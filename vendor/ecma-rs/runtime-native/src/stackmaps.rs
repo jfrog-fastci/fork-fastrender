@@ -1737,6 +1737,50 @@ mod tests {
   }
 
   #[test]
+  fn unknown_stack_size_is_preserved_and_errors_in_strict_sp_to_fp_conversion() {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record with an "unknown" stack_size sentinel. LLVM uses this when the frame size is
+    // not statically known (e.g. dynamic alloca / stack realignment).
+    push_u64(&mut bytes, 0x1000); // addr
+    push_u64(&mut bytes, StackSize::UNKNOWN_SENTINEL); // stack_size
+    push_u64(&mut bytes, 1); // record_count
+
+    // Record.
+    push_u64(&mut bytes, 1); // patchpoint_id
+    push_u32(&mut bytes, 0x10); // instruction_offset
+    push_u16(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 1); // num_locations
+
+    // Location: Indirect [SP + 16], size 8.
+    push_u8(&mut bytes, 3); // kind = Indirect
+    push_u8(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 8); // size
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG); // dwarf_reg
+    push_u16(&mut bytes, 0); // reserved2
+    push_i32(&mut bytes, 16); // offset
+
+    // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
+    align_to_8_with(&mut bytes, 0);
+
+    // No liveouts.
+    push_u16(&mut bytes, 0); // padding
+    push_u16(&mut bytes, 0); // num_liveouts
+    align_to_8_with(&mut bytes, 0);
+
+    let sm = StackMaps::parse(&bytes).unwrap();
+    let callsite = sm.lookup(0x1010).unwrap();
+    assert_eq!(callsite.stack_size, StackSize::Unknown);
+
+    let err = callsite.gc_root_rbp_offsets_strict().unwrap_err();
+    assert!(
+      matches!(err, StackMapError::UnknownStackSize),
+      "expected UnknownStackSize, got {err:?}"
+    );
+  }
+
+  #[test]
   fn derived_pointers_error_in_gc_root_rbp_offsets_strict() {
     let mut bytes: Vec<u8> = Vec::new();
     build_header(&mut bytes, 1, 0, 1);
