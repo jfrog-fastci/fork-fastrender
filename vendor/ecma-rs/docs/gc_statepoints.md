@@ -61,13 +61,31 @@ Notes:
 The concrete call shape we emit is:
 
 ```llvm
-%tok = call token @llvm.experimental.gc.statepoint.p0(
+%tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 <ID>, i32 <NumPatchBytes>,
     ptr elementtype(<fn-ty>) <callee>,
     i32 <NumCallArgs>, i32 0,
     <call args...>,
     i32 <NumTransitionArgs>, i32 <NumDeoptArgs>)
   ["gc-live"(...)]
+```
+
+#### LLVM 18 call-site typing gotcha (do not omit)
+
+In LLVM 18, the statepoint call must spell the intrinsic’s **full function type**
+at the call site:
+
+```llvm
+call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(...)
+```
+
+If you omit the `(i64, i32, ptr, i32, i32, ...)` type and write `call token
+@llvm.experimental.gc.statepoint.p0(...)`, `llvm-as-18` accepts the text but the
+module fails verification with:
+
+```
+Invalid user of intrinsic instruction!
+Intrinsic called with incompatible signature
 ```
 
 Where:
@@ -127,7 +145,7 @@ declare void @rt_safepoint(ptr addrspace(1))
 
 define void @example(ptr addrspace(1) %obj) gc "statepoint-example" {
 entry:
-  %tok = call token @llvm.experimental.gc.statepoint.p0(
+  %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
       i64 0, i32 0,
       ptr elementtype(void (ptr addrspace(1))) @rt_safepoint,
       i32 1, i32 0,
@@ -160,7 +178,7 @@ If you have an interior pointer (derived from a base object pointer), **both** t
 ; derived: an interior pointer into the object
 %field_ptr = getelementptr i8, ptr addrspace(1) %obj, i64 16
 
-%tok = call token @llvm.experimental.gc.statepoint.p0(
+%tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 0, i32 0,
     ptr elementtype(void (ptr addrspace(1))) @rt_safepoint,
     i32 1, i32 0,
