@@ -29,7 +29,7 @@ pub use crate::gc_safe::GcSafeGuard;
 /// stop-the-world safepoint.
 ///
 /// This is used to wake threads blocked in external wait primitives (e.g.
-/// `epoll_wait` inside `rt_async_poll`).
+/// the async reactor poll inside `rt_async_poll`).
 pub fn register_reactor_waker(waker: fn()) {
   safepoint::register_gc_waker(waker);
 }

@@ -69,7 +69,7 @@ pub struct RtCoroutineHeader {
 }
 
 // -----------------------------------------------------------------------------
-// I/O watchers (epoll-backed readiness notifications)
+// I/O watchers (reactor-backed readiness notifications)
 // -----------------------------------------------------------------------------
 
 pub type IoWatcherId = u64;

@@ -43,7 +43,7 @@ struct ReadCtx {
 extern "C" fn on_readable(data: *mut u8) {
   let ctx = unsafe { &*(data as *const ReadCtx) };
 
-  // Drain one byte so the pipe stops being readable (level-triggered epoll).
+  // Drain one byte so the pipe stops being readable.
   let mut buf = [0u8; 1];
   unsafe {
     let _ = libc::read(ctx.fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len());

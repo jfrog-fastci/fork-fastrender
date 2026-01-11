@@ -1,12 +1,12 @@
 //! Async runtime used by LLVM-generated code.
 //!
 //! This module provides:
-//! - A JS-shaped, single-consumer event loop (microtasks + macrotasks + timers + epoll reactor).
+//! - A JS-shaped, single-consumer event loop (microtasks + macrotasks + timers + reactor).
 //! - Minimal Promise/coroutine helpers for async/await lowering.
 //!
 //! The event loop is driven by `rt_async_poll` and is conceptually single-threaded
-//! to preserve JS ordering. Other threads may enqueue work; an `eventfd` is used
-//! to wake a blocked `epoll_wait`.
+//! to preserve JS ordering. Other threads may enqueue work; a platform-specific waker (e.g.
+//! `eventfd` on Linux, `EVFILT_USER` on kqueue platforms) is used to wake a blocked reactor poll.
 //!
 //! ## Concurrency
 //! The runtime is process-global (a singleton). `rt_async_poll` is therefore **thread-safe but not
@@ -259,7 +259,7 @@ pub(crate) fn run_until_idle_nonblocking() -> bool {
 /// It does **not** tear down any background worker threads (the current runtime
 /// doesn't spawn any; this is future-proofing for when it does).
 pub(crate) fn clear_state_for_tests() {
-  // If another thread is currently blocked in `epoll_wait` inside the poll loop, ensure it wakes up
+  // If another thread is currently blocked in the reactor poll inside the event loop, ensure it wakes up
   // so we don't block indefinitely on the poll lock during test cleanup.
   global().loop_.wake();
 

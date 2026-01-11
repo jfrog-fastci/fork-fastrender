@@ -66,7 +66,7 @@ fn gc_wakers() -> &'static Mutex<Vec<fn()>> {
 /// stop-the-world safepoint.
 ///
 /// This is used to wake threads blocked in external wait primitives (e.g.
-/// `epoll_wait` inside `rt_async_poll`).
+/// the async reactor poll inside `rt_async_poll`).
 pub fn register_gc_waker(waker: fn()) {
   let mut wakers = gc_wakers().lock().unwrap();
   if wakers.iter().any(|&w| w as usize == waker as usize) {
