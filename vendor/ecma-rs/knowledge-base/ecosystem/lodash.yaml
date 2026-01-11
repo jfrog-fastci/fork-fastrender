@@ -157,3 +157,130 @@
     kind: caching
     stateful_cache: "true"
     returns: function
+
+- name: lodash.get
+  aliases: [_.get]
+  semantics: Get
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_read
+    reads_from_argument: "0"
+
+- name: lodash.set
+  aliases: [_.set]
+  semantics: Set
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_mutation
+    mutates_argument: "0"
+    returns_argument: "0"
+
+- name: lodash.isEqual
+  aliases: [_.isEqual]
+  semantics: DeepEqual
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: comparison
+
+- name: lodash.uniq
+  aliases: [_.uniq]
+  semantics: Uniq
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.sortBy
+  aliases: [_.sortBy]
+  semantics: SortBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.groupBy
+  aliases: [_.groupBy]
+  semantics: GroupBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: object
+
+- name: lodash.keyBy
+  aliases: [_.keyBy]
+  semantics: KeyBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: object

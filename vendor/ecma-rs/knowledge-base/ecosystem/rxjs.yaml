@@ -244,3 +244,95 @@
     kind: operator
     operator_type: timing
     timer_based: "true"
+
+- name: rxjs.operators.distinctUntilChanged
+  aliases: []
+  semantics: DistinctUntilChanged
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: filtration
+
+- name: rxjs.operators.finalize
+  aliases: []
+  semantics: Finalize
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: side_effect
+
+- name: rxjs.operators.startWith
+  aliases: []
+  semantics: StartWith
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: combinator
+
+- name: rxjs.operators.withLatestFrom
+  aliases: []
+  semantics: WithLatestFrom
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: combinator
+    depends_on_scheduling: "true"
+
+- name: rxjs.operators.delay
+  aliases: []
+  semantics: Delay
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: timing
+    timer_based: "true"
