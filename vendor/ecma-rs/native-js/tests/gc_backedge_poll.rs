@@ -214,6 +214,10 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
     slow_ir.contains("rt_gc_safepoint_slow"),
     "expected slow-path safepoint call to target rt_gc_safepoint_slow:\n{slow_ir}"
   );
+  assert!(
+    !slow_ir.contains("rt_gc_safepoint("),
+    "did not expect slow-path safepoint call to target rt_gc_safepoint wrapper:\n{slow_ir}"
+  );
 
   assert!(
     func_ir.contains("@llvm.experimental.gc.relocate.p1"),

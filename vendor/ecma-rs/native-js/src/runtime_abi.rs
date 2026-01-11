@@ -134,6 +134,13 @@ fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
       codegen_ret: AbiTy::Void,
       codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr],
     },
+    RuntimeFn::WriteBarrierRange => RuntimeFnMeta {
+      symbol: "rt_write_barrier_range",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::RawPtr, AbiTy::RawPtr, AbiTy::I64],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::GcPtr, AbiTy::GcPtr, AbiTy::I64],
+    },
     RuntimeFn::KeepAliveGcRef => RuntimeFnMeta {
       symbol: "rt_keep_alive_gc_ref",
       runtime_ret: AbiTy::Void,
@@ -156,10 +163,12 @@ pub struct RuntimeFns<'ctx> {
   pub rt_gc_collect: FunctionValue<'ctx>,
   pub rt_gc_poll: FunctionValue<'ctx>,
   pub rt_write_barrier: FunctionValue<'ctx>,
+  pub rt_write_barrier_range: FunctionValue<'ctx>,
   pub rt_keep_alive_gc_ref: FunctionValue<'ctx>,
 
   // Leaf wrappers for NoGC runtime fns that want addrspace(1) parameters.
   pub rt_write_barrier_gc: FunctionValue<'ctx>,
+  pub rt_write_barrier_range_gc: FunctionValue<'ctx>,
   pub rt_keep_alive_gc_ref_gc: FunctionValue<'ctx>,
 
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
@@ -191,6 +200,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   pub fn declare_all(&self) -> RuntimeFns<'ctx> {
     // Ensure leaf wrappers exist so tests can assert on their presence.
     let rt_write_barrier_gc = self.get_or_define_leaf_wrapper(RuntimeFn::WriteBarrier);
+    let rt_write_barrier_range_gc = self.get_or_define_leaf_wrapper(RuntimeFn::WriteBarrierRange);
     let rt_keep_alive_gc_ref_gc = self.get_or_define_leaf_wrapper(RuntimeFn::KeepAliveGcRef);
 
     RuntimeFns {
@@ -202,8 +212,10 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_gc_collect: self.get_or_declare_raw(RuntimeFn::GcCollect),
       rt_gc_poll: self.get_or_declare_raw(RuntimeFn::GcPoll),
       rt_write_barrier: self.get_or_declare_raw(RuntimeFn::WriteBarrier),
+      rt_write_barrier_range: self.get_or_declare_raw(RuntimeFn::WriteBarrierRange),
       rt_keep_alive_gc_ref: self.get_or_declare_raw(RuntimeFn::KeepAliveGcRef),
       rt_write_barrier_gc,
+      rt_write_barrier_range_gc,
       rt_keep_alive_gc_ref_gc,
       rt_parallel_spawn: self.rt_parallel_spawn_raw(),
       rt_parallel_join: self.rt_parallel_join_raw(),
@@ -628,3 +640,4 @@ pub fn emit_runtime_call<'ctx>(
   crate::stack_walking::mark_call_notail(call);
   Ok(call)
 }
+

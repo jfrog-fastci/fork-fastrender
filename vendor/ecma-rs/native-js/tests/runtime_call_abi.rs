@@ -1,6 +1,8 @@
 use inkwell::context::Context;
 use native_js::llvm::gc;
-use native_js::runtime_abi::{emit_runtime_call, ArgRootingPolicy, RuntimeCallError, RuntimeFn, RuntimeFnSpec};
+use native_js::runtime_abi::{
+  emit_runtime_call, ArgRootingPolicy, RuntimeCallError, RuntimeFn, RuntimeFnSpec,
+};
 
 #[test]
 fn runtime_call_registry_has_gc_safety_metadata() {
@@ -39,6 +41,16 @@ fn runtime_call_registry_has_gc_safety_metadata() {
   assert!(
     wb.gc_ptr_args > 0,
     "expected rt_write_barrier to take GC pointer args, got {wb:?}"
+  );
+
+  let wbr = RuntimeFn::WriteBarrierRange.spec();
+  assert!(
+    !wbr.may_gc,
+    "expected rt_write_barrier_range to be may_gc=false, got {wbr:?}"
+  );
+  assert!(
+    wbr.gc_ptr_args > 0,
+    "expected rt_write_barrier_range to take GC pointer args, got {wbr:?}"
   );
 
   let keep_alive = RuntimeFn::KeepAliveGcRef.spec();

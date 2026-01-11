@@ -17,7 +17,10 @@ pub enum RuntimeFn {
   Alloc,
   /// Pinned allocation entrypoint: always may trigger GC.
   AllocPinned,
-  /// GC safepoint poll.
+  /// Convenience GC safepoint poll (`rt_gc_safepoint()`).
+  ///
+  /// Compiled code should prefer `GcSafepointSlow` + `RT_GC_EPOCH` polling so the runtime can
+  /// capture the managed callsite context.
   GcSafepoint,
   /// Slow path for explicit safepoint polling:
   /// `rt_gc_safepoint_slow(epoch: u64)`.
@@ -34,6 +37,8 @@ pub enum RuntimeFn {
   GcPoll,
   /// Generational write barrier (must not allocate / GC).
   WriteBarrier,
+  /// Generational write barrier for a contiguous range (must not allocate / GC).
+  WriteBarrierRange,
   /// Keep a GC object alive until after the last use of a derived raw pointer.
   ///
   /// This prevents the compiler from considering a GC reference dead while a raw pointer derived
@@ -154,6 +159,13 @@ impl RuntimeFn {
       },
       RuntimeFn::WriteBarrier => RuntimeFnSpec {
         name: "rt_write_barrier",
+        may_gc: false,
+        gc_ptr_args: 2,
+        gc_handle_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::WriteBarrierRange => RuntimeFnSpec {
+        name: "rt_write_barrier_range",
         may_gc: false,
         gc_ptr_args: 2,
         gc_handle_args: 0,
