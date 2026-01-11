@@ -25,13 +25,18 @@ textual LLVM IR (via a small `parse-js`-driven IR emitter in `native-js`),
 then uses `native-js`’s artifact pipeline to emit an object file via LLVM and
 link a temporary executable (via `clang`/`lld`), and then runs it.
 
-> Note: this path is still **parse-js-driven** and does not perform real
-> TypeScript typechecking for code generation. However, it *does* invoke
-> `typecheck-ts` to discover the module graph and export maps (so it can compile
-> multi-file projects with `import { ... } from "./mod"`).
+> Note: this describes the default `--pipeline project` mode, which is still
+> **parse-js-driven** and does not use TypeScript's type system for code
+> generation. However, it *does* invoke `typecheck-ts` to discover the module
+> graph and export maps (so it can compile multi-file projects with
+> `import { ... } from "./mod"`).
 >
-> The CLI does not currently treat TypeScript type errors as fatal for code
-> generation; `typecheck-ts` is only used for reachability/module metadata.
+> In `--pipeline project` mode, the CLI does not treat TypeScript type errors as
+> fatal for code generation; `typecheck-ts` is only used for
+> reachability/module metadata.
+>
+> For a typechecked pipeline, use `--pipeline checked` (or the `native-js`
+> binary).
 >
 > The input is parsed as a TypeScript **module** (`Dialect::Ts` +
 > `SourceType::Module`).
@@ -68,7 +73,7 @@ also a default mode (no subcommand) that compiles + runs a project.
 In all modes, the entry file is a TypeScript module path:
 
 ```text
-native-js-cli [--entry-fn <NAME>] [--no-builtins] [--emit-llvm <PATH>] [<ENTRY.ts>]
+native-js-cli [--pipeline <project|checked>] [--entry-fn <NAME>] [--no-builtins] [--emit-llvm <PATH>] [<ENTRY.ts>]
 ```
 
 The input file is read as UTF-8 text; invalid UTF-8 will cause the CLI to exit
@@ -118,6 +123,20 @@ export name isn’t `main`).
 
 ## Options
 
+### `--pipeline <project|checked>`
+
+Select which compilation pipeline to use:
+
+- `project` (default): the legacy `parse-js`-driven textual LLVM IR emitter.
+  - keeps compiling even when `typecheck-ts` reports type errors
+  - supports `--entry-fn` (and auto-calls an exported `main()` when present)
+- `checked`: typechecked `native_js::compile_program` pipeline.
+  - fails on TypeScript type errors
+  - enforces the `native_js::validate::validate_strict_subset` checks (`NJS0009` / `NJS0010`)
+  - expects the entry module to export `main()` (like the `native-js` binary)
+  - does **not** support `--entry-fn`
+  - see below (`native-js` section) for the current checked/HIR backend subset
+
 ### `--entry-fn <name>`
 
 After initializing the module graph (executing top-level statements in dependency
@@ -128,6 +147,8 @@ invoked automatically after module initialization. Use `--entry-fn` to call a
 different exported function.
 
 The entry function must take **zero** parameters; its return value is ignored.
+
+This flag is only supported with `--pipeline project`.
 
 ### `--emit-llvm <path>`
 
@@ -185,7 +206,7 @@ can test the non-builtin path.
 - numbers are formatted similar to `printf("%.15g")`, but special-cased for
   `NaN` / `Infinity` / `-Infinity`
 
-## Supported language subset (current)
+## Supported language subset (`--pipeline project`, current)
 
 This CLI exercises the **minimal** IR emitter in `native-js` (it is not the
 future typechecked/HIR-based backend yet). Supported today:
@@ -254,15 +275,13 @@ simple error (e.g. `unsupported statement`, `unsupported expression`, or
 
 ## Diagnostics / errors (`native-js-cli`)
 
-The minimal `native-js-cli` binary prints errors to stderr using the `Display`
-formatting of `native-js` error types:
-
-- parse errors come from `parse-js` (syntax errors)
-- codegen failures come from `native-js::codegen` (`unsupported statement`, etc)
-
-This binary does not currently render source-context diagnostics (file/line
-caret spans). For source-level debugging, consider using `parse-js-cli` or
-`typecheck-ts-cli`.
+- In `--pipeline project` mode (default), errors are printed to stderr using the
+  `Display` formatting of `native-js` error types:
+  - parse errors come from `parse-js` (syntax errors)
+  - codegen failures come from `native-js::codegen` (`unsupported statement`, etc)
+- In `--pipeline checked` mode, failures from `native_js::compile_program` are
+  rendered as source-context diagnostics (file/line caret spans), similar to the
+  `native-js` binary.
 
 Exit codes:
 

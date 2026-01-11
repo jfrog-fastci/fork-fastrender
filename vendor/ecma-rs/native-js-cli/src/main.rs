@@ -67,9 +67,9 @@ enum Pipeline {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-  /// Type-check input sources (no code generation).
+  /// Check that input sources can be compiled (no executable output).
   Check {
-    /// Entry files to type-check.
+    /// Entry files to check.
     entries: Vec<PathBuf>,
   },
 
