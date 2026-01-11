@@ -97,7 +97,8 @@ fn builtin_callee_purity(path: &str) -> Purity {
     "__optimize_js_array"
     | "__optimize_js_object"
     | "__optimize_js_regex"
-    | "__optimize_js_template" => Purity::Allocating,
+    | "__optimize_js_template"
+    | "__optimize_js_tagged_template" => Purity::Allocating,
 
     _ => Purity::Impure,
   }
@@ -112,8 +113,8 @@ fn callee_purity(callee: &Arg, purities: &FnPurityMap) -> Purity {
 }
 
 pub fn annotate_cfg_purity(cfg: &mut Cfg, purities: &FnPurityMap) {
-  for (_, block) in cfg.bblocks.all_mut() {
-    for inst in block.iter_mut() {
+  for label in cfg.graph.labels_sorted() {
+    for inst in cfg.bblocks.get_mut(label).iter_mut() {
       if inst.t != InstTyp::Call {
         continue;
       }
@@ -134,7 +135,9 @@ mod tests {
   use crate::TopLevelMode;
 
   fn cfg_with_single_call(callee: Arg) -> Cfg {
-    let graph = CfgGraph::default();
+    let mut graph = CfgGraph::default();
+    // Ensure label 0 exists in the CFG graph.
+    graph.connect(0, 0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(
       0,
@@ -154,7 +157,8 @@ mod tests {
   }
 
   fn empty_program_function() -> ProgramFunction {
-    let graph = CfgGraph::default();
+    let mut graph = CfgGraph::default();
+    graph.connect(0, 0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, Vec::new());
     ProgramFunction {

@@ -12,7 +12,7 @@ use crate::{FnId, Program};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
-use super::{alias, effect, encoding, escape, nullability, ownership, range};
+use super::{alias, effect, encoding, escape, nullability, ownership, purity, range};
 
 /// Stable identifier for a function in a [`Program`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -31,8 +31,8 @@ pub enum FunctionKey {
 #[derive(Debug, Default)]
 pub struct ProgramAnalyses {
   pub effects_summary: HashMap<FunctionKey, EffectSet>,
-  /// `true` when the function has no observable effects.
-  pub purity: HashMap<FunctionKey, bool>,
+  /// Conservative purity classification derived from the function-level effect summary.
+  pub purity: HashMap<FunctionKey, purity::Purity>,
 
   pub alias: HashMap<FunctionKey, alias::AliasResult>,
   pub escape: HashMap<FunctionKey, escape::EscapeResult>,
@@ -154,13 +154,12 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   }
 
   // 2) purity
-  for &key in &keys {
-    let is_pure = analyses
-      .effects_summary
-      .get(&key)
-      .map(|eff| eff.is_pure())
-      .unwrap_or(false);
-    analyses.purity.insert(key, is_pure);
+  let purities = purity::compute_program_purity(program, &effects);
+  analyses
+    .purity
+    .insert(FunctionKey::TopLevel, purities.top_level);
+  for id in sorted_fn_ids(program) {
+    analyses.purity.insert(FunctionKey::Fn(id), purities.for_fn(id));
   }
 
   // 3) alias
@@ -238,13 +237,18 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   // 2) purity
+  let purities = purity::compute_program_purity(program, &effects);
   for &key in &keys {
-    let is_pure = analyses
-      .effects_summary
-      .get(&key)
-      .map(|eff| eff.is_pure())
-      .unwrap_or(false);
-    analyses.purity.insert(key, is_pure);
+    match key {
+      FunctionKey::TopLevel => purity::annotate_cfg_purity(&mut program.top_level.body, &purities),
+      FunctionKey::Fn(id) => purity::annotate_cfg_purity(&mut program.functions[id].body, &purities),
+    }
+  }
+  analyses
+    .purity
+    .insert(FunctionKey::TopLevel, purities.top_level);
+  for id in sorted_fn_ids(program) {
+    analyses.purity.insert(FunctionKey::Fn(id), purities.for_fn(id));
   }
 
   // 3) alias
@@ -339,7 +343,13 @@ mod tests {
 
     assert!(
       any_inst(&program, |inst| inst.t == InstTyp::Call && !inst.meta.effects.is_pure()),
-      "expected at least one call site to have call purity information"
+      "expected at least one call site to have non-default InstMeta.effects"
+    );
+
+    assert!(
+      any_inst(&program, |inst| inst.t == InstTyp::Call
+        && inst.meta.callee_purity != crate::analysis::purity::Purity::Impure),
+      "expected at least one call site to record non-Impure callee purity"
     );
 
     assert!(
