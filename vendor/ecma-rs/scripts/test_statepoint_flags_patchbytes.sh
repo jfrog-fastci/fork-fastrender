@@ -47,6 +47,16 @@ if [[ "${llc_version_line}" != *"version 18."* ]]; then
   die "expected LLVM 18.x (${LLC}), got: ${llc_version_line}"
 fi
 
+readobj_version_line="$("${LLVM_READOBJ}" --version | head -n1 || true)"
+if [[ "${readobj_version_line}" != *"version 18."* ]]; then
+  die "expected LLVM 18.x (${LLVM_READOBJ}), got: ${readobj_version_line}"
+fi
+
+objdump_version_line="$("${LLVM_OBJDUMP}" --version | head -n1 || true)"
+if [[ "${objdump_version_line}" != *"version 18."* ]]; then
+  die "expected LLVM 18.x (${LLVM_OBJDUMP}), got: ${objdump_version_line}"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FIXTURES_DIR="${ECMA_RS_DIR}/fixtures/llvm_stackmap_abi"
