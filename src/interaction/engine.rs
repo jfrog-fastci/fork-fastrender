@@ -1146,72 +1146,6 @@ fn shaped_total_advance(runs: &[crate::text::pipeline::ShapedRun], fallback: f32
   }
 }
 
-fn shaped_prefix_advance_for_byte(
-  runs: &[crate::text::pipeline::ShapedRun],
-  target_byte: usize,
-) -> f32 {
-  let mut x = 0.0f32;
-  for run in runs {
-    if target_byte <= run.start {
-      break;
-    }
-    if target_byte >= run.end {
-      x += run.advance;
-      continue;
-    }
-
-    let local_byte = target_byte.saturating_sub(run.start);
-    if run.direction.is_rtl() {
-      // TODO: Proper bidi caret mapping. For now, fall back to clamping to either edge of the run.
-      x += if local_byte == 0 { 0.0 } else { run.advance };
-      break;
-    }
-
-    for glyph in &run.glyphs {
-      if (glyph.cluster as usize) >= local_byte {
-        break;
-      }
-      x += glyph.x_advance;
-    }
-    break;
-  }
-
-  if x.is_finite() {
-    x.max(0.0)
-  } else {
-    0.0
-  }
-}
-
-fn shaped_prefix_advance_for_char_idx(
-  text: &str,
-  runs: &[crate::text::pipeline::ShapedRun],
-  char_idx: usize,
-  total_advance: f32,
-  fallback_advance: f32,
-) -> f32 {
-  if char_idx == 0 {
-    return 0.0;
-  }
-  let max_chars = text.chars().count();
-  if char_idx >= max_chars {
-    return total_advance;
-  }
-  let byte = byte_offset_for_char_idx(text, char_idx);
-  let x = shaped_prefix_advance_for_byte(runs, byte);
-  if x > 0.0 || x.is_finite() {
-    x.min(total_advance)
-  } else {
-    // Fall back to proportional mapping when shaping fails.
-    let avg = if max_chars > 0 {
-      (fallback_advance / max_chars as f32).max(0.0)
-    } else {
-      0.0
-    };
-    (avg * char_idx as f32).min(total_advance)
-  }
-}
-
 fn caret_index_for_x_in_text(
   text: &str,
   style: &ComputedStyle,
@@ -1234,50 +1168,7 @@ fn caret_index_for_x_in_text(
   }
   local_x = local_x.clamp(0.0, total_advance);
 
-  let mut lo = 0usize;
-  let mut hi = char_count;
-  while lo < hi {
-    let mid = (lo + hi) / 2;
-    let mid_x = shaped_prefix_advance_for_char_idx(
-      text,
-      &runs,
-      mid,
-      total_advance,
-      fallback_advance,
-    );
-    if mid_x < local_x {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-
-  let upper = lo.min(char_count);
-  if upper == 0 {
-    return 0;
-  }
-  let lower = upper - 1;
-
-  let lower_x = shaped_prefix_advance_for_char_idx(
-    text,
-    &runs,
-    lower,
-    total_advance,
-    fallback_advance,
-  );
-  let upper_x = shaped_prefix_advance_for_char_idx(
-    text,
-    &runs,
-    upper,
-    total_advance,
-    fallback_advance,
-  );
-
-  if (local_x - lower_x) <= (upper_x - local_x) {
-    lower
-  } else {
-    upper
-  }
+  crate::text::caret::char_idx_for_x(text, &runs, local_x).min(char_count)
 }
 
 fn caret_index_for_text_control_point(

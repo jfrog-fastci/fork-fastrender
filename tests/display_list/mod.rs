@@ -3,6 +3,7 @@
 mod background_tiling_viewport;
 mod box_shadow_blur_cache;
 mod builder_clip_path_backdrop_root_test;
+mod form_control_bidi_caret;
 mod form_control_caret_color;
 mod form_control_content_box_clip;
 mod iframe;
