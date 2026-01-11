@@ -84,17 +84,19 @@ fn main() {
         exit(1);
       });
 
-      let status = Command::new(clang)
-        .arg("-x")
-        .arg("ir")
-        .arg(&ll_path)
-        .arg("-o")
-        .arg(output)
-        .status()
-        .unwrap_or_else(|err| {
-          eprintln!("failed to invoke clang: {err}");
-          exit(1);
-        });
+      let mut cmd = Command::new(clang);
+      cmd.arg("-x").arg("ir").arg(&ll_path);
+      // On modern Linux toolchains `clang` defaults to PIE, but native-js stackmaps contain
+      // absolute code relocations that can trigger `DT_TEXTREL` when linked as PIE. Prefer a
+      // stable non-PIE executable by default.
+      if cfg!(target_os = "linux") {
+        cmd.arg("-no-pie");
+      }
+      cmd.arg("-o").arg(output);
+      let status = cmd.status().unwrap_or_else(|err| {
+        eprintln!("failed to invoke clang: {err}");
+        exit(1);
+      });
 
       if !status.success() {
         exit(status.code().unwrap_or(1));
@@ -187,17 +189,17 @@ fn compile_ir_to_temp_exe(ir: &str) -> (PathBuf, TempDir) {
     exit(1);
   });
 
-  let status = Command::new(clang)
-    .arg("-x")
-    .arg("ir")
-    .arg(&ll_path)
-    .arg("-o")
-    .arg(&exe_path)
-    .status()
-    .unwrap_or_else(|err| {
-      eprintln!("failed to invoke clang: {err}");
-      exit(1);
-    });
+  let mut cmd = Command::new(clang);
+  cmd.arg("-x").arg("ir").arg(&ll_path);
+  // See note in `build`: prefer non-PIE executables by default on Linux.
+  if cfg!(target_os = "linux") {
+    cmd.arg("-no-pie");
+  }
+  cmd.arg("-o").arg(&exe_path);
+  let status = cmd.status().unwrap_or_else(|err| {
+    eprintln!("failed to invoke clang: {err}");
+    exit(1);
+  });
 
   if !status.success() {
     exit(status.code().unwrap_or(1));
