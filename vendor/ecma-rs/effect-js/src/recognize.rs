@@ -4,7 +4,7 @@ use hir_js::{
 };
 
 #[cfg(feature = "typed")]
-use hir_js::BinaryOp;
+use hir_js::{BinaryOp, ObjectKey};
 
 use crate::api::ApiId;
 use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
