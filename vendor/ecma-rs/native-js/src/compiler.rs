@@ -61,6 +61,12 @@ pub fn compile_typescript_to_artifact(
   opts: CompileOptions,
   output_path: Option<PathBuf>,
 ) -> Result<CompileOutput, NativeJsError> {
+  if matches!(opts.emit, EmitKind::Executable) && !cfg!(target_os = "linux") {
+    return Err(NativeJsError::UnsupportedPlatform {
+      target_os: std::env::consts::OS.to_string(),
+    });
+  }
+
   let (out_path, out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
 
   let ir = compile_typescript_to_llvm_ir(source, opts.clone())?;
