@@ -2679,13 +2679,16 @@ impl FontMetrics {
     // Snap the "normal" line height metric to whole CSS pixels to better match browser output and
     // avoid this drift. Keep the per-face ascent/descent values un-snapped so baselines and glyph
     // alignment remain driven by the font metrics; only the overall line box height is snapped.
-    // Use the rounded pixel line height as the "normal" line box height.
+    //
+    // Headless Chrome (Skia/FreeType) effectively truncates the scaled font height to whole CSS
+    // pixels for common text metrics. E.g. Roboto Flex at 21px yields a raw height of ~24.61px in
+    // font units, but Chrome lays out lines at 24px. Using `round()` here would inflate that to
+    // 25px, and that +1px/line quickly accumulates into visible vertical drift on real pages.
     //
     // Important: do *not* clamp this to `ceil(ascent + descent)`. When ascent/descent scale to
     // values like 20.16px, `ceil()` would force the line height up to 21px even though browsers
-    // (and FreeType) round the font height to the nearest pixel (20px here). That 1px inflation
-    // per line accumulates into large vertical drift on real pages.
-    let line_height = raw_line_height.round();
+    // truncate to 20px here. That 1px inflation per line accumulates into large vertical drift.
+    let line_height = raw_line_height.floor();
 
     ScaledMetrics {
       font_size,

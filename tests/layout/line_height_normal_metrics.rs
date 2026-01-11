@@ -1,5 +1,8 @@
 use fastrender::tree::fragment_tree::FragmentContent;
+use fastrender::text::font_db::FontMetrics;
 use fastrender::{FastRender, FastRenderConfig, FontConfig, FontContext};
+
+const ROBOTO_FLEX: &[u8] = include_bytes!("../fonts/RobotoFlex-VF.ttf");
 
 fn find_text_fragment<'a>(
   fragment: &'a fastrender::FragmentNode,
@@ -104,5 +107,19 @@ fn bundled_sans_serif_normal_line_height_is_reasonable() {
     (line_height - 18.0).abs() <= 0.2,
     "expected bundled sans-serif normal line-height to snap near Chrome output (~18px at 16px); got {line_height} for {}",
     font.family
+  );
+}
+
+#[test]
+fn roboto_flex_line_height_normal_truncates_like_chrome() {
+  // Roboto Flex's raw typographic line height at 21px is ~24.61px. Headless Chrome truncates
+  // this to 24px, so our `line-height: normal` snapping should do the same to avoid per-line
+  // drift (notably on xkcd.com).
+  let metrics = FontMetrics::from_data(ROBOTO_FLEX, 0).expect("Roboto Flex metrics");
+  let scaled = metrics.scale(21.0);
+  assert!(
+    (scaled.line_height - 24.0).abs() < 0.01,
+    "expected snapped line height of 24px at 21px font size; got {}",
+    scaled.line_height
   );
 }

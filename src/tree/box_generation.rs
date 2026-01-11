@@ -4421,6 +4421,26 @@ fn generate_boxes_for_styled_into(
                 WhiteSpace::Normal | WhiteSpace::Nowrap
               )
             {
+              // In HTML documents, inter-element whitespace between `<head>` and `<body>` is parsed as
+              // a text node that is a direct child of `<html>`. Browsers do not render this text, and
+              // producing boxes for it breaks assumptions in later stages (e.g. identifying the body
+              // box for canvas background propagation) and can affect the static position of
+              // absolutely positioned `<body>`.
+              if stack.iter().rev().nth(1).is_some_and(|parent| {
+                matches!(
+                  &parent.styled.node.node_type,
+                  DomNodeType::Element {
+                    tag_name,
+                    namespace,
+                    ..
+                  } if tag_name.eq_ignore_ascii_case("html")
+                    && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+                )
+              }) {
+                stack.pop();
+                continue;
+              }
+
               // Flex/grid containers treat direct text runs as anonymous items. Collapsible
               // inter-element whitespace should not generate those items, otherwise `gap` and
               // auto-placement treat them as real children.

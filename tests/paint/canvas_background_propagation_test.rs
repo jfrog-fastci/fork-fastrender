@@ -181,3 +181,51 @@ fn canvas_background_propagation_ignores_negative_paint_bounds_for_background_po
     outside_left.alpha()
   );
 }
+
+#[test]
+fn canvas_background_propagates_body_background_with_positioned_body_and_html_whitespace() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // HTML parsing inserts inter-element whitespace between `</head>` and `<body>` as a direct child
+  // of `<html>`. That whitespace should not generate boxes: otherwise the `<body>` box id is no
+  // longer `html_id + 1` and canvas background propagation can fail.
+  //
+  // When propagation fails, the body background is painted as a positioned element (above negative
+  // z-index descendants) instead of as the canvas background (below everything).
+  let html = r#"<!doctype html><html><head><style>
+      html, body { margin: 0; }
+      html { background: transparent; }
+      body { position: absolute; top: 0; left: 0; right: 0; height: 100px; background: rgb(255, 0, 0); }
+      #neg { position: absolute; left: 0; top: 0; width: 40px; height: 40px; background: rgb(0, 0, 255); z-index: -1; }
+    </style></head>
+    <body><div id="neg"></div></body></html>"#;
+
+  let pixmap = renderer
+    .render_html(html, 64, 200)
+    .expect("render should succeed");
+
+  let neg = pixmap.pixel(10, 10).expect("pixel inside #neg");
+  assert!(
+    neg.blue() > 200 && neg.red() < 80 && neg.green() < 80,
+    "expected negative z-index content (blue) to paint above propagated canvas background, got rgba({}, {}, {}, {})",
+    neg.red(),
+    neg.green(),
+    neg.blue(),
+    neg.alpha()
+  );
+
+  let outside = pixmap.pixel(10, 150).expect("outside pixel");
+  assert!(
+    outside.red() > 200 && outside.green() < 80 && outside.blue() < 80,
+    "expected propagated canvas background (red) outside body bounds, got rgba({}, {}, {}, {})",
+    outside.red(),
+    outside.green(),
+    outside.blue(),
+    outside.alpha()
+  );
+}
