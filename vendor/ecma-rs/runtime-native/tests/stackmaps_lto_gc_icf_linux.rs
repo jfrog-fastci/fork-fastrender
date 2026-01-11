@@ -283,7 +283,7 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
     assert_eq!(
       section.source,
       stackmap_loader::StackMapSectionSource::LinkerSymbols,
-      "expected stackmaps to be discovered via linker symbols when stackmaps.ld is injected"
+      "expected stackmaps to be discovered via linker symbols when the stackmaps linker fragment is injected"
     );
   }
 
@@ -602,9 +602,12 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
     None
   };
 
+  // This test links non-PIE executables (`-no-pie`). Mirror production by using
+  // the dedicated non-PIE linker-script fragment, which keeps `.llvm_stackmaps`
+  // directly (no section renaming required).
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
-    .join("stackmaps.ld");
+    .join("stackmaps_nopie.ld");
 
   for cfg in cfgs {
     if (cfg.lto != LtoMode::None || cfg.icf_all) && !lld {

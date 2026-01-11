@@ -91,7 +91,7 @@ fn main() {
     let start = unsafe { &__stackmaps_start as *const u8 };
     let end = unsafe { &__stackmaps_end as *const u8 };
     let len = unsafe { end.offset_from(start) as usize };
-    assert!(len > 0, "expected non-empty .llvm_stackmaps bytes");
+    assert!(len > 0, "expected non-empty stackmaps bytes");
     let bytes = unsafe { std::slice::from_raw_parts(start, len) };
 
     // Allow for alignment padding; search for our injected StackMap v3 header.

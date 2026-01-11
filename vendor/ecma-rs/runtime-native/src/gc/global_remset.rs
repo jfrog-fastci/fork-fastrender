@@ -338,6 +338,7 @@ impl RememberedSet for WorldStoppedRememberedSet {
           std::process::abort();
         }
         // SAFETY: entries originate from the write barrier contract (object base pointers).
+        // SAFETY: entries originate from the write barrier contract (object base pointers).
         unsafe {
           (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
         }

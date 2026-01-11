@@ -10,8 +10,9 @@ use runtime_native::stackmaps::STACKMAP_VERSION;
 //
 // Note: runtime-native's build script links tests with `link/stackmaps.ld`, which:
 // - keeps `.data.rel.ro.llvm_stackmaps` under `--gc-sections`, and
-// - defines `__fastr_stackmaps_start/end` to delimit the in-memory stackmaps byte range (the entire
-//   output section, which may contain multiple concatenated stackmap blobs from all linked objects).
+// - defines `__fastr_stackmaps_start/end` (and aliases) to delimit the in-memory stackmaps byte
+//   range (the entire output section, which may contain multiple concatenated stackmap blobs from
+//   all linked objects).
 //
 // We inject a known-good blob so this test can assert that the symbol-delimited range returned by
 // `stackmaps_symbols::stackmaps_bytes_from_exe()` covers our bytes.
