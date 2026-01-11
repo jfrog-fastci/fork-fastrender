@@ -5,15 +5,18 @@ set -Eeuo pipefail
 pushd "$(dirname "$0")" >/dev/null
 
 # Prefer building via the repo's constrained cargo wrapper (slot throttling + RLIMIT_AS caps) when
-# available (this file may be used both in the standalone ecma-rs repo and in the vendored
-# FastRender checkout).
-if [[ -f ../../scripts/cargo_agent.sh ]]; then
-  # When building from the workspace root (via cargo_agent), we must pass `-p` because this bench
-  # crate is a workspace member.
-  bin_path="$(bash ../../scripts/cargo_agent.sh build -p minify-js-bench --profile release-with-debug --message-format=json | jq -r '.executable | select(. != null)')"
-else
-  bin_path="$(cargo build --profile release-with-debug --message-format=json | jq -r '.executable | select(. != null)')"
+# available.
+#
+# Note: In the FastRender monorepo this wrapper is non-optional: raw `cargo build` runs are
+# forbidden because they can spawn uncontrolled parallelism and OOM the host.
+if [[ ! -f ../../scripts/cargo_agent.sh ]]; then
+  echo "error: expected cargo wrapper at ../../scripts/cargo_agent.sh" >&2
+  exit 1
 fi
-ln -fsv "$bin_path" ./run
 
+# When building from the workspace root (via cargo_agent), we must pass `-p` because this bench
+# crate is a workspace member.
+bin_path="$(bash ../../scripts/cargo_agent.sh build -p minify-js-bench --profile release-with-debug --message-format=json | jq -r '.executable | select(. != null)')"
+ln -fsv "$bin_path" ./run
+ 
 popd >/dev/null
