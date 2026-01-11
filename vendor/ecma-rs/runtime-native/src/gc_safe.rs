@@ -56,6 +56,14 @@ impl Drop for GcSafeGuard {
       safepoint::wait_while_stop_the_world();
     }
 
+    // Publish that we've observed the resumed epoch before clearing NativeSafe.
+    //
+    // Threads in a GC-safe region are treated as "already quiescent" by the STW coordinator, so they
+    // may not run the cooperative safepoint slow path that normally updates the observed epoch on
+    // resume. Without this, a thread can exit NativeSafe after the world is resumed but still have
+    // an old `safepoint_epoch_observed`, causing the coordinator's post-resume barrier to time out.
+    registry::set_current_thread_safepoint_epoch_observed(safepoint::current_epoch());
+
     thread.native_safe_depth.store(0, Ordering::Release);
     safepoint::notify_state_change();
   }
