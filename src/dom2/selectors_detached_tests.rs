@@ -64,6 +64,23 @@ fn query_selector_from_template_scope_does_not_traverse_inert_contents() {
 }
 
 #[test]
+fn query_selector_traverses_svg_template_contents() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<svg>",
+    "<template><g id=hit></g></template>",
+    "</svg>",
+    "</body></html>",
+  );
+  let mut doc = parse_html(html).unwrap();
+  let hit = doc.get_element_by_id("hit").expect("expected #hit inside SVG template");
+  assert_eq!(doc.query_selector("#hit", None).unwrap(), Some(hit));
+  assert_eq!(doc.query_selector_all("#hit", None).unwrap(), vec![hit]);
+  assert!(doc.matches_selector(hit, "#hit").unwrap());
+}
+
+#[test]
 fn selector_mapping_skips_doctype_and_comments_in_dom2_html_parse() {
   // `dom2::parse_html` stores html5ever-only nodes (doctype/comments) in the arena but drops them
   // when snapshotting back to the renderer `DomNode`. Selector preorder mappings must skip them too

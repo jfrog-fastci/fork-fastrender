@@ -522,7 +522,7 @@ impl Document {
       namespace
     };
 
-    let inert_subtree = tag_name.eq_ignore_ascii_case("template");
+    let inert_subtree = is_html_ns && tag_name.eq_ignore_ascii_case("template");
     let kind = if is_html_ns && tag_name.eq_ignore_ascii_case("slot") {
       NodeKind::Slot {
         namespace: namespace.to_string(),

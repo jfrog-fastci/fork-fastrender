@@ -13,7 +13,11 @@ fn node_is_element_like(kind: &NodeKind) -> bool {
 fn node_is_template_element(kind: &NodeKind) -> bool {
   matches!(
     kind,
-    NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template")
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace)
   )
 }
 

@@ -44,6 +44,12 @@ fn create_element_marks_template_inert_and_slot_kind() {
   let template_upper = doc.create_element("TEMPLATE", "");
   assert!(doc.node(template_upper).inert_subtree);
 
+  let svg_template = doc.create_element("template", crate::dom::SVG_NAMESPACE);
+  assert!(
+    !doc.node(svg_template).inert_subtree,
+    "non-HTML <template> elements must not mark inert_subtree"
+  );
+
   let div = doc.create_element("div", "");
   assert!(!doc.node(div).inert_subtree);
 

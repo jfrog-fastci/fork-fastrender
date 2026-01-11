@@ -204,7 +204,14 @@ impl std::fmt::Debug for Document {
 
 fn kind_implies_inert_subtree(kind: &NodeKind) -> bool {
   match kind {
-    NodeKind::Element { tag_name, .. } => tag_name.eq_ignore_ascii_case("template"),
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } => {
+      tag_name.eq_ignore_ascii_case("template")
+        && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+    }
     _ => false,
   }
 }
