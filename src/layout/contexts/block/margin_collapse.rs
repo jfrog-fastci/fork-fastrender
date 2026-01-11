@@ -15,7 +15,7 @@
 //! - Root element margins
 //! - Margins of floats and absolutely positioned elements
 //! - Margins separated by padding or borders
-//! - Margins on boxes that establish new BFCs (overflow != visible)
+//! - Margins on boxes that establish new BFCs (overflow: hidden/scroll/auto)
 //! - Margins on inline-level boxes
 //!
 //! # Collapse Algorithm
@@ -427,6 +427,12 @@ pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   use crate::style::display::Display;
   use crate::style::types::Overflow;
 
+  fn overflow_establishes_bfc(overflow: Overflow) -> bool {
+    // CSS Overflow defines `overflow: clip` to *not* establish a new block formatting context
+    // (unlike `hidden/scroll/auto`), even though it still clips paint.
+    matches!(overflow, Overflow::Hidden | Overflow::Scroll | Overflow::Auto)
+  }
+
   if style.containment.size || style.containment.inline_size || style.containment.layout {
     return true;
   }
@@ -449,7 +455,7 @@ pub fn establishes_bfc(style: &ComputedStyle) -> bool {
   ) {
     return true;
   }
-  if style.overflow_x != Overflow::Visible || style.overflow_y != Overflow::Visible {
+  if overflow_establishes_bfc(style.overflow_x) || overflow_establishes_bfc(style.overflow_y) {
     return true;
   }
   matches!(style.display, Display::Flex | Display::Grid)
@@ -716,9 +722,23 @@ mod tests {
     style.overflow_x = Overflow::Hidden;
     assert!(
       establishes_bfc(&style),
-      "expected overflow != visible to establish a BFC"
+      "expected overflow:hidden to establish a BFC"
     );
     assert!(!is_margin_collapsible_through(&style));
+  }
+
+  #[test]
+  fn test_overflow_clip_does_not_establish_bfc() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Clip;
+    assert!(
+      !establishes_bfc(&style),
+      "expected overflow:clip to not establish a BFC"
+    );
+    assert!(
+      is_margin_collapsible_through(&style),
+      "expected overflow:clip to not prevent collapsing-through"
+    );
   }
 
   #[test]

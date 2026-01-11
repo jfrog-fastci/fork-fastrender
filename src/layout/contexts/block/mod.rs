@@ -5005,7 +5005,8 @@ impl BlockFormattingContext {
                                           float_ctx_ref: &FloatContext|
      -> Result<(), LayoutError> {
       // Floats shorten inline line boxes, but block-level boxes that establish a new BFC (tables,
-      // overflow!=visible, etc) should also avoid overlap with float margin boxes in the same BFC.
+      // overflow:hidden/scroll/auto, etc) should also avoid overlap with float margin boxes in the
+      // same BFC.
       //
       // Restrict this to BFC-establishing children for now so we can safely translate the
       // fragment subtree after layout without having to update the shared float context entries

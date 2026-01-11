@@ -427,6 +427,45 @@ fn overflow_creates_bfc_and_prevents_parent_child_margin_collapse() {
 }
 
 #[test]
+fn overflow_clip_does_not_create_bfc_and_allows_parent_child_margin_collapse() {
+  let prev = block_with_height_and_margins(10.0, 0.0, 0.0);
+
+  let mut inner_style = block_style_with_height(Some(10.0));
+  inner_style.margin_top = Some(Length::px(20.0));
+  let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.overflow_y = Overflow::Clip;
+  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, outer],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let outer_fragment = &fragment.children[1];
+  let inner_fragment = &outer_fragment.children[0];
+
+  assert_approx(
+    outer_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    20.0,
+    "expected overflow:clip to allow parent/first-child margin collapse affecting sibling placement",
+  );
+  assert_approx(
+    inner_fragment.bounds.y(),
+    0.0,
+    "expected overflow:clip to allow the child's top margin to collapse out of the parent",
+  );
+}
+
+#[test]
 fn flow_root_creates_bfc_and_prevents_parent_child_margin_collapse() {
   let prev = block_with_height_and_margins(10.0, 0.0, 0.0);
 
