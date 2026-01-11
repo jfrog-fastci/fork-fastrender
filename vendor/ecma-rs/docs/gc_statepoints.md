@@ -54,7 +54,9 @@ Notes:
 - The return type is `token`.
 - The intrinsic is variadic (`...`).
 - In LLVM 18, the **callee operand is an opaque `ptr`**, so the call target needs `elementtype(...)` (see below).
-- The five fixed arguments are all required; in `native-js` we currently pass constants for all `immarg` positions (`i64 0, i32 0, ..., i32 <NumCallArgs>, i32 0`).
+- The five fixed arguments are all required; in `native-js` we currently pass constants for all `immarg` positions.
+  - The 5th argument is `flags`; we currently emit `flags = 0`.
+  - On LLVM 18.x, the IR verifier only accepts `flags` values in the range `0..=3` (two-bit mask).
 
 ### Statepoint argument ordering (as emitted by `native-js`)
 
@@ -64,7 +66,7 @@ The concrete call shape we emit is:
 %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 <ID>, i32 <NumPatchBytes>,
     ptr elementtype(<fn-ty>) <callee>,
-    i32 <NumCallArgs>, i32 0,
+    i32 <NumCallArgs>, i32 <Flags>,
     <call args...>,
     i32 <NumTransitionArgs>, i32 <NumDeoptArgs>)
   ["gc-live"(...)]
@@ -91,7 +93,7 @@ Intrinsic called with incompatible signature
 Where:
 
 - `<NumCallArgs>` is the number of normal call arguments in `<call args...>`.
-- The second fixed `i32` after `<NumCallArgs>` is currently always `0` in our codegen.
+- `<Flags>` is the `gc.statepoint` `flags` immarg (native-js currently emits `0`; LLVM 18 accepts `0..=3`).
 - `<NumTransitionArgs>` and `<NumDeoptArgs>` are both always `0` today (but still required to be present).
 
 ### Callee operand must use `elementtype(...)`
@@ -277,7 +279,10 @@ llvm-as-18 | opt-18 -passes=rewrite-statepoints-for-gc | llc-18 -filetype=obj
 
 After `rewrite-statepoints-for-gc` in LLVM 18:
 
-- Stackmap record `instruction_offset` equals the **return address** (the PC after the call instruction).
+- Stackmap record `instruction_offset` equals the **return address**.
+  - For `NumPatchBytes = 0`, this is the PC after the `call` instruction.
+  - For `NumPatchBytes > 0`, LLVM reserves a patchable region at the callsite (x86_64: a NOP sled)
+    and the return address is the PC after that reserved region.
 
 `runtime-native` uses the return address captured at a safepoint to look up the corresponding stackmap record.
 
@@ -285,7 +290,11 @@ After `rewrite-statepoints-for-gc` in LLVM 18:
 
 After `rewrite-statepoints-for-gc` (LLVM 18), each safepoint record’s `locations` list has this layout:
 
-1. A **prefix of 3 locations** that are always `Constant: 0`
+1. A **prefix of 3 constant locations**.
+   - The second constant (`locations[1]`, shown as location `#2` in `llvm-readobj --stackmap`) corresponds
+     to the IR `gc.statepoint` `flags` immarg.
+   - Since `runtime-native` currently assumes `flags = 0`, these three constants are expected to be zero
+     in our pipeline.
 2. Then, for each `gc.relocate` call associated with that statepoint:
    - 2 locations: `(base, derived)` in that order
 
@@ -294,14 +303,14 @@ So:
 ```
 locations =
   Constant(0)
-  Constant(0)
+  Constant(<flags>)
   Constant(0)
   base_0, derived_0
   base_1, derived_1
   ...
 ```
 
-`runtime-native` ignores the three leading `Constant(0)` entries and consumes the remaining locations as pairs.
+`runtime-native` ignores the three leading constant entries and consumes the remaining locations as pairs.
 
 ### How relocation is performed in the runtime
 
