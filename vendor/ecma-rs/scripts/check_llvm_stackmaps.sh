@@ -11,7 +11,29 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Keep this check in the lightweight CI path (it runs before any LLVM work below).
 gc_demo_strategy="statepoint-"
 gc_demo_strategy="${gc_demo_strategy}example"
-if grep -R --line-number --exclude='*.md' --binary-files=without-match "${gc_demo_strategy}" "${script_dir}/.."; then
+ecma_root="$(cd "${script_dir}/.." && pwd)"
+
+# IMPORTANT: Do NOT scan the entire `vendor/ecma-rs/` tree.
+# Developers sometimes init the heavyweight nested corpora submodules
+# (`parse-js/tests/TypeScript`, `test262*/data`, ...) and `grep -R` over the whole
+# workspace can take minutes.
+guard_paths=()
+for p in \
+  "${ecma_root}/native-js" \
+  "${ecma_root}/runtime-native" \
+  "${ecma_root}/runtime-native-abi" \
+  "${ecma_root}/llvm-stackmaps" \
+  "${ecma_root}/stackmap" \
+  "${ecma_root}/stackmap-context" \
+  "${ecma_root}/scripts"; do
+  if [[ -d "${p}" ]]; then
+    guard_paths+=("${p}")
+  fi
+done
+
+if ((${#guard_paths[@]} > 0)) && grep -R --line-number --binary-files=without-match --exclude='*.md' \
+  --include='*.rs' --include='*.ll' --include='*.c' --include='*.h' --include='*.S' --include='*.sh' \
+  "${gc_demo_strategy}" "${guard_paths[@]}"; then
   echo "error: found disallowed LLVM GC strategy name \"${gc_demo_strategy}\" in non-markdown files under vendor/ecma-rs" >&2
   echo "note: this repo standardizes on gc \"coreclr\"; see vendor/ecma-rs/native-js/docs/llvm_gc_strategy.md" >&2
   exit 1
