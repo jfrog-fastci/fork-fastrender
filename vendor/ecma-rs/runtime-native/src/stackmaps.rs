@@ -1404,6 +1404,7 @@ mod tests {
     //   u16 Padding;
     //   u16 NumLiveOuts;
     // Keep the padding field non-zero to validate the parser ignores its content.
+    // Include an even number of liveouts so the record-end padding path is exercised.
     push_u16(&mut bytes, 0xABAB); // padding (ignored)
     push_u16(&mut bytes, 2); // num_liveouts
 

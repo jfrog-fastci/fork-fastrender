@@ -12,6 +12,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::async_abi::{
   Coroutine, CoroutineRef, CoroutineStepTag, CORO_FLAG_DESTROYED, CORO_FLAG_RUNTIME_OWNS_FRAME,
@@ -49,9 +50,20 @@ impl Drop for MicrotaskCheckpointGuard {
   }
 }
 
+const DEFAULT_MAX_READY_STEPS_PER_POLL: usize = 100_000;
+const DEFAULT_MAX_READY_QUEUE_LEN: usize = 100_000;
+
+static MAX_READY_STEPS_PER_POLL: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_READY_STEPS_PER_POLL);
+static MAX_READY_QUEUE_LEN: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_READY_QUEUE_LEN);
+
+static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
 pub(crate) fn reset_for_tests() {
   PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
   *MICROTASK_CHECKPOINT_END_HOOK.lock() = None;
+  *LAST_ERROR.lock() = None;
+  MAX_READY_STEPS_PER_POLL.store(DEFAULT_MAX_READY_STEPS_PER_POLL, Ordering::Release);
+  MAX_READY_QUEUE_LEN.store(DEFAULT_MAX_READY_QUEUE_LEN, Ordering::Release);
 }
 
 pub(crate) fn set_microtask_checkpoint_end_hook(hook: Option<MicrotaskCheckpointEndHook>) {
@@ -323,4 +335,35 @@ pub fn cancel_all() {
 /// Test helper: clear all internal coroutine state and destroy any live runtime-owned coroutine frames.
 pub(crate) fn clear_state_for_tests() {
   cancel_all();
+}
+
+pub(crate) fn set_limits(max_steps: usize, max_queue_len: usize) {
+  MAX_READY_STEPS_PER_POLL.store(max_steps.max(1), Ordering::Release);
+  MAX_READY_QUEUE_LEN.store(max_queue_len, Ordering::Release);
+}
+
+pub(crate) fn max_ready_steps_per_poll() -> usize {
+  MAX_READY_STEPS_PER_POLL.load(Ordering::Acquire)
+}
+
+pub(crate) fn max_ready_queue_len() -> Option<usize> {
+  match MAX_READY_QUEUE_LEN.load(Ordering::Acquire) {
+    0 => None,
+    v => Some(v),
+  }
+}
+
+pub(crate) fn has_error() -> bool {
+  LAST_ERROR.lock().is_some()
+}
+
+pub(crate) fn set_error_once(msg: impl Into<String>) {
+  let mut guard = LAST_ERROR.lock();
+  if guard.is_none() {
+    *guard = Some(msg.into());
+  }
+}
+
+pub(crate) fn take_last_error() -> Option<String> {
+  LAST_ERROR.lock().take()
 }

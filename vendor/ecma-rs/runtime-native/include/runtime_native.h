@@ -575,6 +575,18 @@ LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);
 void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
 void rt_coro_await_value_legacy(RtCoroutineHeader* coro, PromiseResolveInput awaited, uint32_t next_state);
 
+// Configure defensive limits for the async runtime.
+//
+// `max_queue_len == 0` disables the ready queue length limit.
+void rt_async_set_limits(size_t max_steps, size_t max_queue_len);
+
+// Take the last async runtime error message, if any.
+//
+// The returned string is allocated by the runtime and must be freed with
+// `rt_async_free_c_string`.
+char* rt_async_take_last_error(void);
+void rt_async_free_c_string(char* s);
+
 // -----------------------------------------------------------------------------
 // Microtasks + timers (queueMicrotask/setTimeout/setInterval)
 // -----------------------------------------------------------------------------

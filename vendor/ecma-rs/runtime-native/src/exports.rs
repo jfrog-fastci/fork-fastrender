@@ -11,6 +11,7 @@ use crate::async_runtime::PromiseLayout;
 use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
+use crate::async_runtime;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
@@ -28,9 +29,11 @@ use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::io;
+use std::os::raw::c_char;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -1087,7 +1090,44 @@ pub extern "C" fn rt_async_cancel_all() {
 pub extern "C" fn rt_async_poll_legacy() -> bool {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    async_rt::poll()
+    if async_runtime::has_error() {
+      return false;
+    }
+    let pending = async_rt::poll();
+    if async_runtime::has_error() {
+      false
+    } else {
+      pending
+    }
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_async_set_limits(max_steps: usize, max_queue_len: usize) {
+  abort_on_panic(|| {
+    async_runtime::set_limits(max_steps, max_queue_len);
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_async_take_last_error() -> *mut c_char {
+  abort_on_panic(|| match async_runtime::take_last_error() {
+    None => std::ptr::null_mut(),
+    Some(msg) => CString::new(msg)
+      .unwrap_or_else(|_| CString::new("async executor error").unwrap())
+      .into_raw(),
+  })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rt_async_free_c_string(s: *mut c_char) {
+  abort_on_panic(|| {
+    if s.is_null() {
+      return;
+    }
+    unsafe {
+      drop(CString::from_raw(s));
+    }
   })
 }
 

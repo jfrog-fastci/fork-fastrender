@@ -704,6 +704,9 @@ mod tests {
       "LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);",
       "bool rt_async_poll_legacy(void);",
       "LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);",
+      "void rt_async_set_limits(size_t max_steps, size_t max_queue_len);",
+      "char* rt_async_take_last_error(void);",
+      "void rt_async_free_c_string(char* s);",
       "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
       "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
@@ -798,6 +801,9 @@ mod tests {
       rt_async_spawn_deferred_legacy;
     let _async_poll_legacy: extern "C" fn() -> bool = rt_async_poll_legacy;
     let _async_sleep_legacy: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep_legacy;
+    let _async_set_limits: extern "C" fn(usize, usize) = rt_async_set_limits;
+    let _async_take_last_error: extern "C" fn() -> *mut core::ffi::c_char = rt_async_take_last_error;
+    let _async_free_c_string: unsafe extern "C" fn(*mut core::ffi::c_char) = rt_async_free_c_string;
     let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
     let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
@@ -863,6 +869,9 @@ mod tests {
       _async_set_strict_await_yields,
       _async_run_until_idle,
       _async_block_on,
+      _async_set_limits,
+      _async_take_last_error,
+      _async_free_c_string,
       _promise_new_legacy,
       _promise_resolve_legacy,
       _promise_reject_legacy,

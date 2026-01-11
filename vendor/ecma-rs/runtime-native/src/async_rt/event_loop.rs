@@ -4,6 +4,7 @@ use crate::async_rt::Interest;
 use crate::async_rt::Task;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
+use crate::async_runtime;
 use crate::sync::GcAwareMutex;
 use crate::threading;
 use std::collections::VecDeque;
@@ -62,6 +63,18 @@ impl EventLoop {
   pub fn enqueue_microtask(&self, task: Task) {
     let needs_wake = {
       let mut q = self.microtasks.lock().unwrap();
+      if async_runtime::has_error() {
+        return;
+      }
+      if let Some(max_len) = async_runtime::max_ready_queue_len() {
+        if q.len() >= max_len {
+          async_runtime::set_error_once(format!(
+            "async runaway: ready queue exceeded max_ready_queue_len={max_len}"
+          ));
+          self.reactor.wake();
+          return;
+        }
+      }
       let needs_wake = q.is_empty();
       q.push_back(task);
       needs_wake
@@ -74,6 +87,18 @@ impl EventLoop {
   pub fn enqueue_macrotask(&self, task: Task) {
     let needs_wake = {
       let mut q = self.macrotasks.lock().unwrap();
+      if async_runtime::has_error() {
+        return;
+      }
+      if let Some(max_len) = async_runtime::max_ready_queue_len() {
+        if q.len() >= max_len {
+          async_runtime::set_error_once(format!(
+            "async runaway: ready queue exceeded max_ready_queue_len={max_len}"
+          ));
+          self.reactor.wake();
+          return;
+        }
+      }
       let needs_wake = q.is_empty();
       q.push_back(task);
       needs_wake
@@ -139,6 +164,18 @@ impl EventLoop {
       return;
     }
     let mut mq = self.macrotasks.lock().unwrap();
+    if async_runtime::has_error() {
+      return;
+    }
+    if let Some(max_len) = async_runtime::max_ready_queue_len() {
+      if mq.len().saturating_add(due.len()) > max_len {
+        async_runtime::set_error_once(format!(
+          "async runaway: ready queue exceeded max_ready_queue_len={max_len}"
+        ));
+        self.reactor.wake();
+        return;
+      }
+    }
     mq.extend(due);
   }
 
@@ -155,6 +192,12 @@ impl EventLoop {
   }
 
   fn drain_microtasks_inner(&self) -> bool {
+    if async_runtime::has_error() {
+      return false;
+    }
+
+    let max_steps = async_runtime::max_ready_steps_per_poll();
+    let mut steps = 0usize;
     let mut did_work = false;
     let mut batch: VecDeque<Task> = VecDeque::new();
     let mut ran = 0usize;
@@ -167,6 +210,21 @@ impl EventLoop {
         std::mem::swap(&mut *q, &mut batch);
       }
       while let Some(task) = batch.pop_front() {
+        if steps >= max_steps {
+          batch.push_front(task);
+          let pending = {
+            let mut q = self.microtasks.lock().unwrap();
+            batch.append(&mut *q);
+            let pending = batch.len();
+            std::mem::swap(&mut *q, &mut batch);
+            pending
+          };
+          async_runtime::set_error_once(format!(
+            "async runaway: exceeded max_ready_steps_per_poll={max_steps} with {pending} microtasks pending"
+          ));
+          self.reactor.wake();
+          return did_work;
+        }
         did_work = true;
         threading::safepoint_poll();
         ran += 1;
@@ -177,6 +235,13 @@ impl EventLoop {
           std::process::abort();
         }
         task.run();
+        steps += 1;
+        if async_runtime::has_error() {
+          let mut q = self.microtasks.lock().unwrap();
+          batch.append(&mut *q);
+          std::mem::swap(&mut *q, &mut batch);
+          return did_work;
+        }
       }
     }
     did_work
@@ -267,6 +332,9 @@ impl EventLoop {
     let _guard = self.poll_lock.lock();
 
     loop {
+      if async_runtime::has_error() {
+        return false;
+      }
       threading::safepoint_poll();
       // 1. Promote due timers into the macrotask queue.
       self.flush_due_timers();
@@ -314,7 +382,20 @@ impl EventLoop {
       threading::safepoint_poll();
       drop(parked);
       if !ready.is_empty() {
-        self.macrotasks.lock().unwrap().extend(ready);
+        let mut mq = self.macrotasks.lock().unwrap();
+        if async_runtime::has_error() {
+          return false;
+        }
+        if let Some(max_len) = async_runtime::max_ready_queue_len() {
+          if mq.len().saturating_add(ready.len()) > max_len {
+            async_runtime::set_error_once(format!(
+              "async runaway: ready queue exceeded max_ready_queue_len={max_len}"
+            ));
+            self.reactor.wake();
+            return false;
+          }
+        }
+        mq.extend(ready);
       }
       // Loop to run the newly-ready tasks (or newly-due timers).
     }
