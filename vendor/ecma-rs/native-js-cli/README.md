@@ -436,16 +436,22 @@ smoke-test subset intended for early end-to-end testing. It is currently an
 `i32`-only backend (booleans are lowered to `0`/`1`).
 
 It emits a single LLVM module for the entry file and all transitively imported
-**runtime** ES modules (type-only imports are ignored). Module initializers run
-in dependency order (matching source import order for sibling imports) before
-calling the entry file’s exported `main()`.
+**runtime** ES modules (type-only imports are ignored). In addition to `import`
+statements, **runtime** re-exports (`export { x } from "./dep"`, `export * from
+"./dep"`) are treated as module dependencies: re-export-only modules participate
+in module initialization ordering, and imports can resolve through them.
 
-Re-export statements (`export { foo } from "./mod"`, `export * from "./mod"`)
-participate in the runtime module dependency graph, ensuring their target
-modules are initialized before the re-exporting module and its importers.
+Type-only re-exports (e.g. `export { type T } from "./dep"`) are ignored for
+runtime (they are erased from JS output), so they do **not** execute the
+dependency module.
+
+Module initializers run in dependency order (matching source request order for
+sibling imports/re-exports) before calling the entry file’s exported `main()`.
+Cyclic runtime module dependencies are not supported (they are rejected with
+`NJS0125`).
 
 - The entry file must export `main()`:
-  - defined in the entry file (no re-exports)
+  - defined in the entry file (re-exported `main` is not supported)
   - no parameters
   - not `async` / not a generator
   - signature must be compatible with the current native ABI/codegen (`NJS0011`):
