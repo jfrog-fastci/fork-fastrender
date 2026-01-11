@@ -63,22 +63,14 @@ pub struct RuntimeFnSpec {
 
 impl RuntimeFn {
   pub fn llvm_name(self) -> &'static str {
-    match self {
-      RuntimeFn::Alloc => "rt_alloc",
-      RuntimeFn::AllocPinned => "rt_alloc_pinned",
-      RuntimeFn::GcSafepoint => "rt_gc_safepoint",
-      RuntimeFn::GcCollect => "rt_gc_collect",
-      RuntimeFn::WriteBarrier => "rt_write_barrier",
-    }
+    self.spec().name
   }
 
   pub fn gc_effect(self) -> GcEffect {
-    match self {
-      RuntimeFn::Alloc => GcEffect::MayGc,
-      RuntimeFn::AllocPinned => GcEffect::MayGc,
-      RuntimeFn::GcSafepoint => GcEffect::MayGc,
-      RuntimeFn::GcCollect => GcEffect::MayGc,
-      RuntimeFn::WriteBarrier => GcEffect::NoGc,
+    if self.spec().may_gc {
+      GcEffect::MayGc
+    } else {
+      GcEffect::NoGc
     }
   }
 

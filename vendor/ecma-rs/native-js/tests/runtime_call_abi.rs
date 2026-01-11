@@ -74,3 +74,39 @@ fn rejects_may_gc_runtime_fn_with_gc_pointer_args() {
     other => panic!("expected MayGcWithGcPointerArgs error, got {other:?}"),
   }
 }
+
+#[test]
+fn allows_may_gc_runtime_fn_with_gc_pointer_args_if_runtime_roots() {
+  let context = Context::create();
+  let module = context.create_module("runtime_call_abi_test_roots");
+  let builder = context.create_builder();
+
+  // Create a dummy caller so the builder has an insertion point.
+  let caller = module.add_function("caller", context.void_type().fn_type(&[], false), None);
+  let entry = context.append_basic_block(caller, "entry");
+  builder.position_at_end(entry);
+
+  // Mock runtime function signature: `void (ptr addrspace(1))`.
+  let gc_ptr = gc::gc_ptr_type(&context);
+  let callee = module.add_function(
+    "rt_may_gc_with_ptr_but_roots",
+    context.void_type().fn_type(&[gc_ptr.into()], false),
+    None,
+  );
+
+  let spec = RuntimeFnSpec {
+    name: "rt_may_gc_with_ptr_but_roots",
+    may_gc: true,
+    gc_ptr_args: 1,
+    arg_rooting: ArgRootingPolicy::RuntimeRootsPointers,
+  };
+
+  emit_runtime_call(
+    &builder,
+    callee,
+    spec,
+    &[gc_ptr.const_null().into()],
+    "call_ok",
+  )
+  .expect("call should be allowed when runtime_roots_args=true");
+}
