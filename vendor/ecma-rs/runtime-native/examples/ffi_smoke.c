@@ -85,9 +85,9 @@ int main(void) {
     .data = (uint8_t*)&microtask_ran,
   };
   rt_queue_microtask(mt);
-  if (check(microtask_ran == 0)) { rc = 11; goto done; }
+  if (check(microtask_ran == 0)) { rc = 12; goto done; }
   rt_drain_microtasks();
-  if (check(microtask_ran == 1)) { rc = 12; goto done; }
+  if (check(microtask_ran == 1)) { rc = 13; goto done; }
 
   enum { N = 4096 };
   uint32_t out[N];
