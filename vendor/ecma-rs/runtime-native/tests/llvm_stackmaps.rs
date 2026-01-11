@@ -41,7 +41,7 @@ fn parses_llvm18_statepoint_stackmaps_and_finds_reloc_pair_offsets() {
       declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
       declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32, i32)
 
-      define void @foo(ptr addrspace(1) %base) gc "statepoint-example" {
+      define void @foo(ptr addrspace(1) %base) gc "coreclr" {
       entry:
         %derived = getelementptr i8, ptr addrspace(1) %base, i64 16
         %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(

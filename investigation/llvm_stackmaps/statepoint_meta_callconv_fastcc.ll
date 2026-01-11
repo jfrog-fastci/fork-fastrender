@@ -14,9 +14,8 @@ target triple = "x86_64-pc-linux-gnu"
 
 declare fastcc void @callee_fast()
 
-define ptr addrspace(1) @foo(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @foo(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   call fastcc void @callee_fast()
   ret ptr addrspace(1) %obj
 }
-

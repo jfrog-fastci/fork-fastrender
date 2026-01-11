@@ -233,7 +233,7 @@ fn statepoint_num_patch_bytes_reserves_nop_sled_x86_64() {
 
   let foo_ty = void_ty.fn_type(&[], false);
   let foo = module.add_function("foo", foo_ty, None);
-  gc::set_gc_strategy(&foo, "statepoint-example").expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&foo).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);
@@ -351,7 +351,7 @@ fn rewrite_statepoints_honors_callsite_directives_on_invoke() {
 
     define i32 @dummy_personality(...) { ret i32 0 }
 
-    define void @foo() gc "statepoint-example" personality ptr @dummy_personality {
+    define void @foo() gc "coreclr" personality ptr @dummy_personality {
     entry:
       invoke void @bar()
               to label %cont unwind label %lpad

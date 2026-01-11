@@ -20,10 +20,10 @@ fn rewrite_statepoints_emits_stackmaps() {
   let callee_ty = context.void_type().fn_type(&[], false);
   let callee = module.add_function("callee", callee_ty, None);
 
-  // define ptr addrspace(1) @test(ptr addrspace(1)) gc "statepoint-example"
+  // define ptr addrspace(1) @test(ptr addrspace(1)) gc "coreclr"
   let test_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
   let test_fn = module.add_function("test", test_ty, None);
-  gc::set_gc_strategy(&test_fn, "statepoint-example").expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);
@@ -59,9 +59,10 @@ fn rewrite_statepoints_emits_stackmaps() {
     .expect("failed to run statepoint rewrite + emit object file");
 
   let ir = module.print_to_string().to_string();
+  let expected_gc = format!("gc \"{}\"", gc::GC_STRATEGY);
   assert!(
-    ir.contains("gc \"statepoint-example\""),
-    "expected `gc \"statepoint-example\"` on function\n{ir}"
+    ir.contains(&expected_gc),
+    "expected `{expected_gc}` on function\n{ir}"
   );
   assert!(
     ir.contains("ptr addrspace(1)"),

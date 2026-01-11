@@ -40,7 +40,7 @@ declare void @callee()
 declare token @llvm.experimental.gc.statepoint.p0(i64 immarg, i32 immarg, ptr, i32 immarg, i32 immarg, ...)
 declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32 immarg, i32 immarg)
 
-define ptr addrspace(1) @fooA(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @fooA(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 2882400001, i32 0, ptr elementtype(void ()) @callee, i32 0, i32 0, i32 0, i32 0
@@ -58,7 +58,7 @@ declare void @callee()
 declare token @llvm.experimental.gc.statepoint.p0(i64 immarg, i32 immarg, ptr, i32 immarg, i32 immarg, ...)
 declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32 immarg, i32 immarg)
 
-define ptr addrspace(1) @fooB(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @fooB(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 2882400002, i32 0, ptr elementtype(void ()) @callee, i32 0, i32 0, i32 0, i32 0

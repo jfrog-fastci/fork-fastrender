@@ -6,8 +6,7 @@ use inkwell::values::AsValueRef;
 use inkwell::AddressSpace;
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_sys::core::{
-  LLVMDisposeMessage, LLVMGetModuleContext, LLVMPrintModuleToString, LLVMSetDataLayout, LLVMSetGC,
-  LLVMSetTarget,
+  LLVMDisposeMessage, LLVMGetModuleContext, LLVMPrintModuleToString, LLVMSetDataLayout, LLVMSetTarget,
 };
 use llvm_sys::prelude::LLVMModuleRef;
 use llvm_sys::target::{
@@ -21,6 +20,7 @@ use llvm_sys::target_machine::{
 };
 
 use native_js::gc::statepoint::StatepointEmitter;
+use native_js::llvm::gc;
 
 #[test]
 fn statepoint_overloaded_intrinsics_are_canonically_mangled() {
@@ -50,10 +50,8 @@ fn statepoint_overloaded_intrinsics_are_canonically_mangled() {
     void_ty.fn_type(&[p1_ty.as_basic_type_enum().into()], false),
     None,
   );
-  unsafe {
-    // LLVM verifier requires a GC strategy on any function containing `gc.statepoint`.
-    LLVMSetGC(test_fn.as_value_ref(), c"statepoint-example".as_ptr());
-  }
+  // LLVM verifier requires a GC strategy on any function containing `gc.statepoint`.
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
 
   let entry = ctx.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);

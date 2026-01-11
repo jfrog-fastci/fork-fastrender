@@ -11,7 +11,7 @@ target triple = "x86_64-pc-linux-gnu"
 
 declare void @callee()
 
-define ptr addrspace(1) @foo(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @foo(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %slot = alloca i64, align 8
   ; Record the *address* of a stack slot in deopt info.
@@ -21,4 +21,3 @@ entry:
   call void @callee() ["deopt"(ptr %slot)]
   ret ptr addrspace(1) %obj
 }
-
