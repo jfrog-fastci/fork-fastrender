@@ -372,3 +372,62 @@ impl PinnedMsgHdr {
     Some(&buf[..len])
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::buffer::GlobalBackingStoreAllocator;
+
+  #[test]
+  fn retained_alloc_len_dedupes_repeated_backing_store() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+    let expected_alloc_len = store.alloc_len();
+    let expected_id = store.id();
+    drop(store);
+
+    let ranges = [
+      IoVecRange::array_buffer(&buf, 0, 1).unwrap(),
+      IoVecRange::array_buffer(&buf, 1, 1).unwrap(),
+    ];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+
+    assert_eq!(buf.pin_count(), 2, "each segment should contribute one pin guard");
+    assert_eq!(pinned.retained_alloc_len_deduped(), Some(expected_alloc_len));
+
+    let stores = pinned.unique_backing_stores();
+    assert_eq!(stores.len(), 1);
+    assert_eq!(stores[0].id(), expected_id);
+    assert_eq!(stores[0].alloc_len(), expected_alloc_len);
+
+    drop(pinned);
+    assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
+  fn retained_alloc_len_sums_distinct_backing_stores() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf1 = ArrayBuffer::new_zeroed_in(&alloc, 4).unwrap();
+    let buf2 = ArrayBuffer::new_zeroed_in(&alloc, 6).unwrap();
+
+    let s1 = buf1.backing_store_handle().unwrap();
+    let s2 = buf2.backing_store_handle().unwrap();
+    let expected_total = s1.alloc_len() + s2.alloc_len();
+    let ids = [s1.id(), s2.id()];
+    drop((s1, s2));
+
+    let ranges = [
+      IoVecRange::whole_array_buffer(&buf1),
+      IoVecRange::whole_array_buffer(&buf2),
+    ];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+
+    assert_eq!(pinned.retained_alloc_len_deduped(), Some(expected_total));
+
+    let got_ids: HashSet<usize> = pinned.unique_backing_stores().iter().map(|s| s.id()).collect();
+    assert_eq!(got_ids.len(), 2);
+    assert!(got_ids.contains(&ids[0]));
+    assert!(got_ids.contains(&ids[1]));
+  }
+}
