@@ -1080,6 +1080,47 @@ impl CallbackAnalyzer<'_> {
                     // so any other constant key does not depend on index/array.
                     _ => {}
                   },
+                  Some(ExprKind::Unary { op, expr: inner }) => match *op {
+                    // `+<number>` preserves the numeric property key.
+                    hir_js::UnaryOp::Plus => {
+                      let inner_node = body.exprs.get(inner.0 as usize);
+                      match inner_node.map(|node| &node.kind) {
+                        Some(ExprKind::Literal(hir_js::Literal::Number(n))) => match n.as_str() {
+                          "0" => {}
+                          "1" => self.uses_index = true,
+                          "2" => self.uses_array = true,
+                          _ => {}
+                        },
+                        _ => {
+                          // Unknown index; conservatively assume it may access either.
+                          self.uses_index = true;
+                          self.uses_array = true;
+                        }
+                      }
+                    }
+                    // `-<literal>` yields a negative numeric property key (or `-0`),
+                    // so it cannot target the index/array callback arguments.
+                    hir_js::UnaryOp::Minus => {
+                      let inner_node = body.exprs.get(inner.0 as usize);
+                      if !matches!(
+                        inner_node.map(|node| &node.kind),
+                        Some(ExprKind::Literal(
+                          hir_js::Literal::Number(_) | hir_js::Literal::BigInt(_),
+                        ))
+                      ) {
+                        // Unknown index; conservatively assume it may access either.
+                        self.uses_index = true;
+                        self.uses_array = true;
+                      }
+                    }
+                    // `void`/`!`/`typeof` always produce non-numeric property keys.
+                    hir_js::UnaryOp::Void | hir_js::UnaryOp::Not | hir_js::UnaryOp::Typeof => {}
+                    _ => {
+                      // Unknown index; conservatively assume it may access either.
+                      self.uses_index = true;
+                      self.uses_array = true;
+                    }
+                  },
                   // Non-numeric primitive property keys cannot target the `index` / `array` slots.
                   Some(ExprKind::Literal(
                     hir_js::Literal::Boolean(_)
@@ -1774,6 +1815,111 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(function (x) { return arguments[true]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_unary_plus_counts_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[+1]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_unary_plus_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[+2]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_using_arguments_unary_minus_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[-1]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_unary_minus_zero_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[-0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_unary_not_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[!0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_void_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[void 0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_typeof_key_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[typeof 0]; });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
