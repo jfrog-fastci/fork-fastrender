@@ -18,11 +18,17 @@ use io_uring::types;
 use crate::buffer::BorrowGuardWrite;
 use crate::buffer::typed_array::{PinnedUint8Array, TypedArrayError, Uint8Array};
 use crate::gc::{GcHeap, RootHandle, OBJ_HEADER_SIZE};
+use crate::threading;
+use crate::threading::ThreadKind;
+
+use super::limits::{IoLimitError, IoLimits, IoLimiter, IoPermit};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
   #[error("operation cancelled")]
   Cancelled,
+  #[error("I/O limits exceeded: {0}")]
+  Limits(IoLimitError),
   #[error("io_uring: {0}")]
   Uring(i32),
   #[error("invalid I/O buffer: {0:?}")]
@@ -90,6 +96,7 @@ pub struct IoOp {
   id: u64,
   buf: Mutex<Option<PinnedUint8Array>>,
   borrow: Mutex<Option<BorrowGuardWrite>>,
+  permit: Mutex<Option<IoPermit>>,
   ptr: *mut u8,
   len: usize,
 
@@ -134,6 +141,7 @@ impl IoOp {
     promise_obj: *mut u8,
     buf: PinnedUint8Array,
     borrow: BorrowGuardWrite,
+    permit: IoPermit,
   ) -> Self {
     let (buffer_root, promise_root) = {
       let mut heap_lock = heap.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -147,6 +155,7 @@ impl IoOp {
       id,
       buf: Mutex::new(Some(buf)),
       borrow: Mutex::new(Some(borrow)),
+      permit: Mutex::new(Some(permit)),
       ptr,
       len,
       heap,
@@ -187,6 +196,11 @@ impl IoOp {
       .take();
     self
       .borrow
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .take();
+    self
+      .permit
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .take();
@@ -283,6 +297,7 @@ struct DriverInner {
   cmd_tx: mpsc::Sender<Command>,
   wake_fd: RawFd,
   next_id: AtomicU64,
+  limiter: Arc<IoLimiter>,
 }
 
 impl Drop for DriverInner {
@@ -308,6 +323,14 @@ pub struct UringDriver {
 
 impl UringDriver {
   pub fn new(entries: u32) -> Result<Self, std::io::Error> {
+    Self::new_with_limits(entries, IoLimits::default())
+  }
+
+  pub fn new_with_limits(entries: u32, limits: IoLimits) -> Result<Self, std::io::Error> {
+    Self::new_with_limiter(entries, Arc::new(IoLimiter::new(limits)))
+  }
+
+  pub fn new_with_limiter(entries: u32, limiter: Arc<IoLimiter>) -> Result<Self, std::io::Error> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
     let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
     if wake_fd < 0 {
@@ -316,7 +339,15 @@ impl UringDriver {
 
     #[cfg(target_os = "linux")]
     {
-      let ring = io_uring::IoUring::new(entries)?;
+      let ring = match io_uring::IoUring::new(entries) {
+        Ok(ring) => ring,
+        Err(err) => {
+          unsafe {
+            libc::close(wake_fd);
+          }
+          return Err(err);
+        }
+      };
       thread::spawn(move || run_driver(ring, wake_fd, cmd_rx));
     }
     #[cfg(not(target_os = "linux"))]
@@ -337,6 +368,7 @@ impl UringDriver {
         cmd_tx,
         wake_fd,
         next_id: AtomicU64::new(1),
+        limiter,
       }),
     })
   }
@@ -375,6 +407,14 @@ impl UringDriver {
 
     // Safety: callers promise `array_obj` points to a `Uint8Array` object payload after ObjHeader.
     let view = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) };
+    let store = view.backing_store_handle().map_err(IoError::InvalidBuffer)?;
+    let pinned_bytes = store.alloc_len();
+    let permit = self
+      .inner
+      .limiter
+      .try_acquire(pinned_bytes)
+      .map_err(IoError::Limits)?;
+
     let pinned = view.pin().map_err(IoError::InvalidBuffer)?;
     let borrow = pinned
       .backing_store()
@@ -382,9 +422,28 @@ impl UringDriver {
       .map_err(|_| IoError::BufferBorrowed)?;
 
     let id = self.next_op_id();
-    let op = Arc::new(IoOp::new(id, heap, array_obj, promise_obj, pinned, borrow));
+    let op = Arc::new(IoOp::new(
+      id,
+      heap,
+      array_obj,
+      promise_obj,
+      pinned,
+      borrow,
+      permit,
+    ));
 
-    let _ = self.inner.cmd_tx.send(Command::SubmitRead { op: Arc::clone(&op), fd });
+    if self
+      .inner
+      .cmd_tx
+      .send(Command::SubmitRead {
+        op: Arc::clone(&op),
+        fd,
+      })
+      .is_err()
+    {
+      op.complete(Err(IoError::Uring(-libc::EPIPE)));
+      return Err(IoError::Uring(-libc::EPIPE));
+    }
     self.signal();
 
     Ok(ReadFuture {
@@ -452,6 +511,15 @@ fn drain_eventfd(fd: RawFd) {
 
 #[cfg(target_os = "linux")]
 fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
+  threading::register_current_thread(ThreadKind::Io);
+  struct Unregister;
+  impl Drop for Unregister {
+    fn drop(&mut self) {
+      threading::unregister_current_thread();
+    }
+  }
+  let _unregister = Unregister;
+
   fn submit_errno(err: &std::io::Error) -> i32 {
     -(err.raw_os_error().unwrap_or(libc::EIO))
   }
@@ -468,16 +536,16 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
             op.complete(Err(IoError::Cancelled));
             continue;
           }
-          let ud = user_data(op.id, UserDataKind::Read);
-          let sqe = opcode::Read::new(types::Fd(fd), op.ptr, op.len as _)
-            .build()
-            .user_data(ud);
-          if let Err(err) = push_sqe_with_backpressure(&mut ring, &sqe) {
-            op.complete(Err(IoError::Uring(submit_errno(&err))));
-            continue;
-          }
-          ops.insert(decode_user_data_id(ud), op);
-        }
+           let ud = user_data(op.id, UserDataKind::Read);
+           let sqe = opcode::Read::new(types::Fd(fd), op.ptr, op.len as _)
+             .build()
+             .user_data(ud);
+           if let Err(err) = push_sqe_with_backpressure(&mut ring, &sqe) {
+             op.complete(Err(IoError::Uring(submit_errno(&err))));
+             continue;
+           }
+           ops.insert(decode_user_data_id(ud), op);
+         }
         Command::Cancel { id } => {
           let target = user_data(id, UserDataKind::Read);
           let ud = user_data(id, UserDataKind::Cancel);
@@ -520,7 +588,8 @@ fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receive
       },
     ];
     loop {
-      let poll_rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+      let poll_rc =
+        threading::park_while(|| unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) });
       if poll_rc >= 0 {
         break;
       }
@@ -728,6 +797,11 @@ mod tests {
       let pinned = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) }
         .pin()
         .expect("pin should succeed");
+      let permit = driver
+        .inner
+        .limiter
+        .try_acquire(pinned.backing_store_alloc_len())
+        .expect("io permit should be available");
       let borrow = pinned
         .backing_store()
         .try_borrow_io_write()
@@ -740,6 +814,7 @@ mod tests {
         promise_obj,
         pinned,
         borrow,
+        permit,
       ));
       assert!(pin_count(buffer_obj) > 0);
 

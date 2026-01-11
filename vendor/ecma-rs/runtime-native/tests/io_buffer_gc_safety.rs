@@ -1,9 +1,12 @@
 #![cfg(target_os = "linux")]
 
 use runtime_native::gc::{RootHandle, RootStack, SimpleRememberedSet, TypeDescriptor, OBJ_HEADER_SIZE};
-use runtime_native::io::{UringCancellationToken as CancellationToken, UringIoError as IoError, UringDriver};
+use runtime_native::io::{
+  IoLimitError, IoLimiter, IoLimits, UringCancellationToken as CancellationToken, UringIoError as IoError,
+  UringDriver,
+};
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{ArrayBuffer, GcHeap, Uint8Array};
+use runtime_native::{ArrayBuffer, ArrayBufferError, BorrowError, GcHeap, TypedArrayError, Uint8Array};
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -143,7 +146,8 @@ fn read_survives_moving_gc_while_in_flight() {
   let _rt = TestRuntimeGuard::new();
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
-  let driver = UringDriver::new(64).unwrap();
+  let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
   let (rfd, wfd) = pipe().unwrap();
 
   // Allocate GC-managed ArrayBuffer + Uint8Array headers (backing store lives outside the GC heap).
@@ -169,6 +173,8 @@ fn read_survives_moving_gc_while_in_flight() {
   };
 
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
 
   let read_fut = driver
     .read_into_uint8_array(Arc::clone(&heap), rfd.as_raw_fd(), array_obj, promise_obj, None)
@@ -177,6 +183,9 @@ fn read_survives_moving_gc_while_in_flight() {
   // Creating the op must pin the ArrayBuffer backing store guard immediately.
   assert!(pin_count(&heap.lock().unwrap(), buffer_obj) > 0);
   assert!(is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
+  // And apply I/O limiter accounting based on the retained allocation size (alloc_len == 16).
+  assert_eq!(limiter.counters().inflight_ops_current, 1);
+  assert_eq!(limiter.counters().pinned_bytes_current, 16);
 
   // Trigger at least one moving GC cycle while the read is in flight (no data yet).
   {
@@ -203,6 +212,8 @@ fn read_survives_moving_gc_while_in_flight() {
   // Completion should unpin.
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
   assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
 
   // Cleanup: remove test roots and free external backing store.
   {
@@ -218,7 +229,8 @@ fn cancel_before_submission_never_submits() {
   let _rt = TestRuntimeGuard::new();
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
-  let driver = UringDriver::new(8).unwrap();
+  let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+  let driver = UringDriver::new_with_limiter(8, Arc::clone(&limiter)).unwrap();
   let (rfd, _wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
@@ -236,6 +248,8 @@ fn cancel_before_submission_never_submits() {
   assert!(matches!(res, Err(IoError::Cancelled)));
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
   assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
 
   // Free external backing store.
   finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
@@ -246,7 +260,8 @@ fn cancel_after_submission_cleans_up_pin() {
   let _rt = TestRuntimeGuard::new();
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
-  let driver = UringDriver::new(64).unwrap();
+  let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
   let (rfd, _wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
@@ -264,12 +279,88 @@ fn cancel_after_submission_cleans_up_pin() {
 
   assert!(pin_count(&heap.lock().unwrap(), buffer_obj) > 0);
   assert!(is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
+  assert_eq!(limiter.counters().inflight_ops_current, 1);
+  assert_eq!(limiter.counters().pinned_bytes_current, 8);
 
   token.cancel();
   let res = block_on(fut, Duration::from_secs(2));
   assert!(matches!(res, Err(IoError::Cancelled)));
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
   assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+
+  finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
+}
+
+#[test]
+fn typed_array_access_errors_while_kernel_write_borrowed() {
+  let _rt = TestRuntimeGuard::new();
+
+  let heap = Arc::new(Mutex::new(GcHeap::new()));
+  let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
+  let (rfd, wfd) = pipe().unwrap();
+
+  let (array_obj, buffer_obj, promise_obj) = {
+    let mut heap = heap.lock().unwrap();
+    let buffer_obj = alloc_array_buffer(&mut heap, 5);
+    let array_obj = alloc_uint8_array(&mut heap, buffer_obj, 0, 5);
+    let promise_obj = alloc_dummy(&mut heap);
+    (array_obj, buffer_obj, promise_obj)
+  };
+
+  // Start a read but don't write any bytes yet.
+  let fut = driver
+    .read_into_uint8_array(Arc::clone(&heap), rfd.as_raw_fd(), array_obj, promise_obj, None)
+    .unwrap();
+
+  // While the op is in-flight, safe typed-array access must be rejected to prevent racing the
+  // kernel's write into the backing store.
+  let view = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) };
+  assert!(matches!(
+    view.get(0),
+    Err(TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed)))
+  ));
+
+  write_all(wfd.as_raw_fd(), b"hello");
+  let n = block_on(fut, Duration::from_secs(2)).unwrap();
+  assert_eq!(n, 5);
+
+  // After completion, the borrow is released and safe access works again.
+  assert_eq!(view.get(0).unwrap(), Some(b'h'));
+
+  finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn limiter_rejects_submission_over_max_pinned_bytes() {
+  let _rt = TestRuntimeGuard::new();
+
+  let heap = Arc::new(Mutex::new(GcHeap::new()));
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 8,
+    max_inflight_ops: 16,
+    max_pinned_bytes_per_op: None,
+  }));
+  let driver = UringDriver::new_with_limiter(8, Arc::clone(&limiter)).unwrap();
+  let (rfd, _wfd) = pipe().unwrap();
+
+  let (array_obj, buffer_obj, promise_obj) = {
+    let mut heap = heap.lock().unwrap();
+    let buffer_obj = alloc_array_buffer(&mut heap, 16);
+    let array_obj = alloc_uint8_array(&mut heap, buffer_obj, 0, 5);
+    let promise_obj = alloc_dummy(&mut heap);
+    (array_obj, buffer_obj, promise_obj)
+  };
+
+  let res = driver.read_into_uint8_array(Arc::clone(&heap), rfd.as_raw_fd(), array_obj, promise_obj, None);
+  assert!(matches!(res, Err(IoError::Limits(IoLimitError::LimitExceeded(_)))));
+  assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
 
   finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
 }

@@ -48,7 +48,6 @@ pub enum BorrowError {
 
 const WRITE_BORROWED: u32 = 1 << 31;
 const READ_BORROW_COUNT_MASK: u32 = WRITE_BORROWED - 1;
-
 #[derive(Debug)]
 struct BackingStoreInner {
   ptr: NonNull<u8>,
