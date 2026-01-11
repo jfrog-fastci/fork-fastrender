@@ -3,40 +3,86 @@ use native_js::runtime_abi::RuntimeAbi;
 use std::process::{Command, Stdio};
 
 #[test]
-fn runtime_wrappers_use_addrspacecasts() {
+fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
   let context = Context::create();
   let cg = native_js::CodeGen::new(&context, "runtime_abi_test");
   cg.runtime_abi().ensure_wrappers();
 
   let ir = cg.module_ir();
 
+  fn function_block(ir: &str, func_name: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_func = false;
+
+    for line in ir.lines() {
+      if !in_func && line.contains("define") && line.contains(func_name) {
+        in_func = true;
+      }
+
+      if in_func {
+        out.push(line);
+        if line.trim() == "}" {
+          break;
+        }
+      }
+    }
+
+    assert!(in_func, "function {func_name} not found in IR:\n{ir}");
+    out.join("\n")
+  }
+
   assert!(
     ir.contains("define internal ptr addrspace(1) @rt_alloc_gc"),
     "missing rt_alloc_gc wrapper:\n{ir}"
   );
+  let alloc = function_block(&ir, "@rt_alloc_gc");
   assert!(
-    ir.contains("addrspacecast ptr") && ir.contains("to ptr addrspace(1)"),
-    "missing addrspacecast to addrspace(1) in rt_alloc_gc:\n{ir}"
+    alloc.contains("store ptr @rt_alloc"),
+    "expected rt_alloc_gc to indirect-call @rt_alloc:\n{alloc}"
+  );
+  assert!(
+    alloc.contains("call ptr addrspace(1) %"),
+    "expected rt_alloc_gc to call a ptr addrspace(1) function pointer:\n{alloc}"
+  );
+  assert!(
+    !alloc.contains("addrspacecast"),
+    "rt_alloc_gc must not use addrspacecasts (would hide GC pointers):\n{alloc}"
   );
 
   assert!(
     ir.contains("define internal ptr addrspace(1) @rt_alloc_pinned_gc"),
     "missing rt_alloc_pinned_gc wrapper:\n{ir}"
   );
+  let alloc_pinned = function_block(&ir, "@rt_alloc_pinned_gc");
   assert!(
-    ir.contains("call ptr @rt_alloc_pinned")
-      && ir.contains("addrspacecast ptr")
-      && ir.contains("to ptr addrspace(1)"),
-    "missing addrspacecast to addrspace(1) in rt_alloc_pinned_gc:\n{ir}"
+    alloc_pinned.contains("store ptr @rt_alloc_pinned"),
+    "expected rt_alloc_pinned_gc to indirect-call @rt_alloc_pinned:\n{alloc_pinned}"
+  );
+  assert!(
+    alloc_pinned.contains("call ptr addrspace(1) %"),
+    "expected rt_alloc_pinned_gc to call a ptr addrspace(1) function pointer:\n{alloc_pinned}"
+  );
+  assert!(
+    !alloc_pinned.contains("addrspacecast"),
+    "rt_alloc_pinned_gc must not use addrspacecasts:\n{alloc_pinned}"
   );
 
   assert!(
     ir.contains("define internal void @rt_write_barrier_gc"),
     "missing rt_write_barrier_gc wrapper:\n{ir}"
   );
+  let wb = function_block(&ir, "@rt_write_barrier_gc");
   assert!(
-    ir.contains("addrspacecast ptr addrspace(1)"),
-    "missing addrspacecast from addrspace(1) in rt_write_barrier_gc:\n{ir}"
+    wb.contains("store ptr @rt_write_barrier"),
+    "expected rt_write_barrier_gc to indirect-call @rt_write_barrier:\n{wb}"
+  );
+  assert!(
+    wb.contains("call void %") && wb.contains("ptr addrspace(1)"),
+    "expected rt_write_barrier_gc to call via function pointer with GC pointer args:\n{wb}"
+  );
+  assert!(
+    !wb.contains("addrspacecast"),
+    "rt_write_barrier_gc must not addrspacecast GC pointers out of addrspace(1):\n{wb}"
   );
 
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
@@ -85,8 +131,7 @@ fn emitted_object_contains_llvm_stackmaps_section() {
   let module = context.create_module("stackmaps_test");
   let builder = context.create_builder();
 
-  // Ensure runtime ABI wrappers exist in the module (regression guard for the
-  // addrspace wrapper strategy).
+  // Ensure runtime ABI wrappers exist in the module (regression guard for the runtime ABI layer).
   RuntimeAbi::new(&context, &module).ensure_wrappers();
 
   // Force emission of the `.llvm_stackmaps` section via `llvm.experimental.stackmap`.

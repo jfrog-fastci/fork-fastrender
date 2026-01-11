@@ -14,10 +14,18 @@ use crate::llvm::gc;
 /// `ptr addrspace(1)`, but our Rust runtime exports C ABI functions using normal
 /// pointers (`*mut u8` / `ptr` == addrspace(0)).
 ///
-/// To keep the LLVM IR type system (and GC verifier) happy *and* keep the ABI
-/// stable for the runtime, `native-js` declares the runtime entrypoints with
-/// addrspace(0) pointers ("raw"), and then emits internal wrapper functions
-/// ("*_gc") that `addrspacecast` between addrspaces.
+/// To keep the runtime ABI stable *and* keep LLVM's GC relocation machinery happy, we:
+///
+/// 1. Declare the runtime entrypoints using addrspace(0) pointer types (matching Rust's ABI).
+/// 2. Emit internal wrapper functions (`*_gc`) that expose addrspace(1) signatures to the rest of
+///    the generated code.
+///
+/// Critically, the wrappers **must not** `addrspacecast` GC pointers from addrspace(1) back to
+/// addrspace(0) because that would "hide" them from `rewrite-statepoints-for-gc`.
+///
+/// Instead, wrappers call the raw runtime symbol via an *indirect call* using the addrspace(1)
+/// signature. On our targets the address-space annotation does not affect the machine ABI (it's a
+/// type-system distinction only), but it keeps GC pointers visible to LLVM's statepoint passes.
 ///
 /// Generated code should exclusively call the `*_gc` wrappers and never call the
 /// raw runtime functions directly with GC pointers.
@@ -185,19 +193,31 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let size = func.get_nth_param(0).expect("size").into_int_value();
       let shape = func.get_nth_param(1).expect("shape").into_int_value();
 
-      let raw_ptr = self
+      // Indirect-call the raw symbol using the addrspace(1) signature so we don't need an
+      // addrspacecast (which would hide GC pointers from LLVM's statepoint rewriting).
+      let fn_ptr_ty = self.ptr_raw();
+      let fp_slot = self
         .builder
-        .build_call(raw, &[size.into(), shape.into()], "raw")
-        .expect("call rt_alloc")
-        .try_as_basic_value()
-        .left()
-        .expect("rt_alloc returns ptr")
+        .build_alloca(fn_ptr_ty, "rt_alloc_fp")
+        .expect("alloca rt_alloc fp");
+      self
+        .builder
+        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
+        .expect("store rt_alloc fp");
+      let fp = self
+        .builder
+        .build_load(fn_ptr_ty, fp_slot, "rt_alloc_fp")
+        .expect("load rt_alloc fp")
         .into_pointer_value();
 
       let gc_ptr = self
         .builder
-        .build_address_space_cast(raw_ptr, self.ptr_gc(), "gc_ptr")
-        .expect("addrspacecast to gc ptr");
+        .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
+        .expect("call rt_alloc via indirect call")
+        .try_as_basic_value()
+        .left()
+        .expect("rt_alloc returns ptr")
+        .into_pointer_value();
 
       self
         .builder
@@ -221,19 +241,29 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let size = func.get_nth_param(0).expect("size").into_int_value();
       let shape = func.get_nth_param(1).expect("shape").into_int_value();
 
-      let raw_ptr = self
+      let fn_ptr_ty = self.ptr_raw();
+      let fp_slot = self
         .builder
-        .build_call(raw, &[size.into(), shape.into()], "raw")
-        .expect("call rt_alloc_pinned")
-        .try_as_basic_value()
-        .left()
-        .expect("rt_alloc_pinned returns ptr")
+        .build_alloca(fn_ptr_ty, "rt_alloc_pinned_fp")
+        .expect("alloca rt_alloc_pinned fp");
+      self
+        .builder
+        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
+        .expect("store rt_alloc_pinned fp");
+      let fp = self
+        .builder
+        .build_load(fn_ptr_ty, fp_slot, "rt_alloc_pinned_fp")
+        .expect("load rt_alloc_pinned fp")
         .into_pointer_value();
 
       let gc_ptr = self
         .builder
-        .build_address_space_cast(raw_ptr, self.ptr_gc(), "gc_ptr")
-        .expect("addrspacecast to gc ptr");
+        .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
+        .expect("call rt_alloc_pinned via indirect call")
+        .try_as_basic_value()
+        .left()
+        .expect("rt_alloc_pinned returns ptr")
+        .into_pointer_value();
 
       self
         .builder
@@ -271,19 +301,27 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let obj_gc = func.get_nth_param(0).expect("obj").into_pointer_value();
       let field_gc = func.get_nth_param(1).expect("field").into_pointer_value();
 
-      let obj_raw = self
+      // As with allocation, avoid addrspacecasting GC pointers back to addrspace(0); call the raw
+      // runtime symbol via an indirect call using the addrspace(1) signature.
+      let fn_ptr_ty = self.ptr_raw();
+      let fp_slot = self
         .builder
-        .build_address_space_cast(obj_gc, self.ptr_raw(), "obj_raw")
-        .expect("addrspacecast obj");
-      let field_raw = self
+        .build_alloca(fn_ptr_ty, "rt_write_barrier_fp")
+        .expect("alloca rt_write_barrier fp");
+      self
         .builder
-        .build_address_space_cast(field_gc, self.ptr_raw(), "field_raw")
-        .expect("addrspacecast field");
+        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
+        .expect("store rt_write_barrier fp");
+      let fp = self
+        .builder
+        .build_load(fn_ptr_ty, fp_slot, "rt_write_barrier_fp")
+        .expect("load rt_write_barrier fp")
+        .into_pointer_value();
 
       let _ = self
         .builder
-        .build_call(raw, &[obj_raw.into(), field_raw.into()], "")
-        .expect("call rt_write_barrier");
+        .build_indirect_call(fn_ty, fp, &[obj_gc.into(), field_gc.into()], "")
+        .expect("call rt_write_barrier via indirect call");
 
       self.builder.build_return(None).expect("return void");
     })
