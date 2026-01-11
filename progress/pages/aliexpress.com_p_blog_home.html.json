@@ -18,12 +18,12 @@
   "auto_notes": "not run",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 84477,
-    "diff_percent": 6.5506,
-    "perceptual": 0.0797,
+    "diff_pixels": 35056,
+    "diff_percent": 3.6517,
+    "perceptual": 0.0819,
     "first_mismatch": {
-      "x": 512,
-      "y": 346,
+      "x": 592,
+      "y": 217,
       "baseline_rgba": [
         255,
         255,
@@ -39,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "d95572fe5cfb39b2eb38433196ef7ba374727068"
+    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
   },
   "hotspot": "fetch",
   "failure_stage": null,
