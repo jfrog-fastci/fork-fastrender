@@ -33,7 +33,6 @@
 //! - `NJS0122`: `continue` is only supported inside loops (also used for unsupported binding patterns)
 //! - `NJS0123`: failed to resolve call signature for exported `main`
 //! - `NJS0124`: labels are only supported on loops in native-js codegen
-//! - `NJS0125`: cyclic module dependency
 //! - `NJS0130`: failed to resolve identifier/callee during codegen
 //! - `NJS0132`: unsupported assignment target
 //! - `NJS0134`: unsupported assignment operator
@@ -42,6 +41,7 @@
 //! - `NJS0142`: unsupported global binding kind in codegen
 //! - `NJS0144`: unsupported call syntax in codegen subset
 //! - `NJS0145`: call to unknown function (or void call not supported)
+//! - `NJS0146`: cyclic module dependency detected in runtime module graph
 //!
 //! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
 //! (`NJS0108..NJS0111`).
@@ -350,7 +350,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       }
       visited.insert(file);
       for dep in file_import_deps(self.program, &lowered) {
-        queue.push_back(dep);
+        queue.push_back(dep.file);
       }
     }
 
@@ -370,34 +370,53 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
   }
 
-  fn init_order(&self, entry_file: FileId, files: &[FileId]) -> Result<Vec<FileId>, Vec<Diagnostic>> {
+  fn init_order(
+    &self,
+    entry_file: FileId,
+    files: &[FileId],
+  ) -> Result<Vec<FileId>, Vec<Diagnostic>> {
     let file_set: HashSet<FileId> = files.iter().copied().collect();
-    let mut deps: HashMap<FileId, Vec<FileId>> = HashMap::new();
+    let mut deps: HashMap<FileId, Vec<ModuleDepEdge>> = HashMap::new();
     for file in files {
       let Some(lowered) = self.program.hir_lowered(*file) else {
         continue;
       };
-      let out: Vec<FileId> = file_import_deps(self.program, &lowered)
+      let out: Vec<ModuleDepEdge> = file_import_deps(self.program, &lowered)
         .into_iter()
-        .filter(|dep| file_set.contains(dep))
+        .filter(|dep| file_set.contains(&dep.file))
         .collect();
       deps.insert(*file, out);
     }
 
     let mut visited = HashSet::<FileId>::new();
     let mut visiting = HashSet::<FileId>::new();
-    let mut stack = Vec::new();
+    let mut stack = Vec::<FileId>::new();
     let mut order = Vec::new();
     topo_visit(
-      self.program,
-      entry_file,
       entry_file,
       &deps,
       &mut visited,
       &mut visiting,
       &mut stack,
       &mut order,
-    )?;
+    )
+    .map_err(|cycle| {
+      let formatted: Vec<String> = cycle
+        .cycle
+        .iter()
+        .map(|f| file_label(self.program, *f))
+        .collect();
+      let cycle_text = if formatted.is_empty() {
+        "<unknown cycle>".to_string()
+      } else {
+        formatted.join(" -> ")
+      };
+      vec![Diagnostic::error(
+        "NJS0146",
+        format!("cyclic module dependency detected: {cycle_text}"),
+        cycle.span,
+      )]
+    })?;
     Ok(order)
   }
 
@@ -2029,6 +2048,25 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ModuleDepEdge {
+  file: FileId,
+  span: TextRange,
+}
+
+#[derive(Clone, Debug)]
+struct ModuleCycle {
+  cycle: Vec<FileId>,
+  span: Span,
+}
+
+fn file_label(program: &Program, file: FileId) -> String {
+  program
+    .file_key(file)
+    .map(|k| k.to_string())
+    .unwrap_or_else(|| format!("file{}", file.0))
+}
+
 fn is_runtime_import(es: &hir_js::ImportEs) -> bool {
   if es.is_type_only {
     return false;
@@ -2043,7 +2081,7 @@ fn is_runtime_import(es: &hir_js::ImportEs) -> bool {
   es.named.is_empty()
 }
 
-fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
+fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<ModuleDepEdge> {
   // Keep module dependencies in the same order as the source-level module
   // requests (`import ...` and `export ... from ...` statements). This matches JS
   // module evaluation semantics and provides deterministic initialization order
@@ -2061,18 +2099,6 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
       continue;
     };
     if !is_runtime_import(es) {
-      continue;
-    }
-    // `import { type Foo } from "./dep"` is erased from JS output and therefore
-    // must not cause module evaluation.
-    //
-    // (Side-effect imports like `import "./dep"` or `import {} from "./dep"`
-    // *do* evaluate the module.)
-    let has_value_bindings = es.default.is_some()
-      || es.namespace.is_some()
-      || es.named.iter().any(|n| !n.is_type_only);
-    let is_side_effect_import = es.default.is_none() && es.namespace.is_none() && es.named.is_empty();
-    if !has_value_bindings && !is_side_effect_import {
       continue;
     }
     module_requests.push(ModuleRequest {
@@ -2130,53 +2156,45 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
       continue;
     }
     if seen.insert(dep) {
-      deps.push(dep);
+      deps.push(ModuleDepEdge {
+        file: dep,
+        span: req.span,
+      });
     }
   }
 
   deps
 }
 
-fn file_label(program: &Program, file: FileId) -> String {
-  program
-    .file_key(file)
-    .map(|k| k.to_string())
-    .unwrap_or_else(|| format!("file{}", file.0))
-}
-
 fn topo_visit(
-  program: &Program,
-  entry_file: FileId,
   file: FileId,
-  deps: &HashMap<FileId, Vec<FileId>>,
+  deps: &HashMap<FileId, Vec<ModuleDepEdge>>,
   visited: &mut HashSet<FileId>,
   visiting: &mut HashSet<FileId>,
   stack: &mut Vec<FileId>,
   out: &mut Vec<FileId>,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Result<(), ModuleCycle> {
   if visited.contains(&file) {
     return Ok(());
   }
-  if !visiting.insert(file) {
-    let idx = stack.iter().position(|f| *f == file).unwrap_or(0);
-    let mut cycle = stack[idx..].to_vec();
-    cycle.push(file);
-    let formatted: Vec<String> = cycle.iter().map(|f| file_label(program, *f)).collect();
-    let path = if formatted.is_empty() {
-      "<unknown cycle>".to_string()
-    } else {
-      formatted.join(" -> ")
-    };
-    return Err(vec![Diagnostic::error(
-      "NJS0125",
-      format!("cyclic module dependency: {path}"),
-      Span::new(entry_file, TextRange::new(0, 0)),
-    )]);
-  }
+  // `visiting` is the recursion stack / in-progress set.
+  visiting.insert(file);
   stack.push(file);
   if let Some(children) = deps.get(&file) {
     for dep in children {
-      topo_visit(program, entry_file, *dep, deps, visited, visiting, stack, out)?;
+      if visited.contains(&dep.file) {
+        continue;
+      }
+      if visiting.contains(&dep.file) {
+        let idx = stack.iter().position(|f| *f == dep.file).unwrap_or(0);
+        let mut cycle = stack[idx..].to_vec();
+        cycle.push(dep.file);
+        return Err(ModuleCycle {
+          cycle,
+          span: Span::new(file, dep.span),
+        });
+      }
+      topo_visit(dep.file, deps, visited, visiting, stack, out)?;
     }
   }
   stack.pop();
