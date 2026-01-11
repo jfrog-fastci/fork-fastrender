@@ -4114,6 +4114,57 @@ impl Drop for ProbeInFlightOwnerGuard<'_> {
 }
 
 impl ImageCache {
+  fn content_type_looks_like_image(content_type: Option<&str>) -> bool {
+    let Some(content_type) = content_type else {
+      return false;
+    };
+    let mime = content_type
+      .split(';')
+      .next()
+      .unwrap_or(content_type)
+      .trim_matches(|c: char| matches!(c, ' ' | '\t'));
+    mime
+      .as_bytes()
+      .get(..6)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"image/"))
+  }
+
+  fn decoded_bitmap_is_single_transparent_pixel(img: &DynamicImage, has_alpha: bool) -> bool {
+    if !has_alpha {
+      return false;
+    }
+    let (w, h) = img.dimensions();
+    if w != 1 || h != 1 {
+      return false;
+    }
+    // Treat any fully-transparent 1×1 bitmap as a placeholder pixel. To keep this lightweight we
+    // only convert to RGBA when the dimensions are already known to be tiny.
+    img.to_rgba8().get_pixel(0, 0).0[3] == 0
+  }
+
+  fn should_map_decoded_image_to_placeholder(
+    resource: &FetchedResource,
+    img: &DynamicImage,
+    has_alpha: bool,
+    is_vector: bool,
+  ) -> bool {
+    if is_vector {
+      return false;
+    }
+    // Only apply this heuristic for non-HTTP(S) loads (e.g. offline fixtures loaded from file://).
+    // HTTP responses have a real content-type/status and are already guarded by stricter checks.
+    if resource.status.is_some() {
+      return false;
+    }
+    // When the fetcher did not classify the payload as an image (common for offline fixtures whose
+    // asset filenames preserve a non-image URL extension), treat a single fully-transparent pixel
+    // as a "missing image" sentinel so replaced element painting can render UA fallback UI.
+    if Self::content_type_looks_like_image(resource.content_type.as_deref()) {
+      return false;
+    }
+    Self::decoded_bitmap_is_single_transparent_pixel(img, has_alpha)
+  }
+
   /// Create a new ImageCache with the default HTTP fetcher
   pub fn new() -> Self {
     Self::with_config(ImageCacheConfig::default())
@@ -5820,6 +5871,9 @@ impl ImageCache {
           return Err(err);
         }
       };
+    if Self::should_map_decoded_image_to_placeholder(&resource, &img, has_alpha, is_vector) {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
@@ -5926,6 +5980,9 @@ impl ImageCache {
           self.decode_resource(resource, resolved_url)
         })
       }?;
+    if Self::should_map_decoded_image_to_placeholder(resource, &img, has_alpha, is_vector) {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
     record_image_decode_ms(decode_ms_value);
@@ -9145,6 +9202,7 @@ impl Clone for ImageCache {
   use std::path::PathBuf;
   use std::time::Duration;
   use std::time::SystemTime;
+  use tempfile::tempdir;
   use url::Url;
 
   #[test]
@@ -9371,6 +9429,69 @@ impl Clone for ImageCache {
     assert!(
       cache.is_placeholder_image(&img),
       "offline placeholder PNG payload should map to the shared placeholder image"
+    );
+  }
+
+  #[test]
+  fn image_cache_load_empty_file_url_returns_shared_placeholder_image() {
+    // Offline fixtures frequently represent missing images as empty files. Our file fetcher
+    // substitutes those bytes with a deterministic 1×1 transparent PNG so downstream code can keep
+    // working with a stable intrinsic size. Ensure `ImageCache` maps that sentinel back to the
+    // shared placeholder image so painters can reliably detect it (e.g. to render UA broken-image
+    // UI for `<img>` elements).
+    let tmp = tempdir().expect("tempdir");
+    let assets = tmp.path().join("assets");
+    std::fs::create_dir(&assets).expect("create assets dir");
+    let index_path = tmp.path().join("index.html");
+    std::fs::write(&index_path, "<!doctype html>").expect("write index.html");
+    let missing = assets.join("missing.bin");
+    std::fs::write(&missing, &[]).expect("write missing image");
+
+    let base_url = Url::from_file_path(&index_path)
+      .expect("index.html file URL")
+      .to_string();
+    let cache = ImageCache::with_base_url(base_url);
+
+    let img = cache
+      .load("assets/missing.bin")
+      .expect("empty fixture image should load as placeholder");
+    assert!(
+      cache.is_placeholder_image(&img),
+      "expected empty fixture image to map to the shared placeholder image"
+    );
+  }
+
+  #[test]
+  fn image_cache_load_file_url_1x1_transparent_png_with_non_image_content_type_maps_to_placeholder() {
+    // Older offline fixtures can contain 1×1 transparent PNG "placeholder pixel" files without the
+    // explicit `fastrender-placeholder=1` content-type marker (because file:// loads infer their
+    // MIME type from the path extension). Ensure we still map these to the shared placeholder image
+    // so `<img>` elements render UA broken-image UI instead of silently painting a stretched
+    // transparent pixel.
+    let png = encode_single_pixel_png([0, 0, 0, 0]);
+    assert_ne!(
+      png.as_slice(),
+      crate::resource::offline_placeholder_png_bytes(),
+      "test requires non-canonical placeholder bytes"
+    );
+
+    let tmp = tempdir().expect("tempdir");
+    let index_path = tmp.path().join("index.html");
+    std::fs::write(&index_path, "<!doctype html>").expect("write index.html");
+    let placeholder_path = tmp.path().join("placeholder.html");
+    std::fs::write(&placeholder_path, png).expect("write placeholder pixel");
+
+    let base_url = Url::from_file_path(&index_path)
+      .expect("index.html file URL")
+      .to_string();
+    let cache = ImageCache::with_base_url(base_url);
+
+    let img = cache
+      .load("placeholder.html")
+      .expect("placeholder pixel should load");
+    assert!(
+      cache.is_placeholder_image(&img),
+      "expected 1×1 transparent non-image file payload to map to the shared placeholder image"
     );
   }
 
