@@ -9462,65 +9462,75 @@ impl GridFormattingContext {
     // Taffy requests intrinsic min-/max-content measurements by setting
     // `AvailableSpace::{MinContent,MaxContent}` on the *physical* axis being queried. These probes
     // are independent of CSS writing mode, so always answer them in physical X/Y space.
+    //
+    // Note: intrinsic *block* sizes depend on the used size in the inline axis (e.g. text wrapping),
+    // so when Taffy probes the physical block axis while still providing a definite inline size we
+    // must answer by performing layout at that inline size rather than using intrinsic sizing APIs.
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let inline_size_is_definite = if inline_is_horizontal {
+      known_dimensions.width.is_some_and(|w| w.is_finite() && w > 1.0)
+        || matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+        )
+    } else {
+      known_dimensions.height.is_some_and(|h| h.is_finite() && h > 1.0)
+        || matches!(
+          available_space.height,
+          taffy::style::AvailableSpace::Definite(h) if h.is_finite() && h > 1.0
+        )
+    };
+
     let mut intrinsic_width: Option<f32> = None;
     if known_dimensions.width.is_none() {
-      intrinsic_width = match available_space.width {
-        taffy::style::AvailableSpace::MinContent => fit_border_box_width.or_else(|| {
-          Some(
-            match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
-              Ok(size) => size,
-              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-              Err(_) => 0.0,
-            },
-          )
-        }),
-        taffy::style::AvailableSpace::MaxContent => fit_border_box_width.or_else(|| {
-          Some(
-            match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
-              Ok(size) => size,
-              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-              Err(_) => 0.0,
-            },
-          )
-        }),
-        _ => None,
+      // In vertical writing-modes, the physical X axis is the block axis. Skip the intrinsic fast
+      // path when the inline axis is definite so we can measure block size via layout at that inline
+      // size.
+      let needs_layout_for_width_probe = !inline_is_horizontal
+        && inline_size_is_definite
+        && matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
+        );
+      intrinsic_width = if needs_layout_for_width_probe {
+        None
+      } else {
+        match available_space.width {
+          taffy::style::AvailableSpace::MinContent => fit_border_box_width.or_else(|| {
+            Some(
+              match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              },
+            )
+          }),
+          taffy::style::AvailableSpace::MaxContent => fit_border_box_width.or_else(|| {
+            Some(
+              match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              },
+            )
+          }),
+          _ => None,
+        }
       };
     }
 
-    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-    let height_probe_has_definite_inline_size = inline_is_horizontal
-      && known_dimensions.height.is_none()
-      && matches!(
-        available_space.height,
-        taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
-      )
-      && matches!(
-        available_space.width,
-        taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
-      );
-
     let mut intrinsic_height: Option<f32> = None;
-    if !height_probe_has_definite_inline_size
-      && known_dimensions.height.is_none()
+    if known_dimensions.height.is_none()
       && matches!(
         available_space.height,
         taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
       )
     {
-      // Computing a block-axis intrinsic size for a grid item must take the orthogonal axis into
-      // account. Taffy can probe min/max-content heights while still providing a *definite* width
-      // (the resolved grid area width). The `FormattingContext::compute_intrinsic_block_size` API
-      // intentionally measures block sizes under intrinsic inline constraints and therefore ignores
-      // that definite width, which can drastically over-estimate heights (e.g. by laying out text in
-      // a min-content column and producing thousands of pixels of wrapping).
-      //
-      // When the width is definite, fall back to the full layout path below so the measured height
-      // is computed under the correct inline constraint.
-      let width_is_definite = known_dimensions.width.is_some()
-        || matches!(available_space.width, taffy::style::AvailableSpace::Definite(_));
-      if width_is_definite {
-        // Leave `intrinsic_height` unset so we don't take the intrinsic probe early-return path.
-      } else {
+      // In horizontal writing-modes, the physical Y axis is the block axis. When the inline axis is
+      // definite (the resolved grid area width), measure block size via full layout at that inline
+      // size so wrapped content contributes correctly.
+      let needs_layout_for_height_probe = inline_is_horizontal && inline_size_is_definite;
+
       // CSS Grid track sizing uses intrinsic min/max-content contributions. When the item has a
       // definite preferred block size (e.g. `height: 100px`), browsers use that size as the
       // contribution even when the track is `min-content`/`max-content`. Taffy requests these
@@ -9552,28 +9562,35 @@ impl GridFormattingContext {
         taffy::style::AvailableSpace::MinContent => fit_border_box_height
           .or(definite_border_box_height)
           .or_else(|| {
-            Some(
-              match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
-                Ok(size) => size,
-                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                Err(_) => 0.0,
-              },
-            )
+            if needs_layout_for_height_probe {
+              None
+            } else {
+              Some(
+                match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
+                  Ok(size) => size,
+                  Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                  Err(_) => 0.0,
+                },
+              )
+            }
           }),
         taffy::style::AvailableSpace::MaxContent => fit_border_box_height
           .or(definite_border_box_height)
           .or_else(|| {
-            Some(
-              match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
-                Ok(size) => size,
-                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                Err(_) => 0.0,
-              },
-            )
-        }),
+            if needs_layout_for_height_probe {
+              None
+            } else {
+              Some(
+                match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
+                  Ok(size) => size,
+                  Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                  Err(_) => 0.0,
+                },
+              )
+            }
+          }),
         _ => None,
       };
-      }
     }
 
     if !(wants_baseline_y || wants_baseline_x)
@@ -9587,12 +9604,12 @@ impl GridFormattingContext {
         Self::taffy_measure_insets_px(taffy_style, percentage_base);
 
       // Grid items with `justify-self`/`justify-items` values other than `stretch` use a
-      // content-based size in the inline axis (roughly: max-content clamped to the grid area).
+      // content-based size in the physical X axis (roughly: max-content clamped to the grid
+      // area).
       //
-      // Taffy can request intrinsic block-size probes (min-/max-content height) while still
-      // providing a definite inline size. The early-return path below must therefore apply the
-      // same shrink-to-fit width logic as the full layout path, otherwise the probe would return
-      // the full grid area width and the item would incorrectly stretch.
+      // When answering an intrinsic probe via the intrinsic fast-path (i.e. without running full
+      // `fc.layout`), mirror the shrink-to-fit width logic from the full layout path so a definite
+      // grid area width does not incorrectly cause the item to stretch.
       let shrink_width = (intrinsic_width.is_none()
         && physical_width_is_auto(style)
         && matches!(available_space.width, taffy::style::AvailableSpace::Definite(_)))
