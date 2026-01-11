@@ -79,6 +79,35 @@ fn scope_drop_truncates_shadow_stack() {
 }
 
 #[test]
+fn stw_root_enumerator_updates_shadow_stack_slots() {
+  let _rt = TestRuntimeGuard::new();
+  registry::register_current_thread(registry::ThreadKind::Main);
+
+  let before = 0xdead_beef_dead_beefu64 as usize as *mut u8;
+  let after = 0xcafe_babe_cafe_babeu64 as usize as *mut u8;
+
+  runtime_native::gc::with_thread_state(|ts| {
+    let scope = RootScope::new(ts);
+    let h = scope.root(before);
+    assert_eq!(h.get(), before);
+
+    safepoint::with_world_stopped(|stop_epoch| {
+      let mut updated = 0usize;
+      safepoint::for_each_root_slot_world_stopped(stop_epoch, |slot| unsafe {
+        if slot.read() == before {
+          slot.write(after);
+          updated += 1;
+        }
+      })
+      .expect("root enumeration should succeed");
+      assert_eq!(updated, 1);
+    });
+
+    assert_eq!(h.get(), after);
+  });
+}
+
+#[test]
 fn gc_traces_shadow_stacks_of_all_threads() {
   let _rt = TestRuntimeGuard::new();
   registry::register_current_thread(registry::ThreadKind::Main);

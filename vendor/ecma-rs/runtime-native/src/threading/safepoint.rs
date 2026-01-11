@@ -1,4 +1,5 @@
 use crate::arch::SafepointContext;
+use crate::gc::RootSet;
 use crate::gc_roots::RelocPair;
 use crate::threading::registry;
 use std::sync::atomic::AtomicU64;
@@ -1025,11 +1026,12 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 ///
 /// Root sources (in order):
 /// 1) Per-thread root scopes (runtime-native handle stack): `(slot, slot)`.
-/// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`:
+/// 2) Per-thread shadow stacks (runtime-native Rust handle scopes): `(slot, slot)`.
+/// 3) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`:
 ///    `(slot, slot)`.
-/// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`):
+/// 4) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`):
 ///    `(slot, slot)`.
-/// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+/// 5) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
 ///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
 ///    - is in a GC-safe ("NativeSafe") region with a published safepoint context:
 ///    `(base_slot, derived_slot)` pairs.
@@ -1071,7 +1073,19 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
     });
   });
 
-  // 2) Global roots.
+  // 2) Thread-local shadow stacks.
+  registry::for_each_thread(|thread| {
+    let mut stack = thread.shadow_stack();
+    stack.for_each_root_slot(&mut |slot| {
+      let slot = slot.cast::<u8>();
+      f(crate::gc_roots::RelocPair {
+        base_slot: crate::statepoints::RootSlot::StackAddr(slot),
+        derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
+      })
+    });
+  });
+
+  // 3) Global roots.
   crate::roots::global_root_registry().for_each_root_slot(|slot| {
     let slot = slot.cast::<u8>();
     f(crate::gc_roots::RelocPair {
@@ -1080,7 +1094,7 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
     })
   });
 
-  // 3) Persistent handle-table roots.
+  // 4) Persistent handle-table roots.
   crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| {
     let slot = slot.cast::<u8>();
     f(crate::gc_roots::RelocPair {
@@ -1089,7 +1103,7 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
     })
   });
 
-  // 4) Stack roots from stackmaps.
+  // 5) Stack roots from stackmaps.
   let Some(stackmaps) = stackmaps else {
     return Ok(());
   };
@@ -1158,9 +1172,10 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
 ///
 /// Root sources (in order):
 /// 1) Per-thread root scopes (runtime-native handle stack).
-/// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
-/// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
-/// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+/// 2) Per-thread shadow stacks (runtime-native Rust handle scopes).
+/// 3) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
+/// 4) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
+/// 5) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
 ///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
 ///    - is in a GC-safe ("NativeSafe") region with a published safepoint context.
 ///
@@ -1193,13 +1208,19 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
   // 1) Thread-local handle stacks.
   registry::for_each_thread(|thread| thread.for_each_handle_slot(|slot| f(slot)));
 
-  // 2) Global roots.
+  // 2) Thread-local shadow stacks.
+  registry::for_each_thread(|thread| {
+    let mut stack = thread.shadow_stack();
+    stack.for_each_root_slot(&mut f);
+  });
+
+  // 3) Global roots.
   crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
 
-  // 3) Persistent handle-table roots.
+  // 4) Persistent handle-table roots.
   crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
 
-  // 4) Stack roots from stackmaps.
+  // 5) Stack roots from stackmaps.
   let Some(stackmaps) = stackmaps else {
     return Ok(());
   };
@@ -1238,9 +1259,10 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
 ///
 /// Root sources (in order):
 /// 1) Per-thread root scopes (runtime-native handle stack).
-/// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
-/// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
-/// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+/// 2) Per-thread shadow stacks (runtime-native Rust handle scopes).
+/// 3) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
+/// 4) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
+/// 5) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
 ///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
 ///    - is in a GC-safe ("NativeSafe") region with a published safepoint context.
 ///
