@@ -1,4 +1,5 @@
 use crate::abi::PromiseRef;
+use crate::buffer::Uint8Array;
 use crate::threading::ThreadKind;
 use crate::{async_rt, threading};
 use parking_lot::Mutex;
@@ -147,9 +148,10 @@ impl IoRuntime {
   /// Submit a non-blocking `write(2)` operation and return the associated promise.
   ///
   /// The write is performed on a dedicated OS thread. The caller provides a stable backing store
-  /// (`Arc<[u8]>`), and the bytes are pinned + accounted for via [`super::op::IoOp`].
-  pub fn write(&self, fd: OwnedFd, backing: Arc<[u8]>, range: Range<usize>) -> io::Result<PromiseRef> {
-    self.write_with_debug_hooks(fd, backing, range, &[], None)
+  /// (`Uint8Array` backed by a non-moving `BackingStore`), and the bytes are pinned + accounted for
+  /// via [`super::op::IoOp`].
+  pub fn write(&self, fd: OwnedFd, view: &Uint8Array, range: Range<usize>) -> io::Result<PromiseRef> {
+    self.write_with_debug_hooks(fd, view, range, &[], None)
   }
 
   /// Submit a non-blocking `write(2)` using pinned `ArrayBuffer`/`TypedArray` backing stores.
@@ -164,7 +166,7 @@ impl IoRuntime {
   pub fn write_with_debug_hooks(
     &self,
     fd: OwnedFd,
-    backing: Arc<[u8]>,
+    view: &Uint8Array,
     range: Range<usize>,
     roots: &[*mut u8],
     debug: Option<IoOpDebugHooks>,
@@ -176,7 +178,7 @@ impl IoRuntime {
     let promise = async_rt::promise::promise_new();
     let cancel = super::op_registry::CancellationToken::new()?;
 
-    let pinned = super::op::IoOp::pin_range(&self.inner.limiter, backing, range)?;
+    let pinned = super::op::IoOp::pin_uint8_array_range(&self.inner.limiter, view, range)?;
     let root_pins = roots.iter().copied().map(RootPin::new).collect::<Vec<_>>();
 
     let (id, op) = {

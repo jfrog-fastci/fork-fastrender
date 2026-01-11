@@ -119,6 +119,15 @@ impl ArrayBuffer {
     Ok(store.as_ptr())
   }
 
+  /// Returns a clone of the underlying backing store handle, if the buffer is not detached.
+  ///
+  /// This is intended for host subsystems (async I/O, FFI) that must keep the allocation alive
+  /// independently of the GC-managed `ArrayBuffer` header.
+  #[inline]
+  pub fn backing_store_handle(&self) -> Option<BackingStore> {
+    self.backing_store.clone()
+  }
+
   /// Pin the backing store bytes and return a stable pointer/length pair.
   ///
   /// While the returned guard is alive, detach/transfer/resize must be rejected.

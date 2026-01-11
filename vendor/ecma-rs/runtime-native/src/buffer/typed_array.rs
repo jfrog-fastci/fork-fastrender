@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
 
 use super::array_buffer::{ArrayBuffer, ArrayBufferError, PinnedArrayBuffer};
+use super::backing_store::BackingStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedArrayError {
@@ -123,6 +124,19 @@ impl Uint8Array {
     // SAFETY: bounds checked above.
     let ptr = unsafe { base_ptr.add(self.byte_offset) };
     Ok((ptr, self.length))
+  }
+
+  /// Returns a clone of the underlying backing store handle.
+  ///
+  /// This is intended for async I/O/FFI subsystems that need to retain/pin the backing allocation
+  /// without storing raw pointers to GC-managed `ArrayBuffer`/`TypedArray` headers.
+  pub fn backing_store_handle(&self) -> Result<BackingStore, TypedArrayError> {
+    // SAFETY: `buffer` is a GC-managed edge. In the real runtime, `buffer` is traced and kept alive.
+    let buffer = unsafe { self.buffer.as_ref() };
+
+    buffer
+      .backing_store_handle()
+      .ok_or(TypedArrayError::Buffer(ArrayBufferError::Detached))
   }
 
   /// Pin this view's backing store and return a stable pointer/length pair.

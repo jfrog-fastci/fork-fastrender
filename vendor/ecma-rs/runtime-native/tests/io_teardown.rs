@@ -1,10 +1,10 @@
 use runtime_native::buffer::ArrayBufferError;
 use runtime_native::io::{IoOpDebugHooks, IoRuntime, IoVecRange, PinnedIoVec};
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::buffer::{ArrayBuffer, Uint8Array};
 use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_promise_then_legacy as rt_promise_then};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 extern "C" fn set_bool(data: *mut u8) {
@@ -43,12 +43,13 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
   let (rfd, wfd) = pipe();
 
   // Large enough to overflow the pipe buffer so the worker thread blocks in poll().
-  let backing: Arc<[u8]> = vec![0u8; 1024 * 1024].into();
+  let buf = ArrayBuffer::new_zeroed(1024 * 1024).unwrap();
+  let view = Uint8Array::view(&buf, 0, buf.byte_len()).unwrap();
   let root_obj = Box::into_raw(Box::new(0u8)) as *mut u8;
 
   let debug = IoOpDebugHooks::pause_before_finish();
   let promise = io_rt
-    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[root_obj], Some(debug.clone()))
+    .write_with_debug_hooks(wfd, &view, 0..view.length(), &[root_obj], Some(debug.clone()))
     .unwrap();
 
   let settled = Box::new(AtomicBool::new(false));
@@ -57,7 +58,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
 
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
-  assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(io_rt.debug_counters().pinned_bytes_current, buf.byte_len());
   assert_eq!(root_registry_len(), 1);
 
   // Trigger teardown while the write is blocked.
@@ -70,7 +71,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
 
   // The op is now canceled but not yet dropped: pins/permit must still be held.
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
-  assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(io_rt.debug_counters().pinned_bytes_current, buf.byte_len());
   assert_eq!(root_registry_len(), 1);
   assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
 
@@ -99,11 +100,12 @@ fn teardown_detaches_queued_completion_tasks() {
 
   let (rfd, wfd) = pipe();
 
-  let backing: Arc<[u8]> = vec![1u8].into();
+  let buf = ArrayBuffer::from_bytes(vec![1u8]).unwrap();
+  let view = Uint8Array::view(&buf, 0, buf.byte_len()).unwrap();
   let root_obj = Box::into_raw(Box::new(0u8)) as *mut u8;
   let debug = IoOpDebugHooks::pause_before_finish();
   let promise = io_rt
-    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[root_obj], Some(debug.clone()))
+    .write_with_debug_hooks(wfd, &view, 0..view.length(), &[root_obj], Some(debug.clone()))
     .unwrap();
 
   let settled = Box::new(AtomicBool::new(false));
@@ -121,7 +123,7 @@ fn teardown_detaches_queued_completion_tasks() {
   // The op should still be in the registry at this point (completion task hasn't run yet).
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
-  assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(io_rt.debug_counters().pinned_bytes_current, buf.byte_len());
   assert_eq!(root_registry_len(), 1);
 
   // Simulate hard termination / realm teardown: detach completions + clear registry.

@@ -2,6 +2,8 @@ use super::iovec::PinnedIoVec;
 #[cfg(unix)]
 use super::iovec::PinnedMsgHdr;
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
+use crate::buffer::{ArrayBuffer, BackingStore, PinnedBackingStore, Uint8Array};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -33,7 +35,8 @@ impl IoBuf {
 #[derive(Debug)]
 pub struct IoOp {
   bufs: Vec<IoBuf>,
-  _backings: Vec<Arc<[u8]>>,
+  // NOTE: keep this after `bufs` so backing stores outlive the pointer descriptors.
+  _pinned: Vec<PinnedBackingStore>,
   #[allow(dead_code)]
   pinned_iovecs: Option<PinnedIoVec>,
   #[cfg(unix)]
@@ -43,57 +46,114 @@ pub struct IoOp {
 }
 
 impl IoOp {
-  /// Pins a single buffer range for an I/O operation.
-  ///
-  /// This is the "pin_range -> IoBuf" bridge: it is the only place that produces kernel pointers,
-  /// so it is where limits/backpressure are enforced.
-  pub fn pin_range(
+  /// Pins a single [`BackingStore`] range for an I/O operation.
+  pub fn pin_backing_store_range(
     limiter: &Arc<IoLimiter>,
-    backing: Arc<[u8]>,
+    store: BackingStore,
     range: Range<usize>,
   ) -> Result<Self, IoLimitError> {
-    Self::pin_vectored(limiter, vec![(backing, range)])
+    Self::pin_vectored(limiter, vec![(store, range)])
+  }
+
+  /// Pins a single [`ArrayBuffer`] range for an I/O operation.
+  pub fn pin_array_buffer_range(
+    limiter: &Arc<IoLimiter>,
+    buf: &ArrayBuffer,
+    range: Range<usize>,
+  ) -> Result<Self, IoLimitError> {
+    if range.start > range.end || range.end > buf.byte_len() {
+      return Err(IoLimitError::InvalidRange);
+    }
+
+    let Some(store) = buf.backing_store_handle() else {
+      return Err(IoLimitError::InvalidRange);
+    };
+    Self::pin_backing_store_range(limiter, store, range)
+  }
+
+  /// Pins a [`Uint8Array`] sub-range for an I/O operation.
+  ///
+  /// The provided `range` is relative to the start of the view (not the underlying `ArrayBuffer`).
+  pub fn pin_uint8_array_range(
+    limiter: &Arc<IoLimiter>,
+    view: &Uint8Array,
+    range: Range<usize>,
+  ) -> Result<Self, IoLimitError> {
+    if range.start > range.end || range.end > view.length() {
+      return Err(IoLimitError::InvalidRange);
+    }
+
+    let store = view
+      .backing_store_handle()
+      .map_err(|_| IoLimitError::InvalidRange)?;
+
+    let view_base = view.byte_offset();
+    let abs_start = view_base
+      .checked_add(range.start)
+      .ok_or(IoLimitError::InvalidRange)?;
+    let abs_end = view_base.checked_add(range.end).ok_or(IoLimitError::InvalidRange)?;
+
+    Self::pin_backing_store_range(limiter, store, abs_start..abs_end)
   }
 
   /// Pins multiple ranges for a single vectored I/O operation.
   ///
-  /// Accounting charges the **sum** of all pinned ranges, but counts as **one** in-flight op.
+  /// Accounting charges the sum of `alloc_len()` for all backing stores retained by this op.
+  /// Backing stores are deduplicated within the op (charging each allocation once), but the op still
+  /// counts as **one** in-flight operation.
   pub fn pin_vectored(
     limiter: &Arc<IoLimiter>,
-    bufs: Vec<(Arc<[u8]>, Range<usize>)>,
+    bufs: Vec<(BackingStore, Range<usize>)>,
   ) -> Result<Self, IoLimitError> {
     // Validate ranges and compute total bytes up-front so error paths don't affect counters.
+    //
+    // IMPORTANT: async ops retain the *entire* backing store allocation against detach/free while
+    // pinned, even if the syscall uses only a sub-range. Charge `alloc_len()` (not range length).
     let mut total_pinned_bytes: usize = 0;
-    for (backing, range) in bufs.iter() {
-      let len = range
-        .end
-        .checked_sub(range.start)
-        .ok_or(IoLimitError::InvalidRange)?;
-      if range.end > backing.len() {
+    let mut seen_store_ids: HashSet<usize> = HashSet::with_capacity(bufs.len());
+    for (store, range) in bufs.iter() {
+      if range.start > range.end || range.end > store.byte_len() {
         return Err(IoLimitError::InvalidRange);
       }
-      total_pinned_bytes = total_pinned_bytes
-        .checked_add(len)
-        .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
+
+      if seen_store_ids.insert(store.id()) {
+        total_pinned_bytes = total_pinned_bytes
+          .checked_add(store.alloc_len())
+          .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
+      }
     }
 
     // Apply backpressure (deterministic error) before producing kernel pointers.
     let permit = limiter.try_acquire(total_pinned_bytes)?;
 
     let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(bufs.len());
-    let mut backings: Vec<Arc<[u8]>> = Vec::with_capacity(bufs.len());
-    for (backing, range) in bufs {
-      let slice = backing.get(range).ok_or(IoLimitError::InvalidRange)?;
-      io_bufs.push(IoBuf {
-        ptr: slice.as_ptr(),
-        len: slice.len(),
-      });
-      backings.push(backing);
+    let mut pinned: Vec<PinnedBackingStore> = Vec::with_capacity(seen_store_ids.len());
+    let mut pinned_index: HashMap<usize, usize> = HashMap::with_capacity(seen_store_ids.len());
+
+    // Pin unique backing stores first, then create OS-visible pointer descriptors.
+    for (store, _) in bufs.iter() {
+      let id = store.id();
+      if pinned_index.contains_key(&id) {
+        continue;
+      }
+      pinned_index.insert(id, pinned.len());
+      pinned.push(store.pin_guard());
+    }
+
+    for (store, range) in bufs {
+      let id = store.id();
+      let idx = *pinned_index.get(&id).expect("store pinned above");
+
+      let base = pinned[idx].as_ptr();
+      // SAFETY: bounds checked above.
+      let ptr = unsafe { base.add(range.start) } as *const u8;
+      let len = range.end - range.start;
+      io_bufs.push(IoBuf { ptr, len });
     }
 
     Ok(Self {
       bufs: io_bufs,
-      _backings: backings,
+      _pinned: pinned,
       pinned_iovecs: None,
       #[cfg(unix)]
       pinned_msghdr: None,

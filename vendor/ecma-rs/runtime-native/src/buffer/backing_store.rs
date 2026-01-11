@@ -169,6 +169,15 @@ impl BackingStore {
       .map_or(0, |inner| unsafe { inner.as_ref().alloc_len })
   }
 
+  /// A stable identity token for this backing store allocation.
+  ///
+  /// This is intended for internal accounting/deduping in async I/O paths where a single operation
+  /// may reference the same backing store multiple times.
+  #[inline]
+  pub(crate) fn id(&self) -> usize {
+    Arc::as_ptr(&self.inner) as usize
+  }
+
   #[inline]
   pub fn as_ptr(&self) -> *mut u8 {
     self.inner_nn().map_or(NonNull::<u8>::dangling().as_ptr(), |inner| unsafe {
