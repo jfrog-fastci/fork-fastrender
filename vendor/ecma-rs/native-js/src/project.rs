@@ -239,33 +239,20 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
           continue;
         }
 
-        let resolved = host
-          .resolve(&from_key, &source.value)
+        let resolved_id = program
+          .resolve_module(file, &source.value)
           .ok_or_else(|| NativeJsError::UnresolvedImport {
             from: from_key.to_string(),
             specifier: source.value.clone(),
           })?;
-        let resolved_id =
-          program
-            .file_id(&resolved)
-            .ok_or_else(|| NativeJsError::UnresolvedImport {
-              from: from_key.to_string(),
-              specifier: source.value.clone(),
-            })?;
         info.deps.insert(resolved_id);
       }
       hir_js::ExportKind::ExportAll(all) => {
         if all.is_type_only {
           continue;
         }
-        let resolved = host
-          .resolve(&from_key, &all.source.value)
-          .ok_or_else(|| NativeJsError::UnresolvedImport {
-            from: from_key.to_string(),
-            specifier: all.source.value.clone(),
-          })?;
         let resolved_id = program
-          .file_id(&resolved)
+          .resolve_module(file, &all.source.value)
           .ok_or_else(|| NativeJsError::UnresolvedImport {
             from: from_key.to_string(),
             specifier: all.source.value.clone(),
