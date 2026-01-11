@@ -59,7 +59,7 @@ fn return_statements_lower_to_return_insts() {
 }
 
 #[test]
-fn return_void_lower_to_return_undefined() {
+fn return_void_lowers_to_return_without_value() {
   let src = r#"
     const make = () => {
       return;
@@ -75,8 +75,5 @@ fn return_void_lower_to_return_undefined() {
     .all()
     .flat_map(|(_, b)| b.iter())
     .any(|inst| inst.t == InstTyp::Return && inst.as_return().is_none());
-  assert!(
-    saw_return_undefined,
-    "expected Return inst with implicit undefined for `return;`"
-  );
+  assert!(saw_return_undefined, "expected Return inst with implicit undefined for `return;`");
 }
