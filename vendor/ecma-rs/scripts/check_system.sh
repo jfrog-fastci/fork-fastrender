@@ -126,11 +126,16 @@ if (command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1) &&
   fi
 
   # Additional x86_64-only corner-case checks (flags + patch_bytes).
-  if bash "${SCRIPT_DIR}/test_statepoint_flags_patchbytes.sh"; then
-    echo -e "${GREEN}✓${NC} statepoint flags/patch_bytes test passed"
+  if [[ "$(uname -m)" == "x86_64" ]]; then
+    if bash "${SCRIPT_DIR}/test_statepoint_flags_patchbytes.sh"; then
+      echo -e "${GREEN}✓${NC} statepoint flags/patch_bytes test passed"
+    else
+      echo -e "${RED}✗${NC} statepoint flags/patch_bytes test failed (run: bash ${SCRIPT_DIR}/test_statepoint_flags_patchbytes.sh)"
+      ((errors++))
+    fi
   else
-    echo -e "${RED}✗${NC} statepoint flags/patch_bytes test failed (run: bash ${SCRIPT_DIR}/test_statepoint_flags_patchbytes.sh)"
-    ((errors++))
+    echo -e "${YELLOW}?${NC} statepoint flags/patch_bytes test skipped (requires x86_64 host)"
+    ((warnings++))
   fi
 else
   echo -e "${YELLOW}?${NC} stackmap ABI tests skipped (missing llc/llvm-readobj/llvm-objdump)"
