@@ -6,6 +6,7 @@
 //!
 //! The hot path performs no global locking.
 //! Slow paths (Immix hole reservation, LOS allocation, GC) are serialized.
+#![allow(dead_code)]
 
 use crate::abi::RtShapeId;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;

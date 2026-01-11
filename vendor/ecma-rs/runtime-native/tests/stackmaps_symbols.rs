@@ -39,7 +39,6 @@ fn stackmaps_discovered_via_exported_symbols() {
   // that, so check the first non-zero byte is the stackmap version.
   let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
   assert_eq!(version, runtime_native::stackmaps::STACKMAP_VERSION);
-
   // The output section may contain multiple concatenated StackMap v3 blobs. Assert that our
   // injected blob is present somewhere in that byte range (and therefore that the exported
   // start/end symbols really delimit the `.llvm_stackmaps` output section).

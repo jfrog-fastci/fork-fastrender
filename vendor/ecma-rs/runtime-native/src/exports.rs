@@ -23,7 +23,7 @@ use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
-use crate::rt_alloc as rt_alloc_mod;
+use crate::shape_table;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
@@ -249,7 +249,27 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc(size, shape)));
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let shape_desc = shape_table::lookup_rt_descriptor(shape);
+    if size != shape_desc.size as usize {
+      trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
+    }
+    let align = (shape_desc.align as usize)
+      .max(16)
+      .max(core::mem::align_of::<ObjHeader>());
+    let type_desc = shape_table::lookup_type_descriptor(shape);
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
+
+    let obj = alloc::alloc_bytes_zeroed(size, align, "rt_alloc");
+    // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
+    unsafe {
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = type_desc as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+    }
+    obj
+  }));
 
   match res {
     Ok(ptr) => ptr,
@@ -266,7 +286,28 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc_pinned(size, shape)));
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let shape_desc = shape_table::lookup_rt_descriptor(shape);
+    if size != shape_desc.size as usize {
+      trap::rt_trap_invalid_arg("rt_alloc_pinned: size does not match registered shape descriptor");
+    }
+    let align = (shape_desc.align as usize)
+      .max(16)
+      .max(core::mem::align_of::<ObjHeader>());
+    let type_desc = shape_table::lookup_type_descriptor(shape);
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
+
+    let obj = alloc::alloc_bytes_zeroed(size, align, "rt_alloc_pinned");
+    // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
+    unsafe {
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = type_desc as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+      header.set_pinned(true);
+    }
+    obj
+  }));
 
   match res {
     Ok(ptr) => ptr,
