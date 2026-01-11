@@ -1761,8 +1761,8 @@ int main(void) {
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
     // `rt_async_spawn` takes a stable `CoroutineId` handle (not a raw pointer) so the runtime can
     // store it across async boundaries.
-    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
-    let result = unsafe { rt_async_spawn(coro_id) };
+    let handle = rt_handle_alloc(coro_ptr.cast());
+    let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
 
     // Coroutine should have suspended on the pending awaited promise.
@@ -1789,6 +1789,7 @@ int main(void) {
     let payload_ptr =
       unsafe { (result_header as *mut u8).add(core::mem::size_of::<async_abi::PromiseHeader>()) as *mut u64 };
     assert_eq!(unsafe { *payload_ptr }, 42);
+    assert!(rt_handle_load(handle).is_null());
 
     unsafe {
       drop(Box::from_raw(state_ptr));
@@ -1822,9 +1823,10 @@ int main(void) {
     });
  
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
-    let result = unsafe { rt_async_spawn(coro_id) };
+    let handle = rt_handle_alloc(coro_ptr.cast::<u8>());
+    let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
+    assert!(rt_handle_load(handle).is_null());
 
     // With strict mode disabled by default, awaiting an already-fulfilled promise resumes
     // synchronously, so the coroutine completes during `rt_async_spawn`.
@@ -1871,8 +1873,8 @@ int main(void) {
     });
  
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
-    let result = unsafe { rt_async_spawn(coro_id) };
+    let handle = rt_handle_alloc(coro_ptr.cast::<u8>());
+    let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
 
     // In strict mode, awaiting an already-settled promise schedules the resume as a microtask,
@@ -1891,6 +1893,7 @@ int main(void) {
       unsafe { &*result_header }.state.load(Ordering::Acquire),
       async_abi::PromiseHeader::FULFILLED
     );
+    assert!(rt_handle_load(handle).is_null());
 
     unsafe {
       drop(Box::from_raw(state_ptr));

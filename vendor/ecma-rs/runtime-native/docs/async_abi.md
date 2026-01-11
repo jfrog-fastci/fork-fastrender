@@ -234,6 +234,7 @@ completion/cancellation (destroying the frame if `CORO_FLAG_RUNTIME_OWNS_FRAME` 
 
 - Same allocation/initialization semantics as `rt_async_spawn`.
 - Enqueues the coroutine’s *first resume* as a **microtask** (does not resume synchronously).
+- Frees the coroutine handle when the coroutine completes.
 
 ### `rt_async_poll() -> bool`
 

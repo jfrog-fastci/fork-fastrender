@@ -156,8 +156,8 @@ fn wake_from_epoll_wait() {
   let ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  // Keep the runtime non-idle so `rt_async_poll` will block in the platform reactor wait syscall
-  // (`epoll_wait`/`kevent`).
+  // Keep the runtime non-idle so `rt_async_poll_legacy` will block in the platform reactor wait
+  // syscall (`epoll_wait`/`kevent`).
   let dummy_timer = runtime_native::async_rt::global().schedule_timer(
     Instant::now() + Duration::from_secs(1),
     Task::new(set_atomic_bool, timer_fired as *const AtomicBool as *mut u8),
@@ -211,7 +211,7 @@ fn wake_from_epoll_wait() {
   );
   assert!(
     wake_elapsed < Duration::from_secs(1),
-    "rt_async_poll did not wake promptly (elapsed={wake_elapsed:?}, total={elapsed:?})"
+    "rt_async_poll_legacy did not wake promptly (elapsed={wake_elapsed:?}, total={elapsed:?})"
   );
   assert!(
     !timer_fired.load(Ordering::SeqCst),
@@ -235,7 +235,7 @@ fn idle_detection() {
   let elapsed = start.elapsed();
 
   assert!(!pending, "expected quiescent runtime");
-  // `rt_async_poll` should return immediately when there are no watchers/timers, but allow generous
+  // `rt_async_poll_legacy` should return immediately when there are no watchers/timers, but allow generous
   // scheduling slack for heavily loaded CI/agent environments.
   assert!(
     elapsed < Duration::from_secs(1),

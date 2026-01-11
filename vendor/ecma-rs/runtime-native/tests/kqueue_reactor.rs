@@ -185,7 +185,7 @@ fn wake_interrupts_poll() {
   let ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  // Keep the runtime non-idle so `rt_async_poll` blocks inside the reactor.
+  // Keep the runtime non-idle so `rt_async_poll_legacy` blocks inside the reactor.
   let timer_id = async_rt::schedule_timer(
     Instant::now() + Duration::from_secs(5),
     set_bool,
@@ -228,7 +228,7 @@ fn wake_interrupts_poll() {
   assert!(ran.load(Ordering::SeqCst), "microtask did not run");
   assert!(
     wake_elapsed < Duration::from_secs(1),
-    "rt_async_poll did not wake promptly (elapsed={wake_elapsed:?})"
+    "rt_async_poll_legacy did not wake promptly (elapsed={wake_elapsed:?})"
   );
   assert!(!timer_fired.load(Ordering::SeqCst), "poll returned only after timer fired");
 }
@@ -240,7 +240,7 @@ fn wake_race_stress() {
   let ran: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  // Keep the runtime non-idle so `rt_async_poll` blocks inside the reactor.
+  // Keep the runtime non-idle so `rt_async_poll_legacy` blocks inside the reactor.
   let timer_id = async_rt::schedule_timer(
     Instant::now() + Duration::from_secs(5),
     set_bool,

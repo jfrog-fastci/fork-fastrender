@@ -88,8 +88,9 @@ fn deferred_spawn_reloads_coroutine_ptr_from_persistent_handle() {
   });
   let coro1_ref = Box::into_raw(coro1);
 
+  let old_ptr = (coro1_ref as *mut Coroutine).cast::<u8>();
+  let handle = runtime_native::rt_handle_alloc(old_ptr);
   // Enqueue the first resume as a microtask.
-  let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
   let _promise = unsafe { runtime_native::rt_async_spawn_deferred(CoroutineId(handle)) };
 
   // Allocate an alternate coroutine and point it at the same promise so the microtask can fulfill
@@ -109,7 +110,6 @@ fn deferred_spawn_reloads_coroutine_ptr_from_persistent_handle() {
     (*coro2_ref).header.promise = (*coro1_ref).header.promise;
   }
 
-  let old_ptr = (coro1_ref as *mut Coroutine).cast::<u8>();
   let new_ptr = (coro2_ref as *mut Coroutine).cast::<u8>();
 
   // Simulate a moving GC by updating the persistent-handle slot while the world is stopped.
@@ -220,7 +220,8 @@ fn await_reaction_reloads_coroutine_ptr_from_persistent_handle() {
   let coro1_ref = Box::into_raw(coro1);
 
   // Enqueue and run once so the coroutine registers its await reaction.
-  let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
+  let old_ptr = (coro1_ref as *mut Coroutine).cast::<u8>();
+  let handle = runtime_native::rt_handle_alloc(old_ptr);
   let _promise = unsafe { runtime_native::rt_async_spawn_deferred(CoroutineId(handle)) };
   while runtime_native::rt_async_poll() {}
   assert!(started);
@@ -242,7 +243,6 @@ fn await_reaction_reloads_coroutine_ptr_from_persistent_handle() {
   });
   let coro2_ref = Box::into_raw(coro2);
 
-  let old_ptr = (coro1_ref as *mut Coroutine).cast::<u8>();
   let new_ptr = (coro2_ref as *mut Coroutine).cast::<u8>();
 
   let mut updated = 0usize;

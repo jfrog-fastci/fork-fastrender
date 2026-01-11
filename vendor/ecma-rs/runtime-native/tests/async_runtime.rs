@@ -135,7 +135,10 @@ fn async_spawn_then_wake_and_complete() {
   assert!(runtime_native::rt_async_poll());
   assert_eq!(promise_state(result_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*result_hdr.cast::<TestPromise>()).value }, 42);
-  assert!(runtime_native::rt_handle_load(handle).is_null());
+  assert!(
+    runtime_native::rt_handle_load(handle).is_null(),
+    "runtime must free the CoroutineId handle when the coroutine completes"
+  );
 
   // Clean up allocations owned by this test.
   unsafe {

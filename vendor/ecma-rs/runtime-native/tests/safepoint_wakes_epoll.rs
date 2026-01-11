@@ -61,7 +61,7 @@ fn safepoint_request_wakes_epoll_wait() {
   // with the GC safepoint coordinator).
   let _ = runtime_native::async_rt::global();
 
-  // Register a dummy I/O watcher that never becomes ready so `rt_async_poll`
+  // Register a dummy I/O watcher that never becomes ready so `rt_async_poll_legacy`
   // blocks in `epoll_wait`.
   let (read_fd, write_fd) = make_pipe();
   let watcher = runtime_native::async_rt::register_fd(
@@ -72,7 +72,7 @@ fn safepoint_request_wakes_epoll_wait() {
   )
   .expect("failed to register dummy fd watcher");
 
-  // Spawn a thread that blocks inside `rt_async_poll()` (and therefore `epoll_wait`).
+  // Spawn a thread that blocks inside `rt_async_poll_legacy()` (and therefore `epoll_wait`).
   let (started_tx, started_rx) = mpsc::channel();
   let poll_thread = std::thread::spawn(move || {
     runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Main);
