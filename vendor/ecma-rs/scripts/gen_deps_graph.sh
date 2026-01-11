@@ -13,11 +13,12 @@ import sys
 
 repo_root = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2])
+cargo_agent = repo_root / "scripts" / "cargo_agent.sh"
 
 metadata = json.loads(
     subprocess.check_output(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
-        cwd=repo_root,
+        ["bash", str(cargo_agent), "metadata", "--format-version", "1", "--no-deps"],
+        cwd=str(repo_root),
     )
 )
 

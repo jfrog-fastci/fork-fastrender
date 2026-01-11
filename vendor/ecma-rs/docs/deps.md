@@ -28,9 +28,11 @@ graph TD
     runtime_js["runtime-js"]
     runtime_native["runtime-native"]
     semantic_js["semantic-js"]
+    stackmap["stackmap"]
     stackmap_context["stackmap-context"]
     test262["test262"]
     test262_semantic["test262-semantic"]
+    ts_erase["ts-erase"]
     typecheck_ts["typecheck-ts"]
     typecheck_ts_bench["typecheck-ts-bench"]
     typecheck_ts_cli["typecheck-ts-cli"]
@@ -60,6 +62,7 @@ graph TD
     minify_js --> hir_js
     minify_js --> parse_js
     minify_js --> semantic_js
+    minify_js --> ts_erase
     minify_js_bench --> diagnostics
     minify_js_bench --> minify_js
     minify_js_cli --> diagnostics
@@ -105,6 +108,9 @@ graph TD
     test262_semantic --> conformance_harness
     test262_semantic --> diagnostics
     test262_semantic --> vm_js
+    ts_erase --> diagnostics
+    ts_erase --> emit_js
+    ts_erase --> parse_js
     typecheck_ts --> diagnostics
     typecheck_ts --> hir_js
     typecheck_ts --> parse_js
