@@ -7052,7 +7052,10 @@ fn first_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
       return Some(node);
     }
 
-    for child in node.children.iter().rev() {
+    for child in node.traversal_children().iter().rev() {
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
       stack.push(child);
     }
   }
@@ -7098,7 +7101,10 @@ fn single_select_selected_option_and_disabled<'a>(select: &'a DomNode) -> Option
       }
     }
 
-    for child in node.children.iter().rev() {
+    for child in node.traversal_children().iter().rev() {
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
       stack.push((child, next_optgroup_disabled));
     }
   }
@@ -7153,7 +7159,10 @@ fn select_placeholder_label_option<'a>(select: &'a DomNode) -> Option<&'a DomNod
       return None;
     }
 
-    for child in node.children.iter().rev() {
+    for child in node.traversal_children().iter().rev() {
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
       stack.push((child, Some(node)));
     }
   }
@@ -7187,7 +7196,10 @@ fn select_has_non_disabled_selected_option(select: &DomNode) -> bool {
       }
     }
 
-    for child in node.children.iter().rev() {
+    for child in node.traversal_children().iter().rev() {
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
       stack.push((child, next_optgroup_disabled));
     }
   }
@@ -13881,6 +13893,36 @@ mod tests {
   }
 
   #[test]
+  fn option_selectedness_ignores_template_contents() {
+    let select = element(
+      "select",
+      vec![
+        element_with_attrs("option", vec![("id", "light")], vec![]),
+        element(
+          "template",
+          vec![element_with_attrs(
+            "option",
+            vec![("id", "tmpl"), ("selected", "")],
+            vec![],
+          )],
+        ),
+      ],
+    );
+
+    let light = &select.children[0];
+    let template = &select.children[1];
+    let tmpl = &template.children[0];
+
+    let light_ancestors: Vec<&DomNode> = vec![&select];
+    assert!(matches(light, &light_ancestors, &PseudoClass::Checked));
+    assert!(matches(light, &light_ancestors, &PseudoClass::Default));
+
+    let tmpl_ancestors: Vec<&DomNode> = vec![&select, template];
+    assert!(!matches(tmpl, &tmpl_ancestors, &PseudoClass::Checked));
+    assert!(!matches(tmpl, &tmpl_ancestors, &PseudoClass::Default));
+  }
+
+  #[test]
   fn radio_group_checked_only_matches_last_checked_in_tree_order() {
     let form = element(
       "form",
@@ -15218,6 +15260,30 @@ mod tests {
     assert!(
       ElementRef::new(&single_last_selected_wins).accessibility_is_valid(),
       "single selects should treat the last selected option as the effective selection"
+    );
+  }
+
+  #[test]
+  fn select_required_validation_ignores_template_contents() {
+    let select = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs("option", vec![("value", "")], vec![text("Pick one")]),
+        element(
+          "template",
+          vec![element_with_attrs(
+            "option",
+            vec![("selected", ""), ("value", "x")],
+            vec![text("X")],
+          )],
+        ),
+      ],
+    );
+
+    assert!(
+      !ElementRef::new(&select).accessibility_is_valid(),
+      "<select required> should ignore selected options inside inert <template> contents"
     );
   }
 
