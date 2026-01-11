@@ -17107,7 +17107,39 @@ impl DisplayListRenderer {
         dest.fill_rect(skia_rect, &fill, transform, clip);
       });
     } else {
-      let transform = image_transform.post_concat(self.canvas.transform());
+      let canvas_transform = self.canvas.transform();
+      // tiny-skia's `draw_pixmap` sampling path can slightly blur image edges even for 1:1 draws
+      // when we express the placement as a floating-point translation matrix. Prefer the integer
+      // offset fast-path when we can prove this is an axis-aligned 1:1 blit.
+      if item.src_rect.is_none()
+        && (scale_x - 1.0).abs() <= 1e-6
+        && (scale_y - 1.0).abs() <= 1e-6
+        && Self::is_translation_only_transform(canvas_transform)
+        && Self::is_near_integer(canvas_transform.tx)
+        && Self::is_near_integer(canvas_transform.ty)
+      {
+        let tx = tx + canvas_transform.tx;
+        let ty = ty + canvas_transform.ty;
+        if tx.is_finite()
+          && ty.is_finite()
+          && Self::is_near_integer(tx)
+          && Self::is_near_integer(ty)
+          && tx >= i32::MIN as f32
+          && tx <= i32::MAX as f32
+          && ty >= i32::MIN as f32
+          && ty <= i32::MAX as f32
+        {
+          let x = tx.round() as i32;
+          let y = ty.round() as i32;
+          self.canvas.with_mirrored_pixmap_mut(|dest| {
+            dest.draw_pixmap(x, y, pixmap_ref.as_ref(), &paint, Transform::identity(), clip);
+          });
+          self.record_background_paint(background_timer);
+          return Ok(());
+        }
+      }
+
+      let transform = image_transform.post_concat(canvas_transform);
       self.canvas.with_mirrored_pixmap_mut(|dest| {
         dest.draw_pixmap(0, 0, pixmap_ref.as_ref(), &paint, transform, clip);
       });
@@ -25364,6 +25396,62 @@ mod tests {
     assert_eq!(pixel(&pixmap, 0, 0), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 0, 1), (0, 0, 255, 255));
     assert_eq!(pixel(&pixmap, 0, 2), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn image_linear_filter_does_not_blur_unscaled_integer_translation() {
+    // When the image is drawn 1:1 (no scaling) with an integer translation, linear filtering
+    // should still behave like a pure blit. Otherwise tiny-skia can blend semi-transparent edge
+    // pixels with neighbors and darken icons (e.g. the twitter.com fixture).
+    let pixels = vec![
+      255, 0, 0, 255, // opaque red
+      0, 0, 0, 0,     // transparent
+    ];
+    let image = Arc::new(ImageData::new_premultiplied(2, 1, 2.0, 1.0, pixels));
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(1.0, 0.0, 2.0, 1.0),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+
+    let pixmap = DisplayListRenderer::new(4, 1, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 2, 0), (0, 0, 0, 0));
+  }
+
+  #[test]
+  fn image_linear_filter_does_not_blur_unscaled_integer_canvas_translation() {
+    let pixels = vec![
+      0, 255, 0, 255, // opaque green
+      0, 0, 0, 0,     // transparent
+    ];
+    let image = Arc::new(ImageData::new_premultiplied(2, 1, 2.0, 1.0, pixels));
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushTransform(TransformItem {
+      transform: Transform3D::translate(1.0, 0.0, 0.0),
+    }));
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 2.0, 1.0),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+    list.push(DisplayItem::PopTransform);
+
+    let pixmap = DisplayListRenderer::new(4, 1, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(pixel(&pixmap, 1, 0), (0, 255, 0, 255));
+    assert_eq!(pixel(&pixmap, 2, 0), (0, 0, 0, 0));
   }
 
   #[test]
