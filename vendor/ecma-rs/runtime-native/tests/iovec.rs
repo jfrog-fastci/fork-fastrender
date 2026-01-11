@@ -103,6 +103,21 @@ mod unix {
   }
 
   #[test]
+  fn empty_iovec_ptrs_are_null() {
+    let mut empty = PinnedIoVec::try_from_ranges(&[]).unwrap();
+    assert_eq!(empty.len(), 0);
+    assert!(empty.as_iovec_ptr().is_null());
+    assert!(empty.as_iovec_mut_ptr().is_null());
+
+    let hdr = PinnedMsgHdr::new(empty);
+    unsafe {
+      let msghdr = &*hdr.as_msghdr_ptr();
+      assert!(msghdr.msg_iov.is_null());
+      assert_eq!(msghdr.msg_iovlen as usize, 0);
+    }
+  }
+
+  #[test]
   fn iovec_range_builders_reject_detached_buffers() {
     let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
     let view = Uint8Array::view(&buf, 0, 4).unwrap();
