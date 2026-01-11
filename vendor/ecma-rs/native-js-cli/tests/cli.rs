@@ -736,6 +736,34 @@ fn checked_pipeline_supports_import_and_call_across_modules() {
 }
 
 #[test]
+fn checked_pipeline_runs_module_initializers_in_import_order_with_transitive_deps() {
+  let tmp = TempDir::new().unwrap();
+  let a = tmp.path().join("a.ts");
+  let b = tmp.path().join("b.ts");
+  let c = tmp.path().join("c.ts");
+  let entry = tmp.path().join("entry.ts");
+
+  fs::write(&c, "print(1);\n").unwrap();
+  fs::write(&b, "import \"./c\";\nprint(2);\n").unwrap();
+  fs::write(&a, "print(3);\n").unwrap();
+  fs::write(
+    &entry,
+    "import \"./b\";\nimport \"./a\";\nprint(99);\nexport function main(): number { print(4); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("1\n2\n3\n99\n4\n"));
+}
+
+#[test]
 fn checked_pipeline_supports_importing_from_reexport_modules() {
   let tmp = TempDir::new().unwrap();
 
