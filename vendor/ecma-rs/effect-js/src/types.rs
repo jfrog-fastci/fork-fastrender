@@ -43,6 +43,13 @@ pub trait TypeProvider {
     None
   }
 
+  /// Render a type as a string for debugging/heuristics.
+  ///
+  /// Typed implementations may forward to `typecheck_ts::Program::display_type`.
+  fn display_type(&self, _ty: TypeId) -> Option<String> {
+    None
+  }
+
   /// Returns `true` when the expression is a known array/readonly-array/tuple.
   #[cfg(feature = "typed")]
   fn expr_is_array(&self, body: BodyId, expr: ExprId) -> bool {

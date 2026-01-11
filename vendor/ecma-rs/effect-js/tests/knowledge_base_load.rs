@@ -29,7 +29,7 @@ fn knowledge_base_loads_from_embedded() {
   }
 
   let json_parse = db.get("JSON.parse").expect("JSON.parse present");
-  assert!(json_parse.effect_summary.throws != ThrowBehavior::Never);
+  assert_ne!(json_parse.effect_summary.throws, ThrowBehavior::Never);
 
   let array_map = db
     .get("Array.prototype.map")

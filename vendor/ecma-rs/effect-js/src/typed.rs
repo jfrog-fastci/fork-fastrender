@@ -3,7 +3,7 @@ use hir_js::{BodyId, ExprId, PatId};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-use types_ts_interned::{IntrinsicKind, TypeKind};
+use types_ts_interned::{ExpandedType, IntrinsicKind, TypeEvaluator, TypeExpander, TypeKind, TypeParamId, TypeStore};
 
 /// Cached `TypeProvider` backed by a `typecheck-ts` [`Program`].
 ///
@@ -116,20 +116,106 @@ impl TypeProvider for TypedProgram {
 
   fn type_kind(&self, ty: TypeId) -> Option<TypeKindSummary> {
     let store = self.program.interned_type_store();
-    let ty = if store.contains_type_id(ty) {
+    let mut ty = if store.contains_type_id(ty) {
       store.canon(ty)
     } else {
       store.primitive_ids().unknown
     };
+
+    struct NoopExpander;
+    impl TypeExpander for NoopExpander {
+      fn expand(&self, _store: &TypeStore, _def: hir_js::DefId, _args: &[TypeId]) -> Option<ExpandedType> {
+        None
+      }
+    }
+
+    let expander = NoopExpander;
+    let mut evaluator = TypeEvaluator::new(Arc::clone(&store), &expander);
+
+    // Expand through user-defined type aliases, but preserve nominal `Ref` nodes
+    // for classes/interfaces like `Map` and `Promise` (needed for typed API resolution).
+    const MAX_ALIAS_EXPANSION_DEPTH: usize = 16;
+    for _ in 0..MAX_ALIAS_EXPANSION_DEPTH {
+      let TypeKind::Ref { def, args } = store.type_kind(ty) else {
+        break;
+      };
+      let Some(typecheck_ts::DefKind::TypeAlias(_)) = self.program.def_kind(def) else {
+        break;
+      };
+
+      // Fetch the alias's type parameter IDs in the same order as the ref arguments.
+      let mut params = Vec::<TypeParamId>::new();
+      if let TypeKind::Ref { args: param_types, .. } = store.type_kind(self.program.type_of_def_interned(def))
+      {
+        for param_ty in param_types {
+          if let TypeKind::TypeParam(param) = store.type_kind(param_ty) {
+            params.push(param);
+          }
+        }
+      }
+
+      let declared = self.program.declared_type_of_def_interned(def);
+      let bindings = params.into_iter().zip(args.iter().copied());
+      let evaluated = store.canon(evaluator.evaluate_with_bindings(declared, bindings));
+      if evaluated == ty {
+        break;
+      }
+      ty = evaluated;
+    }
+
     Some(summarize_kind_raw(&store, ty))
   }
 
   fn def_name(&self, def: typecheck_ts::DefId) -> Option<String> {
     self.program.def_name(def)
   }
+
+  fn display_type(&self, ty: TypeId) -> Option<String> {
+    Some(self.program.display_type(ty).to_string())
+  }
+
+  fn expr_is_array(&self, body: BodyId, expr: ExprId) -> bool {
+    let Some(ty) = self.expr_type(body, expr) else {
+      return false;
+    };
+
+    if matches!(
+      self.type_kind(ty),
+      Some(TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. })
+    ) {
+      return true;
+    }
+
+    // Avoid guessing for union-like or unknown types.
+    if matches!(
+      self.type_kind(ty),
+      Some(
+        TypeKindSummary::Any
+          | TypeKindSummary::Unknown
+          | TypeKindSummary::Never
+          | TypeKindSummary::Union { .. }
+          | TypeKindSummary::Intersection { .. }
+      )
+    ) {
+      return false;
+    }
+
+    let Some(display) = self.display_type(ty) else {
+      return false;
+    };
+    let display = display.trim_start();
+
+    // `T[]` / `readonly T[]`.
+    if display.ends_with("[]") {
+      return true;
+    }
+
+    // `Array<T>` / `ReadonlyArray<T>`.
+    display.starts_with("Array<") || display.starts_with("ReadonlyArray<")
+  }
 }
 
-fn summarize_kind_raw(store: &types_ts_interned::TypeStore, ty: TypeId) -> TypeKindSummary {
+fn summarize_kind_raw(store: &TypeStore, ty: TypeId) -> TypeKindSummary {
   match store.type_kind(ty) {
     TypeKind::Any => TypeKindSummary::Any,
     TypeKind::Unknown => TypeKindSummary::Unknown,
