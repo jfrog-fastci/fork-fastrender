@@ -51,3 +51,17 @@ frame-pointer requirement, we would need to move to unwinding-based stack walkin
   stack map records.
 
 Until then, **frame pointers + no tail calls** are treated as a hard invariant.
+
+## Register-located roots
+
+LLVM stackmaps can describe live values as either:
+
+- addressable stack slots (`Indirect [SP/FP + off]`), or
+- registers (`Register R#N`, encoded as DWARF register numbers).
+
+While LLVM statepoint output *often* spills GC roots to stack slots (so they can be addressed and
+rewritten easily), register locations are legal in the stackmap format and can appear depending on
+LLVM version, optimization level, or different stackmap users (e.g. patchpoints).
+
+For completeness, the runtime must support rewriting **register-located** GC roots when resuming a
+stopped thread (e.g. via Linux `ucontext_t` in signal-based stop-the-world).

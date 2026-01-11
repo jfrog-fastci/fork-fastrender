@@ -109,8 +109,11 @@ const MAX_FRAMES: usize = 100_000;
 ///   - LLVM: `disable-tail-calls="true"`
 /// - The stack grows downwards and FP values increase as we walk toward older
 ///   callers (Linux x86_64/AArch64).
-/// - GC roots are described by LLVM stackmaps statepoints as spilled stack slots
-///   (i.e. `Indirect [SP + off]`).
+/// - In practice, LLVM statepoints *often* spill GC roots into addressable stack
+///   slots (`Indirect [SP + off]`). However, the stackmap format also supports
+///   register locations (`Register R#N`), which require rewriting the stopped
+///   thread's register file when resuming (see `statepoints::RootSlot` and the
+///   `stackmap-context` crate).
 /// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`)
 ///   are currently **rejected**. Codegen should ensure interior pointers are not
 ///   live across statepoints.

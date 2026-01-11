@@ -25,4 +25,9 @@ impl ThreadContext {
   pub unsafe fn from_ucontext(_uc: *const libc::ucontext_t) -> ThreadContext {
     ThreadContext
   }
+
+  #[cfg(target_os = "linux")]
+  pub unsafe fn write_to_ucontext(&self, _uc: *mut libc::ucontext_t) {
+    // No-op: unsupported target.
+  }
 }

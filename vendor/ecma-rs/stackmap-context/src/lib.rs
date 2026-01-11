@@ -9,6 +9,10 @@
 //! - [`StackMapLocation`], a tiny evaluator for `Register(regno)` and
 //!   `Indirect { base_reg, offset }` locations.
 //!
+//! When a thread is paused via signals (Linux `ucontext_t`), the captured
+//! [`ThreadContext`] can be written back with `ThreadContext::write_to_ucontext`
+//! so register updates are applied before resuming the thread.
+//!
 //! # Supported DWARF register numbers
 //!
 //! ## `x86_64` (System V)

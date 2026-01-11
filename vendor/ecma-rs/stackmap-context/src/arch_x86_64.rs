@@ -105,12 +105,42 @@ impl ThreadContext {
       rip: gregs[libc::REG_RIP as usize] as u64,
     }
   }
+
+  /// Writes this [`ThreadContext`] back into a Linux `ucontext_t`.
+  ///
+  /// This is required when a runtime (or test) wants to **rewrite registers** for a
+  /// stopped thread (e.g. updating register-located GC roots) before resuming
+  /// execution from a signal handler.
+  #[cfg(target_os = "linux")]
+  pub unsafe fn write_to_ucontext(&self, uc: *mut libc::ucontext_t) {
+    debug_assert!(!uc.is_null());
+    let gregs = &mut (*uc).uc_mcontext.gregs;
+
+    gregs[libc::REG_R8 as usize] = self.r8 as libc::greg_t;
+    gregs[libc::REG_R9 as usize] = self.r9 as libc::greg_t;
+    gregs[libc::REG_R10 as usize] = self.r10 as libc::greg_t;
+    gregs[libc::REG_R11 as usize] = self.r11 as libc::greg_t;
+    gregs[libc::REG_R12 as usize] = self.r12 as libc::greg_t;
+    gregs[libc::REG_R13 as usize] = self.r13 as libc::greg_t;
+    gregs[libc::REG_R14 as usize] = self.r14 as libc::greg_t;
+    gregs[libc::REG_R15 as usize] = self.r15 as libc::greg_t;
+    gregs[libc::REG_RDI as usize] = self.rdi as libc::greg_t;
+    gregs[libc::REG_RSI as usize] = self.rsi as libc::greg_t;
+    gregs[libc::REG_RBP as usize] = self.rbp as libc::greg_t;
+    gregs[libc::REG_RBX as usize] = self.rbx as libc::greg_t;
+    gregs[libc::REG_RDX as usize] = self.rdx as libc::greg_t;
+    gregs[libc::REG_RAX as usize] = self.rax as libc::greg_t;
+    gregs[libc::REG_RCX as usize] = self.rcx as libc::greg_t;
+    gregs[libc::REG_RSP as usize] = self.rsp as libc::greg_t;
+    gregs[libc::REG_RIP as usize] = self.rip as libc::greg_t;
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::ThreadContext;
   use crate::context::UnsupportedDwarfRegister;
+  use core::mem::MaybeUninit;
 
   #[test]
   fn dwarf_register_mapping_round_trips() {
@@ -166,5 +196,24 @@ mod tests {
       ctx.set_dwarf_reg_u64(999, 0),
       Err(UnsupportedDwarfRegister(999))
     );
+  }
+
+  #[test]
+  #[cfg(target_os = "linux")]
+  fn write_to_ucontext_updates_gregs() {
+    unsafe {
+      let mut uc = MaybeUninit::<libc::ucontext_t>::uninit();
+      assert_eq!(libc::getcontext(uc.as_mut_ptr()), 0);
+      let mut uc = uc.assume_init();
+
+      let mut ctx = ThreadContext::from_ucontext(&uc);
+      ctx.rax = 0xdead_beef;
+      ctx.rdi = 0xfeed_face;
+      ctx.write_to_ucontext(&mut uc);
+
+      let ctx2 = ThreadContext::from_ucontext(&uc);
+      assert_eq!(ctx2.rax, 0xdead_beef);
+      assert_eq!(ctx2.rdi, 0xfeed_face);
+    }
   }
 }

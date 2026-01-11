@@ -1,6 +1,6 @@
 use runtime_native::stackmaps::{Location, StackMap, StackMapRecord};
 use runtime_native::statepoints::{
-  eval_location, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
+  eval_location, LocationValue, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
   LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 
@@ -82,7 +82,7 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
   };
   let slot = eval_location(first_base, &regs).unwrap();
   match slot {
-    RootSlot::Stack { addr } => {
+    LocationValue::Slot(RootSlot::StackAddr(addr)) => {
       let expected = (0x1000i128 + offset as i128) as u64;
       assert_eq!(addr as usize as u64, expected);
     }
@@ -118,7 +118,7 @@ fn eval_direct_location_is_immediate_value() {
     regs: [(X86_64_DWARF_REG_FP, 0x1000)].into_iter().collect(),
   };
   let slot = eval_location(&loc, &regs).unwrap();
-  assert_eq!(slot, RootSlot::Const { value: 0x0ff8 });
+  assert_eq!(slot, LocationValue::Const { value: 0x0ff8 });
 }
 
 #[test]

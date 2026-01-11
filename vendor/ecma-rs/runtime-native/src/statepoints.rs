@@ -14,6 +14,7 @@
 //! catch regressions if LLVM changes its encoding.
 
 use crate::stackmaps::{Location, StackMapRecord};
+use stackmap_context::ThreadContext;
 use thiserror::Error;
 
 pub const LLVM18_STATEPOINT_HEADER_CONSTANTS: usize = 3;
@@ -99,17 +100,48 @@ pub trait RegFile {
   fn get(&self, dwarf_reg: u16) -> Option<u64>;
 }
 
+impl RegFile for ThreadContext {
+  fn get(&self, dwarf_reg: u16) -> Option<u64> {
+    self.get_dwarf_reg_u64(dwarf_reg)
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootSlot {
   /// An addressable stack slot containing the pointer value.
-  Stack { addr: *mut u8 },
-  /// The pointer value lives in a register (rare in observed statepoint output).
-  Register { dwarf_reg: u16 },
-  /// A non-addressable value (constant or computed).
+  StackAddr(*mut u8),
+  /// The pointer value lives in a register.
+  Reg { dwarf_reg: u16 },
+}
+
+impl RootSlot {
+  pub fn read_u64(&self, ctx: &ThreadContext) -> u64 {
+    match *self {
+      RootSlot::StackAddr(addr) => unsafe { (addr as *const u64).read_unaligned() },
+      RootSlot::Reg { dwarf_reg } => ctx.get_dwarf_reg_u64(dwarf_reg).unwrap_or_else(|| {
+        panic!("missing DWARF register {dwarf_reg} in ThreadContext when reading RootSlot")
+      }),
+    }
+  }
+
+  pub fn write_u64(&self, ctx: &mut ThreadContext, val: u64) {
+    match *self {
+      RootSlot::StackAddr(addr) => unsafe { (addr as *mut u64).write_unaligned(val) },
+      RootSlot::Reg { dwarf_reg } => {
+        ctx.set_dwarf_reg_u64(dwarf_reg, val)
+          .unwrap_or_else(|err| panic!("failed to write DWARF register {dwarf_reg}: {err}"))
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationValue {
+  Slot(RootSlot),
   Const { value: u64 },
 }
 
-pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<RootSlot, StatepointError> {
+pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<LocationValue, StatepointError> {
   match *loc {
     Location::Indirect {
       dwarf_reg, offset, ..
@@ -124,13 +156,13 @@ pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<RootSlot, St
       // pointer value lives). A `Direct` value is not an addressable root slot, so we surface it as
       // an immediate value.
       let value = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
-      Ok(RootSlot::Const { value })
+      Ok(LocationValue::Const { value })
     }
 
-    Location::Register { dwarf_reg, .. } => Ok(RootSlot::Register { dwarf_reg }),
+    Location::Register { dwarf_reg, .. } => Ok(LocationValue::Slot(RootSlot::Reg { dwarf_reg })),
 
-    Location::Constant { value, .. } => Ok(RootSlot::Const { value }),
-    Location::ConstIndex { value, .. } => Ok(RootSlot::Const { value }),
+    Location::Constant { value, .. } => Ok(LocationValue::Const { value }),
+    Location::ConstIndex { value, .. } => Ok(LocationValue::Const { value }),
   }
 }
 
@@ -138,11 +170,9 @@ fn eval_stack_indirect(
   dwarf_reg: u16,
   offset: i32,
   regs: &impl RegFile,
-) -> Result<RootSlot, StatepointError> {
+) -> Result<LocationValue, StatepointError> {
   let addr = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
-  Ok(RootSlot::Stack {
-    addr: addr as *mut u8,
-  })
+  Ok(LocationValue::Slot(RootSlot::StackAddr(addr as *mut u8)))
 }
 
 fn eval_reg_plus_offset(
@@ -159,4 +189,38 @@ fn eval_reg_plus_offset(
     return Err(StatepointError::AddressOverflow { base, offset });
   }
   Ok(addr as u64)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{RootSlot, ThreadContext};
+
+  #[test]
+  fn root_slot_stack_addr_read_write_u64() {
+    let mut slot: u64 = 0x1111_2222_3333_4444;
+    let slot_addr = (&mut slot as *mut u64).cast::<u8>();
+    let root = RootSlot::StackAddr(slot_addr);
+    let mut ctx = ThreadContext::default();
+
+    assert_eq!(root.read_u64(&ctx), 0x1111_2222_3333_4444);
+
+    root.write_u64(&mut ctx, 0xaaaa_bbbb_cccc_dddd);
+    assert_eq!(slot, 0xaaaa_bbbb_cccc_dddd);
+  }
+
+  #[test]
+  fn root_slot_register_read_write_u64() {
+    let mut ctx = ThreadContext::default();
+    // DWARF reg 0 is X86_64 RAX / AArch64 X0.
+    ctx.set_dwarf_reg_u64(0, 0x1234_5678_9abc_def0).unwrap();
+
+    let root = RootSlot::Reg { dwarf_reg: 0 };
+    assert_eq!(root.read_u64(&ctx), 0x1234_5678_9abc_def0);
+
+    root.write_u64(&mut ctx, 0x0fed_cba9_8765_4321);
+    assert_eq!(
+      ctx.get_dwarf_reg_u64(0).unwrap(),
+      0x0fed_cba9_8765_4321
+    );
+  }
 }

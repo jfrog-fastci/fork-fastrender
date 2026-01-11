@@ -7,6 +7,9 @@ repository.workspace = true
 publish = false
 build = "build.rs"
 
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
 [features]
 # Enables parsing the in-memory `.llvm_stackmaps` section via the native-js
 # exported boundary symbols:
@@ -26,9 +29,6 @@ gc_stats = []
 gc_debug = []
 rt-trace = []
 
-[lib]
-crate-type = ["rlib", "staticlib", "cdylib"]
-
 [dependencies]
 ahash = { workspace = true }
 arc-swap = { workspace = true }
@@ -38,6 +38,7 @@ crossbeam-utils = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+stackmap-context = { path = "../stackmap-context" }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
 

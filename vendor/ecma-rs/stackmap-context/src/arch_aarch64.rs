@@ -57,12 +57,26 @@ impl ThreadContext {
       pc: mctx.pc,
     }
   }
+
+  /// Writes this [`ThreadContext`] back into a Linux `ucontext_t`.
+  ///
+  /// This is used when rewriting register-located stackmap roots while a thread
+  /// is stopped in a signal handler.
+  #[cfg(target_os = "linux")]
+  pub unsafe fn write_to_ucontext(&self, uc: *mut libc::ucontext_t) {
+    debug_assert!(!uc.is_null());
+    let mctx = &mut (*uc).uc_mcontext;
+    mctx.regs = self.x;
+    mctx.sp = self.sp;
+    mctx.pc = self.pc;
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
   use crate::context::UnsupportedDwarfRegister;
+  use core::mem::MaybeUninit;
 
   #[test]
   fn constants_match_abi() {
@@ -92,5 +106,24 @@ mod tests {
       ctx.set_dwarf_reg_u64(999, 0),
       Err(UnsupportedDwarfRegister(999))
     );
+  }
+
+  #[test]
+  #[cfg(target_os = "linux")]
+  fn write_to_ucontext_updates_mcontext() {
+    unsafe {
+      let mut uc = MaybeUninit::<libc::ucontext_t>::uninit();
+      assert_eq!(libc::getcontext(uc.as_mut_ptr()), 0);
+      let mut uc = uc.assume_init();
+
+      let mut ctx = ThreadContext::from_ucontext(&uc);
+      ctx.x[0] = 0xaaaa;
+      ctx.sp = 0x1111_2222_3333_4444;
+      ctx.write_to_ucontext(&mut uc);
+
+      let ctx2 = ThreadContext::from_ucontext(&uc);
+      assert_eq!(ctx2.x[0], 0xaaaa);
+      assert_eq!(ctx2.sp, 0x1111_2222_3333_4444);
+    }
   }
 }
