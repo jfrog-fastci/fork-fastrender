@@ -128,12 +128,19 @@ fi
 # that contains `__start_llvm_stackmaps` and ensure its PT_LOAD segment also contains `.dynamic`.
 segments="$(readelf -W -l "${out}")"
 start_hex="$(readelf -W -s "${out}" | awk '$8=="__start_llvm_stackmaps" { print $2; exit }')"
+stop_hex="$(readelf -W -s "${out}" | awk '$8=="__stop_llvm_stackmaps" { print $2; exit }')"
 if [[ -z "${start_hex}" ]]; then
   echo "error: missing __start_llvm_stackmaps in PIE output" >&2
   readelf -W -s "${out}" >&2 || true
   exit 1
 fi
+if [[ -z "${stop_hex}" ]]; then
+  echo "error: missing __stop_llvm_stackmaps in PIE output" >&2
+  readelf -W -s "${out}" >&2 || true
+  exit 1
+fi
 start_dec=$((16#${start_hex}))
+stop_dec=$((16#${stop_hex}))
 
 stackmaps_section=""
 while read -r name addr_hex size_hex; do
@@ -195,6 +202,28 @@ fi
 if [[ " ${stackmaps_seg_sections} " != *" .dynamic "* ]]; then
   echo "error: expected stackmaps section (${stackmaps_section}) PT_LOAD segment to also contain .dynamic" >&2
   echo "  segment sections: ${stackmaps_seg_sections}" >&2
+  echo "${segments}" >&2
+  exit 1
+fi
+
+# Ensure the stackmaps range is protected by RELRO (PT_GNU_RELRO), so the bytes become read-only
+# after dynamic relocations are applied.
+relro_ok=0
+while read -r relro_vaddr_hex relro_memsz_hex; do
+  relro_vaddr_hex="${relro_vaddr_hex#0x}"
+  relro_memsz_hex="${relro_memsz_hex#0x}"
+  relro_vaddr_dec=$((16#${relro_vaddr_hex}))
+  relro_memsz_dec=$((16#${relro_memsz_hex}))
+  relro_end_dec=$((relro_vaddr_dec + relro_memsz_dec))
+  if (( relro_vaddr_dec <= start_dec && stop_dec <= relro_end_dec )); then
+    relro_ok=1
+    break
+  fi
+done < <(printf '%s\n' "${segments}" | awk '$1=="GNU_RELRO" { print $3, $6 }')
+
+if [[ "${relro_ok}" -ne 1 ]]; then
+  echo "error: expected stackmaps range to be covered by PT_GNU_RELRO" >&2
+  echo "  stackmaps: start=0x${start_hex} stop=0x${stop_hex}" >&2
   echo "${segments}" >&2
   exit 1
 fi
