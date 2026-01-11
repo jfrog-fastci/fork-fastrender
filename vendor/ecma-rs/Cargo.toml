@@ -20,6 +20,7 @@ members = [
   "emit-js",
   "runtime-native",
   "vm-js",
+  "runtime-native",
   "runtime-js",
   "webidl",
   "webidl-vm-js",

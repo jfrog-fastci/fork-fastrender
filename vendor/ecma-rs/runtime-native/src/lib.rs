@@ -17,6 +17,7 @@ pub mod threading;
 pub mod async_rt;
 pub mod stackmaps;
 pub mod statepoints;
+pub mod stackwalk_fp;
 
 mod alloc;
 mod exports;
@@ -32,6 +33,8 @@ pub use gc::RememberedSet;
 pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
+pub use stackmaps::StackMaps;
+pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use string::*;
 
 use std::sync::OnceLock;

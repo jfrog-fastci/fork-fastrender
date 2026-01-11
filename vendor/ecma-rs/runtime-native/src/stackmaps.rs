@@ -2,10 +2,12 @@
 //!
 //! This module parses the raw section bytes emitted by LLVM for stackmaps (v3).
 //! It's intentionally small and self-contained so higher-level layers (like
-//! statepoint GC root decoding) can depend on it without needing to parse object
-//! files.
+//! statepoint GC root decoding and stack walking) can depend on it without
+//! needing to parse object files.
 //!
 //! Format reference: LLVM `StackMaps` / `StackMaps.cpp` (version 3).
+
+use std::collections::BTreeMap;
 
 use thiserror::Error;
 
@@ -22,6 +24,23 @@ pub enum StackMapError {
 
   #[error("ConstIndex location refers to constants[{index}], but constants.len()={constants_len}")]
   InvalidConstIndex { index: u32, constants_len: usize },
+
+  #[error("overflow while summing stackmap per-function record counts")]
+  RecordCountOverflow,
+
+  #[error("stackmap record count mismatch: functions expect {expected}, section has {actual}")]
+  RecordCountMismatch { expected: u64, actual: usize },
+
+  #[error("stackmap function record_count {record_count} does not fit in usize")]
+  RecordCountTooLarge { record_count: u64 },
+
+  #[error(
+    "callsite address overflow: function_address=0x{function_address:x} instruction_offset=0x{instruction_offset:x}"
+  )]
+  CallSiteAddressOverflow {
+    function_address: u64,
+    instruction_offset: u32,
+  },
 }
 
 pub const STACKMAP_VERSION: u8 = 3;
@@ -265,6 +284,107 @@ impl<'a> Cursor<'a> {
     out.copy_from_slice(&self.bytes[self.off..self.off + N]);
     self.off += N;
     Ok(out)
+  }
+}
+
+/// A parsed stackmap section with a callsite-address index.
+///
+/// This type is the "runtime-friendly" view for safepoint/GC stack walking.
+#[derive(Debug, Clone)]
+pub struct StackMaps {
+  raw: StackMap,
+  by_callsite: BTreeMap<u64, CallSiteEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CallSiteEntry {
+  stack_size: u64,
+  record_index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CallSite<'a> {
+  pub stack_size: u64,
+  pub record: &'a StackMapRecord,
+}
+
+impl StackMaps {
+  pub fn parse(section: &[u8]) -> Result<Self, StackMapError> {
+    let raw = StackMap::parse(section)?;
+
+    let mut expected: u64 = 0;
+    for f in &raw.functions {
+      expected = expected
+        .checked_add(f.record_count)
+        .ok_or(StackMapError::RecordCountOverflow)?;
+    }
+
+    if expected != raw.records.len() as u64 {
+      return Err(StackMapError::RecordCountMismatch {
+        expected,
+        actual: raw.records.len(),
+      });
+    }
+
+    let mut by_callsite = BTreeMap::new();
+    let mut record_index: usize = 0;
+    for f in &raw.functions {
+      let record_count = usize::try_from(f.record_count)
+        .map_err(|_| StackMapError::RecordCountTooLarge {
+          record_count: f.record_count,
+        })?;
+
+      for _ in 0..record_count {
+        let record = &raw.records[record_index];
+        let callsite = f
+          .address
+          .checked_add(record.instruction_offset as u64)
+          .ok_or(StackMapError::CallSiteAddressOverflow {
+            function_address: f.address,
+            instruction_offset: record.instruction_offset,
+          })?;
+
+        by_callsite.insert(
+          callsite,
+          CallSiteEntry {
+            stack_size: f.stack_size,
+            record_index,
+          },
+        );
+
+        record_index += 1;
+      }
+    }
+
+    Ok(Self { raw, by_callsite })
+  }
+
+  #[inline]
+  pub fn lookup(&self, callsite_return_addr: u64) -> Option<CallSite<'_>> {
+    let entry = self.by_callsite.get(&callsite_return_addr)?;
+    Some(CallSite {
+      stack_size: entry.stack_size,
+      record: &self.raw.records[entry.record_index],
+    })
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = (u64, CallSite<'_>)> + '_ {
+    self
+      .by_callsite
+      .iter()
+      .map(|(&addr, entry)| {
+        (
+          addr,
+          CallSite {
+            stack_size: entry.stack_size,
+            record: &self.raw.records[entry.record_index],
+          },
+        )
+      })
+  }
+
+  pub fn raw(&self) -> &StackMap {
+    &self.raw
   }
 }
 
