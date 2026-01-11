@@ -19,7 +19,7 @@ Today the repo contains:
 - **North-star design**: [`AGENTS.md`](./AGENTS.md) — authoritative architecture + implementation playbook.
 - **Current crate boundaries**: [`docs/architecture.md`](./docs/architecture.md) — what exists today and how the crates connect.
 - **Local setup for conformance + difftsc**: [`docs/quickstart.md`](./docs/quickstart.md) (also links into [`typecheck-ts-harness/README.md`](./typecheck-ts-harness/README.md)).
-- **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `cargo run` examples for the core crate APIs.
+- **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `bash scripts/cargo_agent.sh run` examples for the core crate APIs.
 - **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (CLI usage + current supported subset).
 - **Native runtime ABI**: [`docs/runtime-native.md`](./docs/runtime-native.md) and [`runtime-native/README.md`](./runtime-native/README.md).
 
@@ -46,7 +46,7 @@ This bootstraps submodules + `typecheck-ts-harness` npm deps, generates `Cargo.l
 This workspace intentionally does **not** commit `Cargo.lock` (it is gitignored). To run commands that match CI’s `--locked` behaviour, generate it first:
 
 ```bash
-cargo generate-lockfile
+bash scripts/cargo_agent.sh generate-lockfile
 ```
 
 If you have [`just`](https://github.com/casey/just) installed, the root `justfile` mirrors CI’s main checks:
@@ -75,13 +75,13 @@ bash scripts/cargo_agent.sh test -p effect-js --lib
 
 `just ci` runs:
 
-- `cargo fmt --all --check`
-- `./scripts/check_utf8_apis.sh`
-- `./scripts/check_diagnostic_codes.sh`
-- `cargo clippy --workspace --all-targets --all-features`
-- `cargo check --workspace --all-targets`
-- `cargo test --workspace`
-- `./scripts/gen_deps_graph.sh` (then verifies `docs/deps.md` is unchanged)
+- `bash scripts/cargo_agent.sh fmt --all --check`
+- `bash scripts/check_utf8_apis.sh`
+- `bash scripts/check_diagnostic_codes.sh`
+- `bash scripts/cargo_agent.sh clippy …` (sharded; see `clippy-*` recipes in `justfile`)
+- `bash scripts/cargo_agent.sh check …` (sharded; see `check-*` recipes in `justfile`)
+- `bash scripts/cargo_agent.sh test …` (sharded; see `test-*` recipes in `justfile`)
+- `bash scripts/gen_deps_graph.sh` (then verifies `docs/deps.md` is unchanged)
 
 ### Run the in-repo examples
 
@@ -89,8 +89,8 @@ The repository includes compiled examples demonstrating the public APIs of the
 core crates (especially `typecheck-ts`):
 
 ```bash
-cargo run -p typecheck-ts --example memory_host_basic
-cargo run -p typecheck-ts --example json_snapshot
+bash scripts/cargo_agent.sh run -p typecheck-ts --example memory_host_basic
+bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot
 ```
 
 See [`docs/examples.md`](./docs/examples.md) for the full list.
@@ -104,7 +104,7 @@ All tools treat input source as **UTF-8 text** (see [UTF-8 policy](#utf-8--sourc
 Reads from stdin and prints a JSON AST to stdout:
 
 ```bash
-echo 'let x = 1 + 2' | cargo run -p parse-js-cli --locked -- --timeout-secs 2 > ast.json
+echo 'let x = 1 + 2' | bash scripts/cargo_agent.sh run -p parse-js-cli --locked -- --timeout-secs 2 > ast.json
 ```
 
 #### Minifier CLI (`minify-js-cli`)
@@ -112,7 +112,7 @@ echo 'let x = 1 + 2' | cargo run -p parse-js-cli --locked -- --timeout-secs 2 > 
 Minifies a single file (or stdin) and writes to stdout:
 
 ```bash
-echo 'function add(a, b) { return a + b; }' | cargo run -p minify-js-cli --locked -- --mode global
+echo 'function add(a, b) { return a + b; }' | bash scripts/cargo_agent.sh run -p minify-js-cli --locked -- --mode global
 ```
 
 #### Typechecker CLI (`typecheck-ts-cli`)
@@ -120,16 +120,16 @@ echo 'function add(a, b) { return a + b; }' | cargo run -p minify-js-cli --locke
 Type-check a file:
 
 ```bash
-cargo run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts
 
 # Enforce additional strict-native checks (repo-specific; see EXEC.plan):
-cargo run -p typecheck-ts-cli --locked -- typecheck --strict-native fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck --strict-native fixtures/basic.ts
 ```
 
 Query types/symbols by **byte offset** (UTF-8):
 
 ```bash
-cargo run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts --type-at fixtures/basic.ts:0
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts --type-at fixtures/basic.ts:0
 ```
 
 #### Native LLVM CLIs (`native-js-cli` / `native-js`)
@@ -176,7 +176,7 @@ binaries, supported subsets, and flags.
 Run the small “conformance-mini” suite used by CI (no submodule checkout required):
 
 ```bash
-cargo run -p typecheck-ts-harness --release --locked -- \
+bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked -- \
   conformance \
   --root typecheck-ts-harness/fixtures/conformance-mini \
   --compare snapshot \
@@ -187,7 +187,7 @@ cargo run -p typecheck-ts-harness --release --locked -- \
 Run `difftsc` against the stored baselines (no Node/`tsc` required):
 
 ```bash
-cargo run -p typecheck-ts-harness --release --locked -- \
+bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked -- \
   difftsc \
   --suite typecheck-ts-harness/fixtures/difftsc \
   --compare-rust \

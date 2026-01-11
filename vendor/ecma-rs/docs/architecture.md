@@ -58,7 +58,7 @@ flowchart TD
 
 ## Runnable examples
 
-See [`docs/examples.md`](./examples.md) for compiled `cargo run` examples that
+See [`docs/examples.md`](./examples.md) for compiled `bash scripts/cargo_agent.sh run` examples that
 demonstrate the public APIs of the core crates (especially `typecheck-ts`).
 
 ### diagnostics

@@ -15,10 +15,10 @@ lockfile:
   bash "{{justfile_directory()}}/scripts/cargo_agent.sh" generate-lockfile
 
 fmt:
-  cd "{{justfile_directory()}}" && cargo fmt --all --check
+  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" fmt --all --check
 
 fmt-fix:
-  cd "{{justfile_directory()}}" && cargo fmt --all
+  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" fmt --all
 
 fmt-js:
   cd "{{justfile_directory()}}" && npx --yes prettier@3.4.2 --check \

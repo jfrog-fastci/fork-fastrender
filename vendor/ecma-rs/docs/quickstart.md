@@ -46,7 +46,7 @@ just setup
 - Fetches the required git submodules (TypeScript + test262 data)
 - Installs npm dependencies for `typecheck-ts-harness` (`npm ci`)
 - Generates an untracked workspace `Cargo.lock`
-- Runs a small sanity check (`cargo check -p typecheck-ts-harness --locked`)
+- Runs a small sanity check (`bash scripts/cargo_agent.sh check -p typecheck-ts-harness --locked`)
 - Verifies the pinned `typescript` npm package is usable
 
 ## 0) Generate a lockfile (Cargo.lock is untracked)
@@ -54,7 +54,7 @@ just setup
 CI generates `Cargo.lock` on the fly and then uses `--locked` for reproducible resolution. Locally:
 
 ```bash
-cargo generate-lockfile
+bash scripts/cargo_agent.sh generate-lockfile
 ```
 
 (Or `just lockfile` if you have `just` installed.)
@@ -78,8 +78,8 @@ core crates. See [`docs/examples.md`](./examples.md) for the full list.
 TypeScript checker examples:
 
 ```bash
-cargo run -p typecheck-ts --example memory_host_basic
-cargo run -p typecheck-ts --example json_snapshot
+bash scripts/cargo_agent.sh run -p typecheck-ts --example memory_host_basic
+bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot
 ```
 
 ## 3) Optional submodules (TypeScript + test262)
@@ -102,7 +102,7 @@ This matches the GitHub Actions `test262-parser` job:
 
 ```bash
 mkdir -p reports
-cargo run -p test262 --release --locked -- \
+bash scripts/cargo_agent.sh run -p test262 --release --locked -- \
   --data-dir test262/data \
   --manifest test262/manifest.toml \
   --report-path reports/test262-parser-report.json \
@@ -129,7 +129,7 @@ cd typecheck-ts-harness && npm ci
 Then run a shard of conformance tests (this is similar to `.github/workflows/nightly.yaml`):
 
 ```bash
-cargo run -p typecheck-ts-harness --release --locked -- \
+bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked -- \
   conformance \
   --root parse-js/tests/TypeScript/tests/cases/conformance \
   --shard 0/16 \

@@ -3,19 +3,19 @@
 The workspace ships a small set of compiled examples intended for copy/paste
 setups in downstream tools. They avoid filesystem I/O by using in-memory hosts
 and produce deterministic output (stable ordering of diagnostics and queries).
-These examples are compiled by CI via `cargo check --workspace --all-targets`.
+These examples are compiled by CI via the `justfile`'s scoped `check-*` recipes.
 
 Note: this workspace intentionally does not commit `Cargo.lock`. If you want to
 run the examples with `--locked` (matching CI), generate it first:
 
 ```bash
-cargo generate-lockfile
+bash scripts/cargo_agent.sh generate-lockfile
 ```
 
 ## `diagnostics`
 
 ```bash
-cargo run -p diagnostics --example diagnostics_basic
+bash scripts/cargo_agent.sh run -p diagnostics --example diagnostics_basic
 ```
 
 This example builds a `Diagnostic` and renders it with caret highlighting using
@@ -24,7 +24,7 @@ This example builds a `Diagnostic` and renders it with caret highlighting using
 ## `parse-js`
 
 ```bash
-cargo run -p parse-js --example parse_js_basic
+bash scripts/cargo_agent.sh run -p parse-js --example parse_js_basic
 ```
 
 This example parses a small TypeScript module with explicit `ParseOptions` and
@@ -33,8 +33,8 @@ prints a couple of basic stats.
 ## `typecheck-ts`
 
 ```bash
-cargo run -p typecheck-ts --example memory_host_basic
-cargo run -p typecheck-ts --example json_snapshot
+bash scripts/cargo_agent.sh run -p typecheck-ts --example memory_host_basic
+bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot
 ```
 
 - `memory_host_basic` demonstrates `MemoryHost`, deterministic module resolution,
@@ -44,13 +44,13 @@ cargo run -p typecheck-ts --example json_snapshot
   can be redirected to a file for snapshot tests:
 
   ```bash
-  cargo run -p typecheck-ts --example json_snapshot > snapshot.json
+  bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot > snapshot.json
   ```
 
 ## `types-ts-interned`
 
 ```bash
-cargo run -p types-ts-interned --example types_ts_interned_basic
+bash scripts/cargo_agent.sh run -p types-ts-interned --example types_ts_interned_basic
 ```
 
 This example builds a few interned types (`{ x: number }`, union types, callable
@@ -60,7 +60,7 @@ via `RelateCtx`.
 ## `hir-js`
 
 ```bash
-cargo run -p hir-js --example basic_lowering
+bash scripts/cargo_agent.sh run -p hir-js --example basic_lowering
 ```
 
 This example parses+lowers a small TypeScript snippet and shows how to use
@@ -69,7 +69,7 @@ This example parses+lowers a small TypeScript snippet and shows how to use
 ## `semantic-js` (JS mode)
 
 ```bash
-cargo run -p semantic-js --example js_mode_basic
+bash scripts/cargo_agent.sh run -p semantic-js --example js_mode_basic
 ```
 
 This example binds+resolves a small JavaScript snippet in-memory and prints the
@@ -78,7 +78,7 @@ top-level symbols plus identifier resolutions.
 ## `emit-js`
 
 ```bash
-cargo run -p emit-js --example emit_js_basic
+bash scripts/cargo_agent.sh run -p emit-js --example emit_js_basic
 ```
 
 This example parses a small TypeScript snippet with `parse-js` and prints the
@@ -87,7 +87,7 @@ minified emitted output.
 ## `optimize-js`
 
 ```bash
-cargo run -p optimize-js --example optimize_js_basic
+bash scripts/cargo_agent.sh run -p optimize-js --example optimize_js_basic
 ```
 
 This example compiles a small JS snippet to SSA, runs the optimizer, and
@@ -96,7 +96,7 @@ decompiles the result back to emitted JavaScript.
 ## `minify-js`
 
 ```bash
-cargo run -p minify-js --example minify_js_basic
+bash scripts/cargo_agent.sh run -p minify-js --example minify_js_basic
 ```
 
 This example minifies a small TypeScript snippet and prints the emitted
