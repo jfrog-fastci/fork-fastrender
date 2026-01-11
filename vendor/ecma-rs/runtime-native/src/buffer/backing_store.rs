@@ -38,7 +38,12 @@ pub enum BackingStoreDetachError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorrowError {
-  /// Backing store is currently borrowed by an in-flight I/O operation.
+  /// Backing store is currently borrowed.
+  ///
+  /// This includes:
+  /// - in-flight async I/O borrows (kernel reads/writes), and
+  /// - scoped borrows held by `try_with_slice` / `try_with_slice_mut` while a safe Rust slice
+  ///   reference is live.
   Borrowed,
   /// Shared read-borrow count overflowed.
   ReadBorrowOverflow,
@@ -69,7 +74,7 @@ struct BackingStoreInner {
   /// Number of live `BackingStore` handles (including any in-flight pin guards).
   ref_count: AtomicUsize,
 
-  /// In-flight async I/O borrow state.
+  /// Backing store borrow state (async I/O + scoped safe slice access).
   ///
   /// See `docs/runtime-native/buffers-and-io.md` ("Exclusive-borrow semantics for in-flight async I/O").
   borrow_state: AtomicU32,
@@ -238,6 +243,9 @@ impl BackingStore {
   /// returning the `&[u8]` and holding it beyond the callback, which would allow aliasing across
   /// in-flight async I/O borrows.
   ///
+  /// This method also acquires a scoped borrow for the duration of the callback, so new async I/O
+  /// borrows cannot start while the safe slice reference is live.
+  ///
   /// ```compile_fail
   /// # use runtime_native::ArrayBuffer;
   /// let buf = ArrayBuffer::new_zeroed(1).unwrap();
@@ -256,6 +264,10 @@ impl BackingStore {
   ///
   /// Like [`Self::try_with_slice`], the callback is generic over the slice lifetime to prevent
   /// leaking a `&mut [u8]` beyond the call.
+  ///
+  /// Like [`Self::try_with_slice`], this also acquires a scoped borrow for the duration of the
+  /// callback, preventing new async I/O borrows from starting while the safe `&mut [u8]` reference
+  /// is live.
   ///
   /// This additionally requires the backing store to be uniquely owned (`ref_count == 1`), since
   /// creating a `&mut [u8]` while other handles exist would violate Rust aliasing rules.

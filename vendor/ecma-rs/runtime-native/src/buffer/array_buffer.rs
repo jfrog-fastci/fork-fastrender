@@ -164,6 +164,9 @@ impl ArrayBuffer {
   /// The callback is generic over the slice lifetime (`for<'a>`), so callers cannot return the
   /// `&[u8]` and hold it beyond the call.
   ///
+  /// The backing store is also scoped-borrowed for the duration of the callback, so async I/O
+  /// borrows cannot start while the safe slice reference is live.
+  ///
   /// ```compile_fail
   /// # use runtime_native::ArrayBuffer;
   /// let buf = ArrayBuffer::new_zeroed(1).unwrap();
@@ -180,6 +183,9 @@ impl ArrayBuffer {
   ///
   /// Like [`Self::try_with_slice`], the callback is generic over the slice lifetime so the
   /// `&mut [u8]` cannot escape.
+  ///
+  /// Like [`Self::try_with_slice`], this also blocks async I/O borrows for the duration of the
+  /// callback.
   ///
   /// This additionally requires the backing store to be uniquely owned (no other [`BackingStore`]
   /// handles exist). If the backing store is shared, this returns `BorrowError::NotUnique`.
