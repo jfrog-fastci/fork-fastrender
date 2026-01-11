@@ -1,4 +1,4 @@
-use crate::dom::{ShadowRootMode, HTML_NAMESPACE};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 
 use super::{Document, NodeId, NodeKind};
 
@@ -19,6 +19,16 @@ fn node_is_template_element(kind: &NodeKind) -> bool {
 
 fn node_is_shadow_root(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::ShadowRoot { .. })
+}
+
+fn node_is_valid_shadow_host(kind: &NodeKind) -> bool {
+  match kind {
+    NodeKind::Element {
+      tag_name, namespace, ..
+    } => is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+    NodeKind::Slot { namespace, .. } => is_html_namespace(namespace) && is_valid_shadow_host_name("slot"),
+    _ => false,
+  }
 }
 
 fn get_attribute<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -120,6 +130,7 @@ impl Document {
         let first_declarative_shadow_template =
           if node_is_element_like(&node.kind)
             && !node_is_template_element(&node.kind)
+            && node_is_valid_shadow_host(&node.kind)
             && !node.children.iter().any(|&child_id| {
               self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
             })
@@ -155,6 +166,8 @@ impl Document {
       let shadow_template = {
         let node = self.node(id);
         if !node_is_element_like(&node.kind) || node_is_template_element(&node.kind) {
+          None
+        } else if !node_is_valid_shadow_host(&node.kind) {
           None
         } else if node.children.iter().any(|&child_id| {
           self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
@@ -313,6 +326,56 @@ mod tests {
   }
 
   #[test]
+  fn attach_shadow_roots_requires_valid_shadow_host_name() {
+    let invalid =
+      "<!doctype html><a id=host><template shadowroot=open><span>shadow</span></template></a>";
+    let expected = crate::dom::parse_html(invalid).unwrap();
+    let doc = crate::dom2::parse_html(invalid).unwrap();
+    let host = find_node_by_id(&doc, "host").expect("host element not found");
+    let host_children = doc.node(host).children.clone();
+    assert!(
+      host_children
+        .iter()
+        .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+      "invalid shadow host names must not have declarative shadow roots attached"
+    );
+    assert!(
+      host_children
+        .iter()
+        .any(|&child| node_is_template_element(&doc.node(child).kind)),
+      "declarative shadow templates on invalid hosts should remain in the light DOM"
+    );
+    let roundtrip = doc.to_renderer_dom();
+    assert_eq!(
+      snapshot_dom(&expected),
+      snapshot_dom(&roundtrip),
+      "dom2 shadow attachment should match crate::dom::parse_html snapshot"
+    );
+
+    let custom_element_host = "<!doctype html><x-host id=host><template shadowroot=open><span>shadow</span></template></x-host>";
+    let expected = crate::dom::parse_html(custom_element_host).unwrap();
+    let doc = crate::dom2::parse_html(custom_element_host).unwrap();
+    let host = find_node_by_id(&doc, "host").expect("custom element host not found");
+    let host_children = doc.node(host).children.clone();
+    assert!(
+      matches!(doc.node(host_children[0]).kind, NodeKind::ShadowRoot { .. }),
+      "valid custom element names should be treated as valid shadow hosts"
+    );
+    assert!(
+      host_children
+        .iter()
+        .all(|&child| !node_is_template_element(&doc.node(child).kind)),
+      "shadowroot template should be promoted to a shadow root on valid hosts"
+    );
+    let roundtrip = doc.to_renderer_dom();
+    assert_eq!(
+      snapshot_dom(&expected),
+      snapshot_dom(&roundtrip),
+      "dom2 shadow attachment should match crate::dom::parse_html snapshot"
+    );
+  }
+
+  #[test]
   fn attach_shadow_roots_ignores_detached_shadow_templates() {
     // Declarative shadow DOM should only consider children that are actually connected to their
     // parent via the `parent` pointer. If a tree is partially detached (stale entry in `children`
@@ -374,4 +437,3 @@ mod tests {
     );
   }
 }
-

@@ -462,6 +462,37 @@ pub(crate) fn is_valid_custom_element_name(name: &str) -> bool {
   has_hyphen
 }
 
+/// Returns true if `local_name` is a [valid shadow host name] per DOM.
+///
+/// [valid shadow host name]: https://dom.spec.whatwg.org/#valid-shadow-host-name
+pub(crate) fn is_valid_shadow_host_name(local_name: &str) -> bool {
+  if is_valid_custom_element_name(local_name) {
+    return true;
+  }
+
+  matches!(
+    local_name,
+    "article"
+      | "aside"
+      | "blockquote"
+      | "body"
+      | "div"
+      | "footer"
+      | "h1"
+      | "h2"
+      | "h3"
+      | "h4"
+      | "h5"
+      | "h6"
+      | "header"
+      | "main"
+      | "nav"
+      | "p"
+      | "section"
+      | "span"
+  )
+}
+
 const SELECTOR_BLOOM_ASCII_LOWERCASE_STACK_BUF: usize = 64;
 
 #[inline]
@@ -2596,7 +2627,14 @@ fn attach_shadow_roots(node: &mut DomNode, deadline_counter: &mut usize) -> Resu
       // Declarative shadow DOM only promotes the first shadow root template child of a shadow host
       // element. Additional `<template shadowroot=...>` siblings must remain inert, so we skip
       // traversing into them here.
-      let first_declarative_shadow_template = if node.is_element() && !node.is_template_element() {
+      let first_declarative_shadow_template = if node.is_element()
+        && !node.is_template_element()
+        && !node.is_shadow_host()
+        && node_is_html_element(node)
+        && node
+          .tag_name()
+          .is_some_and(|tag| is_valid_shadow_host_name(tag))
+      {
         node
           .children
           .iter()
@@ -2621,7 +2659,14 @@ fn attach_shadow_roots(node: &mut DomNode, deadline_counter: &mut usize) -> Resu
       continue;
     }
 
-    if !node.is_element() || node.is_template_element() {
+    if !node.is_element()
+      || node.is_template_element()
+      || node.is_shadow_host()
+      || !node_is_html_element(node)
+      || !node
+        .tag_name()
+        .is_some_and(|tag| is_valid_shadow_host_name(tag))
+    {
       continue;
     }
 
@@ -9865,6 +9910,39 @@ mod tests {
         .iter()
         .any(|child| child.get_attribute_ref("id") == Some("shadow")),
       "shadow root should include children from the declarative template"
+    );
+  }
+
+  #[test]
+  fn declarative_shadow_dom_requires_valid_shadow_host_name() {
+    let invalid = "<a id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></a>";
+    let dom = parse_html(invalid).expect("parse html");
+    let host = find_element_by_id(&dom, "host").expect("host element");
+    assert!(
+      host
+        .children
+        .iter()
+        .all(|child| !matches!(child.node_type, DomNodeType::ShadowRoot { .. })),
+      "invalid shadow host names must not have declarative shadow roots attached"
+    );
+    assert!(
+      host.children.iter().any(|child| child.is_template_element()),
+      "declarative shadow templates on invalid hosts should remain in the light DOM"
+    );
+
+    let custom_element_host = "<x-host id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></x-host>";
+    let dom = parse_html(custom_element_host).expect("parse html");
+    let host = find_element_by_id(&dom, "host").expect("custom element host");
+    assert!(
+      host
+        .children
+        .iter()
+        .any(|child| matches!(child.node_type, DomNodeType::ShadowRoot { .. })),
+      "valid custom element names should be treated as valid shadow hosts for declarative shadow DOM"
+    );
+    assert!(
+      host.children.iter().all(|child| !child.is_template_element()),
+      "shadowroot template should be promoted to a shadow root on valid hosts"
     );
   }
 
