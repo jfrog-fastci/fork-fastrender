@@ -7,6 +7,7 @@ members = [
   "bench/typecheck-ts",
   "native-js",
   "native-js-cli",
+  "stackmap",
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
@@ -66,6 +67,7 @@ runtime-js = { path = "runtime-js", version = "0.1.0" }
 runtime-native = { path = "runtime-native", version = "0.1.0" }
 webidl = { path = "webidl", version = "0.1.0" }
 webidl-vm-js = { path = "webidl-vm-js", version = "0.1.0" }
+stackmap = { path = "stackmap", version = "0.1.0" }
 
 # Shared third-party dependencies.
 ahash = "0.8.7"
