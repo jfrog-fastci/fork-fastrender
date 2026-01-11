@@ -168,7 +168,7 @@ Today the harness asserts that fixtures erase to JS and execute successfully in 
 
 #### Optional: enable the `optimize-js` TS→JS fallback
 
-If a fixture uses TS syntax that `emit-js`’s erasure emitter cannot handle yet, you can enable the heavier fallback:
+If a fixture uses TS syntax that the lightweight TS→JS erasure path (`ts-erase` + `emit-js`) cannot handle yet, you can enable the heavier fallback:
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --features optimize-js-fallback
@@ -176,7 +176,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --featu
 
 This switches the erasure step to:
 
-- try `emit-js` first, then
+- try `ts-erase` + `emit-js` first, then
 - compile + decompile via `optimize-js` when needed.
 
 ### Related native pipeline smoke tests (LLVM)
@@ -231,10 +231,10 @@ The current `native-oracle-harness` crate provides the TS → JS erasure step as
 It:
 
 1. Parses the input as TypeScript (`parse-js`, `Dialect::Ts`, `SourceType::Script`).
-2. Emits JavaScript using the `emit-js` “JS emitter” (`emit_js::emit_js_top_level`), which erases
-   supported TS-only syntax (e.g. `as` assertions, non-null assertions, `satisfies`, instantiation type args).
-3. Optionally falls back to `optimize-js` decompilation when built with the `optimize-js-fallback` feature.
-4. Executes the erased JS using `runtime-js` (which is built on `vm-js`).
+2. Erases TypeScript-only syntax using the shared `ts-erase` pipeline (`TsEraseMode::StrictNative`).
+3. Emits JavaScript using the `emit-js` “JS emitter” (`emit_js::emit_js_top_level`).
+4. Optionally falls back to `optimize-js` decompilation when built with the `optimize-js-fallback` feature.
+5. Executes the erased JS using `vm-js`.
 
 Today the harness test suite primarily asserts that fixtures:
 
@@ -258,7 +258,7 @@ Each file is a standalone **TypeScript script** (not a module) that should be er
 Guidelines for fixtures:
 
 - Keep them **deterministic**: avoid real time, randomness, networking, and filesystem access unless explicitly mocked.
-- Avoid host APIs: `runtime-js`/`vm-js` do not provide browser/Node globals like `console` by default.
+- Avoid host APIs: `vm-js` does not provide browser/Node globals like `console` by default.
 
 To add a new fixture:
 
