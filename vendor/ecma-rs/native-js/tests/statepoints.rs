@@ -129,7 +129,7 @@ fn gc_pointer_call_args_are_implicitly_in_gc_live() {
 
   let caller_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
   let caller = module.add_function("caller", caller_ty, None);
-  set_statepoint_example_gc(caller);
+  set_native_js_gc(caller);
 
   let entry = context.append_basic_block(caller, "entry");
   builder.position_at_end(entry);
