@@ -14,6 +14,8 @@ enum Ty {
   Number,
   Bool,
   String,
+  Null,
+  Undefined,
   Void,
 }
 
@@ -129,11 +131,9 @@ impl Codegen {
   fn emit_print_value(&mut self, value: Value) -> Result<(), CodegenError> {
     match value.ty {
       Ty::Number => {
-        let fmt = self.emit_string_ptr(b"%g\n");
-        self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, double {})",
-          value.ir
-        ));
+        self.emit_print_number_inline(&value.ir)?;
+        let empty = self.emit_string_ptr(b"");
+        self.emit(format!("  call i32 @puts(ptr {empty})"));
         Ok(())
       }
       Ty::Bool => {
@@ -151,6 +151,16 @@ impl Codegen {
         self.emit(format!("  call i32 @puts(ptr {})", value.ir));
         Ok(())
       }
+      Ty::Null => {
+        let null_ptr = self.emit_string_ptr(b"null");
+        self.emit(format!("  call i32 @puts(ptr {null_ptr})"));
+        Ok(())
+      }
+      Ty::Undefined => {
+        let undef_ptr = self.emit_string_ptr(b"undefined");
+        self.emit(format!("  call i32 @puts(ptr {undef_ptr})"));
+        Ok(())
+      }
       Ty::Void => Err(CodegenError::TypeError(
         "cannot print a void expression".to_string(),
       )),
@@ -160,12 +170,7 @@ impl Codegen {
   fn emit_print_value_inline(&mut self, value: Value) -> Result<(), CodegenError> {
     match value.ty {
       Ty::Number => {
-        let fmt = self.emit_string_ptr(b"%g");
-        self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, double {})",
-          value.ir
-        ));
-        Ok(())
+        self.emit_print_number_inline(&value.ir)
       }
       Ty::Bool => {
         let true_ptr = self.emit_string_ptr(b"true");
@@ -189,10 +194,109 @@ impl Codegen {
         ));
         Ok(())
       }
+      Ty::Null => {
+        let fmt = self.emit_string_ptr(b"%s");
+        let null_ptr = self.emit_string_ptr(b"null");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {null_ptr})"
+        ));
+        Ok(())
+      }
+      Ty::Undefined => {
+        let fmt = self.emit_string_ptr(b"%s");
+        let undef_ptr = self.emit_string_ptr(b"undefined");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {undef_ptr})"
+        ));
+        Ok(())
+      }
       Ty::Void => Err(CodegenError::TypeError(
         "cannot print a void expression".to_string(),
       )),
     }
+  }
+
+  fn emit_print_number_inline(&mut self, value_ir: &str) -> Result<(), CodegenError> {
+    let is_nan = self.tmp();
+    self.emit(format!(
+      "  {is_nan} = fcmp uno double {value_ir}, {value_ir}"
+    ));
+
+    let nan = self.fresh_block("print.nan");
+    let not_nan = self.fresh_block("print.not_nan");
+    self.emit(format!(
+      "  br i1 {is_nan}, label %{nan}, label %{not_nan}"
+    ));
+
+    let cont = self.fresh_block("print.num.cont");
+
+    self.emit(format!("{nan}:"));
+    {
+      let fmt = self.emit_string_ptr(b"%s");
+      let nan_ptr = self.emit_string_ptr(b"NaN");
+      self.emit(format!(
+        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {nan_ptr})"
+      ));
+      self.emit(format!("  br label %{cont}"));
+    }
+
+    self.emit(format!("{not_nan}:"));
+    let is_pos_inf = self.tmp();
+    self.emit(format!(
+      "  {is_pos_inf} = fcmp oeq double {value_ir}, {}",
+      f64_to_llvm_const(f64::INFINITY)
+    ));
+
+    let pos_inf = self.fresh_block("print.pos_inf");
+    let not_pos_inf = self.fresh_block("print.not_pos_inf");
+    self.emit(format!(
+      "  br i1 {is_pos_inf}, label %{pos_inf}, label %{not_pos_inf}"
+    ));
+
+    self.emit(format!("{pos_inf}:"));
+    {
+      let fmt = self.emit_string_ptr(b"%s");
+      let inf_ptr = self.emit_string_ptr(b"Infinity");
+      self.emit(format!(
+        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
+      ));
+      self.emit(format!("  br label %{cont}"));
+    }
+
+    self.emit(format!("{not_pos_inf}:"));
+    let is_neg_inf = self.tmp();
+    self.emit(format!(
+      "  {is_neg_inf} = fcmp oeq double {value_ir}, {}",
+      f64_to_llvm_const(f64::NEG_INFINITY)
+    ));
+
+    let neg_inf = self.fresh_block("print.neg_inf");
+    let finite = self.fresh_block("print.finite");
+    self.emit(format!(
+      "  br i1 {is_neg_inf}, label %{neg_inf}, label %{finite}"
+    ));
+
+    self.emit(format!("{neg_inf}:"));
+    {
+      let fmt = self.emit_string_ptr(b"%s");
+      let inf_ptr = self.emit_string_ptr(b"-Infinity");
+      self.emit(format!(
+        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
+      ));
+      self.emit(format!("  br label %{cont}"));
+    }
+
+    self.emit(format!("{finite}:"));
+    {
+      let fmt = self.emit_string_ptr(b"%g");
+      self.emit(format!(
+        "  call i32 (ptr, ...) @printf(ptr {fmt}, double {value_ir})"
+      ));
+      self.emit(format!("  br label %{cont}"));
+    }
+
+    self.emit(format!("{cont}:"));
+    Ok(())
   }
 
   fn emit_print_log_call(&mut self, args: &[Node<CallArg>]) -> Result<(), CodegenError> {
@@ -240,10 +344,29 @@ impl Codegen {
         ty: Ty::Bool,
         ir: if b.stx.value { "1" } else { "0" }.to_string(),
       }),
+      Expr::LitNull(_) => Ok(Value {
+        ty: Ty::Null,
+        ir: String::new(),
+      }),
       Expr::LitStr(s) => {
         let ptr = self.emit_string_ptr(s.stx.value.as_bytes());
         Ok(Value { ty: Ty::String, ir: ptr })
       }
+      Expr::Id(id) => match id.stx.name.as_str() {
+        "undefined" => Ok(Value {
+          ty: Ty::Undefined,
+          ir: String::new(),
+        }),
+        "NaN" => Ok(Value {
+          ty: Ty::Number,
+          ir: f64_to_llvm_const(f64::NAN),
+        }),
+        "Infinity" => Ok(Value {
+          ty: Ty::Number,
+          ir: f64_to_llvm_const(f64::INFINITY),
+        }),
+        _ => Err(CodegenError::UnsupportedExpr),
+      },
 
       Expr::Binary(bin) => {
         let left = self.compile_expr(&bin.stx.left)?;
@@ -285,9 +408,16 @@ impl Codegen {
                   left.ir, right.ir
                 ));
               }
+              Ty::Null | Ty::Undefined => {
+                // `null === null` and `undefined === undefined`.
+                return Ok(Value {
+                  ty: Ty::Bool,
+                  ir: "1".to_string(),
+                });
+              }
               _ => {
                 return Err(CodegenError::TypeError(
-                  "`===` currently only supports numbers and booleans".to_string(),
+                  "`===` currently only supports numbers, booleans, null, and undefined".to_string(),
                 ));
               }
             }

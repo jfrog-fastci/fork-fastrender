@@ -38,6 +38,21 @@ fn console_log_supports_multiple_args() {
 }
 
 #[test]
+fn console_log_prints_null_undefined_nan_and_infinity() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "console.log(null, undefined, NaN, Infinity);\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("null undefined NaN Infinity\n"));
+}
+
+#[test]
 fn print_alias_prints_booleans() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
