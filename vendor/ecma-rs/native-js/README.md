@@ -82,6 +82,9 @@ The API is intentionally small and currently consists of:
 - `CodeGen`: a minimal façade around `inkwell` that applies LLVM function
   attributes required for deterministic stack walking (used by the planned
   precise GC integration).
+- `strict::validate(...)`: strict TypeScript-subset validator that rejects
+  unsafe constructs (`any`, `eval`, type assertions, etc) even if the TypeScript
+  typechecker accepts them.
 - `Compiler`: entry point (configured with `CompileOptions`)
 - `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
   (currently unimplemented)
@@ -150,33 +153,39 @@ for the repo-wide policy).
 The intended place to define new native-js diagnostics is
 [`src/codes.rs`](./src/codes.rs).
 
-## Supported TypeScript subset (intended)
+## Strict TypeScript subset (`native_js::strict`)
 
-We compile a **strict subset** of TypeScript. The compiler is intended to error
-on constructs that TypeScript (`tsc`) would normally accept.
+`typecheck-ts` implements TypeScript’s semantics (including unsafe escape hatches
+like `any`, `eval`, and type assertions). The native pipeline is stricter, so
+`native-js` provides an additional validation pass:
 
-> Note: strict-mode validation is planned to live under `native_js::strict` and
-> is not implemented yet.
+```rust
+pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic>
+```
 
-### Rejected (hard errors)
+### Rejected constructs (enforced today)
 
-- `any` type (explicit or inferred)
-- Type assertions that “lie” (`x as T` where `x` is not `T`)
-- Non-null assertions on nullable values (`x!` where `x` might be `null`/`undefined`)
-- `eval()` / `new Function()`
-- `with` statement
-- `arguments` object
-- Prototype mutation after construction
-- Computed property access with non-constant keys (in strict paths)
-- `Proxy` (unsupported or heavily restricted)
+The validator emits hard errors with stable `NJS####` codes:
 
-### Restricted
+- `NJS0001`: `any` type (explicit or inferred)
+  - also covers exported `any` (e.g. `export function f(): any`)
+- `NJS0002`: type assertions (`x as T`, `<T>x`)
+- `NJS0003`: non-null assertions (`x!`)
+- `NJS0004`: `eval()`
+- `NJS0005`: `new Function()`
+- `NJS0006`: `with` statements
+- `NJS0007`: computed property access with non-literal keys
+  - only literal string/number keys are allowed (`obj["x"]`, `arr[0]`)
+- `NJS0008`: use of the `arguments` identifier/object
 
-- Union types: allowed, but lowered to tag-checked dispatch
-- `unknown`: allowed, but requires explicit narrowing before use
-- Dynamic property access: allowed only via slower paths (may warn)
+This list is expected to expand over time as the native backend’s supported
+subset grows.
 
-### Allowed (intended to work end-to-end)
+Everything else is currently accepted by the strict validator, but note that
+`native-js` codegen is still a skeleton and does not yet “support” any
+particular feature end-to-end.
+
+### Allowed (design target; codegen is still a skeleton)
 
 - Primitive types (`number`, `boolean`, `string`, `null`, `undefined`)
 - Interfaces, type aliases, generics
