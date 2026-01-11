@@ -6811,6 +6811,11 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_target(&self) -> bool {
+    // Template contents are inert and not part of the document tree for fragment navigation, so
+    // nodes inside a `<template>` must never match `:target`.
+    if self.all_ancestors.iter().any(|ancestor| ancestor.is_template_element()) {
+      return false;
+    }
     current_target_fragment()
       .as_deref()
       .map(|target| Self::node_matches_target(self.node, target))
@@ -6818,6 +6823,15 @@ impl<'a> ElementRef<'a> {
   }
 
   fn subtree_contains_target(&self, slot_map: Option<&SlotAssignmentMap<'_>>) -> bool {
+    // Template contents are inert and not part of the document tree for fragment navigation, so
+    // nodes inside a `<template>` must never match `:target-within`.
+    if self
+      .all_ancestors
+      .iter()
+      .any(|ancestor| ancestor.is_template_element())
+    {
+      return false;
+    }
     let Some(target) = current_target_fragment() else {
       return false;
     };
@@ -6849,7 +6863,7 @@ impl<'a> ElementRef<'a> {
         Self::push_assigned_slot_nodes(current, slot_map, visited.as_ref(), &mut stack);
 
       if !assigned_children_pushed {
-        for child in current.children.iter().rev() {
+        for child in current.traversal_children().iter().rev() {
           stack.push(child);
         }
       }
@@ -15884,6 +15898,36 @@ mod tests {
       assert!(
         !matches(&cafe_target, &[], &PseudoClass::Target),
         "expected fragment decoding to occur exactly once (double-encoded fragment must not match)"
+      );
+    });
+  }
+
+  #[test]
+  fn target_and_target_within_ignore_template_contents() {
+    let template = element(
+      "template",
+      vec![element_with_attrs("div", vec![("id", "section")], vec![])],
+    );
+    let root = element("body", vec![template]);
+    let template_ref = root.children.first().unwrap();
+    let inner_ref = template_ref.children.first().unwrap();
+
+    with_target_fragment(Some("#section"), || {
+      assert!(
+        !matches(inner_ref, &[&root, template_ref], &PseudoClass::Target),
+        "expected :target to ignore inert <template> contents"
+      );
+      assert!(
+        !matches(inner_ref, &[&root, template_ref], &PseudoClass::TargetWithin),
+        "expected :target-within to ignore inert <template> contents"
+      );
+      assert!(
+        !matches(template_ref, &[&root], &PseudoClass::TargetWithin),
+        "expected :target-within not to traverse into <template> contents"
+      );
+      assert!(
+        !matches(&root, &[], &PseudoClass::TargetWithin),
+        "expected :target-within not to traverse into <template> contents"
       );
     });
   }
