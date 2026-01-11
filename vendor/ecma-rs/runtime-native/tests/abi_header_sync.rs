@@ -30,6 +30,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_unregister_thread(",
     "rt_thread_attach(",
     "rt_thread_detach(",
+    "rt_keep_alive_gc_ref(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -86,6 +87,12 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
 
 #[test]
 fn runtime_native_exports_match_expected_abi_signatures() {
+  // KeepAlive is an exported C ABI symbol but not part of the Rust public API surface, so we bind
+  // it via an extern declaration here to ensure the signature stays in sync with the header.
+  extern "C" {
+    fn rt_keep_alive_gc_ref(gc_ref: *mut u8);
+  }
+
   // Thread registration.
   let _thread_init: extern "C" fn(u32) = runtime_native::rt_thread_init;
   let _thread_deinit: extern "C" fn() = runtime_native::rt_thread_deinit;
@@ -109,6 +116,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_write_barrier_range;
   let _backing_store_external_bytes: extern "C" fn() -> usize =
     runtime_native::rt_backing_store_external_bytes;
+  let _keep_alive: unsafe extern "C" fn(*mut u8) = rt_keep_alive_gc_ref;
 
   // Global root registration.
   let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 =
@@ -148,6 +156,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _write_barrier,
     _write_barrier_range,
     _backing_store_external_bytes,
+    _keep_alive,
     _register_root_slot,
     _unregister_root_slot,
     _pin,
