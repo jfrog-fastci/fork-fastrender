@@ -1,38 +1,39 @@
-use crate::analysis::dataflow::BlockState;
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
 use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
+use crate::analysis::loop_info::LoopInfo;
 use crate::cfg::cfg::Cfg;
 use crate::dom::Dom;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use ahash::{HashMap, HashSet};
-use num_traits::ToPrimitive;
 use parse_js::num::JsNumber;
 use std::cmp::Ordering;
- 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use std::fmt;
+use std::fmt::Formatter;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Bound {
   NegInf,
-  Finite(i64),
+  I64(i64),
   PosInf,
 }
- 
-impl Bound {
-  fn min(self, other: Self) -> Self {
-    if self <= other { self } else { other }
-  }
- 
-  fn max(self, other: Self) -> Self {
-    if self >= other { self } else { other }
+
+impl fmt::Debug for Bound {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      Bound::NegInf => write!(f, "-inf"),
+      Bound::PosInf => write!(f, "+inf"),
+      Bound::I64(n) => write!(f, "{n}"),
+    }
   }
 }
- 
+
 impl PartialOrd for Bound {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     Some(self.cmp(other))
   }
 }
- 
+
 impl Ord for Bound {
   fn cmp(&self, other: &Self) -> Ordering {
     use Bound::*;
@@ -43,569 +44,726 @@ impl Ord for Bound {
       (PosInf, PosInf) => Ordering::Equal,
       (PosInf, _) => Ordering::Greater,
       (_, PosInf) => Ordering::Less,
-      (Finite(a), Finite(b)) => a.cmp(b),
+      (I64(a), I64(b)) => a.cmp(b),
     }
   }
 }
- 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
+impl Bound {
+  fn min(self, other: Self) -> Self {
+    if self <= other { self } else { other }
+  }
+
+  fn max(self, other: Self) -> Self {
+    if self >= other { self } else { other }
+  }
+
+  fn checked_neg(self) -> Option<Self> {
+    match self {
+      Bound::NegInf => Some(Bound::PosInf),
+      Bound::PosInf => Some(Bound::NegInf),
+      Bound::I64(n) => Some(Bound::I64(n.checked_neg()?)),
+    }
+  }
+
+  fn as_i64(self) -> Option<i64> {
+    match self {
+      Bound::I64(v) => Some(v),
+      _ => None,
+    }
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum IntRange {
   Bottom,
-  Range { lo: Bound, hi: Bound },
+  Interval { lo: Bound, hi: Bound },
+  Unknown,
 }
- 
-impl IntRange {
-  pub fn top() -> Self {
-    Self::Range {
-      lo: Bound::NegInf,
-      hi: Bound::PosInf,
-    }
-  }
- 
-  pub fn const_(value: i64) -> Self {
-    Self::Range {
-      lo: Bound::Finite(value),
-      hi: Bound::Finite(value),
-    }
-  }
- 
-  fn new(lo: Bound, hi: Bound) -> Self {
-    if lo > hi {
-      Self::Bottom
-    } else {
-      Self::Range { lo, hi }
-    }
-  }
- 
-  pub fn union(self, other: Self) -> Self {
-    match (self, other) {
-      (Self::Bottom, x) | (x, Self::Bottom) => x,
-      (
-        Self::Range { lo: lo1, hi: hi1 },
-        Self::Range { lo: lo2, hi: hi2 },
-      ) => Self::Range {
-        lo: lo1.min(lo2),
-        hi: hi1.max(hi2),
-      },
-    }
-  }
- 
-  pub fn intersect(self, other: Self) -> Self {
-    match (self, other) {
-      (Self::Bottom, _) | (_, Self::Bottom) => Self::Bottom,
-      (
-        Self::Range { lo: lo1, hi: hi1 },
-        Self::Range { lo: lo2, hi: hi2 },
-      ) => Self::new(lo1.max(lo2), hi1.min(hi2)),
-    }
-  }
- 
-  /// Interval widening used to enforce convergence on loops.
-  ///
-  /// This is the classic interval widening:
-  ///
-  /// ```text
-  /// [a, b] ▽ [c, d] = [ if c < a then -∞ else a,
-  ///                    if d > b then +∞ else b ]
-  /// ```
-  pub fn widen(self, next: Self) -> Self {
-    match (self, next) {
-      (Self::Bottom, x) => x,
-      (x, Self::Bottom) => x,
-      (
-        Self::Range { lo: old_lo, hi: old_hi },
-        Self::Range { lo: new_lo, hi: new_hi },
-      ) => Self::Range {
-        lo: if new_lo < old_lo { Bound::NegInf } else { old_lo },
-        hi: if new_hi > old_hi { Bound::PosInf } else { old_hi },
-      },
-    }
-  }
-}
- 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub enum RangeState {
-  Unreachable,
-  Vars(
-    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
-    HashMap<u32, IntRange>,
-  ),
-}
- 
-impl RangeState {
-  /// Lookup used during analysis. Missing variables are treated as bottom so
-  /// that values from currently-unreachable predecessors don't pollute `Phi`
-  /// ranges (e.g. during the first loop iteration before the back edge is
-  /// reached).
-  fn get_var(&self, var: u32) -> IntRange {
+
+impl fmt::Debug for IntRange {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     match self {
-      RangeState::Unreachable => IntRange::Bottom,
-      RangeState::Vars(map) => map.get(&var).copied().unwrap_or(IntRange::Bottom),
+      IntRange::Bottom => write!(f, "⊥"),
+      IntRange::Unknown => write!(f, "⊤"),
+      IntRange::Interval { lo, hi } => write!(f, "[{lo:?},{hi:?}]"),
+    }
+  }
+}
+
+impl IntRange {
+  pub fn interval(lo: Bound, hi: Bound) -> Self {
+    if lo > hi {
+      return IntRange::Bottom;
+    }
+    if lo == Bound::NegInf && hi == Bound::PosInf {
+      return IntRange::Unknown;
+    }
+    IntRange::Interval { lo, hi }
+  }
+
+  pub fn const_i64(n: i64) -> Self {
+    IntRange::Interval {
+      lo: Bound::I64(n),
+      hi: Bound::I64(n),
     }
   }
 
-  fn get_var_query(&self, var: u32) -> IntRange {
-    match self {
-      RangeState::Unreachable => IntRange::Bottom,
-      RangeState::Vars(map) => map.get(&var).copied().unwrap_or(IntRange::top()),
-    }
-  }
- 
-  fn set_var(&mut self, var: u32, range: IntRange) {
-    let RangeState::Vars(map) = self else {
-      return;
-    };
-    map.insert(var, range);
-  }
- 
-  fn union_with(&mut self, other: &Self) {
-    match other {
-      RangeState::Unreachable => {}
-      RangeState::Vars(right) => match self {
-        RangeState::Unreachable => {
-          *self = RangeState::Vars(right.clone());
-        }
-        RangeState::Vars(left) => {
-          for (var, right_range) in right.iter() {
-            let merged = left
-              .get(var)
-              .copied()
-              .unwrap_or(IntRange::Bottom)
-              .union(*right_range);
-            left.insert(*var, merged);
-          }
-        }
-      },
-    }
-  }
- 
-  fn widen_from(&self, incoming: &Self) -> Self {
-    match (self, incoming) {
-      (RangeState::Unreachable, x) => x.clone(),
-      (_, RangeState::Unreachable) => RangeState::Unreachable,
-      (RangeState::Vars(old), RangeState::Vars(new)) => {
-        let mut widened = HashMap::<u32, IntRange>::default();
-        for (&var, &new_range) in new.iter() {
-          let old_range = old.get(&var).copied().unwrap_or(IntRange::Bottom);
-          widened.insert(var, old_range.widen(new_range));
-        }
-        RangeState::Vars(widened)
+  pub fn join(self, other: Self) -> Self {
+    use IntRange::*;
+    match (self, other) {
+      (Unknown, _) | (_, Unknown) => Unknown,
+      (Bottom, x) | (x, Bottom) => x,
+      (Interval { lo: lo1, hi: hi1 }, Interval { lo: lo2, hi: hi2 }) => {
+        IntRange::interval(lo1.min(lo2), hi1.max(hi2))
       }
     }
   }
+
+  pub fn intersect(self, other: Self) -> Self {
+    use IntRange::*;
+    match (self, other) {
+      (Bottom, _) | (_, Bottom) => Bottom,
+      (Unknown, x) | (x, Unknown) => x,
+      (Interval { lo: lo1, hi: hi1 }, Interval { lo: lo2, hi: hi2 }) => {
+        IntRange::interval(lo1.max(lo2), hi1.min(hi2))
+      }
+    }
+  }
+
+  pub fn widen_backedge(self, next: Self) -> Self {
+    use IntRange::*;
+    match (self, next) {
+      (Unknown, _) | (_, Unknown) => Unknown,
+      (Bottom, x) => x,
+      (x, Bottom) => x,
+      (Interval { lo: old_lo, hi: old_hi }, Interval { lo: new_lo, hi: new_hi }) => {
+        IntRange::interval(
+          if new_lo < old_lo { Bound::NegInf } else { old_lo },
+          if new_hi > old_hi { Bound::PosInf } else { old_hi },
+        )
+      }
+    }
+  }
+
+  fn bounds(self) -> Option<(Bound, Bound)> {
+    match self {
+      IntRange::Bottom => None,
+      IntRange::Unknown => Some((Bound::NegInf, Bound::PosInf)),
+      IntRange::Interval { lo, hi } => Some((lo, hi)),
+    }
+  }
+
+  fn singleton_i64(self) -> Option<i64> {
+    match self {
+      IntRange::Interval {
+        lo: Bound::I64(a),
+        hi: Bound::I64(b),
+      } if a == b => Some(a),
+      _ => None,
+    }
+  }
 }
- 
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct State {
+  reachable: bool,
+  ranges: Vec<IntRange>,
+}
+
+impl State {
+  fn bottom(var_count: usize) -> Self {
+    Self {
+      reachable: false,
+      ranges: vec![IntRange::Bottom; var_count],
+    }
+  }
+
+  fn boundary(var_count: usize, entry_vars: &[u32]) -> Self {
+    let mut state = Self {
+      reachable: true,
+      ranges: vec![IntRange::Bottom; var_count],
+    };
+    for &var in entry_vars {
+      if let Some(slot) = state.ranges.get_mut(var as usize) {
+        *slot = IntRange::Unknown;
+      }
+    }
+    state
+  }
+
+  fn set_unreachable(&mut self) {
+    self.reachable = false;
+    for r in &mut self.ranges {
+      *r = IntRange::Bottom;
+    }
+  }
+
+  pub fn is_reachable(&self) -> bool {
+    self.reachable
+  }
+
+  pub fn range_of_var(&self, var: u32) -> IntRange {
+    if !self.reachable {
+      return IntRange::Bottom;
+    }
+    self
+      .ranges
+      .get(var as usize)
+      .copied()
+      .unwrap_or(IntRange::Unknown)
+  }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct RangeResult {
-  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
-  pub blocks: HashMap<u32, BlockState<RangeState>>,
-  pub edges: HashMap<Edge, RangeState>,
+  result: ForwardEdgeDataFlowResult<State>,
 }
- 
+
 impl RangeResult {
   /// State at basic block entry, after merging all incoming edges.
-  pub fn entry(&self, label: u32) -> Option<&RangeState> {
-    self.blocks.get(&label).map(|b| &b.entry)
-  }
-
-  pub fn state_at_block_entry(&self, label: u32) -> Option<&RangeState> {
-    self.entry(label)
+  pub fn entry(&self, label: u32) -> Option<&State> {
+    self.result.block_entry.get(&label)
   }
 
   /// State at basic block exit, before successor-specific edge refinement.
-  pub fn exit(&self, label: u32) -> Option<&RangeState> {
-    self.blocks.get(&label).map(|b| &b.exit)
+  pub fn exit(&self, label: u32) -> Option<&State> {
+    self.result.block_exit.get(&label)
   }
 
-  pub fn state_at_block_exit(&self, label: u32) -> Option<&RangeState> {
+  pub fn state_at_block_entry(&self, label: u32) -> Option<&State> {
+    self.entry(label)
+  }
+
+  pub fn state_at_block_exit(&self, label: u32) -> Option<&State> {
     self.exit(label)
   }
 
   /// State flowing into `edge.to` along the given edge.
-  pub fn edge_entry(&self, edge: Edge) -> Option<&RangeState> {
-    self.edges.get(&edge)
+  pub fn state_at_edge_entry(&self, edge: Edge) -> Option<&State> {
+    self.result.edge_out.get(&(edge.from, edge.to))
   }
 
-  pub fn state_at_edge_entry(&self, edge: Edge) -> Option<&RangeState> {
-    self.edge_entry(edge)
+  pub fn edge_entry(&self, edge: Edge) -> Option<&State> {
+    self.state_at_edge_entry(edge)
   }
- 
+
+  pub fn entry_state(&self, label: u32) -> &State {
+    &self.result.block_entry[&label]
+  }
+
+  pub fn exit_state(&self, label: u32) -> &State {
+    &self.result.block_exit[&label]
+  }
+
+  pub fn edge_state(&self, pred: u32, succ: u32) -> Option<&State> {
+    self.result.edge_out.get(&(pred, succ))
+  }
+
+  pub fn edge_is_reachable(&self, pred: u32, succ: u32) -> bool {
+    self.edge_state(pred, succ).is_some_and(|s| s.is_reachable())
+  }
+
+  pub fn range_of_var_at_entry(&self, label: u32, var: u32) -> IntRange {
+    self.entry_state(label).range_of_var(var)
+  }
+
+  pub fn range_of_var_at_exit(&self, label: u32, var: u32) -> IntRange {
+    self.exit_state(label).range_of_var(var)
+  }
+
+  pub fn range_of_var_on_edge(&self, pred: u32, succ: u32, var: u32) -> IntRange {
+    self
+      .edge_state(pred, succ)
+      .map(|s| s.range_of_var(var))
+      .unwrap_or(IntRange::Bottom)
+  }
+
   pub fn var_at_entry(&self, label: u32, var: u32) -> Option<IntRange> {
-    self.entry(label).map(|s| s.get_var_query(var))
+    self.entry(label).map(|s| s.range_of_var(var))
   }
- 
+
   pub fn var_at_exit(&self, label: u32, var: u32) -> Option<IntRange> {
-    self.exit(label).map(|s| s.get_var_query(var))
+    self.exit(label).map(|s| s.range_of_var(var))
   }
 
   pub fn var_at_edge(&self, edge: Edge, var: u32) -> Option<IntRange> {
-    self.edge_entry(edge).map(|s| s.get_var_query(var))
+    self.edge_entry(edge).map(|s| s.range_of_var(var))
   }
 
   /// Compute the analysis state immediately before `inst_idx` in `label`.
   ///
   /// This is computed by replaying the instruction transfer function inside the
   /// block starting from the stored block entry state.
-  pub fn state_before_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> RangeState {
-    let entry = self.entry(label).cloned().unwrap_or(RangeState::Unreachable);
-    // `apply_to_instruction` does not depend on the loop header metadata, so we
-    // can use a lightweight dummy analysis instance for replay.
-    let mut analysis = RangeAnalysis {
-      back_preds: HashMap::default(),
-      entry_vars: Vec::new(),
-    };
+  pub fn state_before_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
+    let entry = self
+      .entry(label)
+      .cloned()
+      .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
+    let mut analysis = RangeAnalysis::new_for_replay(entry.ranges.len());
     replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
     })
   }
 
   /// Compute the analysis state immediately after `inst_idx` in `label`.
-  pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> RangeState {
-    let entry = self.entry(label).cloned().unwrap_or(RangeState::Unreachable);
-    let mut analysis = RangeAnalysis {
-      back_preds: HashMap::default(),
-      entry_vars: Vec::new(),
-    };
+  pub fn state_after_inst(&self, cfg: &Cfg, label: u32, inst_idx: usize) -> State {
+    let entry = self
+      .entry(label)
+      .cloned()
+      .unwrap_or_else(|| State::bottom(cfg_var_count(cfg)));
+    let mut analysis = RangeAnalysis::new_for_replay(entry.ranges.len());
     replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
     })
   }
 
-  pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> RangeState {
+  pub fn state_before_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
     self.state_before_inst(cfg, loc.block, loc.inst)
   }
 
-  pub fn state_after_loc(&self, cfg: &Cfg, loc: InstLoc) -> RangeState {
+  pub fn state_after_loc(&self, cfg: &Cfg, loc: InstLoc) -> State {
     self.state_after_inst(cfg, loc.block, loc.inst)
   }
 
-  pub fn fact_for_arg(&self, state: &RangeState, arg: &Arg) -> IntRange {
+  pub fn fact_for_arg(&self, state: &State, arg: &Arg) -> IntRange {
     let _ = self;
-    match arg {
-      Arg::Const(c) => RangeAnalysis::const_range(c),
-      Arg::Var(v) => state.get_var_query(*v),
-      _ => IntRange::top(),
-    }
+    RangeAnalysis::range_for_arg(state, arg)
+  }
+
+  pub fn result(&self) -> &ForwardEdgeDataFlowResult<State> {
+    &self.result
   }
 }
- 
+
+#[derive(Clone, Debug)]
+struct PhiNode {
+  tgt: u32,
+  sources: Vec<(u32, Arg)>,
+}
+
+fn cfg_var_count(cfg: &Cfg) -> usize {
+  let mut max: Option<u32> = None;
+  for (_, block) in cfg.bblocks.all() {
+    for inst in block.iter() {
+      for &tgt in inst.tgts.iter() {
+        max = Some(max.map_or(tgt, |m| m.max(tgt)));
+      }
+      for arg in inst.args.iter() {
+        if let Arg::Var(v) = arg {
+          max = Some(max.map_or(*v, |m| m.max(*v)));
+        }
+      }
+    }
+  }
+  max.map(|m| m as usize + 1).unwrap_or(0)
+}
+
+fn cfg_entry_vars(cfg: &Cfg) -> Vec<u32> {
+  let mut used = HashSet::<u32>::default();
+  let mut defined = HashSet::<u32>::default();
+  for (_, block) in cfg.bblocks.all() {
+    for inst in block.iter() {
+      for &tgt in inst.tgts.iter() {
+        defined.insert(tgt);
+      }
+      for arg in inst.args.iter() {
+        if let Arg::Var(v) = arg {
+          used.insert(*v);
+        }
+      }
+    }
+  }
+  let mut entry_vars = used.difference(&defined).copied().collect::<Vec<_>>();
+  entry_vars.sort_unstable();
+  entry_vars
+}
+
+fn cfg_phi_nodes(cfg: &Cfg) -> HashMap<u32, Vec<PhiNode>> {
+  let mut out = HashMap::<u32, Vec<PhiNode>>::default();
+  for (label, block) in cfg.bblocks.all() {
+    let mut phis = Vec::new();
+    for inst in block.iter() {
+      if inst.t != InstTyp::Phi {
+        break;
+      }
+      debug_assert_eq!(inst.labels.len(), inst.args.len());
+      phis.push(PhiNode {
+        tgt: inst.tgts[0],
+        sources: inst
+          .labels
+          .iter()
+          .copied()
+          .zip(inst.args.iter().cloned())
+          .collect(),
+      });
+    }
+    if !phis.is_empty() {
+      out.insert(label, phis);
+    }
+  }
+  out
+}
+
 pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
-  let mut analysis = RangeAnalysis::new(cfg);
-  let ForwardEdgeDataFlowResult {
-    block_entry,
-    block_exit,
-    edge_out,
-    ..
-  } = analysis.analyze(cfg, cfg.entry);
-  let mut blocks = HashMap::<u32, BlockState<RangeState>>::default();
-  for (label, entry) in block_entry {
-    let exit = block_exit.get(&label).cloned().unwrap_or(RangeState::Unreachable);
-    blocks.insert(label, BlockState { entry, exit });
-  }
-  let edges = edge_out
-    .into_iter()
-    .map(|((from, to), state)| (Edge { from, to }, state))
+  let var_count = cfg_var_count(cfg);
+  let dom = Dom::calculate(cfg);
+  let loops = LoopInfo::compute(cfg, &dom);
+  let backedges: HashSet<(u32, u32)> = loops
+    .loops
+    .iter()
+    .flat_map(|l| l.latches.iter().map(move |&lat| (lat, l.header)))
     .collect();
-  RangeResult { blocks, edges }
+
+  let entry_vars = cfg_entry_vars(cfg);
+  let phi_nodes = cfg_phi_nodes(cfg);
+
+  let mut analysis = RangeAnalysis {
+    var_count,
+    entry_vars,
+    backedges,
+    phi_nodes,
+  };
+  let result = analysis.analyze(cfg, cfg.entry);
+  RangeResult { result }
 }
- 
+
 struct RangeAnalysis {
-  // header -> latch preds (back edges) for widening.
-  back_preds: HashMap<u32, HashSet<u32>>,
-  // Vars used but never defined; treat as params/externals at entry.
+  var_count: usize,
   entry_vars: Vec<u32>,
+  backedges: HashSet<(u32, u32)>,
+  phi_nodes: HashMap<u32, Vec<PhiNode>>,
 }
- 
+
 impl RangeAnalysis {
-  fn new(cfg: &Cfg) -> Self {
-    let dom = Dom::<false>::calculate(cfg);
-    let dominates = dom.dominates_graph();
-    let mut back_preds = HashMap::<u32, HashSet<u32>>::default();
-    for header in cfg.graph.labels_sorted() {
-      let latches: HashSet<u32> = cfg
-        .graph
-        .parents(header)
-        .filter(|&pred| dominates.dominates(header, pred))
-        .collect();
-      if !latches.is_empty() {
-        back_preds.insert(header, latches);
-      }
-    }
- 
-    let mut used = HashSet::<u32>::default();
-    let mut defined = HashSet::<u32>::default();
-    for (_, block) in cfg.bblocks.all() {
-      for inst in block.iter() {
-        for &tgt in inst.tgts.iter() {
-          defined.insert(tgt);
-        }
-        for arg in inst.args.iter() {
-          if let Arg::Var(v) = arg {
-            used.insert(*v);
-          }
-        }
-      }
-    }
-    let mut entry_vars = used.difference(&defined).copied().collect::<Vec<_>>();
-    entry_vars.sort_unstable();
- 
+  fn new_for_replay(var_count: usize) -> Self {
     Self {
-      back_preds,
-      entry_vars,
+      var_count,
+      entry_vars: Vec::new(),
+      backedges: HashSet::default(),
+      phi_nodes: HashMap::default(),
     }
   }
- 
-  fn arg_to_i64(arg: &Arg) -> Option<i64> {
-    match arg {
-      Arg::Const(Const::Num(JsNumber(n))) => {
-        if !n.is_finite() {
-          return None;
-        }
-        if n.trunc() != *n {
-          return None;
-        }
-        if *n < i64::MIN as f64 || *n > i64::MAX as f64 {
-          return None;
-        }
-        Some(*n as i64)
-      }
-      Arg::Const(Const::BigInt(v)) => v.to_i64(),
-      _ => None,
+
+  fn set_var(&self, state: &mut State, var: u32, range: IntRange) {
+    if let Some(slot) = state.ranges.get_mut(var as usize) {
+      *slot = range;
     }
   }
- 
+
+  fn maybe_i64_const(c: &Const) -> Option<i64> {
+    let Const::Num(JsNumber(n)) = c else {
+      return None;
+    };
+    if !n.is_finite() || n.trunc() != *n {
+      return None;
+    }
+    if *n < i64::MIN as f64 || *n > i64::MAX as f64 {
+      return None;
+    }
+    let as_i64 = *n as i64;
+    // Validate that the cast is exact (f64 can't represent all i64 values).
+    if as_i64 as f64 != *n {
+      return None;
+    }
+    Some(as_i64)
+  }
+
   fn const_range(c: &Const) -> IntRange {
-    match c {
-      Const::Num(JsNumber(n)) => {
-        if !n.is_finite() || n.trunc() != *n || *n < i64::MIN as f64 || *n > i64::MAX as f64 {
-          IntRange::top()
-        } else {
-          IntRange::const_(*n as i64)
-        }
-      }
-      Const::BigInt(v) => v.to_i64().map(IntRange::const_).unwrap_or(IntRange::top()),
-      _ => IntRange::top(),
-    }
+    Self::maybe_i64_const(c).map(IntRange::const_i64).unwrap_or(IntRange::Unknown)
   }
- 
-  fn arg_range(state: &RangeState, arg: &Arg) -> IntRange {
+
+  fn range_for_arg(state: &State, arg: &Arg) -> IntRange {
     match arg {
       Arg::Const(c) => Self::const_range(c),
-      Arg::Var(v) => state.get_var(*v),
-      _ => IntRange::top(),
+      Arg::Var(v) => state.range_of_var(*v),
+      Arg::Builtin(_) | Arg::Fn(_) => IntRange::Unknown,
     }
   }
- 
-  fn add(a: IntRange, b: IntRange) -> IntRange {
-    let (a_lo, a_hi) = match a {
-      IntRange::Bottom => return IntRange::Bottom,
-      IntRange::Range { lo, hi } => (lo, hi),
-    };
-    let (b_lo, b_hi) = match b {
-      IntRange::Bottom => return IntRange::Bottom,
-      IntRange::Range { lo, hi } => (lo, hi),
-    };
 
-    let lo = match (a_lo, b_lo) {
-      (Bound::NegInf, _) | (_, Bound::NegInf) => Bound::NegInf,
-      (Bound::PosInf, _) | (_, Bound::PosInf) => Bound::PosInf,
-      (Bound::Finite(x), Bound::Finite(y)) => {
-        let sum = x as i128 + y as i128;
-        if sum < i64::MIN as i128 {
-          Bound::NegInf
-        } else if sum > i64::MAX as i128 {
-          Bound::Finite(i64::MAX)
-        } else {
-          Bound::Finite(sum as i64)
-        }
-      }
-    };
-    let hi = match (a_hi, b_hi) {
-      (Bound::NegInf, _) | (_, Bound::NegInf) => Bound::NegInf,
-      (Bound::PosInf, _) | (_, Bound::PosInf) => Bound::PosInf,
-      (Bound::Finite(x), Bound::Finite(y)) => {
-        let sum = x as i128 + y as i128;
-        if sum < i64::MIN as i128 {
-          Bound::Finite(i64::MIN)
-        } else if sum > i64::MAX as i128 {
-          Bound::PosInf
-        } else {
-          Bound::Finite(sum as i64)
-        }
-      }
-    };
-    IntRange::new(lo, hi)
+  fn eval_arg(&self, state: &State, arg: &Arg) -> IntRange {
+    Self::range_for_arg(state, arg)
   }
- 
-  fn sub(a: IntRange, b: IntRange) -> IntRange {
-    let (a_lo, a_hi, b_lo, b_hi) = match (a, b) {
-      (IntRange::Bottom, _) | (_, IntRange::Bottom) => return IntRange::Bottom,
-      (IntRange::Range { lo: a_lo, hi: a_hi }, IntRange::Range { lo: b_lo, hi: b_hi }) => {
-        (a_lo, a_hi, b_lo, b_hi)
-      }
-    };
- 
-    let lo = match (a_lo, b_hi) {
-      (Bound::NegInf, _) | (_, Bound::PosInf) => Bound::NegInf,
-      (Bound::PosInf, Bound::NegInf) => Bound::PosInf,
-      (Bound::PosInf, _) => Bound::PosInf,
-      (_, Bound::NegInf) => Bound::PosInf,
-      (Bound::Finite(x), Bound::Finite(y)) => {
-        let diff = x as i128 - y as i128;
-        if diff < i64::MIN as i128 {
-          Bound::NegInf
-        } else if diff > i64::MAX as i128 {
-          Bound::Finite(i64::MAX)
-        } else {
-          Bound::Finite(diff as i64)
-        }
-      }
-    };
-    let hi = match (a_hi, b_lo) {
-      (Bound::PosInf, _) | (_, Bound::NegInf) => Bound::PosInf,
-      (Bound::NegInf, Bound::PosInf) => Bound::NegInf,
-      (Bound::NegInf, _) => Bound::NegInf,
-      (_, Bound::PosInf) => Bound::NegInf,
-      (Bound::Finite(x), Bound::Finite(y)) => {
-        let diff = x as i128 - y as i128;
-        if diff < i64::MIN as i128 {
-          Bound::Finite(i64::MIN)
-        } else if diff > i64::MAX as i128 {
-          Bound::PosInf
-        } else {
-          Bound::Finite(diff as i64)
-        }
-      }
-    };
-    IntRange::new(lo, hi)
-  }
- 
-  fn mul(a: IntRange, b: IntRange) -> IntRange {
-    let (a_lo, a_hi, b_lo, b_hi) = match (a, b) {
-      (IntRange::Bottom, _) | (_, IntRange::Bottom) => return IntRange::Bottom,
-      (IntRange::Range { lo: a_lo, hi: a_hi }, IntRange::Range { lo: b_lo, hi: b_hi }) => {
-        (a_lo, a_hi, b_lo, b_hi)
-      }
-    };
- 
-    // If either range is unbounded, be conservative.
-    if matches!(a_lo, Bound::NegInf | Bound::PosInf)
-      || matches!(a_hi, Bound::NegInf | Bound::PosInf)
-      || matches!(b_lo, Bound::NegInf | Bound::PosInf)
-      || matches!(b_hi, Bound::NegInf | Bound::PosInf)
-    {
-      return IntRange::top();
-    }
- 
-    let (Bound::Finite(a_lo), Bound::Finite(a_hi), Bound::Finite(b_lo), Bound::Finite(b_hi)) =
-      (a_lo, a_hi, b_lo, b_hi)
-    else {
-      return IntRange::top();
-    };
- 
-    let candidates = [
-      a_lo as i128 * b_lo as i128,
-      a_lo as i128 * b_hi as i128,
-      a_hi as i128 * b_lo as i128,
-      a_hi as i128 * b_hi as i128,
-    ];
-    let min = candidates.into_iter().min().unwrap();
-    let max = candidates.into_iter().max().unwrap();
- 
-    let lo = if min < i64::MIN as i128 {
-      Bound::NegInf
-    } else if min > i64::MAX as i128 {
-      Bound::Finite(i64::MAX)
-    } else {
-      Bound::Finite(min as i64)
-    };
-    let hi = if max < i64::MIN as i128 {
-      Bound::Finite(i64::MIN)
-    } else if max > i64::MAX as i128 {
-      Bound::PosInf
-    } else {
-      Bound::Finite(max as i64)
-    };
-    IntRange::new(lo, hi)
-  }
- 
-  fn i32_range() -> IntRange {
-    IntRange::Range {
-      lo: Bound::Finite(i32::MIN as i64),
-      hi: Bound::Finite(i32::MAX as i64),
-    }
-  }
- 
-  fn u32_range() -> IntRange {
-    IntRange::Range {
-      lo: Bound::Finite(0),
-      hi: Bound::Finite(u32::MAX as i64),
-    }
-  }
- 
+
   fn find_cond_compare(block: &[Inst], cond_var: u32) -> Option<(u32, BinOp, i64)> {
-    // Find the defining instruction for the condition variable in this block.
-    let def = block.iter().rev().find(|inst| inst.tgts.first() == Some(&cond_var))?;
+    let def = block
+      .iter()
+      .rev()
+      .find(|inst| inst.tgts.first() == Some(&cond_var))?;
     if def.t != InstTyp::Bin {
       return None;
     }
-    let (_, left, op, right) = def.as_bin();
-    let Arg::Var(x) = left else {
+    let (_tgt, left, op, right) = def.as_bin();
+    let x = left.maybe_var()?;
+    let Arg::Const(c) = right else {
       return None;
     };
-    let c = Self::arg_to_i64(right)?;
-    Some((*x, op, c))
+    let c = Self::maybe_i64_const(c)?;
+    Some((x, op, c))
+  }
+
+  fn int32_range() -> IntRange {
+    IntRange::interval(Bound::I64(i32::MIN as i64), Bound::I64(i32::MAX as i64))
+  }
+
+  fn uint32_range() -> IntRange {
+    IntRange::interval(Bound::I64(0), Bound::I64(u32::MAX as i64))
+  }
+
+  fn add_range(a: IntRange, b: IntRange) -> IntRange {
+    match (a, b) {
+      (IntRange::Bottom, _) | (_, IntRange::Bottom) => IntRange::Bottom,
+      (IntRange::Unknown, _) | (_, IntRange::Unknown) => IntRange::Unknown,
+      (
+        IntRange::Interval { lo: a_lo, hi: a_hi },
+        IntRange::Interval { lo: b_lo, hi: b_hi },
+      ) => {
+        let lo = match (a_lo, b_lo) {
+          (Bound::NegInf, _) | (_, Bound::NegInf) => Bound::NegInf,
+          (Bound::PosInf, _) | (_, Bound::PosInf) => Bound::PosInf,
+          (Bound::I64(x), Bound::I64(y)) => {
+            let sum = x as i128 + y as i128;
+            if sum < i64::MIN as i128 {
+              Bound::NegInf
+            } else if sum > i64::MAX as i128 {
+              // Low bounds must stay <= the true lower bound; clamp instead of +inf.
+              Bound::I64(i64::MAX)
+            } else {
+              Bound::I64(sum as i64)
+            }
+          }
+        };
+        let hi = match (a_hi, b_hi) {
+          (Bound::NegInf, _) | (_, Bound::NegInf) => Bound::NegInf,
+          (Bound::PosInf, _) | (_, Bound::PosInf) => Bound::PosInf,
+          (Bound::I64(x), Bound::I64(y)) => {
+            let sum = x as i128 + y as i128;
+            if sum < i64::MIN as i128 {
+              Bound::I64(i64::MIN)
+            } else if sum > i64::MAX as i128 {
+              Bound::PosInf
+            } else {
+              Bound::I64(sum as i64)
+            }
+          }
+        };
+        IntRange::interval(lo, hi)
+      }
+    }
+  }
+
+  fn sub_range(a: IntRange, b: IntRange) -> IntRange {
+    match (a, b) {
+      (IntRange::Bottom, _) | (_, IntRange::Bottom) => IntRange::Bottom,
+      (IntRange::Unknown, _) | (_, IntRange::Unknown) => IntRange::Unknown,
+      (
+        IntRange::Interval { lo: a_lo, hi: a_hi },
+        IntRange::Interval { lo: b_lo, hi: b_hi },
+      ) => {
+        let lo = match (a_lo, b_hi) {
+          (Bound::NegInf, _) | (_, Bound::PosInf) => Bound::NegInf,
+          (Bound::PosInf, Bound::NegInf) => Bound::PosInf,
+          (Bound::PosInf, _) => Bound::PosInf,
+          (_, Bound::NegInf) => Bound::PosInf,
+          (Bound::I64(x), Bound::I64(y)) => {
+            let diff = x as i128 - y as i128;
+            if diff < i64::MIN as i128 {
+              Bound::NegInf
+            } else if diff > i64::MAX as i128 {
+              Bound::I64(i64::MAX)
+            } else {
+              Bound::I64(diff as i64)
+            }
+          }
+        };
+        let hi = match (a_hi, b_lo) {
+          (Bound::PosInf, _) | (_, Bound::NegInf) => Bound::PosInf,
+          (Bound::NegInf, Bound::PosInf) => Bound::NegInf,
+          (Bound::NegInf, _) => Bound::NegInf,
+          (_, Bound::PosInf) => Bound::NegInf,
+          (Bound::I64(x), Bound::I64(y)) => {
+            let diff = x as i128 - y as i128;
+            if diff < i64::MIN as i128 {
+              Bound::I64(i64::MIN)
+            } else if diff > i64::MAX as i128 {
+              Bound::PosInf
+            } else {
+              Bound::I64(diff as i64)
+            }
+          }
+        };
+        IntRange::interval(lo, hi)
+      }
+    }
+  }
+
+  fn mul_range(a: IntRange, b: IntRange) -> IntRange {
+    match (a, b) {
+      (IntRange::Bottom, _) | (_, IntRange::Bottom) => IntRange::Bottom,
+      (IntRange::Unknown, _) | (_, IntRange::Unknown) => IntRange::Unknown,
+      (
+        IntRange::Interval { lo: a_lo, hi: a_hi },
+        IntRange::Interval { lo: b_lo, hi: b_hi },
+      ) => {
+        // Be conservative in the presence of infinities (multiplication sign matters).
+        let (Some(a_lo), Some(a_hi), Some(b_lo), Some(b_hi)) =
+          (a_lo.as_i64(), a_hi.as_i64(), b_lo.as_i64(), b_hi.as_i64())
+        else {
+          return IntRange::Unknown;
+        };
+        let candidates = [
+          a_lo as i128 * b_lo as i128,
+          a_lo as i128 * b_hi as i128,
+          a_hi as i128 * b_lo as i128,
+          a_hi as i128 * b_hi as i128,
+        ];
+        let lo_val = *candidates.iter().min().unwrap();
+        let hi_val = *candidates.iter().max().unwrap();
+
+        let lo = if lo_val < i64::MIN as i128 {
+          Bound::NegInf
+        } else if lo_val > i64::MAX as i128 {
+          Bound::I64(i64::MAX)
+        } else {
+          Bound::I64(lo_val as i64)
+        };
+        let hi = if hi_val < i64::MIN as i128 {
+          Bound::I64(i64::MIN)
+        } else if hi_val > i64::MAX as i128 {
+          Bound::PosInf
+        } else {
+          Bound::I64(hi_val as i64)
+        };
+        IntRange::interval(lo, hi)
+      }
+    }
+  }
+
+  fn bin_range(op: BinOp, left: IntRange, right: IntRange) -> IntRange {
+    use BinOp::*;
+    match op {
+      Add => Self::add_range(left, right),
+      Sub => Self::sub_range(left, right),
+      Mul => Self::mul_range(left, right),
+      BitAnd | BitOr | BitXor | Shl | Shr | UShr => {
+        let left_c = left.singleton_i64();
+        let right_c = right.singleton_i64();
+        if let (Some(a), Some(b)) = (left_c, right_c) {
+          let shift = (b as u32) & 0x1f;
+          let res = match op {
+            BitAnd => (a as i32) & (b as i32),
+            BitOr => (a as i32) | (b as i32),
+            BitXor => (a as i32) ^ (b as i32),
+            Shl => (a as i32).wrapping_shl(shift),
+            Shr => (a as i32).wrapping_shr(shift),
+            UShr => {
+              let u = (a as u32).wrapping_shr(shift);
+              return IntRange::const_i64(u as i64);
+            }
+            _ => unreachable!(),
+          };
+          return IntRange::const_i64(res as i64);
+        }
+        match op {
+          UShr => Self::uint32_range(),
+          _ => Self::int32_range(),
+        }
+      }
+      // Comparisons and other operations yield non-integer values.
+      _ => IntRange::Unknown,
+    }
+  }
+
+  fn un_range(op: UnOp, arg: IntRange) -> IntRange {
+    use UnOp::*;
+    match op {
+      Neg => {
+        let Some((lo, hi)) = arg.bounds() else {
+          return IntRange::Bottom;
+        };
+        match (hi.checked_neg(), lo.checked_neg()) {
+          (Some(lo), Some(hi)) => IntRange::interval(lo, hi),
+          _ => IntRange::Unknown,
+        }
+      }
+      BitNot => {
+        if let Some(v) = arg.singleton_i64() {
+          return IntRange::const_i64((!(v as i32)) as i64);
+        }
+        Self::int32_range()
+      }
+      Plus => IntRange::Unknown,
+      Void | Typeof | Not | _Dummy => IntRange::Unknown,
+    }
   }
 }
- 
+
 impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
-  type State = RangeState;
- 
+  type State = State;
+
   fn bottom(&self, _cfg: &Cfg) -> Self::State {
-    RangeState::Unreachable
+    State::bottom(self.var_count)
   }
- 
+
   fn boundary_state(&self, _entry: u32, _cfg: &Cfg) -> Self::State {
-    let mut vars = HashMap::<u32, IntRange>::default();
-    for &var in self.entry_vars.iter() {
-      vars.insert(var, IntRange::top());
-    }
-    RangeState::Vars(vars)
+    State::boundary(self.var_count, &self.entry_vars)
   }
- 
-  fn meet(&mut self, inputs: &[(u32, &Self::State)]) -> Self::State {
-    let mut merged = RangeState::Unreachable;
-    for (_, state) in inputs.iter() {
-      merged.union_with(state);
+
+  fn meet(&mut self, incoming: &[(u32, &Self::State)]) -> Self::State {
+    let mut out = State {
+      reachable: false,
+      ranges: vec![IntRange::Bottom; self.var_count],
+    };
+    for (_, s) in incoming {
+      if !s.reachable {
+        continue;
+      }
+      if !out.reachable {
+        out.reachable = true;
+      }
+      for (dst, src) in out.ranges.iter_mut().zip(s.ranges.iter()) {
+        *dst = (*dst).join(*src);
+      }
     }
-    merged
+    out
   }
- 
+
   fn meet_block(
     &mut self,
     label: u32,
     prev_entry: &Self::State,
-    inputs: &[(u32, &Self::State)],
+    incoming: &[(u32, &Self::State)],
   ) -> Self::State {
-    let mut merged = RangeState::Unreachable;
-    for (pred, state) in inputs.iter() {
-      let incoming = if self
-        .back_preds
-        .get(&label)
-        .is_some_and(|latches| latches.contains(pred))
-      {
-        prev_entry.widen_from(state)
-      } else {
-        (*state).clone()
-      };
-      merged.union_with(&incoming);
+    let _ = prev_entry;
+    let mut merged = self.meet(incoming);
+    if !merged.reachable {
+      return merged;
     }
+
+    let Some(phis) = self.phi_nodes.get(&label) else {
+      return merged;
+    };
+
+    for phi in phis {
+      let mut acc = IntRange::Bottom;
+      for (pred, arg) in &phi.sources {
+        let pred_state = incoming
+          .iter()
+          .find_map(|(p, s)| if p == pred { Some(*s) } else { None });
+        let Some(pred_state) = pred_state else {
+          continue;
+        };
+        acc = acc.join(self.eval_arg(pred_state, arg));
+      }
+      self.set_var(&mut merged, phi.tgt, acc);
+    }
+
     merged
   }
- 
+
   fn apply_to_instruction(
     &mut self,
     _label: u32,
@@ -613,53 +771,46 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
     inst: &Inst,
     state: &mut Self::State,
   ) {
-    let RangeState::Vars(_) = state else {
+    if !state.reachable {
       return;
-    };
- 
-    let define_top = |state: &mut RangeState, var: u32| state.set_var(var, IntRange::top());
- 
+    }
+
     match inst.t {
       InstTyp::VarAssign => {
         let (tgt, arg) = inst.as_var_assign();
-        let r = Self::arg_range(state, arg);
-        state.set_var(tgt, r);
-      }
-      InstTyp::Phi => {
-        let tgt = inst.tgts[0];
-        let mut acc = None::<IntRange>;
-        for arg in inst.args.iter() {
-          let r = Self::arg_range(state, arg);
-          acc = Some(acc.map_or(r, |a| a.union(r)));
-        }
-        state.set_var(tgt, acc.unwrap_or_else(IntRange::top));
+        let r = self.eval_arg(state, arg);
+        self.set_var(state, tgt, r);
       }
       InstTyp::Bin => {
         let (tgt, left, op, right) = inst.as_bin();
-        let l = Self::arg_range(state, left);
-        let r = Self::arg_range(state, right);
-        let out = match op {
-          BinOp::Add => Self::add(l, r),
-          BinOp::Sub => Self::sub(l, r),
-          BinOp::Mul => Self::mul(l, r),
-          BinOp::Shl | BinOp::Shr | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
-            Self::i32_range()
-          }
-          BinOp::UShr => Self::u32_range(),
-          _ => IntRange::top(),
-        };
-        state.set_var(tgt, out);
+        let left = self.eval_arg(state, left);
+        let right = self.eval_arg(state, right);
+        let out = Self::bin_range(op, left, right);
+        self.set_var(state, tgt, out);
       }
-      // These define values, but we don't attempt to track their integer range.
-      InstTyp::Un
-      | InstTyp::Call
-      | InstTyp::ForeignLoad
-      | InstTyp::UnknownLoad => {
-        for &tgt in inst.tgts.iter() {
-          define_top(state, tgt);
+      InstTyp::Un => {
+        let (tgt, op, arg) = inst.as_un();
+        let arg = self.eval_arg(state, arg);
+        let out = Self::un_range(op, arg);
+        self.set_var(state, tgt, out);
+      }
+      InstTyp::Call => {
+        let (tgt, _callee, _this, _args, _spreads) = inst.as_call();
+        if let Some(tgt) = tgt {
+          self.set_var(state, tgt, IntRange::Unknown);
         }
       }
-      // No defining targets.
+      InstTyp::ForeignLoad => {
+        let (tgt, _foreign) = inst.as_foreign_load();
+        self.set_var(state, tgt, IntRange::Unknown);
+      }
+      InstTyp::UnknownLoad => {
+        let (tgt, _unknown) = inst.as_unknown_load();
+        self.set_var(state, tgt, IntRange::Unknown);
+      }
+      // Phi nodes are handled in `meet_block` using predecessor-specific values.
+      InstTyp::Phi => {}
+      // Non-defining instructions.
       InstTyp::PropAssign
       | InstTyp::CondGoto
       | InstTyp::Return
@@ -671,150 +822,127 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       | InstTyp::_Dummy => {}
     }
   }
- 
+
   fn apply_edge(
     &mut self,
-    from: u32,
-    to: u32,
-    from_block: &[Inst],
-    state: &Self::State,
-    cfg: &Cfg,
+    _pred: u32,
+    succ: u32,
+    pred_block: &[Inst],
+    state_at_end_of_pred: &Self::State,
+    _cfg: &Cfg,
   ) -> Self::State {
-    let RangeState::Vars(_) = state else {
-      return RangeState::Unreachable;
+    let mut next = state_at_end_of_pred.clone();
+    if !next.reachable {
+      return next;
+    }
+
+    let Some(term) = pred_block.last() else {
+      return next;
     };
- 
-    let term = cfg.terminator(from);
-    let crate::cfg::cfg::Terminator::CondGoto { cond, t, f } = term else {
-      return state.clone();
-    };
- 
-    let Arg::Var(cond_var) = cond else {
-      return state.clone();
+    if term.t != InstTyp::CondGoto {
+      return next;
+    }
+
+    let (cond, then_label, else_label) = term.as_cond_goto();
+    let Some(cond_var) = cond.maybe_var() else {
+      return next;
     };
 
-    // Support `if (!(x < c))` by looking through a chain of `!` operators on the
-    // condition variable.
+    // Chase simple boolean negation and var assignments:
+    //
+    //   %1 = (x < 10)
+    //   %2 = !%1
+    //   %3 = %2
+    //   if %3 goto ...
+    //
+    // This keeps the refinement logic local and avoids needing a full def-use graph.
     let mut probe_var = cond_var;
     let mut negate = false;
     let mut resolved: Option<(u32, BinOp, i64)> = None;
     for _ in 0..8 {
-      if let Some((x, op, c)) = Self::find_cond_compare(from_block, probe_var) {
+      if let Some((x, op, c)) = Self::find_cond_compare(pred_block, probe_var) {
         resolved = Some((x, op, c));
         break;
       }
-      let Some(def) = from_block
+
+      let Some(def) = pred_block
         .iter()
         .rev()
         .find(|inst| inst.tgts.first() == Some(&probe_var))
       else {
         break;
       };
+
       match def.t {
         InstTyp::Un => {
           let (_tgt, op, arg) = def.as_un();
           if op != UnOp::Not {
             break;
           }
-          let Arg::Var(inner) = arg else {
+          let Some(inner) = arg.maybe_var() else {
             break;
           };
-          probe_var = *inner;
+          probe_var = inner;
           negate = !negate;
         }
         InstTyp::VarAssign => {
           let (_tgt, arg) = def.as_var_assign();
-          let Arg::Var(inner) = arg else {
+          let Some(inner) = arg.maybe_var() else {
             break;
           };
-          probe_var = *inner;
+          probe_var = inner;
         }
         _ => break,
       }
     }
 
     let Some((x, op, c)) = resolved else {
-      return state.clone();
+      return next;
     };
 
-    let is_true_edge = to == t;
-    let is_false_edge = to == f;
-    if !is_true_edge && !is_false_edge {
-      return state.clone();
-    }
+    let is_true_edge = if succ == then_label {
+      true
+    } else if succ == else_label {
+      false
+    } else {
+      return next;
+    };
     let is_true_edge = if negate { !is_true_edge } else { is_true_edge };
 
-    let mut next = state.clone();
-    let cur = next.get_var(x);
-
+    let c_minus_1 = c.saturating_sub(1);
+    let c_plus_1 = c.saturating_add(1);
     let constraint = match op {
       BinOp::Lt => {
         if is_true_edge {
-          match c.checked_sub(1) {
-            Some(hi) => IntRange::Range {
-              lo: Bound::NegInf,
-              hi: Bound::Finite(hi),
-            },
-            None => IntRange::Bottom,
-          }
+          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
         } else {
-          IntRange::Range {
-            lo: Bound::Finite(c),
-            hi: Bound::PosInf,
-          }
+          IntRange::interval(Bound::I64(c), Bound::PosInf)
         }
       }
       BinOp::Leq => {
         if is_true_edge {
-          IntRange::Range {
-            lo: Bound::NegInf,
-            hi: Bound::Finite(c),
-          }
+          IntRange::interval(Bound::NegInf, Bound::I64(c))
         } else {
-          match c.checked_add(1) {
-            Some(lo) => IntRange::Range {
-              lo: Bound::Finite(lo),
-              hi: Bound::PosInf,
-            },
-            None => IntRange::Bottom,
-          }
+          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
         }
       }
       BinOp::Gt => {
         if is_true_edge {
-          match c.checked_add(1) {
-            Some(lo) => IntRange::Range {
-              lo: Bound::Finite(lo),
-              hi: Bound::PosInf,
-            },
-            None => IntRange::Bottom,
-          }
+          IntRange::interval(Bound::I64(c_plus_1), Bound::PosInf)
         } else {
-          IntRange::Range {
-            lo: Bound::NegInf,
-            hi: Bound::Finite(c),
-          }
+          IntRange::interval(Bound::NegInf, Bound::I64(c))
         }
       }
       BinOp::Geq => {
         if is_true_edge {
-          IntRange::Range {
-            lo: Bound::Finite(c),
-            hi: Bound::PosInf,
-          }
+          IntRange::interval(Bound::I64(c), Bound::PosInf)
         } else {
-          match c.checked_sub(1) {
-            Some(hi) => IntRange::Range {
-              lo: Bound::NegInf,
-              hi: Bound::Finite(hi),
-            },
-            None => IntRange::Bottom,
-          }
+          IntRange::interval(Bound::NegInf, Bound::I64(c_minus_1))
         }
       }
       BinOp::StrictEq => {
         if is_true_edge {
-          IntRange::const_(c)
+          IntRange::const_i64(c)
         } else {
           // Excluding a single value is optional; skip.
           return next;
@@ -822,28 +950,59 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       }
       _ => return next,
     };
- 
-    let refined = cur.intersect(constraint);
-    if refined == IntRange::Bottom {
-      return RangeState::Unreachable;
+
+    if let Some(slot) = next.ranges.get_mut(x as usize) {
+      *slot = (*slot).intersect(constraint);
+      if matches!(*slot, IntRange::Bottom) {
+        next.set_unreachable();
+      }
     }
-    next.set_var(x, refined);
     next
   }
+
+  fn widen_edge(
+    &mut self,
+    from: u32,
+    to: u32,
+    old: &Self::State,
+    new: &Self::State,
+  ) -> Self::State {
+    if !self.backedges.contains(&(from, to)) {
+      return new.clone();
+    }
+
+    if !old.reachable {
+      return new.clone();
+    }
+    if !new.reachable {
+      return old.clone();
+    }
+
+    let ranges = old
+      .ranges
+      .iter()
+      .zip(new.ranges.iter())
+      .map(|(o, n)| (*o).widen_backedge(*n))
+      .collect();
+    State {
+      reachable: true,
+      ranges,
+    }
+  }
 }
- 
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
- 
+
   fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
     let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
     let mut graph = CfgGraph::default();
     for &(from, to) in edges {
       graph.connect(from, to);
     }
-    // Ensure all labels exist in the graph even if they have no edges.
+    // Ensure labels exist in the graph even if disconnected.
     for &label in &labels {
       if !graph.contains(label) {
         graph.connect(label, label);
@@ -860,7 +1019,7 @@ mod tests {
       entry: 0,
     }
   }
- 
+
   #[test]
   fn narrows_on_lt_branch_edges() {
     let cfg = cfg_with_blocks(
@@ -882,21 +1041,15 @@ mod tests {
       ],
       &[(0, 1), (0, 2)],
     );
- 
+
     let result = analyze_ranges(&cfg);
     assert_eq!(
-      result.var_at_entry(1, 0),
-      Some(IntRange::Range {
-        lo: Bound::NegInf,
-        hi: Bound::Finite(9)
-      })
+      result.range_of_var_at_entry(1, 0),
+      IntRange::interval(Bound::NegInf, Bound::I64(9))
     );
     assert_eq!(
-      result.var_at_entry(2, 0),
-      Some(IntRange::Range {
-        lo: Bound::Finite(10),
-        hi: Bound::PosInf
-      })
+      result.range_of_var_at_entry(2, 0),
+      IntRange::interval(Bound::I64(10), Bound::PosInf)
     );
   }
 
@@ -913,7 +1066,7 @@ mod tests {
               BinOp::Lt,
               Arg::Const(Const::Num(JsNumber(10.0))),
             ),
-            Inst::un(2, crate::il::inst::UnOp::Not, Arg::Var(1)),
+            Inst::un(2, UnOp::Not, Arg::Var(1)),
             Inst::cond_goto(Arg::Var(2), 1, 2),
           ],
         ),
@@ -925,18 +1078,12 @@ mod tests {
 
     let result = analyze_ranges(&cfg);
     assert_eq!(
-      result.var_at_entry(1, 0),
-      Some(IntRange::Range {
-        lo: Bound::Finite(10),
-        hi: Bound::PosInf
-      })
+      result.range_of_var_at_entry(1, 0),
+      IntRange::interval(Bound::I64(10), Bound::PosInf)
     );
     assert_eq!(
-      result.var_at_entry(2, 0),
-      Some(IntRange::Range {
-        lo: Bound::NegInf,
-        hi: Bound::Finite(9)
-      })
+      result.range_of_var_at_entry(2, 0),
+      IntRange::interval(Bound::NegInf, Bound::I64(9))
     );
   }
 
@@ -965,18 +1112,12 @@ mod tests {
 
     let result = analyze_ranges(&cfg);
     assert_eq!(
-      result.var_at_entry(1, 0),
-      Some(IntRange::Range {
-        lo: Bound::NegInf,
-        hi: Bound::Finite(9)
-      })
+      result.range_of_var_at_entry(1, 0),
+      IntRange::interval(Bound::NegInf, Bound::I64(9))
     );
     assert_eq!(
-      result.var_at_entry(2, 0),
-      Some(IntRange::Range {
-        lo: Bound::Finite(10),
-        hi: Bound::PosInf
-      })
+      result.range_of_var_at_entry(2, 0),
+      IntRange::interval(Bound::I64(10), Bound::PosInf)
     );
   }
 
@@ -992,7 +1133,7 @@ mod tests {
     let mut phi = Inst::phi_empty(1);
     phi.insert_phi(0, Arg::Var(0));
     phi.insert_phi(2, Arg::Var(2));
- 
+
     let cfg = cfg_with_blocks(
       &[
         (0, vec![Inst::var_assign(0, Arg::Const(Const::Num(JsNumber(0.0))))]),
@@ -1009,14 +1150,39 @@ mod tests {
       ],
       &[(0, 1), (1, 2), (2, 1)],
     );
- 
+
     let result = analyze_ranges(&cfg);
     assert_eq!(
-      result.var_at_entry(1, 2),
-      Some(IntRange::Range {
-        lo: Bound::Finite(1),
-        hi: Bound::PosInf
-      })
+      result.range_of_var_at_entry(1, 2),
+      IntRange::interval(Bound::I64(1), Bound::PosInf)
     );
   }
+
+  #[test]
+  fn deterministic_across_edge_ordering() {
+    let blocks = &[
+      (
+        0,
+        vec![
+          Inst::bin(
+            1,
+            Arg::Var(0),
+            BinOp::Lt,
+            Arg::Const(Const::Num(JsNumber(10.0))),
+          ),
+          Inst::cond_goto(Arg::Var(1), 1, 2),
+        ],
+      ),
+      (1, vec![]),
+      (2, vec![]),
+    ];
+
+    let cfg1 = cfg_with_blocks(blocks, &[(0, 1), (0, 2)]);
+    let cfg2 = cfg_with_blocks(blocks, &[(0, 2), (0, 1)]);
+
+    let r1 = analyze_ranges(&cfg1);
+    let r2 = analyze_ranges(&cfg2);
+    assert_eq!(r1, r2);
+  }
 }
+
