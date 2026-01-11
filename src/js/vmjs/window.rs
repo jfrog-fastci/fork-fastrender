@@ -1001,6 +1001,39 @@ mod tests {
 
     let got = {
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "new URLSearchParams([['a','1'],['b','2']]).get('b')",
+      )?
+    };
+    assert_eq!(value_to_string(&host, got), "2");
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(event_loop, "new URLSearchParams({a:'1'}).get('a')")?
+    };
+    assert_eq!(value_to_string(&host, got), "1");
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "new URLSearchParams(new URLSearchParams('a=1')).get('a')",
+      )?
+    };
+    assert_eq!(value_to_string(&host, got), "1");
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "new URLSearchParams('a=1').keys().next().value",
+      )?
+    };
+    assert_eq!(value_to_string(&host, got), "a");
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
       host_state.exec_script_in_event_loop(event_loop, "URL.canParse('https://example.com/')")?
     };
     assert_eq!(got, Value::Bool(true));

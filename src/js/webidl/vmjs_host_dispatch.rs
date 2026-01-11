@@ -14,7 +14,8 @@ use vm_js::{
   GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value, Vm,
   VmError, VmHost, VmHostHooks, WeakGcObject,
 };
-use webidl_vm_js::WebIdlBindingsHost;
+use webidl_vm_js::bindings_runtime::BindingValue;
+use webidl_vm_js::{IterableKind, WebIdlBindingsHost};
 
 const URL_INVALID_ERROR: &str = "Invalid URL";
 const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
@@ -175,6 +176,27 @@ fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, V
     return Err(VmError::TypeError("expected string"));
   };
   Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+}
+
+fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, array: GcObject) -> Result<usize, VmError> {
+  let length_key = key_from_str(scope, "length")?;
+  let len = vm.get(scope, array, length_key)?;
+  match len {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
+    _ => Err(VmError::TypeError(
+      "URLSearchParams init array length is not a number",
+    )),
+  }
+}
+
+fn array_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  array: GcObject,
+  idx: usize,
+) -> Result<Value, VmError> {
+  let key = key_from_str(scope, &idx.to_string())?;
+  vm.get(scope, array, key)
 }
 
 fn url_parse_result_to_vm_error(err: crate::js::UrlError) -> VmError {
@@ -897,16 +919,76 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         let obj = Self::require_receiver_object(receiver)?;
         let init = args.get(0).copied().unwrap_or(Value::Undefined);
         let params = match init {
-          Value::String(_) => {
-            let s = js_string_to_rust_string(scope, init)?;
-            UrlSearchParams::parse(&s, &self.limits).map_err(url_search_params_error_to_vm_error)?
+          Value::Undefined => UrlSearchParams::new(&self.limits),
+          Value::Object(init_obj) => {
+            // Allow directly passing an existing URLSearchParams wrapper (outside of the generated
+            // bindings constructor conversions).
+            if let Some(existing) = self.params.get(&WeakGcObject::from(init_obj)).cloned() {
+              existing
+            } else if scope.heap().object_is_array(init_obj)? {
+              // Treat arrays as the URLSearchParams "sequence of pairs" initializer.
+              let params = UrlSearchParams::new(&self.limits);
+              let len = array_length(vm, scope, init_obj)?;
+              for idx in 0..len {
+                let pair = array_get(vm, scope, init_obj, idx)?;
+                let Value::Object(pair_obj) = pair else {
+                  return Err(VmError::TypeError(
+                    "URLSearchParams init sequence contains a non-object element",
+                  ));
+                };
+                if !scope.heap().object_is_array(pair_obj)? {
+                  return Err(VmError::TypeError(
+                    "URLSearchParams init sequence contains a non-array pair",
+                  ));
+                }
+                let pair_len = array_length(vm, scope, pair_obj)?;
+                if pair_len < 2 {
+                  return Err(VmError::TypeError(
+                    "URLSearchParams init pair does not contain two elements",
+                  ));
+                }
+                let name = array_get(vm, scope, pair_obj, 0)?;
+                let value = array_get(vm, scope, pair_obj, 1)?;
+                let name = js_string_to_rust_string(scope, name)?;
+                let value = js_string_to_rust_string(scope, value)?;
+                params
+                  .append(&name, &value)
+                  .map_err(url_search_params_error_to_vm_error)?;
+              }
+              params
+            } else {
+              // Treat non-array objects as the URLSearchParams "record" initializer.
+              let params = UrlSearchParams::new(&self.limits);
+              let keys = scope.ordinary_own_property_keys(init_obj)?;
+              for key in keys {
+                let PropertyKey::String(key_s) = key else {
+                  continue;
+                };
+                let key = PropertyKey::String(key_s);
+                let Some(desc) = scope.heap().object_get_own_property(init_obj, &key)? else {
+                  continue;
+                };
+                if !desc.enumerable {
+                  continue;
+                }
+                let name = scope.heap().get_string(key_s)?.to_utf8_lossy();
+                let value = vm.get(scope, init_obj, key)?;
+                let value = js_string_to_rust_string(scope, value)?;
+                params
+                  .append(&name, &value)
+                  .map_err(url_search_params_error_to_vm_error)?;
+              }
+              params
+            }
           }
-          Value::Object(other) => self
-            .params
-            .get(&WeakGcObject::from(other))
-            .cloned()
-            .ok_or(VmError::TypeError("Unsupported URLSearchParams init object"))?,
-          _ => return Err(VmError::TypeError("Unsupported URLSearchParams init value")),
+          other => {
+            // This path is unlikely for generated bindings (they convert to string first), but
+            // accept primitives defensively. `vm-js` heap `ToString` only supports primitives, so
+            // objects still require a proper binding-side conversion.
+            let s = scope.heap_mut().to_string(other)?;
+            let init = scope.heap().get_string(s)?.to_utf8_lossy();
+            UrlSearchParams::parse(&init, &self.limits).map_err(url_search_params_error_to_vm_error)?
+          }
         };
         self.params.insert(WeakGcObject::from(obj), params);
         Ok(Value::Undefined)
@@ -1203,5 +1285,36 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     Err(VmError::Unimplemented(
       "vm-js WebIDL bindings use call_operation(\"constructor\") dispatch",
     ))
+  }
+
+  fn iterable_snapshot(
+    &mut self,
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    kind: IterableKind,
+  ) -> Result<Vec<BindingValue>, VmError> {
+    self.maybe_sweep(scope.heap_mut());
+
+    match interface {
+      "URLSearchParams" => {
+        let params = self.require_params(receiver)?;
+        let pairs = params.pairs().map_err(url_search_params_error_to_vm_error)?;
+        let mut out: Vec<BindingValue> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+          match kind {
+            IterableKind::Entries => out.push(BindingValue::Sequence(vec![
+              BindingValue::RustString(k),
+              BindingValue::RustString(v),
+            ])),
+            IterableKind::Keys => out.push(BindingValue::RustString(k)),
+            IterableKind::Values => out.push(BindingValue::RustString(v)),
+          }
+        }
+        Ok(out)
+      }
+      _ => Err(VmError::TypeError("unimplemented host iterable snapshot")),
+    }
   }
 }
