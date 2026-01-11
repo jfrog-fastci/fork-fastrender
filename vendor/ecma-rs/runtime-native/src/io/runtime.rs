@@ -48,8 +48,9 @@ impl IoRuntimeInner {
     }
 
     extern "C" fn run(data: *mut u8) {
-      // Safety: allocated via `Box::into_raw` in `enqueue_completion`.
-      let st = unsafe { Box::from_raw(data as *mut Completion) };
+      // Safety: allocated via `Box::into_raw` in `enqueue_completion`, and freed by the task drop
+      // hook.
+      let st = unsafe { &*(data as *const Completion) };
 
       let Some(rt) = st.rt.upgrade() else {
         return;
@@ -77,9 +78,19 @@ impl IoRuntimeInner {
       // Dropping `op` releases the pinned buffers/permit and any GC roots.
     }
 
-    async_rt::global().enqueue_macrotask(async_rt::Task::new(
+    extern "C" fn drop_completion(data: *mut u8) {
+      // Safety: allocated by `Box::into_raw` below.
+      unsafe {
+        drop(Box::from_raw(data as *mut Completion));
+      }
+    }
+
+    // Use a drop hook so the boxed completion state is freed even if the event loop is torn down
+    // before the task is executed.
+    async_rt::global().enqueue_macrotask(async_rt::Task::new_with_drop(
       run,
       Box::into_raw(Box::new(Completion { rt: this, id })) as *mut u8,
+      drop_completion,
     ));
   }
 

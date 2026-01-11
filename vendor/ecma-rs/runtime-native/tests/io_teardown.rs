@@ -19,6 +19,12 @@ fn pipe() -> (OwnedFd, OwnedFd) {
   unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
 }
 
+fn root_registry_len() -> usize {
+  let mut count = 0usize;
+  runtime_native::roots::global_root_registry().for_each_root_slot(|_slot| count += 1);
+  count
+}
+
 fn wait_until(deadline: Instant, mut pred: impl FnMut() -> bool) {
   while !pred() {
     assert!(Instant::now() < deadline, "timed out waiting for condition");
@@ -37,10 +43,11 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
 
   // Large enough to overflow the pipe buffer so the worker thread blocks in poll().
   let backing: Arc<[u8]> = vec![0u8; 1024 * 1024].into();
+  let root_obj = Box::into_raw(Box::new(0u8)) as *mut u8;
 
   let debug = IoOpDebugHooks::pause_before_finish();
   let promise = io_rt
-    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[], Some(debug.clone()))
+    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[root_obj], Some(debug.clone()))
     .unwrap();
 
   let settled = Box::new(AtomicBool::new(false));
@@ -50,6 +57,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(root_registry_len(), 1);
 
   // Trigger teardown while the write is blocked.
   io_rt.teardown();
@@ -62,6 +70,7 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
   // The op is now canceled but not yet dropped: pins/permit must still be held.
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(root_registry_len(), 1);
   assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
 
   // Let the worker thread finish and drop the op record, releasing pins/permit.
@@ -69,10 +78,12 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
   wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
 
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, 0);
+  assert_eq!(root_registry_len(), 0);
   assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
 
   drop(rfd);
   unsafe {
+    drop(Box::from_raw(root_obj));
     drop(Box::from_raw(settled_ptr));
   }
 }
@@ -85,9 +96,10 @@ fn teardown_detaches_queued_completion_tasks() {
   let (rfd, wfd) = pipe();
 
   let backing: Arc<[u8]> = vec![1u8].into();
+  let root_obj = Box::into_raw(Box::new(0u8)) as *mut u8;
   let debug = IoOpDebugHooks::pause_before_finish();
   let promise = io_rt
-    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[], Some(debug.clone()))
+    .write_with_debug_hooks(wfd, backing.clone(), 0..backing.len(), &[root_obj], Some(debug.clone()))
     .unwrap();
 
   let settled = Box::new(AtomicBool::new(false));
@@ -106,6 +118,7 @@ fn teardown_detaches_queued_completion_tasks() {
   assert_eq!(io_rt.debug_registry_len(), 1);
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, backing.len());
+  assert_eq!(root_registry_len(), 1);
 
   // Simulate hard termination / realm teardown: detach completions + clear registry.
   io_rt.teardown();
@@ -116,6 +129,7 @@ fn teardown_detaches_queued_completion_tasks() {
   wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
 
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, 0);
+  assert_eq!(root_registry_len(), 0);
 
   // Drive the event loop. The queued completion task must *not* settle the promise after teardown.
   for _ in 0..16 {
@@ -125,6 +139,7 @@ fn teardown_detaches_queued_completion_tasks() {
 
   drop(rfd);
   unsafe {
+    drop(Box::from_raw(root_obj));
     drop(Box::from_raw(settled_ptr));
   }
 }
