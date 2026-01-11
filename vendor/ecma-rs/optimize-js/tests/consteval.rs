@@ -61,6 +61,27 @@ fn math_round_matches_ecmascript_ties_to_plus_infinity() {
 }
 
 #[test]
+fn math_round_coerces_primitives_via_to_number() {
+  let eval_round = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Math.round", &[arg]) {
+    Some(ConstNum(JN(v))) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert_eq!(eval_round(ConstStr("1.5".into())), 2.0);
+  assert_eq!(eval_round(ConstStr("-1.5".into())), -1.0);
+
+  assert_eq!(eval_round(optimize_js::il::inst::Const::Bool(true)), 1.0);
+  assert_eq!(eval_round(optimize_js::il::inst::Const::Null), 0.0);
+  assert!(eval_round(optimize_js::il::inst::Const::Undefined).is_nan());
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Math.round", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),

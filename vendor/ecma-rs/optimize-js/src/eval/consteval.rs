@@ -717,22 +717,38 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
         BigInt(bigint_from_integral_f64(value))
       }
       ("BigInt", Str(v)) => BigInt(parse_bigint(v)?),
-      ("Math.abs", Num(a)) => Num(JN(a.0.abs())),
-      ("Math.acos", Num(a)) => Num(JN(a.0.acos())),
-      ("Math.asin", Num(a)) => Num(JN(a.0.asin())),
-      ("Math.atan", Num(a)) => Num(JN(a.0.atan())),
-      ("Math.ceil", Num(a)) => Num(JN(a.0.ceil())),
-      ("Math.cos", Num(a)) => Num(JN(a.0.cos())),
-      ("Math.floor", Num(a)) => Num(JN(a.0.floor())),
-      ("Math.log", Num(a)) => Num(JN(a.0.ln())),
-      ("Math.log10", Num(a)) => Num(JN(a.0.log10())),
-      ("Math.log1p", Num(a)) => Num(JN(a.0.ln_1p())),
-      ("Math.log2", Num(a)) => Num(JN(a.0.log2())),
-      ("Math.round", Num(a)) => Num(JN(js_round(a.0))),
-      ("Math.sin", Num(a)) => Num(JN(a.0.sin())),
-      ("Math.sqrt", Num(a)) => Num(JN(a.0.sqrt())),
-      ("Math.tan", Num(a)) => Num(JN(a.0.tan())),
-      ("Math.trunc", Num(a)) => Num(JN(a.0.trunc())),
+      ("Math.abs", BigInt(_))
+      | ("Math.acos", BigInt(_))
+      | ("Math.asin", BigInt(_))
+      | ("Math.atan", BigInt(_))
+      | ("Math.ceil", BigInt(_))
+      | ("Math.cos", BigInt(_))
+      | ("Math.floor", BigInt(_))
+      | ("Math.log", BigInt(_))
+      | ("Math.log10", BigInt(_))
+      | ("Math.log1p", BigInt(_))
+      | ("Math.log2", BigInt(_))
+      | ("Math.round", BigInt(_))
+      | ("Math.sin", BigInt(_))
+      | ("Math.sqrt", BigInt(_))
+      | ("Math.tan", BigInt(_))
+      | ("Math.trunc", BigInt(_)) => return None,
+      ("Math.abs", a) => Num(JN(coerce_to_num(a).abs())),
+      ("Math.acos", a) => Num(JN(coerce_to_num(a).acos())),
+      ("Math.asin", a) => Num(JN(coerce_to_num(a).asin())),
+      ("Math.atan", a) => Num(JN(coerce_to_num(a).atan())),
+      ("Math.ceil", a) => Num(JN(coerce_to_num(a).ceil())),
+      ("Math.cos", a) => Num(JN(coerce_to_num(a).cos())),
+      ("Math.floor", a) => Num(JN(coerce_to_num(a).floor())),
+      ("Math.log", a) => Num(JN(coerce_to_num(a).ln())),
+      ("Math.log10", a) => Num(JN(coerce_to_num(a).log10())),
+      ("Math.log1p", a) => Num(JN(coerce_to_num(a).ln_1p())),
+      ("Math.log2", a) => Num(JN(coerce_to_num(a).log2())),
+      ("Math.round", a) => Num(JN(js_round(coerce_to_num(a)))),
+      ("Math.sin", a) => Num(JN(coerce_to_num(a).sin())),
+      ("Math.sqrt", a) => Num(JN(coerce_to_num(a).sqrt())),
+      ("Math.tan", a) => Num(JN(coerce_to_num(a).tan())),
+      ("Math.trunc", a) => Num(JN(coerce_to_num(a).trunc())),
       ("Number", BigInt(_)) => return None,
       ("Number", a) => Num(JN(coerce_to_num(a))),
       _ => return None,
