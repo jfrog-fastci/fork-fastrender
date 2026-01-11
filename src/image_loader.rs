@@ -9831,6 +9831,30 @@ impl Clone for ImageCache {
   use url::Url;
 
   #[test]
+  fn sized_lru_cache_tracks_bytes_and_eviction() {
+    let mut cache = SizedLruCache::new(0, 10);
+    cache.insert("a".to_string(), 1u32, 6);
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.current_bytes(), 6);
+    cache.insert("b".to_string(), 2u32, 6);
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.current_bytes(), 6);
+    assert!(cache.get_cloned("a").is_none());
+    assert_eq!(cache.get_cloned("b"), Some(2));
+  }
+
+  #[test]
+  fn sized_lru_cache_replacing_updates_current_bytes() {
+    let mut cache = SizedLruCache::new(0, 100);
+    cache.insert("a".to_string(), 1u32, 10);
+    assert_eq!(cache.current_bytes(), 10);
+    cache.insert("a".to_string(), 2u32, 4);
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.current_bytes(), 4);
+    assert_eq!(cache.get_cloned("a"), Some(2));
+  }
+
+  #[test]
   fn svg_text_renders_with_fontdb_configured() {
     let cache = ImageCache::new();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30">
