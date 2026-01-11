@@ -7606,6 +7606,7 @@ impl GridFormattingContext {
           | FormattingContextType::Table
       );
 
+      let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext::default();
       let (mut layout_positioned_style, mut result) =
         crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
           &abs,
@@ -7615,7 +7616,7 @@ impl GridFormattingContext {
           self.viewport_size,
           &self.font_context,
           None,
-          crate::layout::anchor_positioning::AnchorQueryContext::default(),
+          anchor_query,
         )?;
       let mut border_size = Size::new(
         result.size.width + actual_horizontal,
@@ -7674,7 +7675,7 @@ impl GridFormattingContext {
             self.viewport_size,
             &self.font_context,
             None,
-            crate::layout::anchor_positioning::AnchorQueryContext::default(),
+            anchor_query,
           )?;
         border_size = Size::new(
           result.size.width + actual_horizontal,
@@ -13366,6 +13367,10 @@ impl FormattingContext for GridFormattingContext {
             | FormattingContextType::Inline
             | FormattingContextType::Table
         );
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(root_box_id),
+          implicit_anchor_box_id,
+        };
         let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
@@ -13375,10 +13380,7 @@ impl FormattingContext for GridFormattingContext {
             ctx.viewport_size,
             &ctx.font_context,
             anchors_for_cb,
-            crate::layout::anchor_positioning::AnchorQueryContext {
-              query_parent_box_id: Some(root_box_id),
-              implicit_anchor_box_id,
-            },
+            anchor_query,
           )?;
         let mut border_size = Size::new(
           result.size.width + actual_horizontal,
@@ -13438,10 +13440,7 @@ impl FormattingContext for GridFormattingContext {
               ctx.viewport_size,
               &ctx.font_context,
               anchors_for_cb,
-              crate::layout::anchor_positioning::AnchorQueryContext {
-                query_parent_box_id: Some(root_box_id),
-                implicit_anchor_box_id,
-              },
+              anchor_query,
             )?;
           border_size = Size::new(
             result.size.width + actual_horizontal,

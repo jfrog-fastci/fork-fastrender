@@ -7012,6 +7012,10 @@ impl FormattingContext for TableFormattingContext {
             }
           };
 
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(root_box_id),
+          implicit_anchor_box_id,
+        };
         let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
@@ -7021,10 +7025,7 @@ impl FormattingContext for TableFormattingContext {
             self.viewport_size,
             self.factory.font_context(),
             Some(&anchor_index),
-            crate::layout::anchor_positioning::AnchorQueryContext {
-              query_parent_box_id: Some(root_box_id),
-              implicit_anchor_box_id,
-            },
+            anchor_query,
           )?;
         let mut border_size = crate::geometry::Size::new(
           result.size.width + actual_horizontal,
@@ -7090,10 +7091,7 @@ impl FormattingContext for TableFormattingContext {
               self.viewport_size,
               self.factory.font_context(),
               Some(&anchor_index),
-              crate::layout::anchor_positioning::AnchorQueryContext {
-                query_parent_box_id: Some(root_box_id),
-                implicit_anchor_box_id,
-              },
+              anchor_query,
             )?;
           border_size = crate::geometry::Size::new(
             result.size.width + actual_horizontal,
