@@ -24,58 +24,7 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
         return Ok(());
     }
 
-    Target::initialize_native(&InitializationConfig::default())
-        .expect("failed to initialize native LLVM target");
-
-    // Build a small statepoint/stackmap PoC module:
-    // - `main` calls `test`.
-    // - `test` is `gc \"coreclr\"` and keeps a GC pointer live across a call, which forces
-    //   statepoint rewriting and `.llvm_stackmaps` emission.
-    let context = Context::create();
-    let module = context.create_module("stackmaps_link");
-    let builder = context.create_builder();
-
-    let gc_ptr = gc::gc_ptr_type(&context);
-
-    let callee_ty = context.void_type().fn_type(&[], false);
-    let callee = module.add_function("callee", callee_ty, None);
-    let callee_entry = context.append_basic_block(callee, "entry");
-    builder.position_at_end(callee_entry);
-    builder.build_return(None).unwrap();
-
-    let test_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
-    let test_fn = module.add_function("test", test_ty, None);
-    gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
-
-    let test_entry = context.append_basic_block(test_fn, "entry");
-    builder.position_at_end(test_entry);
-    builder.build_call(callee, &[], "call_callee").unwrap();
-    let arg0 = test_fn
-        .get_first_param()
-        .expect("missing arg0")
-        .into_pointer_value();
-    builder.build_return(Some(&arg0)).unwrap();
-
-    let main_ty = context.i32_type().fn_type(&[], false);
-    let main_fn = module.add_function("main", main_ty, None);
-    let main_entry = context.append_basic_block(main_fn, "entry");
-    builder.position_at_end(main_entry);
-    builder
-        .build_call(test_fn, &[gc_ptr.const_null().into()], "call_test")
-        .unwrap();
-    builder
-        .build_return(Some(&context.i32_type().const_int(0, false)))
-        .unwrap();
-
-    let mut target = emit::TargetConfig::default();
-    target.cpu = "generic".to_string();
-    target.features = "".to_string();
-    target.opt_level = OptimizationLevel::None;
-    target.reloc_mode = RelocMode::Default;
-    target.code_model = CodeModel::Default;
-
-    let obj_bytes = emit::emit_object_with_statepoints(&module, target)
-        .context("emit object with statepoints")?;
+    let obj_bytes = build_statepoint_object().context("build statepoint object")?;
 
     assert_section_present_non_empty(&obj_bytes, ".llvm_stackmaps")?;
     assert_any_section_present_non_empty(&obj_bytes, &[".rela.llvm_stackmaps", ".rel.llvm_stackmaps"])?;
@@ -107,6 +56,52 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
         .with_context(|| format!("run {}", exe_path.display()))?;
     if !status.success() {
         return Err(anyhow!("linked executable failed with status {status}"));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
+    if !command_works("clang-18") {
+        eprintln!("skipping: clang-18 not found in PATH");
+        return Ok(());
+    }
+
+    if !command_works("llvm-objcopy-18") && !command_works("llvm-objcopy") {
+        eprintln!("skipping: llvm-objcopy not found in PATH (needed for PIE stackmaps patching)");
+        return Ok(());
+    }
+
+    let obj_bytes = build_statepoint_object().context("build statepoint object")?;
+
+    let tmp = tempfile::tempdir().context("create tempdir")?;
+    let exe_path = tmp.path().join("poc_pie");
+
+    native_js::link::link_object_buffers_to_elf_executable(
+        &exe_path,
+        &[obj_bytes.as_slice()],
+        LinkOpts {
+            pie: true,
+            ..Default::default()
+        },
+    )?;
+
+    let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
+    // PIE should be ET_DYN.
+    let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
+    assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
+
+    assert_section_present_non_empty(&exe_bytes, ".llvm_stackmaps")?;
+    assert_section_absent(&exe_bytes, ".rela.llvm_stackmaps")?;
+    assert_section_absent(&exe_bytes, ".rel.llvm_stackmaps")?;
+    assert_no_textrel_dynamic_tags(&exe_bytes)?;
+
+    let status = Command::new(&exe_path)
+        .status()
+        .with_context(|| format!("run {}", exe_path.display()))?;
+    if !status.success() {
+        return Err(anyhow!("linked PIE executable failed with status {status}"));
     }
 
     Ok(())
@@ -162,4 +157,85 @@ fn assert_section_absent(bytes: &[u8], name: &str) -> Result<()> {
         return Err(anyhow!("expected section {name} to be absent"));
     }
     Ok(())
+}
+
+fn assert_no_textrel_dynamic_tags(bytes: &[u8]) -> Result<()> {
+    let file = object::File::parse(bytes).context("parse object/elf")?;
+    let Some(dynamic) = file.section_by_name(".dynamic") else {
+        // Static binaries have no dynamic section, so DT_TEXTREL can't apply.
+        return Ok(());
+    };
+    let data = dynamic.data().context("read .dynamic section")?;
+
+    // ELF64 little-endian: each entry is (i64 tag, u64 val).
+    for ent in data.chunks_exact(16) {
+        let tag = i64::from_le_bytes(ent[0..8].try_into().unwrap());
+        let val = u64::from_le_bytes(ent[8..16].try_into().unwrap());
+        if tag == 0 {
+            break; // DT_NULL
+        }
+        // DT_TEXTREL (22) indicates text relocations are present.
+        if tag == 22 {
+            return Err(anyhow!("unexpected DT_TEXTREL in PIE executable"));
+        }
+        // DT_FLAGS (30) can include DF_TEXTREL (0x4).
+        if tag == 30 && (val & 0x4) != 0 {
+            return Err(anyhow!("unexpected DF_TEXTREL in DT_FLAGS for PIE executable"));
+        }
+    }
+    Ok(())
+}
+
+fn build_statepoint_object() -> Result<Vec<u8>> {
+    Target::initialize_native(&InitializationConfig::default())
+        .expect("failed to initialize native LLVM target");
+
+    // Build a small statepoint/stackmap PoC module:
+    // - `main` calls `test`.
+    // - `test` is `gc \"coreclr\"` and keeps a GC pointer live across a call, which forces
+    //   statepoint rewriting and `.llvm_stackmaps` emission.
+    let context = Context::create();
+    let module = context.create_module("stackmaps_link");
+    let builder = context.create_builder();
+
+    let gc_ptr = gc::gc_ptr_type(&context);
+
+    let callee_ty = context.void_type().fn_type(&[], false);
+    let callee = module.add_function("callee", callee_ty, None);
+    let callee_entry = context.append_basic_block(callee, "entry");
+    builder.position_at_end(callee_entry);
+    builder.build_return(None).unwrap();
+
+    let test_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
+    let test_fn = module.add_function("test", test_ty, None);
+    gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+    let test_entry = context.append_basic_block(test_fn, "entry");
+    builder.position_at_end(test_entry);
+    builder.build_call(callee, &[], "call_callee").unwrap();
+    let arg0 = test_fn
+        .get_first_param()
+        .expect("missing arg0")
+        .into_pointer_value();
+    builder.build_return(Some(&arg0)).unwrap();
+
+    let main_ty = context.i32_type().fn_type(&[], false);
+    let main_fn = module.add_function("main", main_ty, None);
+    let main_entry = context.append_basic_block(main_fn, "entry");
+    builder.position_at_end(main_entry);
+    builder
+        .build_call(test_fn, &[gc_ptr.const_null().into()], "call_test")
+        .unwrap();
+    builder
+        .build_return(Some(&context.i32_type().const_int(0, false)))
+        .unwrap();
+
+    let mut target = emit::TargetConfig::default();
+    target.cpu = "generic".to_string();
+    target.features = "".to_string();
+    target.opt_level = OptimizationLevel::None;
+    target.reloc_mode = RelocMode::Default;
+    target.code_model = CodeModel::Default;
+
+    emit::emit_object_with_statepoints(&module, target).context("emit object with statepoints")
 }
