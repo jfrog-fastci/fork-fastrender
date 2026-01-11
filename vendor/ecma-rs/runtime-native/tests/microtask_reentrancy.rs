@@ -91,3 +91,34 @@ fn run_until_idle_is_non_reentrant() {
   assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn drain_microtasks_is_non_reentrant_inside_rt_async_poll() {
+  let _rt = TestRuntimeGuard::new();
+
+  let st: &'static ReentrancyState = Box::leak(Box::new(ReentrancyState::new()));
+  enqueue_microtask(microtask_a_calls_drain, st as *const ReentrancyState as *mut u8);
+
+  // Drive the runtime using the event loop polling API. The inner call to `rt_drain_microtasks`
+  // must not deadlock on the poll lock.
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert!(!st.inner_call_result.load(Ordering::SeqCst));
+  assert_eq!(st.b_runs.load(Ordering::SeqCst), 1);
+  assert!(!st.b_ran_during_a.load(Ordering::SeqCst));
+}
+
+#[test]
+fn run_until_idle_is_non_reentrant_inside_rt_async_poll() {
+  let _rt = TestRuntimeGuard::new();
+
+  let st: &'static ReentrancyState = Box::leak(Box::new(ReentrancyState::new()));
+  enqueue_macrotask(macrotask_a_calls_run_until_idle, st as *const ReentrancyState as *mut u8);
+
+  // Drive the runtime using the event loop polling API. The inner call to `rt_async_run_until_idle`
+  // must not deadlock on the poll lock.
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert!(!st.inner_call_result.load(Ordering::SeqCst));
+  assert_eq!(st.b_runs.load(Ordering::SeqCst), 1);
+  assert!(!st.b_ran_during_a.load(Ordering::SeqCst));
+}

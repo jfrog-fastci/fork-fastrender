@@ -30,10 +30,10 @@ thread_local! {
   static PERFORMING_MICROTASK_CHECKPOINT: Cell<bool> = const { Cell::new(false) };
 }
 
-struct MicrotaskCheckpointGuard;
+pub(crate) struct MicrotaskCheckpointGuard;
 
 impl MicrotaskCheckpointGuard {
-  fn enter() -> Option<Self> {
+  pub(crate) fn enter() -> Option<Self> {
     let already_in_checkpoint =
       PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.replace(true));
     if already_in_checkpoint {

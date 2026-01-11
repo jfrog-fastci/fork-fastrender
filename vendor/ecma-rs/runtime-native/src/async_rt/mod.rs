@@ -240,6 +240,13 @@ pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
 ///
 /// Returns `true` if there is still pending work after the turn.
 pub(crate) fn poll() -> bool {
+  // Prevent nested calls into the event loop from tasks/microtasks (HTML-style microtask checkpoint
+  // semantics). This also avoids deadlocks on `POLL_LOCK` if code attempts to drive the runtime
+  // recursively.
+  let Some(_checkpoint_guard) = crate::async_runtime::MicrotaskCheckpointGuard::enter() else {
+    return false;
+  };
+
   // Serialize at the ABI boundary: the event loop itself is single-consumer.
   let _guard = POLL_LOCK.lock();
   global().poll()
