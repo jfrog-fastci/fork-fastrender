@@ -45,6 +45,20 @@ impl RequireBindings {
       .push(BindingEvent { start, target });
   }
 
+  fn extend(&mut self, other: RequireBindings) {
+    for (name, mut events) in other.bindings {
+      self.bindings.entry(name).or_default().append(&mut events);
+    }
+  }
+
+  fn hoist_all(&mut self, start: u32) {
+    for events in self.bindings.values_mut() {
+      for event in events.iter_mut() {
+        event.start = start;
+      }
+    }
+  }
+
   fn resolve(&self, name: NameId, use_start: u32) -> Option<&BindingTarget> {
     let events = self.bindings.get(&name)?;
     events
@@ -303,7 +317,17 @@ pub fn resolve_api_call<'a>(
   };
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
-  let require_bindings = collect_require_bindings(lower, body_id);
+  let require_bindings = if body_id == lower.hir.root_body {
+    collect_require_bindings(lower, body_id)
+  } else {
+    // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
+    // executes after module initialization, so treat the root body bindings as hoisted for the
+    // purpose of best-effort resolution.
+    let mut bindings = collect_require_bindings(lower, lower.hir.root_body);
+    bindings.hoist_all(0);
+    bindings.extend(collect_require_bindings(lower, body_id));
+    bindings
+  };
   let import_bindings = collect_import_bindings(lower);
 
   let (base, member_path) = flatten_member_chain(lower, body, call.callee)?;
@@ -348,6 +372,26 @@ mod tests {
       }
       if let Some(id) = resolve_api_call(&db, &lowered, body_id, ExprId(idx as u32)) {
         resolved.push(id.to_string());
+      }
+    }
+
+    resolved
+  }
+
+  fn resolved_calls_all_bodies(source: &str) -> Vec<String> {
+    let lowered = lower_from_source_with_kind(FileKind::Ts, source).unwrap();
+    let db = crate::load_default_api_database();
+    let mut resolved = Vec::new();
+
+    for (&body_id, _) in lowered.body_index.iter() {
+      let body = lowered.body(body_id).unwrap();
+      for (idx, expr) in body.exprs.iter().enumerate() {
+        if !matches!(expr.kind, ExprKind::Call(_)) {
+          continue;
+        }
+        if let Some(id) = resolve_api_call(&db, &lowered, body_id, ExprId(idx as u32)) {
+          resolved.push(id.to_string());
+        }
       }
     }
 
@@ -419,6 +463,20 @@ mod tests {
       r#"
         const fs = require('node:fs') as any;
         fs!.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_root_require_bindings_inside_nested_bodies() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        function foo() {
+          fs.readFile('x', () => {});
+        }
+
+        const fs = require('node:fs');
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);
