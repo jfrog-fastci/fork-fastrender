@@ -38,6 +38,9 @@ pub enum StackMapError {
   #[error("ConstIndex location refers to constants[{index}], but constants.len()={constants_len}")]
   InvalidConstIndex { index: u32, constants_len: usize },
 
+  #[error("non-zero bytes after stackmap blob at section offset {offset}")]
+  TrailingNonZeroBytes { offset: usize },
+
   #[error("overflow while summing stackmap per-function record counts")]
   RecordCountOverflow,
 
@@ -84,7 +87,14 @@ pub struct StackMap {
 
 impl StackMap {
   pub fn parse(section: &[u8]) -> Result<Self, StackMapError> {
-    let (map, _len) = Self::parse_with_len(section)?;
+    let (map, len) = Self::parse_with_len(section)?;
+    // A `StackMap` models a single StackMap v3 blob. If the caller accidentally
+    // passes the entire `.llvm_stackmaps` output section (which may contain
+    // multiple concatenated blobs), fail fast instead of silently dropping the
+    // trailing records.
+    if section.get(len..).map_or(false, |tail| tail.iter().any(|&b| b != 0)) {
+      return Err(StackMapError::TrailingNonZeroBytes { offset: len });
+    }
     Ok(map)
   }
 
@@ -891,6 +901,56 @@ mod tests {
     assert!(matches!(locs[2], Location::Indirect { .. }));
     assert!(matches!(locs[3], Location::Constant { .. }));
     assert!(matches!(locs[4], Location::ConstIndex { index: 0, .. }));
+  }
+
+  #[test]
+  fn parse_concatenated_stackmap_blobs_from_multiple_objects() {
+    // When linking multiple object files without full LTO, `.llvm_stackmaps`
+    // commonly contains multiple independent StackMap v3 blobs concatenated with
+    // zero padding between them.
+
+    fn build_min_blob(func_addr: u64, patchpoint_id: u64, inst_offset: u32) -> Vec<u8> {
+      let mut bytes = Vec::new();
+      build_header(&mut bytes, 1, 0, 1);
+
+      // Function record.
+      push_u64(&mut bytes, func_addr);
+      push_u64(&mut bytes, 32); // stack_size
+      push_u64(&mut bytes, 1); // record_count
+
+      // Record with 0 locations / 0 live-outs.
+      push_u64(&mut bytes, patchpoint_id);
+      push_u32(&mut bytes, inst_offset);
+      push_u16(&mut bytes, 0);
+      push_u16(&mut bytes, 0); // num_locations
+
+      // Align to live-out header.
+      align_to_8_with(&mut bytes, 0);
+      push_u16(&mut bytes, 0); // padding
+      push_u16(&mut bytes, 0); // num_liveouts
+      align_to_8_with(&mut bytes, 0);
+
+      bytes
+    }
+
+    let blob_a = build_min_blob(0x1000, 1, 0x10);
+    let blob_b = build_min_blob(0x2000, 2, 0x20);
+
+    let mut section = Vec::new();
+    section.extend_from_slice(&blob_a);
+    section.extend_from_slice(&[0u8; 16]); // linker alignment padding
+    section.extend_from_slice(&blob_b);
+    section.extend_from_slice(&[0u8; 8]); // trailing padding
+
+    let sm = StackMaps::parse(&section).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+    assert_eq!(sm.raws()[0].functions.len(), 1);
+    assert_eq!(sm.raws()[0].records.len(), 1);
+    assert_eq!(sm.raws()[1].functions.len(), 1);
+    assert_eq!(sm.raws()[1].records.len(), 1);
+    assert_eq!(sm.callsites().len(), 2);
+    assert_eq!(sm.lookup(0x1010).unwrap().record.patchpoint_id, 1);
+    assert_eq!(sm.lookup(0x2020).unwrap().record.patchpoint_id, 2);
   }
 
   #[test]
