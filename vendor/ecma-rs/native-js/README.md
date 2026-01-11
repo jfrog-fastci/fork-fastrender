@@ -131,9 +131,13 @@ The API is intentionally small and currently consists of:
   - `emit::emit_bitcode(&Module) -> Vec<u8>`
   - `emit::emit_object(&Module, TargetConfig) -> Vec<u8>`
   - `emit::emit_asm(&Module, TargetConfig) -> Vec<u8>`
-- `strict::validate(...)`: strict TypeScript-subset validator that rejects
-  unsafe constructs (`any`, `eval`, type assertions, etc) even if the TypeScript
-  typechecker accepts them.
+- `validate::validate_strict_subset(...)`: validator for the **strict compilation
+  subset** currently supported by the native backend (syntax + type restrictions;
+  used by the `native-js` binary in `native-js-cli`).
+- `strict::validate(...)`: legacy strict validator that rejects unsafe constructs
+  (`any`, `eval`, etc). This is still useful for tests and tooling, but the AOT
+  pipeline prefers `validate_strict_subset` (which allows TS-only runtime-inert
+  wrappers like `satisfies` / `as` / `!`).
 - `strict::entrypoint(...)`: locate the exported `main()` entrypoint in a
   typechecked program (used by the early HIR-based backend).
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
@@ -356,7 +360,24 @@ Everything else currently fails with a coarse `native_js::codegen::CodegenError`
 (`unsupported statement`, `unsupported expression`, `unsupported operator: ...`,
 etc).
 
-## Strict TypeScript subset (`native_js::strict`)
+## Strict compilation subset (`native_js::validate`)
+
+The typechecked AOT pipeline (`native-js` binary) runs an additional validation
+pass after successful type checking and before LLVM IR generation:
+
+```rust
+pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>>
+```
+
+It emits stable `NJS####` codes:
+
+- `NJS0009`: unsupported syntax in the native-js strict subset
+- `NJS0010`: unsupported type in the native-js strict subset
+
+This validator is intentionally conservative and is expected to be relaxed
+incrementally as more language features are lowered safely.
+
+## Legacy strict validator (`native_js::strict`)
 
 `typecheck-ts` implements TypeScript’s semantics (including unsafe escape hatches
 like `any`, `eval`, and type assertions). The native pipeline is stricter, so
@@ -366,9 +387,9 @@ like `any`, `eval`, and type assertions). The native pipeline is stricter, so
 pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic>
 ```
 
-This validator is intended to be run on a `typecheck-ts` program and is **not**
-currently invoked by the minimal `compile_typescript_to_llvm_ir` emitter (and
-therefore not by `native-js-cli` either).
+This validator is intended to be run on a `typecheck-ts` program, but it is
+**not** invoked by the minimal `compile_typescript_to_llvm_ir` emitter (and
+therefore not by `native-js-cli`).
 
 ### Rejected constructs (enforced today)
 

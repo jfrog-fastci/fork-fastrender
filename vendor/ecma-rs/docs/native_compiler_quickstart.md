@@ -52,8 +52,6 @@ Strict-native rejects (hard error, not warning):
 **Strict-native design** (see [`EXEC.plan.md`](../EXEC.plan.md) for rationale):
 
 - `any` (explicit or inferred)
-- Type assertions that bypass checking (`x as T`, `<T>x`)
-- Non-null assertions (`x!`)
 - Dynamic code execution: `eval()`, `new Function()`
 - `with`
 - `arguments`
@@ -68,16 +66,17 @@ Strict-native rejects (hard error, not warning):
 > Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
 > proceeds.
 
-**Also enforced today** by `native-js`’s strict validator (`native_js::strict::validate`, diagnostics use the `NJS####` prefix):
+**Also enforced today** by `native-js`’s strict subset validator (`native_js::validate::validate_strict_subset`, diagnostics use the `NJS####` prefix):
 
-- `any` (explicit or inferred) (`NJS0001`)
-- Type assertions (`x as T`, `<T>x`) (`NJS0002`)
-- Non-null assertions (`x!`) (`NJS0003`)
-- `eval()` (`NJS0004`)
-- `new Function()` (`NJS0005`)
-- `with` statements (`NJS0006`)
-- Computed property access with non-literal keys (`obj[key]` where `key` is not a string/number literal) (`NJS0007`)
-- Use of the `arguments` identifier/object (`NJS0008`)
+- `NJS0009`: unsupported syntax in the strict subset (e.g. `with`, `try`/`throw`, `eval`, `super`, `yield`, `await`, object/array literals, property access, classes, …)
+- `NJS0010`: unsupported types in the strict subset (e.g. `any`, `unknown`, unions/intersections, object/callable/reference types, `bigint`, `symbol`, …)
+
+> Note: TS-only **runtime-inert** expression wrappers such as `satisfies`, type assertions (`as`),
+> and non-null assertions (`!`) are allowed by this strict subset validator, but the wrapped runtime
+> expressions are still validated.
+
+The older `native_js::strict::validate` API remains as a legacy validator (used in tests/tooling) and
+emits `NJS0001`–`NJS0008`.
 
 See [`native-js/README.md`](../native-js/README.md) for the canonical `native_js::strict` list (with diagnostic codes).
 
@@ -129,10 +128,10 @@ with `NJS####` diagnostics. To run its regression tests:
 
 ```bash
 # From the repo root:
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_validator
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_subset
 
 # Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_llvm.sh test -p native-js --test strict_validator
+  bash scripts/cargo_llvm.sh test -p native-js --test strict_subset
 ```
 
 ---
@@ -276,7 +275,8 @@ Strict-native checks can come from multiple layers:
 
 - `TN####` codes: emitted by `typecheck-ts` when `--strict-native` is enabled.
   - Today this is small (currently `TN0001` for explicit `any`), and is expected to grow.
-- `NJS####` codes: emitted by `native-js`’s strict validator (`native_js::strict::validate`).
-  - These are intended to be conservative and are used by the typechecked `native-js` AOT CLI.
+- `NJS####` codes: emitted by `native-js` strict subset validation.
+  - `native_js::validate::validate_strict_subset` is used by the typechecked `native-js` AOT CLI.
+  - `native_js::strict::validate` is a legacy validator that still emits `NJS####` codes for tests/tooling.
 
 See [`docs/diagnostic-codes.md`](./diagnostic-codes.md) for the repo-wide prefix registry.

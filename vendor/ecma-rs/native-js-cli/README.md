@@ -7,7 +7,8 @@ This crate currently ships two binaries:
 - `native-js-cli` (default): a minimal `parse-js`-driven LLVM IR emitter used for
   builtin smoke tests and IR debugging.
 - `native-js`: an experimental **typechecked AOT** pipeline (`typecheck-ts` +
-  `native-js` strict validator + HIR → LLVM + object emission + `clang` link).
+  `native_js::validate::validate_strict_subset` + HIR → LLVM + object emission +
+  `clang` link).
 
 ## `native-js-cli` (minimal emitter)
 
