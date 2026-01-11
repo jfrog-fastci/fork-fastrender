@@ -136,7 +136,6 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     | InstTyp::VarAssign
     | InstTyp::Return
     | InstTyp::Phi
-    | InstTyp::Return
     | InstTyp::_Label => {}
     // These should not exist after CFG construction but are treated as no-ops for analysis.
     InstTyp::_Goto | InstTyp::_Dummy => {}
