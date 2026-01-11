@@ -353,7 +353,7 @@ impl EffectTemplate {
         }
         effects
       }
-      Self::Unknown => EffectSet::UNKNOWN,
+      Self::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
     }
   }
 }
@@ -466,5 +466,12 @@ mod tests {
     // Throwing does not automatically imply impurity at this coarse layer; we
     // track throws separately via `EffectSet::MAY_THROW`.
     assert_eq!(throwing.inferred_purity(), Purity::Pure);
+  }
+
+  #[test]
+  fn unknown_template_is_conservative_about_throwing() {
+    let effects = EffectTemplate::Unknown.apply(&[]);
+    assert!(effects.contains(EffectSet::UNKNOWN));
+    assert!(effects.contains(EffectSet::MAY_THROW));
   }
 }
