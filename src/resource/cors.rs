@@ -104,11 +104,23 @@ pub fn validate_cors_allow_origin(
   }
 
   // `null` is a special-case sentinel value defined as a literal token in Fetch/CORS.
-  // Treat only the exact lowercase spelling as valid; other casings are invalid.
-  if raw != "null" && raw.eq_ignore_ascii_case("null") {
-    return Err(format!(
-      "blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"
-    ));
+  // Treat only the exact lowercase spelling as valid; other casings must be treated as invalid
+  // origins.
+  if raw != "null" {
+    let parsed = Url::parse(raw)
+      .ok()
+      .and_then(|url| super::http_browser_origin_and_referer_for_url(&url))
+      .map(|(origin, _)| origin);
+    let Some(serialized) = parsed else {
+      return Err(format!(
+        "blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"
+      ));
+    };
+    if serialized != raw {
+      return Err(format!(
+        "blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"
+      ));
+    }
   }
 
   if raw != serialized_request_origin {
@@ -301,7 +313,7 @@ mod tests {
     )
     .expect_err("NBSP-prefixed ACAO wildcard must not be accepted");
     assert!(
-      err.contains("does not match request origin"),
+      err.contains("invalid Access-Control-Allow-Origin"),
       "unexpected error: {err}"
     );
   }
@@ -420,7 +432,7 @@ mod tests {
     )
     .expect_err("ACAO containing a path must be rejected");
     assert!(
-      err.contains("does not match request origin"),
+      err.contains("invalid Access-Control-Allow-Origin"),
       "unexpected error message: {err}"
     );
   }
@@ -444,7 +456,7 @@ mod tests {
     )
     .expect_err("ACAO containing an explicit default port must be rejected");
     assert!(
-      err.contains("does not match request origin"),
+      err.contains("invalid Access-Control-Allow-Origin"),
       "unexpected error message: {err}"
     );
   }
@@ -551,7 +563,7 @@ mod tests {
     )
     .expect_err("unbracketed IPv6 origin should not match the serialized request origin");
     assert!(
-      err.contains("does not match request origin"),
+      err.contains("invalid Access-Control-Allow-Origin"),
       "unexpected error message: {err}"
     );
   }
