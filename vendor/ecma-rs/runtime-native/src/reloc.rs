@@ -121,5 +121,26 @@ pub fn relocate_derived_pair(
   derived_slot: *mut usize,
   mut relocate_base: impl FnMut(usize) -> usize,
 ) {
-  relocate_derived_pairs(&[(base_slot, derived_slot)], |base| relocate_base(base))
+  if base_slot.is_null() || derived_slot.is_null() {
+    debug_assert!(false, "relocate_derived_pair received null slot pointer");
+    return;
+  }
+
+  // SAFETY: callers must provide valid, writable slots.
+  unsafe {
+    let base = *base_slot;
+    let derived = *derived_slot;
+
+    if base == 0 {
+      *base_slot = 0;
+      *derived_slot = 0;
+      return;
+    }
+
+    let delta = (derived as isize) - (base as isize);
+    let new_base = relocate_base(base);
+
+    *base_slot = new_base;
+    *derived_slot = (new_base as isize + delta) as usize;
+  }
 }
