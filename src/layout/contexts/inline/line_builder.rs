@@ -5333,6 +5333,7 @@ impl<'a> LineBuilder<'a> {
           //
           // Compute the baseline shift from the inline box's strut (its line-height box), then
           // apply that shift to the aligned subtree bounds when updating the line box height.
+          self.baseline_acc.has_items = true;
           let shift = self.baseline_acc.compute_baseline_shift(
             vertical_align,
             &inline_box.strut_metrics,
@@ -5462,6 +5463,7 @@ impl<'a> LineBuilder<'a> {
       } else {
         match &positioned.item {
           InlineItem::InlineBox(inline_box) => {
+            self.baseline_acc.has_items = true;
             let shift = self.baseline_acc.compute_baseline_shift(
               vertical_align,
               &inline_box.strut_metrics,

@@ -9083,6 +9083,7 @@ fn compute_inline_items_single_line_layout(
     } else {
       match child {
         InlineItem::InlineBox(inline_box) => {
+          acc.has_items = true;
           let shift = acc.compute_baseline_shift(
             vertical_align,
             &inline_box.strut_metrics,
@@ -9178,6 +9179,7 @@ fn compute_inline_box_line_metrics(
     } else {
       match child {
         InlineItem::InlineBox(inline_box) => {
+          acc.has_items = true;
           let shift = acc.compute_baseline_shift(vertical_align, &inline_box.strut_metrics, Some(&fallback));
           let item_ascent = metrics.baseline_offset - shift;
           let item_descent = (metrics.height - metrics.baseline_offset) + shift;
