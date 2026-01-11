@@ -2,9 +2,10 @@
 #define ECMA_RS_RUNTIME_NATIVE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
-// Minimal stable C ABI surface for runtime-native.
+// Stable C ABI surface for runtime-native.
 //
 // This header is intended for code generators / native glue code. Keep it small:
 // only entrypoints that are part of the compiler/runtime ABI contract should live here.
@@ -14,6 +15,38 @@ extern "C" {
 #endif
 
 // -----------------------------------------------------------------------------
+// Core ABI types
+// -----------------------------------------------------------------------------
+
+#ifndef __SIZEOF_INT128__
+#error "runtime-native requires a compiler with __int128 support"
+#endif
+typedef unsigned __int128 ShapeId;
+
+typedef uint32_t InternedId;
+typedef uint64_t TaskId;
+
+// runtime-native does not yet implement a full JS value representation/GC.
+// For now, values are passed as opaque pointers.
+typedef void* ValueRef;
+
+// Minimal promise placeholder.
+typedef struct RtPromise RtPromise;
+typedef RtPromise* PromiseRef;
+
+// An FFI-friendly UTF-8 byte string reference.
+typedef struct StringRef {
+  const uint8_t* ptr;
+  size_t len;
+} StringRef;
+
+// -----------------------------------------------------------------------------
+// Memory
+// -----------------------------------------------------------------------------
+uint8_t* rt_alloc(size_t size, ShapeId shape);
+uint8_t* rt_alloc_array(size_t len, size_t elem_size);
+
+// -----------------------------------------------------------------------------
 // GC entrypoints (milestone runtime: mostly no-ops)
 // -----------------------------------------------------------------------------
 void rt_gc_safepoint(void);
@@ -21,19 +54,20 @@ void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 void rt_gc_collect(void);
 
 // -----------------------------------------------------------------------------
-// Opaque value model
+// Strings
 // -----------------------------------------------------------------------------
-//
-// runtime-native does not yet implement a full JS value representation/GC.
-// For now, values are passed as opaque pointers.
-typedef void* ValueRef;
+StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);
+InternedId rt_string_intern(const uint8_t* s, size_t len);
+
+// -----------------------------------------------------------------------------
+// Parallel
+// -----------------------------------------------------------------------------
+TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
+void rt_parallel_join(const TaskId* tasks, size_t count);
 
 // -----------------------------------------------------------------------------
 // Promise placeholder
 // -----------------------------------------------------------------------------
-typedef struct RtPromise RtPromise;
-typedef RtPromise* PromiseRef;
-
 PromiseRef rt_promise_new(void);
 void rt_promise_resolve(PromiseRef p, ValueRef value);
 void rt_promise_reject(PromiseRef p, ValueRef err);
@@ -52,14 +86,6 @@ typedef struct RtCoroutineHeader RtCoroutineHeader;
 typedef RtCoroStatus (*RtCoroResumeFn)(RtCoroutineHeader*);
 
 // Generated coroutine frames are structs whose prefix is RtCoroutineHeader.
-//
-// Layout (x64):
-//   0  : resume
-//   8  : promise
-//   16 : state
-//   20 : await_is_error (0=value, 1=error)
-//   24 : await_value
-//   32 : await_error
 struct RtCoroutineHeader {
   RtCoroResumeFn resume;
   PromiseRef promise;

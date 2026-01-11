@@ -19,6 +19,7 @@ parking_lot = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 rand = { workspace = true }
+tempfile = { workspace = true }
 
 [[bench]]
 name = "card_table"

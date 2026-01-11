@@ -6,7 +6,7 @@
 //!
 //! See:
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
-//! - `include/runtime_native.h` for the minimal stable C ABI surface.
+//! - `include/runtime_native.h` for the stable C ABI surface.
 
 pub mod abi;
 pub mod gc;
@@ -97,14 +97,31 @@ mod tests {
   }
 
   #[test]
-  fn c_header_matches_exported_gc_entrypoints() {
+  fn c_header_matches_exported_entrypoints() {
     const HEADER: &str = include_str!("../include/runtime_native.h");
 
-    const GC_SAFEPOINT: &str = "void rt_gc_safepoint(void);";
-    const WRITE_BARRIER: &str = "void rt_write_barrier(uint8_t* obj, uint8_t* slot);";
-    const GC_COLLECT: &str = "void rt_gc_collect(void);";
+    // Keep these strings in sync with `include/runtime_native.h` to ensure we
+    // don't forget to update the header when changing the exported ABI.
+    const DECLS: &[&str] = &[
+      "uint8_t* rt_alloc(size_t size, ShapeId shape);",
+      "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
+      "void rt_gc_safepoint(void);",
+      "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
+      "void rt_gc_collect(void);",
+      "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
+      "InternedId rt_string_intern(const uint8_t* s, size_t len);",
+      "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
+      "void rt_parallel_join(const TaskId* tasks, size_t count);",
+      "PromiseRef rt_async_spawn(RtCoroutineHeader* coro);",
+      "bool rt_async_poll(void);",
+      "PromiseRef rt_promise_new(void);",
+      "void rt_promise_resolve(PromiseRef p, ValueRef value);",
+      "void rt_promise_reject(PromiseRef p, ValueRef err);",
+      "void rt_promise_then(PromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "void rt_coro_await(RtCoroutineHeader* coro, PromiseRef awaited, uint32_t next_state);",
+    ];
 
-    for decl in [GC_SAFEPOINT, WRITE_BARRIER, GC_COLLECT] {
+    for decl in DECLS {
       assert!(
         HEADER.contains(decl),
         "`runtime_native.h` is missing expected declaration: {decl}"
@@ -112,9 +129,39 @@ mod tests {
     }
 
     // Ensure the Rust exports match the declared ABI shape.
+    let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
+    let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _write_barrier: extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _collect: extern "C" fn() = rt_gc_collect;
-    let _ = (_safepoint, _write_barrier, _collect);
+    let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
+    let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
+    let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
+    let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
+    let _async_spawn: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn;
+    let _async_poll: extern "C" fn() -> bool = rt_async_poll;
+    let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
+    let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
+    let _promise_reject: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject;
+    let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
+    let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
+    let _ = (
+      _alloc,
+      _alloc_array,
+      _safepoint,
+      _write_barrier,
+      _collect,
+      _concat,
+      _intern,
+      _spawn,
+      _join,
+      _async_spawn,
+      _async_poll,
+      _promise_new,
+      _promise_resolve,
+      _promise_reject,
+      _promise_then,
+      _coro_await,
+    );
   }
 }

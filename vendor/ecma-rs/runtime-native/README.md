@@ -2,9 +2,43 @@
 
 Native runtime library used by LLVM-generated code (planned `native-js` backend).
 
-This crate is intentionally minimal today: it provides the milestone ABI surface (allocator, string
-helpers, etc.) plus the **minimal async/await runtime ABI** needed to execute LLVM-generated
-coroutine state machines with JS-correct microtask ordering.
+This crate provides the runtime-side pieces of the compiler/runtime ABI contract:
+allocator entrypoints, string helpers, GC safepoints, and the **minimal async/await runtime ABI**
+needed to execute LLVM-generated coroutine state machines with JS-correct microtask ordering.
+
+## Build (static library)
+
+From the `vendor/ecma-rs/` workspace root:
+
+```bash
+cargo build -p runtime-native --release
+```
+
+Or via the helper script (prints include/lib paths for downstream build systems):
+
+```bash
+bash scripts/build_runtime_native.sh
+```
+
+Expected artifacts:
+
+- Static library: `target/release/libruntime_native.a`
+- C header: `runtime-native/include/runtime_native.h`
+
+## Link from C / clang
+
+Example (from the workspace root):
+
+```bash
+cc -std=c99 \
+  -I runtime-native/include \
+  /path/to/program.c \
+  target/release/libruntime_native.a \
+  -o program
+```
+
+Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
+ensure the search path points at `target/release`.
 
 ## Coroutine ABI
 
@@ -58,3 +92,4 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
 FIFO by calling `rt_async_poll()`.
+
