@@ -33,7 +33,23 @@ fn assert_is_red(rgba: (u8, u8, u8, u8), msg: &str) {
   );
 }
 
-fn html_with_mask_clip(clip: &str) -> String {
+#[derive(Clone, Copy, Debug)]
+enum MaskPropertyFlavor {
+  Standard,
+  Webkit,
+}
+
+fn html_with_mask_clip(clip: &str, flavor: MaskPropertyFlavor) -> String {
+  let (mask_image, mask_size, mask_repeat, mask_clip) = match flavor {
+    MaskPropertyFlavor::Standard => ("mask-image", "mask-size", "mask-repeat", "mask-clip"),
+    MaskPropertyFlavor::Webkit => (
+      "-webkit-mask-image",
+      "-webkit-mask-size",
+      "-webkit-mask-repeat",
+      "-webkit-mask-clip",
+    ),
+  };
+
   format!(
     r#"<!doctype html>
       <style>
@@ -46,11 +62,10 @@ fn html_with_mask_clip(clip: &str) -> String {
           font-family: "DejaVu Sans Subset";
           font-size: 32px;
           line-height: 32px;
-          mask-image: linear-gradient(#fff, #fff);
-          mask-size: 100% 100%;
-          mask-repeat: no-repeat;
-          mask-clip: {clip};
-          -webkit-mask-clip: {clip};
+          {mask_image}: linear-gradient(#fff, #fff);
+          {mask_size}: 100% 100%;
+          {mask_repeat}: no-repeat;
+          {mask_clip}: {clip};
         }}
       </style>
       <div id="target">Hello</div>
@@ -60,26 +75,31 @@ fn html_with_mask_clip(clip: &str) -> String {
 
 #[test]
 fn mask_clip_text_clips_mask_to_glyph_shapes() {
-  let html_text_clip = html_with_mask_clip("text");
-  let html_content_clip = html_with_mask_clip("content-box");
+  for (label, flavor) in [
+    ("standard", MaskPropertyFlavor::Standard),
+    ("webkit", MaskPropertyFlavor::Webkit),
+  ] {
+    let html_text_clip = html_with_mask_clip("text", flavor);
+    let html_content_clip = html_with_mask_clip("content-box", flavor);
 
-  let mut renderer = create_stacking_context_bounds_renderer();
-  let text_clip = renderer
-    .render_html(&html_text_clip, WIDTH, HEIGHT)
-    .expect("render mask-clip:text");
-  assert_is_white(
-    rgba_at(&text_clip, 10, 90),
-    "mask-clip:text should mask out the element outside glyph shapes",
-  );
+    let mut renderer = create_stacking_context_bounds_renderer();
+    let text_clip = renderer
+      .render_html(&html_text_clip, WIDTH, HEIGHT)
+      .unwrap_or_else(|_| panic!("{label}: render mask-clip:text"));
+    assert_is_white(
+      rgba_at(&text_clip, 10, 90),
+      &format!("{label}: mask-clip:text should mask out the element outside glyph shapes"),
+    );
 
-  let mut renderer = create_stacking_context_bounds_renderer();
-  let content_clip = renderer
-    .render_html(&html_content_clip, WIDTH, HEIGHT)
-    .expect("render mask-clip:content-box");
-  assert_is_red(
-    rgba_at(&content_clip, 10, 90),
-    "mask-clip:content-box should leave the element background visible",
-  );
+    let mut renderer = create_stacking_context_bounds_renderer();
+    let content_clip = renderer
+      .render_html(&html_content_clip, WIDTH, HEIGHT)
+      .unwrap_or_else(|_| panic!("{label}: render mask-clip:content-box"));
+    assert_is_red(
+      rgba_at(&content_clip, 10, 90),
+      &format!("{label}: mask-clip:content-box should leave the element background visible"),
+    );
+  }
 }
 
 fn deterministic_toggles() -> RuntimeToggles {
@@ -135,7 +155,7 @@ fn assert_rgba8888_pixels_eq(width: u32, height: u32, expected: &[u8], actual: &
 
 #[test]
 fn mask_clip_text_is_deterministic_under_parallel_tiling() {
-  let html = html_with_mask_clip("text");
+  let html = html_with_mask_clip("text", MaskPropertyFlavor::Webkit);
 
   let config = FastRenderConfig::new()
     .with_runtime_toggles(deterministic_toggles())
@@ -202,4 +222,3 @@ fn mask_clip_text_is_deterministic_under_parallel_tiling() {
     "serial_vs_parallel",
   );
 }
-
