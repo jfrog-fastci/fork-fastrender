@@ -155,6 +155,123 @@ fn collect_lexical_names(lower: &LowerResult, body: &Body) -> BTreeSet<NameId> {
   names
 }
 
+fn pat_binds_name(body: &Body, pat: PatId, name: NameId) -> bool {
+  let Some(pat) = body.pats.get(pat.0 as usize) else {
+    return false;
+  };
+  match &pat.kind {
+    PatKind::Ident(id) => *id == name,
+    PatKind::Array(arr) => {
+      for element in arr.elements.iter().flatten() {
+        if pat_binds_name(body, element.pat, name) {
+          return true;
+        }
+      }
+      arr
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Object(obj) => {
+      for prop in &obj.props {
+        if pat_binds_name(body, prop.value, name) {
+          return true;
+        }
+      }
+      obj
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Rest(inner) => pat_binds_name(body, **inner, name),
+    PatKind::Assign { target, .. } => pat_binds_name(body, *target, name),
+    PatKind::AssignTarget(_) => false,
+  }
+}
+
+fn name_is_shadowed_in_block_scope(lower: &LowerResult, body: &Body, name: NameId, use_start: u32) -> bool {
+  fn block_declares_name(lower: &LowerResult, body: &Body, stmts: &[hir_js::StmtId], name: NameId) -> bool {
+    for stmt_id in stmts {
+      let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+        continue;
+      };
+      match &stmt.kind {
+        StmtKind::Var(var_decl) => {
+          if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+            for decl in &var_decl.declarators {
+              if pat_binds_name(body, decl.pat, name) {
+                return true;
+              }
+            }
+          }
+        }
+        StmtKind::Decl(def) => {
+          if let Some(def) = lower.def(*def) {
+            if def.name == name {
+              return true;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    false
+  }
+
+  fn walk(lower: &LowerResult, body: &Body, stmt_id: hir_js::StmtId, name: NameId, pos: u32) -> bool {
+    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+      return false;
+    };
+    if pos < stmt.span.start || pos >= stmt.span.end {
+      return false;
+    }
+
+    match &stmt.kind {
+      StmtKind::Block(stmts) => {
+        if block_declares_name(lower, body, stmts, name) {
+          return true;
+        }
+        stmts.iter().any(|inner| walk(lower, body, *inner, name, pos))
+      }
+      StmtKind::If {
+        consequent,
+        alternate,
+        ..
+      } => {
+        walk(lower, body, *consequent, name, pos)
+          || alternate.is_some_and(|alt| walk(lower, body, alt, name, pos))
+      }
+      StmtKind::While { body: inner, .. }
+      | StmtKind::DoWhile { body: inner, .. }
+      | StmtKind::With { body: inner, .. }
+      | StmtKind::For { body: inner, .. }
+      | StmtKind::ForIn { body: inner, .. }
+      | StmtKind::Labeled { body: inner, .. } => walk(lower, body, *inner, name, pos),
+      StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        walk(lower, body, *block, name, pos)
+          || catch
+            .as_ref()
+            .is_some_and(|catch| walk(lower, body, catch.body, name, pos))
+          || finally_block.is_some_and(|finally| walk(lower, body, finally, name, pos))
+      }
+      StmtKind::Switch { cases, .. } => cases.iter().any(|case| {
+        case
+          .consequent
+          .iter()
+          .any(|stmt| walk(lower, body, *stmt, name, pos))
+      }),
+      _ => false,
+    }
+  }
+
+  body
+    .root_stmts
+    .iter()
+    .any(|stmt| walk(lower, body, *stmt, name, use_start))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingTarget {
   pub module: String,
@@ -674,7 +791,8 @@ pub fn resolve_api_call<'a>(
       //
       // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
       // *before* the declaration should not resolve to an outer `require()` binding.
-      if local_decls.contains(name) {
+      if local_decls.contains(name) || name_is_shadowed_in_block_scope(lower, body, *name, use_start)
+      {
         if let Some(target) = local_bindings.resolve(*name, use_start) {
           let mut path = target.path.clone();
           path.extend(member_path);
@@ -747,7 +865,8 @@ pub fn resolve_api_call_typed<'a>(
       //
       // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
       // *before* the declaration should not resolve to an outer `require()` binding.
-      if local_decls.contains(name) {
+      if local_decls.contains(name) || name_is_shadowed_in_block_scope(lower, body, *name, use_start)
+      {
         if let Some(target) = local_bindings.resolve(*name, use_start) {
           let mut path = target.path.clone();
           path.extend(member_path);

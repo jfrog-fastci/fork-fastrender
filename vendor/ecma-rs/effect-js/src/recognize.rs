@@ -21,7 +21,6 @@ enum ExprFingerprint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MemberKey {
-  Ident(hir_js::NameId),
   String(String),
   Number(String),
 }
@@ -41,10 +40,19 @@ fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option
       }
       let obj = expr_fingerprint(lowered, body, member.object)?;
       let key = match &member.property {
-        hir_js::ObjectKey::Ident(id) => MemberKey::Ident(*id),
+        hir_js::ObjectKey::Ident(id) => MemberKey::String(lowered.names.resolve(*id)?.to_string()),
         hir_js::ObjectKey::String(s) => MemberKey::String(s.clone()),
         hir_js::ObjectKey::Number(n) => MemberKey::Number(n.clone()),
-        hir_js::ObjectKey::Computed(_) => return None,
+        hir_js::ObjectKey::Computed(expr) => {
+          let expr = strip_transparent_wrappers(body_ref, *expr);
+          let expr = body_ref.exprs.get(expr.0 as usize)?;
+          match &expr.kind {
+            ExprKind::Literal(hir_js::Literal::String(lit)) => MemberKey::String(lit.lossy.clone()),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => MemberKey::Number(n.clone()),
+            ExprKind::Literal(hir_js::Literal::BigInt(n)) => MemberKey::Number(n.clone()),
+            _ => return None,
+          }
+        }
       };
       Some(ExprFingerprint::Member(Box::new(obj), key))
     }
@@ -2244,7 +2252,7 @@ pub fn recognize_patterns_typed(
 }
 
 #[cfg(feature = "typed")]
-fn expr_equivalent(body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
+fn expr_equivalent(lowered: &LowerResult, body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
   let a = strip_transparent_wrappers(body, a);
   let b = strip_transparent_wrappers(body, b);
   let Some(a_expr) = body.exprs.get(a.0 as usize) else {
@@ -2261,27 +2269,16 @@ fn expr_equivalent(body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
       if a.optional || b.optional {
         return false;
       }
-      match (&a.property, &b.property) {
-        (hir_js::ObjectKey::Ident(a), hir_js::ObjectKey::Ident(b)) if a == b => {}
-        (hir_js::ObjectKey::String(a), hir_js::ObjectKey::String(b)) if a == b => {}
-        (hir_js::ObjectKey::Number(a), hir_js::ObjectKey::Number(b)) if a == b => {}
-        (hir_js::ObjectKey::Computed(a), hir_js::ObjectKey::Computed(b)) => {
-          let a = strip_transparent_wrappers(body, *a);
-          let b = strip_transparent_wrappers(body, *b);
-          let Some(a_expr) = body.exprs.get(a.0 as usize) else {
-            return false;
-          };
-          let Some(b_expr) = body.exprs.get(b.0 as usize) else {
-            return false;
-          };
-          match (&a_expr.kind, &b_expr.kind) {
-            (ExprKind::Literal(a), ExprKind::Literal(b)) if a == b => {}
-            _ => return false,
-          }
-        }
-        _ => return false,
+      let Some(a_key) = static_object_key_name(lowered, body, &a.property) else {
+        return false;
+      };
+      let Some(b_key) = static_object_key_name(lowered, body, &b.property) else {
+        return false;
+      };
+      if a_key != b_key {
+        return false;
       }
-      expr_equivalent(body, a.object, b.object)
+      expr_equivalent(lowered, body, a.object, b.object)
     }
     _ => false,
   }
@@ -2344,7 +2341,9 @@ fn map_get_or_default_conditional(
     return None;
   }
 
-  if !expr_equivalent(body_ref, has_recv, get_recv) || !expr_equivalent(body_ref, has_key, get_key) {
+  if !expr_equivalent(lowered, body_ref, has_recv, get_recv)
+    || !expr_equivalent(lowered, body_ref, has_key, get_key)
+  {
     return None;
   }
 
