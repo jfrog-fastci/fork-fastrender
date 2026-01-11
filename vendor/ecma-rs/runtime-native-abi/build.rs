@@ -27,6 +27,40 @@ fn main() {
   let mut header = std::fs::read_to_string(&header_path)
     .unwrap_or_else(|err| panic!("failed to read generated header {}: {err}", header_path.display()));
   let mut modified = false;
+
+  // Prefer `size_t` for Rust `usize` so this header composes cleanly with the
+  // existing handwritten `runtime_native.h` (which uses `size_t` for all
+  // lengths/sizes). cbindgen defaults to `uintptr_t`.
+  if header.contains("uintptr_t") {
+    header = header.replace("uintptr_t", "size_t");
+    modified = true;
+  }
+
+  // Make the header usable from C++ callers too (C linkage).
+  if !header.contains("extern \"C\"") {
+    if let Some(insert_at) = header.find("/**") {
+      header.insert_str(
+        insert_at,
+        concat!(
+          "#ifdef __cplusplus\n",
+          "extern \"C\" {\n",
+          "#endif\n\n",
+        ),
+      );
+      modified = true;
+    }
+    if let Some(end_at) = header.rfind("#endif /* RUNTIME_NATIVE_ABI_H */") {
+      header.insert_str(
+        end_at,
+        concat!(
+          "\n#ifdef __cplusplus\n",
+          "} // extern \"C\"\n",
+          "#endif\n\n",
+        ),
+      );
+      modified = true;
+    }
+  }
   if let Some(start) = header.find("typedef struct Coroutine {") {
     if let Some(end_rel) = header[start..].find("} Coroutine;") {
       let mut end = start + end_rel + "} Coroutine;".len();

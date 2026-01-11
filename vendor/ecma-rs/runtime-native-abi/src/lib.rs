@@ -7,6 +7,7 @@ compile_error!("runtime-native ABI is currently only supported on 64-bit targets
 extern crate std;
 
 use core::ffi::c_void;
+use core::sync::atomic::AtomicU64;
 
 /// ABI types shared between `runtime-native`, generated native code, and external tooling.
 ///
@@ -168,8 +169,7 @@ extern "C" {
   // GC
   ///
   /// This is an atomic `u64` in the runtime; treat it as `_Atomic uint64_t` from C.
-  pub static RT_GC_EPOCH: u64;
- 
+  pub static RT_GC_EPOCH: AtomicU64;
   pub fn rt_gc_safepoint();
   pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> GcPtr;
   pub fn rt_gc_safepoint_slow(requested_epoch: u64);
@@ -224,6 +224,9 @@ mod tests {
 
     assert!(size_of::<RtShapeDescriptor>() == 24);
     assert!(align_of::<RtShapeDescriptor>() == 8);
+
+    assert!(size_of::<AtomicU64>() == 8);
+    assert!(align_of::<AtomicU64>() == 8);
   };
 
   #[test]

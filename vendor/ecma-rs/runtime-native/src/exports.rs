@@ -487,10 +487,12 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
 mod write_barrier_tests {
   use super::*;
   use crate::gc::roots::RememberedSet;
+  use once_cell::sync::Lazy;
+  use parking_lot::Mutex;
 
-  static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
   // These tests mutate global write-barrier state (`YOUNG_SPACE` + `REMEMBERED_SET`), so they must
   // not run concurrently under the default parallel Rust test runner.
+  static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
   fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
     let _g = TEST_LOCK.lock();
     f()
