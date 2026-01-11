@@ -436,7 +436,7 @@ pub(crate) fn is_valid_custom_element_name(name: &str) -> bool {
 
   let Some(bytes) = name.as_bytes().split_first() else {
     return false;
-  }
+  };
   let (&first, bytes) = bytes;
   if !first.is_ascii_lowercase() {
     return false;
