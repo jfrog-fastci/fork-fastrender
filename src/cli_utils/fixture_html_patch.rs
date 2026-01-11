@@ -10,6 +10,13 @@
 //!   background for determinism and hides scrollbars; this flag applies the same patch on the
 //!   FastRender side so comparisons are meaningful.
 
+use base64::Engine as _;
+use image::ImageFormat;
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::path::PathBuf;
+use url::Url;
+
 /// Patch HTML fixture bytes in-place by injecting deterministic/offline tags into `<head>`.
 ///
 /// The patch is intentionally simple and byte-oriented: we look for `<head>`, `<html>`, or a
@@ -227,6 +234,10 @@ pub fn patch_html_bytes(
     out = replace_all_bytes(&out, br#"loading="lazy""#, br#"loading="eager""#);
     out = replace_all_bytes(&out, br#"loading='lazy'"#, br#"loading='eager'"#);
     out = replace_all_bytes_with_ascii_boundaries(&out, b"loading=lazy", b"loading=eager");
+
+    if let Some(base_url) = base_url {
+      out = rewrite_gif_img_srcs_to_static_png_data_urls(&out, base_url);
+    }
   }
 
   out
@@ -286,6 +297,208 @@ fn replace_all_bytes_with_ascii_boundaries(
 
 fn ascii_boundary(b: u8) -> bool {
   matches!(b, b'>' | b' ' | b'\n' | b'\r' | b'\t' | b'/')
+}
+
+fn rewrite_gif_img_srcs_to_static_png_data_urls(html: &[u8], base_url: &str) -> Vec<u8> {
+  let base = match Url::parse(base_url) {
+    Ok(url) => url,
+    Err(_) => return html.to_vec(),
+  };
+  if base.scheme() != "file" {
+    return html.to_vec();
+  }
+
+  let lower = html
+    .iter()
+    .map(|b| b.to_ascii_lowercase())
+    .collect::<Vec<_>>();
+  let mut cache: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+
+  let mut out = Vec::with_capacity(html.len());
+  let mut cursor = 0usize;
+
+  const IMG: &[u8] = b"<img";
+  while let Some(rel) = lower[cursor..]
+    .windows(IMG.len())
+    .position(|window| window == IMG)
+  {
+    let pos = cursor + rel;
+    let after = lower.get(pos + IMG.len());
+    let boundary_ok = matches!(
+      after,
+      Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/')
+    );
+    if !boundary_ok {
+      cursor = pos + IMG.len();
+      continue;
+    }
+
+    let Some(end_rel) = lower[pos..].iter().position(|&b| b == b'>') else {
+      break;
+    };
+    let end = pos + end_rel + 1;
+
+    out.extend_from_slice(&html[cursor..pos]);
+    out.extend_from_slice(&rewrite_img_tag_src_gif_to_data_url(
+      &html[pos..end],
+      &lower[pos..end],
+      &base,
+      &mut cache,
+    ));
+    cursor = end;
+  }
+
+  out.extend_from_slice(&html[cursor..]);
+  out
+}
+
+fn rewrite_img_tag_src_gif_to_data_url(
+  tag: &[u8],
+  tag_lower: &[u8],
+  base: &Url,
+  cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+) -> Vec<u8> {
+  let mut i = 0usize;
+  while i < tag.len() {
+    // Find the start of the next attribute name.
+    while i < tag.len() && !is_attr_name_start(tag[i]) {
+      i += 1;
+    }
+    let name_start = i;
+    while i < tag.len() && is_attr_name_char(tag[i]) {
+      i += 1;
+    }
+    let name_end = i;
+    if name_start == name_end {
+      break;
+    }
+
+    while i < tag.len() && tag[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= tag.len() || tag[i] != b'=' {
+      continue;
+    }
+    i += 1;
+    while i < tag.len() && tag[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= tag.len() {
+      break;
+    }
+
+    let name = &tag_lower[name_start..name_end];
+
+    let quote = match tag[i] {
+      b'"' | b'\'' => {
+        let q = tag[i];
+        i += 1;
+        Some(q)
+      }
+      _ => None,
+    };
+    let value_start = i;
+    let value_end = match quote {
+      Some(q) => match tag[value_start..].iter().position(|&b| b == q) {
+        Some(rel) => value_start + rel,
+        None => break,
+      },
+      None => {
+        let mut end = value_start;
+        while end < tag.len() && !tag[end].is_ascii_whitespace() && tag[end] != b'>' {
+          end += 1;
+        }
+        end
+      }
+    };
+    let raw_value = &tag[value_start..value_end];
+
+    // Advance i past the value (and closing quote when present) so the next iteration starts at
+    // the next attribute.
+    i = value_end;
+    if let Some(q) = quote {
+      if i < tag.len() && tag[i] == q {
+        i += 1;
+      }
+    }
+
+    if name != b"src" {
+      continue;
+    }
+    if !src_is_gif(raw_value) {
+      return tag.to_vec();
+    }
+
+    let replacement = if let Some(cached) = cache.get(raw_value) {
+      cached.clone()
+    } else {
+      let Some(data_url) = gif_src_to_png_data_url(raw_value, base) else {
+        return tag.to_vec();
+      };
+      cache.insert(raw_value.to_vec(), data_url.clone());
+      data_url
+    };
+
+    let mut out = Vec::with_capacity(tag.len() + replacement.len());
+    out.extend_from_slice(&tag[..value_start]);
+    out.extend_from_slice(&replacement);
+    out.extend_from_slice(&tag[value_end..]);
+    return out;
+  }
+
+  tag.to_vec()
+}
+
+fn is_attr_name_start(b: u8) -> bool {
+  b.is_ascii_alphabetic() || b == b':' || b == b'_'
+}
+
+fn is_attr_name_char(b: u8) -> bool {
+  is_attr_name_start(b) || b.is_ascii_digit() || b == b'-' || b == b'.'
+}
+
+fn src_is_gif(raw_value: &[u8]) -> bool {
+  let lower = raw_value
+    .iter()
+    .map(|b| b.to_ascii_lowercase())
+    .collect::<Vec<_>>();
+  let end = lower
+    .iter()
+    .position(|&b| b == b'?' || b == b'#')
+    .unwrap_or(lower.len());
+  lower[..end].ends_with(b".gif")
+}
+
+fn gif_src_to_png_data_url(raw_value: &[u8], base: &Url) -> Option<Vec<u8>> {
+  let raw = std::str::from_utf8(raw_value).ok()?.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  if raw.starts_with("data:") {
+    return None;
+  }
+
+  let end = raw
+    .find(|c| matches!(c, '?' | '#'))
+    .unwrap_or(raw.len());
+  let raw = raw[..end].trim();
+  if raw.is_empty() {
+    return None;
+  }
+
+  let resolved_url = Url::parse(raw).ok().or_else(|| base.join(raw).ok())?;
+  if resolved_url.scheme() != "file" {
+    return None;
+  }
+  let path: PathBuf = resolved_url.to_file_path().ok()?;
+  let bytes = std::fs::read(path).ok()?;
+  let image = image::load_from_memory_with_format(&bytes, ImageFormat::Gif).ok()?;
+  let mut png_buf = Cursor::new(Vec::new());
+  image.write_to(&mut png_buf, ImageFormat::Png).ok()?;
+  let png = png_buf.into_inner();
+
+  let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+  Some(format!("data:image/png;base64,{encoded}").into_bytes())
 }
 
 fn insert_after_open_tag(
@@ -353,6 +566,9 @@ fn insert_after_doctype(data: &[u8], lower: &[u8], insertion: &[u8]) -> Option<V
 #[cfg(test)]
 mod tests {
   use super::patch_html_bytes;
+  use base64::Engine as _;
+  use tempfile::tempdir;
+  use url::Url;
 
   #[test]
   fn patch_html_keeps_doctype_first_when_head_missing() {
@@ -498,6 +714,49 @@ mod tests {
     assert!(
       output_str.contains("@font-face"),
       "patched HTML should alias common system fonts to bundled fonts"
+    );
+  }
+
+  #[test]
+  fn patch_html_rewrites_gif_imgs_to_static_png_data_urls_when_js_disabled() {
+    let dir = tempdir().expect("tempdir");
+    let gif_path = dir.path().join("x.gif");
+    // A minimal 1x1 GIF (`GIF89a`), base64-encoded to keep the test self-contained.
+    let gif_bytes = base64::engine::general_purpose::STANDARD
+      .decode("R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs=")
+      .expect("decode gif base64");
+    std::fs::write(&gif_path, gif_bytes).expect("write gif");
+
+    let base_url = Url::from_directory_path(dir.path()).expect("base url");
+    let input = b"<!doctype html><html><head></head><body><img src=\"x.gif\"></body></html>";
+    let output = patch_html_bytes(input, Some(base_url.as_str()), true, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+
+    assert!(
+      output_str.contains("data:image/png;base64,"),
+      "expected GIF src to be rewritten to a PNG data URL; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("x.gif"),
+      "expected original GIF src to be removed; got: {output_str}"
+    );
+
+    let prefix = "data:image/png;base64,";
+    let start = output_str
+      .find(prefix)
+      .expect("expected PNG data URL")
+      + prefix.len();
+    let end = output_str[start..]
+      .find('"')
+      .expect("expected closing quote after data url")
+      + start;
+    let b64 = &output_str[start..end];
+    let png = base64::engine::general_purpose::STANDARD
+      .decode(b64.as_bytes())
+      .expect("decode png base64");
+    assert!(
+      png.starts_with(b"\x89PNG\r\n\x1a\n"),
+      "expected rewritten data URL to decode to a PNG; got bytes: {png:?}"
     );
   }
 }
