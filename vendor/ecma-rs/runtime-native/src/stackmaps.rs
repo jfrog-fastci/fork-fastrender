@@ -555,22 +555,31 @@ impl<'a> CallSite<'a> {
   /// - Exclude constants (`Constant`/`ConstIndex`) used for patchpoint metadata.
   /// - Chunk into `(base, derived)` pairs, preserving the original order.
   pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
-    // `gc.relocate` pairing is only meaningful for LLVM statepoints that follow our patchpoint-id
-    // convention. For other stackmap records (e.g. plain patchpoints), return an empty iterator.
-    if self.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+    // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records
+    // (e.g. plain patchpoints), return an empty iterator.
+    //
+    // We detect statepoints by their structural prefix rather than by `patchpoint_id`. Our codegen
+    // uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a convention, but that is not guaranteed by LLVM
+    // itself and other toolchains may emit different IDs.
+    let looks_like_statepoint = self.record.locations.len()
+      >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+    if !looks_like_statepoint {
       return RelocPairsIter::Empty;
     }
 
-    // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records,
-    // return an empty iterator.
     let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
       Ok(sp) => sp,
       Err(err) => {
-        debug_assert!(
-          false,
-          "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
-          self.record
-        );
+        if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+          debug_assert!(
+            false,
+            "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
+            self.record
+          );
+        }
         return RelocPairsIter::Empty;
       }
     };
