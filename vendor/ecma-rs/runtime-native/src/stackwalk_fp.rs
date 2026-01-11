@@ -776,12 +776,7 @@ fn enumerate_roots_for_frame(
   // Important: the StackMap record `patchpoint_id` is **not** a stable marker (LLVM supports
   // overriding it via the `"statepoint-id"` callsite attribute), so do not rely on it to detect
   // statepoints.
-  let looks_like_statepoint =
-    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-  if !looks_like_statepoint {
+  if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
     return Ok(());
   }
 
@@ -905,12 +900,7 @@ fn enumerate_root_pairs_for_frame(
   bounds: Option<StackBounds>,
   caller_sp_override: Option<u64>,
 ) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
-  let looks_like_statepoint =
-    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-  if !looks_like_statepoint {
+  if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
     return Ok(Vec::new());
   }
 

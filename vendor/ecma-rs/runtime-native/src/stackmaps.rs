@@ -770,11 +770,7 @@ impl<'a> CallSite<'a> {
     // convention, but LLVM does not contractually guarantee that value: callsites may override it
     // via `"statepoint-id"`. Misclassifying a statepoint as a generic patchpoint would cause us to
     // treat deopt operands as GC roots.
-    let looks_like_statepoint = self.record.locations.len()
-      >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+    let looks_like_statepoint = crate::statepoints::looks_like_statepoint_record(self.record);
 
     let sp_relative_to_fp_relative =
       |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {

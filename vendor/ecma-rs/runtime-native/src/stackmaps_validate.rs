@@ -99,10 +99,7 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
     // Deopt operand locations are *not* relocation pairs and must not be validated as such (they can
     // be any location kind). Use `StatepointRecord` to skip over them when the record structurally
     // looks like a statepoint (3 leading constants).
-    let looks_like_statepoint = record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+    let looks_like_statepoint = crate::statepoints::looks_like_statepoint_record(record);
 
     let filtered: Vec<&Location> = if looks_like_statepoint {
       let statepoint = StatepointRecord::new(record).map_err(|_| ValidationError::OddLocationCount {

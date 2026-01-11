@@ -20,6 +20,25 @@ use thiserror::Error;
 
 pub const LLVM18_STATEPOINT_HEADER_CONSTANTS: usize = 3;
 
+/// Returns `true` if `record`'s `locations` begin with the standard LLVM18 statepoint header prefix.
+///
+/// This is a *structural* check: LLVM allows overriding the per-callsite statepoint ID
+/// (`StackMapRecord.patchpoint_id`), so code should not rely on a specific value to detect
+/// statepoints.
+#[inline]
+pub fn looks_like_statepoint_record(record: &StackMapRecord) -> bool {
+  looks_like_statepoint_locations(&record.locations)
+}
+
+/// Returns `true` if `locs` begin with the standard LLVM18 statepoint header prefix.
+#[inline]
+pub fn looks_like_statepoint_locations(locs: &[Location]) -> bool {
+  locs.len() >= LLVM18_STATEPOINT_HEADER_CONSTANTS
+    && locs[..LLVM18_STATEPOINT_HEADER_CONSTANTS]
+      .iter()
+      .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
+}
+
 // DWARF register number helpers used by tests and documentation.
 pub const X86_64_DWARF_REG_SP: u16 = 7;
 pub const X86_64_DWARF_REG_FP: u16 = 6;
