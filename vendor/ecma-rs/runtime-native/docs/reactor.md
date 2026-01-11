@@ -78,3 +78,24 @@ The reactor includes an internal cross-thread [`Waker`].
 - Calling `wake()` from **any thread** must cause a thread blocked in `poll()` to return promptly.
 - Wakeups are surfaced to the caller as an `Event` with `token == Token::WAKE`.
   (`Token::WAKE` is reserved for this purpose.)
+
+### kqueue wake implementation (EVFILT_USER vs pipe)
+
+On kqueue platforms, the preferred wake mechanism is `EVFILT_USER`. Some environments may reject it
+(older kernels, restricted sandboxes, or future kqueue ports), so the reactor can fall back to a
+pipe-based wake.
+
+#### `EVFILT_USER` (preferred)
+
+- During reactor init, we attempt to `EV_ADD` an `EVFILT_USER` knote with `EV_CLEAR` so wake events
+  behave like an edge-triggered notification.
+- `Waker::wake()` triggers it via `NOTE_TRIGGER`.
+
+#### Pipe fallback (portable)
+
+- If `EVFILT_USER` registration fails with “not supported” errors (e.g. `ENOSYS`, `EINVAL`) **or**
+  the crate is built with the `force_pipe_wake` feature, the reactor uses a nonblocking pipe.
+- The read end is registered with `EVFILT_READ | EV_CLEAR` under `Token::WAKE`.
+- `wake()` writes a single byte; `EAGAIN`/`WouldBlock` is ignored (wake already pending).
+- When `poll()` observes `Token::WAKE`, it drains the pipe (read until `EAGAIN`) to re-arm
+  `EV_CLEAR` edge semantics.

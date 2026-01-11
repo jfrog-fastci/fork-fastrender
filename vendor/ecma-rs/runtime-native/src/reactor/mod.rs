@@ -98,9 +98,9 @@ struct WakerInner {
   target_os = "openbsd",
   target_os = "dragonfly"
 ))]
-struct WakerInner {
-  kqueue: OwnedFd,
-  ident: libc::uintptr_t,
+enum WakerInner {
+  User { kqueue: OwnedFd, ident: libc::uintptr_t },
+  Pipe { read_keepalive: OwnedFd, write: OwnedFd },
 }
 
 #[cfg(not(any(
@@ -144,29 +144,55 @@ impl Waker {
       target_os = "dragonfly"
     ))]
     {
-      let mut kev = libc::kevent {
-        ident: self.inner.ident,
-        filter: libc::EVFILT_USER,
-        flags: 0,
-        fflags: libc::NOTE_TRIGGER,
-        data: 0,
-        // Preserve the udata token (some platforms may treat it as part of the change record).
-        udata: (Token::WAKE.0 as usize) as *mut libc::c_void,
-      };
-      let rc = unsafe {
-        libc::kevent(
-          self.inner.kqueue.as_raw_fd(),
-          &kev as *const libc::kevent,
-          1,
-          std::ptr::null_mut(),
-          0,
-          std::ptr::null(),
-        )
-      };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
+      match &*self.inner {
+        WakerInner::User { kqueue, ident } => loop {
+          let mut kev = libc::kevent {
+            ident: *ident,
+            filter: libc::EVFILT_USER,
+            flags: 0,
+            fflags: libc::NOTE_TRIGGER,
+            data: 0,
+            // Preserve the udata token (some platforms may treat it as part of the change record).
+            udata: (Token::WAKE.0 as usize) as *mut libc::c_void,
+          };
+          let rc = unsafe {
+            libc::kevent(
+              kqueue.as_raw_fd(),
+              &kev as *const libc::kevent,
+              1,
+              std::ptr::null_mut(),
+              0,
+              std::ptr::null(),
+            )
+          };
+          if rc != -1 {
+            return Ok(());
+          }
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          return Err(err);
+        },
+        WakerInner::Pipe { write, .. } => loop {
+          let buf = [0_u8; 1];
+          let rc = unsafe { libc::write(write.as_raw_fd(), buf.as_ptr() as *const libc::c_void, 1) };
+          if rc == 1 {
+            return Ok(());
+          }
+          if rc == -1 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+              continue;
+            }
+            if err.kind() == io::ErrorKind::WouldBlock {
+              return Ok(());
+            }
+            return Err(err);
+          }
+          return Err(io::Error::new(io::ErrorKind::Other, "pipe wake write returned unexpected value"));
+        },
       }
-      return Ok(());
     }
 
     #[cfg(not(any(
@@ -475,6 +501,7 @@ mod sys {
 
   pub(super) struct ReactorSys {
     kqueue: OwnedFd,
+    wake_read: Option<OwnedFd>,
   }
 
   impl ReactorSys {
@@ -485,38 +512,47 @@ mod sys {
       }
       let kqueue = unsafe { OwnedFd::from_raw_fd(kq) };
 
-      let ident: libc::uintptr_t = 1;
-      let mut kev = libc::kevent {
-        ident,
-        filter: libc::EVFILT_USER,
-        flags: libc::EV_ADD | libc::EV_ENABLE,
-        fflags: libc::NOTE_FFNOP,
-        data: 0,
-        udata: (Token::WAKE.0 as usize) as *mut libc::c_void,
-      };
-      let rc = unsafe {
-        libc::kevent(
-          kqueue.as_raw_fd(),
-          &kev as *const libc::kevent,
-          1,
-          std::ptr::null_mut(),
-          0,
-          std::ptr::null(),
+      let (wake_read, waker_inner) = if cfg!(feature = "force_pipe_wake") {
+        let (read, write) = create_pipe()?;
+        let read_keepalive = read.try_clone()?;
+        register_pipe_waker(kqueue.as_raw_fd(), read.as_raw_fd())?;
+        (
+          Some(read),
+          super::WakerInner::Pipe {
+            read_keepalive,
+            write,
+          },
         )
+      } else {
+        let ident: libc::uintptr_t = 1;
+        match register_user_waker(kqueue.as_raw_fd(), ident) {
+          Ok(()) => (
+            None,
+            super::WakerInner::User {
+              kqueue: kqueue.try_clone()?,
+              ident,
+            },
+          ),
+          Err(err) if is_evfilt_user_unsupported(&err) => {
+            let (read, write) = create_pipe()?;
+            let read_keepalive = read.try_clone()?;
+            register_pipe_waker(kqueue.as_raw_fd(), read.as_raw_fd())?;
+            (
+              Some(read),
+              super::WakerInner::Pipe {
+                read_keepalive,
+                write,
+              },
+            )
+          }
+          Err(err) => return Err(err),
+        }
       };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
-      }
 
-      let sys = ReactorSys {
-        kqueue: kqueue.try_clone()?,
-      };
+      let sys = ReactorSys { kqueue, wake_read };
 
       let waker = super::Waker {
-        inner: std::sync::Arc::new(super::WakerInner {
-          kqueue,
-          ident,
-        }),
+        inner: std::sync::Arc::new(waker_inner),
       };
 
       Ok((sys, waker))
@@ -667,9 +703,179 @@ mod sys {
     }
 
     pub(super) fn drain_waker(&mut self) -> io::Result<()> {
-      // EVFILT_USER events are one-shot and are cleared by being returned.
+      if let Some(read) = &self.wake_read {
+        let mut buf = [0u8; 256];
+        loop {
+          let rc = unsafe { libc::read(read.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+          if rc > 0 {
+            continue;
+          }
+          if rc == 0 {
+            break;
+          }
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          if err.kind() == io::ErrorKind::WouldBlock {
+            break;
+          }
+          return Err(err);
+        }
+      }
       Ok(())
     }
+  }
+
+  fn register_user_waker(kqueue: RawFd, ident: libc::uintptr_t) -> io::Result<()> {
+    let mut kev = libc::kevent {
+      ident,
+      filter: libc::EVFILT_USER,
+      flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+      fflags: libc::NOTE_FFNOP,
+      data: 0,
+      udata: (Token::WAKE.0 as usize) as *mut libc::c_void,
+    };
+    loop {
+      let rc = unsafe {
+        libc::kevent(
+          kqueue,
+          &kev as *const libc::kevent,
+          1,
+          std::ptr::null_mut(),
+          0,
+          std::ptr::null(),
+        )
+      };
+      if rc != -1 {
+        return Ok(());
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    }
+  }
+
+  fn register_pipe_waker(kqueue: RawFd, read_fd: RawFd) -> io::Result<()> {
+    let mut kev = libc::kevent {
+      ident: read_fd as libc::uintptr_t,
+      filter: libc::EVFILT_READ,
+      flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+      fflags: 0,
+      data: 0,
+      udata: (Token::WAKE.0 as usize) as *mut libc::c_void,
+    };
+    loop {
+      let rc = unsafe {
+        libc::kevent(
+          kqueue,
+          &kev as *const libc::kevent,
+          1,
+          std::ptr::null_mut(),
+          0,
+          std::ptr::null(),
+        )
+      };
+      if rc != -1 {
+        return Ok(());
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    }
+  }
+
+  fn is_evfilt_user_unsupported(err: &io::Error) -> bool {
+    match err.raw_os_error() {
+      Some(libc::ENOSYS)
+      | Some(libc::EINVAL)
+      | Some(libc::ENOTSUP)
+      | Some(libc::EOPNOTSUPP)
+      | Some(libc::EPERM) => true,
+      _ => false,
+    }
+  }
+
+  fn create_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    #[cfg(any(
+      target_os = "freebsd",
+      target_os = "netbsd",
+      target_os = "openbsd",
+      target_os = "dragonfly"
+    ))]
+    {
+      loop {
+        let mut fds = [-1, -1];
+        let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        if rc == 0 {
+          // SAFETY: just created fds.
+          return Ok((
+            unsafe { OwnedFd::from_raw_fd(fds[0]) },
+            unsafe { OwnedFd::from_raw_fd(fds[1]) },
+          ));
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        if err.raw_os_error() != Some(libc::ENOSYS) {
+          return Err(err);
+        }
+        break;
+      }
+    }
+
+    let (read_fd, write_fd) = loop {
+      let mut fds = [-1, -1];
+      let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+      if rc == 0 {
+        break (fds[0], fds[1]);
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
+
+    // SAFETY: just created fds.
+    let read = unsafe { OwnedFd::from_raw_fd(read_fd) };
+    let write = unsafe { OwnedFd::from_raw_fd(write_fd) };
+
+    // Use fcntl to set flags when pipe2 isn't available.
+    set_nonblocking(read.as_raw_fd())?;
+    set_nonblocking(write.as_raw_fd())?;
+    set_cloexec(read.as_raw_fd())?;
+    set_cloexec(write.as_raw_fd())?;
+    Ok((read, write))
+  }
+
+  fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+      return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc == -1 {
+      return Err(io::Error::last_os_error());
+    }
+    Ok(())
+  }
+
+  fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags == -1 {
+      return Err(io::Error::last_os_error());
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if rc == -1 {
+      return Err(io::Error::last_os_error());
+    }
+    Ok(())
   }
 
   fn make_kevent(fd: RawFd, filter: i16, token: Token, flags: u16) -> libc::kevent {

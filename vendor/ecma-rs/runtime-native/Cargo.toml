@@ -28,6 +28,9 @@ gc_stats = []
 # nursery poisoning) intended for tests and debugging.
 gc_debug = []
 rt-trace = []
+# Force the kqueue reactor to use a pipe-based wakeup instead of EVFILT_USER.
+# Intended for tests to exercise the portable fallback even on macOS.
+force_pipe_wake = []
 
 [dependencies]
 ahash = { workspace = true }
