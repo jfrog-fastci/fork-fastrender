@@ -37,6 +37,16 @@ Call targets passed to the statepoint intrinsic are normal code pointers:
 ptr            ; addrspace(0)
 ```
 
+### GC strategy name (`gc "coreclr"`)
+
+Any function that contains (or may contain after LLVM passes) GC safepoints/statepoints must be marked as a GC-managed function:
+
+```llvm
+define void @f(...) gc "coreclr" { ... }
+```
+
+`native-js` standardizes on LLVM's production `coreclr` GC strategy name. Without a `gc "..."` strategy on the containing function, LLVM will not apply statepoint lowering correctly (and can fail verification/rewriting).
+
 ---
 
 ## Required IR pattern: `gc.statepoint` (LLVM 18)
@@ -54,7 +64,7 @@ Notes:
 - The return type is `token`.
 - The intrinsic is variadic (`...`).
 - In LLVM 18, the **callee operand is an opaque `ptr`**, so the call target needs `elementtype(...)` (see below).
-- The five fixed arguments are all required; in `native-js` we currently pass constants for all `immarg` positions.
+- The five fixed arguments are all required; in `native-js` we currently pass constants for all `immarg` positions (e.g. `i64 0xABCDEF00, i32 0, ..., i32 <NumCallArgs>, i32 0`).
   - The 5th argument is `flags`; we currently emit `flags = 0`.
   - On LLVM 18.x, the IR verifier only accepts `flags` values in the range `0..=3` (two-bit mask).
 
@@ -95,6 +105,18 @@ Where:
 - `<NumCallArgs>` is the number of normal call arguments in `<call args...>`.
 - `<Flags>` is the `gc.statepoint` `flags` immarg (native-js currently emits `0`; LLVM 18 accepts `0..=3`).
 - `<NumTransitionArgs>` and `<NumDeoptArgs>` are both always `0` today (but still required to be present).
+
+#### Statepoint `<ID>` (StackMap record `patchpoint_id`)
+
+The first `i64 <ID>` becomes the StackMap record's `patchpoint_id` / `Record ID` (as printed by `llvm-readobj-18 --stackmap`).
+
+When using LLVM's `rewrite-statepoints-for-gc` pass (the `native-js` pipeline), LLVM 18 currently uses a fixed ID:
+
+```llvm
+i64 2882400000   ; 0xABCDEF00
+```
+
+`runtime-native` uses this value to cheaply identify which stackmap records are statepoints.
 
 ### Callee operand must use `elementtype(...)`
 
@@ -148,7 +170,7 @@ declare void @rt_safepoint(ptr addrspace(1))
 define void @example(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
-      i64 0, i32 0,
+      i64 2882400000, i32 0,
       ptr elementtype(void (ptr addrspace(1))) @rt_safepoint,
       i32 1, i32 0,
       ptr addrspace(1) %obj,
@@ -181,7 +203,7 @@ If you have an interior pointer (derived from a base object pointer), **both** t
 %field_ptr = getelementptr i8, ptr addrspace(1) %obj, i64 16
 
 %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
-    i64 0, i32 0,
+    i64 2882400000, i32 0,
     ptr elementtype(void (ptr addrspace(1))) @rt_safepoint,
     i32 1, i32 0,
     ptr addrspace(1) %obj,
@@ -256,14 +278,37 @@ After codegen, LLVM emits a `.llvm_stackmaps` section in the object file.
 - mapped into memory in the final binary,
 - discoverable at runtime.
 
-### ELF: `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+### ELF stackmap boundaries
 
-On ELF, the runtime locates stackmaps using the conventional linker-defined section boundaries:
+On ELF, the runtime locates stackmaps by taking the in-memory byte range of the linked `.llvm_stackmaps` section.
+
+This repo supports two common ways to get that byte range:
+
+#### Option A (repo default): `runtime-native/stackmaps.ld` (`__llvm_stackmaps_start` / `__llvm_stackmaps_end`)
+
+`runtime-native` ships a linker script fragment, `runtime-native/stackmaps.ld`, which:
+
+- `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
+- defines:
+  - `__llvm_stackmaps_start`
+  - `__llvm_stackmaps_end`
+
+When linking a final ELF binary, apply it (example):
+
+```bash
+cc ... -Wl,-T,runtime-native/stackmaps.ld ...
+```
+
+Cargo applies this automatically when linking Rust binaries via `runtime-native/build.rs`, but you must pass it explicitly when linking from C/clang.
+
+#### Option B: conventional section start/stop (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
+
+Some ELF linkers/toolchains also provide conventional section boundary symbols of the form:
 
 - `__start_llvm_stackmaps`
 - `__stop_llvm_stackmaps`
 
-These symbols must be present and the section must be kept.
+If you rely on these instead of `stackmaps.ld`, ensure the section is still retained (not removed by `--gc-sections` / stripping).
 
 ---
 
@@ -314,17 +359,20 @@ locations =
 
 ### How relocation is performed in the runtime
 
-For each `(base, derived)` pair:
+`runtime-native` enumerates GC roots by interpreting the location pairs emitted for `gc.relocate` calls.
 
-- Read the *current* base pointer value from its machine location.
-- Read the *current* derived pointer value from its machine location.
-- If `base == 0` (null), treat it as non-root (skip).
-- Ask the GC to relocate `base` to `new_base` (moving/compacting collector).
-- Compute `offset = derived - base` (for interior pointers).
-- Compute `new_derived = new_base + offset`.
-- Write `new_base` / `new_derived` back to their machine locations (register or stack slot).
+Current runtime contract (v1):
 
-For simple roots where `base_index == derived_index`, the offset is zero and `new_derived == new_base`.
+- Root locations must be **addressable spill slots** (`Location::Indirect` based on SP/FP), not values kept only in registers.
+- Derived pointers (base/derived locations that differ) are currently **rejected** to avoid silent corruption.
+  - `native-js` should avoid keeping interior pointers live across safepoints; keep the base pointer live and recompute derived pointers after the safepoint if needed.
+
+For each `(base, derived)` pair (where the locations are the same spill slot):
+
+- Read the *current* pointer value from the spill slot.
+- If the pointer is `0` (null), treat it as non-root (skip).
+- Ask the GC to relocate it to `new_ptr` (moving/compacting collector).
+- Write `new_ptr` back to the spill slot (in place).
 
 ---
 
