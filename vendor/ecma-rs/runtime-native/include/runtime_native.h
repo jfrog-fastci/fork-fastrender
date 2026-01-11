@@ -612,7 +612,12 @@ typedef struct CoroutineStep {
 typedef CoroutineStep (*CoroutineResumeFn)(Coroutine*);
 
 // Async ABI version tag for coroutine frames/vtables.
+//
+// Guard against RT_ASYNC_ABI_VERSION being defined as a macro by other headers; otherwise the
+// preprocessor would substitute the name inside the enum definition.
+#ifndef RT_ASYNC_ABI_VERSION
 enum { RT_ASYNC_ABI_VERSION = 1 };
+#endif
 
 struct CoroutineVTable {
   CoroutineResumeFn resume;
