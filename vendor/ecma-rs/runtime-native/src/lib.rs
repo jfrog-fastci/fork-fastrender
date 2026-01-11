@@ -33,6 +33,7 @@ pub mod stackmaps_loader;
 pub mod statepoints;
 pub mod stackwalk_fp;
 pub mod test_util;
+pub mod statepoint_verify;
 
 mod alloc;
 #[cfg(feature = "gc_stats")]

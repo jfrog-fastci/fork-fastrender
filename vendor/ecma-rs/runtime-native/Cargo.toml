@@ -7,6 +7,11 @@ repository.workspace = true
 publish = false
 build = "build.rs"
 
+[features]
+# Always-on statepoint verification can be enabled by consumers that want a hard failure in
+# release builds too. In debug builds we verify unconditionally.
+verify-statepoints = []
+
 [lib]
 crate-type = ["rlib", "staticlib"]
 

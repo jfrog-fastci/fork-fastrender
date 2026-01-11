@@ -175,7 +175,10 @@ pub struct StackMapRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
-  Register { size: u16, dwarf_reg: u16 },
+  // Note: `offset` is semantically unused for `Register` locations, but the field is present in
+  // the on-disk encoding for all location kinds. Keeping it enables better diagnostics when
+  // verifying stackmap invariants.
+  Register { size: u16, dwarf_reg: u16, offset: i32 },
   Direct { size: u16, dwarf_reg: u16, offset: i32 },
   Indirect { size: u16, dwarf_reg: u16, offset: i32 },
   Constant { size: u16, value: u64 },
@@ -217,6 +220,7 @@ fn parse_location(
     KIND_REGISTER => Location::Register {
       size,
       dwarf_reg,
+      offset: offset_or_small_const,
     },
     KIND_DIRECT => Location::Direct {
       size,
@@ -309,7 +313,6 @@ impl<'a> Cursor<'a> {
     Ok(out)
   }
 }
-
 /// A parsed stackmap section with a callsite-address index.
 ///
 /// This type is the "runtime-friendly" view for safepoint/GC stack walking.
@@ -497,7 +500,6 @@ impl StackMaps {
     Self::parse(llvm_stackmaps_section_bytes())
   }
 }
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "llvm_stackmaps_linker"))]
 fn llvm_stackmaps_section_bytes() -> &'static [u8] {
   extern "C" {
