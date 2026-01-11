@@ -17,6 +17,13 @@ pub use limits::WebFetchLimits;
 pub use request::{Request, RequestCredentials, RequestMode, RequestRedirect};
 pub use response::{Response, ResponseType};
 
+pub(crate) fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+  let Ok(name) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
+    return false;
+  };
+  headers::is_cors_safelisted_request_header(&name, value)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebFetchLimitKind {
   HeaderCount,

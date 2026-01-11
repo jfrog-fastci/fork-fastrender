@@ -4162,7 +4162,7 @@ fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String>
 
   for (name, value) in headers {
     let name = name.to_ascii_lowercase();
-    if !is_cors_safelisted_request_header(name.as_str(), value) {
+    if !web_fetch::is_cors_safelisted_request_header(name.as_str(), value) {
       unsafe_names.insert(name);
     } else {
       safelist_value_size = safelist_value_size.saturating_add(value.as_bytes().len());

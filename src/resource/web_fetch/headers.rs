@@ -702,7 +702,7 @@ fn is_no_cors_safelisted_request_header(name: &HeaderName, value: &str) -> bool 
   is_cors_safelisted_request_header(name, value)
 }
 
-fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) -> bool {
+pub(super) fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) -> bool {
   // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
   if value.as_bytes().len() > 128 {
     return false;
