@@ -10,7 +10,7 @@ use crate::css::parser::{
 };
 use crate::debug::runtime;
 use crate::dom::{DomNode, DomNodeType, DomParseOptions, HTML_NAMESPACE};
-use crate::error::{RenderError, RenderStage, Result};
+use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::resource::CorsMode;
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
 use crate::resource::ReferrerPolicy;
@@ -1714,40 +1714,52 @@ where
                   budget_exhausted = true;
                 } else if state.cache.contains_key(&canonical_resolved) {
                   inlined_key = Some(canonical_resolved.clone());
-                } else if let Ok(fetched) = fetch(ImportFetchContext {
-                  url: &resolved,
-                  importer_url: base_url,
-                }) {
-                  let final_url = fetched.final_url.unwrap_or_else(|| resolved.clone());
-                  state.record_redirect(&resolved, &final_url);
-                  let canonical_final = state.canonicalize_url(&final_url);
-                  budget_url = canonical_final.clone();
+                } else {
+                  match fetch(ImportFetchContext {
+                    url: &resolved,
+                    importer_url: base_url,
+                  }) {
+                    Ok(fetched) => {
+                      let final_url = fetched.final_url.unwrap_or_else(|| resolved.clone());
+                      state.record_redirect(&resolved, &final_url);
+                      let canonical_final = state.canonicalize_url(&final_url);
+                      budget_url = canonical_final.clone();
 
-                  if state.stack.contains(&canonical_final) {
-                    diagnostics(&canonical_final, "skipping cyclic @import");
-                  } else if state.cache.contains_key(&canonical_final) {
-                    inlined_key = Some(canonical_final.clone());
-                  } else if !state.try_register_stylesheet_with_budget(&canonical_final, diagnostics) {
-                    // Count exhausted; skip this import.
-                  } else if state.budget.remaining_bytes() == 0 {
-                    diagnostics(&canonical_final, "stylesheet byte budget exhausted");
-                    budget_exhausted = true;
-                  } else {
-                    let rewritten = absolutize_css_urls_cow(&fetched.css, &canonical_final)?;
-                    let rewritten_str = rewritten.as_ref();
-                    if rewritten_str.len() > state.budget.remaining_bytes() {
-                      diagnostics(&canonical_final, "stylesheet byte budget exhausted");
-                    } else {
-                      let nested = inline_imports_with_request_with_diagnostics(
-                        rewritten_str,
-                        &canonical_final,
-                        fetch,
-                        state,
-                        diagnostics,
-                        deadline,
-                      )?;
-                      state.cache.entry(canonical_final.clone()).or_insert(nested);
-                      inlined_key = Some(canonical_final.clone());
+                      if state.stack.contains(&canonical_final) {
+                        diagnostics(&canonical_final, "skipping cyclic @import");
+                      } else if state.cache.contains_key(&canonical_final) {
+                        inlined_key = Some(canonical_final.clone());
+                      } else if !state
+                        .try_register_stylesheet_with_budget(&canonical_final, diagnostics)
+                      {
+                        // Count exhausted; skip this import.
+                      } else if state.budget.remaining_bytes() == 0 {
+                        diagnostics(&canonical_final, "stylesheet byte budget exhausted");
+                        budget_exhausted = true;
+                      } else {
+                        let rewritten = absolutize_css_urls_cow(&fetched.css, &canonical_final)?;
+                        let rewritten_str = rewritten.as_ref();
+                        if rewritten_str.len() > state.budget.remaining_bytes() {
+                          diagnostics(&canonical_final, "stylesheet byte budget exhausted");
+                        } else {
+                          let nested = inline_imports_with_request_with_diagnostics(
+                            rewritten_str,
+                            &canonical_final,
+                            fetch,
+                            state,
+                            diagnostics,
+                            deadline,
+                          )?;
+                          state.cache.entry(canonical_final.clone()).or_insert(nested);
+                          inlined_key = Some(canonical_final.clone());
+                        }
+                      }
+                    }
+                    Err(Error::Render(err)) => return Err(err),
+                    Err(_) => {
+                      // Per spec, failed imports are ignored. Render-control errors (deadline,
+                      // cancellation) are handled above, but other fetch failures (network, parse,
+                      // etc.) should behave like missing imports.
                     }
                   }
                 }
@@ -3963,6 +3975,37 @@ mod tests {
       vec!["https://example.com/failed-layer/missing.css".to_string()],
       "expected failing import to still attempt fetching"
     );
+  }
+
+  #[test]
+  fn inline_imports_propagates_render_errors() {
+    let mut state = InlineImportState::new();
+    let mut fetched = |_url: &str, _referrer: &str| -> Result<FetchedStylesheet> {
+      Err(Error::Render(RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed: std::time::Duration::from_millis(1),
+      }))
+    };
+
+    let css = r#"@import "missing.css"; body { color: black; }"#;
+    let err = inline_imports(
+      css,
+      "https://example.com/timeout/root.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect_err("expected render error to propagate");
+
+    match err {
+      RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed,
+      } => {
+        assert_eq!(elapsed, std::time::Duration::from_millis(1));
+      }
+      other => panic!("expected RenderError::Timeout, got {other:?}"),
+    }
   }
 
   #[test]
