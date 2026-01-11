@@ -42,7 +42,7 @@ fn readme_documents_type_only_reexports_and_cycles() {
   // Runtime re-exports participate in module initialization ordering.
   assert!(
     contains_value_reexport(&readme),
-    "native-js-cli README should document a runtime `export { ... } from \"...\"` re-export"
+    "native-js-cli README should document a runtime `export {{ ... }} from \"...\"` re-export"
   );
   assert!(
     readme.contains("export * from"),
@@ -56,7 +56,7 @@ fn readme_documents_type_only_reexports_and_cycles() {
   );
   assert!(
     readme.contains("export { type"),
-    "native-js-cli README should include a `export { type ... } from \"...\"` example for type-only re-export semantics"
+    "native-js-cli README should include a `export {{ type ... }} from \"...\"` example for type-only re-export semantics"
   );
 
   // Cyclic runtime module dependencies are rejected.
