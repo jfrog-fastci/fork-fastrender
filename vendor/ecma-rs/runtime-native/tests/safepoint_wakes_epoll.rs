@@ -6,6 +6,14 @@ use runtime_native::test_util::TestRuntimeGuard;
 
 extern "C" fn noop_task(_data: *mut u8) {}
 
+struct ResumeWorldOnDrop;
+
+impl Drop for ResumeWorldOnDrop {
+  fn drop(&mut self) {
+    runtime_native::rt_gc_resume_world();
+  }
+}
+
 fn make_pipe() -> (OwnedFd, OwnedFd) {
   let mut fds = [0; 2];
 
@@ -72,14 +80,14 @@ fn safepoint_request_wakes_epoll_wait() {
   )
   .expect("failed to register dummy fd watcher");
 
+  let (tx_id, rx_id) = mpsc::channel();
   // Spawn a thread that blocks inside `rt_async_poll_legacy()` (and therefore `epoll_wait`).
-  let (started_tx, started_rx) = mpsc::channel();
   let poll_thread = std::thread::spawn(move || {
-    runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Main);
-    started_tx.send(()).unwrap();
+    let id = runtime_native::threading::register_current_thread(runtime_native::threading::ThreadKind::Main);
+    tx_id.send(id).unwrap();
     runtime_native::rt_async_poll_legacy();
   });
-  started_rx
+  let poll_thread_id = rx_id
     .recv_timeout(Duration::from_secs(1))
     .expect("poll thread did not start");
 
@@ -102,11 +110,33 @@ fn safepoint_request_wakes_epoll_wait() {
     std::thread::sleep(Duration::from_millis(1));
   }
 
-  runtime_native::rt_gc_request_stop_the_world();
+  let stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+  let resume = ResumeWorldOnDrop;
   let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(500));
 
+  // Prove the poll thread actually observed the stop-the-world request (meaning
+  // it was woken out of `epoll_wait` and entered the safepoint slow path), not
+  // merely treated as quiescent.
+  let mut observed_ok = false;
+  let deadline = Instant::now() + Duration::from_millis(500);
+  loop {
+    let observed = runtime_native::threading::all_threads()
+      .into_iter()
+      .find(|t| t.id() == poll_thread_id)
+      .map(|t| t.safepoint_epoch_observed())
+      .unwrap_or(0);
+    if observed == stop_epoch {
+      observed_ok = true;
+      break;
+    }
+    if Instant::now() > deadline {
+      break;
+    }
+    std::thread::yield_now();
+  }
+
   // Always resume + clean up so the test can't hang even on failure.
-  runtime_native::rt_gc_resume_world();
+  drop(resume);
 
   runtime_native::async_rt::global().deregister_fd(watcher);
 
@@ -120,5 +150,9 @@ fn safepoint_request_wakes_epoll_wait() {
   assert!(
     stopped,
     "GC stop-the-world did not complete in time; epoll_wait likely was not woken"
+  );
+  assert!(
+    observed_ok,
+    "poll thread did not observe stop-the-world epoch {stop_epoch}; epoll_wait likely was not woken"
   );
 }

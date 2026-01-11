@@ -1,21 +1,30 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use core::arch::global_asm;
+use core::slice;
+
 use runtime_native::stackmaps::STACKMAP_VERSION;
 
-// Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records).
+// Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records) inside
+// `.llvm_stackmaps`.
 //
-// Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which:
+// Note: runtime-native's build script links tests with `link/stackmaps.ld`, which:
 // - keeps `.llvm_stackmaps` under `--gc-sections`, and
-// - defines `__fastr_stackmaps_start/end` to delimit the in-memory stackmaps byte range.
+// - defines `__fastr_stackmaps_start/end` to delimit the in-memory stackmaps byte range (the entire
+//   output section, which may contain multiple concatenated stackmap blobs from all linked objects).
 //
-// This blob ensures the section is non-empty even in minimal environments that don't have LLVM
-// tools installed (and therefore don't build the stackmap test artifact). The output section may
-// still contain additional concatenated stackmap blobs from other object files.
+// We inject a known-good blob so this test can assert that the symbol-delimited range returned by
+// `stackmaps_symbols::stackmaps_bytes_from_exe()` covers our bytes.
+//
+// We also export `__runtime_native_test_stackmaps_fixture_start/end` so the test can deterministically
+// locate the injected blob and validate byte-for-byte inclusion.
 global_asm!(
   r#"
   .section .llvm_stackmaps,"a",@progbits
   .p2align 3
+  .globl __runtime_native_test_stackmaps_fixture_start
+  .globl __runtime_native_test_stackmaps_fixture_end
+__runtime_native_test_stackmaps_fixture_start:
   .byte 3
   .byte 0
   .short 0
@@ -23,35 +32,49 @@ global_asm!(
   .long 1
   .long 0
   .quad 0x0123456789abcdef
+__runtime_native_test_stackmaps_fixture_end:
 "#
 );
 
+extern "C" {
+  static __runtime_native_test_stackmaps_fixture_start: u8;
+  static __runtime_native_test_stackmaps_fixture_end: u8;
+}
+
 const MAGIC_CONST: u64 = 0x0123_4567_89ab_cdef;
+
+const FIXTURE: &[u8] = &[
+  3, 0, // Version, Reserved0
+  0, 0, // Reserved1
+  0, 0, 0, 0, // NumFunctions
+  1, 0, 0, 0, // NumConstants
+  0, 0, 0, 0, // NumRecords
+  0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // MAGIC_CONST (little endian)
+];
 
 #[test]
 fn stackmaps_discovered_via_exported_symbols() {
   let bytes = runtime_native::stackmaps_symbols::stackmaps_bytes_from_exe();
+  let bytes_start = bytes.as_ptr() as usize;
+  let bytes_end = bytes_start + bytes.len();
+
+  // Ensure our fixture bytes are within the exported start/end symbol range.
+  let fixture_start = (&raw const __runtime_native_test_stackmaps_fixture_start) as *const u8 as usize;
+  let fixture_end = (&raw const __runtime_native_test_stackmaps_fixture_end) as *const u8 as usize;
+  assert!(fixture_end >= fixture_start);
+  let fixture_len = fixture_end - fixture_start;
+  assert_eq!(fixture_len, FIXTURE.len());
+
+  let fixture = unsafe { slice::from_raw_parts(fixture_start as *const u8, fixture_len) };
+  assert_eq!(fixture, FIXTURE);
+
   assert!(
-    !bytes.is_empty(),
-    "expected __fastr_stackmaps_start/end to cover a non-empty .llvm_stackmaps range"
+    bytes_start <= fixture_start && fixture_end <= bytes_end,
+    "stackmaps_bytes_from_exe did not cover the injected fixture: bytes=[{bytes_start:#x},{bytes_end:#x}) fixture=[{fixture_start:#x},{fixture_end:#x})",
   );
 
-  // Linkers may insert alignment padding before the first blob. The runtime helper should tolerate
-  // that, so check the first non-zero byte is the stackmap version.
-  let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
-  assert_eq!(version, STACKMAP_VERSION);
-
-  // `runtime-native`'s test build links an additional `.llvm_stackmaps` object (see `build.rs`) so
-  // the symbol range may contain multiple concatenated StackMap v3 blobs.
-  //
-  // Assert that our tiny fixture is present somewhere in that byte range (and therefore that the
-  // exported start/end symbols really delimit the `.llvm_stackmaps` output section).
-  let needle = MAGIC_CONST.to_le_bytes();
-  assert!(
-    bytes.windows(needle.len()).any(|w| w == needle),
-    "expected .llvm_stackmaps bytes to contain the injected stackmap blob (len={})",
-    bytes.len()
-  );
+  let off = fixture_start - bytes_start;
+  assert_eq!(&bytes[off..off + FIXTURE.len()], FIXTURE);
 
   // The general stackmaps loader should observe the same in-memory range when linker-defined
   // boundary symbols are available.
