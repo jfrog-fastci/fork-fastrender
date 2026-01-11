@@ -135,7 +135,7 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
           let ImportTarget::File(mut dep) = data.target else {
             continue;
           };
-          let export_name = data.original.clone();
+          let mut export_name = data.original.clone();
           let local_name = program
             .def_name(import_def.expect("def exists"))
             .unwrap_or_else(|| {
@@ -156,6 +156,15 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
               .map(|def| def.file())
               .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
             if let Some(file) = resolved_file {
+              if file != dep {
+                if let Some((name, _)) = program
+                  .exports_of(file)
+                  .iter()
+                  .find(|(_, candidate)| candidate.symbol == entry.symbol)
+                {
+                  export_name = name.clone();
+                }
+              }
               dep = file;
             }
           }
@@ -171,7 +180,7 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
             .resolve(named.local)
             .unwrap_or("_")
             .to_string();
-          let export_name = lowered
+          let mut export_name = lowered
             .names
             .resolve(named.imported)
             .unwrap_or("_")
@@ -184,6 +193,15 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
               .map(|def| def.file())
               .or_else(|| program.symbol_info(entry.symbol).and_then(|i| i.file));
             if let Some(file) = resolved_file {
+              if file != dep {
+                if let Some((name, _)) = program
+                  .exports_of(file)
+                  .iter()
+                  .find(|(_, candidate)| candidate.symbol == entry.symbol)
+                {
+                  export_name = name.clone();
+                }
+              }
               dep = file;
             }
           }
