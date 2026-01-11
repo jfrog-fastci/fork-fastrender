@@ -3001,7 +3001,26 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return keyword_in_list(parsed, &["auto", "none", "preserve-parent-color"])
     }
     "print-color-adjust" | "color-adjust" => return keyword_in_list(parsed, &["economy", "exact"]),
-    "display" => return keyword_parse(parsed, |kw| Display::parse(kw).ok()),
+    "display" => {
+      // `@supports` should reflect browser support for particular `display` keywords.
+      //
+      // Modern browsers (and our renderer) do not implement legacy IE layout modes like
+      // `display: -ms-grid`. Treating these values as supported flips real-world feature queries
+      // such as `@supports not (display: -ms-grid)`, causing sites to take the wrong code path.
+      //
+      // Example (ft.com fixture): `.slice { grid-template-columns: 1fr 1260px 1fr }` is overridden
+      // with a responsive variant behind `@supports not (display:-ms-grid)`. If we consider
+      // `-ms-grid` supported, the override is skipped and the layout overflows the viewport.
+      let trimmed = raw_value.trim();
+      if trimmed.eq_ignore_ascii_case("-ms-grid")
+        || trimmed.eq_ignore_ascii_case("-ms-inline-grid")
+        || trimmed.eq_ignore_ascii_case("-ms-flexbox")
+        || trimmed.eq_ignore_ascii_case("-ms-inline-flexbox")
+      {
+        return false;
+      }
+      return keyword_parse(parsed, |kw| Display::parse(kw).ok());
+    }
     "-webkit-box-orient" | "box-orient" => {
       return keyword_in_list(parsed, &["horizontal", "vertical"])
     }

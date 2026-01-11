@@ -57,6 +57,14 @@ fn supports_not_negates() {
 }
 
 #[test]
+fn supports_not_ms_grid_display_matches() {
+  // Modern browsers do not support the legacy IE `-ms-grid` display keyword, so `not` should match.
+  // Real-world sites (e.g. ft.com) use this pattern to gate responsive grid templates.
+  let css = r"@supports not (display: -ms-grid) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
 fn supports_nested_conditions_combine_correctly() {
   let css = r"@supports ((display: grid) and (color: red)) or (selector(:has(*))) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
