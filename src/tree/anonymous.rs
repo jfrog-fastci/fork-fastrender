@@ -768,6 +768,21 @@ impl AnonymousBoxCreator {
         inline_run.clear();
         return;
       }
+      // Runs that contain only floats + collapsible whitespace (common clearfix pattern) should not
+      // be wrapped into an anonymous block box. Doing so makes the floats descendants of the
+      // anonymous wrapper, which prevents subsequent clearing blocks/pseudo-elements from clearing
+      // them in our layout engine and results in collapsed container heights.
+      if inline_run.iter().all(|node| {
+        node.style.float.is_floating() || Self::is_collapsible_whitespace_text_node(node)
+      }) {
+        let inline_run_nodes = std::mem::take(inline_run);
+        for node in inline_run_nodes {
+          if node.style.float.is_floating() {
+            result.push(node);
+          }
+        }
+        return;
+      }
       let style = anonymous_block_style.get_or_insert_with(|| {
         let mut style = inherited_style(parent_style);
         style.display = Display::Block;
@@ -1133,7 +1148,7 @@ mod tests {
   use super::*;
   use crate::style::color::Rgba;
   use crate::style::display::{Display, FormattingContextType};
-  use crate::style::float::Float;
+  use crate::style::float::{Clear, Float};
   use crate::style::position::Position;
   use crate::style::types::BorderStyle;
   use crate::style::values::Length;
@@ -1560,6 +1575,48 @@ mod tests {
     assert_eq!(fixed.children.len(), 2);
     assert!(fixed.children.iter().all(|child| child.is_block_level()));
     assert!(fixed.children.iter().all(|child| !child.is_anonymous()));
+  }
+
+  #[test]
+  fn float_only_inline_runs_are_not_wrapped_into_anonymous_blocks() {
+    // Floated children are treated as part of an inline run for source-order purposes, but if a
+    // run contains *only* floats + collapsible whitespace, we must not wrap them into an anonymous
+    // block. Otherwise clearing elements (including clearfix pseudo-elements) become unable to
+    // clear the floats.
+    let whitespace1 = BoxNode::new_text(default_style(), "   ".to_string());
+
+    let mut float_style_1 = ComputedStyle::default();
+    float_style_1.display = Display::Block;
+    float_style_1.float = Float::Left;
+    let float1 = BoxNode::new_block(Arc::new(float_style_1), FormattingContextType::Block, vec![]);
+
+    let whitespace2 = BoxNode::new_text(default_style(), "\n  ".to_string());
+
+    let mut float_style_2 = ComputedStyle::default();
+    float_style_2.display = Display::Block;
+    float_style_2.float = Float::Right;
+    let float2 = BoxNode::new_block(Arc::new(float_style_2), FormattingContextType::Block, vec![]);
+
+    let whitespace3 = BoxNode::new_text(default_style(), " ".to_string());
+
+    let mut clearer_style = ComputedStyle::default();
+    clearer_style.display = Display::Block;
+    clearer_style.clear = Clear::Both;
+    let clearer =
+      BoxNode::new_block(Arc::new(clearer_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![whitespace1, float1, whitespace2, float2, whitespace3, clearer],
+    );
+
+    let fixed = fixup_tree(container);
+    assert_eq!(fixed.children.len(), 3);
+    assert!(fixed.children.iter().all(|child| !child.is_anonymous()));
+    assert!(fixed.children[0].style.float.is_floating());
+    assert!(fixed.children[1].style.float.is_floating());
+    assert_eq!(fixed.children[2].style.clear, Clear::Both);
   }
 
   #[test]
