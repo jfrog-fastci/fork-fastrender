@@ -240,16 +240,18 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     // Fixed args: (i64 id, i32 patch_bytes, ptr callee, i32 num_call_args, i32 num_deopt_args, ...)
     let mut args: Vec<LLVMValueRef> = Vec::with_capacity(5 + call_args.len() + 2);
     unsafe {
-      args.push(LLVMConstInt(i64_ty, statepoint_id, 0));
-      args.push(LLVMConstInt(i32_ty, 0, 0));
-      args.push(callee.ptr.as_value_ref());
-      args.push(LLVMConstInt(
-        i32_ty,
-        call_args.len() as u64,
-        0,
-      ));
-      args.push(LLVMConstInt(i32_ty, 0, 0));
-    }
+       args.push(LLVMConstInt(i64_ty, statepoint_id, 0));
+       // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
+       args.push(LLVMConstInt(i32_ty, 0, 0));
+       args.push(callee.ptr.as_value_ref());
+       args.push(LLVMConstInt(
+         i32_ty,
+         call_args.len() as u64,
+         0,
+       ));
+       // flags (LLVM 18 verifier currently accepts only 0..=3; project default is 0).
+       args.push(LLVMConstInt(i32_ty, 0, 0));
+     }
 
     // Call args.
     for arg in call_args {

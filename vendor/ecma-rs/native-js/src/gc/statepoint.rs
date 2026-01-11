@@ -112,7 +112,8 @@ impl StatepointEmitter {
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
     sp_args.push(callee);
     sp_args.push(LLVMConstInt(self.i32_ty, call_args.len() as u64, 0));
-    sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // flags
+    // flags (LLVM 18 verifier currently accepts only 0..=3; project default is 0).
+    sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
     sp_args.extend_from_slice(call_args);
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_transition_args
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_deopt_args
