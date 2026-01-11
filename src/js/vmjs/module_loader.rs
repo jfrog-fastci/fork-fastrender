@@ -216,8 +216,14 @@ impl VmJsModuleLoader {
 
           {
             let mut scope = heap.scope();
-            let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
-              EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(&mut vm, &mut scope, module_graph, url, url),
+             let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
+              EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
+                &mut vm,
+                &mut scope,
+                module_graph,
+                url,
+                Some(hooks.document_url),
+              ),
               EntryModule::Inline {
                 url,
                 base_url,
@@ -425,14 +431,17 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     scope: &mut Scope<'_>,
     modules: &mut ModuleGraph,
     url: &str,
-    base_url: &str,
+    referrer_url: Option<&str>,
   ) -> std::result::Result<ModuleId, VmError> {
     if let Some(existing) = self.module_id_by_url.get(url).copied() {
       return Ok(existing);
     }
 
     // Fetch module scripts in CORS mode (`<script type="module">` / module imports).
-    let mut req = FetchRequest::new(url, FetchDestination::ScriptCors).with_referrer_url(self.document_url);
+    let mut req = FetchRequest::new(url, FetchDestination::ScriptCors);
+    if let Some(referrer_url) = referrer_url {
+      req = req.with_referrer_url(referrer_url);
+    }
     if let Some(origin) = self.document_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
@@ -492,7 +501,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     self.module_url_by_id.insert(id, url.to_string());
     self
       .module_base_url_by_id
-      .insert(id, base_url.to_string());
+      .insert(id, url.to_string());
 
     Ok(id)
   }
@@ -703,7 +712,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       }
     };
 
-    let module_id = match self.get_or_fetch_module(vm, scope, modules, &resolved_url, &resolved_url) {
+    let module_id = match self.get_or_fetch_module(vm, scope, modules, &resolved_url, Some(base_url.as_str())) {
       Ok(id) => id,
       Err(err) => {
         vm.finish_loading_imported_module(
@@ -753,10 +762,17 @@ mod tests {
   };
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
+  #[derive(Clone, Debug)]
+  struct RecordedRequest {
+    url: String,
+    destination: FetchDestination,
+    referrer_url: Option<String>,
+  }
+
   #[derive(Default)]
   struct MapFetcher {
     map: HashMap<String, FetchedResource>,
-    calls: Mutex<Vec<String>>,
+    calls: Mutex<Vec<RecordedRequest>>,
   }
 
   impl MapFetcher {
@@ -769,6 +785,16 @@ mod tests {
 
     fn calls(&self) -> Vec<String> {
       self.calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|call| call.url.clone())
+        .collect()
+    }
+
+    fn calls_detailed(&self) -> Vec<RecordedRequest> {
+      self
+        .calls
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
@@ -785,7 +811,11 @@ mod tests {
         .calls
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(req.url.to_string());
+        .push(RecordedRequest {
+          url: req.url.to_string(),
+          destination: req.destination,
+          referrer_url: req.referrer_url.map(|s| s.to_string()),
+        });
       self
         .map
         .get(req.url)
@@ -966,6 +996,52 @@ mod tests {
       dep_fetches, 1,
       "expected dep module to be fetched once, got calls: {calls:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_sets_referrer_url_for_module_imports() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import x from './dep.js'; globalThis.result = x;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export default 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url, 128 * 1024);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    let calls = fetcher.calls_detailed();
+    let entry_call = calls.iter().find(|call| call.url == entry_url).expect("entry module fetched");
+    assert_eq!(entry_call.destination, FetchDestination::ScriptCors);
+    assert_eq!(entry_call.referrer_url.as_deref(), Some(document_url));
+
+    let dep_call = calls.iter().find(|call| call.url == dep_url).expect("dep module fetched");
+    assert_eq!(dep_call.destination, FetchDestination::ScriptCors);
+    assert_eq!(dep_call.referrer_url.as_deref(), Some(entry_url));
     Ok(())
   }
 
