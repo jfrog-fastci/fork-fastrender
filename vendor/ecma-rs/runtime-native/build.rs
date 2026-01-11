@@ -94,8 +94,12 @@ fn maybe_build_stackmap_test_artifact() {
     data_rs.display()
   );
 
-  // Link the generated object into any binaries that depend on this crate (tests).
-  println!("cargo:rustc-link-arg={}", obj_path.display());
+  // Link the generated object only into this crate's *tests*.
+  //
+  // The `.llvm_stackmaps` section contains relocations against code addresses and is not always
+  // PIC-safe for shared-library builds. We only need this artifact for the integration tests that
+  // validate stack walking logic.
+  println!("cargo:rustc-link-arg-tests={}", obj_path.display());
 
   // Enable the integration test.
   println!("cargo:rustc-cfg=runtime_native_has_stackmap_test_artifact");
@@ -148,9 +152,9 @@ fn generate_llvm_module(
    ret void
  }
 
-define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "coreclr" {
-entry:
-  call void @safepoint()
+ define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "coreclr" {
+ entry:
+   call void @safepoint()
   ret ptr addrspace(1) %p
 }
 "#;

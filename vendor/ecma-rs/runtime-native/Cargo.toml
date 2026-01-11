@@ -11,10 +11,13 @@ build = "build.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
-# Enables parsing the in-memory `.llvm_stackmaps` section via the native-js
+# Enables parsing the in-memory `.llvm_stackmaps` section via the `native-js`
 # exported boundary symbols:
 # - `__fastr_stackmaps_start`
 # - `__fastr_stackmaps_end`
+#
+# The linker script fragment (`stackmaps.ld`) defines these symbols on Linux/ELF.
+# It also defines `__stackmaps_start` / `__stackmaps_end` as a generic alias.
 #
 # Keep this feature opt-in: test binaries and non-AOT tools don't always link a
 # `.llvm_stackmaps` section, and missing symbols would otherwise fail the link.

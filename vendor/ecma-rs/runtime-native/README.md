@@ -74,8 +74,12 @@ locate it for stack walking, you must also export the boundary symbols:
 - `__fastr_stackmaps_end`
 
 The `runtime-native/stackmaps.ld` linker script fragment defines these symbols
-(and legacy `__llvm_stackmaps_{start,end}` aliases). When the section is
+(and also defines `__stackmaps_{start,end}` as a generic alias, plus legacy
+`__llvm_stackmaps_{start,end}` aliases). When the section is
 absent, the symbols still define an empty range (`start == end`).
+
+Note: lld does not auto-define GNU ld-style `__start_<section>` / `__stop_<section>`
+symbols, so the linker script (or an equivalent mechanism) is required.
 
 When linking from C/clang, pass it explicitly:
 
@@ -83,8 +87,16 @@ When linking from C/clang, pass it explicitly:
 cc ... -Wl,-T,runtime-native/stackmaps.ld ...
 ```
 
-When linking Rust binaries, `runtime-native/build.rs` injects `stackmaps.ld`
-only when the `llvm_stackmaps_linker` Cargo feature is enabled.
+When linking from Rust, you still need to pass the script to the final link step
+(e.g. via `RUSTFLAGS` or your build system):
+
+```bash
+RUSTFLAGS="\
+  -C linker=clang-18 \
+  -C link-arg=-fuse-ld=lld \
+  -C link-arg=-Wl,-T,$PWD/runtime-native/stackmaps.ld" \
+  cargo build
+```
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.

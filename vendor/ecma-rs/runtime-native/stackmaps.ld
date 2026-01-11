@@ -20,11 +20,13 @@ SECTIONS
   {
     /* Preferred symbol names (shared with native-js). */
     __fastr_stackmaps_start = .;
-    /* Backwards compatible aliases (older runtime-native prototypes). */
+    /* Backwards compatible aliases (older runtime-native prototypes / generic tooling). */
+    __stackmaps_start = .;
     __llvm_stackmaps_start = .;
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
     __fastr_stackmaps_end = .;
+    __stackmaps_end = .;
     __llvm_stackmaps_end = .;
   }
 }
