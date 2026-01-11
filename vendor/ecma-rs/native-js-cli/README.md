@@ -127,6 +127,12 @@ The CLI does not currently render source-context diagnostics (file/line caret
 spans). For source-level debugging, consider using `parse-js-cli` or
 `typecheck-ts-cli`.
 
+Exit codes:
+
+- `0` on success
+- non-zero if parsing/codegen fails, if `clang` fails, or if the compiled program
+  exits non-zero (the CLI forwards the program’s exit code).
+
 ## `tsconfig.json` support
 
 `native-js-cli` currently takes a single input file and does not load

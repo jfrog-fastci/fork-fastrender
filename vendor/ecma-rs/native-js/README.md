@@ -229,6 +229,10 @@ like `any`, `eval`, and type assertions). The native pipeline is stricter, so
 pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic>
 ```
 
+This validator is intended to be run on a `typecheck-ts` program and is **not**
+currently invoked by the minimal `compile_typescript_to_llvm_ir` emitter (and
+therefore not by `native-js-cli` either).
+
 ### Rejected constructs (enforced today)
 
 The validator emits hard errors with stable `NJS####` codes:
