@@ -9803,16 +9803,16 @@ fn prepare_dynamic_script_element(
       .unwrap_or(false);
     if supports_module_scripts && spec.nomodule_attr {
       // Still mark "already started" so later mutations do not cause execution.
-      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-      // lifetime of the associated host document.
+      // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only used
+      // within this function call.
       let dom = unsafe { dom_ptr.as_mut() };
       let _ = dom.set_script_already_started(script, true);
       return Ok(());
     }
 
     // Mark started before executing to avoid re-entrancy.
-    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-    // lifetime of the associated host document.
+    // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only used
+    // within this function call.
     let dom = unsafe { dom_ptr.as_mut() };
     if dom.set_script_already_started(script, true).is_err() {
       return Ok(());
