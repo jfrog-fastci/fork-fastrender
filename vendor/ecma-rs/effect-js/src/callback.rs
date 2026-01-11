@@ -190,6 +190,7 @@ fn is_associative_op(ty: AssocType, op: BinaryOp) -> bool {
 
 fn is_commutative_op(ty: AssocType, op: BinaryOp) -> bool {
   match (ty, op) {
+    (AssocType::Boolean, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => true,
     (AssocType::BigInt, BinaryOp::Add | BinaryOp::Multiply) => true,
     (AssocType::BigInt, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
     (AssocType::Number, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
@@ -1082,6 +1083,36 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Ts,
       "arr.reduce((a: number, b: number) => b | a);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_is_associative, Some(true));
+  }
+
+  #[test]
+  fn infers_associative_reduce_callback_for_boolean_and() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: boolean, b: boolean) => a && b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_is_associative, Some(true));
+  }
+
+  #[test]
+  fn infers_associative_reduce_callback_for_boolean_and_swapped_operands() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: boolean, b: boolean) => b && a);",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);

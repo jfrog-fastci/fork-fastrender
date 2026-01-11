@@ -171,4 +171,36 @@ mod tests {
 
     assert!(parallelizable_at_callsite(api, &callsite));
   }
+
+  #[test]
+  fn parallelizable_heuristic_array_reduce_associative_boolean_and() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.reduce").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: boolean, b: boolean) => a && b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(parallelizable_at_callsite(api, &callsite));
+  }
+
+  #[test]
+  fn parallelizable_heuristic_array_reduce_associative_boolean_and_swapped_operands() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.reduce").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: boolean, b: boolean) => b && a);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(parallelizable_at_callsite(api, &callsite));
+  }
 }
