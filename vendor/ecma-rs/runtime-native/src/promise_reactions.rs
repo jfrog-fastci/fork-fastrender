@@ -128,7 +128,7 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
 
   // Root the promise once and clone the handle into each task so the promise remains valid even if
   // it relocates under a moving GC while the reaction jobs are queued.
-  let promise = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
+  let promise_root = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
   let mut tasks: Vec<Task> = Vec::new();
   while !head.is_null() {
     let next = unsafe { (*head).next };
@@ -139,7 +139,7 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
     let node = head;
     let job = Box::new(PromiseReactionJob {
       node,
-      promise: promise.clone(),
+      promise: promise_root.clone(),
     });
     tasks.push(Task::new_with_drop(
       run_promise_reaction_job,
