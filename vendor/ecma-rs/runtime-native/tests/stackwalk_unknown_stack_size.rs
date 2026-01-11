@@ -102,6 +102,42 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   visited_base_ctx.dedup();
   assert_eq!(visited_base_ctx, vec![caller_sp_callsite + 0]);
 
+  // 2c) If `ctx.sp == 0` but `ctx.sp_entry` is available, the walker can still reconstruct the
+  // stackmap-semantics SP without consulting `stack_size`:
+  // - x86_64: `sp = sp_entry + 8` (call pushes return address)
+  // - aarch64: `sp == sp_entry`
+  let ctx_entry_only = SafepointContext {
+    sp_entry,
+    sp: 0,
+    fp: caller_fp,
+    ip: callsite_ra as usize,
+  };
+  let mut visited_entry_only = Vec::<(usize, usize)>::new();
+  unsafe {
+    walk_gc_root_pairs_from_safepoint_context(&ctx_entry_only, Some(bounds), &stackmaps, |_ra, pairs| {
+      for &(base_slot, derived_slot) in pairs {
+        visited_entry_only.push((base_slot as usize, derived_slot as usize));
+      }
+    })
+    .expect("walk from ctx with sp_entry only");
+  }
+  visited_entry_only.sort_unstable();
+  assert_eq!(visited_entry_only, expected);
+
+  let mut visited_base_entry_only = Vec::<usize>::new();
+  unsafe {
+    runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context(
+      &ctx_entry_only,
+      Some(bounds),
+      &stackmaps,
+      |slot| visited_base_entry_only.push(slot as usize),
+    )
+    .expect("walk roots from ctx with sp_entry only");
+  }
+  visited_base_entry_only.sort_unstable();
+  visited_base_entry_only.dedup();
+  assert_eq!(visited_base_entry_only, vec![caller_sp_callsite + 0]);
+
   // 3) If `ctx.sp == 0`, the walker falls back to `stack_size` for the top frame. A sentinel
   // `u64::MAX` stack size must surface as an explicit error.
   let ctx_missing_sp = SafepointContext {
