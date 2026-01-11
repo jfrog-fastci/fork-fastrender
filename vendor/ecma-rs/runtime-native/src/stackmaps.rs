@@ -70,6 +70,9 @@ pub enum StackMapError {
   #[error("stack slot offset overflow computing rbp offset for stack_size={stack_size} off={off}")]
   StackSlotOffsetOverflow { stack_size: u64, off: i32 },
 
+  #[error("derived pointers are not supported (base={base:?}, derived={derived:?})")]
+  DerivedPointerNotSupported { base: Location, derived: Location },
+
   #[error(transparent)]
   StatepointVerify(#[from] crate::statepoint_verify::VerifyError),
 
@@ -492,7 +495,14 @@ impl<'a> CallSite<'a> {
 
     if looks_like_statepoint {
       let statepoint = crate::statepoints::StatepointRecord::new(self.record)?;
-      for (base, _derived) in statepoint.gc_pairs() {
+      for (base, derived) in statepoint.gc_pairs() {
+        if base != derived {
+          return Err(StackMapError::DerivedPointerNotSupported {
+            base: base.clone(),
+            derived: derived.clone(),
+          });
+        }
+
         let rbp_off = match *base {
           Location::Indirect {
             dwarf_reg, offset, ..
@@ -824,6 +834,65 @@ mod tests {
 
     // rbp_off = 8 - 32 + 16 = -8
     assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-8]);
+  }
+
+  #[test]
+  fn derived_pointers_are_rejected_by_gc_root_extraction() {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, 0x1000); // addr
+    push_u64(&mut bytes, 40); // stack_size
+    push_u64(&mut bytes, 1); // record_count
+
+    // Record (statepoint-style).
+    push_u64(&mut bytes, 0xabcdef00); // patchpoint_id
+    push_u32(&mut bytes, 0x10); // instruction_offset
+    push_u16(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 5); // num_locations = 3 header + 1 (base,derived) pair
+
+    // Statepoint header constants (callconv, flags, deopt_count).
+    for _ in 0..3 {
+      push_u8(&mut bytes, 4); // kind = Constant
+      push_u8(&mut bytes, 0); // reserved
+      push_u16(&mut bytes, 8); // size
+      push_u16(&mut bytes, 0); // dwarf_reg
+      push_u16(&mut bytes, 0); // reserved
+      push_i32(&mut bytes, 0); // constant value
+    }
+
+    // base: Indirect [RSP + 0]
+    push_u8(&mut bytes, 3); // kind = Indirect
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8);
+    push_u16(&mut bytes, X86_64_DWARF_REG_RSP);
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 0);
+
+    // derived: Indirect [RSP + 8] (different spill slot => derived pointer)
+    push_u8(&mut bytes, 3); // kind = Indirect
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8);
+    push_u16(&mut bytes, X86_64_DWARF_REG_RSP);
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 8);
+
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
+
+    // Live-out header: u16 Padding; u16 NumLiveOuts (none).
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    let sm = StackMaps::parse(&bytes).unwrap();
+    let callsite = sm.lookup(0x1010).unwrap();
+    let err = callsite.gc_root_rbp_offsets_strict().unwrap_err();
+    assert!(matches!(
+      err,
+      StackMapError::DerivedPointerNotSupported { .. }
+    ));
   }
 
   #[test]
