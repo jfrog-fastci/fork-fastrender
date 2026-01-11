@@ -53,7 +53,11 @@ pub fn relocate_derived_pair(
       return;
     }
 
-    let delta = (derived as isize) - (base as isize);
-    derived_slot.write_unaligned((new_base as isize + delta) as usize);
+    // Derived relocation is defined as: `new_derived = new_base + (derived_old - base_old)`.
+    //
+    // Use wrapping arithmetic so this is safe even if the interior-pointer delta would not fit in
+    // `isize` (debug overflow checks) or if the derived pointer happens to be below the base.
+    let delta = derived.wrapping_sub(base);
+    derived_slot.write_unaligned(new_base.wrapping_add(delta));
   }
 }

@@ -55,6 +55,22 @@ fn derived_forced_null_if_base_relocates_to_zero() {
   assert_eq!(derived, 0);
 }
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn relocate_derived_pair_handles_wrapping_delta_across_isize_boundary() {
+  let base_old = isize::MIN as usize;
+  let derived_old = isize::MAX as usize;
+
+  let mut base = base_old;
+  let mut derived = derived_old;
+
+  relocate_derived_pair(&mut base as *mut usize, &mut derived as *mut usize, |base| base.wrapping_add(0x10));
+
+  let base_new = base_old.wrapping_add(0x10);
+  assert_eq!(base, base_new);
+  assert_eq!(derived, base_new.wrapping_sub(1));
+}
+
 #[test]
 fn works_when_base_and_derived_share_a_slot() {
   let mut slot = 0x1000usize;
