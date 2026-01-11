@@ -1,7 +1,7 @@
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::OptimizationLevel;
 use inkwell::AddressSpace;
+use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes};
 
 #[test]
@@ -37,8 +37,8 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
   // store ptr @callee, ptr %fp_slot, align 8
   // %fp = load ptr, ptr %fp_slot, align 8
   //
-  // Loading the function pointer from memory ensures this is an indirect call (not a
-  // direct call to @callee).
+  // Loading the function pointer from memory ensures this is an indirect call (not a direct call
+  // to @callee).
   let fn_ptr_ty = context.ptr_type(AddressSpace::default());
   let fp_slot = builder
     .build_alloca(fn_ptr_ty, "fp_slot")
@@ -98,14 +98,14 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
 
   // Statepoint inserted.
   assert!(
-    rewritten.contains("llvm.experimental.gc.statepoint.p0"),
+    rewritten.contains("call token") && rewritten.contains("llvm.experimental.gc.statepoint.p0"),
     "expected gc.statepoint intrinsic in rewritten IR, got:\n{rewritten}"
   );
 
   // Indirect call's callee operand must carry elementtype(void (i64)).
   assert!(
-    rewritten.contains("ptr elementtype(void (i64))"),
-    "expected statepoint callee operand to have `elementtype(void (i64))`, got:\n{rewritten}"
+    rewritten.contains("ptr elementtype(void (i64)) %fp"),
+    "expected statepoint callee operand to be `ptr elementtype(void (i64)) %fp`, got:\n{rewritten}"
   );
 
   // %obj is live across the call => it must be in the gc-live bundle.
@@ -116,7 +116,8 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
 
   // ...and thus a relocate for %obj must exist.
   assert!(
-    rewritten.contains("@llvm.experimental.gc.relocate.p1"),
+    rewritten.contains("%obj.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate for %obj in rewritten IR, got:\n{rewritten}"
   );
 }
+

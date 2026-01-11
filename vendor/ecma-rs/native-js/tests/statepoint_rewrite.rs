@@ -1,9 +1,10 @@
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
-use std::process::Command;
+use native_js::llvm::passes;
+use object::Object;
+use std::fs;
 use std::sync::Once;
 use tempfile::tempdir;
 
@@ -52,15 +53,12 @@ fn with_rewritten_module<R>(
   module.set_triple(&tm.get_triple());
   module.set_data_layout(&tm.get_target_data().get_data_layout());
 
-  let pb_opts = PassBuilderOptions::create();
-  module
-    .run_passes("rewrite-statepoints-for-gc", &tm, pb_opts)
-    .unwrap_or_else(|err| {
-      panic!(
-        "failed to run rewrite-statepoints-for-gc: {err}\n\nBefore:\n{llvm_ir}\n\nAfter:\n{}",
-        module.print_to_string()
-      )
-    });
+  passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_or_else(|err| {
+    panic!(
+      "failed to run rewrite-statepoints-for-gc: {err}\n\nBefore:\n{llvm_ir}\n\nAfter:\n{}",
+      module.print_to_string()
+    )
+  });
 
   if let Err(err) = module.verify() {
     panic!(
@@ -146,7 +144,7 @@ fn parse_relocate_indices(line: &str) -> Option<(u32, u32)> {
 #[test]
 fn gc_result_for_scalar_return() {
   let before = r#"
-declare i64 @bar()
+ declare i64 @bar()
 
 define i64 @test() gc "coreclr" {
 entry:
@@ -158,15 +156,22 @@ entry:
   let after = rewritten_ir(before);
 
   assert!(
-    after.contains("@llvm.experimental.gc.statepoint"),
-    "missing gc.statepoint intrinsic:\n{after}"
-  );
-  assert!(
     after.contains("@llvm.experimental.gc.result.i64"),
     "missing gc.result.i64 intrinsic:\n{after}"
   );
 
   let func = function_block(&after, "@test");
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.statepoint"))
+    .unwrap_or_else(|| panic!("missing gc.statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("call token"),
+    "expected gc.statepoint callsite to be a `call token`, got:\n{statepoint_line}\n\n{func}"
+  );
+  let statepoint_token =
+    assigned_ssa(statepoint_line).unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
+
   assert!(
     !func.contains("call i64 @bar"),
     "expected @bar call to be rewritten (no direct call i64 @bar):\n{func}"
@@ -176,6 +181,10 @@ entry:
     .lines()
     .find(|l| l.contains("@llvm.experimental.gc.result.i64"))
     .unwrap_or_else(|| panic!("missing gc.result in function:\n{func}"));
+  assert!(
+    gc_result_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.result to reference statepoint token {statepoint_token}, got:\n{gc_result_line}\n\n{func}"
+  );
   let result_ssa = assigned_ssa(gc_result_line)
     .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
@@ -188,7 +197,7 @@ entry:
 #[test]
 fn gc_result_for_gc_pointer_return() {
   let before = r#"
-declare ptr addrspace(1) @alloc()
+ declare ptr addrspace(1) @alloc()
 
 define ptr addrspace(1) @test() gc "coreclr" {
 entry:
@@ -200,15 +209,27 @@ entry:
   let after = rewritten_ir(before);
 
   assert!(
-    after.contains("@llvm.experimental.gc.statepoint"),
-    "missing gc.statepoint intrinsic:\n{after}"
-  );
-  assert!(
     after.contains("@llvm.experimental.gc.result.p1"),
     "missing gc.result.p1 intrinsic:\n{after}"
   );
 
   let func = function_block(&after, "@test");
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.statepoint"))
+    .unwrap_or_else(|| panic!("missing gc.statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("call token"),
+    "expected gc.statepoint callsite to be a `call token`, got:\n{statepoint_line}\n\n{func}"
+  );
+  let statepoint_token =
+    assigned_ssa(statepoint_line).unwrap_or_else(|| panic!("unexpected statepoint line: {statepoint_line}"));
+
+  assert!(
+    !func.contains("call ptr addrspace(1) @alloc"),
+    "expected @alloc call to be rewritten (no direct call ptr addrspace(1) @alloc):\n{func}"
+  );
+
   assert!(
     func.contains("ret ptr addrspace(1) %"),
     "expected return type to remain ptr addrspace(1):\n{func}"
@@ -218,6 +239,10 @@ entry:
     .lines()
     .find(|l| l.contains("@llvm.experimental.gc.result.p1"))
     .unwrap_or_else(|| panic!("missing gc.result.p1 in function:\n{func}"));
+  assert!(
+    gc_result_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.result to reference statepoint token {statepoint_token}, got:\n{gc_result_line}\n\n{func}"
+  );
   let result_ssa = assigned_ssa(gc_result_line)
     .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
@@ -254,12 +279,19 @@ join:
 
   let after = rewritten_ir(before);
 
-  assert!(
-    after.contains("\"gc-live\""),
-    "expected statepoint to have a gc-live bundle:\n{after}"
-  );
-
   let func = function_block(&after, "@test");
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.statepoint"))
+    .unwrap_or_else(|| panic!("missing gc.statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("\"gc-live\""),
+    "expected statepoint to have a gc-live bundle:\n{statepoint_line}\n\n{func}"
+  );
+  assert!(
+    statepoint_line.contains("ptr addrspace(1) %base") && statepoint_line.contains("ptr addrspace(1) %derived"),
+    "expected gc-live bundle to include both %base and %derived:\n{statepoint_line}\n\n{func}"
+  );
   assert!(
     func.contains("@llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate.p1 calls:\n{func}"
@@ -357,31 +389,12 @@ entry:
     tm.write_to_file(module, FileType::Object, &obj_path)
       .unwrap_or_else(|err| panic!("failed to emit object file: {err}"));
 
-    let output = Command::new("llvm-readobj-18")
-      .arg("--sections")
-      .arg(&obj_path)
-      .output()
-      .unwrap_or_else(|err| {
-        panic!(
-          "failed to run llvm-readobj-18: {err}\n\
-           ensure LLVM 18 is installed and llvm-readobj-18 is in PATH"
-        )
-      });
-
+    let bytes = fs::read(&obj_path).expect("read emitted object");
+    let obj = object::File::parse(&*bytes).expect("parse emitted object");
     assert!(
-      output.status.success(),
-      "llvm-readobj-18 failed with status {}:\nstdout:\n{}\nstderr:\n{}",
-      output.status,
-      String::from_utf8_lossy(&output.stdout),
-      String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-      stdout.contains(".llvm_stackmaps") || stderr.contains(".llvm_stackmaps"),
-      "expected .llvm_stackmaps section in emitted object.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+      obj.section_by_name(".llvm_stackmaps").is_some(),
+      "expected .llvm_stackmaps section in emitted object.\nIR:\n{}",
+      module.print_to_string()
     );
   });
 }
-

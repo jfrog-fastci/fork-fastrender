@@ -2,7 +2,7 @@ use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes};
-use std::process::Command;
+use object::Object;
 use tempfile::tempdir;
 
 #[test]
@@ -80,21 +80,10 @@ fn rewrite_statepoints_emits_stackmaps() {
   tm.write_to_file(&module, FileType::Object, &obj)
     .expect("failed to emit object file");
 
-  let readobj = Command::new("llvm-readobj-18")
-    .arg("--sections")
-    .arg(&obj)
-    .output()
-    .expect("failed to run llvm-readobj-18");
+  let bytes = std::fs::read(&obj).expect("read emitted object file");
+  let file = object::File::parse(&*bytes).expect("parse emitted object file");
   assert!(
-    readobj.status.success(),
-    "llvm-readobj-18 failed:\nstdout:\n{}\nstderr:\n{}",
-    String::from_utf8_lossy(&readobj.stdout),
-    String::from_utf8_lossy(&readobj.stderr)
-  );
-
-  let stdout = String::from_utf8_lossy(&readobj.stdout);
-  assert!(
-    stdout.contains(".llvm_stackmaps"),
-    "expected .llvm_stackmaps section in emitted object\nllvm-readobj-18 --sections output:\n{stdout}"
+    file.section_by_name(".llvm_stackmaps").is_some(),
+    "expected .llvm_stackmaps section in emitted object\nIR:\n{ir}"
   );
 }
