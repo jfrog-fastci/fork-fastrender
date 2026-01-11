@@ -9,6 +9,11 @@ static int check(int cond) {
   return cond ? 0 : 1;
 }
 
+static void set_int(uint8_t* data) {
+  int* flag = (int*)data;
+  *flag = 1;
+}
+
 static void par_for_body(size_t i, uint8_t* data) {
   uint32_t* out = (uint32_t*)data;
   out[i] = (uint32_t)(i * 3u + 1u);
@@ -72,6 +77,17 @@ int main(void) {
   if (check(ab.len == 2)) { rc = 2; goto done; }
   if (check(ab.ptr != NULL)) { rc = 3; goto done; }
   if (check(memcmp(ab.ptr, "ab", 2) == 0)) { rc = 4; goto done; }
+
+  // Microtask API: microtasks should not run synchronously when queued, and should run once drained.
+  int microtask_ran = 0;
+  Microtask mt = {
+    .func = set_int,
+    .data = (uint8_t*)&microtask_ran,
+  };
+  rt_queue_microtask(mt);
+  if (check(microtask_ran == 0)) { rc = 11; goto done; }
+  rt_drain_microtasks();
+  if (check(microtask_ran == 1)) { rc = 12; goto done; }
 
   enum { N = 4096 };
   uint32_t out[N];
