@@ -32,8 +32,10 @@ pub use timer::Timers;
 
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Condvar;
 use std::sync::Once;
 use std::sync::OnceLock;
+use std::sync::{Mutex as StdMutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -41,6 +43,44 @@ use crate::sync::GcAwareMutex;
 
 /// Global serialization guard for the core poll loop.
 static POLL_LOCK: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
+
+// Test-only hook: allow integration tests to hold the global poll lock while the calling thread
+// is parked in a GC-safe region. This makes it possible to deterministically reproduce contention
+// on `rt_async_poll`'s serialization lock without relying on `epoll_wait` timing.
+static DEBUG_HOLD_POLL_LOCK: AtomicBool = AtomicBool::new(false);
+static DEBUG_HOLD_POLL_LOCK_SYNC: OnceLock<(StdMutex<()>, Condvar)> = OnceLock::new();
+
+fn debug_maybe_hold_poll_lock() {
+  if !DEBUG_HOLD_POLL_LOCK.load(Ordering::Acquire) {
+    return;
+  }
+
+  let gc_safe = crate::threading::enter_gc_safe_region();
+  let (m, cv) = DEBUG_HOLD_POLL_LOCK_SYNC.get_or_init(|| (StdMutex::new(()), Condvar::new()));
+  let mut guard = m.lock().unwrap();
+  while DEBUG_HOLD_POLL_LOCK.load(Ordering::Acquire) {
+    guard = cv.wait(guard).unwrap();
+  }
+  drop(guard);
+  drop(gc_safe);
+}
+
+/// Test-only: Enable/disable holding the global async poll lock.
+#[doc(hidden)]
+pub fn debug_set_hold_poll_lock(hold: bool) {
+  DEBUG_HOLD_POLL_LOCK.store(hold, Ordering::Release);
+  if !hold {
+    if let Some((_, cv)) = DEBUG_HOLD_POLL_LOCK_SYNC.get() {
+      cv.notify_all();
+    }
+  }
+}
+
+/// Test-only: Whether some thread currently holds the global async poll lock.
+#[doc(hidden)]
+pub fn debug_poll_lock_is_held() -> bool {
+  POLL_LOCK.try_lock().is_none()
+}
 
 /// When enabled, `await` follows JS microtask semantics even when the awaited promise is already
 /// settled: the coroutine is resumed in a later microtask turn instead of synchronously.
@@ -296,6 +336,7 @@ pub(crate) fn poll() -> bool {
 
   // Serialize at the ABI boundary: the event loop itself is single-consumer.
   let _guard = POLL_LOCK.lock();
+  debug_maybe_hold_poll_lock();
   global().poll()
 }
 
@@ -327,6 +368,9 @@ pub(crate) fn wait_for_work() {
 ///
 /// It does **not** tear down any background worker threads.
 pub(crate) fn clear_state_for_tests() {
+  // Make test cleanup resilient even if a prior test panicked while holding the poll lock.
+  debug_set_hold_poll_lock(false);
+
   // If another thread is currently blocked in the reactor poll inside the event loop, ensure it wakes up
   // so we don't block indefinitely on the poll lock during test cleanup.
   global().loop_.wake();
