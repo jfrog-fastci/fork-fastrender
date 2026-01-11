@@ -308,7 +308,18 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 
 #### When to root a derived pointer vs recompute it
 
-**Important:** `runtime-native` currently rejects derived pointers at safepoints. In practice, the runtime currently requires `base` and `derived` to refer to the same **addressable spill slot** (the same `Location::Indirect` stack slot). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
+`runtime-native` supports derived pointers at safepoints when they are encoded as `(base, derived)` pairs (per `gc.relocate`) in the stackmap record.
+
+Runtime contract:
+
+- Both `base` and `derived` locations must be **addressable spill slots** (`Location::Indirect`).
+- The runtime treats the **base slot** as the GC root (for tracing + moving); the derived slot is *not* a root.
+- If `base_slot != derived_slot`, the runtime preserves the interior offset and updates the derived slot in-place after relocating the base slot:
+
+  ```text
+  delta       = derived_old - base_old
+  derived_new = base_new + delta
+  ```
 
 If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
@@ -319,7 +330,7 @@ If the derived pointer is a pure function of the base pointer (for example: a co
 This keeps stack maps smaller (fewer `"gc-live"` entries and fewer `gc.relocate` calls) and can make
 later optimization easier.
 
-Once `runtime-native` supports derived pointers, rooting a derived pointer (include it in `"gc-live"` and relocate it with `(base_idx, derived_idx)`) is appropriate when you *cannot* reliably recompute it after the safepoint.
+Rooting a derived pointer (include it in `"gc-live"` and relocate it with `(base_idx, derived_idx)`) is appropriate when you *cannot* reliably recompute it after the safepoint.
 
 ---
 
@@ -474,16 +485,18 @@ Current runtime contract (v1):
   - base register must be the caller-frame stack pointer (SP): x86_64 DWARF reg 7 (`RSP`), AArch64 DWARF reg 31 (`SP`)
   - slot size must be pointer-sized (8 bytes on our supported 64-bit targets)
 - Root locations in registers (`Location::Register`) or non-addressable expressions (`Location::Direct`) are currently **rejected**.
-- Derived pointers (base/derived locations that differ) are currently **rejected** to avoid silent corruption.
-  - `native-js` should avoid keeping interior pointers live across safepoints; keep the base pointer live and recompute derived pointers after the safepoint if needed.
+- Derived pointers (where the `(base, derived)` locations differ) are supported:
+  - The **base** slot is the GC root (traced/relocated).
+  - The derived slot is updated after the base is relocated by preserving the interior offset:
+    `derived_new = base_new + (derived_old - base_old)`.
 
-For each `(base, derived)` pair (where `base` and `derived` refer to the same spill slot):
+Operationally, for each `(base, derived)` pair:
 
-- Read the *current* pointer value from the root location.
-- If the pointer is `0` (null), treat it as non-root (skip).
-- Ask the GC to relocate it to `new_ptr` (moving/compacting collector).
-- Write `new_ptr` back to the same root location:
-  - write to the stack memory slot (in place)
+- Evaluate the stack slots for both locations (`base_slot`, `derived_slot`).
+- Treat `base_slot` as a GC root slot:
+  - relocate the pointer in-place (moving/compacting collector)
+- If `base_slot != derived_slot`, update the derived slot after base relocation:
+  - `derived_new = relocated_base + (derived_old - base_old)`
 
 ---
 
