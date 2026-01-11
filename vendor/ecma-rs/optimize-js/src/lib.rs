@@ -4,8 +4,14 @@
 //! intermediate representation, runs optimization passes, and can decompile the
 //! result back to a `parse-js` AST or emitted JavaScript.
 //!
-//! The public entry point for one-shot compilation is [`compile_source`]. See
-//! [`program_to_js`] / [`program_to_ast`] for decompilation.
+//! The public entry point for one-shot compilation is [`compile_source`]. Use
+//! [`compile_source_with_cfg_options`] with [`CompileCfgOptions`] to opt into
+//! retaining SSA form (including `Phi`) in the returned CFGs for downstream
+//! analyses/backends.
+//!
+//! See [`program_to_js`] / [`program_to_ast`] for decompilation. Note that the
+//! decompiler expects non-SSA CFGs, so callers must disable `keep_ssa` (default)
+//! or deconstruct SSA before decompiling.
 //!
 //! # Example
 //! ```no_run
