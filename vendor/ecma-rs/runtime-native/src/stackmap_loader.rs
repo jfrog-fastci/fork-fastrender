@@ -375,13 +375,13 @@ impl<'a> Cursor<'a> {
   }
 }
 
-/// Load the current process's in-memory `.llvm_stackmaps` section (Linux x86_64).
+/// Load the current process's in-memory `.llvm_stackmaps` section.
 ///
 /// This is a convenience wrapper for consumers that only care about stackmaps in
 /// the main executable. For environments that can `dlopen` managed code, prefer
 /// [`load_all_llvm_stackmaps`] + [`build_global_stackmap_index`].
 pub fn load_llvm_stackmaps() -> anyhow::Result<&'static [u8]> {
-  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
   {
     use std::ffi::CStr;
     use std::os::raw::c_int;
@@ -492,9 +492,9 @@ pub fn load_llvm_stackmaps() -> anyhow::Result<&'static [u8]> {
       .ok_or_else(|| anyhow::anyhow!("dl_iterate_phdr did not report the main executable"))
   }
 
-  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  #[cfg(not(all(target_os = "linux", target_pointer_width = "64", target_endian = "little")))]
   {
-    anyhow::bail!("load_llvm_stackmaps is only supported on Linux x86_64");
+    anyhow::bail!("load_llvm_stackmaps is only supported on Linux 64-bit little-endian targets");
   }
 }
 
