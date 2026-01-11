@@ -85,6 +85,9 @@ impl ParallelRuntime {
   pub(crate) fn spawn(&self, task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
     // Ensure the caller thread participates in GC safepoints.
     threading::register_current_thread(ThreadKind::External);
+    // If a stop-the-world is active, don't enqueue new work (and don't block on
+    // scheduler locks) until we've observed the safepoint request.
+    threading::safepoint_poll();
 
     let task_state = Arc::new(TaskState::new(task, data));
     self.scheduler.enqueue(task_state.clone());
@@ -420,6 +423,8 @@ fn worker_loop(
   'work: loop {
     if let Some(task) = local.pop() {
       spins = 0;
+      // Before running mutator code, poll the GC safepoint.
+      threading::safepoint_poll();
       task.run();
       continue;
     }
@@ -427,6 +432,7 @@ fn worker_loop(
     match inner.injector.steal_batch_and_pop(&local) {
       Steal::Success(task) => {
         spins = 0;
+        threading::safepoint_poll();
         task.run();
         continue;
       }
@@ -443,6 +449,7 @@ fn worker_loop(
           Steal::Success(task) => {
             crate::rt_trace::steals_succeeded_inc();
             spins = 0;
+            threading::safepoint_poll();
             task.run();
             continue 'work;
           }
