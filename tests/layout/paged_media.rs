@@ -3107,6 +3107,128 @@ fn multicol_break_before_right_inserts_blank_page() {
 }
 
 #[test]
+fn multicol_break_after_left_inserts_blank_page_when_break_occurs_on_left_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 140px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .pre { height: 200px; margin: 0; }
+          .a, .b { height: 60px; margin: 0; }
+          .a { break-after: left; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="pre"></div>
+          <div class="a">A</div>
+          <div class="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    4,
+    "expected left-side break on a left page to insert a blank page"
+  );
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+  let page3 = page_roots[2];
+  let page4 = page_roots[3];
+
+  assert!(find_text(page1, "A").is_none());
+  assert!(find_text(page1, "B").is_none());
+
+  assert!(find_text(page2, "A").is_some());
+  assert!(find_text(page2, "B").is_none());
+
+  assert!(
+    margin_boxes_contain_text(page3, "Blank"),
+    "blank page should use the :blank page rule"
+  );
+  assert!(find_text(page3, "A").is_none());
+  assert!(find_text(page3, "B").is_none());
+
+  assert!(find_text(page4, "B").is_some());
+  let pos_b = find_text_position(page4, "B", (0.0, 0.0)).expect("B position");
+  assert!(
+    pos_b.1 <= page_content_start_y(page4) + 1.0,
+    "B should start near the top of the next column set/page (y={}, content_start={})",
+    pos_b.1,
+    page_content_start_y(page4)
+  );
+}
+
+#[test]
+fn multicol_break_before_left_inserts_blank_page_when_break_starts_on_right_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 140px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .pre { height: 200px; margin: 0; }
+          .b { height: 60px; margin: 0; break-before: left; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="pre"></div>
+          <div class="pre"></div>
+          <div class="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    4,
+    "expected left-side break-before on a right page to insert a blank page"
+  );
+  let page3 = page_roots[2];
+  let page4 = page_roots[3];
+
+  assert!(
+    margin_boxes_contain_text(page3, "Blank"),
+    "blank page should use the :blank page rule"
+  );
+  assert!(find_text(page3, "B").is_none());
+
+  assert!(find_text(page4, "B").is_some());
+  let pos_b = find_text_position(page4, "B", (0.0, 0.0)).expect("B position");
+  assert!(
+    pos_b.1 <= page_content_start_y(page4) + 1.0,
+    "B should start near the top of the next column set/page (y={}, content_start={})",
+    pos_b.1,
+    page_content_start_y(page4)
+  );
+}
+
+#[test]
 fn multicol_break_after_recto_uses_root_page_progression() {
   let html = r#"
     <html>
