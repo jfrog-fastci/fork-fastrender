@@ -97,13 +97,16 @@ pub type OptimizeResult<T> = Result<T, Vec<Diagnostic>>;
 /// Options controlling the CFG/IL pipeline during compilation.
 ///
 /// The default behaviour matches the existing `compile_source` pipeline: build
-/// SSA, run optimisation passes, then deconstruct SSA back into a non-SSA CFG.
+/// SSA, run optimisation passes, then deconstruct SSA back into a non-SSA CFG
+/// stored in [`ProgramFunction::body`]. The SSA form is still preserved in
+/// [`ProgramFunction::ssa_body`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompileCfgOptions {
-  /// Retain SSA form (including `InstTyp::Phi`) in the resulting CFG.
+  /// Retain SSA form (including `InstTyp::Phi`) in [`ProgramFunction::body`].
   ///
-  /// When this is `false` (default), SSA is always deconstructed before the CFG
-  /// is stored on the returned [`Program`].
+  /// When this is `false` (default), SSA is always deconstructed before it is
+  /// stored in the returned program's `body`. The preserved SSA copy is still
+  /// available via [`ProgramFunction::ssa_body`]/[`ProgramFunction::cfg_ssa`].
   pub keep_ssa: bool,
   /// Run optimisation passes after SSA construction.
   ///
