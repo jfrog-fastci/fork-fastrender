@@ -20,8 +20,8 @@
         "result": "ok",
         "summary": {
           "functions": 6,
-          "instructions": 20,
-          "dom_calculations": 12
+          "instructions": 41,
+          "dom_calculations": 7
         }
       }
     },
@@ -43,9 +43,9 @@
       "optimize": {
         "result": "ok",
         "summary": {
-          "functions": 1,
-          "instructions": 1,
-          "dom_calculations": 2
+          "functions": 2,
+          "instructions": 33,
+          "dom_calculations": 4
         }
       }
     },
@@ -67,9 +67,9 @@
       "optimize": {
         "result": "ok",
         "summary": {
-          "functions": 1,
-          "instructions": 5,
-          "dom_calculations": 2
+          "functions": 5,
+          "instructions": 54,
+          "dom_calculations": 9
         }
       }
     },
@@ -92,8 +92,8 @@
         "result": "ok",
         "summary": {
           "functions": 12,
-          "instructions": 158,
-          "dom_calculations": 25
+          "instructions": 176,
+          "dom_calculations": 23
         }
       }
     },
@@ -115,9 +115,9 @@
       "optimize": {
         "result": "ok",
         "summary": {
-          "functions": 1,
-          "instructions": 8,
-          "dom_calculations": 2
+          "functions": 3,
+          "instructions": 238,
+          "dom_calculations": 6
         }
       }
     },
@@ -139,9 +139,9 @@
       "optimize": {
         "result": "ok",
         "summary": {
-          "functions": 4,
-          "instructions": 13,
-          "dom_calculations": 8
+          "functions": 11,
+          "instructions": 143,
+          "dom_calculations": 17
         }
       }
     },
@@ -161,12 +161,15 @@
         "type_params": 0
       },
       "optimize": {
-        "result": "ok",
-        "summary": {
-          "functions": 6,
-          "instructions": 32,
-          "dom_calculations": 12
-        }
+        "result": "err",
+        "diagnostics": [
+          {
+            "code": "OPT0002",
+            "message": "unsupported expression Missing",
+            "start": 6367,
+            "end": 6415
+          }
+        ]
       }
     },
     "scientific_computing.js": {
@@ -187,9 +190,9 @@
       "optimize": {
         "result": "ok",
         "summary": {
-          "functions": 1,
-          "instructions": 0,
-          "dom_calculations": 1
+          "functions": 6,
+          "instructions": 582,
+          "dom_calculations": 11
         }
       }
     },
@@ -213,9 +216,9 @@
         "diagnostics": [
           {
             "code": "OPT0002",
-            "message": "object accessor literals are not supported",
-            "start": 633,
-            "end": 1097
+            "message": "unsupported expression Yield { expr: Some(ExprId(15)), delegate: false }",
+            "start": 2863,
+            "end": 2884
           }
         ]
       }
@@ -240,9 +243,9 @@
         "diagnostics": [
           {
             "code": "OPT0002",
-            "message": "unsupported expression Yield { expr: Some(ExprId(9)), delegate: false }",
-            "start": 1200,
-            "end": 1275
+            "message": "unsupported expression Missing",
+            "start": 4931,
+            "end": 5241
           }
         ]
       }
@@ -293,8 +296,8 @@
         "result": "ok",
         "summary": {
           "functions": 20,
-          "instructions": 588,
-          "dom_calculations": 46
+          "instructions": 618,
+          "dom_calculations": 45
         }
       }
     },
