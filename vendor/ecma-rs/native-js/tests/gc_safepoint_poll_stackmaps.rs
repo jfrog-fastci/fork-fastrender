@@ -58,8 +58,11 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
   let gc_ptr = gc::gc_ptr_type(&context);
   let i64_ty = context.i64_type();
 
-  // define ptr addrspace(1) @test(ptr addrspace(1) %obj, i64 %n) gc "coreclr"
-  let fn_ty = gc_ptr.fn_type(&[gc_ptr.into(), i64_ty.into()], false);
+  // define ptr addrspace(1) @test(ptr addrspace(1) %obj) gc "coreclr"
+  //
+  // The loop trip count is a compile-time constant so we exercise `place-safepoints`'s
+  // `--spp-all-backedges` behavior (counted loops still get backedge polls).
+  let fn_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
   let f = module.add_function("test", fn_ty, None);
   gc::set_default_gc_strategy(&f).expect("GC strategy contains NUL byte");
 
@@ -67,10 +70,6 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
     .get_nth_param(0)
     .expect("missing obj param")
     .into_pointer_value();
-  let n = f
-    .get_nth_param(1)
-    .expect("missing n param")
-    .into_int_value();
 
   let entry = context.append_basic_block(f, "entry");
   let loop_header = context.append_basic_block(f, "loop");
@@ -91,6 +90,7 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
   obj_phi.add_incoming(&[(&obj, entry)]);
 
   let i = i_phi.as_basic_value().into_int_value();
+  let n = i64_ty.const_int(1_000_000, false);
   let cond = builder
     .build_int_compare(IntPredicate::ULT, i, n, "cond")
     .expect("icmp");
@@ -224,4 +224,3 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
     );
   }
 }
-

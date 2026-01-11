@@ -109,6 +109,10 @@ pub fn init_native_target() -> Result<(), String> {
         CString::new("--fixup-allow-gcptr-in-csr=false").expect("argv[1]"),
         // Fallback/defense-in-depth: allow at most 0 statepoints to keep GC pointers in CSRs.
         CString::new("--fixup-max-csr-statepoints=0").expect("argv[2]"),
+        // Always poll at loop backedges, even for "counted" loops with statically-known trip
+        // counts. Without this, a call-free counted loop can run for a long time after the entry
+        // poll and delay a stop-the-world GC request.
+        CString::new("--spp-all-backedges").expect("argv[3]"),
       ];
       let argv_ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
       unsafe {
