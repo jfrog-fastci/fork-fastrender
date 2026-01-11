@@ -352,7 +352,11 @@ fi
 
 if [[ -n "${LLVM_READOBJ}" ]]; then
   echo "[stackmaps] inspect: llvm-readobj --sections"
-  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -Eq 'Name: \.data\.rel\.ro\.llvm_stackmaps|Name: \.llvm_stackmaps'
+  # Do NOT use `grep -q` here: under `set -o pipefail`, `grep -q` can close the
+  # pipe early once a match is found, causing `llvm-readobj` to see EPIPE and
+  # exit non-zero (flaky failure depending on scheduling/buffering).
+  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" \
+    | grep -E 'Name: \.data\.rel\.ro\.llvm_stackmaps|Name: \.llvm_stackmaps' >/dev/null
 else
   echo "[stackmaps] note: llvm-readobj not found; skipping llvm-readobj check"
 fi
