@@ -169,8 +169,9 @@ pub use stackmaps::{
 };
 pub use stackmaps_validate::{validate_stackmaps, ValidationError};
 pub use stackwalk_fp::{
-  relocate_pair, walk_gc_root_pairs_from_fp, walk_gc_root_pairs_from_safepoint_context,
-  walk_gc_roots_from_fp, StatepointRootPair, WalkError,
+  relocate_pair, walk_gc_reloc_pairs_from_fp, walk_gc_reloc_pairs_from_safepoint_context,
+  walk_gc_root_pairs_from_fp, walk_gc_root_pairs_from_safepoint_context, walk_gc_roots_from_fp,
+  StatepointRootPair, WalkError,
 };
 pub use rt_trace::rt_debug_snapshot_counters;
 pub use rt_trace::RtDebugCountersSnapshot;

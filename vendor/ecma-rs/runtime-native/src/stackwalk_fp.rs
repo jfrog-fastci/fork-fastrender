@@ -1,6 +1,6 @@
+use crate::gc_roots::RelocPair;
 use crate::stackmaps::{CallSite, Location, StackMaps, StackSize};
 use crate::stackwalk::StackBounds;
-use crate::gc_roots::RelocPair;
 use crate::statepoints::RootSlot;
 
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -511,6 +511,30 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
   // managed frame we just handled above.
   walk_gc_roots_from_fp(caller_fp, bounds, stackmaps, visit)
+}
+
+/// Walk the frame-pointer chain and enumerate GC relocation pairs (`(base, derived)` slots).
+///
+/// This is the primary API for moving collectors: it yields the exact stack slots LLVM recorded for
+/// each `gc.relocate` use at every statepoint callsite, including interior/derived pointers where
+/// `base != derived`.
+///
+/// Note: this uses the same stack-walking strategy as [`walk_gc_root_pairs_from_fp`], and will skip
+/// frames whose return address is not present in `stackmaps`.
+pub unsafe fn walk_gc_reloc_pairs_from_fp(
+  start_fp: u64,
+  bounds: Option<StackBounds>,
+  stackmaps: &StackMaps,
+  mut visit: impl FnMut(RelocPair),
+) -> Result<(), WalkError> {
+  walk_gc_root_pairs_from_fp(start_fp, bounds, stackmaps, |_return_addr, pairs| {
+    for &(base_slot, derived_slot) in pairs {
+      visit(RelocPair {
+        base_slot: RootSlot::StackAddr(base_slot.cast::<u8>()),
+        derived_slot: RootSlot::StackAddr(derived_slot.cast::<u8>()),
+      });
+    }
+  })
 }
 
 /// Walk the frame-pointer chain and enumerate `(base_slot, derived_slot)` pairs using LLVM stackmaps.

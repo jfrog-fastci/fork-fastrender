@@ -28,8 +28,11 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
   let mut stack = AlignedStack([0usize; 64]);
   let base = stack.0.as_mut_ptr() as usize;
 
+  // Layout:
+  // - callee frame at `callee_fp`
+  // - caller frame at `caller_fp` (older, so a larger address)
   let callee_fp = base + 8 * std::mem::size_of::<usize>();
-  let caller_fp = base + 24 * std::mem::size_of::<usize>();
+  let caller_fp = base + 16 * std::mem::size_of::<usize>();
   let return_address = 0x1234usize;
 
   unsafe {
@@ -42,8 +45,6 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     (caller_fp as *mut usize).add(1).write(0);
 
     // Simulate two pointer slots in caller frame at offsets 0 and 8 from the caller's callsite SP.
-    // Under the forced-frame-pointer ABI, the caller's SP at the callsite return address is
-    // `callee_fp + 16`.
     let caller_sp = callee_fp + 16;
     let base_slot_addr = caller_sp as *mut usize;
     let derived_slot_addr = (caller_sp + 8) as *mut usize;
@@ -147,12 +148,13 @@ fn stack_root_enumerator_stops_on_out_of_bounds_slot() {
   // Make the stackmap describe slots far outside the synthetic stack buffer.
   let stackmaps = StackMaps::parse(&minimal_stackmap_section_with_offsets(
     return_address as u32,
-    // Keep one offset small so (after we bump `stack_size` below) the reconstructed caller_sp is far
-    // below the synthetic stack bounds and this base slot becomes out-of-bounds.
+    // Keep one offset small so the base slot is in-bounds, and use a huge derived offset to force
+    // the derived slot out-of-bounds.
     0, // base slot offset
-    // Use a large derived offset to force the helper to bump stack_size enough for the stackmap
-    // verifier (`offset <= stack_size`), without making *both* slots land back in-bounds.
-    0x7fff, // derived slot offset
+    // Note: `minimal_stackmap_section_with_offsets` bumps `stack_size` so the verifier accepts the
+    // synthetic record, but the frame-pointer stack walker uses `callee_fp + 16` to derive the
+    // callsite `SP`, so this address remains out-of-bounds for our tiny synthetic stack.
+    0x8000, // derived slot offset (aligned but far out-of-bounds)
   ))
   .unwrap();
   let roots = StackRootEnumerator::new(&stackmaps);

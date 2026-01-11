@@ -60,6 +60,7 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
 
   let slot0 = caller_fp - 0x10;
   let slot1 = caller_fp - 0x8;
+  assert_eq!(start_fp + 16, slot0);
 
   unsafe {
     // runtime frame -> caller frame
