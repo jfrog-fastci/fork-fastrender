@@ -23,6 +23,8 @@ use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
 use crate::shape_table;
+#[cfg(feature = "gc_stats")]
+use crate::abi::RtGcStatsSnapshot;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
@@ -198,6 +200,9 @@ fn thread_kind_from_abi(kind: u32) -> threading::ThreadKind {
 fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usize) {
   debug_assert!(!card_table.is_null());
   debug_assert!(start_card <= end_card);
+
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_card_marks((end_card - start_card + 1) as u64);
 
   let start_word = start_card / 64;
   let end_word = end_card / 64;
@@ -635,12 +640,12 @@ unsafe fn remember_old_object(obj: *mut u8) {
   // can iterate remembered objects without scanning the entire heap.
   let header = &*(obj as *const ObjHeader);
   if header.set_remembered_idempotent() {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_remembered_object_added();
     REMEMBERED_SET.insert(obj);
   }
 }
 /// Write barrier for GC.
-///
-/// Records old→young pointer stores in the remembered set.
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u8) {
   #[cfg(feature = "gc_stats")]
@@ -675,6 +680,9 @@ pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u
   if YOUNG_SPACE.contains(obj as usize) {
     return;
   }
+
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_write_barrier_old_young_hit();
 
   // Old → young store. Mark the base object as remembered.
   //
@@ -1114,7 +1122,7 @@ pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
 
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
-pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut crate::abi::RtGcStatsSnapshot) {
+pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut RtGcStatsSnapshot) {
   if out.is_null() {
     return;
   }

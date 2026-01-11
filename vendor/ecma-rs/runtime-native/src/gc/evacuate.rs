@@ -55,6 +55,8 @@ impl GcHeap {
       evac.heap.root_handles = root_handles;
 
       remembered.for_each_remembered_obj(&mut |obj| {
+        #[cfg(feature = "gc_stats")]
+        crate::gc_stats::record_remembered_object_scanned_minor();
         unsafe {
           for_each_ptr_slot_in_dirty_cards(obj, |slot| evac.visit_slot(slot));
         }

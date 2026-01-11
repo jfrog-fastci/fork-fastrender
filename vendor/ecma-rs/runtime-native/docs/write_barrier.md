@@ -348,3 +348,41 @@ If an allocation site is forced to allocate into old gen, the object begins life
 * Initialization stores may omit the barrier only when the RHS is proven not-young (e.g. null or pretenured).
 
 Do not assume that “initialization stores are safe” unless the compiler can prove the object is young (or non-escaping).
+
+---
+
+## Stats
+
+For tuning and regression detection, `runtime-native` can optionally collect low-overhead counters for the write barrier,
+remembered set, and card table.
+
+### Enabling
+
+Build with the Cargo feature:
+
+```bash
+# From vendor/ecma-rs/
+bash scripts/cargo_agent.sh test -p runtime-native --features gc_stats
+```
+
+### Reading/resetting
+
+Use the stable C ABI entrypoints:
+
+* `rt_gc_stats_snapshot(RtGcStatsSnapshot* out)` — read counters into `out`.
+* `rt_gc_stats_reset()` — zero all counters.
+
+`RtGcStatsSnapshot` is a `#[repr(C)]` snapshot struct of `u64` counters (see `include/runtime_native.h`). In C, the
+declarations are guarded by `#ifdef RUNTIME_NATIVE_GC_STATS` so consumers can opt-in when linking
+against a `runtime-native` build compiled with `--features gc_stats`.
+
+### Counter meanings
+
+* `write_barrier_calls_total`: total `rt_write_barrier` calls (a proxy for barrier insertion density).
+* `write_barrier_old_young_hits`: slow-path hits where `obj` was old and the stored value was young.
+  * Barrier hit rate ≈ `old_young_hits / write_barrier_calls_total`.
+* `remembered_objects_added`: number of objects newly inserted into the remembered set (deduplicated).
+* `remembered_objects_scanned_minor`: remembered objects scanned during minor GC.
+* `card_marks_total`: total cards marked dirty by the barrier (sum of `end_card - start_card + 1` across calls).
+* `cards_scanned_minor`: dirty cards processed/cleared during minor GC.
+* `cards_kept_after_rebuild`: cards that remain marked after the minor-GC rebuild (still contain young pointers).

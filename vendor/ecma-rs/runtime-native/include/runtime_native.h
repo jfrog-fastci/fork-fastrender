@@ -453,16 +453,22 @@ void rt_gc_get_young_range(GcPtr* out_start, GcPtr* out_end);
 #ifdef RUNTIME_NATIVE_GC_STATS
 typedef struct RtGcStatsSnapshot {
   uint64_t alloc_calls;
-  size_t alloc_bytes;
+  uint64_t alloc_bytes;
   uint64_t alloc_array_calls;
-  size_t alloc_array_bytes;
+  uint64_t alloc_array_bytes;
   uint64_t gc_collect_calls;
   uint64_t safepoint_calls;
-  uint64_t write_barrier_calls;
+  uint64_t write_barrier_calls_total;
   uint64_t write_barrier_range_calls;
+  uint64_t write_barrier_old_young_hits;
   uint64_t set_young_range_calls;
   uint64_t thread_init_calls;
   uint64_t thread_deinit_calls;
+  uint64_t remembered_objects_added;
+  uint64_t remembered_objects_scanned_minor;
+  uint64_t card_marks_total;
+  uint64_t cards_scanned_minor;
+  uint64_t cards_kept_after_rebuild;
 } RtGcStatsSnapshot;
 
 void rt_gc_stats_snapshot(RtGcStatsSnapshot* out);

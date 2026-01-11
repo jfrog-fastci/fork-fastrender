@@ -111,6 +111,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
       vtable: &COUNTER_VTABLE,
       promise: null_mut(),
       next_waiter: null_mut(),
+      // Deferred spawn always stores the coroutine across turns; treat it as runtime-owned.
       flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
     },
     counter: &counter,

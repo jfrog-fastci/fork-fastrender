@@ -71,6 +71,8 @@ pub(crate) unsafe fn for_each_ptr_slot_in_dirty_cards(mut obj: *mut u8, mut f: i
 
       for word_idx in 0..word_count {
         let mut bits = (*card_table.add(word_idx)).swap(0, Ordering::AcqRel);
+        #[cfg(feature = "gc_stats")]
+        crate::gc_stats::record_cards_scanned_minor(bits.count_ones() as u64);
         while bits != 0 {
           let bit = bits.trailing_zeros() as usize;
           bits &= bits - 1;
@@ -105,7 +107,8 @@ pub(crate) unsafe fn for_each_ptr_slot_in_dirty_cards(mut obj: *mut u8, mut f: i
   // Object has a card table but is not a pointer array. Clear all bits so the
   // next minor collection doesn't rescan stale cards.
   for word_idx in 0..word_count {
-    (*card_table.add(word_idx)).store(0, Ordering::Release);
+    let _bits = (*card_table.add(word_idx)).swap(0, Ordering::AcqRel);
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_cards_scanned_minor(_bits.count_ones() as u64);
   }
 }
-

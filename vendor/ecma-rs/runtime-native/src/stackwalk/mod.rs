@@ -174,8 +174,21 @@ pub fn find_nearest_managed_cursor(start_fp: u64, stackmaps: &crate::StackMaps) 
 }
 
 /// Convenience wrapper over [`find_nearest_managed_cursor`] for the current thread.
+///
+/// Note: this intentionally starts from the *caller* frame of this helper, not this helper's own
+/// frame, so runtime code can call it and recover the nearest managed callsite without accidentally
+/// selecting a stackmap record inside this helper itself.
+#[inline(never)]
 pub fn find_nearest_managed_cursor_from_here(stackmaps: &crate::StackMaps) -> Option<FrameCursor> {
-  find_nearest_managed_cursor(current_frame_pointer(), stackmaps)
+  let fp = current_frame_pointer();
+  if fp == 0 {
+    return None;
+  }
+
+  // SAFETY: under the forced-frame-pointer ABI, `fp` points at a valid frame record:
+  // `[fp + 0]` is the saved caller FP.
+  let caller_fp = unsafe { (fp as *const u64).read() };
+  find_nearest_managed_cursor(caller_fp, stackmaps)
 }
 
 /// Captured CPU context for a stopped thread.

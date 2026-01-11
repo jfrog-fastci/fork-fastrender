@@ -18,6 +18,7 @@ use crate::abi::PromiseRef;
 use crate::abi::ValueRef;
 use crate::async_rt;
 use crate::gc::YOUNG_SPACE;
+use crate::gc::GcHeap;
 use crate::time;
 
 static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -231,4 +232,15 @@ pub fn unhandled_rejection_count() -> usize {
 /// Drains and returns any promise rejection tracking events reported since the last call.
 pub fn drain_promise_rejection_events() -> Vec<PromiseRejectionEvent> {
   crate::unhandled_rejection::drain_events_for_tests()
+}
+
+// --- GC helpers used by integration tests -------------------------------------------------------
+
+/// Set the global young-space range to this heap's nursery.
+///
+/// `rt_write_barrier` uses a process-global range check to classify pointers as young/old. The real
+/// runtime will set this during GC initialization and after nursery flips; integration tests that
+/// directly allocate a [`GcHeap`] need a helper to keep the barrier consistent.
+pub fn gc_set_young_range_for_heap(heap: &GcHeap) {
+  crate::rt_gc_set_young_range(heap.nursery.start(), heap.nursery.end());
 }

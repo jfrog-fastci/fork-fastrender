@@ -126,16 +126,22 @@ impl PromiseResolveInput {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RtGcStatsSnapshot {
   pub alloc_calls: u64,
-  pub alloc_bytes: usize,
+  pub alloc_bytes: u64,
   pub alloc_array_calls: u64,
-  pub alloc_array_bytes: usize,
+  pub alloc_array_bytes: u64,
   pub gc_collect_calls: u64,
   pub safepoint_calls: u64,
-  pub write_barrier_calls: u64,
+  pub write_barrier_calls_total: u64,
   pub write_barrier_range_calls: u64,
+  pub write_barrier_old_young_hits: u64,
   pub set_young_range_calls: u64,
   pub thread_init_calls: u64,
   pub thread_deinit_calls: u64,
+  pub remembered_objects_added: u64,
+  pub remembered_objects_scanned_minor: u64,
+  pub card_marks_total: u64,
+  pub cards_scanned_minor: u64,
+  pub cards_kept_after_rebuild: u64,
 }
 
 // -----------------------------------------------------------------------------

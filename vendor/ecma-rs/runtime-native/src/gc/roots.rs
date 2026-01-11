@@ -47,6 +47,7 @@ pub trait RememberedSet {
   /// Clear all remembered entries.
   fn clear(&mut self);
 
+  /// Register a promoted object that may still contain references into the nursery.
   fn on_promoted_object(&mut self, obj: *mut u8, has_young_refs: bool);
 }
 
@@ -143,6 +144,8 @@ impl SimpleRememberedSet {
     if !header.set_remembered_idempotent() {
       return;
     }
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_remembered_object_added();
     self.objs.push(obj);
   }
 

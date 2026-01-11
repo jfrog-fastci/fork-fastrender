@@ -258,8 +258,9 @@ fn pin_uint8_array_range_converts_view_relative_range_and_charges_alloc_len() {
   assert_eq!(alloc_len, 1024);
 
   let view = Uint8Array::view(&buf, 4, 8).unwrap();
-  // `IoOp::pin_uint8_array_range` borrows the backing store for the lifetime of the op; once pinned,
-  // `ArrayBuffer::data_ptr()` must be rejected. Compute the expected base pointer before pinning.
+  // `IoOp::pin_uint8_array_range` borrows the backing store for the lifetime of the op; once
+  // pinned, `ArrayBuffer::data_ptr()` must be rejected. Compute the expected base pointer before
+  // pinning.
   let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4 + 2) } as *const u8;
   let op = IoOp::pin_uint8_array_range(&limiter, &view, 2..6).unwrap();
 

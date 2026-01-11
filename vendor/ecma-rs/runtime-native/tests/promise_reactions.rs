@@ -60,10 +60,7 @@ extern "C" fn log_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
       1 => {
         let log = &*(*coro).log;
         log.lock().unwrap().push((*coro).id);
-        runtime_native::rt_promise_resolve_legacy(
-          (*coro).header.promise,
-          core::ptr::null_mut::<core::ffi::c_void>(),
-        );
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
