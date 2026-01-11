@@ -4,6 +4,7 @@ pub mod defs;
 pub mod driver;
 pub mod effect;
 pub mod escape;
+pub mod encoding;
 pub mod find_conds;
 pub mod find_loops;
 pub mod interference;

@@ -1,0 +1,362 @@
+use crate::analysis::dataflow::{
+  AnalysisBoundary, BlockState, DataFlowAnalysis, DataFlowResult, Direction, ResolvedAnalysisBoundary,
+};
+use crate::cfg::cfg::Cfg;
+use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
+use ahash::HashMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringEncoding {
+  Bottom,
+  Ascii,
+  Utf8,
+  Unknown,
+}
+
+impl StringEncoding {
+  fn join(self, other: Self) -> Self {
+    use StringEncoding::*;
+    match (self, other) {
+      (Bottom, v) | (v, Bottom) => v,
+      (Unknown, _) | (_, Unknown) => Unknown,
+      (Ascii, Ascii) => Ascii,
+      (Utf8, Utf8) => Utf8,
+      (Ascii, Utf8) | (Utf8, Ascii) => Unknown,
+    }
+  }
+
+  fn concat(self, other: Self) -> Self {
+    use StringEncoding::*;
+    match (self, other) {
+      (Bottom, _) | (_, Bottom) => Bottom,
+      (Ascii, Ascii) => Ascii,
+      (Utf8, _) | (_, Utf8) => Utf8,
+      _ => Unknown,
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodingState {
+  reachable: bool,
+  vars: HashMap<u32, StringEncoding>,
+}
+
+impl EncodingState {
+  fn bottom() -> Self {
+    Self {
+      reachable: false,
+      vars: HashMap::default(),
+    }
+  }
+
+  fn entry() -> Self {
+    Self {
+      reachable: true,
+      vars: HashMap::default(),
+    }
+  }
+
+  fn get(&self, var: u32) -> StringEncoding {
+    if !self.reachable {
+      return StringEncoding::Bottom;
+    }
+    self.vars.get(&var).copied().unwrap_or(StringEncoding::Unknown)
+  }
+
+  fn set(&mut self, var: u32, enc: StringEncoding) {
+    if !self.reachable {
+      return;
+    }
+    self.vars.insert(var, enc);
+  }
+
+  fn join_with(&mut self, other: &Self) {
+    if !other.reachable {
+      return;
+    }
+    if !self.reachable {
+      *self = other.clone();
+      return;
+    }
+    for (&var, &enc_other) in other.vars.iter() {
+      let enc = self
+        .vars
+        .get(&var)
+        .copied()
+        .unwrap_or(StringEncoding::Bottom)
+        .join(enc_other);
+      self.vars.insert(var, enc);
+    }
+  }
+}
+
+pub struct EncodingResult {
+  pub boundary: ResolvedAnalysisBoundary,
+  pub blocks: HashMap<u32, BlockState<EncodingState>>,
+}
+
+impl EncodingResult {
+  pub fn block_entry(&self, label: u32) -> Option<&EncodingState> {
+    self.blocks.get(&label).map(|b| &b.entry)
+  }
+
+  pub fn block_exit(&self, label: u32) -> Option<&EncodingState> {
+    self.blocks.get(&label).map(|b| &b.exit)
+  }
+
+  pub fn encoding_at_entry(&self, label: u32, var: u32) -> StringEncoding {
+    self
+      .block_entry(label)
+      .map(|state| state.get(var))
+      .unwrap_or(StringEncoding::Bottom)
+  }
+
+  pub fn encoding_at_exit(&self, label: u32, var: u32) -> StringEncoding {
+    self
+      .block_exit(label)
+      .map(|state| state.get(var))
+      .unwrap_or(StringEncoding::Bottom)
+  }
+}
+
+struct EncodingAnalysis;
+
+impl EncodingAnalysis {
+  fn encoding_of_arg(&self, state: &EncodingState, arg: &Arg) -> StringEncoding {
+    match arg {
+      Arg::Const(Const::Str(s)) => {
+        if s.is_ascii() {
+          StringEncoding::Ascii
+        } else {
+          StringEncoding::Utf8
+        }
+      }
+      Arg::Var(var) => state.get(*var),
+      _ => StringEncoding::Unknown,
+    }
+  }
+
+  fn encoding_for_bin_add(&self, state: &EncodingState, left: &Arg, right: &Arg) -> StringEncoding {
+    let left = self.encoding_of_arg(state, left);
+    let right = self.encoding_of_arg(state, right);
+    left.concat(right)
+  }
+}
+
+impl DataFlowAnalysis for EncodingAnalysis {
+  type State = EncodingState;
+
+  const DIRECTION: Direction = Direction::Forward;
+
+  fn bottom(&self, _cfg: &Cfg) -> Self::State {
+    EncodingState::bottom()
+  }
+
+  fn boundary_state(&self, boundary: &ResolvedAnalysisBoundary, _cfg: &Cfg) -> Self::State {
+    match boundary {
+      ResolvedAnalysisBoundary::Entry(_) => EncodingState::entry(),
+      ResolvedAnalysisBoundary::VirtualExit { .. } => EncodingState::bottom(),
+    }
+  }
+
+  fn meet(&mut self, states: &[(u32, &Self::State)]) -> Self::State {
+    if states.is_empty() {
+      return EncodingState::bottom();
+    }
+    let mut merged = EncodingState::bottom();
+    for (_, state) in states {
+      merged.join_with(state);
+    }
+    merged
+  }
+
+  fn apply_to_instruction(
+    &mut self,
+    _label: u32,
+    _inst_idx: usize,
+    inst: &Inst,
+    state: &mut Self::State,
+  ) {
+    if !state.reachable {
+      return;
+    }
+
+    match inst.t {
+      InstTyp::VarAssign => {
+        let (tgt, arg) = inst.as_var_assign();
+        let enc = self.encoding_of_arg(state, arg);
+        state.set(tgt, enc);
+      }
+      InstTyp::Phi => {
+        let tgt = inst.tgts[0];
+        let enc = inst
+          .args
+          .iter()
+          .map(|arg| self.encoding_of_arg(state, arg))
+          .fold(StringEncoding::Bottom, |acc, enc| acc.join(enc));
+        state.set(tgt, enc);
+      }
+      InstTyp::Un => {
+        let (tgt, op, _arg) = inst.as_un();
+        let enc = match op {
+          UnOp::Typeof => StringEncoding::Ascii,
+          _ => StringEncoding::Unknown,
+        };
+        state.set(tgt, enc);
+      }
+      InstTyp::Bin => {
+        let (tgt, left, op, right) = inst.as_bin();
+        let enc = match op {
+          BinOp::Add => self.encoding_for_bin_add(state, left, right),
+          _ => StringEncoding::Unknown,
+        };
+        state.set(tgt, enc);
+      }
+      InstTyp::Call => {
+        if let Some(tgt) = inst.tgts.get(0).copied() {
+          state.set(tgt, StringEncoding::Unknown);
+        }
+      }
+      InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
+        let tgt = inst.tgts[0];
+        state.set(tgt, StringEncoding::Unknown);
+      }
+      _ => {
+        for &tgt in inst.tgts.iter() {
+          state.set(tgt, StringEncoding::Unknown);
+        }
+      }
+    };
+  }
+}
+
+pub fn analyze_encoding(cfg: &Cfg) -> EncodingResult {
+  let mut analysis = EncodingAnalysis;
+  let DataFlowResult { boundary, blocks } = analysis.analyze(cfg, AnalysisBoundary::Entry(cfg.entry));
+  EncodingResult { boundary, blocks }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+
+  fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+    let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
+    let mut graph = CfgGraph::default();
+    for &(from, to) in edges {
+      graph.connect(from, to);
+    }
+    for &label in &labels {
+      if !graph.contains(label) {
+        graph.connect(label, label);
+        graph.disconnect(label, label);
+      }
+    }
+    let mut bblocks = CfgBBlocks::default();
+    for (label, insts) in blocks.iter() {
+      bblocks.add(*label, insts.clone());
+    }
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  #[test]
+  fn distinguishes_ascii_and_utf8_literals() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::var_assign(0, Arg::Const(Const::Str("hello".to_string()))),
+            Inst::var_assign(1, Arg::Const(Const::Str("π".to_string()))),
+          ],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+
+    let result = analyze_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 0), StringEncoding::Ascii);
+    assert_eq!(result.encoding_at_entry(1, 1), StringEncoding::Utf8);
+  }
+
+  #[test]
+  fn concatenation_of_ascii_literals_is_ascii() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::var_assign(0, Arg::Const(Const::Str("a".to_string()))),
+            Inst::var_assign(1, Arg::Const(Const::Str("b".to_string()))),
+            Inst::bin(2, Arg::Var(0), BinOp::Add, Arg::Var(1)),
+          ],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+
+    let result = analyze_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Ascii);
+  }
+
+  #[test]
+  fn concatenation_with_non_ascii_literal_is_utf8() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::var_assign(0, Arg::Const(Const::Str("a".to_string()))),
+            Inst::var_assign(1, Arg::Const(Const::Str("π".to_string()))),
+            Inst::bin(2, Arg::Var(0), BinOp::Add, Arg::Var(1)),
+          ],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+
+    let result = analyze_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Utf8);
+  }
+
+  #[test]
+  fn phi_joins_encodings() {
+    let mut phi = Inst::phi_empty(3);
+    phi.insert_phi(1, Arg::Var(1));
+    phi.insert_phi(2, Arg::Var(2));
+
+    let cfg = cfg_with_blocks(
+      &[
+        (0, vec![Inst::cond_goto(Arg::Const(Const::Bool(true)), 1, 2)]),
+        (
+          1,
+          vec![
+            Inst::var_assign(1, Arg::Const(Const::Str("a".to_string()))),
+            Inst::goto(3),
+          ],
+        ),
+        (
+          2,
+          vec![
+            Inst::var_assign(2, Arg::Const(Const::Str("b".to_string()))),
+            Inst::goto(3),
+          ],
+        ),
+        (3, vec![phi]),
+      ],
+      &[(0, 1), (0, 2), (1, 3), (2, 3)],
+    );
+
+    let result = analyze_encoding(&cfg);
+    assert_eq!(result.encoding_at_exit(3, 3), StringEncoding::Ascii);
+  }
+}
