@@ -83,16 +83,6 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   let func = module.add_function("loop", fn_ty, None);
   gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
 
-  // Declare the slow-path runtime entrypoint. In production this will be the
-  // `_gc` wrapper from `RuntimeAbi`, but for this test we only care that the
-  // call site exists so `rewrite-statepoints-for-gc` can rewrite it into a
-  // statepoint.
-  let rt_gc_safepoint_gc = module.add_function(
-    "rt_gc_safepoint_gc",
-    context.void_type().fn_type(&[], false),
-    None,
-  );
-
   let entry = context.append_basic_block(func, "entry");
   let loop_header = context.append_basic_block(func, "loop.header");
   let loop_body = context.append_basic_block(func, "loop.body");
@@ -135,7 +125,7 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
 
   builder.position_at_end(loop_latch);
   // This is the key: a tight loop with no calls except our explicit GC poll.
-  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func, rt_gc_safepoint_gc);
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
   // Poll helper positions the builder at `gc.poll.cont`.
   builder
     .build_unconditional_branch(loop_header)
@@ -173,23 +163,21 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
 
   let ir = module.print_to_string().to_string();
 
-  // Fast-path poll should remain a direct leaf call in the backedge block.
+  // Fast-path poll should inline the exported `RT_GC_EPOCH` flag in the backedge
+  // block (no call/statepoint on the fast path).
   let latch_ir = block_body(&ir, "loop.latch");
-  assert!(latch_ir.contains("@rt_gc_poll"), "IR missing fast poll:\n{ir}");
-
-  let func_ir = function_block(&ir, "@loop");
-  for line in func_ir.lines() {
-    assert!(
-      !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_gc_poll")),
-      "rt_gc_poll should not be wrapped in a statepoint:\n{line}\n\n{func_ir}"
-    );
-  }
+  assert!(latch_ir.contains("@RT_GC_EPOCH"), "IR missing epoch load:\n{ir}");
 
   // Slow-path call should be rewritten into a statepoint.
+  let func_ir = function_block(&ir, "@loop");
   let slow_ir = block_body(&ir, "gc.poll.slow");
   assert!(
     slow_ir.contains("@llvm.experimental.gc.statepoint"),
     "IR missing statepoint in slow path:\n{ir}"
+  );
+  assert!(
+    slow_ir.contains("rt_gc_safepoint_slow"),
+    "expected slow-path safepoint call to target rt_gc_safepoint_slow:\n{slow_ir}"
   );
 
   assert!(

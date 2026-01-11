@@ -10,10 +10,10 @@
 //!
 //! ## Policy (initial)
 //! * Insert a poll on **every loop backedge**.
-//! * Fast path: a cheap leaf check (`rt_gc_poll() -> i1`) that is **not**
-//!   rewritten into a statepoint.
-//! * Slow path: if requested, call into the runtime via a **normal callsite**
-//!   (`rt_gc_safepoint_gc()`), which is then rewritten into an LLVM statepoint by
+//! * Fast path: inline the runtime's exported epoch (`@RT_GC_EPOCH`) and branch
+//!   on the low bit.
+//! * Slow path: if requested, call `rt_gc_safepoint_slow(epoch)` via a **normal
+//!   callsite**, which is then rewritten into an LLVM statepoint by
 //!   `rewrite-statepoints-for-gc`.
 //!
 //! This keeps the runtime ABI stable while making it easy to tune overhead later
@@ -22,28 +22,36 @@
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::values::AsValueRef;
+use inkwell::values::BasicValue;
 use inkwell::values::{FunctionValue, IntValue};
+use inkwell::IntPredicate;
+use llvm_sys::core::LLVMSetOrdering;
+use llvm_sys::LLVMAtomicOrdering;
 
-/// Ensure `declare i1 @rt_gc_poll() "gc-leaf-function"` exists in `module`.
-///
-/// Marking the poll as a *GC leaf* ensures LLVM's `rewrite-statepoints-for-gc`
-/// pass does not wrap it in a statepoint (the poll itself is just a cheap check).
-pub fn get_or_declare_rt_gc_poll<'ctx>(
+fn get_or_declare_rt_gc_epoch<'ctx>(
+  context: &'ctx Context,
+  module: &Module<'ctx>,
+) -> inkwell::values::GlobalValue<'ctx> {
+  if let Some(existing) = module.get_global("RT_GC_EPOCH") {
+    return existing;
+  }
+  // Declared in `runtime-native/include/runtime_native.h`.
+  //
+  // The runtime defines the symbol; native-js only needs an external declaration
+  // so it can emit an atomic load.
+  module.add_global(context.i64_type(), None, "RT_GC_EPOCH")
+}
+
+fn get_or_declare_rt_gc_safepoint_slow<'ctx>(
   context: &'ctx Context,
   module: &Module<'ctx>,
 ) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("rt_gc_poll") {
+  if let Some(existing) = module.get_function("rt_gc_safepoint_slow") {
     return existing;
   }
-
-  let fn_ty = context.bool_type().fn_type(&[], false);
-  let func = module.add_function("rt_gc_poll", fn_ty, None);
-
-  // A string attribute with an empty value prints as `"gc-leaf-function"` in IR.
-  let leaf = context.create_string_attribute("gc-leaf-function", "");
-  func.add_attribute(inkwell::attributes::AttributeLoc::Function, leaf);
-
-  func
+  let fn_ty = context.void_type().fn_type(&[context.i64_type().into()], false);
+  module.add_function("rt_gc_safepoint_slow", fn_ty, None)
 }
 
 /// Emit a GC poll at the current insertion point (intended for loop backedges).
@@ -51,26 +59,39 @@ pub fn get_or_declare_rt_gc_poll<'ctx>(
 /// After this returns, the builder is positioned at the continuation block
 /// (`gc.poll.cont`) so the caller can finish the backedge (e.g. branch to the
 /// loop header).
-///
-/// `rt_gc_safepoint_gc` should be the addrspace(1) wrapper from
-/// [`crate::runtime_abi::RuntimeAbi`]. The call is emitted as a normal call; it
-/// becomes a statepoint once `rewrite-statepoints-for-gc` runs.
 pub fn emit_backedge_gc_poll<'ctx>(
   context: &'ctx Context,
   module: &Module<'ctx>,
   builder: &Builder<'ctx>,
   current_fn: FunctionValue<'ctx>,
-  rt_gc_safepoint_gc: FunctionValue<'ctx>,
 ) -> IntValue<'ctx> {
-  let rt_gc_poll = get_or_declare_rt_gc_poll(context, module);
+  let i64_ty = context.i64_type();
+  let rt_gc_epoch = get_or_declare_rt_gc_epoch(context, module);
 
-  let requested = builder
-    .build_call(rt_gc_poll, &[], "gc.poll.requested")
-    .expect("build rt_gc_poll call")
-    .try_as_basic_value()
-    .left()
-    .expect("rt_gc_poll returns i1")
+  let epoch = builder
+    .build_load(i64_ty, rt_gc_epoch.as_pointer_value(), "gc.epoch")
+    .expect("build RT_GC_EPOCH load")
     .into_int_value();
+
+  // Treat the epoch as `_Atomic uint64_t` and use Acquire ordering.
+  //
+  // Note: inkwell's atomic helpers are limited, so we directly set ordering on
+  // the produced `load` instruction via the LLVM C API.
+  if let Some(load_inst) = epoch.as_instruction_value() {
+    unsafe {
+      LLVMSetOrdering(load_inst.as_value_ref(), LLVMAtomicOrdering::LLVMAtomicOrderingAcquire);
+    }
+  }
+
+  // requested = (epoch & 1) != 0
+  let lowbit = builder
+    .build_and(epoch, i64_ty.const_int(1, false), "gc.epoch.lowbit")
+    .expect("build epoch lowbit");
+  let requested = builder
+    .build_int_compare(IntPredicate::NE, lowbit, i64_ty.const_zero(), "gc.poll.requested")
+    .expect("build poll compare");
+
+  let rt_gc_safepoint_slow = get_or_declare_rt_gc_safepoint_slow(context, module);
 
   let slow_block = context.append_basic_block(current_fn, "gc.poll.slow");
   let cont_block = context.append_basic_block(current_fn, "gc.poll.cont");
@@ -80,8 +101,8 @@ pub fn emit_backedge_gc_poll<'ctx>(
 
   builder.position_at_end(slow_block);
   let _ = builder
-    .build_call(rt_gc_safepoint_gc, &[], "gc.safepoint")
-    .expect("build rt_gc_safepoint_gc call");
+    .build_call(rt_gc_safepoint_slow, &[epoch.into()], "gc.safepoint")
+    .expect("build rt_gc_safepoint_slow call");
   builder
     .build_unconditional_branch(cont_block)
     .expect("branch to poll continuation");
