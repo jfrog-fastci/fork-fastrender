@@ -428,13 +428,17 @@ impl Drop for ThreadRegistration {
 
 fn set_tls_thread_registration(reg: ThreadRegistration) {
   TLS_THREAD_REGISTRATION.with(|cell| {
-    *cell.borrow_mut() = Some(reg);
+    // Important: drop the previous registration *after* releasing the RefCell borrow.
+    // Dropping while the RefCell is mutably borrowed makes it easy to accidentally
+    // re-enter TLS access from `Drop` and panic.
+    drop(cell.replace(Some(reg)));
   });
 }
 
 fn clear_tls_thread_registration() {
   TLS_THREAD_REGISTRATION.with(|cell| {
-    *cell.borrow_mut() = None;
+    // See comment in `set_tls_thread_registration`: drop outside the borrow.
+    drop(cell.replace(None));
   });
 }
 
