@@ -54,6 +54,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -100,6 +101,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -155,6 +157,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -201,6 +204,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -247,6 +251,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -261,6 +266,7 @@ pub mod window {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -996,7 +1002,7 @@ pub mod window {
     }
   }
 
-  pub fn install_foo_bindings_vm_js(
+  pub fn install_bar_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
     realm: &Realm,
@@ -1005,8 +1011,13 @@ pub mod window {
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
 
-    let key = rt.property_key("Foo")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    let key = rt.property_key("Bar")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -1014,8 +1025,6 @@ pub mod window {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_bar = rt.alloc_object()?;
-    let proto_foo = rt.alloc_object()?;
-
     let func = rt.alloc_native_function(bar_entries, None, "entries", 0)?;
     rt.define_data_property_str(
       proto_bar,
@@ -1072,6 +1081,32 @@ pub mod window {
       Value::Object(ctor_bar),
       ctor_link_attrs,
     )?;
+    Ok(())
+  }
+
+  pub fn install_foo_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Foo")?;
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_foo = rt.alloc_object()?;
     let func = rt.alloc_native_function(foo_baz, None, "baz", 1)?;
     rt.define_data_property_str(
       proto_foo,
@@ -1171,10 +1206,12 @@ pub mod window {
     heap: &mut Heap,
     realm: &Realm,
   ) -> Result<(), VmError> {
+    install_bar_bindings_vm_js(vm, heap, realm)?;
     install_foo_bindings_vm_js(vm, heap, realm)?;
     Ok(())
   }
 }
 
+pub use window::install_bar_bindings_vm_js;
 pub use window::install_foo_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;
