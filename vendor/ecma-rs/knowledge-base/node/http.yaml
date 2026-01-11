@@ -27,3 +27,24 @@
       flags: IO | NETWORK
       throws: Maybe
   purity: Impure
+
+- name: http.request
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+
+- name: http.get
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+
+- name: http.createServer
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure

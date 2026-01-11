@@ -32,3 +32,78 @@
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+
+- name: path.join
+  effects: Pure
+  purity: Pure
+
+- name: path.resolve
+  effects: Pure
+  purity: Pure
+
+- name: path.basename
+  effects: Pure
+  purity: Pure
+
+- name: path.dirname
+  effects: Pure
+  purity: Pure
+
+- name: path.extname
+  effects: Pure
+  purity: Pure
+
+- name: node:path.normalize
+  aliases:
+    - path.normalize
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.isAbsolute
+  aliases:
+    - path.isAbsolute
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.relative
+  aliases:
+    - path.relative
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.parse
+  aliases:
+    - path.parse
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.format
+  aliases:
+    - path.format
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: path.normalize
+  effects: Pure
+  purity: Pure
+
+- name: path.isAbsolute
+  effects: Pure
+  purity: Pure
+
+- name: path.relative
+  effects: Pure
+  purity: Pure
+
+- name: path.parse
+  effects: Pure
+  purity: Pure
+
+- name: path.format
+  effects: Pure
+  purity: Pure

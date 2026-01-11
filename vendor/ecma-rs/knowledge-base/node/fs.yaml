@@ -63,3 +63,86 @@
       flags: IO
       throws: Never
   purity: ReadOnly
+
+- name: fs.readFile
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.readFileSync
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.writeFile
+  effects: Io
+  purity: Impure
+
+- name: fs.writeFileSync
+  effects: Io
+  purity: Impure
+
+- name: fs.stat
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.statSync
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.readdir
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.readdirSync
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.existsSync
+  effects:
+    Custom:
+      flags: IO
+      throws: Never
+  purity: ReadOnly
+
+- name: node:fs.promises.readFile
+  aliases:
+    - fs.promises.readFile
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: node:fs.promises.writeFile
+  aliases:
+    - fs.promises.writeFile
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.promises.stat
+  aliases:
+    - fs.promises.stat
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: node:fs.promises.readdir
+  aliases:
+    - fs.promises.readdir
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.promises.readFile
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.promises.writeFile
+  effects: Io
+  purity: Impure
+
+- name: fs.promises.stat
+  effects: Io
+  purity: ReadOnly
+
+- name: fs.promises.readdir
+  effects: Io
+  purity: ReadOnly

@@ -17,3 +17,17 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+
+- name: crypto.randomBytes
+  effects:
+    Custom:
+      flags: ALLOCATES | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+
+- name: crypto.createHash
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Impure

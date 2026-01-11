@@ -39,3 +39,27 @@
   since: "v0.9.1"
   effects: Unknown
   purity: Impure
+
+- name: timers.setTimeout
+  effects: Unknown
+  purity: Impure
+
+- name: timers.clearTimeout
+  effects: Unknown
+  purity: Impure
+
+- name: timers.setInterval
+  effects: Unknown
+  purity: Impure
+
+- name: timers.clearInterval
+  effects: Unknown
+  purity: Impure
+
+- name: timers.setImmediate
+  effects: Unknown
+  purity: Impure
+
+- name: timers.clearImmediate
+  effects: Unknown
+  purity: Impure
