@@ -852,13 +852,6 @@ impl<'p> HirSourceToInst<'p> {
         Ok(())
       }
       StmtKind::Throw(value) => {
-        if self.body.kind != BodyKind::Function {
-          return Err(unsupported_syntax_range(
-            file,
-            stmt.span,
-            "throw statement outside function",
-          ));
-        }
         let value = self.compile_expr(*value)?;
         self.out.push(Inst::throw(value));
         Ok(())
