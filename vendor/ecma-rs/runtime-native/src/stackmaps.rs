@@ -252,18 +252,46 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   let mut off: usize = 0;
 
   while off < bytes.len() {
-    // Linkers may insert 0-filled padding between concatenated input sections to
-    // satisfy alignment constraints. Skip that padding to find the next
-    // `version=3` blob header.
+    // Linkers may insert padding between concatenated input sections to satisfy alignment
+    // constraints. Skip any 0-filled padding to find the next `version=3` blob header.
     //
-    // Note: we only skip *zero* bytes here. If the remaining tail is shorter than a StackMap v3
-    // header (16 bytes), it cannot start another blob; ignore it (some toolchains leave short
-    // non-zero alignment noise).
+    // If the remaining tail is shorter than a StackMap v3 header (16 bytes), it cannot start
+    // another blob; ignore it (some toolchains leave short non-zero alignment noise).
+    //
+    // Some toolchains have also been observed to leave short non-zero padding bytes between blobs.
+    // For safety we treat those bytes as ignorable *only* if we can recover a plausible StackMap
+    // v3 header shortly after (see the scan below).
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
     if off >= bytes.len() || bytes.len() - off < STACKMAP_HEADER_SIZE {
       break;
+    }
+
+    if bytes[off] != STACKMAP_VERSION {
+      // If we land on non-zero padding, try to recover by searching for the
+      // next plausible `version=3` header.
+      //
+      // We limit the scan range to keep us from accidentally "resynchronizing"
+      // into the middle of an otherwise-valid blob if our offset accounting is
+      // wrong.
+      const MAX_PADDING_SCAN: usize = 256;
+      let scan_end = (off + MAX_PADDING_SCAN).min(bytes.len().saturating_sub(STACKMAP_HEADER_SIZE));
+
+      let mut found: Option<usize> = None;
+      for i in off + 1..=scan_end {
+        if bytes[i] == STACKMAP_VERSION && bytes[i + 1] == 0 && bytes[i + 2] == 0 && bytes[i + 3] == 0 {
+          found = Some(i);
+          break;
+        }
+      }
+
+      if let Some(i) = found {
+        off = i;
+        continue;
+      }
+
+      return Err(StackMapError::TrailingNonZeroBytes { offset: off });
     }
 
     let (map, len) = StackMap::parse_with_len(&bytes[off..])?;
@@ -1223,6 +1251,25 @@ mod tests {
       "expected TrailingNonZeroBytes at offset {}, got {err:?}",
       blob_a.len()
     );
+  }
+
+  #[test]
+  fn parse_all_stackmaps_skips_non_zero_padding_between_blobs() {
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x2000, 2, 0x20);
+    let mut concat = blob_a.clone();
+
+    // Some toolchains have been observed to leave non-zero bytes in linker padding; treat them
+    // as ignorable if we can recover the next `version=3` header.
+    concat.extend_from_slice(&[0xAA; 8]);
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+
+    // Ensure the callsite indexes are still correct.
+    assert!(sm.lookup(0x1010).is_some());
+    assert!(sm.lookup(0x2020).is_some());
   }
 
   #[test]
