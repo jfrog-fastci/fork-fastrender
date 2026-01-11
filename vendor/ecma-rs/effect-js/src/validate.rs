@@ -240,10 +240,9 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::{EffectSet, Purity};
+  use effect_model::Purity;
   use knowledge_base::ApiKind;
   use knowledge_base::JsonValue;
-  use std::collections::BTreeMap;
 
   fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
     match template {

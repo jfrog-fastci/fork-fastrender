@@ -1482,8 +1482,6 @@ mod tests {
   };
 
   use super::*;
-  use effect_model::EffectSet;
-  use serde_json::Value as JsonValue;
 
   fn test_api(
     name: &str,

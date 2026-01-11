@@ -289,7 +289,10 @@
     depends_on_args:
       base: MAY_THROW
       args: [0]
-  purity: Impure
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
 
 - name: URLSearchParams.prototype.toString
   kind: function

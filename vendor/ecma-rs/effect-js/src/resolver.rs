@@ -50,7 +50,7 @@ fn collect_pat_idents(body: &Body, pat: PatId, out: &mut BTreeSet<NameId>) {
   }
 }
 
-fn collect_lexical_names(body: &Body) -> BTreeSet<NameId> {
+fn collect_lexical_names(lower: &LowerResult, body: &Body) -> BTreeSet<NameId> {
   let mut names = BTreeSet::new();
 
   if let Some(func) = &body.function {
@@ -61,10 +61,18 @@ fn collect_lexical_names(body: &Body) -> BTreeSet<NameId> {
 
   for stmt_id in body.root_stmts.iter().copied() {
     let stmt = &body.stmts[stmt_id.0 as usize];
-    if let StmtKind::Var(var_decl) = &stmt.kind {
-      for decl in var_decl.declarators.iter() {
-        collect_pat_idents(body, decl.pat, &mut names);
+    match &stmt.kind {
+      StmtKind::Var(var_decl) => {
+        for decl in var_decl.declarators.iter() {
+          collect_pat_idents(body, decl.pat, &mut names);
+        }
       }
+      StmtKind::Decl(def) => {
+        if let Some(def) = lower.def(*def) {
+          names.insert(def.name);
+        }
+      }
+      _ => {}
     }
   }
 
@@ -514,7 +522,7 @@ pub fn resolve_api_call<'a>(
   }
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
-  let local_decls = collect_lexical_names(body);
+  let local_decls = collect_lexical_names(lower, body);
   let local_bindings = collect_require_bindings(lower, body_id);
   let require_bindings = if body_id == lower.hir.root_body {
     local_bindings.clone()
@@ -875,6 +883,21 @@ mod tests {
 
         function foo() {
           const fs = 123;
+          fs.readFile('x', () => {});
+        }
+      "#,
+    );
+    assert_eq!(calls, Vec::<String>::new());
+  }
+
+  #[test]
+  fn does_not_resolve_outer_binding_when_shadowed_by_function_decl() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        const fs = require('node:fs');
+
+        function foo() {
+          function fs() {}
           fs.readFile('x', () => {});
         }
       "#,
