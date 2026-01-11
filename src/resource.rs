@@ -4149,6 +4149,8 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
         "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
       )
     }
+    // Privileged APIs can attach a `Range` header without triggering preflight in browsers; treat it
+    // as safelisted when it follows the simple `bytes=<start>-<end>` syntax.
     "range" => is_safelisted_range_header_value(value),
     _ => false,
   }

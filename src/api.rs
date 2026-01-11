@@ -7442,7 +7442,7 @@ impl FastRender {
         Some(crate::accessibility::build_accessibility_tree(
           &styled_tree,
           None,
-        ))
+        )?)
       } else {
         None
       };
@@ -10741,11 +10741,19 @@ impl FastRender {
         self.collect_document_style_set(dom_for_style, &media_ctx, &mut media_query_cache, None)?;
       // Style and accessibility tree construction are deeply recursive. Run them on a larger-stack
       // helper thread to avoid stack overflows on debug builds and on documents with deep nesting.
+      let deadline_stack = crate::render_control::deadline_stack_snapshot();
+      let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
+      let stage = crate::render_control::active_stage();
       std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
           .name("fastr-accessibility".to_string())
           .stack_size(8 * 1024 * 1024)
           .spawn_scoped(scope, move || {
+            let _deadline_stack_guard =
+              crate::render_control::DeadlineStackGuard::install(deadline_stack);
+            let _stage_listener_stack_guard =
+              crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
+            let _stage_guard = StageGuard::install(stage);
             let interaction_state = interaction_state.as_ref();
             let mut local_media_query_cache = MediaQueryCache::default();
             let styled_tree = match PreparedCascade::new_for_style_set(
@@ -10804,11 +10812,12 @@ impl FastRender {
             })
           })?;
 
-        handle.join().map_err(|_| {
+        let result = handle.join().map_err(|_| {
           Error::Render(RenderError::InvalidParameters {
             message: "Accessibility worker thread panicked".to_string(),
           })
-        })
+        })?;
+        result
       })
     })();
 

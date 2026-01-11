@@ -1,9 +1,12 @@
 use crate::dom::{forms_validation, DomNode, DomNodeType, ElementRef, HTML_NAMESPACE};
+use crate::error::{Error, RenderStage, Result};
 use crate::interaction::InteractionState;
+use crate::render_control;
 use crate::style::cascade::StyledNode;
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
 use serde::Serialize;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ptr;
 
@@ -164,25 +167,19 @@ pub struct AccessibilityNode {
 pub fn build_accessibility_tree(
   root: &StyledNode,
   interaction_state: Option<&InteractionState>,
-) -> AccessibilityNode {
+) -> Result<AccessibilityNode> {
   let mut lookup = HashMap::new();
-  build_styled_lookup(root, &mut lookup);
+  build_styled_lookup(root, &mut lookup)?;
   let mut hidden = HashMap::new();
   let mut aria_hidden = HashMap::new();
   let mut node_scope = HashMap::new();
   let mut ids_by_scope: HashMap<usize, HashMap<String, usize>> = HashMap::new();
-  compute_hidden_and_scoped_ids(
-    root,
-    false,
-    false,
-    root.node_id,
-    &mut hidden,
-    &mut aria_hidden,
-    &mut node_scope,
-    &mut ids_by_scope,
-  );
+  compute_hidden_and_scoped_ids(root, &mut hidden, &mut aria_hidden, &mut node_scope, &mut ids_by_scope)?;
 
-  let labels = collect_labels(root, &node_scope, &ids_by_scope, &lookup);
+  let labels = collect_labels(root, &node_scope, &ids_by_scope, &lookup)?;
+
+  let (aria_owned_children, aria_owned_by) =
+    compute_aria_owns(root, &lookup, &hidden, &node_scope, &ids_by_scope)?;
 
   let needs_validation_dom = lookup.values().any(|node| {
     node
@@ -209,21 +206,25 @@ pub fn build_accessibility_tree(
     lookup,
     validation_dom,
     interaction_state,
+    aria_owned_children,
+    aria_owned_by,
+    deadline_counter: Cell::new(0),
+    deadline_error: RefCell::new(None),
   };
 
-  let mut ancestors: Vec<&DomNode> = Vec::new();
-  let mut styled_ancestors: Vec<&StyledNode> = Vec::new();
   let mut children = Vec::new();
-  for child in ctx.composed_children(root) {
-    children.extend(build_nodes(
-      child,
-      &ctx,
-      &mut ancestors,
-      &mut styled_ancestors,
-    ));
+  for child in ctx.tree_children(root) {
+    children.extend(build_nodes(child, &ctx));
+    if ctx.deadline_tripped() {
+      break;
+    }
   }
 
-  AccessibilityNode {
+  if let Some(err) = ctx.deadline_error.borrow_mut().take() {
+    return Err(Error::Render(err));
+  }
+
+  Ok(AccessibilityNode {
     role: "document".to_string(),
     role_description: None,
     name: None,
@@ -235,19 +236,29 @@ pub fn build_accessibility_tree(
     relations: None,
     states: AccessibilityState::default(),
     children,
-  }
+  })
 }
 
 /// Serialize the accessibility tree to JSON for snapshot tests.
 pub fn accessibility_tree_json(root: &StyledNode) -> serde_json::Value {
-  serde_json::to_value(build_accessibility_tree(root, None)).unwrap_or(serde_json::Value::Null)
+  match build_accessibility_tree(root, None) {
+    Ok(tree) => serde_json::to_value(tree).unwrap_or(serde_json::Value::Null),
+    Err(_) => serde_json::Value::Null,
+  }
 }
 
-fn build_styled_lookup<'a>(node: &'a StyledNode, out: &mut HashMap<usize, &'a StyledNode>) {
-  out.insert(node.node_id, node);
-  for child in node.children.iter() {
-    build_styled_lookup(child, out);
+fn build_styled_lookup<'a>(root: &'a StyledNode, out: &mut HashMap<usize, &'a StyledNode>) -> Result<()> {
+  let mut stack: Vec<&'a StyledNode> = vec![root];
+  let mut counter = 0usize;
+  while let Some(node) = stack.pop() {
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree)
+      .map_err(Error::Render)?;
+    out.insert(node.node_id, node);
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
   }
+  Ok(())
 }
 
 fn composed_children<'a>(
@@ -360,6 +371,10 @@ struct BuildContext<'a, 'state> {
   lookup: HashMap<usize, &'a StyledNode>,
   validation_dom: Option<ValidationDomIndex>,
   interaction_state: Option<&'state InteractionState>,
+  aria_owned_children: HashMap<usize, Vec<usize>>,
+  aria_owned_by: HashMap<usize, usize>,
+  deadline_counter: Cell<usize>,
+  deadline_error: RefCell<Option<crate::error::RenderError>>,
 }
 
 #[derive(Clone, Copy)]
@@ -368,6 +383,26 @@ enum TextAlternativeMode {
   Visible,
   /// Include nodes that are hidden by CSS/HTML but not explicitly aria-hidden.
   Referenced,
+}
+
+#[derive(Clone, Copy)]
+enum TextAltCollectKind {
+  Children,
+  Join,
+}
+
+enum TextAltEngineStart<'a> {
+  Node {
+    node: &'a StyledNode,
+    mode: TextAlternativeMode,
+    allow_name_from_content: Option<bool>,
+  },
+  Collect {
+    nodes: Vec<&'a StyledNode>,
+    kind: TextAltCollectKind,
+    mode: TextAlternativeMode,
+    allow_name_from_content: Option<bool>,
+  },
 }
 
 impl<'a, 'state> BuildContext<'a, 'state> {
@@ -381,12 +416,38 @@ impl<'a, 'state> BuildContext<'a, 'state> {
     *self.aria_hidden.get(&node.node_id).unwrap_or(&false)
   }
 
+  fn deadline_tripped(&self) -> bool {
+    self.deadline_error.borrow().is_some()
+  }
+
+  fn deadline_step(&self, stage: RenderStage) {
+    if self.deadline_tripped() {
+      return;
+    }
+
+    let mut counter = self.deadline_counter.get();
+    counter = counter.wrapping_add(1);
+    self.deadline_counter.set(counter);
+
+    // Amortize expensive deadline checks while still making cancellation/timeouts effective for
+    // large accessibility traversals.
+    if counter % 1024 == 0 {
+      if let Err(err) = render_control::check_active(stage) {
+        *self.deadline_error.borrow_mut() = Some(err);
+      }
+    }
+  }
+
   fn text_content(
     &self,
     node: &'a StyledNode,
     visited: &mut HashSet<usize>,
     mode: TextAlternativeMode,
   ) -> String {
+    if self.deadline_tripped() {
+      return String::new();
+    }
+
     if !visited.insert(node.node_id) {
       return String::new();
     }
@@ -398,7 +459,7 @@ impl<'a, 'state> BuildContext<'a, 'state> {
     match &node.node.node_type {
       DomNodeType::Text { content } => normalize_whitespace(content),
       DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
-        self.text_from_children(self.composed_children(node), visited, mode)
+        self.subtree_text(node, visited, mode)
       }
       DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
         if node
@@ -409,45 +470,9 @@ impl<'a, 'state> BuildContext<'a, 'state> {
           return String::new();
         }
 
-        self.text_from_children(self.composed_children(node), visited, mode)
+        self.subtree_text(node, visited, mode)
       }
     }
-  }
-
-  fn text_from_children(
-    &self,
-    children: Vec<&'a StyledNode>,
-    visited: &mut HashSet<usize>,
-    mode: TextAlternativeMode,
-  ) -> String {
-    let mut out = String::new();
-    let mut suppress_space = false;
-
-    for child in children {
-      if child
-        .node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("wbr"))
-      {
-        suppress_space = true;
-        continue;
-      }
-
-      if let Some(text) = self.text_alternative(child, visited, mode, None) {
-        if text.is_empty() {
-          continue;
-        }
-
-        if !out.is_empty() && !suppress_space {
-          out.push(' ');
-        }
-
-        suppress_space = false;
-        out.push_str(&text);
-      }
-    }
-
-    normalize_whitespace(&out)
   }
 
   fn is_hidden_for_mode(&self, node: &StyledNode, mode: TextAlternativeMode) -> bool {
@@ -475,13 +500,804 @@ impl<'a, 'state> BuildContext<'a, 'state> {
     composed_children(node, &self.lookup)
   }
 
+  /// Returns the children used for building the exported accessibility tree.
+  ///
+  /// This is the composed/flattened tree with `aria-owns` reparenting applied:
+  /// - nodes that are targets of another element's `aria-owns` are removed from their original
+  ///   location
+  /// - owned targets are injected as children of the owning node in author-specified token order
+  fn tree_children(&self, node: &'a StyledNode) -> Vec<&'a StyledNode> {
+    let mut out: Vec<&'a StyledNode> = Vec::new();
+
+    for child in self.composed_children(node) {
+      if self.aria_owned_by.contains_key(&child.node_id) {
+        continue;
+      }
+      out.push(child);
+    }
+
+    if let Some(owned) = self.aria_owned_children.get(&node.node_id) {
+      for owned_id in owned {
+        if let Some(target) = self.node_by_id(*owned_id) {
+          if !self.is_hidden(target) {
+            out.push(target);
+          }
+        }
+      }
+    }
+
+    out
+  }
+
+  fn run_text_alternative_engine(
+    &self,
+    start: TextAltEngineStart<'a>,
+    visited: &mut HashSet<usize>,
+  ) -> Option<String> {
+    #[derive(Clone, Copy)]
+    enum NodeStep {
+      Start,
+      Element(ElementStep),
+      AwaitCollect(AwaitCollect),
+      AwaitNode(AwaitNode),
+    }
+
+    #[derive(Clone, Copy)]
+    enum ElementStep {
+      AriaLabelledBy,
+      AriaLabel,
+      Presentational,
+      LabelAssociation,
+      Placeholder,
+      NativeName,
+      RoleSpecific,
+      NameFromContent,
+      Alt,
+      Fallback,
+      Title,
+      Done,
+    }
+
+    #[derive(Clone, Copy)]
+    enum AwaitCollectKind {
+      DocumentChildren,
+      AriaLabelledBy,
+      LabelAssociation,
+      RoleSpecificButtonText,
+      RoleSpecificOptionText,
+      RoleSpecificFieldsetLegendText,
+      RoleSpecificCaptionText,
+      RoleSpecificFigcaptionText,
+      RoleSpecificHeadingText,
+      NameFromContentText,
+      FallbackRoleOptionText,
+    }
+
+    #[derive(Clone, Copy)]
+    struct AwaitCollect {
+      kind: AwaitCollectKind,
+      resume: Option<ElementStep>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum AwaitNodeKind {
+      NativeName,
+    }
+
+    #[derive(Clone, Copy)]
+    struct AwaitNode {
+      kind: AwaitNodeKind,
+      resume: ElementStep,
+    }
+
+    struct NodeFrame<'a> {
+      node: &'a StyledNode,
+      mode: TextAlternativeMode,
+      allow_name_from_content: Option<bool>,
+      tag: Option<String>,
+      role: Option<String>,
+      presentational: bool,
+      step: NodeStep,
+    }
+
+    struct CollectFrame<'a> {
+      kind: TextAltCollectKind,
+      nodes: Vec<&'a StyledNode>,
+      index: usize,
+      mode: TextAlternativeMode,
+      allow_name_from_content: Option<bool>,
+      out: String,
+      suppress_space: bool,
+      awaiting_child: bool,
+    }
+
+    enum Frame<'a> {
+      Node(NodeFrame<'a>),
+      Collect(CollectFrame<'a>),
+    }
+
+    fn node_frame<'a>(
+      node: &'a StyledNode,
+      mode: TextAlternativeMode,
+      allow_name_from_content: Option<bool>,
+    ) -> Frame<'a> {
+      Frame::Node(NodeFrame {
+        node,
+        mode,
+        allow_name_from_content,
+        tag: None,
+        role: None,
+        presentational: false,
+        step: NodeStep::Start,
+      })
+    }
+
+    fn collect_frame<'a>(
+      nodes: Vec<&'a StyledNode>,
+      kind: TextAltCollectKind,
+      mode: TextAlternativeMode,
+      allow_name_from_content: Option<bool>,
+    ) -> Frame<'a> {
+      Frame::Collect(CollectFrame {
+        kind,
+        nodes,
+        index: 0,
+        mode,
+        allow_name_from_content,
+        out: String::new(),
+        suppress_space: false,
+        awaiting_child: false,
+      })
+    }
+
+    let mut stack: Vec<Frame<'a>> = Vec::new();
+    match start {
+      TextAltEngineStart::Node {
+        node,
+        mode,
+        allow_name_from_content,
+      } => stack.push(node_frame(node, mode, allow_name_from_content)),
+      TextAltEngineStart::Collect {
+        nodes,
+        kind,
+        mode,
+        allow_name_from_content,
+      } => stack.push(collect_frame(nodes, kind, mode, allow_name_from_content)),
+    }
+
+    // Outer `Option` indicates whether a value is pending. Inner `Option` matches the return type
+    // of `text_alternative` (Some(text) or None).
+    let mut pending: Option<Option<String>> = None;
+
+    while let Some(frame) = stack.pop() {
+      if self.deadline_tripped() {
+        return Some(String::new());
+      }
+      self.deadline_step(RenderStage::BoxTree);
+      if self.deadline_tripped() {
+        return Some(String::new());
+      }
+
+      match frame {
+        Frame::Collect(mut frame) => {
+          if frame.awaiting_child {
+            let child_value = pending.take().unwrap_or(None);
+            if let Some(text) = child_value {
+              if !text.is_empty() {
+                if !frame.out.is_empty() && !frame.suppress_space {
+                  frame.out.push(' ');
+                }
+                frame.suppress_space = false;
+                frame.out.push_str(&text);
+              }
+            }
+            frame.awaiting_child = false;
+            stack.push(Frame::Collect(frame));
+            continue;
+          }
+
+          if frame.index >= frame.nodes.len() {
+            let normalized = normalize_whitespace(&frame.out);
+            pending = Some(Some(normalized));
+            continue;
+          }
+
+          let child = frame.nodes[frame.index];
+          frame.index += 1;
+
+          if matches!(frame.kind, TextAltCollectKind::Children)
+            && child
+              .node
+              .tag_name()
+              .is_some_and(|tag| tag.eq_ignore_ascii_case("wbr"))
+          {
+            frame.suppress_space = true;
+            stack.push(Frame::Collect(frame));
+            continue;
+          }
+
+          frame.awaiting_child = true;
+          let child_frame = node_frame(child, frame.mode, frame.allow_name_from_content);
+          stack.push(Frame::Collect(frame));
+          stack.push(child_frame);
+        }
+        Frame::Node(mut frame) => match frame.step {
+          NodeStep::Start => {
+            if !visited.insert(frame.node.node_id) {
+              pending = Some(Some(String::new()));
+              continue;
+            }
+
+            if self.is_hidden_for_mode(frame.node, frame.mode) {
+              pending = Some(Some(String::new()));
+              continue;
+            }
+
+            match &frame.node.node.node_type {
+              DomNodeType::Text { content } => {
+                pending = Some(Some(normalize_whitespace(content)));
+              }
+              DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
+                let children = self.composed_children(frame.node);
+                let mode = frame.mode;
+                frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                  kind: AwaitCollectKind::DocumentChildren,
+                  resume: None,
+                });
+                stack.push(Frame::Node(frame));
+                stack.push(collect_frame(
+                  children,
+                  TextAltCollectKind::Children,
+                  mode,
+                  None,
+                ));
+              }
+              DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
+                frame.tag = frame.node.node.tag_name().map(|t| t.to_ascii_lowercase());
+                let (role, presentational, _) = compute_role(frame.node, &[], None);
+                frame.role = role;
+                frame.presentational = presentational;
+
+                // Script/style never contribute to the text alternative.
+                if frame
+                  .tag
+                  .as_deref()
+                  .is_some_and(|t| t.eq_ignore_ascii_case("script") || t.eq_ignore_ascii_case("style"))
+                {
+                  pending = Some(Some(String::new()));
+                  continue;
+                }
+
+                frame.step = NodeStep::Element(ElementStep::AriaLabelledBy);
+                stack.push(Frame::Node(frame));
+              }
+            }
+          }
+          NodeStep::Element(step) => {
+            let node = frame.node;
+            let tag = frame.tag.as_deref();
+            let role = frame.role.as_deref();
+
+            match step {
+              ElementStep::AriaLabelledBy => {
+                if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
+                  let mut targets: Vec<&'a StyledNode> = Vec::new();
+                  for id in split_ascii_whitespace(labelledby) {
+                    if let Some(target) = self.node_for_id_scoped(node.node_id, id) {
+                      targets.push(target);
+                    }
+                  }
+
+                  frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                    kind: AwaitCollectKind::AriaLabelledBy,
+                    resume: None,
+                  });
+                  stack.push(Frame::Node(frame));
+                  stack.push(collect_frame(
+                    targets,
+                    TextAltCollectKind::Join,
+                    TextAlternativeMode::Referenced,
+                    Some(true),
+                  ));
+                  continue;
+                }
+
+                frame.step = NodeStep::Element(ElementStep::AriaLabel);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::AriaLabel => {
+                if let Some(label) = node.node.get_attribute_ref("aria-label") {
+                  pending = Some(Some(normalize_whitespace(label)));
+                } else {
+                  frame.step = NodeStep::Element(ElementStep::Presentational);
+                  stack.push(Frame::Node(frame));
+                }
+              }
+              ElementStep::Presentational => {
+                if frame.presentational && frame.allow_name_from_content == Some(false) {
+                  pending = Some(None);
+                } else {
+                  frame.step = NodeStep::Element(ElementStep::LabelAssociation);
+                  stack.push(Frame::Node(frame));
+                }
+              }
+              ElementStep::LabelAssociation => {
+                if is_labelable(&node.node) {
+                  if let Some(label_ids) = self.labels.get(&node.node_id) {
+                    let mut label_nodes: Vec<&'a StyledNode> = Vec::new();
+                    for label_id in label_ids {
+                      if let Some(label_node) = self.node_by_id(*label_id) {
+                        label_nodes.push(label_node);
+                      }
+                    }
+
+                    if !label_nodes.is_empty() {
+                      frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                        kind: AwaitCollectKind::LabelAssociation,
+                        resume: Some(ElementStep::Placeholder),
+                      });
+                      stack.push(Frame::Node(frame));
+                      stack.push(collect_frame(
+                        label_nodes,
+                        TextAltCollectKind::Join,
+                        TextAlternativeMode::Referenced,
+                        None,
+                      ));
+                      continue;
+                    }
+                  }
+                }
+
+                frame.step = NodeStep::Element(ElementStep::Placeholder);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::Placeholder => {
+                if let Some(placeholder) = placeholder_as_name(node, self) {
+                  pending = Some(Some(placeholder));
+                } else {
+                  frame.step = NodeStep::Element(ElementStep::NativeName);
+                  stack.push(Frame::Node(frame));
+                }
+              }
+              ElementStep::NativeName => {
+                let child = match tag {
+                  Some("fieldset") => first_child_with_tag(node, self, "legend", false, frame.mode),
+                  Some("figure") => first_child_with_tag(node, self, "figcaption", true, frame.mode),
+                  Some("table") => first_child_with_tag(node, self, "caption", true, frame.mode),
+                  _ => None,
+                };
+
+                if let Some(child) = child {
+                  let mode = frame.mode;
+                  frame.step = NodeStep::AwaitNode(AwaitNode {
+                    kind: AwaitNodeKind::NativeName,
+                    resume: ElementStep::RoleSpecific,
+                  });
+                  stack.push(Frame::Node(frame));
+                  stack.push(node_frame(child, mode, None));
+                  continue;
+                }
+
+                frame.step = NodeStep::Element(ElementStep::RoleSpecific);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::RoleSpecific => {
+                if !frame.presentational {
+                  match tag {
+                    Some("img") => {
+                      if let Some(alt) = node.node.get_attribute_ref("alt") {
+                        let norm = normalize_whitespace(alt);
+                        if !norm.is_empty() {
+                          pending = Some(Some(norm));
+                          continue;
+                        }
+                      }
+                    }
+                    Some("input") => {
+                      let input_type = node
+                        .node
+                        .get_attribute_ref("type")
+                        .map(|t| t.to_ascii_lowercase())
+                        .unwrap_or_else(|| "text".to_string());
+
+                      if matches!(input_type.as_str(), "button" | "submit" | "reset") {
+                        let label = node
+                          .node
+                          .get_attribute_ref("value")
+                          .map(normalize_whitespace)
+                          .or_else(|| default_button_label(&input_type).map(|s| s.to_string()));
+                        if let Some(label) = label {
+                          if !label.is_empty() {
+                            pending = Some(Some(label));
+                            continue;
+                          }
+                        }
+                      }
+
+                      if input_type == "image" {
+                        let label = node
+                          .node
+                          .get_attribute_ref("alt")
+                          .map(normalize_whitespace)
+                          .or_else(|| {
+                            node
+                              .node
+                              .get_attribute_ref("value")
+                              .map(normalize_whitespace)
+                          });
+                        if let Some(label) = label {
+                          if !label.is_empty() {
+                            pending = Some(Some(label));
+                            continue;
+                          }
+                        }
+                      }
+                    }
+                    Some("button") => {
+                      frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                        kind: AwaitCollectKind::RoleSpecificButtonText,
+                        resume: Some(ElementStep::NameFromContent),
+                      });
+                      let children = self.composed_children(node);
+                      let mode = frame.mode;
+                      stack.push(Frame::Node(frame));
+                      stack.push(collect_frame(
+                        children,
+                        TextAltCollectKind::Children,
+                        mode,
+                        None,
+                      ));
+                      continue;
+                    }
+                    Some("option") => {
+                      if let Some(label) = node.node.get_attribute_ref("label") {
+                        if label.is_empty() {
+                          frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                            kind: AwaitCollectKind::RoleSpecificOptionText,
+                            resume: Some(ElementStep::NameFromContent),
+                          });
+                          let children = self.composed_children(node);
+                          let mode = frame.mode;
+                          stack.push(Frame::Node(frame));
+                          stack.push(collect_frame(
+                            children,
+                            TextAltCollectKind::Children,
+                            mode,
+                            None,
+                          ));
+                          continue;
+                        }
+
+                        let norm = normalize_whitespace(label);
+                        if !norm.is_empty() {
+                          pending = Some(Some(norm));
+                          continue;
+                        }
+                      } else {
+                        frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                          kind: AwaitCollectKind::RoleSpecificOptionText,
+                          resume: Some(ElementStep::NameFromContent),
+                        });
+                        let children = self.composed_children(node);
+                        let mode = frame.mode;
+                        stack.push(Frame::Node(frame));
+                        stack.push(collect_frame(
+                          children,
+                          TextAltCollectKind::Children,
+                          mode,
+                          None,
+                        ));
+                        continue;
+                      }
+                    }
+                    Some("fieldset") => {
+                      let legend = self.composed_children(node).into_iter().find(|child| {
+                        child
+                          .node
+                          .tag_name()
+                          .map(|t| t.eq_ignore_ascii_case("legend"))
+                          .unwrap_or(false)
+                      });
+                      if let Some(legend) = legend {
+                        if !self.is_hidden_for_mode(legend, frame.mode) {
+                          frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                            kind: AwaitCollectKind::RoleSpecificFieldsetLegendText,
+                            resume: Some(ElementStep::NameFromContent),
+                          });
+                          let children = self.composed_children(legend);
+                          let mode = frame.mode;
+                          stack.push(Frame::Node(frame));
+                          stack.push(collect_frame(
+                            children,
+                            TextAltCollectKind::Children,
+                            mode,
+                            None,
+                          ));
+                          continue;
+                        }
+                      }
+                    }
+                    Some("table") => {
+                      let caption = self.composed_children(node).into_iter().find(|child| {
+                        child
+                          .node
+                          .tag_name()
+                          .map(|t| t.eq_ignore_ascii_case("caption"))
+                          .unwrap_or(false)
+                      });
+                      if let Some(caption) = caption {
+                        frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                          kind: AwaitCollectKind::RoleSpecificCaptionText,
+                          resume: Some(ElementStep::NameFromContent),
+                        });
+                        let children = self.composed_children(caption);
+                        let mode = frame.mode;
+                        stack.push(Frame::Node(frame));
+                        stack.push(collect_frame(
+                          children,
+                          TextAltCollectKind::Children,
+                          mode,
+                          None,
+                        ));
+                        continue;
+                      }
+                    }
+                    Some("figure") => {
+                      let figcaption = self.composed_children(node).into_iter().find(|child| {
+                        child
+                          .node
+                          .tag_name()
+                          .map(|t| t.eq_ignore_ascii_case("figcaption"))
+                          .unwrap_or(false)
+                      });
+                      if let Some(figcaption) = figcaption {
+                        frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                          kind: AwaitCollectKind::RoleSpecificFigcaptionText,
+                          resume: Some(ElementStep::NameFromContent),
+                        });
+                        let children = self.composed_children(figcaption);
+                        let mode = frame.mode;
+                        stack.push(Frame::Node(frame));
+                        stack.push(collect_frame(
+                          children,
+                          TextAltCollectKind::Children,
+                          mode,
+                          None,
+                        ));
+                        continue;
+                      }
+                    }
+                    _ => {
+                      if role == Some("heading") {
+                        frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                          kind: AwaitCollectKind::RoleSpecificHeadingText,
+                          resume: Some(ElementStep::NameFromContent),
+                        });
+                        let children = self.composed_children(node);
+                        let mode = frame.mode;
+                        stack.push(Frame::Node(frame));
+                        stack.push(collect_frame(
+                          children,
+                          TextAltCollectKind::Children,
+                          mode,
+                          None,
+                        ));
+                        continue;
+                      }
+                    }
+                  }
+                }
+
+                frame.step = NodeStep::Element(ElementStep::NameFromContent);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::NameFromContent => {
+                let mut allows_content = self.allows_name_from_content(
+                  node,
+                  role,
+                  frame.allow_name_from_content,
+                ) && allows_visible_text_name(tag, role);
+
+                if allows_content
+                  && tag.is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
+                  && node
+                    .node
+                    .get_attribute_ref("title")
+                    .map(normalize_whitespace)
+                    .is_some_and(|t| !t.is_empty())
+                {
+                  allows_content = false;
+                }
+
+                if allows_content {
+                  frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                    kind: AwaitCollectKind::NameFromContentText,
+                    resume: Some(ElementStep::Alt),
+                  });
+                  let children = self.composed_children(node);
+                  let mode = frame.mode;
+                  stack.push(Frame::Node(frame));
+                  stack.push(collect_frame(
+                    children,
+                    TextAltCollectKind::Children,
+                    mode,
+                    None,
+                  ));
+                  continue;
+                }
+
+                frame.step = NodeStep::Element(ElementStep::Alt);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::Alt => {
+                if let Some(alt) = node.node.get_attribute_ref("alt") {
+                  if alt_applies(tag, role, &node.node) {
+                    let norm = normalize_whitespace(alt);
+                    if !norm.is_empty() {
+                      pending = Some(Some(norm));
+                      continue;
+                    }
+                  }
+                }
+
+                frame.step = NodeStep::Element(ElementStep::Fallback);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::Fallback => {
+                if role == Some("option") {
+                  if let Some(label) = node.node.get_attribute_ref("label") {
+                    if label.is_empty() {
+                      frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                        kind: AwaitCollectKind::FallbackRoleOptionText,
+                        resume: Some(ElementStep::Title),
+                      });
+                      let children = self.composed_children(node);
+                      let mode = frame.mode;
+                      stack.push(Frame::Node(frame));
+                      stack.push(collect_frame(
+                        children,
+                        TextAltCollectKind::Children,
+                        mode,
+                        None,
+                      ));
+                      continue;
+                    }
+
+                    let norm = normalize_whitespace(label);
+                    if !norm.is_empty() {
+                      pending = Some(Some(norm));
+                      continue;
+                    }
+                  } else {
+                    frame.step = NodeStep::AwaitCollect(AwaitCollect {
+                      kind: AwaitCollectKind::FallbackRoleOptionText,
+                      resume: Some(ElementStep::Title),
+                    });
+                    let children = self.composed_children(node);
+                    let mode = frame.mode;
+                    stack.push(Frame::Node(frame));
+                    stack.push(collect_frame(
+                      children,
+                      TextAltCollectKind::Children,
+                      mode,
+                      None,
+                    ));
+                    continue;
+                  }
+                }
+
+                frame.step = NodeStep::Element(ElementStep::Title);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::Title => {
+                if let Some(title) = node.node.get_attribute_ref("title") {
+                  let norm = normalize_whitespace(title);
+                  if !norm.is_empty() {
+                    pending = Some(Some(norm));
+                    continue;
+                  }
+                }
+
+                frame.step = NodeStep::Element(ElementStep::Done);
+                stack.push(Frame::Node(frame));
+              }
+              ElementStep::Done => {
+                pending = Some(None);
+              }
+            }
+          }
+          NodeStep::AwaitCollect(awaited) => {
+            let collected = pending.take().unwrap_or(None).unwrap_or_default();
+
+            match awaited.kind {
+              AwaitCollectKind::DocumentChildren | AwaitCollectKind::AriaLabelledBy => {
+                pending = Some(Some(collected));
+              }
+              AwaitCollectKind::LabelAssociation => {
+                if !collected.is_empty() {
+                  pending = Some(Some(collected));
+                } else if let Some(resume) = awaited.resume {
+                  frame.step = NodeStep::Element(resume);
+                  stack.push(Frame::Node(frame));
+                } else {
+                  pending = Some(None);
+                }
+              }
+              AwaitCollectKind::RoleSpecificButtonText => {
+                if !collected.is_empty() {
+                  pending = Some(Some(collected));
+                } else if let Some(value) = frame.node.node.get_attribute_ref("value") {
+                  let norm = normalize_whitespace(value);
+                  if !norm.is_empty() {
+                    pending = Some(Some(norm));
+                  } else if let Some(resume) = awaited.resume {
+                    frame.step = NodeStep::Element(resume);
+                    stack.push(Frame::Node(frame));
+                  } else {
+                    pending = Some(None);
+                  }
+                } else if let Some(resume) = awaited.resume {
+                  frame.step = NodeStep::Element(resume);
+                  stack.push(Frame::Node(frame));
+                } else {
+                  pending = Some(None);
+                }
+              }
+              AwaitCollectKind::RoleSpecificOptionText
+              | AwaitCollectKind::RoleSpecificFieldsetLegendText
+              | AwaitCollectKind::RoleSpecificCaptionText
+              | AwaitCollectKind::RoleSpecificFigcaptionText
+              | AwaitCollectKind::RoleSpecificHeadingText
+              | AwaitCollectKind::NameFromContentText
+              | AwaitCollectKind::FallbackRoleOptionText => {
+                if !collected.is_empty() {
+                  pending = Some(Some(collected));
+                } else if let Some(resume) = awaited.resume {
+                  frame.step = NodeStep::Element(resume);
+                  stack.push(Frame::Node(frame));
+                } else {
+                  pending = Some(None);
+                }
+              }
+            }
+          }
+          NodeStep::AwaitNode(awaited) => match awaited.kind {
+            AwaitNodeKind::NativeName => {
+              let child_text = pending.take().unwrap_or(None);
+              if let Some(text) = child_text {
+                if !text.is_empty() {
+                  pending = Some(Some(text));
+                  continue;
+                }
+              }
+              frame.step = NodeStep::Element(awaited.resume);
+              stack.push(Frame::Node(frame));
+            }
+          },
+        },
+      }
+    }
+
+    pending.unwrap_or(None)
+  }
+
   fn subtree_text(
     &self,
     node: &'a StyledNode,
     visited: &mut HashSet<usize>,
     mode: TextAlternativeMode,
   ) -> String {
-    self.text_from_children(self.composed_children(node), visited, mode)
+    self
+      .run_text_alternative_engine(
+        TextAltEngineStart::Collect {
+          nodes: self.composed_children(node),
+          kind: TextAltCollectKind::Children,
+          mode,
+          allow_name_from_content: None,
+        },
+        visited,
+      )
+      .unwrap_or_default()
   }
 
   fn allows_name_from_content(
@@ -505,117 +1321,14 @@ impl<'a, 'state> BuildContext<'a, 'state> {
     mode: TextAlternativeMode,
     allow_name_from_content: Option<bool>,
   ) -> Option<String> {
-    if !visited.insert(node.node_id) {
-      return Some(String::new());
-    }
-
-    if self.is_hidden_for_mode(node, mode) {
-      return Some(String::new());
-    }
-
-    match &node.node.node_type {
-      DomNodeType::Text { content } => Some(normalize_whitespace(content)),
-      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
-        Some(self.subtree_text(node, visited, mode))
-      }
-      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
-        let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-        let (role, presentational, _) = compute_role(node, &[], None);
-
-        // Script/style never contribute to the text alternative.
-        if tag
-          .as_deref()
-          .is_some_and(|t| t.eq_ignore_ascii_case("script") || t.eq_ignore_ascii_case("style"))
-        {
-          return Some(String::new());
-        }
-
-        if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
-          let labelled = referenced_text_attr(
-            self,
-            node.node_id,
-            labelledby,
-            visited,
-            TextAlternativeMode::Referenced,
-          );
-          return Some(labelled);
-        }
-
-        if let Some(label) = node.node.get_attribute_ref("aria-label") {
-          return Some(normalize_whitespace(label));
-        }
-
-        if presentational && allow_name_from_content == Some(false) {
-          return None;
-        }
-
-        if let Some(label) = label_association_name(node, self, visited) {
-          return Some(label);
-        }
-
-        if let Some(placeholder) = placeholder_as_name(node, self) {
-          return Some(placeholder);
-        }
-
-        if let Some(native) = native_name_from_html(node, self, visited, mode) {
-          if !native.is_empty() {
-            return Some(native);
-          }
-        }
-
-        if !presentational {
-          if let Some(specific) = role_specific_name(node, self, role.as_deref(), visited, mode) {
-            if !specific.is_empty() {
-              return Some(specific);
-            }
-          }
-        }
-
-        let mut allows_content =
-          self.allows_name_from_content(node, role.as_deref(), allow_name_from_content)
-            && allows_visible_text_name(tag.as_deref(), role.as_deref());
-        if allows_content
-          && tag
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
-          && node
-            .node
-            .get_attribute_ref("title")
-            .map(normalize_whitespace)
-            .is_some_and(|t| !t.is_empty())
-        {
-          allows_content = false;
-        }
-        if allows_content {
-          let text = self.subtree_text(node, visited, mode);
-          if !text.is_empty() {
-            return Some(text);
-          }
-        }
-
-        if let Some(alt) = node.node.get_attribute_ref("alt") {
-          if alt_applies(tag.as_deref(), role.as_deref(), &node.node) {
-            let norm = normalize_whitespace(alt);
-            if !norm.is_empty() {
-              return Some(norm);
-            }
-          }
-        }
-
-        if let Some(fallback) = fallback_name_for_role(role.as_deref(), node, self) {
-          return Some(fallback);
-        }
-
-        if let Some(title) = node.node.get_attribute_ref("title") {
-          let norm = normalize_whitespace(title);
-          if !norm.is_empty() {
-            return Some(norm);
-          }
-        }
-
-        None
-      }
-    }
+    self.run_text_alternative_engine(
+      TextAltEngineStart::Node {
+        node,
+        mode,
+        allow_name_from_content,
+      },
+      visited,
+    )
   }
 }
 
@@ -667,242 +1380,316 @@ fn clone_dom_subtree(node: &StyledNode) -> DomNode {
   root
 }
 
-fn build_nodes<'a, 'state>(
-  node: &'a StyledNode,
-  ctx: &BuildContext<'a, 'state>,
-  ancestors: &mut Vec<&'a DomNode>,
-  styled_ancestors: &mut Vec<&'a StyledNode>,
-) -> Vec<AccessibilityNode> {
+fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>) -> Vec<AccessibilityNode> {
   if ctx.is_hidden(node) {
     return Vec::new();
   }
+  if matches!(node.node.node_type, DomNodeType::Text { .. }) {
+    return Vec::new();
+  }
 
-  match node.node.node_type {
-    DomNodeType::Text { .. } => Vec::new(),
-    DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
-      let mut children = Vec::new();
-      ancestors.push(&node.node);
-      styled_ancestors.push(node);
-      for child in ctx.composed_children(node) {
-        children.extend(build_nodes(child, ctx, ancestors, styled_ancestors));
-      }
-      styled_ancestors.pop();
-      ancestors.pop();
-      children
+  struct Frame<'a> {
+    node: &'a StyledNode,
+    children: Vec<&'a StyledNode>,
+    next_child: usize,
+    built_children: Vec<AccessibilityNode>,
+  }
+
+  let mut dom_ancestors: Vec<&'a DomNode> = Vec::new();
+  let mut styled_ancestors: Vec<&'a StyledNode> = Vec::new();
+  let mut stack: Vec<Frame<'a>> = Vec::new();
+
+  dom_ancestors.push(&node.node);
+  styled_ancestors.push(node);
+  stack.push(Frame {
+    node,
+    children: ctx.tree_children(node),
+    next_child: 0,
+    built_children: Vec::new(),
+  });
+
+  let mut root_output: Vec<AccessibilityNode> = Vec::new();
+
+  while let Some(frame) = stack.last_mut() {
+    if ctx.deadline_tripped() {
+      break;
     }
-    DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
-      let mut children = Vec::new();
-      ancestors.push(&node.node);
-      styled_ancestors.push(node);
-      for child in ctx.composed_children(node) {
-        children.extend(build_nodes(child, ctx, ancestors, styled_ancestors));
-      }
-      styled_ancestors.pop();
-      ancestors.pop();
+    ctx.deadline_step(RenderStage::BoxTree);
 
-      // `StyledNode.node` is a shallow copy of the DOM node; its `children` are intentionally empty.
-      //
-      // Most native accessibility state can be derived from element attributes alone, but some
-      // constraint validation rules depend on descendant content (e.g. `<select>` uses `<option>`
-      // descendants, and `<textarea>` uses its text contents). Reconstruct a minimal DOM subtree
-      // for these controls so `ElementRef` validity helpers can see the required descendants.
-      let needs_dom_subtree = node.node.tag_name().is_some_and(|tag| {
-        tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("textarea")
+    if frame.next_child < frame.children.len() {
+      let child = frame.children[frame.next_child];
+      frame.next_child += 1;
+
+      if ctx.is_hidden(child) {
+        continue;
+      }
+
+      if matches!(child.node.node_type, DomNodeType::Text { .. }) {
+        continue;
+      }
+
+      dom_ancestors.push(&child.node);
+      styled_ancestors.push(child);
+      stack.push(Frame {
+        node: child,
+        children: ctx.tree_children(child),
+        next_child: 0,
+        built_children: Vec::new(),
       });
-      let dom_subtree = needs_dom_subtree.then(|| clone_dom_subtree(node));
-      let element_ref_node = dom_subtree.as_ref().unwrap_or(&node.node);
-      let element_ref = ElementRef::with_ancestors(element_ref_node, ancestors);
-      let (mut role, presentational_role, role_from_attr) =
-        compute_role(node, ancestors, styled_ancestors.last().copied());
+      continue;
+    }
 
-      // `<legend>` content is used to compute the accessible name for its owning `<fieldset>`; do
-      // not expose it as a separate node unless the author explicitly assigns an ARIA role.
-      if !role_from_attr
-        && node
-          .node
-          .tag_name()
-          .is_some_and(|t| t.eq_ignore_ascii_case("legend"))
-        && ancestors
-          .last()
-          .and_then(|parent| parent.tag_name())
-          .is_some_and(|t| t.eq_ignore_ascii_case("fieldset"))
-      {
-        return children;
+    let finished = stack
+      .pop()
+      .expect("frame exists (we are in while stack.last_mut)");
+    let node = finished.node;
+    let children = finished.built_children;
+
+    // Pop the current node from the ancestor stacks so role computations see only the DOM/styled
+    // ancestor chain (excluding the current node), matching the previous recursive implementation.
+    dom_ancestors.pop();
+    styled_ancestors.pop();
+
+    let output = match node.node.node_type {
+      DomNodeType::Text { .. } => Vec::new(),
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => children,
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
+        // `StyledNode.node` is a shallow copy of the DOM node; its `children` are intentionally
+        // empty.
+        //
+        // Most native accessibility state can be derived from element attributes alone, but some
+        // constraint validation rules depend on descendant content (e.g. `<select>` uses `<option>`
+        // descendants, and `<textarea>` uses its text contents). Reconstruct a minimal DOM subtree
+        // for these controls so `ElementRef` validity helpers can see the required descendants.
+        let needs_dom_subtree = node.node.tag_name().is_some_and(|tag| {
+          tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("textarea")
+        });
+        let dom_subtree = needs_dom_subtree.then(|| clone_dom_subtree(node));
+        let element_ref_node = dom_subtree.as_ref().unwrap_or(&node.node);
+        let element_ref = ElementRef::with_ancestors(element_ref_node, dom_ancestors.as_slice());
+        let (mut role, presentational_role, role_from_attr) =
+          compute_role(node, dom_ancestors.as_slice(), styled_ancestors.last().copied());
+
+        // `<legend>` content is used to compute the accessible name for its owning `<fieldset>`; do
+        // not expose it as a separate node unless the author explicitly assigns an ARIA role.
+        if !role_from_attr
+          && node
+            .node
+            .tag_name()
+            .is_some_and(|t| t.eq_ignore_ascii_case("legend"))
+          && dom_ancestors
+            .last()
+            .and_then(|parent| parent.tag_name())
+            .is_some_and(|t| t.eq_ignore_ascii_case("fieldset"))
+        {
+          children
+        } else {
+          // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have an
+          // author-provided accessible name (not a name derived from their content).
+          if !role_from_attr
+            && matches!(role.as_deref(), Some("region") | Some("form"))
+            && !has_accessible_name_attr(&node.node)
+          {
+            role = None;
+          }
+
+          let role_description = compute_role_description(role.as_deref(), &node.node);
+
+          let mut name = compute_name(node, ctx, !presentational_role);
+
+          let native_disabled = compute_native_disabled(node, styled_ancestors.as_slice());
+          let aria_disabled = parse_bool_attr(&node.node, "aria-disabled");
+          let disabled = native_disabled || aria_disabled == Some(true);
+
+          let native_required = element_ref.accessibility_required();
+          let aria_required = parse_bool_attr(&node.node, "aria-required");
+          let required = native_required || aria_required == Some(true);
+          let invalid = parse_invalid(node, &element_ref, styled_ancestors.as_slice(), ctx);
+
+          let mut description = compute_description(node, ctx, invalid, name.as_deref());
+          let decorative_image = is_decorative_img(node, ctx);
+
+          if decorative_image {
+            role = None;
+            name = None;
+            description = None;
+          }
+
+          let checked = compute_checked(node, role.as_deref(), &element_ref);
+          let selected =
+            compute_selected(node, role.as_deref(), &element_ref, styled_ancestors.as_slice(), ctx);
+          let pressed = compute_pressed(node, role.as_deref(), ctx);
+          let busy = attr_truthy(&node.node, "aria-busy");
+          let modal = compute_modal(&node.node);
+          let current = parse_aria_current(&node.node);
+          let expanded = compute_expanded(node, role.as_deref(), dom_ancestors.as_slice());
+          let has_popup = parse_has_popup(&node.node);
+          let multiline = compute_multiline(node, role.as_deref());
+          let live = parse_aria_live(&node.node);
+          let atomic = parse_bool_attr(&node.node, "aria-atomic");
+          let relevant = parse_aria_relevant(&node.node);
+          let visited = role.as_deref() == Some("link")
+            && ctx
+              .interaction_state
+              .is_some_and(|state| state.is_visited_link(node.node_id));
+          let focusable = compute_focusable(&node.node, role.as_deref(), disabled);
+          let focused = !disabled
+            && ctx
+              .interaction_state
+              .is_some_and(|state| state.is_focused(node.node_id));
+          let focus_visible =
+            focused && ctx.interaction_state.is_some_and(|state| state.focus_visible);
+          let readonly = compute_readonly(&node.node, role.as_deref(), &element_ref);
+          let value = compute_value(node, role.as_deref(), &element_ref, ctx);
+          let level = compute_level(&node.node, role.as_deref());
+
+          let states = AccessibilityState {
+            focusable,
+            focused,
+            focus_visible,
+            disabled,
+            required,
+            invalid,
+            visited,
+            busy,
+            readonly,
+            has_popup,
+            multiline,
+            checked,
+            selected,
+            pressed,
+            expanded,
+            current,
+            modal,
+            live,
+            atomic,
+            relevant,
+          };
+
+          let owns_children = ctx
+            .aria_owned_children
+            .get(&node.node_id)
+            .is_some_and(|v| !v.is_empty());
+
+          let should_expose = !decorative_image
+            && (role.is_some()
+              || name.is_some()
+              || description.is_some()
+              || value.is_some()
+              || focusable
+              || owns_children);
+          if !should_expose {
+            children
+          } else {
+            let role = role.unwrap_or_else(|| "generic".to_string());
+            let html_tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+            let id = node
+              .node
+              .get_attribute_ref("id")
+              .filter(|s| !s.is_empty())
+              .map(|s| s.to_string());
+            let relations = compute_relations(node, ctx, invalid);
+
+            vec![AccessibilityNode {
+              role,
+              role_description,
+              name,
+              description,
+              value,
+              level,
+              html_tag,
+              id,
+              relations,
+              states,
+              children,
+            }]
+          }
+        }
       }
+    };
 
-      // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have an
-      // author-provided accessible name (not a name derived from their content).
-      if !role_from_attr
-        && matches!(role.as_deref(), Some("region") | Some("form"))
-        && !has_accessible_name_attr(&node.node)
-      {
-        role = None;
-      }
-
-      let role_description = compute_role_description(role.as_deref(), &node.node);
-
-      let mut name = compute_name(node, ctx, !presentational_role);
-
-      let native_disabled = compute_native_disabled(node, styled_ancestors);
-      let aria_disabled = parse_bool_attr(&node.node, "aria-disabled");
-      let disabled = native_disabled || aria_disabled == Some(true);
-
-      let native_required = element_ref.accessibility_required();
-      let aria_required = parse_bool_attr(&node.node, "aria-required");
-      let required = native_required || aria_required == Some(true);
-      let invalid = parse_invalid(node, &element_ref, styled_ancestors, ctx);
-
-      let mut description = compute_description(node, ctx, invalid, name.as_deref());
-      let decorative_image = is_decorative_img(node, ctx);
-
-      if decorative_image {
-        role = None;
-        name = None;
-        description = None;
-      }
-
-      let checked = compute_checked(node, role.as_deref(), &element_ref);
-      let selected = compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
-      let pressed = compute_pressed(node, role.as_deref(), ctx);
-      let busy = attr_truthy(&node.node, "aria-busy");
-      let modal = compute_modal(&node.node);
-      let current = parse_aria_current(&node.node);
-      let expanded = compute_expanded(node, role.as_deref(), ancestors);
-      let has_popup = parse_has_popup(&node.node);
-      let multiline = compute_multiline(node, role.as_deref());
-      let live = parse_aria_live(&node.node);
-      let atomic = parse_bool_attr(&node.node, "aria-atomic");
-      let relevant = parse_aria_relevant(&node.node);
-      let visited = role.as_deref() == Some("link")
-        && ctx
-          .interaction_state
-          .is_some_and(|state| state.is_visited_link(node.node_id));
-      let focusable = compute_focusable(&node.node, role.as_deref(), disabled);
-      let focused = !disabled
-        && ctx
-          .interaction_state
-          .is_some_and(|state| state.is_focused(node.node_id));
-      let focus_visible = focused && ctx.interaction_state.is_some_and(|state| state.focus_visible);
-      let readonly = compute_readonly(&node.node, role.as_deref(), &element_ref);
-      let value = compute_value(node, role.as_deref(), &element_ref, ctx);
-      let level = compute_level(&node.node, role.as_deref());
-
-      let states = AccessibilityState {
-        focusable,
-        focused,
-        focus_visible,
-        disabled,
-        required,
-        invalid,
-        visited,
-        busy,
-        readonly,
-        has_popup,
-        multiline,
-        checked,
-        selected,
-        pressed,
-        expanded,
-        current,
-        modal,
-        live,
-        atomic,
-        relevant,
-      };
-
-      let should_expose = !decorative_image
-        && (role.is_some()
-          || name.is_some()
-          || description.is_some()
-          || value.is_some()
-          || focusable);
-      if !should_expose {
-        return children;
-      }
-
-      let role = role.unwrap_or_else(|| "generic".to_string());
-      let html_tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-      let id = node
-        .node
-        .get_attribute_ref("id")
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-      let relations = compute_relations(node, ctx, invalid);
-
-      vec![AccessibilityNode {
-        role,
-        role_description,
-        name,
-        description,
-        value,
-        level,
-        html_tag,
-        id,
-        relations,
-        states,
-        children,
-      }]
+    if let Some(parent) = stack.last_mut() {
+      parent.built_children.extend(output);
+    } else {
+      root_output = output;
     }
   }
+
+  root_output
 }
 
 fn compute_hidden_and_scoped_ids(
-  node: &StyledNode,
-  ancestor_hidden: bool,
-  ancestor_aria_hidden: bool,
-  scope_id: usize,
+  root: &StyledNode,
   hidden: &mut HashMap<usize, bool>,
   aria_hidden: &mut HashMap<usize, bool>,
   node_scope: &mut HashMap<usize, usize>,
   ids_by_scope: &mut HashMap<usize, HashMap<String, usize>>,
-) {
-  let is_hidden = ancestor_hidden || is_node_hidden(node);
-  let is_aria_hidden = ancestor_aria_hidden || is_node_aria_hidden(node);
-  hidden.insert(node.node_id, is_hidden);
-  aria_hidden.insert(node.node_id, is_aria_hidden);
-  node_scope.insert(node.node_id, scope_id);
+) -> Result<()> {
+  struct Frame<'a> {
+    node: &'a StyledNode,
+    ancestor_hidden: bool,
+    ancestor_aria_hidden: bool,
+    scope_id: usize,
+  }
 
-  if matches!(
-    node.node.node_type,
-    DomNodeType::Element { .. } | DomNodeType::Slot { .. }
-  ) {
-    if let Some(id) = node
-      .node
-      .get_attribute_ref("id")
-      .filter(|value| !value.is_empty())
-    {
-      ids_by_scope
-        .entry(scope_id)
-        .or_default()
-        .entry(id.to_string())
-        .or_insert(node.node_id);
+  let mut stack: Vec<Frame<'_>> = vec![Frame {
+    node: root,
+    ancestor_hidden: false,
+    ancestor_aria_hidden: false,
+    scope_id: root.node_id,
+  }];
+  let mut counter = 0usize;
+
+  while let Some(frame) = stack.pop() {
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree)
+      .map_err(Error::Render)?;
+
+    let node = frame.node;
+    let is_hidden = frame.ancestor_hidden || is_node_hidden(node);
+    let is_aria_hidden = frame.ancestor_aria_hidden || is_node_aria_hidden(node);
+    hidden.insert(node.node_id, is_hidden);
+    aria_hidden.insert(node.node_id, is_aria_hidden);
+    node_scope.insert(node.node_id, frame.scope_id);
+
+    if matches!(
+      node.node.node_type,
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. }
+    ) {
+      if let Some(id) = node
+        .node
+        .get_attribute_ref("id")
+        .filter(|value| !value.is_empty())
+      {
+        ids_by_scope
+          .entry(frame.scope_id)
+          .or_default()
+          .entry(id.to_string())
+          .or_insert(node.node_id);
+      }
+    }
+
+    // `<template>` contents are inert and should not participate in accessibility traversal or
+    // ARIA ID scoping. Do not descend into template children at all (even if CSS overrides template
+    // display properties).
+    if node.node.template_contents_are_inert() {
+      continue;
+    }
+
+    for child in node.children.iter().rev() {
+      let child_scope = match child.node.node_type {
+        DomNodeType::ShadowRoot { .. } => child.node_id,
+        _ => frame.scope_id,
+      };
+      stack.push(Frame {
+        node: child,
+        ancestor_hidden: is_hidden,
+        ancestor_aria_hidden: is_aria_hidden,
+        scope_id: child_scope,
+      });
     }
   }
 
-  // `<template>` contents are inert and should not participate in accessibility traversal or
-  // ARIA ID scoping. Do not recurse into template children at all (even if CSS overrides
-  // template display properties).
-  if node.node.template_contents_are_inert() {
-    return;
-  }
-
-  for child in node.children.iter() {
-    let child_scope = match child.node.node_type {
-      DomNodeType::ShadowRoot { .. } => child.node_id,
-      _ => scope_id,
-    };
-
-    compute_hidden_and_scoped_ids(
-      child,
-      is_hidden,
-      is_aria_hidden,
-      child_scope,
-      hidden,
-      aria_hidden,
-      node_scope,
-      ids_by_scope,
-    );
-  }
+  Ok(())
 }
 
 fn collect_labels(
@@ -910,7 +1697,7 @@ fn collect_labels(
   node_scope: &HashMap<usize, usize>,
   ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
   lookup: &HashMap<usize, &StyledNode>,
-) -> HashMap<usize, Vec<usize>> {
+) -> Result<HashMap<usize, Vec<usize>>> {
   fn node_id_for_id_scoped(
     node_scope: &HashMap<usize, usize>,
     ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
@@ -923,17 +1710,23 @@ fn collect_labels(
   }
 
   /// HTML label containment is defined in terms of the DOM tree, not the composed tree.
-  fn first_labelable_dom_descendant<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
-    for child in node.children.iter() {
-      if matches!(child.node.node_type, DomNodeType::ShadowRoot { .. }) {
+  fn first_labelable_dom_descendant<'a>(
+    node: &'a StyledNode,
+    counter: &mut usize,
+  ) -> Result<Option<&'a StyledNode>> {
+    let mut stack: Vec<&'a StyledNode> = node.children.iter().rev().collect();
+    while let Some(current) = stack.pop() {
+      render_control::check_active_periodic(counter, 1024, RenderStage::BoxTree).map_err(Error::Render)?;
+
+      if matches!(current.node.node_type, DomNodeType::ShadowRoot { .. }) {
         continue;
       }
 
-      if is_labelable(&child.node) {
-        return Some(child);
+      if is_labelable(&current.node) {
+        return Ok(Some(current));
       }
 
-      if child
+      if current
         .node
         .tag_name()
         .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
@@ -941,20 +1734,20 @@ fn collect_labels(
         continue;
       }
 
-      if let Some(found) = first_labelable_dom_descendant(child) {
-        return Some(found);
+      for child in current.children.iter().rev() {
+        stack.push(child);
       }
     }
-    None
+    Ok(None)
   }
 
-  fn walk_dom(
-    node: &StyledNode,
-    node_scope: &HashMap<usize, usize>,
-    ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
-    lookup: &HashMap<usize, &StyledNode>,
-    labels: &mut HashMap<usize, Vec<usize>>,
-  ) {
+  let mut labels: HashMap<usize, Vec<usize>> = HashMap::new();
+  let mut stack: Vec<&StyledNode> = vec![root];
+  let mut counter = 0usize;
+
+  while let Some(node) = stack.pop() {
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree).map_err(Error::Render)?;
+
     let is_label = node
       .node
       .tag_name()
@@ -975,7 +1768,7 @@ fn collect_labels(
             }
           }
         }
-      } else if let Some(target) = first_labelable_dom_descendant(node) {
+      } else if let Some(target) = first_labelable_dom_descendant(node, &mut counter)? {
         labels.entry(target.node_id).or_default().push(node.node_id);
       }
     }
@@ -985,17 +1778,150 @@ fn collect_labels(
       .tag_name()
       .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
     {
-      return;
+      continue;
     }
 
-    for child in node.children.iter() {
-      walk_dom(child, node_scope, ids_by_scope, lookup, labels);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
 
-  let mut labels: HashMap<usize, Vec<usize>> = HashMap::new();
-  walk_dom(root, node_scope, ids_by_scope, lookup, &mut labels);
-  labels
+  Ok(labels)
+}
+
+fn compute_aria_owns<'a>(
+  root: &StyledNode,
+  lookup: &HashMap<usize, &'a StyledNode>,
+  hidden: &HashMap<usize, bool>,
+  node_scope: &HashMap<usize, usize>,
+  ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
+) -> Result<(HashMap<usize, Vec<usize>>, HashMap<usize, usize>)> {
+  fn node_id_for_id_scoped(
+    node_scope: &HashMap<usize, usize>,
+    ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
+    referrer_node_id: usize,
+    id: &str,
+  ) -> Option<usize> {
+    let scope_id = node_scope.get(&referrer_node_id)?;
+    let map = ids_by_scope.get(scope_id)?;
+    map.get(id).copied()
+  }
+
+  fn would_create_cycle(
+    owner_id: usize,
+    target_id: usize,
+    composed_parent: &HashMap<usize, usize>,
+    owned_by: &HashMap<usize, usize>,
+  ) -> bool {
+    if owner_id == target_id {
+      return true;
+    }
+
+    let mut current = owner_id;
+    // Guard against corrupt graphs: the composed tree is acyclic, but `aria-owns` edges are
+    // user-authored and may attempt to introduce cycles. We only insert edges after checking for
+    // cycles, so this should terminate quickly.
+    let mut safety = 0usize;
+    while safety < 1_000_000 {
+      safety += 1;
+      let parent = owned_by
+        .get(&current)
+        .copied()
+        .or_else(|| composed_parent.get(&current).copied());
+      let Some(parent) = parent else {
+        return false;
+      };
+      if parent == target_id {
+        return true;
+      }
+      current = parent;
+    }
+
+    true
+  }
+
+  let mut composed_parent: HashMap<usize, usize> = HashMap::new();
+  let mut in_composed: HashSet<usize> = HashSet::new();
+  let mut traversal_order: Vec<&StyledNode> = Vec::new();
+
+  let mut stack: Vec<(&StyledNode, Option<usize>)> = vec![(root, None)];
+  let mut counter = 0usize;
+
+  while let Some((node, parent)) = stack.pop() {
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree)
+      .map_err(Error::Render)?;
+
+    if *hidden.get(&node.node_id).unwrap_or(&false) {
+      continue;
+    }
+
+    if let Some(parent_id) = parent {
+      composed_parent.insert(node.node_id, parent_id);
+    }
+    in_composed.insert(node.node_id);
+    traversal_order.push(node);
+
+    for child in composed_children(node, lookup).into_iter().rev() {
+      stack.push((child, Some(node.node_id)));
+    }
+  }
+
+  let mut aria_owned_children: HashMap<usize, Vec<usize>> = HashMap::new();
+  let mut aria_owned_by: HashMap<usize, usize> = HashMap::new();
+
+  let mut counter = 0usize;
+  for owner in traversal_order {
+    render_control::check_active_periodic(&mut counter, 1024, RenderStage::BoxTree)
+      .map_err(Error::Render)?;
+
+    if !matches!(
+      owner.node.node_type,
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. }
+    ) {
+      continue;
+    }
+
+    let Some(attr) = owner.node.get_attribute_ref("aria-owns") else {
+      continue;
+    };
+
+    let mut seen_tokens: HashSet<&str> = HashSet::new();
+    for token in split_ascii_whitespace(attr) {
+      if !seen_tokens.insert(token) {
+        continue;
+      }
+
+      let Some(target_id) =
+        node_id_for_id_scoped(node_scope, ids_by_scope, owner.node_id, token)
+      else {
+        continue;
+      };
+
+      if !in_composed.contains(&target_id) {
+        continue;
+      }
+
+      if *hidden.get(&target_id).unwrap_or(&false) {
+        continue;
+      }
+
+      if aria_owned_by.contains_key(&target_id) {
+        continue;
+      }
+
+      if would_create_cycle(owner.node_id, target_id, &composed_parent, &aria_owned_by) {
+        continue;
+      }
+
+      aria_owned_by.insert(target_id, owner.node_id);
+      aria_owned_children
+        .entry(owner.node_id)
+        .or_default()
+        .push(target_id);
+    }
+  }
+
+  Ok((aria_owned_children, aria_owned_by))
 }
 
 fn is_decorative_img(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> bool {
@@ -1691,25 +2617,6 @@ fn compute_name(
   )
 }
 
-fn native_name_from_html<'a, 'state>(
-  node: &'a StyledNode,
-  ctx: &BuildContext<'a, 'state>,
-  visited: &mut HashSet<usize>,
-  mode: TextAlternativeMode,
-) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase())?;
-
-  match tag.as_str() {
-    "fieldset" => first_child_with_tag(node, ctx, "legend", false, mode)
-      .and_then(|legend| ctx.text_alternative(legend, visited, mode, None)),
-    "figure" => first_child_with_tag(node, ctx, "figcaption", true, mode)
-      .and_then(|caption| ctx.text_alternative(caption, visited, mode, None)),
-    "table" => first_child_with_tag(node, ctx, "caption", true, mode)
-      .and_then(|caption| ctx.text_alternative(caption, visited, mode, None)),
-    _ => None,
-  }
-}
-
 fn first_child_with_tag<'a, 'state>(
   node: &'a StyledNode,
   ctx: &BuildContext<'a, 'state>,
@@ -1812,19 +2719,28 @@ fn select_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
 }
 
 fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  if ctx.is_hidden(node) {
-    return None;
-  }
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<&StyledNode> = vec![node];
+  while let Some(current) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return None;
+    }
 
-  if is_option && node.node.get_attribute_ref("selected").is_some() {
-    return Some(option_label_text(node, ctx));
-  }
+    if ctx.is_hidden(current) {
+      continue;
+    }
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_selected_option_text(child, ctx) {
-      return Some(val);
+    let is_option = current
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"));
+
+    if is_option && current.node.get_attribute_ref("selected").is_some() {
+      return Some(option_label_text(current, ctx));
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push(child);
     }
   }
 
@@ -1856,19 +2772,34 @@ fn collect_selected_option_text(
   ctx: &BuildContext,
   out: &mut Vec<String>,
 ) {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return;
+    }
 
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
 
-  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    out.push(option_label_text(node, ctx));
-  }
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  for child in ctx.composed_children(node) {
-    collect_selected_option_text(child, next_optgroup_disabled, ctx, out);
+    if is_option
+      && current.node.get_attribute_ref("selected").is_some()
+      && !ctx.is_hidden(current)
+    {
+      out.push(option_label_text(current, ctx));
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
+    }
   }
 }
 
@@ -1877,21 +2808,34 @@ fn find_selected_option_text(
   optgroup_disabled: bool,
   ctx: &BuildContext,
 ) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
   let mut selected = None;
-  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    selected = Some(option_label_text(node, ctx));
-  }
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return selected;
+    }
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = find_selected_option_text(child, next_optgroup_disabled, ctx) {
-      selected = Some(val);
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
+
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+    if is_option
+      && current.node.get_attribute_ref("selected").is_some()
+      && !ctx.is_hidden(current)
+    {
+      selected = Some(option_label_text(current, ctx));
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
     }
   }
   selected
@@ -1902,20 +2846,30 @@ fn first_enabled_option_text(
   optgroup_disabled: bool,
   ctx: &BuildContext,
 ) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return None;
+    }
 
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
 
-  if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
-    return Some(option_label_text(node, ctx));
-  }
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_enabled_option_text(child, next_optgroup_disabled, ctx) {
-      return Some(val);
+    if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(current) {
+      return Some(option_label_text(current, ctx));
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
     }
   }
 
@@ -1923,16 +2877,28 @@ fn first_enabled_option_text(
 }
 
 fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<&StyledNode> = vec![node];
+  while let Some(current) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return None;
+    }
 
-  if is_option && !ctx.is_hidden(node) {
-    return Some(option_label_text(node, ctx));
-  }
+    if current
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+      && !ctx.is_hidden(current)
+    {
+      return Some(option_label_text(current, ctx));
+    }
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_option_text(child, ctx) {
-      return Some(val);
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push(child);
     }
   }
 
@@ -2027,21 +2993,34 @@ fn find_selected_option_node_id(
   optgroup_disabled: bool,
   ctx: &BuildContext,
 ) -> Option<usize> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
   let mut selected = None;
-  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    selected = Some(node.node_id);
-  }
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return selected;
+    }
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = find_selected_option_node_id(child, next_optgroup_disabled, ctx) {
-      selected = Some(val);
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
+
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+    if is_option
+      && current.node.get_attribute_ref("selected").is_some()
+      && !ctx.is_hidden(current)
+    {
+      selected = Some(current.node_id);
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
     }
   }
   selected
@@ -2052,20 +3031,30 @@ fn first_enabled_option_node_id(
   optgroup_disabled: bool,
   ctx: &BuildContext,
 ) -> Option<usize> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<(&StyledNode, bool)> = vec![(node, optgroup_disabled)];
+  while let Some((current, optgroup_disabled)) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return None;
+    }
 
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+    let tag = current.node.tag_name().map(|t| t.to_ascii_lowercase());
+    let is_option = tag.as_deref() == Some("option");
 
-  if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
-    return Some(node.node_id);
-  }
+    let option_disabled = current.node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled =
+      optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_enabled_option_node_id(child, next_optgroup_disabled, ctx) {
-      return Some(val);
+    if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(current) {
+      return Some(current.node_id);
+    }
+
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push((child, next_optgroup_disabled));
     }
   }
 
@@ -2073,16 +3062,28 @@ fn first_enabled_option_node_id(
 }
 
 fn first_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
+  let mut stack: Vec<&StyledNode> = vec![node];
+  while let Some(current) = stack.pop() {
+    ctx.deadline_step(RenderStage::BoxTree);
+    if ctx.deadline_tripped() {
+      return None;
+    }
 
-  if is_option && !ctx.is_hidden(node) {
-    return Some(node.node_id);
-  }
+    if current
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+      && !ctx.is_hidden(current)
+    {
+      return Some(current.node_id);
+    }
 
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_option_node_id(child, ctx) {
-      return Some(val);
+    if ctx.is_hidden(current) {
+      continue;
+    }
+
+    for child in ctx.composed_children(current).into_iter().rev() {
+      stack.push(child);
     }
   }
 
@@ -2170,222 +3171,6 @@ fn referenced_text_attr(
   }
 
   normalize_whitespace(&parts.join(" "))
-}
-
-fn label_association_name(
-  node: &StyledNode,
-  ctx: &BuildContext,
-  visited: &mut HashSet<usize>,
-) -> Option<String> {
-  if !is_labelable(&node.node) {
-    return None;
-  }
-
-  let Some(label_ids) = ctx.labels.get(&node.node_id) else {
-    return None;
-  };
-
-  let mut parts = Vec::new();
-  for label_id in label_ids {
-    if let Some(label_node) = ctx.node_by_id(*label_id) {
-      if let Some(text) =
-        ctx.text_alternative(label_node, visited, TextAlternativeMode::Referenced, None)
-      {
-        if !text.is_empty() {
-          parts.push(text);
-        }
-      }
-    }
-  }
-
-  if parts.is_empty() {
-    None
-  } else {
-    Some(normalize_whitespace(&parts.join(" ")))
-  }
-}
-
-fn first_visible_child_text(
-  node: &StyledNode,
-  ctx: &BuildContext,
-  tag_name: &str,
-  visited: &mut HashSet<usize>,
-  mode: TextAlternativeMode,
-) -> Option<String> {
-  for child in ctx.composed_children(node) {
-    if child
-      .node
-      .tag_name()
-      .map(|t| t.eq_ignore_ascii_case(tag_name))
-      .unwrap_or(false)
-    {
-      let text = ctx.subtree_text(child, visited, mode);
-      if !text.is_empty() {
-        return Some(text);
-      }
-    }
-  }
-
-  None
-}
-
-fn role_specific_name(
-  node: &StyledNode,
-  ctx: &BuildContext,
-  role: Option<&str>,
-  visited: &mut HashSet<usize>,
-  mode: TextAlternativeMode,
-) -> Option<String> {
-  let tag = node
-    .node
-    .tag_name()
-    .map(|t| t.to_ascii_lowercase())?
-    .to_string();
-
-  match tag.as_str() {
-    "img" => node
-      .node
-      .get_attribute_ref("alt")
-      .map(|alt| normalize_whitespace(alt)),
-    "input" => {
-      let input_type = node
-        .node
-        .get_attribute_ref("type")
-        .map(|t| t.to_ascii_lowercase())
-        .unwrap_or_else(|| "text".to_string());
-
-      if matches!(input_type.as_str(), "button" | "submit" | "reset") {
-        return node
-          .node
-          .get_attribute_ref("value")
-          .map(normalize_whitespace)
-          .or_else(|| default_button_label(&input_type).map(|s| s.to_string()));
-      }
-
-      if input_type == "image" {
-        return node
-          .node
-          .get_attribute_ref("alt")
-          .map(normalize_whitespace)
-          .or_else(|| {
-            node
-              .node
-              .get_attribute_ref("value")
-              .map(normalize_whitespace)
-          });
-      }
-
-      None
-    }
-    "button" => {
-      let text = ctx.subtree_text(node, visited, mode);
-      if !text.is_empty() {
-        Some(text)
-      } else {
-        node
-          .node
-          .get_attribute_ref("value")
-          .map(normalize_whitespace)
-      }
-    }
-    "option" => {
-      if let Some(label) = node.node.get_attribute_ref("label") {
-        if label.is_empty() {
-          let text = ctx.subtree_text(node, visited, mode);
-          if text.is_empty() {
-            None
-          } else {
-            Some(text)
-          }
-        } else {
-          let norm = normalize_whitespace(label);
-          if norm.is_empty() {
-            None
-          } else {
-            Some(norm)
-          }
-        }
-      } else {
-        let text = ctx.subtree_text(node, visited, mode);
-        if text.is_empty() {
-          None
-        } else {
-          Some(text)
-        }
-      }
-    }
-    "fieldset" => ctx
-      .composed_children(node)
-      .into_iter()
-      .find(|child| {
-        child
-          .node
-          .tag_name()
-          .map(|t| t.eq_ignore_ascii_case("legend"))
-          .unwrap_or(false)
-      })
-      .and_then(|legend| {
-        if ctx.is_hidden_for_mode(legend, mode) {
-          None
-        } else {
-          let text = ctx.subtree_text(legend, visited, mode);
-          if text.is_empty() {
-            None
-          } else {
-            Some(text)
-          }
-        }
-      }),
-    "table" => first_visible_child_text(node, ctx, "caption", visited, mode),
-    "figure" => first_visible_child_text(node, ctx, "figcaption", visited, mode),
-    _ => {
-      if role == Some("heading") {
-        let text = ctx.subtree_text(node, visited, mode);
-        if !text.is_empty() {
-          return Some(text);
-        }
-      }
-      None
-    }
-  }
-}
-
-fn fallback_name_for_role(
-  role: Option<&str>,
-  node: &StyledNode,
-  ctx: &BuildContext,
-) -> Option<String> {
-  match role {
-    Some("option") => {
-      if let Some(label) = node.node.get_attribute_ref("label") {
-        if label.is_empty() {
-          let mut visited = HashSet::new();
-          let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
-          if text.is_empty() {
-            None
-          } else {
-            Some(text)
-          }
-        } else {
-          let norm = normalize_whitespace(label);
-          if norm.is_empty() {
-            None
-          } else {
-            Some(norm)
-          }
-        }
-      } else {
-        let mut visited = HashSet::new();
-        let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
-        if text.is_empty() {
-          None
-        } else {
-          Some(text)
-        }
-      }
-    }
-    _ => None,
-  }
 }
 
 fn default_button_label(input_type: &str) -> Option<&'static str> {
@@ -3386,6 +4171,9 @@ fn is_labelable(node: &DomNode) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::ComputedStyle;
+  use selectors::context::QuirksMode;
+  use std::sync::Arc;
 
   #[test]
   fn accessibility_normalize_whitespace_does_not_trim_non_ascii_whitespace() {
@@ -3403,5 +4191,78 @@ mod tests {
     let input = format!("a{nbsp}b");
     let tokens: Vec<&str> = split_ascii_whitespace(&input).collect();
     assert_eq!(tokens, vec![input.as_str()]);
+  }
+
+  #[test]
+  fn accessibility_tree_build_is_stack_safe_for_deep_trees() {
+    fn make_styled_node(node_id: usize, node_type: DomNodeType, styles: &Arc<ComputedStyle>) -> StyledNode {
+      StyledNode {
+        node_id,
+        node: DomNode {
+          node_type,
+          children: Vec::new(),
+        },
+        styles: Arc::clone(styles),
+        starting_styles: Default::default(),
+        before_styles: None,
+        after_styles: None,
+        marker_styles: None,
+        placeholder_styles: None,
+        file_selector_button_styles: None,
+        footnote_call_styles: None,
+        footnote_marker_styles: None,
+        first_line_styles: None,
+        first_letter_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
+        progress_bar_styles: None,
+        progress_value_styles: None,
+        meter_bar_styles: None,
+        meter_optimum_value_styles: None,
+        meter_suboptimum_value_styles: None,
+        meter_even_less_good_value_styles: None,
+        assigned_slot: None,
+        slotted_node_ids: Vec::new(),
+        children: Vec::new(),
+      }
+    }
+
+    // A deep chain should not overflow the stack during accessibility tree construction.
+    let depth = 20_000usize;
+    let styles = Arc::new(ComputedStyle::default());
+    let mut root = make_styled_node(
+      1,
+      DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
+      },
+      &styles,
+    );
+
+    let mut current: *mut StyledNode = &mut root;
+    for node_id in 2..=(depth + 1) {
+      let child = make_styled_node(
+        node_id,
+        DomNodeType::Element {
+          tag_name: String::new(),
+          namespace: String::new(),
+          attributes: vec![("role".to_string(), "presentation".to_string())],
+        },
+        &styles,
+      );
+
+      // Safety: each node gets exactly one child, so we never push to the same `children` vec twice
+      // after taking the pointer to its last element.
+      unsafe {
+        let node = &mut *current;
+        node.children.push(child);
+        current = node
+          .children
+          .last_mut()
+          .expect("child was just pushed") as *mut StyledNode;
+      }
+    }
+
+    assert!(build_accessibility_tree(&root, None).is_ok());
   }
 }

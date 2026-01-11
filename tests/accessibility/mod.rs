@@ -2,6 +2,7 @@
 
 mod accname_references;
 mod aria_token_parsing;
+mod aria_owns;
 mod list_context;
 mod name_computation;
 mod relations_extra;
