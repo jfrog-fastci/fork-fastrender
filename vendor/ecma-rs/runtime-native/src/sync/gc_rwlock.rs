@@ -82,6 +82,28 @@ impl<T> GcAwareRwLock<T> {
       return self.inner.read();
     }
 
+    // See `GcAwareMutex::lock`: if we're holding handle-stack roots, we must
+    // not enter a GC-safe region while waiting on a contended lock.
+    let thread = threading::registry::current_thread_state().expect("registered thread");
+    if thread.handle_stack_len() != 0 {
+      loop {
+        if let Some(g) = self.inner.try_read() {
+          let epoch = threading::safepoint::current_epoch();
+          if epoch & 1 == 1
+            && !threading::safepoint::in_stop_the_world()
+            && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+          {
+            drop(g);
+            threading::safepoint_poll();
+            continue;
+          }
+          return g;
+        }
+        threading::safepoint_poll();
+        std::hint::spin_loop();
+      }
+    }
+
     loop {
       // The stop-the-world coordinator must be able to acquire locks while the world is stopped;
       // otherwise root enumeration can deadlock if a mutator thread is contending on the same lock.
@@ -146,6 +168,28 @@ impl<T> GcAwareRwLock<T> {
     // GC-aware locks while the world is stopped.
     if threading::registry::current_thread_state().is_none() {
       return self.inner.write();
+    }
+
+    // See `GcAwareMutex::lock`: if we're holding handle-stack roots, we must
+    // not enter a GC-safe region while waiting on a contended lock.
+    let thread = threading::registry::current_thread_state().expect("registered thread");
+    if thread.handle_stack_len() != 0 {
+      loop {
+        if let Some(g) = self.inner.try_write() {
+          let epoch = threading::safepoint::current_epoch();
+          if epoch & 1 == 1
+            && !threading::safepoint::in_stop_the_world()
+            && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+          {
+            drop(g);
+            threading::safepoint_poll();
+            continue;
+          }
+          return g;
+        }
+        threading::safepoint_poll();
+        std::hint::spin_loop();
+      }
     }
 
     loop {

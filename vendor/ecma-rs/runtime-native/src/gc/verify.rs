@@ -4,17 +4,16 @@ use super::ObjHeader;
 use super::RootSet;
 use super::TypeDescriptor;
 use ahash::AHashSet;
-use once_cell::sync::Lazy;
 use crate::sync::GcAwareMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::mem;
+use std::sync::OnceLock;
 
 /// Registry of type descriptors we've seen during allocation.
 ///
 /// This lets debug verification reject corrupted `type_desc` pointers *without*
 /// dereferencing them (which would be UB if the pointer is invalid).
-static KNOWN_TYPE_DESCRIPTORS: Lazy<GcAwareMutex<AHashSet<usize>>> =
-  Lazy::new(|| GcAwareMutex::new(AHashSet::new()));
+static KNOWN_TYPE_DESCRIPTORS: OnceLock<GcAwareMutex<AHashSet<usize>>> = OnceLock::new();
 
 static DEBUG_KNOWN_TYPE_DESCRIPTORS_CONTENDED: AtomicBool = AtomicBool::new(false);
 
@@ -30,8 +29,12 @@ pub(crate) fn debug_known_type_descriptors_was_contended() -> bool {
 
 #[doc(hidden)]
 pub(crate) fn debug_with_known_type_descriptors_lock<R>(f: impl FnOnce() -> R) -> R {
-  let _guard = KNOWN_TYPE_DESCRIPTORS.lock();
+  let _guard = known_type_descriptors().lock();
   f()
+}
+
+fn known_type_descriptors() -> &'static GcAwareMutex<AHashSet<usize>> {
+  KNOWN_TYPE_DESCRIPTORS.get_or_init(|| GcAwareMutex::new(AHashSet::new()))
 }
 
 pub(crate) fn register_type_descriptor(desc: &'static TypeDescriptor) {
@@ -48,19 +51,19 @@ pub(crate) fn register_type_descriptor_ptr(desc: *const TypeDescriptor) {
   // Coordinator code should not call into the safepoint slow path, so fall back to a plain lock if
   // we're currently the stop-the-world coordinator.
   if crate::threading::safepoint::in_stop_the_world() {
-    KNOWN_TYPE_DESCRIPTORS.lock_for_gc().insert(desc as usize);
+    known_type_descriptors().lock_for_gc().insert(desc as usize);
     return;
   }
 
   // Unregistered threads do not participate in stop-the-world coordination, so blocking here cannot
   // deadlock the GC coordinator.
   if crate::threading::registry::current_thread_state().is_none() {
-    KNOWN_TYPE_DESCRIPTORS.lock_for_gc().insert(desc as usize);
+    known_type_descriptors().lock_for_gc().insert(desc as usize);
     return;
   }
 
   loop {
-    if let Some(mut guard) = KNOWN_TYPE_DESCRIPTORS.try_lock() {
+    if let Some(mut guard) = known_type_descriptors().try_lock() {
       guard.insert(desc as usize);
       return;
     }
@@ -74,7 +77,12 @@ pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
   if desc.is_null() {
     return false;
   }
-  KNOWN_TYPE_DESCRIPTORS.lock().contains(&(desc as usize))
+  // Conservative root scanning must not allocate. If no type descriptors have been registered yet,
+  // treat the candidate as unknown rather than lazily initializing the registry.
+  let Some(reg) = KNOWN_TYPE_DESCRIPTORS.get() else {
+    return false;
+  };
+  reg.lock().contains(&(desc as usize))
 }
 
 impl GcHeap {
@@ -90,7 +98,7 @@ impl GcHeap {
     let nursery_alloc_end = nursery_base + self.nursery.allocated_bytes();
     let min_align = super::OBJ_ALIGN;
 
-    let known_desc = KNOWN_TYPE_DESCRIPTORS.lock();
+    let known_desc = known_type_descriptors().lock();
 
     let mut worklist: Vec<*mut u8> = Vec::new();
     roots.for_each_root_slot(&mut |slot| {
@@ -136,7 +144,7 @@ impl GcHeap {
 
   pub(crate) fn verify_forwarding_pairs(&self, forwarded: &[(*mut u8, *mut u8)]) {
     let min_align = super::OBJ_ALIGN;
-    let known_desc = KNOWN_TYPE_DESCRIPTORS.lock();
+    let known_desc = known_type_descriptors().lock();
 
     for &(from, to) in forwarded {
       assert!(!from.is_null(), "forwarded-from pointer is null");
@@ -350,7 +358,7 @@ mod tests {
 
       scope.spawn(move || {
         threading::register_current_thread(ThreadKind::Worker);
-        let guard = KNOWN_TYPE_DESCRIPTORS.lock();
+        let guard = known_type_descriptors().lock();
         a_locked_tx.send(()).unwrap();
         a_release_rx.recv().unwrap();
         drop(guard);

@@ -82,6 +82,35 @@ impl<T> GcAwareMutex<T> {
       return self.inner.lock();
     }
 
+    // Threads that are holding handle-stack roots (i.e. raw GC pointers live in
+    // Rust locals/registers) must not enter a GC-safe ("NativeSafe") region:
+    // NativeSafe threads are treated as quiescent by stop-the-world GC, so any
+    // live GC pointers would not be relocated.
+    //
+    // When contending on a lock while holding roots, fall back to a polling
+    // spin loop instead of blocking in a GC-safe region. This keeps the thread
+    // eligible to cooperatively stop at safepoints and avoids unsound NativeSafe
+    // transitions.
+    let thread = threading::registry::current_thread_state().expect("registered thread");
+    if thread.handle_stack_len() != 0 {
+      loop {
+        if let Some(g) = self.inner.try_lock() {
+          let epoch = threading::safepoint::current_epoch();
+          if epoch & 1 == 1
+            && !threading::safepoint::in_stop_the_world()
+            && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+          {
+            drop(g);
+            threading::safepoint_poll();
+            continue;
+          }
+          return g;
+        }
+        threading::safepoint_poll();
+        std::hint::spin_loop();
+      }
+    }
+
     loop {
       // The stop-the-world coordinator must be able to acquire locks while the world is stopped;
       // otherwise root enumeration can deadlock if a mutator thread is contending on the same lock.

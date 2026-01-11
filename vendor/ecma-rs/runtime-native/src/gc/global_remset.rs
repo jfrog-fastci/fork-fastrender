@@ -360,6 +360,7 @@ impl RememberedSet for WorldStoppedRememberedSet {
         if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
           std::process::abort();
         }
+        // SAFETY: Entries originate from the write barrier contract (object base pointers).
         unsafe {
           (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
         }

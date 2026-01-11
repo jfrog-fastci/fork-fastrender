@@ -177,14 +177,17 @@ impl SafepointCoordinator {
 }
 
 static COORDINATOR: OnceLock<SafepointCoordinator> = OnceLock::new();
-static GC_WAKERS: OnceLock<GcAwareMutex<Vec<fn()>>> = OnceLock::new();
+// Keep the GC waker list allocation-free during stop-the-world coordination by
+// using a `const`-initialized mutex+Vec (no `OnceLock`/lazy init on the GC
+// request path).
+static GC_WAKERS: GcAwareMutex<Vec<fn()>> = GcAwareMutex::new(Vec::new());
 
 fn coordinator() -> &'static SafepointCoordinator {
   COORDINATOR.get_or_init(SafepointCoordinator::new)
 }
 
 fn gc_wakers() -> &'static GcAwareMutex<Vec<fn()>> {
-  GC_WAKERS.get_or_init(|| GcAwareMutex::new(Vec::new()))
+  &GC_WAKERS
 }
 
 /// Register a callback that should be invoked whenever the GC requests a
