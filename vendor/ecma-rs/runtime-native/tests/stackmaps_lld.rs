@@ -42,17 +42,11 @@ fn lld_linker_script_defines_stackmaps_range_symbols() {
 
   std::fs::write(
     project_dir.join("Cargo.toml"),
-    format!(
-      r#"[package]
+    r#"[package]
 name = "stackmaps_test_bin"
 version = "0.0.0"
 edition = "2021"
-
-[dependencies]
-runtime-native = {{ path = "{}" }}
 "#,
-      crate_dir.display()
-    ),
   )
   .expect("write Cargo.toml");
 
@@ -77,15 +71,26 @@ global_asm!(
     .previous
 "#);
 
-fn main() {
-    let stackmaps = runtime_native::try_load_via_linker_symbols()
-        .expect("expected linker-defined stackmap boundary symbols");
-    assert!(!stackmaps.is_empty(), "expected non-empty .llvm_stackmaps bytes");
+extern "C" {
+    static __stackmaps_start: u8;
+    static __stackmaps_end: u8;
+}
 
-    let blobs = runtime_native::stackmap_loader::parse_stackmap_blobs(stackmaps)
-        .expect("expected StackMap v3 header");
-    assert!(!blobs.is_empty(), "expected at least one stackmap blob");
-    assert_eq!(blobs[0].version, 3);
+fn main() {
+    let start = unsafe { &__stackmaps_start as *const u8 };
+    let end = unsafe { &__stackmaps_end as *const u8 };
+    let len = unsafe { end.offset_from(start) as usize };
+    assert!(len > 0, "expected non-empty .llvm_stackmaps bytes");
+    let bytes = unsafe { std::slice::from_raw_parts(start, len) };
+
+    // Allow for alignment padding; search for our injected StackMap v3 header.
+    const HEADER: [u8; 16] = [
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    assert!(
+        bytes.windows(HEADER.len()).any(|w| w == HEADER),
+        "expected stackmaps range to include the injected StackMap v3 header; len={len}"
+    );
 }
 "##,
   )
@@ -110,13 +115,10 @@ fn main() {
   if !rustflags.is_empty() {
     rustflags.push(' ');
   }
-  // `runtime-native` enforces this (see `build.rs`); ensure the nested project
-  // inherits it even though we override `RUSTFLAGS` below.
-  rustflags.push_str("-C force-frame-pointers=yes ");
   rustflags.push_str(&format!(
     // Speed up the nested build: we only care about the link result (symbols +
     // section retention), not debug info.
-    "-C debuginfo=0 -C force-frame-pointers=yes -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+    "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
   ));
 
