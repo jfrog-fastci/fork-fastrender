@@ -721,6 +721,7 @@ fn run_driver(
   let mut pending_cancels: VecDeque<u64> = VecDeque::new();
   let mut cancel_in_flight: usize = 0;
 
+  let mut shutdown = false;
   let mut drain_done: Option<mpsc::Sender<std::io::Result<()>>> = None;
   let mut drain_cancels_enqueued = false;
 
@@ -785,19 +786,22 @@ fn run_driver(
             // dropped without an explicit drain request.
             std::mem::forget(ops);
             std::mem::forget(ring);
+            if let Some(done) = drain_done.take() {
+              let _ = done.send(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "io_uring driver thread terminated during shutdown_and_drain",
+              )));
+            }
+            unsafe {
+              libc::close(wake_fd);
+            }
+            return;
           }
 
-          if let Some(done) = drain_done.take() {
-            let _ = done.send(Err(std::io::Error::new(
-              std::io::ErrorKind::BrokenPipe,
-              "io_uring driver thread terminated during shutdown_and_drain",
-            )));
-          }
-
-          unsafe {
-            libc::close(wake_fd);
-          }
-          return;
+          // No read ops in flight. We still must not drop `ring` while any cancel SQEs are in
+          // flight: the kernel may still write cancel CQEs into the ring's shared memory mappings.
+          // Drive the loop until `cancel_in_flight == 0`, then exit cleanly.
+          shutdown = true;
         }
         Command::ShutdownAndDrain { done } => {
           // Enter drain mode:
@@ -876,6 +880,14 @@ fn run_driver(
     if drain_done.is_some() && ops.is_empty() && cancel_in_flight == 0 && pending_cancels.is_empty() {
       let done = drain_done.take().expect("checked above");
       let _ = done.send(Ok(()));
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return;
+    }
+
+    // Drop request with no in-flight reads/cancels: exit without blocking in `poll`.
+    if shutdown && ops.is_empty() && cancel_in_flight == 0 && pending_cancels.is_empty() {
       unsafe {
         libc::close(wake_fd);
       }
@@ -978,6 +990,14 @@ fn run_driver(
     if drain_done.is_some() && ops.is_empty() && cancel_in_flight == 0 && pending_cancels.is_empty() {
       let done = drain_done.take().expect("checked above");
       let _ = done.send(Ok(()));
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return;
+    }
+
+    // If the driver was dropped and there are no more in-flight reads/cancels, exit cleanly.
+    if shutdown && ops.is_empty() && cancel_in_flight == 0 && pending_cancels.is_empty() {
       unsafe {
         libc::close(wake_fd);
       }
