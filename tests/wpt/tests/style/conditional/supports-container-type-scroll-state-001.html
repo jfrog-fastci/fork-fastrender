@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>@supports container-type invalid value is false</title>
+<title>@supports container-type scroll-state true branch applies</title>
 <style>
   body {
     margin: 0;
@@ -12,11 +12,11 @@
     background: rgb(255, 0, 0);
   }
 
-  /* `style` is not a valid keyword for `container-type` per spec. */
-  @supports (container-type: style) {
+  @supports (container-type: scroll-state) {
     #box {
       background: rgb(0, 160, 0);
     }
   }
 </style>
 <div id="box"></div>
+

@@ -70,6 +70,44 @@ fn scroll_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<Scroll
 }
 
 #[test]
+fn container_scroll_state_queries_require_container_type_scroll_state_opt_in() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        container-name: scroller;
+        /* Intentionally omit `container-type: scroll-state` to ensure scroll-state queries do not
+           auto-register based on overflow alone. */
+      }
+      #spacer { height: 200px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(80, 60))
+    .expect("prepare");
+
+  let target = find_by_id(prepared.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scroll-state queries to require container-type opt-in"
+  );
+}
+
+#[test]
 fn container_scroll_state_scrollable_bottom_tracks_element_scroll_offset() {
   let html = r#"
     <style>
