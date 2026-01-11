@@ -17,8 +17,14 @@ pub struct TimerKey(u64);
 /// public API and behaviour.
 pub struct TimerWheel<T> {
   next_key: u64,
-  timers: HashMap<TimerKey, (Instant, T)>,
+  timers: HashMap<TimerKey, TimerData<T>>,
   by_deadline: BTreeMap<Instant, Vec<TimerKey>>,
+}
+
+struct TimerData<T> {
+  deadline: Instant,
+  index: usize,
+  payload: T,
 }
 
 impl<T> Default for TimerWheel<T> {
@@ -40,17 +46,49 @@ impl<T> TimerWheel<T> {
     let key = TimerKey(self.next_key);
     self.next_key += 1;
 
-    self.timers.insert(key, (deadline, payload));
-    self.by_deadline.entry(deadline).or_default().push(key);
+    let keys = self.by_deadline.entry(deadline).or_default();
+    let index = keys.len();
+    keys.push(key);
+
+    self.timers.insert(
+      key,
+      TimerData {
+        deadline,
+        index,
+        payload,
+      },
+    );
     key
   }
 
   pub fn cancel(&mut self, key: TimerKey) -> Option<T> {
-    let (deadline, payload) = self.timers.remove(&key)?;
+    let TimerData {
+      deadline,
+      index,
+      payload,
+    } = self.timers.remove(&key)?;
 
     if let Some(keys) = self.by_deadline.get_mut(&deadline) {
-      if let Some(pos) = keys.iter().position(|k| *k == key) {
+      // Fast path: we remember the index within the per-deadline vector so cancellation does not
+      // require a linear search.
+      let removed_index = if index < keys.len() && keys[index] == key {
+        keys.swap_remove(index);
+        index
+      } else if let Some(pos) = keys.iter().position(|k| *k == key) {
+        // Should not happen, but fall back to a linear scan if internal indices drift.
         keys.swap_remove(pos);
+        pos
+      } else {
+        // Also unexpected: the deadline bucket exists but does not contain this key.
+        // Leave the bucket untouched.
+        keys.len()
+      };
+
+      if removed_index < keys.len() {
+        let moved_key = keys[removed_index];
+        if let Some(data) = self.timers.get_mut(&moved_key) {
+          data.index = removed_index;
+        }
       }
       if keys.is_empty() {
         self.by_deadline.remove(&deadline);
@@ -68,8 +106,8 @@ impl<T> TimerWheel<T> {
 
       let keys = self.by_deadline.remove(&deadline).unwrap();
       for key in keys {
-        if let Some((_deadline, payload)) = self.timers.remove(&key) {
-          on_fired(payload);
+        if let Some(data) = self.timers.remove(&key) {
+          on_fired(data.payload);
         }
       }
     }
@@ -79,4 +117,3 @@ impl<T> TimerWheel<T> {
     self.by_deadline.keys().next().copied()
   }
 }
-
