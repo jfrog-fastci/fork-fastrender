@@ -141,6 +141,56 @@ fn parse_relocate_indices(line: &str) -> Option<(u32, u32)> {
   Some((parse_i32_constant(base_part)?, parse_i32_constant(derived_part)?))
 }
 
+fn parse_gc_live_vars(statepoint_line: &str) -> Vec<String> {
+  fn extract_paren_contents(line: &str, marker: &str) -> String {
+    let start = line
+      .find(marker)
+      .unwrap_or_else(|| panic!("missing `{marker}` in line: {line}"));
+    let mut idx = start + marker.len();
+
+    // `marker` includes the opening `(`.
+    let mut depth: i32 = 1;
+    let bytes = line.as_bytes();
+    while idx < bytes.len() {
+      match bytes[idx] {
+        b'(' => depth += 1,
+        b')' => {
+          depth -= 1;
+          if depth == 0 {
+            let inner = &line[(start + marker.len())..idx];
+            return inner.to_string();
+          }
+        }
+        _ => {}
+      }
+      idx += 1;
+    }
+
+    panic!("unterminated `{marker}` (...) in line: {line}");
+  }
+
+  let inside = extract_paren_contents(statepoint_line, "\"gc-live\"(");
+
+  inside
+    .split(',')
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+    .map(|s| {
+      s.split_whitespace()
+        .last()
+        .unwrap_or_else(|| panic!("malformed gc-live entry `{s}` in line: {statepoint_line}"))
+        .to_string()
+    })
+    .collect()
+}
+
+fn parse_relocate_comment_vars(line: &str) -> Option<(String, String)> {
+  let (_, after) = line.split_once("; (")?;
+  let (inside, _) = after.split_once(')')?;
+  let (base, derived) = inside.split_once(',')?;
+  Some((base.trim().to_string(), derived.trim().to_string()))
+}
+
 #[test]
 fn gc_result_for_scalar_return() {
   let before = r#"
@@ -292,6 +342,12 @@ join:
     statepoint_line.contains("ptr addrspace(1) %base") && statepoint_line.contains("ptr addrspace(1) %derived"),
     "expected gc-live bundle to include both %base and %derived:\n{statepoint_line}\n\n{func}"
   );
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert!(
+    gc_live_vars.iter().any(|v| v == "%base") && gc_live_vars.iter().any(|v| v == "%derived"),
+    "expected gc-live vars to include %base and %derived, got: {gc_live_vars:?}\n\n{func}"
+  );
+
   assert!(
     func.contains("@llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate.p1 calls:\n{func}"
@@ -299,11 +355,17 @@ join:
 
   let mut saw_distinct = false;
   let mut derived_relocated_ssa: Option<String> = None;
+  let mut derived_reloc_line: Option<String> = None;
+  let mut derived_reloc_indices: Option<(u32, u32)> = None;
+  let mut derived_reloc_comment: Option<(String, String)> = None;
   for line in func.lines() {
     if let Some((base, derived)) = parse_relocate_indices(line) {
       if base != derived {
         saw_distinct = true;
         derived_relocated_ssa = assigned_ssa(line);
+        derived_reloc_line = Some(line.to_string());
+        derived_reloc_indices = Some((base, derived));
+        derived_reloc_comment = parse_relocate_comment_vars(line);
         break;
       }
     }
@@ -319,6 +381,38 @@ join:
   assert!(
     func.contains(&format!("load i8, ptr addrspace(1) {derived_relocated_ssa}")),
     "expected derived relocated SSA ({derived_relocated_ssa}) to be used after safepoint:\n{func}"
+  );
+
+  // Verify the relocate indices refer to the correct gc-live entries (base/derived).
+  let (base_idx, derived_idx) =
+    derived_reloc_indices.expect("expected to capture base/derived indices for derived relocation");
+  let (base_var, derived_var) = derived_reloc_comment.unwrap_or_else(|| {
+    panic!(
+      "expected derived relocate line to contain a `; (base, derived)` comment, got:\n{}",
+      derived_reloc_line.as_deref().unwrap_or("<missing>")
+    )
+  });
+  assert_eq!(
+    derived_var, "%derived",
+    "expected derived relocation to be for %derived, got {derived_var} in:\n{}",
+    derived_reloc_line.as_deref().unwrap_or("<missing>")
+  );
+
+  let base_pos = gc_live_vars
+    .iter()
+    .position(|v| v == &base_var)
+    .unwrap_or_else(|| panic!("base var {base_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}"));
+  let derived_pos = gc_live_vars
+    .iter()
+    .position(|v| v == &derived_var)
+    .unwrap_or_else(|| panic!("derived var {derived_var} missing from gc-live vars {gc_live_vars:?}\n\n{func}"));
+  assert_eq!(
+    base_idx as usize, base_pos,
+    "gc.relocate base index should point at gc-live[{base_pos}]={base_var}, got base_idx={base_idx}\n\n{func}"
+  );
+  assert_eq!(
+    derived_idx as usize, derived_pos,
+    "gc.relocate derived index should point at gc-live[{derived_pos}]={derived_var}, got derived_idx={derived_idx}\n\n{func}"
   );
 }
 
