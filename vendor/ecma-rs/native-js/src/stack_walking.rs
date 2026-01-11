@@ -5,6 +5,18 @@ use inkwell::module::Module;
 use inkwell::types::FunctionType;
 use inkwell::values::FunctionValue;
 
+pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {
+  // Required for deterministic GC stack walking:
+  //
+  // - `frame-pointer="all"`: force a stable frame chain we can walk.
+  // - `disable-tail-calls="true"`: prevent tail-call elimination from collapsing frames.
+  let frame_pointer = context.create_string_attribute("frame-pointer", "all");
+  let disable_tail_calls = context.create_string_attribute("disable-tail-calls", "true");
+
+  func.add_attribute(AttributeLoc::Function, frame_pointer);
+  func.add_attribute(AttributeLoc::Function, disable_tail_calls);
+}
+
 /// LLVM code generator.
 ///
 /// This is currently a minimal façade around `inkwell` that guarantees stack-walkability
@@ -24,6 +36,10 @@ impl<'ctx> CodeGen<'ctx> {
     }
   }
 
+  pub fn runtime_abi(&self) -> crate::runtime_abi::RuntimeAbi<'ctx, '_> {
+    crate::runtime_abi::RuntimeAbi::new(self.context, &self.module)
+  }
+
   pub fn module_ir(&self) -> String {
     // Be defensive: future code may add functions without going through `define_function`.
     // Enforce the stack-walking invariant across the whole module before emitting IR.
@@ -33,7 +49,7 @@ impl<'ctx> CodeGen<'ctx> {
 
   pub fn define_function(&self, name: &str, ty: FunctionType<'ctx>) -> FunctionValue<'ctx> {
     let func = self.module.add_function(name, ty, None);
-    self.apply_stack_walking_attrs(func);
+    apply_stack_walking_attrs(self.context, func);
     func
   }
 
@@ -51,24 +67,10 @@ impl<'ctx> CodeGen<'ctx> {
     func
   }
 
-  fn apply_stack_walking_attrs(&self, func: FunctionValue<'ctx>) {
-    // Required for deterministic GC stack walking:
-    //
-    // - `frame-pointer="all"`: force a stable frame chain we can walk.
-    // - `disable-tail-calls="true"`: prevent tail-call elimination from collapsing frames.
-    let frame_pointer = self.context.create_string_attribute("frame-pointer", "all");
-    let disable_tail_calls = self
-      .context
-      .create_string_attribute("disable-tail-calls", "true");
-
-    func.add_attribute(AttributeLoc::Function, frame_pointer);
-    func.add_attribute(AttributeLoc::Function, disable_tail_calls);
-  }
-
   fn enforce_stack_walking_invariants(&self) {
     let mut func = self.module.get_first_function();
     while let Some(f) = func {
-      self.apply_stack_walking_attrs(f);
+      apply_stack_walking_attrs(self.context, f);
       func = f.get_next_function();
     }
   }

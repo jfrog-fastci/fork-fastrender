@@ -43,6 +43,7 @@ pub mod codes;
 pub mod emit;
 pub mod link;
 pub mod llvm;
+pub mod runtime_abi;
 pub mod strict;
 
 mod stack_walking;
