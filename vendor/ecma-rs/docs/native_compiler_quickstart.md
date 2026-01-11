@@ -52,6 +52,8 @@ Strict-native rejects (hard error, not warning):
 **Strict-native design** (see [`EXEC.plan.md`](../EXEC.plan.md) for rationale):
 
 - `any` (explicit or inferred)
+- Type assertions (`x as T`, `<T>x`)
+- Non-null assertions (`x!`)
 - Dynamic code execution: `eval()`, `new Function()`
 - `with`
 - `arguments`
@@ -128,10 +130,10 @@ with `NJS####` diagnostics. To run its regression tests:
 
 ```bash
 # From the repo root:
-  bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_subset
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_subset
 
 # Or, if you're already in vendor/ecma-rs/:
-  bash scripts/cargo_llvm.sh test -p native-js --test strict_subset
+bash scripts/cargo_llvm.sh test -p native-js --test strict_subset
 ```
 
 ---
