@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regenerate the `.llvm_stackmaps` binary fixtures under `tests/fixtures/`.
+# Regenerate the `.llvm_stackmaps` binary fixtures under `tests/fixtures/bin/`.
 #
 # Requirements:
 # - LLVM 18 toolchain on PATH (Ubuntu package names: opt-18, llc-18, llvm-objcopy-18)
@@ -126,28 +126,4 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_deopt_x86_64.bin" \
   "${TMP}/statepoint_deopt_x86_64.o"
 
-# Additional fixtures (not in `bin/`):
-# - `stackmaps_v3.bin`: one function containing multiple stackmap records that exercise all location kinds.
-# - `patchpoint_liveouts.bin`: patchpoint stackmap with non-empty live-out list.
-
-# stackmaps_v3 (x86_64)
-llc-18 -O2 -filetype=obj \
-  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
-  "${SCRIPT_DIR}/stackmaps_v3.ll" \
-  -o "${TMP}/stackmaps_v3.o"
-
-llvm-objcopy-18 --dump-section ".llvm_stackmaps=${SCRIPT_DIR}/stackmaps_v3.bin" \
-  "${TMP}/stackmaps_v3.o"
-
-# patchpoint_liveouts (x86_64)
-llc-18 -O0 -filetype=obj \
-  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
-  "${SCRIPT_DIR}/patchpoint_liveouts.ll" \
-  -o "${TMP}/patchpoint_liveouts.o"
-
-llvm-objcopy-18 --dump-section ".llvm_stackmaps=${SCRIPT_DIR}/patchpoint_liveouts.bin" \
-  "${TMP}/patchpoint_liveouts.o"
-
-echo "ok: regenerated stackmap fixtures into:"
-echo "  - ${BIN_DIR}"
-echo "  - ${SCRIPT_DIR}"
+echo "ok: regenerated stackmap fixtures into ${BIN_DIR}"
