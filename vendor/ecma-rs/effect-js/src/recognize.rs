@@ -1,6 +1,6 @@
 use hir_js::{
-  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind, StmtId,
-  StmtKind, UnaryOp, VarDeclKind,
+  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectKey, ObjectProperty, PatId, PatKind,
+  StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
 
 #[cfg(feature = "typed")]
@@ -16,6 +16,22 @@ pub enum GuardKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayChainOp {
+  Map { callback: ExprId },
+  Filter { callback: ExprId },
+  FlatMap { callback: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayTerminal {
+  Reduce { callback: ExprId, init: Option<ExprId> },
+  Find { callback: ExprId },
+  Every { callback: ExprId },
+  Some { callback: ExprId },
+  ForEach { callback: ExprId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecognizedPattern {
   /// A call site that could be resolved to a canonical API identifier.
   CanonicalCall { call: ExprId, api: ApiId },
@@ -26,6 +42,14 @@ pub enum RecognizedPattern {
     map_call: ExprId,
     filter_call: ExprId,
     reduce_call: ExprId,
+  },
+
+  /// Array prototype call chain such as `arr.map(f).filter(g).reduce(h, init)`
+  /// (typed only).
+  ArrayChain {
+    base: ExprId,
+    ops: Vec<ArrayChainOp>,
+    terminal: Option<ArrayTerminal>,
   },
 
   /// `Promise.all(urls.map(url => fetch(url)))` (best-effort; untyped).
@@ -80,7 +104,6 @@ pub enum RecognizedPattern {
   /// `const x: T = JSON.parse(input)` (untyped; uses declared annotation).
   JsonParseTyped { call: ExprId, target: hir_js::TypeExprId },
 }
-
 fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(StmtId, &StmtKind)) {
   fn walk(body: &hir_js::Body, stmt_id: StmtId, f: &mut impl FnMut(StmtId, &StmtKind)) {
     let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
@@ -177,29 +200,54 @@ fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPatte
           .unwrap_or(u32::MAX);
         (start, end, 2, reduce_call.0)
       }
+      RecognizedPattern::ArrayChain {
+        base,
+        ops,
+        terminal,
+      } => {
+        let start = expr_span(body, *base).map(|(s, _)| s).unwrap_or(u32::MAX);
+        let end_expr = match terminal {
+          Some(ArrayTerminal::Reduce { init: Some(init), .. }) => Some(*init),
+          Some(ArrayTerminal::Reduce { callback, .. }) => Some(*callback),
+          Some(ArrayTerminal::Find { callback })
+          | Some(ArrayTerminal::Every { callback })
+          | Some(ArrayTerminal::Some { callback })
+          | Some(ArrayTerminal::ForEach { callback }) => Some(*callback),
+          None => ops.last().map(|op| match op {
+            ArrayChainOp::Map { callback }
+            | ArrayChainOp::Filter { callback }
+            | ArrayChainOp::FlatMap { callback } => *callback,
+          }),
+        };
+        let end = end_expr
+          .and_then(|expr| expr_span(body, expr))
+          .map(|(_, e)| e)
+          .unwrap_or(u32::MAX);
+        (start, end, 3, base.0)
+      }
       RecognizedPattern::PromiseAllFetch {
         promise_all_call, ..
       } => expr_span(body, *promise_all_call)
-        .map(|(s, e)| (s, e, 3, promise_all_call.0))
-        .unwrap_or((u32::MAX, u32::MAX, 3, promise_all_call.0)),
+        .map(|(s, e)| (s, e, 4, promise_all_call.0))
+        .unwrap_or((u32::MAX, u32::MAX, 4, promise_all_call.0)),
       RecognizedPattern::AsyncIterator { stmt, .. } => stmt_span(body, *stmt)
-        .map(|(s, e)| (s, e, 4, stmt.0))
-        .unwrap_or((u32::MAX, u32::MAX, 4, stmt.0)),
+        .map(|(s, e)| (s, e, 5, stmt.0))
+        .unwrap_or((u32::MAX, u32::MAX, 5, stmt.0)),
       RecognizedPattern::StringTemplate { expr, .. } => expr_span(body, *expr)
-        .map(|(s, e)| (s, e, 5, expr.0))
-        .unwrap_or((u32::MAX, u32::MAX, 5, expr.0)),
-      RecognizedPattern::ObjectSpread { expr, .. } => expr_span(body, *expr)
         .map(|(s, e)| (s, e, 6, expr.0))
         .unwrap_or((u32::MAX, u32::MAX, 6, expr.0)),
+      RecognizedPattern::ObjectSpread { expr, .. } => expr_span(body, *expr)
+        .map(|(s, e)| (s, e, 7, expr.0))
+        .unwrap_or((u32::MAX, u32::MAX, 7, expr.0)),
       RecognizedPattern::ArrayDestructure { pat, .. } => pat_span(body, *pat)
-        .map(|(s, e)| (s, e, 7, pat.0))
-        .unwrap_or((u32::MAX, u32::MAX, 7, pat.0)),
+        .map(|(s, e)| (s, e, 8, pat.0))
+        .unwrap_or((u32::MAX, u32::MAX, 8, pat.0)),
       RecognizedPattern::GuardClause { stmt, .. } => stmt_span(body, *stmt)
-        .map(|(s, e)| (s, e, 8, stmt.0))
-        .unwrap_or((u32::MAX, u32::MAX, 8, stmt.0)),
+        .map(|(s, e)| (s, e, 9, stmt.0))
+        .unwrap_or((u32::MAX, u32::MAX, 9, stmt.0)),
       RecognizedPattern::MapGetOrDefault { map, .. } => expr_span(body, *map)
-        .map(|(s, e)| (s, e, 9, map.0))
-        .unwrap_or((u32::MAX, u32::MAX, 9, map.0)),
+        .map(|(s, e)| (s, e, 10, map.0))
+        .unwrap_or((u32::MAX, u32::MAX, 10, map.0)),
     }
   }
 
@@ -574,6 +622,134 @@ fn promise_all_fetch_match_untyped(
 }
 
 #[cfg(feature = "typed")]
+enum ArrayCallNode {
+  Op(ArrayChainOp),
+  Terminal(ArrayTerminal),
+}
+
+#[cfg(feature = "typed")]
+fn classify_array_call(
+  lowered: &LowerResult,
+  body: &hir_js::Body,
+  call_expr: ExprId,
+) -> Option<(ExprId, ArrayCallNode)> {
+  let call = body.exprs.get(call_expr.0 as usize)?;
+  let ExprKind::Call(call) = &call.kind else {
+    return None;
+  };
+  if call.optional || call.is_new {
+    return None;
+  }
+  if call.args.iter().any(|arg| arg.spread) {
+    return None;
+  }
+
+  let callee_expr = body.exprs.get(call.callee.0 as usize)?;
+  let ExprKind::Member(member) = &callee_expr.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+  let ObjectKey::Ident(prop) = member.property else {
+    return None;
+  };
+  let prop = lowered.names.resolve(prop)?;
+
+  let callback = call.args.first()?.expr;
+  match prop {
+    "map" => Some((
+      member.object,
+      ArrayCallNode::Op(ArrayChainOp::Map { callback }),
+    )),
+    "filter" => Some((
+      member.object,
+      ArrayCallNode::Op(ArrayChainOp::Filter { callback }),
+    )),
+    "flatMap" => Some((
+      member.object,
+      ArrayCallNode::Op(ArrayChainOp::FlatMap { callback }),
+    )),
+    "reduce" => Some((
+      member.object,
+      ArrayCallNode::Terminal(ArrayTerminal::Reduce {
+        callback,
+        init: call.args.get(1).map(|arg| arg.expr),
+      }),
+    )),
+    "find" => Some((
+      member.object,
+      ArrayCallNode::Terminal(ArrayTerminal::Find { callback }),
+    )),
+    "every" => Some((
+      member.object,
+      ArrayCallNode::Terminal(ArrayTerminal::Every { callback }),
+    )),
+    "some" => Some((
+      member.object,
+      ArrayCallNode::Terminal(ArrayTerminal::Some { callback }),
+    )),
+    "forEach" => Some((
+      member.object,
+      ArrayCallNode::Terminal(ArrayTerminal::ForEach { callback }),
+    )),
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn parse_array_chain(
+  lowered: &LowerResult,
+  body_id: BodyId,
+  body: &hir_js::Body,
+  types: &impl crate::types::TypeProvider,
+  call_expr: ExprId,
+) -> Option<RecognizedPattern> {
+  let mut ops_rev = Vec::new();
+  let mut terminal = None;
+
+  let (mut recv, node) = classify_array_call(lowered, body, call_expr)?;
+  match node {
+    ArrayCallNode::Op(op) => ops_rev.push(op),
+    ArrayCallNode::Terminal(term) => terminal = Some(term),
+  }
+
+  loop {
+    let recv_expr = body.exprs.get(recv.0 as usize)?;
+    match &recv_expr.kind {
+      ExprKind::Call(_) => {
+        let (next_recv, node) = classify_array_call(lowered, body, recv)?;
+        match node {
+          ArrayCallNode::Op(op) => ops_rev.push(op),
+          // Terminal methods must be the final call in the chain.
+          ArrayCallNode::Terminal(_) => return None,
+        }
+        recv = next_recv;
+      }
+      _ => {
+        let base = recv;
+        if !types.expr_is_array(body_id, base) {
+          return None;
+        }
+
+        ops_rev.reverse();
+
+        let ok_len = if terminal.is_some() {
+          ops_rev.len() >= 1
+        } else {
+          ops_rev.len() >= 2
+        };
+        if !ok_len {
+          return None;
+        }
+
+        return Some(RecognizedPattern::ArrayChain { base, ops: ops_rev, terminal });
+      }
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
 pub fn recognize_patterns_typed(
   lowered: &LowerResult,
   body: BodyId,
@@ -717,8 +893,29 @@ pub fn recognize_patterns_typed(
   //
   // These are intentionally conservative: if typing is missing or the chain
   // includes unknown/any/union receivers, we do not emit the pattern.
+  let mut non_outermost_array_calls = std::collections::HashSet::<ExprId>::new();
+  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
+    let expr_id = ExprId(idx as u32);
+    let Some((recv, _node)) = classify_array_call(lowered, body_ref, expr_id) else {
+      continue;
+    };
+    if matches!(
+      body_ref.exprs.get(recv.0 as usize).map(|e| &e.kind),
+      Some(ExprKind::Call(_))
+    ) {
+      non_outermost_array_calls.insert(recv);
+    }
+  }
+
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
+
+    // ArrayChain: recognize only at the outermost chain call.
+    if matches!(expr.kind, ExprKind::Call(_)) && !non_outermost_array_calls.contains(&expr_id) {
+      if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
+        patterns.push(pat);
+      }
+    }
 
     // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
     if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
@@ -737,7 +934,6 @@ pub fn recognize_patterns_typed(
           filter_call: chain[1].0,
           reduce_call: chain[2].0,
         });
-        continue;
       }
     }
 

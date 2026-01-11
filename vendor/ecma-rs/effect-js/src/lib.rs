@@ -38,7 +38,8 @@ pub use patterns::{
   StmtPatternTables,
 };
 pub use recognize::{
-  recognize_patterns_best_effort_untyped, recognize_patterns_untyped, GuardKind, RecognizedPattern,
+  recognize_patterns_best_effort_untyped, recognize_patterns_untyped, ArrayChainOp, ArrayTerminal,
+  GuardKind, RecognizedPattern,
 };
 pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};
 pub use signals::{collect_signals, SemanticSignal, SignalTables};
