@@ -427,6 +427,23 @@ LLVM emits stackmap data into a dedicated ELF section:
 - Section name: **`.llvm_stackmaps`**
 - Format: LLVM “StackMap” version 3 (see below)
 
+#### Multi-object linking: concatenated StackMap blobs
+When linking **multiple** object files, linkers (GNU ld, lld) typically **concatenate**
+the input `.llvm_stackmaps` sections into a single output section. This means the
+final section bytes may contain **multiple independent StackMap v3 tables**
+back-to-back (one per object file), with optional 0-filled padding for alignment.
+
+Tools like `llvm-readobj --stackmap` generally only display the **first** table,
+so runtime consumers must parse the whole sequence.
+
+In this repository:
+- `runtime_native::stackmaps::parse_all_stackmaps` parses all concatenated blobs.
+- `runtime_native::stackmaps::StackMaps::parse` builds a PC→record index across
+  all blobs.
+- `runtime_native::stackmaps::StackMap::parse` intentionally models a **single**
+  StackMap v3 blob and will reject a longer section that appears to contain
+  additional blobs.
+
 #### Why we cannot `extern __LLVM_StackMaps`
 LLVM/LLD typically emit a symbol named `__LLVM_StackMaps`, but it is marked with
 **LOCAL** binding in the final ELF. That means:
@@ -441,7 +458,8 @@ stackmap bytes some other way.
 
 ### 5.3 Locating stackmaps at runtime (Linux/ELF)
 Instead of parsing `/proc/self/exe`, the final link step can export two **global**
-symbols that delimit the in-memory `.llvm_stackmaps` blob:
+symbols that delimit the in-memory stackmaps byte range (which may include
+multiple concatenated StackMap v3 blobs):
 
 - `__start_llvm_stackmaps`
 - `__stop_llvm_stackmaps`
