@@ -8,6 +8,8 @@ AGENTS.md is the law. These rules are not suggestions. Violating them destroys h
 
 **MANDATORY (no exceptions):**
 - Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+  - For `vendor/ecma-rs/` workspace builds: prefer `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`
+    (it `cd`s into `vendor/ecma-rs/` and delegates to the top-level wrapper).
 - Use `bash scripts/run_limited.sh --as 64G` when executing ANY renderer binary
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
@@ -124,7 +126,8 @@ Cargo commands for ecma-rs crates.
 Example pattern:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash -lc 'cd vendor/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
+bash scripts/run_limited.sh --as 64G -- \
+  bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js
 ```
 
 For builds/tests, avoid multi-agent cargo stampedes (same principle as FastRender):
