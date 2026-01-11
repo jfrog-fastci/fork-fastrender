@@ -6,7 +6,7 @@ use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{
   register_dom_host_source, register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
-  WindowRealmHost,
+  WindowRealmHost, WindowRealmUserData,
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -367,6 +367,17 @@ impl WindowHostState {
       }
     };
     window.set_cookie_fetcher(fetcher.clone());
+    if js_execution_options.supports_module_scripts {
+      let document_origin = crate::resource::origin_from_url(&document_url);
+      if let Err(err) = window.enable_module_loader(
+        fetcher.clone(),
+        js_execution_options.max_script_bytes,
+        document_origin,
+      ) {
+        unregister_dom_source(dom_source_id);
+        return Err(Error::Other(err.to_string()));
+      }
+    }
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
@@ -468,10 +479,20 @@ impl WindowHostState {
   }
 
   pub fn import_map_state(&self) -> &ImportMapState {
+    if let Some(data) = self.window.vm().user_data::<WindowRealmUserData>() {
+      if let Some(loader) = data.module_loader.as_ref() {
+        return &loader.import_map_state;
+      }
+    }
     &self.import_map_state
   }
 
   pub fn import_map_state_mut(&mut self) -> &mut ImportMapState {
+    if let Some(data) = self.window.vm_mut().user_data_mut::<WindowRealmUserData>() {
+      if let Some(loader) = data.module_loader.as_mut() {
+        return &mut loader.import_map_state;
+      }
+    }
     &mut self.import_map_state
   }
 
@@ -515,7 +536,7 @@ impl WindowHostState {
     let mut parse_result =
       crate::js::import_maps::create_import_map_parse_result_with_limits(json, base_url, limits);
     let warnings = std::mem::take(&mut parse_result.warnings);
-    crate::js::import_maps::register_import_map_with_limits(&mut self.import_map_state, parse_result, limits)?;
+    crate::js::import_maps::register_import_map_with_limits(self.import_map_state_mut(), parse_result, limits)?;
     Ok(warnings)
   }
 
@@ -524,9 +545,12 @@ impl WindowHostState {
     let mut result = crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
     self.import_map_warnings.append(&mut result.warnings);
 
-    if let Err(err) =
-      crate::js::import_maps::register_import_map_with_limits(&mut self.import_map_state, result, &limits)
-    {
+    let register_result = crate::js::import_maps::register_import_map_with_limits(
+      self.import_map_state_mut(),
+      result,
+      &limits,
+    );
+    if let Err(err) = register_result {
       // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
       // import map errors (console, `window.onerror`, etc.).
       self.import_map_errors.push(err);
@@ -551,7 +575,7 @@ impl WindowHostState {
     base_url: &::url::Url,
   ) -> std::result::Result<::url::Url, crate::js::import_maps::ImportMapError> {
     crate::js::import_maps::resolve_module_specifier(
-      &mut self.import_map_state,
+      self.import_map_state_mut(),
       specifier,
       base_url,
     )
@@ -562,7 +586,7 @@ impl WindowHostState {
     specifier: &str,
     referrer_base: &::url::Url,
   ) -> std::result::Result<::url::Url, ModuleResolutionError> {
-    crate::js::import_maps::resolve_module_specifier(&mut self.import_map_state, specifier, referrer_base)
+    crate::js::import_maps::resolve_module_specifier(self.import_map_state_mut(), specifier, referrer_base)
   }
 
   pub fn resolve_module_specifier_using_document_base(
@@ -579,7 +603,7 @@ impl WindowHostState {
   }
 
   pub fn resolve_module_integrity_metadata(&self, url: &::url::Url) -> &str {
-    crate::js::import_maps::resolve_module_integrity_metadata(&self.import_map_state, url)
+    crate::js::import_maps::resolve_module_integrity_metadata(self.import_map_state(), url)
   }
 
   /// Execute a classic script while integrating Promise jobs into the provided [`EventLoop`]'s
@@ -1036,7 +1060,115 @@ mod tests {
       fetcher.calls(),
       vec!["https://example.invalid/dir/x".to_string()]
     );
+    Ok(())
+  }
 
+  #[test]
+  fn window_host_dynamic_import_works_when_module_scripts_supported() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(
+      "https://example.invalid/mod.js",
+      FetchedResource::new(
+        "export default 42;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, options)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__x = 0;
+      globalThis.__err = "";
+      import("https://example.invalid/mod.js")
+        .then(m => { globalThis.__x = m.default; })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+      "#,
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__x"),
+      Value::Number(n) if n == 42.0
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_dynamic_import_resolves_bare_specifiers_via_import_maps() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(
+      "https://example.invalid/mod.js",
+      FetchedResource::new(
+        "export default 42;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, options)?;
+
+    host
+      .host_mut()
+      .register_import_map_using_document_base(r#"{"imports":{"foo":"https://example.invalid/mod.js"}}"#)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__x = 0;
+      globalThis.__err = "";
+      import("foo")
+        .then(m => { globalThis.__x = m.default; })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+      "#,
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__x"),
+      Value::Number(n) if n == 42.0
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_dynamic_import_rejects_when_module_scripts_not_supported() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = false;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, options)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__x = 0;
+      globalThis.__err = "";
+      import("https://example.invalid/mod.js")
+        .then(() => { globalThis.__x = 1; })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+      "#,
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+
+    let err = get_global_prop_utf8(&mut host, "__err").unwrap_or_default();
+    assert!(
+      err.contains("module loading is not enabled for this realm"),
+      "unexpected error: {err:?}"
+    );
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
     Ok(())
   }
 
