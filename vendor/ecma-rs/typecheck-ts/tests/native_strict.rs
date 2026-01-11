@@ -224,6 +224,38 @@ fn native_strict_bans_eval_via_reflect_apply_function_prototype_apply() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_reflect_apply_call() {
+  let source = "Reflect.apply.call(Reflect, eval, null, [\"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_reflect_apply_apply() {
+  let source = "Reflect.apply.apply(Reflect, [eval, null, [\"1\"]]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_new_function() {
   let source = "new Function(\"return 1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -275,6 +307,39 @@ fn native_strict_bans_function_via_reflect_apply() {
 #[test]
 fn native_strict_bans_function_via_reflect_construct() {
   let source = "Reflect.construct(Function, [\"return 1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_construct_call() {
+  let source = "Reflect.construct.call(Reflect, Function, [\"return 1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_construct_apply() {
+  let source =
+    "Reflect.construct.apply(Reflect, [Function, [\"return 1\"]]);";
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("Function").expect("Function") as u32;
   let span = TextRange::new(start, start + "Function".len() as u32);
@@ -1383,6 +1448,24 @@ fn native_strict_bans_set_prototype_of_via_reflect_apply() {
   let source = "const value: object = {};\nReflect.apply(Object.setPrototypeOf, Object, [value, {}]);";
   let (diagnostics, file_id) = check(source, true);
   let needle = "Reflect.apply(Object.setPrototypeOf, Object, [value, {}])";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_set_prototype_of_via_reflect_apply_call() {
+  let source =
+    "const value: object = {};\nReflect.apply.call(Reflect, Object.setPrototypeOf, Object, [value, {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Reflect.apply.call(Reflect, Object.setPrototypeOf, Object, [value, {}])";
   let start = source.find(needle).expect("call") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(

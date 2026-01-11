@@ -811,6 +811,272 @@ pub fn validate_native_strict_body(
                 }
               }
 
+              // `Reflect.apply.call(...)` / `Reflect.apply.apply(...)` and `Reflect.construct.*`
+              // can be used to indirectly call banned targets.
+              if is_call_or_apply {
+                let obj_is_reflect_apply = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  reflect_name,
+                  "Reflect",
+                  apply_name,
+                  "apply",
+                );
+                let obj_is_reflect_construct = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  reflect_name,
+                  "Reflect",
+                  construct_name,
+                  "construct",
+                );
+                if obj_is_reflect_apply || obj_is_reflect_construct {
+                  let reflect_args = if prop_is_call {
+                    // `.call(thisArg, ...args)`
+                    let mut out = Vec::new();
+                    for arg in call.args.iter().skip(1) {
+                      if arg.spread {
+                        out.clear();
+                        break;
+                      }
+                      out.push(arg.expr);
+                    }
+                    Some(out)
+                  } else if prop_is_apply {
+                    // `.apply(thisArg, argsArray)`
+                    call
+                      .args
+                      .get(1)
+                      .filter(|arg| !arg.spread)
+                      .map(|arg| arg.expr)
+                      .and_then(|args_array| array_literal_exprs(body, args_array))
+                  } else {
+                    None
+                  };
+
+                  if let Some(reflect_args) = reflect_args {
+                    if obj_is_reflect_apply {
+                      if let Some(target_arg) = reflect_args.first().copied() {
+                        let target_span = result
+                          .expr_spans
+                          .get(target_arg.0 as usize)
+                          .copied()
+                          .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
+                          .unwrap_or(callee_span);
+
+                        if expr_is_ident_or_global_this_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          eval_name,
+                          "eval",
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                            "`eval` is forbidden when `native_strict` is enabled",
+                            Span::new(file, target_span),
+                          ));
+                        }
+                        if expr_is_ident_or_global_this_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          "Function",
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                            "`Function` constructor is forbidden when `native_strict` is enabled",
+                            Span::new(file, target_span),
+                          ));
+                        }
+                        if expr_is_ident_or_global_this_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          proxy_name,
+                          "Proxy",
+                        ) || expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          proxy_name,
+                          "Proxy",
+                          revocable_name,
+                          "revocable",
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                            "`Proxy` is forbidden when `native_strict` is enabled",
+                            Span::new(file, target_span),
+                          ));
+                        }
+
+                        if expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          object_name,
+                          "Object",
+                          set_prototype_of_name,
+                          "setPrototypeOf",
+                        ) || expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          reflect_name,
+                          "Reflect",
+                          set_prototype_of_name,
+                          "setPrototypeOf",
+                        ) {
+                          let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                          diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                            "prototype mutation is forbidden when `native_strict` is enabled",
+                            Span::new(file, span),
+                          ));
+                        }
+
+                        let target_is_object_define_property = expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          object_name,
+                          "Object",
+                          define_property_name,
+                          "defineProperty",
+                        );
+                        let target_is_reflect_define_property = expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          reflect_name,
+                          "Reflect",
+                          define_property_name,
+                          "defineProperty",
+                        );
+                        let target_is_object_define_properties = expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          object_name,
+                          "Object",
+                          define_properties_name,
+                          "defineProperties",
+                        );
+                        let target_is_object_assign = expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          object_name,
+                          "Object",
+                          assign_name,
+                          "assign",
+                        );
+
+                        if target_is_object_define_property
+                          || target_is_reflect_define_property
+                          || target_is_object_define_properties
+                          || target_is_object_assign
+                        {
+                          if let Some(args_list_expr) = reflect_args.get(2).copied() {
+                            if let Some(args_list) = array_literal_exprs(body, args_list_expr) {
+                              if let Some(target_obj) = args_list.first().copied() {
+                                let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                  body,
+                                  target_obj,
+                                  prototype_name,
+                                  proto_name,
+                                );
+
+                                if !is_proto_mutation
+                                  && (target_is_object_define_property
+                                    || target_is_reflect_define_property)
+                                {
+                                  if let Some(key_arg) = args_list.get(1).copied() {
+                                    if expr_is_const_string(body, key_arg, "prototype")
+                                      || expr_is_const_string(body, key_arg, "__proto__")
+                                    {
+                                      is_proto_mutation = true;
+                                    }
+                                  }
+                                }
+
+                                if !is_proto_mutation && target_is_object_define_properties {
+                                  if let Some(props_arg) = args_list.get(1).copied() {
+                                    if expr_is_object_literal_with_proto_key(
+                                      body,
+                                      props_arg,
+                                      prototype_name,
+                                      proto_name,
+                                    ) {
+                                      is_proto_mutation = true;
+                                    }
+                                  }
+                                }
+                                if !is_proto_mutation && target_is_object_assign {
+                                  for source_arg in args_list.iter().skip(1).copied() {
+                                    if expr_is_object_literal_with_proto_key(
+                                      body,
+                                      source_arg,
+                                      prototype_name,
+                                      proto_name,
+                                    ) {
+                                      is_proto_mutation = true;
+                                      break;
+                                    }
+                                  }
+                                }
+
+                                if is_proto_mutation {
+                                  let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                                  diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                    "prototype mutation is forbidden when `native_strict` is enabled",
+                                    Span::new(file, span),
+                                  ));
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } else if obj_is_reflect_construct {
+                      if let Some(target_arg) = reflect_args.first().copied() {
+                        let target_span = result
+                          .expr_spans
+                          .get(target_arg.0 as usize)
+                          .copied()
+                          .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
+                          .unwrap_or(callee_span);
+
+                        if expr_is_ident_or_global_this_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          "Function",
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                            "`Function` constructor is forbidden when `native_strict` is enabled",
+                            Span::new(file, target_span),
+                          ));
+                        }
+                        if expr_is_ident_or_global_this_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          proxy_name,
+                          "Proxy",
+                        ) {
+                          diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                            "`Proxy` is forbidden when `native_strict` is enabled",
+                            Span::new(file, target_span),
+                          ));
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
               if is_call_like {
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
