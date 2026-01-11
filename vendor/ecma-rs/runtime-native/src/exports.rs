@@ -909,23 +909,30 @@ pub extern "C" fn rt_gc_collect() {
       // decides to collect), the nearest managed frame is suspended at the
       // callsite into the *outermost* runtime frame (which has a stackmap
       // record). Recover that managed callsite cursor by walking the FP chain.
-      let ctx = crate::stackmap::try_stackmaps()
+      // Call `capture_safepoint_context` directly from this function on fallback.
+      //
+      // The capture helper walks the frame-pointer chain assuming it is invoked
+      // by a *runtime helper* frame. Calling it indirectly (e.g. via
+      // `Option::unwrap_or_else`) introduces an extra frame and changes which FP/IP
+      // are captured.
+      let ctx = if let Some(cursor) = crate::stackmap::try_stackmaps()
         .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor(entry_fp, stackmaps))
-        .map(|cursor| {
-          let sp_callsite = cursor.sp.unwrap_or(0);
-          #[cfg(target_arch = "x86_64")]
-          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-          #[cfg(not(target_arch = "x86_64"))]
-          let sp_entry = sp_callsite;
+      {
+        let sp_callsite = cursor.sp.unwrap_or(0);
+        #[cfg(target_arch = "x86_64")]
+        let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+        #[cfg(not(target_arch = "x86_64"))]
+        let sp_entry = sp_callsite;
 
-          crate::arch::SafepointContext {
-            sp_entry: sp_entry as usize,
-            sp: sp_callsite as usize,
-            fp: cursor.fp as usize,
-            ip: cursor.pc as usize,
-          }
-        })
-        .unwrap_or_else(crate::arch::capture_safepoint_context);
+        crate::arch::SafepointContext {
+          sp_entry: sp_entry as usize,
+          sp: sp_callsite as usize,
+          fp: cursor.fp as usize,
+          ip: cursor.pc as usize,
+        }
+      } else {
+        crate::arch::capture_safepoint_context()
+      };
       registry::set_current_thread_safepoint_context(ctx);
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
       crate::threading::safepoint::notify_state_change();
