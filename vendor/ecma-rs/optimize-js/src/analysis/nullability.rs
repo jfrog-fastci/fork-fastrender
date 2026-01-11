@@ -336,16 +336,20 @@ impl NullabilityAnalysis {
     }
   }
 
-  fn refine_for_known_non_nullish(&self, var: u32, mask: NullabilityMask) -> NullabilityMask {
-    if self
-      .types
-      .var(var)
-      .is_some_and(|ty| ty.excludes_nullish())
-    {
-      NullabilityMask::OTHER
-    } else {
-      mask
+  fn set_value_result(&self, inst: &Inst, state: &mut State, tgt: u32, mut mask: NullabilityMask) {
+    // In typed builds, lowering annotates some value-producing instructions with
+    // `excludes_nullish` even when the coarse `ValueTypeSummary` is `Unknown`
+    // (e.g. `NonNullable<T>`). Prefer the per-instruction flag when present,
+    // and fall back to the global per-variable type summaries when they prove
+    // the target never includes `null`/`undefined`.
+    if inst.meta.excludes_nullish || self.types.var(tgt).is_some_and(|ty| ty.excludes_nullish()) {
+      mask &= NullabilityMask::OTHER;
+      if mask.is_bottom() {
+        state.set_unreachable();
+        return;
+      }
     }
+    self.set_var(state, tgt, mask);
   }
 
   fn call_result_mask(&self, callee: &Arg) -> NullabilityMask {
@@ -408,8 +412,8 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
     match inst.t {
       InstTyp::VarAssign => {
         let (tgt, arg) = inst.as_var_assign();
-        let mask = self.refine_for_known_non_nullish(tgt, self.arg_mask(arg, state));
-        self.set_var(state, tgt, mask);
+        let mask = self.arg_mask(arg, state);
+        self.set_value_result(inst, state, tgt, mask);
       }
       InstTyp::Bin => {
         let (tgt, _left, op, _right) = inst.as_bin();
@@ -418,7 +422,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           BinOp::_Dummy => NullabilityMask::TOP,
           _ => NullabilityMask::OTHER,
         };
-        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
+        self.set_value_result(inst, state, tgt, mask);
       }
       InstTyp::Un => {
         let (tgt, op, _arg) = inst.as_un();
@@ -427,37 +431,29 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           UnOp::_Dummy => NullabilityMask::TOP,
           _ => NullabilityMask::OTHER,
         };
-        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
+        self.set_value_result(inst, state, tgt, mask);
       }
       InstTyp::Call => {
         let (tgt, callee, _this, _args, _spreads) = inst.as_call();
         if let Some(tgt) = tgt {
-          let mask = self.refine_for_known_non_nullish(tgt, self.call_result_mask(callee));
-          self.set_var(state, tgt, mask);
+          let mask = self.call_result_mask(callee);
+          self.set_value_result(inst, state, tgt, mask);
         }
       }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();
-        self.set_var(
-          state,
-          tgt,
-          self.refine_for_known_non_nullish(tgt, NullabilityMask::TOP),
-        );
+        self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
       }
       InstTyp::UnknownLoad => {
         let (tgt, _unknown) = inst.as_unknown_load();
-        self.set_var(
-          state,
-          tgt,
-          self.refine_for_known_non_nullish(tgt, NullabilityMask::TOP),
-        );
+        self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
       }
       InstTyp::Phi => {
         let Some(&tgt) = inst.tgts.get(0) else {
           return;
         };
         if inst.args.is_empty() {
-          self.set_var(state, tgt, NullabilityMask::TOP);
+          self.set_value_result(inst, state, tgt, NullabilityMask::TOP);
           return;
         }
         let mut mask = NullabilityMask::BOTTOM;
@@ -468,7 +464,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           // This should be unreachable in well-formed SSA; stay conservative.
           mask = NullabilityMask::TOP;
         }
-        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
+        self.set_value_result(inst, state, tgt, mask);
       }
       _ => {}
     }

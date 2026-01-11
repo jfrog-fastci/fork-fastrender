@@ -21,6 +21,10 @@ pub fn optpass_redundant_assigns(cfg: &mut Cfg) -> PassResult {
       if inst.t != InstTyp::VarAssign {
         continue;
       }
+      #[cfg(feature = "typed")]
+      if inst.meta.hir_expr.is_some() {
+        continue;
+      }
       let (tgt, value) = inst.as_var_assign();
       if !inst.value_type.is_unknown() {
         if let Arg::Var(rhs) = value {

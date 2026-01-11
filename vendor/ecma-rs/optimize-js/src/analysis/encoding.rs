@@ -293,30 +293,33 @@ impl EncodingAnalysis {
       return;
     }
 
-    let mut any_non_ascii = false;
+    // `__optimize_js_template` represents template literal concatenation, which
+    // stringifies non-string expressions via `ToString` and concatenates the
+    // result with the surrounding literal segments.
+    //
+    // We can reuse the same per-operand logic as string concatenation:
+    // - string literals contribute their literal encoding
+    // - non-string primitives contribute ASCII (`ToString` is ASCII)
+    // - typed vars can be treated as ASCII when their value types are proven to
+    //   be within those primitive sets.
+    let mut acc = StringEncoding::Ascii;
     for arg in args {
-      match arg {
-        Arg::Const(Const::Str(s)) => {
-          if !s.is_ascii() {
-            any_non_ascii = true;
-          }
+      let mut enc = self.encoding_for_concat_operand(state, arg);
+      if enc == StringEncoding::Latin1 {
+        enc = StringEncoding::Utf8;
+      }
+      match enc {
+        StringEncoding::Ascii => {}
+        StringEncoding::Utf8 => acc = StringEncoding::Utf8,
+        StringEncoding::Unknown => {
+          acc = StringEncoding::Unknown;
+          break;
         }
-        _ => {
-          self.set(state, tgt, StringEncoding::Unknown);
-          return;
-        }
+        // Normalized above.
+        StringEncoding::Latin1 => unreachable!(),
       }
     }
-
-    self.set(
-      state,
-      tgt,
-      if any_non_ascii {
-        StringEncoding::Utf8
-      } else {
-        StringEncoding::Ascii
-      },
-    );
+    self.set(state, tgt, acc);
   }
 }
 

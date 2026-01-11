@@ -161,7 +161,17 @@ impl<'p> HirSourceToInst<'p> {
 
   fn compile_id_expr(&mut self, expr: ExprId, name: NameId) -> OptimizeResult<Arg> {
     Ok(match self.classify_ident(expr, name) {
-      VarType::Local(local) => Arg::Var(self.symbol_to_temp(local)),
+      VarType::Local(local) => {
+        #[cfg(feature = "typed")]
+        {
+          let sym_tmp = self.symbol_to_temp(local);
+          self.temp_var_arg_for_expr(expr, |tgt| Inst::var_assign(tgt, Arg::Var(sym_tmp)))
+        }
+        #[cfg(not(feature = "typed"))]
+        {
+          Arg::Var(self.symbol_to_temp(local))
+        }
+      }
       VarType::Builtin(builtin) => Arg::Builtin(builtin),
       VarType::Foreign(foreign) => {
         self.temp_var_arg_for_expr(expr, |tgt| Inst::foreign_load(tgt, foreign))
