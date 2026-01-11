@@ -169,6 +169,31 @@ pub struct RtShapeDescriptor {
 unsafe impl Send for RtShapeDescriptor {}
 unsafe impl Sync for RtShapeDescriptor {}
 
+/// Optional GC/runtime statistics snapshot exposed for debugging/benching.
+///
+/// Must match `RtGcStatsSnapshot` in `runtime-native/include/runtime_native.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RtGcStatsSnapshot {
+  pub alloc_calls: u64,
+  pub alloc_bytes: u64,
+  pub alloc_array_calls: u64,
+  pub alloc_array_bytes: u64,
+  pub gc_collect_calls: u64,
+  pub safepoint_calls: u64,
+  pub write_barrier_calls_total: u64,
+  pub write_barrier_range_calls: u64,
+  pub write_barrier_old_young_hits: u64,
+  pub set_young_range_calls: u64,
+  pub thread_init_calls: u64,
+  pub thread_deinit_calls: u64,
+  pub remembered_objects_added: u64,
+  pub remembered_objects_scanned_minor: u64,
+  pub card_marks_total: u64,
+  pub cards_scanned_minor: u64,
+  pub cards_kept_after_rebuild: u64,
+}
+
 /// A stable identifier for an interned UTF-8 string.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -517,6 +542,15 @@ extern "C" {
   pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
   pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
 
+  // Optional gc_stats APIs.
+  pub fn rt_gc_stats_snapshot(out: *mut RtGcStatsSnapshot);
+  pub fn rt_gc_stats_reset();
+
+  // Optional gc_debug APIs.
+  pub fn rt_debug_shape_count() -> usize;
+  pub fn rt_debug_shape_descriptor(id: RtShapeId) -> *const RtShapeDescriptor;
+  pub fn rt_debug_validate_heap();
+
   // Weak references (weak handles).
   pub fn rt_weak_add(value: GcPtr) -> u64;
   pub fn rt_weak_get(handle: u64) -> GcPtr;
@@ -786,6 +820,9 @@ mod tests {
     assert!(size_of::<RtShapeDescriptor>() == 24);
     assert!(align_of::<RtShapeDescriptor>() == 8);
 
+    assert!(size_of::<RtGcStatsSnapshot>() == 136);
+    assert!(align_of::<RtGcStatsSnapshot>() == 8);
+
     assert!(size_of::<AtomicU64>() == 8);
     assert!(align_of::<AtomicU64>() == 8);
   };
@@ -853,6 +890,7 @@ mod tests {
       "PromiseResolveInput",
       "RtCoroStatus",
       "RtCoroutineHeader",
+      "RtGcStatsSnapshot",
       "CoroutineRef",
       "CoroutineStepTag",
       "CoroutineStep",
@@ -935,6 +973,11 @@ mod tests {
       "rt_handle_store(",
       "rt_gc_set_young_range(",
       "rt_gc_get_young_range(",
+      "rt_gc_stats_snapshot(",
+      "rt_gc_stats_reset(",
+      "rt_debug_shape_count(",
+      "rt_debug_shape_descriptor(",
+      "rt_debug_validate_heap(",
       "rt_weak_add(",
       "rt_weak_get(",
       "rt_weak_remove(",
