@@ -201,6 +201,7 @@ mod form_control_pseudo_elements;
 mod appearance_none_form_control_strut;
 mod input_height_includes_padding_with_content_box;
 mod search_input_width_100_percent_uses_border_box;
+mod submit_input_specified_size_uses_border_box;
 mod progress_meter_intrinsic_sizing;
 mod field_sizing_intrinsic_sizing;
 mod fragmentation;
