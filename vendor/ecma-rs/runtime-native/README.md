@@ -244,6 +244,7 @@ Contract:
 - The task must settle the promise via `rt_promise_resolve` / `rt_promise_reject`.
 - `data` must remain valid for the duration of the task and must be safe to access from a blocking
   worker thread.
+- Blocking tasks execute in a GC-safe ("NativeSafe") region and must not touch the GC heap.
 
 Pool sizing:
 

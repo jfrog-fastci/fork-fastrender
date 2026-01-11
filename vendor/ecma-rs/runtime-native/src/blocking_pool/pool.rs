@@ -4,6 +4,7 @@ use crate::threading;
 use crate::threading::ThreadKind;
 use once_cell::sync::OnceCell;
 use std::collections::VecDeque;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -118,8 +119,15 @@ fn worker_loop(shared: Arc<Shared>) {
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
 
-    // The task is responsible for settling the promise. It must not unwind across the FFI
-    // boundary; in practice Rust will abort if it panics.
-    (work.task)(work.data, work.promise);
+    let gc_safe = threading::enter_gc_safe_region();
+
+    // The task is responsible for settling the promise. It must not unwind across the FFI boundary;
+    // in practice Rust will abort if it panics.
+    let res = catch_unwind(AssertUnwindSafe(|| (work.task)(work.data, work.promise)));
+    if res.is_err() {
+      std::process::abort();
+    }
+
+    drop(gc_safe);
   }
 }

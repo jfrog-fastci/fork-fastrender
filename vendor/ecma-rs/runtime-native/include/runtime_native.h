@@ -376,6 +376,10 @@ PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t
 // etc.). The task must resolve/reject `promise` via `rt_promise_resolve_legacy` /
 // `rt_promise_reject_legacy`.
 //
+// Blocking tasks execute in a GC-safe ("NativeSafe") region: they must not touch the GC heap (no
+// GC allocations, no write barriers, and no dereferencing GC-managed pointers unless pinned via a
+// stable handle).
+//
 // Pool size:
 // - default: min(available_parallelism, 32)
 // - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
