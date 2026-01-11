@@ -92,7 +92,7 @@ To obtain a `(ptr, len)` pair for kernel I/O:
 - Use either:
   - `Uint8Array::as_ptr_range()` for **immediate** / synchronous I/O (not pinned), or
   - `io::IoOp` / `io::IoRuntime` for async I/O (pins + borrows backing stores for the duration of the
-    op), or
+    op; `IoRuntime` supports `write`, `write_iovecs`, `read`, and `read_iovecs`), or
   - `Uint8Array::pin()` / `Uint8Array::pin_range()` (or `ArrayBuffer::pin()` / `ArrayBuffer::pin_range()`)
     for **pointer stability only** (pin-count enforcement).
 

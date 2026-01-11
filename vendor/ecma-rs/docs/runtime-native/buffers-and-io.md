@@ -94,6 +94,12 @@ async I/O:
 - While borrowed, backing-store invalidation operations (`detach`, `transfer`, `resize`) are also
   rejected.
 
+This applies to both single-buffer and vectored operations:
+- `io::IoOp::{pin_backing_store_range, pin_vectored, pin_iovecs}` acquire **shared** read-borrows for
+  write-like ops (`write(2)`, `send(2)`, ...).
+- `io::IoOp::{pin_backing_store_range_for_read, pin_vectored_for_read, pin_iovecs_for_read}` acquire
+  an **exclusive** write-borrow for read-like ops (`read(2)`, `recv(2)`, ...).
+
 #### Deviation from Node/Web APIs
 
 Node.js and Web APIs generally allow continued reads/writes to a `Buffer`/`Uint8Array` while an
