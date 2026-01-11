@@ -34,7 +34,7 @@ fn major_gc_reclaims_old_blocks_for_reuse() {
   let blocks_before = heap.immix_block_count();
   assert!(blocks_before > 0);
 
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   for _ in 0..10_000 {
     heap.alloc_old(&DESC_NO_PTR);
@@ -82,7 +82,7 @@ fn major_compaction_reuses_holes_without_growing_the_heap() {
   assert_eq!(blocks_before, 2, "test setup should use exactly 2 Immix blocks");
 
   let mut roots = VecRootSet::from_boxed_slots(&mut root_slots);
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   let blocks_after = heap.immix_block_count();
   assert_eq!(
@@ -131,7 +131,7 @@ fn major_compaction_does_not_reclaim_blocks_with_pinned_immix_objects() {
     .block_id_for_ptr(pinned_before)
     .expect("pinned object should be in Immix");
 
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   assert_eq!(pinned, pinned_before);
   assert_eq!(
@@ -183,7 +183,7 @@ fn old_space_does_not_grow_unbounded_under_fragmentation() {
     }
 
     let mut roots = VecRootSet::from_boxed_slots(&mut root_slots);
-    heap.collect_major(&mut roots, &mut remembered);
+    heap.collect_major(&mut roots, &mut remembered).unwrap();
 
     let immix_bytes = heap.immix_block_count() * gc::heap::IMMIX_BLOCK_SIZE;
     assert!(
@@ -219,7 +219,7 @@ fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
   let mut roots = RootStack::new();
   roots.push(old_slot);
 
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   // The old object's field should now point to the promoted copy.
   let promoted = unsafe { *((old as *mut u8).add(OBJ_HEADER_SIZE) as *const *mut u8) };
@@ -296,7 +296,7 @@ fn gc_ignores_non_heap_pointer_in_traced_slot() {
   let mut roots = RootStack::new();
   roots.push(&mut root as *mut *mut u8);
 
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   let stored = unsafe { *((root as *mut u8).add(OBJ_HEADER_SIZE) as *const *mut u8) };
   assert_eq!(stored, external_ptr);

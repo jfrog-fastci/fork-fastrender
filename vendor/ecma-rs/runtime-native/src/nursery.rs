@@ -341,7 +341,13 @@ impl ThreadNursery {
 
     // Slow path: refill the TLAB from the global bump pointer.
     let chunk_align = align.max(TLAB_ALIGN);
-    let chunk_start = nursery.reserve_chunk(TLAB_SIZE, chunk_align)?;
+    let chunk_start = match nursery.reserve_chunk(TLAB_SIZE, chunk_align) {
+      Some(start) => start,
+      None => {
+        return nursery.alloc_raw(size, chunk_align);
+      }
+    };
+
     self.cursor = chunk_start;
     // SAFETY: `chunk_start` points to `TLAB_SIZE` bytes in the nursery.
     self.limit = unsafe { chunk_start.add(TLAB_SIZE) };

@@ -9,6 +9,7 @@ use super::weak::run_weak_cleanups;
 use super::cards::for_each_ptr_slot_in_dirty_cards;
 use super::ObjHeader;
 use super::Tracer;
+use crate::gc::heap::AllocError;
 use crate::gc::heap::GcHeap;
 
 impl GcHeap {
@@ -18,7 +19,11 @@ impl GcHeap {
   /// This GC is **stop-the-world**: the caller must ensure there are no
   /// concurrent mutators and that the provided root/remembered sets remain
   /// stable for the duration of the call.
-  pub fn collect_minor(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
+  pub fn collect_minor(
+    &mut self,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<(), AllocError> {
     let start = Instant::now();
     self.stats.minor_collections += 1;
     self.work_stack.clear();
@@ -28,9 +33,10 @@ impl GcHeap {
     #[cfg(any(debug_assertions, feature = "gc_debug"))]
     let nursery_poison_len = self.nursery.allocated_bytes();
 
-    {
+    let err = {
       let mut evac = Evacuator {
         heap: self,
+        err: None,
       };
 
       roots.for_each_root_slot(&mut |slot| {
@@ -51,11 +57,21 @@ impl GcHeap {
 
       while let Some(obj) = evac.heap.work_stack.pop() {
         evac.visit_obj(obj);
+        if evac.err.is_some() {
+          break;
+        }
       }
-    }
+      evac.err
+    };
 
     // All nursery pointers reachable from roots/remembered objects should now be
     // forwarded to old-gen.
+    if let Some(err) = err {
+      let pause = start.elapsed();
+      self.stats.last_minor_pause = pause;
+      self.stats.total_minor_pause += pause;
+      return Err(err);
+    }
     self.process_finalizers_minor();
     self.process_weak_handles_minor();
     process_global_weak_handles_minor(self);
@@ -75,26 +91,28 @@ impl GcHeap {
     let pause = start.elapsed();
     self.stats.last_minor_pause = pause;
     self.stats.total_minor_pause += pause;
+    Ok(())
   }
 }
 
 struct Evacuator<'a> {
   heap: &'a mut GcHeap,
+  err: Option<AllocError>,
 }
 
 impl Evacuator<'_> {
-  fn evacuate(&mut self, obj: *mut u8) -> (*mut u8, bool) {
+  fn evacuate(&mut self, obj: *mut u8) -> Result<(*mut u8, bool), AllocError> {
     debug_assert!(self.heap.is_in_nursery(obj));
 
     // SAFETY: `obj` is a valid GC object in the nursery.
     unsafe {
       let header = &mut *(obj as *mut ObjHeader);
       if header.is_forwarded() {
-        return (header.forwarding_ptr(), false);
+        return Ok((header.forwarding_ptr(), false));
       }
 
       let size = super::obj_size(obj);
-      let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>());
+      let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>())?;
 
       ptr::copy_nonoverlapping(obj, new_obj, size);
       header.set_forwarding_ptr(new_obj);
@@ -104,13 +122,17 @@ impl Evacuator<'_> {
         self.heap.verify_forwarding_pairs(&[(obj, new_obj)]);
       }
 
-      (new_obj, true)
+      Ok((new_obj, true))
     }
   }
 }
 
 impl Tracer for Evacuator<'_> {
   fn visit_slot(&mut self, slot: *mut *mut u8) {
+    if self.err.is_some() {
+      return;
+    }
+
     // SAFETY: `slot` originates from root enumeration or from a valid object
     // descriptor, so it is a valid pointer to a GC reference.
     let obj = unsafe { *slot };
@@ -123,13 +145,19 @@ impl Tracer for Evacuator<'_> {
     }
 
     if self.heap.is_in_nursery(obj) {
-      let (new_obj, is_new) = self.evacuate(obj);
-      // SAFETY: `slot` is valid and writable.
-      unsafe {
-        *slot = new_obj;
-      }
-      if is_new {
-        self.heap.work_stack.push(new_obj);
+      match self.evacuate(obj) {
+        Ok((new_obj, is_new)) => {
+          // SAFETY: `slot` is valid and writable.
+          unsafe {
+            *slot = new_obj;
+          }
+          if is_new {
+            self.heap.work_stack.push(new_obj);
+          }
+        }
+        Err(err) => {
+          self.err = Some(err);
+        }
       }
     }
   }

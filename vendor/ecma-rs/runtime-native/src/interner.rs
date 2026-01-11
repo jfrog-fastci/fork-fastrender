@@ -366,5 +366,5 @@ pub(crate) fn collect_garbage_for_tests() {
   let mut heap = INTERN_HEAP.lock();
   let mut roots = gc::RootStack::new();
   let mut remembered = gc::SimpleRememberedSet::new();
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 }

@@ -50,7 +50,7 @@ fn major_gc_reclaims_dead_immix_lines_and_sweeps_large_objects() {
   let mut roots = RootStack::new();
   roots.push(&mut root_live as *mut *mut u8);
 
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert_eq!(heap.los_object_count(), 0);
 

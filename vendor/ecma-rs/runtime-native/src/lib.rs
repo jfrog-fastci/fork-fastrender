@@ -1337,7 +1337,7 @@ mod tests {
     roots.push(&mut root_array as *mut *mut u8);
     let mut remembered = crate::gc::SimpleRememberedSet::new();
 
-    heap.collect_minor(&mut roots, &mut remembered);
+    heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
     assert!(!heap.is_in_nursery(root_array));
 
@@ -1369,7 +1369,7 @@ mod tests {
     roots.push(&mut root_array as *mut *mut u8);
     let mut remembered = crate::gc::SimpleRememberedSet::new();
 
-    heap.collect_minor(&mut roots, &mut remembered);
+    heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
     // If the GC incorrectly treated the payload as pointer slots, it would have evacuated `obj`
     // and updated the stored value to point to the promoted object (outside the nursery).
@@ -1447,7 +1447,7 @@ mod tests {
     let mut root = node;
     roots.push(&mut root as *mut *mut u8);
 
-    heap.collect_major(&mut roots, &mut remembered);
+    heap.collect_major(&mut roots, &mut remembered).unwrap();
     assert_eq!(heap.los_object_count(), 2);
 
     // Ensure live objects remain intact after a major GC and that the collector
@@ -1464,7 +1464,7 @@ mod tests {
     unsafe {
       (*(root as *mut Node)).left = std::ptr::null_mut();
     }
-    heap.collect_major(&mut roots, &mut remembered);
+    heap.collect_major(&mut roots, &mut remembered).unwrap();
     assert_eq!(heap.los_object_count(), 0);
 
     // RootStack must support explicit pop for callers that manage stack
@@ -1474,7 +1474,7 @@ mod tests {
     root = std::ptr::null_mut();
     assert!(root.is_null());
 
-    heap.collect_major(&mut roots, &mut remembered);
+    heap.collect_major(&mut roots, &mut remembered).unwrap();
   }
 
   #[test]
@@ -1488,14 +1488,14 @@ mod tests {
       let mut root = obj;
       roots.push(&mut root as *mut *mut u8);
 
-      heap.collect_major(&mut roots, &mut remembered);
+      heap.collect_major(&mut roots, &mut remembered).unwrap();
       assert_eq!(heap.los_object_count(), 1);
 
       roots.pop();
       root = std::ptr::null_mut();
       assert!(root.is_null());
 
-      heap.collect_major(&mut roots, &mut remembered);
+      heap.collect_major(&mut roots, &mut remembered).unwrap();
       assert_eq!(heap.los_object_count(), 0);
     }
   }

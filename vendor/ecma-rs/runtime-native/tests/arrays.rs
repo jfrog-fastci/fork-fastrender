@@ -48,7 +48,9 @@ fn ptr_arrays_trace_elements_in_minor_and_major() {
   let mut root_arr = arr;
   let mut roots = RootStack::new();
   roots.push(&mut root_arr as *mut *mut u8);
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_minor(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert!(!heap.is_in_nursery(root_arr));
   let a2 = unsafe { *(runtime_native::rt_array_data(root_arr) as *mut *mut u8).add(0) };
@@ -66,12 +68,16 @@ fn ptr_arrays_trace_elements_in_minor_and_major() {
   }
 
   // Major GC marking must trace pointer-array elements.
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
   assert_eq!(heap.los_object_count(), 2);
 
   // Drop all roots: the large objects should be swept.
   let mut empty_roots = RootStack::new();
-  heap.collect_major(&mut empty_roots, &mut NullRememberedSet::default());
+  heap
+    .collect_major(&mut empty_roots, &mut NullRememberedSet::default())
+    .unwrap();
   assert_eq!(heap.los_object_count(), 0);
 }
 
@@ -102,7 +108,9 @@ fn non_ptr_arrays_do_not_get_scanned_for_pointers() {
   let mut root = root_arr;
   let mut roots = RootStack::new();
   roots.push(&mut root as *mut *mut u8);
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert_eq!(heap.los_object_count(), 0);
 }

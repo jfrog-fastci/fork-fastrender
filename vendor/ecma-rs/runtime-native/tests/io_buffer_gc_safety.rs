@@ -183,7 +183,7 @@ fn read_survives_moving_gc_while_in_flight() {
     let mut heap = heap.lock().unwrap();
     let mut roots = RootStack::new();
     let mut remembered = SimpleRememberedSet::new();
-    heap.collect_minor(&mut roots, &mut remembered);
+    heap.collect_minor(&mut roots, &mut remembered).unwrap();
   }
 
   let array_ptr_after = {

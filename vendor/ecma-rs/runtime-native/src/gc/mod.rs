@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::array;
 use crate::trap;
 
+pub mod config;
 pub mod heap;
 pub mod roots;
 pub mod handle_table;
@@ -17,8 +18,8 @@ mod mark;
 mod keep_alive;
 mod work_stack;
 
-pub use heap::GcHeap;
-pub use heap::PersistentRoot;
+pub use config::{HeapConfig, HeapLimits};
+pub use heap::{AllocError, AllocKind, AllocRequest, GcHeap, PersistentRoot};
 pub use keep_alive::keep_alive_gc_ref;
 pub use handle_table::{HandleId, HandleTable, OwnedGcHandle, PersistentHandle};
 pub use roots::RememberedSet;
@@ -291,7 +292,8 @@ impl TypeDescriptor {
       return &[];
     }
     debug_assert!(!self.ptr_offsets.is_null());
-    // SAFETY: `ptr_offsets` points to `ptr_offsets_len` `u32` values.
+    // SAFETY: `ptr_offsets_len != 0` implies `ptr_offsets` is a valid pointer to an immutable
+    // `u32` array per `TypeDescriptor::from_raw_parts`' safety contract.
     unsafe { slice::from_raw_parts(self.ptr_offsets, self.ptr_offsets_len as usize) }
   }
 }

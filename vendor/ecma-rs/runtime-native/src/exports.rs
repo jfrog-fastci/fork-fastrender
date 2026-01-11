@@ -168,6 +168,7 @@ fn register_block_on_waker(p: PromiseRef) {
     drain_reactions(promise);
   }
 }
+
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {
   // The async runtime is driven by the main thread/event loop. Register it on

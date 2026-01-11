@@ -1,5 +1,3 @@
-use std::alloc::handle_alloc_error;
-use std::alloc::Layout;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
@@ -7,22 +5,26 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use super::config::{HeapConfig, HeapLimits};
 use super::roots::RootHandle;
+use super::roots::RememberedSet;
 use super::roots::RootHandles;
+use super::roots::RootSet;
 use super::work_stack::WorkStack;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
 use super::ObjHeader;
 use super::TypeDescriptor;
+use crate::abi::RtShapeId;
 use crate::array;
 use crate::array::RtArrayHeader;
+use crate::buffer::backing_store::{BackingStoreAllocator, GlobalBackingStoreAllocator};
 use crate::trap;
 use crate::immix;
 use crate::immix::ImmixSpace;
 use crate::los::LargeObjectSpace;
 use crate::nursery;
 use crate::nursery::ThreadNursery;
-use crate::buffer::backing_store::{BackingStoreAllocator, GlobalBackingStoreAllocator};
 
 /// Immix block size in bytes.
 pub const IMMIX_BLOCK_SIZE: usize = immix::BLOCK_SIZE;
@@ -35,7 +37,35 @@ pub const IMMIX_LINES_PER_BLOCK: usize = immix::LINES_PER_BLOCK;
 /// Maximum object size that is eligible for Immix allocation.
 pub const IMMIX_MAX_OBJECT_SIZE: usize = IMMIX_BLOCK_SIZE / 2;
 
+const LOS_PAGE_SIZE: usize = 4096;
+
 const OBJ_ALIGN: usize = mem::align_of::<ObjHeader>();
+
+// Approximate metadata overhead for enforcing heap limits. This does not need to be exact, just
+// stable/deterministic.
+const METADATA_BASE_BYTES: usize = 4096;
+const METADATA_PER_IMMIX_BLOCK: usize = 256;
+const METADATA_PER_LOS_OBJECT: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocKind {
+  YoungPreferred,
+  OldOnly,
+  Pinned,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllocRequest {
+  pub size: usize,
+  pub align: usize,
+  pub shape_id: RtShapeId,
+  pub kind: Option<AllocKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocError {
+  OutOfMemory,
+}
 
 #[derive(Debug, Default)]
 pub struct GcStats {
@@ -76,6 +106,9 @@ impl Default for MajorCompactionConfig {
 }
 
 pub struct GcHeap {
+  config: HeapConfig,
+  limits: HeapLimits,
+
   pub(crate) nursery: nursery::NurserySpace,
   pub(crate) nursery_tlab: ThreadNursery,
   pub(crate) immix: ImmixSpace,
@@ -175,11 +208,16 @@ impl Default for GcHeap {
 
 impl GcHeap {
   pub fn new() -> Self {
-    Self::with_nursery_size(nursery::DEFAULT_NURSERY_SIZE_BYTES)
+    Self::with_config(HeapConfig::default(), HeapLimits::default())
   }
 
   pub fn with_nursery_size(nursery_size: usize) -> Self {
     Self {
+      config: HeapConfig {
+        nursery_size_bytes: nursery_size,
+        ..HeapConfig::default()
+      },
+      limits: HeapLimits::default(),
       nursery: nursery::NurserySpace::new(nursery_size).expect("failed to reserve nursery space"),
       nursery_tlab: ThreadNursery::new(),
       immix: ImmixSpace::new(),
@@ -197,6 +235,37 @@ impl GcHeap {
       root_handles: RootHandles::new(),
       work_stack: WorkStack::new(),
     }
+  }
+
+  pub fn with_config(config: HeapConfig, limits: HeapLimits) -> Self {
+    let nursery =
+      nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
+
+    Self {
+      config,
+      limits,
+      nursery_tlab: ThreadNursery::new(),
+      nursery,
+      immix: ImmixSpace::new(),
+      los: LargeObjectSpace::new(),
+      weak_handles: WeakHandles::new(),
+      backing_store_alloc: Box::new(GlobalBackingStoreAllocator::default()),
+      external_bytes: 0,
+      finalizers: Vec::new(),
+      mark_epoch: 0,
+      major_compaction: MajorCompactionConfig::default(),
+      stats: GcStats::default(),
+      root_handles: RootHandles::new(),
+      work_stack: WorkStack::new(),
+    }
+  }
+
+  pub fn config(&self) -> &HeapConfig {
+    &self.config
+  }
+
+  pub fn limits(&self) -> &HeapLimits {
+    &self.limits
   }
 
   pub fn stats(&self) -> &GcStats {
@@ -344,6 +413,119 @@ impl GcHeap {
     });
   }
 
+  /// Approximate total heap bytes for enforcing [`HeapLimits`].
+  ///
+  /// This is intentionally an estimate: it counts committed/reserved regions plus rough metadata
+  /// overhead, so that OOM behavior is stable and deterministic.
+  pub fn estimated_total_bytes(&self) -> usize {
+    let nursery = self.nursery.size_bytes();
+    let immix = self.immix.block_count() * IMMIX_BLOCK_SIZE;
+    let los = self.los.committed_bytes();
+    let meta = METADATA_BASE_BYTES
+      + (self.immix.block_count() * METADATA_PER_IMMIX_BLOCK)
+      + (self.los.object_count() * METADATA_PER_LOS_OBJECT);
+    nursery + immix + los + meta
+  }
+
+  fn projected_total_bytes_with(
+    &self,
+    additional_immix_blocks: usize,
+    additional_los_objects: usize,
+    additional_los_committed_bytes: usize,
+  ) -> usize {
+    self
+      .estimated_total_bytes()
+      .saturating_add(additional_immix_blocks.saturating_mul(IMMIX_BLOCK_SIZE + METADATA_PER_IMMIX_BLOCK))
+      .saturating_add(additional_los_objects.saturating_mul(METADATA_PER_LOS_OBJECT))
+      .saturating_add(additional_los_committed_bytes)
+  }
+
+  pub fn alloc_object(
+    &mut self,
+    req: AllocRequest,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<*mut u8, AllocError> {
+    if req.align == 0 || !req.align.is_power_of_two() {
+      trap::rt_trap_invalid_arg("GcHeap::alloc_object: align must be a non-zero power of two");
+    }
+
+    let desc = type_desc_from_shape_id(req.shape_id);
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(desc);
+
+    if req.size != desc.size {
+      trap::rt_trap_invalid_arg("GcHeap::alloc_object: size does not match registered shape");
+    }
+
+    let size = req.size;
+    let align = req.align.max(OBJ_ALIGN);
+
+    // If we're already above the hard cap, try a full collection before giving up.
+    if self.estimated_total_bytes() > self.limits.max_heap_bytes {
+      self.collect_major(roots, remembered)?;
+      if self.estimated_total_bytes() > self.limits.max_heap_bytes {
+        return Err(AllocError::OutOfMemory);
+      }
+    }
+
+    if self.should_trigger_major() {
+      self.collect_major(roots, remembered)?;
+    }
+
+    let kind = req.kind.unwrap_or(AllocKind::YoungPreferred);
+    if kind == AllocKind::Pinned {
+      if let Some(obj) = self.try_alloc_pinned(desc, size, align)? {
+        return Ok(obj);
+      }
+      self.collect_major(roots, remembered)?;
+      if let Some(obj) = self.try_alloc_pinned(desc, size, align)? {
+        return Ok(obj);
+      }
+      return Err(AllocError::OutOfMemory);
+    }
+
+    let allow_nursery = matches!(kind, AllocKind::YoungPreferred);
+    let wants_nursery =
+      allow_nursery && size <= self.config.los_threshold_bytes && size <= self.config.nursery_size_bytes;
+
+    if wants_nursery {
+      if self.should_trigger_minor() {
+        self.collect_minor(roots, remembered)?;
+      }
+
+      if let Some(obj) = self.try_alloc_young(desc, size, align) {
+        return Ok(obj);
+      }
+
+      // Nursery allocation failed: trigger a minor collection and retry.
+      self.collect_minor(roots, remembered)?;
+      if let Some(obj) = self.try_alloc_young(desc, size, align) {
+        return Ok(obj);
+      }
+
+      // If we still can't allocate, attempt a major collection and retry (also resets the nursery).
+      self.collect_major(roots, remembered)?;
+      if let Some(obj) = self.try_alloc_young(desc, size, align) {
+        return Ok(obj);
+      }
+    }
+
+    // Old/LOS allocation path.
+    if let Some(obj) = self.try_alloc_old(desc, size, align, GrowMode::NoGrow)? {
+      return Ok(obj);
+    }
+    self.collect_major(roots, remembered)?;
+    if let Some(obj) = self.try_alloc_old(desc, size, align, GrowMode::NoGrow)? {
+      return Ok(obj);
+    }
+    if let Some(obj) = self.try_alloc_old(desc, size, align, GrowMode::AllowGrow)? {
+      return Ok(obj);
+    }
+
+    Err(AllocError::OutOfMemory)
+  }
+
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
@@ -413,7 +595,9 @@ impl GcHeap {
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
-    let obj = self.alloc_old_raw(desc.size, OBJ_ALIGN);
+    let obj = self
+      .alloc_old_raw(desc.size, OBJ_ALIGN)
+      .unwrap_or_else(|_| panic!("old allocation out of space"));
 
     // SAFETY: The allocation is valid for `desc.size` bytes.
     unsafe {
@@ -432,15 +616,41 @@ impl GcHeap {
   /// Pinned objects have a stable address across minor GC, major GC, and (future) compaction.
   /// They are still traced and reclaimed when unreachable.
   pub fn alloc_pinned(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    self
+      .try_alloc_pinned(desc, desc.size, OBJ_ALIGN)
+      .and_then(|o| o.ok_or(AllocError::OutOfMemory))
+      .unwrap_or_else(|_| panic!("pinned allocation out of space"))
+  }
+
+  pub(crate) fn alloc_old_raw(&mut self, size: usize, align: usize) -> Result<*mut u8, AllocError> {
+    debug_assert!(align.is_power_of_two());
+    self
+      .try_alloc_old_raw(size, align, GrowMode::AllowGrow)
+      .and_then(|o| o.ok_or(AllocError::OutOfMemory))
+  }
+
+  fn try_alloc_pinned(
+    &mut self,
+    desc: &'static TypeDescriptor,
+    size: usize,
+    align: usize,
+  ) -> Result<Option<*mut u8>, AllocError> {
+    debug_assert!(align.is_power_of_two());
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
-    let obj = self.los.alloc(desc.size, OBJ_ALIGN);
-    self.stats.bytes_allocated_old += desc.size;
+    let committed = round_up(size, LOS_PAGE_SIZE);
+    let projected = self.projected_total_bytes_with(0, 1, committed);
+    if projected > self.limits.max_heap_bytes {
+      return Ok(None);
+    }
 
-    // SAFETY: The allocation is valid for `desc.size` bytes.
+    let obj = self.los.alloc(size, align);
+    self.stats.bytes_allocated_old += size;
+
+    // SAFETY: The allocation is valid for `size` bytes.
     unsafe {
-      ptr::write_bytes(obj, 0, desc.size);
+      ptr::write_bytes(obj, 0, size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
@@ -448,22 +658,106 @@ impl GcHeap {
       header.set_pinned(true);
     }
 
-    obj
+    Ok(Some(obj))
   }
 
-  pub(crate) fn alloc_old_raw(&mut self, size: usize, align: usize) -> *mut u8 {
+  fn try_alloc_young(&mut self, desc: &'static TypeDescriptor, size: usize, align: usize) -> Option<*mut u8> {
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(desc);
+
+    let obj = self.nursery_tlab.alloc(size, align, &self.nursery)?;
+
+    // SAFETY: The nursery allocation is valid for `size` bytes.
+    unsafe {
+      ptr::write_bytes(obj, 0, size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = desc as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+      header.set_mark_epoch(self.mark_epoch);
+    }
+
+    self.stats.bytes_allocated_young += size;
+    Some(obj)
+  }
+
+  fn try_alloc_old(
+    &mut self,
+    desc: &'static TypeDescriptor,
+    size: usize,
+    align: usize,
+    grow: GrowMode,
+  ) -> Result<Option<*mut u8>, AllocError> {
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(desc);
+
+    let obj = self.try_alloc_old_raw(size, align, grow)?;
+    let Some(obj) = obj else {
+      return Ok(None);
+    };
+
+    // SAFETY: The allocation is valid for `size` bytes.
+    unsafe {
+      ptr::write_bytes(obj, 0, size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = desc as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+      header.set_mark_epoch(self.mark_epoch);
+    }
+
+    Ok(Some(obj))
+  }
+
+  fn try_alloc_old_raw(&mut self, size: usize, align: usize, grow: GrowMode) -> Result<Option<*mut u8>, AllocError> {
     debug_assert!(align.is_power_of_two());
-    let obj = if size > IMMIX_MAX_OBJECT_SIZE {
-      self.los.alloc(size, align)
-    } else {
-      self
-        .immix
-        .alloc_old(size, align)
-        .unwrap_or_else(|| handle_alloc_error(Layout::from_size_align(size, align).unwrap()))
+
+    if size > self.config.los_threshold_bytes || size > IMMIX_MAX_OBJECT_SIZE {
+      let committed = round_up(size, LOS_PAGE_SIZE);
+      let projected = self.projected_total_bytes_with(0, 1, committed);
+      if projected > self.limits.max_heap_bytes {
+        return Ok(None);
+      }
+
+      let obj = self.los.alloc(size, align);
+      self.stats.bytes_allocated_old += size;
+      return Ok(Some(obj));
+    }
+
+    // Heuristic: if we don't have enough free space for the allocation, assume we'll need to grow
+    // the Immix space (allocate a new block) and account for it up-front.
+    let needs_grow = self.immix.block_count() == 0 || self.immix.free_bytes() < size;
+    if needs_grow && grow == GrowMode::NoGrow {
+      return Ok(None);
+    }
+    if needs_grow && grow == GrowMode::AllowGrow {
+      let projected = self.projected_total_bytes_with(1, 0, 0);
+      if projected > self.limits.max_heap_bytes {
+        return Ok(None);
+      }
+    }
+
+    let obj = self.immix.alloc_old(size, align);
+    let Some(obj) = obj else {
+      return Ok(None);
     };
 
     self.stats.bytes_allocated_old += size;
-    obj
+    Ok(Some(obj))
+  }
+
+  fn should_trigger_minor(&self) -> bool {
+    let percent = self.config.minor_gc_nursery_used_percent as usize;
+    if percent >= 100 {
+      return false;
+    }
+    let used = self.nursery.allocated_bytes();
+    let cap = self.nursery.size_bytes();
+    used * 100 > cap * percent
+  }
+
+  fn should_trigger_major(&self) -> bool {
+    let old_bytes = (self.immix.block_count() * IMMIX_BLOCK_SIZE).saturating_add(self.los.committed_bytes());
+    old_bytes > self.config.major_gc_old_bytes_threshold
+      || self.immix.block_count() > self.config.major_gc_old_blocks_threshold
   }
 
   pub fn is_in_nursery(&self, obj: *mut u8) -> bool {
@@ -643,4 +937,25 @@ impl GcHeap {
       }
     }
   }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GrowMode {
+  NoGrow,
+  AllowGrow,
+}
+
+fn type_desc_from_shape_id(shape_id: RtShapeId) -> &'static TypeDescriptor {
+  crate::shape_table::lookup_type_descriptor(shape_id)
+}
+
+#[inline]
+fn align_up(n: usize, align: usize) -> usize {
+  debug_assert!(align.is_power_of_two());
+  (n + (align - 1)) & !(align - 1)
+}
+
+#[inline]
+fn round_up(n: usize, m: usize) -> usize {
+  align_up(n, m)
 }

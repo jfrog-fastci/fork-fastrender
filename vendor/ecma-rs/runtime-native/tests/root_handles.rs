@@ -42,7 +42,9 @@ fn root_handle_survives_minor_gc_and_updates_pointer() {
   let h = heap.root_add(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_minor(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   let updated = heap.root_get(h).unwrap();
   assert_ne!(updated, obj);
@@ -65,13 +67,13 @@ fn root_handle_keeps_object_alive_across_major_gc() {
 
   let mut roots = RootStack::new();
   let mut remembered = NullRememberedSet::default();
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   assert_eq!(heap.los_object_count(), 1);
   assert_eq!(heap.root_get(h).unwrap(), obj);
 
   heap.root_remove(h);
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   assert_eq!(heap.los_object_count(), 0);
 }
 
@@ -91,7 +93,9 @@ fn root_handle_updates_during_major_compaction() {
   let h = heap.root_add(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   let updated = heap.root_get(h).expect("handle should remain live");
   assert_ne!(updated, obj, "expected compaction to move the object and update the handle");
@@ -137,6 +141,6 @@ fn persistent_root_guard_removes_on_drop() {
 
   let mut roots = RootStack::new();
   let mut remembered = NullRememberedSet::default();
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   assert_eq!(heap.los_object_count(), 0);
 }

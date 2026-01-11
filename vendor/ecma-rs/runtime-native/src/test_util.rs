@@ -126,6 +126,9 @@ impl Drop for TestGcGuard {
     YOUNG_SPACE
       .end
       .store(self.prev_young_end, Ordering::Release);
+    YOUNG_SPACE
+      .end
+      .store(self.prev_young_end, Ordering::Release);
   }
 }
 

@@ -111,7 +111,7 @@ fn gc_finalizer_releases_arraybuffer_backing_store_on_minor_gc() {
 
   let mut roots = RootStack::new();
   let mut remembered = SimpleRememberedSet::new();
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
 }
 
@@ -129,7 +129,7 @@ fn gc_finalizer_not_called_on_promotion_and_runs_once() {
   roots.push(&mut root as *mut *mut u8);
   let mut remembered = SimpleRememberedSet::new();
 
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert!(
     !heap.is_in_nursery(root),
     "expected ArrayBuffer header to be promoted out of nursery"
@@ -137,16 +137,16 @@ fn gc_finalizer_not_called_on_promotion_and_runs_once() {
   assert_eq!(heap.external_bytes(), size);
 
   // Still reachable: major GC must not run the finalizer.
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), size);
 
   // Unreachable: major GC must run the finalizer once.
   let mut empty_roots = RootStack::new();
-  heap.collect_major(&mut empty_roots, &mut remembered);
+  heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
 
   // Subsequent collections must not run it again.
-  heap.collect_major(&mut empty_roots, &mut remembered);
+  heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
 }
 
@@ -163,10 +163,10 @@ fn gc_finalizer_delays_backing_store_free_until_unpinned() {
     let buf = unsafe { &*(buf_obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
     buf.pin().expect("pin")
   };
-
+ 
   let mut roots = RootStack::new();
   let mut remembered = SimpleRememberedSet::new();
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   // The header is unreachable so the GC finalizer should have run, but the backing store is still
   // pinned and must remain allocated until the pin guard is dropped.
@@ -187,8 +187,8 @@ fn gc_finalizer_survives_major_compaction_relocation() {
   let mut roots = RootStack::new();
   roots.push(&mut root as *mut *mut u8);
   let mut remembered = SimpleRememberedSet::new();
-
-  heap.collect_minor(&mut roots, &mut remembered);
+ 
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert!(!heap.is_in_nursery(root));
   let promoted = root;
 
@@ -200,7 +200,7 @@ fn gc_finalizer_survives_major_compaction_relocation() {
     cfg.min_live_lines = 1;
   }
 
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   assert_ne!(
     root, promoted,
     "expected major compaction to relocate the ArrayBuffer header"
@@ -209,8 +209,8 @@ fn gc_finalizer_survives_major_compaction_relocation() {
 
   // Once unreachable, the finalizer should run and free the backing store exactly once.
   let mut empty_roots = RootStack::new();
-  heap.collect_major(&mut empty_roots, &mut remembered);
+  heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
-  heap.collect_major(&mut empty_roots, &mut remembered);
+  heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
 }

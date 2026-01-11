@@ -13,6 +13,7 @@ use super::weak::process_global_weak_handles_major;
 use super::weak::run_weak_cleanups;
 use super::ObjHeader;
 use super::Tracer;
+use crate::gc::heap::AllocError;
 use crate::gc::heap::GcHeap;
 use crate::gc::heap::IMMIX_LINES_PER_BLOCK;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;
@@ -29,8 +30,12 @@ impl GcHeap {
   /// This GC is **stop-the-world**: the caller must ensure there are no
   /// concurrent mutators and that the provided root/remembered sets remain
   /// stable for the duration of the call.
-  pub fn collect_major(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
-    self.collect_minor(roots, remembered);
+  pub fn collect_major(
+    &mut self,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<(), AllocError> {
+    self.collect_minor(roots, remembered)?;
     self.stats.major_collections += 1;
     let start = Instant::now();
 
@@ -171,6 +176,7 @@ impl GcHeap {
     let pause = start.elapsed();
     self.stats.last_major_pause = pause;
     self.stats.total_major_pause += pause;
+    Ok(())
   }
 }
 

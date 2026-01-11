@@ -157,7 +157,7 @@ fn statepoint_fixture_stackmaps_drive_minor_gc_root_updates() {
 
   let mut roots = StackMapRoots { slots };
   let mut remembered = SimpleRememberedSet::new();
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   let moved = unsafe { moving_slot.read() };
   assert_ne!(moved, young, "minor GC should evacuate nursery object and update slot");
@@ -227,7 +227,7 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
     .collect();
   let mut roots = StackMapRoots { slots: wrong_slots };
   let mut remembered = SimpleRememberedSet::new();
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   let slot_after = unsafe { moving_slot.read() };
   assert_eq!(

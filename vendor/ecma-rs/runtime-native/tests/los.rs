@@ -30,7 +30,7 @@ fn los_mark_sweep_frees_unreachable_objects() {
   let mut remembered = SimpleRememberedSet::new();
 
   assert_eq!(heap.los_object_count(), 3);
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 
   // b should be swept.
   assert_eq!(heap.los_object_count(), 2);

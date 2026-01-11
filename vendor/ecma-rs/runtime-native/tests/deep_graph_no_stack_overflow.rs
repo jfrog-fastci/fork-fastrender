@@ -51,11 +51,11 @@ fn deep_graph_child() {
   roots.push(&mut root_head as *mut *mut u8);
 
   // Previously this would recurse once per node and overflow the Rust call stack.
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert!(!heap.is_in_nursery(root_head));
 
   // Major marking must also be iterative; a deep old-gen graph should not overflow either.
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   assert!(!heap.is_in_nursery(root_head));
 }
 
@@ -75,4 +75,3 @@ fn deep_graph_no_stack_overflow() {
     "deep graph child process failed (likely stack overflow): {status:?}"
   );
 }
-

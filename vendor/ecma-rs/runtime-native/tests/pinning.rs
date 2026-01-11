@@ -43,12 +43,12 @@ fn pinned_object_address_is_stable_across_minor_and_major_gc() {
   let mut roots = RootStack::new();
   roots.push(&mut root_pinned as *mut *mut u8);
 
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default()).unwrap();
   assert_eq!(root_pinned, pinned_addr);
   #[cfg(any(debug_assertions, feature = "gc_debug"))]
   heap.verify_from_roots(&mut roots);
 
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
   assert_eq!(root_pinned, pinned_addr);
   #[cfg(any(debug_assertions, feature = "gc_debug"))]
   heap.verify_from_roots(&mut roots);
@@ -76,7 +76,7 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
   remembered.on_promoted_object(pinned, true);
   assert!(remembered.contains(pinned));
   assert!(unsafe { &*(pinned as *const ObjHeader) }.is_remembered());
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   assert_eq!(root_pinned, pinned);
   let updated = unsafe { (*(pinned as *mut Node)).next };
@@ -88,7 +88,7 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
   assert!(unsafe { &*(pinned as *const ObjHeader) }.is_pinned());
 
   // Major GC should keep both pinned + its child alive.
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
   assert_eq!(unsafe { (*(pinned as *mut Node)).next }, updated);
   #[cfg(any(debug_assertions, feature = "gc_debug"))]
   heap.verify_from_roots(&mut roots);
@@ -103,7 +103,7 @@ fn unreachable_pinned_objects_are_collectible() {
   assert_eq!(heap.los_object_count(), 1);
 
   let mut roots = RootStack::new();
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
   assert_eq!(heap.los_object_count(), 0);
 }
 

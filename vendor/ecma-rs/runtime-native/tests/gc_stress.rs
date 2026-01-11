@@ -220,12 +220,12 @@ fn run_stress(seed: u64, ops: usize) {
     // Periodic collections.
     if i % 97 == 0 {
       reachable.clear();
-      heap.collect_minor(&mut roots, &mut remembered);
+      heap.collect_minor(&mut roots, &mut remembered).unwrap();
       heap.verify_from_roots(&mut roots);
     }
     if i % 997 == 0 {
       reachable.clear();
-      heap.collect_major(&mut roots, &mut remembered);
+      heap.collect_major(&mut roots, &mut remembered).unwrap();
       heap.verify_from_roots(&mut roots);
     }
 
@@ -308,21 +308,21 @@ fn run_stress(seed: u64, ops: usize) {
       // Explicit minor.
       95..=98 => {
         reachable.clear();
-        heap.collect_minor(&mut roots, &mut remembered);
+        heap.collect_minor(&mut roots, &mut remembered).unwrap();
         heap.verify_from_roots(&mut roots);
       }
 
       // Explicit major.
       _ => {
         reachable.clear();
-        heap.collect_major(&mut roots, &mut remembered);
+        heap.collect_major(&mut roots, &mut remembered).unwrap();
         heap.verify_from_roots(&mut roots);
       }
     }
   }
 
   reachable.clear();
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
   heap.verify_from_roots(&mut roots);
 }
 

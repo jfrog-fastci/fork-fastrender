@@ -34,7 +34,7 @@ fn weak_handle_clears_on_minor_gc_when_unreachable() {
   let handle = heap.weak_add(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert_eq!(heap.weak_get(handle), None);
 }
@@ -50,7 +50,7 @@ fn weak_handle_updates_on_minor_gc_when_reachable() {
   let mut roots = RootStack::new();
   roots.push(&mut root_obj as *mut *mut u8);
 
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert!(!heap.is_in_nursery(root_obj));
   assert_ne!(root_obj, obj);
@@ -65,7 +65,7 @@ fn weak_handle_clears_on_major_gc_when_unreachable() {
   let handle = heap.weak_add(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert_eq!(heap.weak_get(handle), None);
 }
@@ -81,7 +81,7 @@ fn weak_handle_survives_major_gc_when_reachable() {
   let mut roots = RootStack::new();
   roots.push(&mut root_obj as *mut *mut u8);
 
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert_eq!(root_obj, obj);
   assert_eq!(heap.weak_get(handle), Some(obj));
@@ -129,7 +129,9 @@ fn abi_weak_handle_clears_on_minor_gc_when_unreachable() {
   let handle = WeakHandleGuard::new(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_minor(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert!(handle.get().is_null());
 }
@@ -145,7 +147,9 @@ fn abi_weak_handle_updates_on_minor_gc_when_reachable() {
   let mut roots = RootStack::new();
   roots.push(&mut root_obj as *mut *mut u8);
 
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_minor(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert!(!heap.is_in_nursery(root_obj));
   assert_eq!(handle.get(), root_obj);
@@ -159,7 +163,9 @@ fn abi_weak_handle_clears_on_major_gc_when_unreachable() {
   let handle = WeakHandleGuard::new(obj);
 
   let mut roots = RootStack::new();
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert!(handle.get().is_null());
 }

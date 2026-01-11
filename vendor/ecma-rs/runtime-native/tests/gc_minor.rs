@@ -45,7 +45,7 @@ fn minor_evacuation_updates_root_and_interior_pointers() {
   roots.push(&mut root_a as *mut *mut u8);
   roots.push(&mut root_b as *mut *mut u8);
 
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_minor(&mut roots, &mut NullRememberedSet::default()).unwrap();
 
   assert!(!heap.is_in_nursery(root_a));
   assert!(!heap.is_in_nursery(root_b));
@@ -99,7 +99,7 @@ fn minor_gc_traces_remembered_old_objects() {
   roots.push(&mut root_old as *mut *mut u8);
 
   let mut remembered = VecRememberedSet::new(vec![old]);
-  heap.collect_minor(&mut roots, &mut remembered);
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   let updated = unsafe { (*(old as *mut Node)).next };
   assert!(!heap.is_in_nursery(updated));

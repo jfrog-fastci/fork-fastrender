@@ -117,7 +117,8 @@ fn major_gc_compaction_evacuates_sparse_blocks_and_preserves_payloads() {
   let free_before = heap.immix_free_block_count();
   let live_before = live;
 
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   let free_after = heap.immix_free_block_count();
   assert!(
@@ -169,7 +170,8 @@ fn major_gc_without_compaction_does_not_move() {
   // Fill enough blocks to ensure we run a real major GC.
   alloc_dead_lines(&mut heap, IMMIX_LINES_PER_BLOCK * 2);
 
-  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default())
+    .unwrap();
 
   assert_eq!(root_obj, obj_before);
   assert_eq!(unsafe { (*(root_obj as *mut LeafLine)).value }, 123);

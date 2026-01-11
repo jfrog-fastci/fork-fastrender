@@ -107,6 +107,10 @@ impl LargeObjectSpace {
   pub(crate) fn object_count(&self) -> usize {
     self.entries.len()
   }
+
+  pub(crate) fn committed_bytes(&self) -> usize {
+    self.entries.iter().map(|e| e.mmap_size).sum()
+  }
 }
 
 impl Drop for LargeObjectSpace {
