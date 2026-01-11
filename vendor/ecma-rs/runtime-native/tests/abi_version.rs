@@ -3,8 +3,8 @@ use std::process::Command;
 use runtime_native::async_abi::{
   Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, RT_ASYNC_ABI_VERSION,
 };
-use runtime_native::RtShapeId;
 use runtime_native::CoroutineId;
+use runtime_native::RtShapeId;
 
 unsafe extern "C" fn dummy_resume(_coro: *mut Coroutine) -> CoroutineStep {
   CoroutineStep::complete()
