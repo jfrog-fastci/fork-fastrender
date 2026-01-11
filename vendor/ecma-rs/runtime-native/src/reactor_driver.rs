@@ -14,6 +14,16 @@
 //!   [`ReactorDriver::poll`] with `timeout = None` to wait until the next event.
 //! - If there are no runnable tasks and no registered fds/timers, return `false`
 //!   (idle) without calling into the driver.
+//!
+//! # Clock / time base
+//!
+//! `ReactorDriver` maintains its own monotonic clock used for timer deadlines:
+//! - [`ReactorDriver::new`] uses the real monotonic clock.
+//! - [`ReactorDriver::new_with_clock`] allows tests/embedders to supply a custom clock.
+//!
+//! Deadlines passed to [`ReactorDriver::register_timer`] must be in the same `std::time::Instant`
+//! domain as [`ReactorDriver::now`]. When using a custom clock, do **not** use `Instant::now()`
+//! directly; compute deadlines relative to `driver.now()`.
 
 use std::collections::HashMap;
 use std::io;
