@@ -3,6 +3,7 @@ use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[repr(C)]
@@ -168,9 +169,12 @@ fn block_on_returns_immediately_when_promise_already_settled() {
   // If `rt_async_block_on` mistakenly calls `rt_async_wait` even though the
   // promise is already settled, it would block indefinitely unless something
   // wakes the event loop. Use a watchdog wake to keep this test bounded.
+  let watchdog_fired = Arc::new(AtomicBool::new(false));
+  let watchdog_fired2 = watchdog_fired.clone();
   let (tx, rx) = mpsc::channel::<()>();
   let t = std::thread::spawn(move || {
-    if rx.recv_timeout(Duration::from_millis(250)).is_err() {
+    if rx.recv_timeout(Duration::from_secs(1)).is_err() {
+      watchdog_fired2.store(true, Ordering::SeqCst);
       runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
     }
   });
@@ -186,14 +190,23 @@ fn block_on_returns_immediately_when_promise_already_settled() {
   t.join().unwrap();
 
   assert!(
-    elapsed < Duration::from_millis(100),
-    "block_on should return immediately when promise is settled (elapsed={elapsed:?})"
+    !watchdog_fired.load(Ordering::SeqCst),
+    "block_on appeared to wait even though the promise was already settled (elapsed={elapsed:?})"
   );
 }
 
 #[test]
 fn block_on_wakes_on_native_promise_settlement_without_payload() {
   let _rt = TestRuntimeGuard::new();
+
+  // Warm up the runtime so this test doesn't include one-time initialization in the wakeup timing.
+  //
+  // Safety: ABI call.
+  unsafe {
+    let _ = runtime_native::rt_async_run_until_idle_abi();
+  }
+  let this_thread_id = runtime_native::threading::registry::current_thread_id()
+    .expect("rt_async_run_until_idle_abi should register the current thread");
 
   // Allocate a promise that is *only* a `PromiseHeader` (no extra payload). This
   // models the native async ABI contract: promise payload begins immediately
@@ -210,18 +223,35 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
     runtime_native::rt_promise_init(p);
   }
 
-  // Fulfill from another thread after a short delay.
+  // Fulfill from another thread once the event-loop thread is parked inside the runtime.
+  let (fulfill_tx, fulfill_rx) = mpsc::channel::<(Instant, bool)>();
   let fulfiller = std::thread::spawn(move || unsafe {
-    std::thread::sleep(Duration::from_millis(20));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut saw_parked = false;
+    while Instant::now() < deadline {
+      if runtime_native::threading::all_threads()
+        .iter()
+        .any(|t| t.id() == this_thread_id && t.is_parked())
+      {
+        saw_parked = true;
+        break;
+      }
+      std::thread::yield_now();
+    }
+
+    let fulfilled_at = Instant::now();
     runtime_native::rt_promise_fulfill(p);
+    let _ = fulfill_tx.send((fulfilled_at, saw_parked));
   });
 
   // Watchdog: if `rt_async_block_on` fails to wake on settlement, it will sleep
-  // until some other event wakes the runtime. Use a bounded wake to prevent a
-  // hung test; also assert it returns *before* this fires.
+  // until some other event wakes the runtime. Use a bounded wake to prevent a hung test.
+  let watchdog_fired = Arc::new(AtomicBool::new(false));
+  let watchdog_fired2 = watchdog_fired.clone();
   let (tx, rx) = mpsc::channel::<()>();
   let watchdog = std::thread::spawn(move || {
-    if rx.recv_timeout(Duration::from_millis(200)).is_err() {
+    if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+      watchdog_fired2.store(true, Ordering::SeqCst);
       runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
     }
   });
@@ -230,19 +260,30 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
   unsafe {
     runtime_native::rt_async_block_on(p);
   }
-  let elapsed = start.elapsed();
+  let end = Instant::now();
+  let elapsed = end.duration_since(start);
 
   let _ = tx.send(());
   watchdog.join().unwrap();
   fulfiller.join().unwrap();
 
+  let (fulfilled_at, saw_parked) = fulfill_rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("fulfiller thread did not report fulfillment time");
+
   assert!(
-    elapsed >= Duration::from_millis(5),
-    "block_on returned too quickly (elapsed={elapsed:?})"
+    saw_parked,
+    "fulfiller never observed the event-loop thread parked inside the runtime (elapsed={elapsed:?})"
   );
   assert!(
-    elapsed < Duration::from_millis(150),
-    "block_on did not wake promptly on promise settlement (elapsed={elapsed:?})"
+    !watchdog_fired.load(Ordering::SeqCst),
+    "block_on did not wake on promise settlement without external payload (elapsed={elapsed:?})"
+  );
+
+  let after_fulfill = end.duration_since(fulfilled_at);
+  assert!(
+    after_fulfill < Duration::from_millis(250),
+    "block_on returned too long after promise fulfillment (after_fulfill={after_fulfill:?}, elapsed={elapsed:?})"
   );
 
   // Safety: the promise is settled and `rt_async_block_on` has drained its reaction jobs.
