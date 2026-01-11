@@ -25,7 +25,7 @@ extern "C" {
 ///
 /// ```text
 /// load RT_GC_EPOCH
-/// test low bit; if set call rt_gc_safepoint()
+/// test low bit; if set call rt_gc_safepoint_slow(observed_epoch)
 /// ```
 #[no_mangle]
 pub static RT_GC_EPOCH: AtomicU64 = AtomicU64::new(0);

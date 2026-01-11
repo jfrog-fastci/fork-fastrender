@@ -35,7 +35,7 @@ This is not just an implementation preference; it is a GC requirement:
 
 Implications:
 
-* Their addresses are not stable across `rt_gc_safepoint` / allocation.
+* Their addresses are not stable across GC safepoints (e.g. `rt_gc_safepoint_slow`) / allocation.
 * No runtime subsystem may store a raw pointer to a frame/Promise in memory that outlives a
   safepoint, unless that pointer is itself treated as a GC root and updated by the GC.
 
@@ -227,9 +227,10 @@ Notes:
 
 Names are provisional; the important part is the behavior.
 
-### `rt_gc_safepoint()`
+### Safepoint poll (`RT_GC_EPOCH` + `rt_gc_safepoint_slow`)
 
-* Called by mutator threads at compiler-inserted safepoints (or allocation slow paths).
+* Called by mutator threads at compiler-inserted safepoints (or allocation slow paths), typically via
+  an inline `RT_GC_EPOCH` poll with a slow-path call to `rt_gc_safepoint_slow(epoch)`.
 * Coordinates “stop-the-world” (or STW phases) so that:
   * all threads reach a known point, and
   * the GC can enumerate roots (LLVM stack maps for compiled code + shadow roots + handle tables).

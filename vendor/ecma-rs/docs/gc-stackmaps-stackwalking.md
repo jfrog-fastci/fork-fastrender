@@ -18,12 +18,12 @@ Two details matter for the runtime:
 
 ## Implication: a GC must unwind
 
-Stop-the-world GC commonly stops threads *inside* the safepoint callee (e.g. inside
-`rt_gc_safepoint()`), but the stackmap we need to interpret is for the *caller* frame:
+Stop-the-world GC commonly stops threads *inside* the safepoint slow path (e.g. inside
+`rt_gc_safepoint_slow`), but the stackmap we need to interpret is for the *caller* frame (the
+managed callsite):
 
-- We have the callee's register state (`SP`, `FP`, `IP`).
 - The stackmap record we need is keyed by the **return address back into the caller**.
-- The stack slots we must scan are relative to the **caller**'s `SP`.
+- The stack slots we must scan are relative to the **caller**'s `SP` at that return address.
 
 Therefore the runtime needs a reliable way to unwind a thread's stack and compute, per frame:
 

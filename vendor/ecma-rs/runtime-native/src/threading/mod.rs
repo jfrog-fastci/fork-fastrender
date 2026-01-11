@@ -82,7 +82,10 @@ pub fn set_parked(parked: bool) {
   }
 }
 
-/// Safepoint poll used at compiler-inserted and runtime-inserted safepoints.
+/// Safepoint poll used by runtime-native and embedding code.
+///
+/// Compiler-generated code should generally inline an `RT_GC_EPOCH` poll and call
+/// `rt_gc_safepoint_slow(epoch)` at the callsite instead of calling this helper.
 #[inline(always)]
 pub fn safepoint_poll() {
   safepoint::rt_gc_safepoint();

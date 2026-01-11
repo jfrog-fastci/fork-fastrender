@@ -487,9 +487,10 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
 ///
 /// Returns `true` if a stop-the-world GC/safepoint is currently requested.
 ///
-/// Generated code typically uses this in a "fast poll" sequence:
-///
-/// 1. `if rt_gc_poll() { rt_gc_safepoint(); }`
+/// Compiler-generated code should typically **not** call this function directly. Instead, it should
+/// inline an atomic (Acquire) load of the exported `RT_GC_EPOCH` symbol and, on an odd value, call
+/// `rt_gc_safepoint_slow(epoch)` at the *callsite* so `rewrite-statepoints-for-gc` can rewrite it
+/// into a statepoint and the runtime captures the managed callsite context correctly.
 ///
 /// `native-js` marks this function as a GC leaf (`"gc-leaf-function"`) so
 /// `rewrite-statepoints-for-gc` does not wrap the poll itself in a statepoint.

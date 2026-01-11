@@ -114,7 +114,7 @@ Every exported runtime function must be classified by codegen as one of:
   - Example (Milestone 1): `rt_write_barrier`.
 - **MayGC**: may allocate, may safepoint, and therefore may trigger GC and move
   objects.
-  - Example (Milestone 1): `rt_alloc`, `rt_gc_safepoint`, `rt_string_concat`.
+  - Example (Milestone 1): `rt_alloc`, `rt_gc_safepoint_slow`, `rt_string_concat`.
 
 This classification matters because **compiled code must use LLVM statepoints**
 around *MayGC* calls so live references are relocated correctly if the GC moves
@@ -293,6 +293,10 @@ pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
 ```
 
+GC also exports a global epoch `RT_GC_EPOCH` (an atomic `u64`) so compiler-generated code can
+inline the safepoint poll fast path; see `runtime-native/README.md` (“Safepoint ABI”) for the
+recommended poll sequence.
+
 `rt_parallel_spawn` contract:
 - `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
 - Each `TaskId` must be joined exactly once.
@@ -319,7 +323,7 @@ generation strategy.
 | `rt_alloc_array` | MayGC | Ditto. |
 | `rt_gc_poll` | NoGC | Cheap leaf poll used by backedge safepoints (codegen may also inline `RT_GC_EPOCH`). |
 | `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
-| `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint. |
+| `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint (prefer inline poll in codegen so context capture matches the managed callsite). |
 | `rt_gc_safepoint_relocate_h` | MayGC | Handle-based helper: safepoint + reload `*slot` for moving-GC safe runtime calls. |
 | `rt_root_push` | NoGC | Register an addressable root slot on the current thread's shadow stack. |
 | `rt_root_pop` | NoGC | Pop a root slot (must be called in strict LIFO order). |
