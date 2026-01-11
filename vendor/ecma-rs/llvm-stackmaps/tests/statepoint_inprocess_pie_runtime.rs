@@ -201,9 +201,12 @@ fn main() {
 
     let target_dir = dir.join("target");
 
+    // Speed up the nested build: we only care about the link result + in-process parsing (symbols,
+    // section retention, and dynamic relocations), not debug info.
     let rustflags = format!(
-        "-C linker=clang-18 \
-         -C link-arg=-fuse-ld=lld \
+        "-C debuginfo=0 \
+         -C linker=clang-18 \
+         -C link-arg=-fuse-ld=lld-18 \
          -C link-arg=-pie \
          -C link-arg=-Wl,-T,{} \
          -C link-arg=-Wl,--gc-sections \
