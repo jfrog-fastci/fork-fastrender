@@ -167,6 +167,10 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   // block (no call/statepoint on the fast path).
   let latch_ir = block_body(&ir, "loop.latch");
   assert!(latch_ir.contains("@RT_GC_EPOCH"), "IR missing epoch load:\n{ir}");
+  assert!(
+    latch_ir.contains("load atomic") && latch_ir.contains("acquire"),
+    "expected RT_GC_EPOCH to be loaded atomically with Acquire ordering:\n{latch_ir}"
+  );
 
   // Slow-path call should be rewritten into a statepoint.
   let func_ir = function_block(&ir, "@loop");
