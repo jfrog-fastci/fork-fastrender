@@ -28,6 +28,15 @@ fn find_clang() -> Option<&'static str> {
   None
 }
 
+fn find_objcopy() -> Option<&'static str> {
+  for cand in ["llvm-objcopy-18", "llvm-objcopy", "objcopy"] {
+    if have_cmd(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn lld_flag() -> Option<&'static str> {
   if have_cmd("ld.lld-18") {
     Some("-fuse-ld=lld-18")
@@ -39,22 +48,29 @@ fn lld_flag() -> Option<&'static str> {
 }
 
 fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
-  // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
-  // fragments can't rely on them existing. lld errors if an `INSERT` anchor
-  // output section does not exist.
+  // Intentionally avoid emitting any `.rodata`. lld errors if an `INSERT`
+  // anchor output section does not exist; `link/stackmaps.ld` anchors at
+  // `.data`, so we include a minimal `.data` section and reference it from
+  // `.text` so it survives `--gc-sections`.
   let asm = r#"
- .text
+  .text
   .globl _start
   _start:
-   mov $60, %rax
-   xor %rdi, %rdi
-   syscall
- 
- .section .llvm_stackmaps,"a",@progbits
-   .byte 1,2,3,4
- 
- .section .note.GNU-stack,"",@progbits
- "#;
+    lea data_anchor(%rip), %rcx
+    mov $60, %rax
+    xor %rdi, %rdi
+    syscall
+
+  .data
+  .globl data_anchor
+  data_anchor:
+    .byte 0
+
+  .section .llvm_stackmaps,"a",@progbits
+    .byte 1,2,3,4
+
+  .section .note.GNU-stack,"",@progbits
+  "#;
 
   let asm_path = out_dir.join("stackmaps.S");
   write_file(&asm_path, asm);
@@ -111,6 +127,10 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
     return;
   };
+  let Some(objcopy) = find_objcopy() else {
+    eprintln!("skipping: llvm-objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy)");
+    return;
+  };
 
   const START_SYM: &str = "__start_llvm_stackmaps";
   const STOP_SYM: &str = "__stop_llvm_stackmaps";
@@ -126,15 +146,29 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let td = tempfile::tempdir().unwrap();
   let obj = compile_obj(clang, td.path());
 
+  // `native-js` renames `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps`
+  // for PIE/DSO builds so the section can be relocated without `DT_TEXTREL`.
+  // Mirror that behavior in this test: `link/stackmaps.ld` only keeps the
+  // hardened `.data.rel.ro.llvm_stackmaps` input section name.
+  let status = Command::new(objcopy)
+    .args([
+      "--rename-section",
+      ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+    ])
+    .arg(&obj)
+    .status()
+    .unwrap();
+  assert!(status.success(), "llvm-objcopy failed to rename .llvm_stackmaps");
+
   let exe = td.path().join("a.out");
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps.ld");
 
   // Link a minimal PIE executable (no stdlib/CRT) using our linker script
-  // fragment. `link/stackmaps.ld` is applied via `INSERT BEFORE .dynamic;`, but
-  // non-PIE `-nostdlib` links can omit `.dynamic` entirely, so we ensure the
-  // anchor is present by linking as PIE.
+  // fragment. `link/stackmaps.ld` anchors its `INSERT` after `.data`, so the
+  // object we link includes a reachable `.data` symbol even under
+  // `--gc-sections`.
   let status = Command::new(clang)
     .arg("-nostdlib")
     .arg(lld_flag)
@@ -155,22 +189,15 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let bytes = fs::read(&exe).unwrap();
   let file = object::File::parse(&*bytes).unwrap();
 
-  // Regression guard: we link as PIE to ensure `.dynamic` exists, because
-  // `link/stackmaps.ld` uses `INSERT BEFORE .dynamic`.
-  file
-    .section_by_name(".dynamic")
-    .expect("missing .dynamic section (link output must be PIE/DSO)");
-
-  // lld does not reliably accept custom `.data.rel.ro.*` output sections in the
-  // RELRO region; `link/stackmaps.ld` therefore places stackmaps inside the
-  // standard `.data.rel.ro` output section.
+  // PIE/DSO stackmaps are kept in a dedicated `.data.rel.ro.llvm_stackmaps`
+  // output section (see `link/stackmaps.ld`).
   let section = file
-    .section_by_name(".data.rel.ro")
-    .expect("missing .data.rel.ro section (was stackmaps GC'd?)");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .expect("missing .data.rel.ro.llvm_stackmaps section (was stackmaps GC'd?)");
 
   let section_addr = section.address();
   let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty .data.rel.ro");
+  assert!(section_size > 0, "expected non-empty .data.rel.ro.llvm_stackmaps");
 
   let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __start_llvm_stackmaps");
   let (stop, stop_scope) = find_symbol(&file, STOP_SYM).expect("missing __stop_llvm_stackmaps");
@@ -233,7 +260,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   );
   assert!(
     section_addr <= start && stop <= section_addr + section_size,
-    "stackmaps symbol range must be contained in .data.rel.ro (section_addr=0x{section_addr:x} size=0x{section_size:x} start=0x{start:x} stop=0x{stop:x})"
+    "stackmaps symbol range must be contained in .data.rel.ro.llvm_stackmaps (section_addr=0x{section_addr:x} size=0x{section_size:x} start=0x{start:x} stop=0x{stop:x})"
   );
 
   assert_eq!(generic_start, start, "generic start symbol must match");
@@ -244,7 +271,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   assert_eq!(fastr_end, stop, "fastr end symbol must match");
 
   // Ensure the linker script actually retained our bytes (not just the symbols).
-  let data = section.data().expect("read .data.rel.ro bytes");
+  let data = section.data().expect("read .data.rel.ro.llvm_stackmaps bytes");
   let off = usize::try_from(start - section_addr).expect("offset fits usize");
   let len = usize::try_from(stop - start).expect("len fits usize");
   assert!(off + len <= data.len(), "stackmaps range out of bounds");
