@@ -2,7 +2,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::Ordering;
 
 use crate::async_abi::{
-  Coroutine, CoroutineRef, CoroutineStepTag, CoroutineVTable, PromiseHeader, PromiseState,
+  Coroutine, CoroutineRef, CoroutineStepTag, CoroutineVTable, PromiseHeader, PromiseState, CORO_FLAG_RUNTIME_OWNS_FRAME,
 };
 use crate::ffi::abort_on_panic;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
@@ -203,6 +203,9 @@ extern "C" fn coroutine_reaction_run(node: *mut PromiseReactionNode, _promise: *
     return;
   }
   let coro = unsafe { (*node).coro };
+  if !crate::async_runtime::coro_is_live_owned(coro) {
+    return;
+  }
   run_coroutine(coro);
 }
 
@@ -257,8 +260,22 @@ fn run_coroutine(coro: CoroutineRef) {
 
     let step = unsafe { (vtable.resume)(coro) };
     match step.tag {
-      CoroutineStepTag::Complete => return,
+      CoroutineStepTag::Complete => unsafe {
+        crate::async_runtime::coro_destroy_once(coro);
+        return;
+      },
       CoroutineStepTag::Await => {
+        // A coroutine that yields must be stored across turns (await reaction + later resume).
+        // Stack-owned frames cannot outlive the spawning call and would otherwise cause
+        // use-after-return UB.
+        if cfg!(debug_assertions) && unsafe { (*coro).flags & CORO_FLAG_RUNTIME_OWNS_FRAME } == 0 {
+          eprintln!(
+            "runtime-native async ABI violation: coroutine yielded `Await` but \
+CORO_FLAG_RUNTIME_OWNS_FRAME was not set (stack-owned coroutine frames must not suspend)"
+          );
+          std::process::abort();
+        }
+
         let awaited = validate_promise_ptr(step.await_promise);
         if awaited.is_null() {
           return;
@@ -282,6 +299,9 @@ fn run_coroutine(coro: CoroutineRef) {
 
 extern "C" fn coro_resume_task(data: *mut u8) {
   let coro = data as CoroutineRef;
+  if !crate::async_runtime::coro_is_live_owned(coro) {
+    return;
+  }
   run_coroutine(coro);
 }
 
@@ -294,6 +314,9 @@ pub(crate) fn async_spawn(coro: CoroutineRef) -> AbiPromiseRef {
 
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
+    unsafe {
+      crate::async_runtime::track_coro_if_runtime_owned(coro);
+    }
 
     let promise = unsafe {
       if (*coro).promise.is_null() {
@@ -325,6 +348,17 @@ pub(crate) fn async_spawn_deferred(coro: CoroutineRef) -> AbiPromiseRef {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
 
+    if cfg!(debug_assertions) && unsafe { (*coro).flags & CORO_FLAG_RUNTIME_OWNS_FRAME } == 0 {
+      eprintln!(
+        "runtime-native async ABI violation: rt_async_spawn_deferred was called with a \
+stack-owned coroutine frame (CORO_FLAG_RUNTIME_OWNS_FRAME must be set)"
+      );
+      std::process::abort();
+    }
+    unsafe {
+      crate::async_runtime::track_coro_if_runtime_owned(coro);
+    }
+
     let promise = unsafe {
       if (*coro).promise.is_null() {
         let vtable_ptr = (*coro).vtable;
@@ -346,4 +380,3 @@ pub(crate) fn async_spawn_deferred(coro: CoroutineRef) -> AbiPromiseRef {
     promise
   })
 }
-

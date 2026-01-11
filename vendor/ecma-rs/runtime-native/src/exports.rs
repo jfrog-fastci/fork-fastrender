@@ -879,6 +879,19 @@ pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -
   })
 }
 
+/// Cancel all runtime-owned async-ABI coroutine frames currently queued in the runtime.
+///
+/// This is primarily a teardown helper: it is intended to be called when the host is shutting down
+/// and wants to ensure no heap-owned coroutine frames leak.
+#[no_mangle]
+pub extern "C" fn rt_async_cancel_all() {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::async_runtime::cancel_all();
+  })
+}
+
 /// Drive the runtime's async/event-loop queues.
 ///
 /// This runtime maintains process-global singleton state. `rt_async_poll_legacy` may be called from

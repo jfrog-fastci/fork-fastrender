@@ -28,6 +28,8 @@ pub fn visit_reloc_pairs_with_bounds(
     return Ok(());
   };
 
+  let bounds = bounds.or_else(|| crate::stackwalk::StackBounds::current_thread().ok());
+
   // Safety: stackmap-driven root enumeration inherently walks raw pointers into
   // thread stacks.
   unsafe {

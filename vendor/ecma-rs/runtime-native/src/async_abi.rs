@@ -110,6 +110,15 @@ pub struct CoroutineVTable {
   /// - `Complete` after resolving/rejecting `coro.promise`.
   pub resume: unsafe extern "C" fn(*mut Coroutine) -> CoroutineStep,
 
+  /// Destroy (drop + deallocate) a coroutine frame.
+  ///
+  /// If [`CORO_FLAG_RUNTIME_OWNS_FRAME`] is set in `coro.flags`, the runtime will call this
+  /// exactly once after the coroutine completes or is cancelled.
+  ///
+  /// If the flag is not set, the runtime must never call `destroy` (the caller owns the frame,
+  /// e.g. stack-temporary frames for coroutines that cannot suspend).
+  pub destroy: unsafe extern "C" fn(CoroutineRef),
+
   /// Allocation size in bytes of the coroutine's result promise (`Promise<T>`).
   pub promise_size: u32,
   /// Allocation alignment of the coroutine's result promise (`Promise<T>`).
@@ -135,11 +144,27 @@ pub struct Coroutine {
   pub promise: PromiseRef,
 
   /// Intrusive list pointer used by the runtime while the coroutine is suspended.
-  pub next_waiter: *mut Coroutine,
+  ///
+  /// Generated code should initialize this to null.
+  pub next_waiter: CoroutineRef,
 
   /// Reserved for runtime flags (e.g. scheduled/running bits).
   pub flags: u32,
 }
+
+/// Coroutine frame is owned by the runtime.
+///
+/// When set, the runtime will call `(*coro.vtable).destroy(coro)` exactly once after completion
+/// or cancellation.
+pub const CORO_FLAG_RUNTIME_OWNS_FRAME: u32 = 1 << 0;
+
+/// Coroutine frame has been destroyed (runtime internal).
+///
+/// This bit is used to guard against double-destroy in cancellation/queueing edge cases.
+pub const CORO_FLAG_DESTROYED: u32 = 1 << 1;
+
+/// Debug aid: coroutine may suspend (yield `Await`) at runtime.
+pub const CORO_FLAG_MAY_SUSPEND: u32 = 1 << 2;
 
 // Safety: `Coroutine` is a plain ABI header embedded at the start of a coroutine frame
 // allocation. The scheduler may move coroutine frames (and/or handles to them) across
@@ -155,6 +180,10 @@ pub type CoroutineRef = *mut Coroutine;
 const _: () = {
   assert!(core::mem::align_of::<PromiseHeader>() >= 8);
 
+  // Keep the Rust ABI layout in sync with `include/runtime_native.h`.
+  const PTR: usize = core::mem::size_of::<*const u8>();
+  const U32: usize = core::mem::size_of::<u32>();
+
   let ptr_size = core::mem::size_of::<usize>();
   let ptr_align = core::mem::align_of::<usize>();
 
@@ -164,6 +193,21 @@ const _: () = {
   let raw_size = (3 * ptr_size) + core::mem::size_of::<u32>();
   let expected_size = (raw_size + (ptr_align - 1)) & !(ptr_align - 1);
   assert!(core::mem::size_of::<Coroutine>() == expected_size);
+
+  // `Coroutine` layout (vtable, promise, next_waiter, flags).
+  assert!(core::mem::offset_of!(Coroutine, vtable) == 0);
+  assert!(core::mem::offset_of!(Coroutine, promise) == PTR);
+  assert!(core::mem::offset_of!(Coroutine, next_waiter) == PTR * 2);
+  assert!(core::mem::offset_of!(Coroutine, flags) == PTR * 3);
+
+  // `CoroutineVTable` layout (resume, destroy, promise_size/align/shape_id, abi_version, reserved).
+  assert!(core::mem::offset_of!(CoroutineVTable, resume) == 0);
+  assert!(core::mem::offset_of!(CoroutineVTable, destroy) == PTR);
+  assert!(core::mem::offset_of!(CoroutineVTable, promise_size) == PTR * 2);
+  assert!(core::mem::offset_of!(CoroutineVTable, promise_align) == PTR * 2 + U32);
+  assert!(core::mem::offset_of!(CoroutineVTable, promise_shape_id) == PTR * 2 + U32 * 2);
+  assert!(core::mem::offset_of!(CoroutineVTable, abi_version) == PTR * 2 + U32 * 3);
+  assert!(core::mem::offset_of!(CoroutineVTable, reserved) == PTR * 2 + U32 * 4);
 };
 
 #[allow(dead_code)]

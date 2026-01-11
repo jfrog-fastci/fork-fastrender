@@ -60,7 +60,7 @@ pub mod arch;
 pub mod gc_safe;
 pub mod async_abi;
 pub mod async_rt;
-mod async_runtime;
+pub mod async_runtime;
 pub mod promise_reactions;
 pub mod reactor;
 pub mod timer_wheel;
@@ -587,6 +587,7 @@ mod tests {
       "void rt_promise_reject(PromiseRef p);",
       "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
+      "void rt_async_cancel_all(void);",
       "bool rt_async_poll(void);",
       "void rt_async_set_strict_await_yields(bool strict);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
@@ -663,6 +664,7 @@ mod tests {
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
     let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
+    let _async_cancel_all: extern "C" fn() = rt_async_cancel_all;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
@@ -725,6 +727,7 @@ mod tests {
       _promise_reject,
       _promise_payload_ptr,
       _async_spawn,
+      _async_cancel_all,
       _async_poll,
       _promise_new_legacy,
       _promise_resolve_legacy,

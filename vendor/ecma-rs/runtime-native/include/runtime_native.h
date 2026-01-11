@@ -428,6 +428,11 @@ typedef CoroutineStep (*CoroutineResumeFn)(Coroutine*);
 
 struct CoroutineVTable {
   CoroutineResumeFn resume;
+  // Destroy (drop + deallocate) a coroutine frame.
+  //
+  // If the coroutine frame is runtime-owned (`CORO_FLAG_RUNTIME_OWNS_FRAME` set in `coro.flags`),
+  // the runtime will call this exactly once after completion or cancellation.
+  void (*destroy)(CoroutineRef coro);
   uint32_t promise_size;
   uint32_t promise_align;
   RtShapeId promise_shape_id;
@@ -443,10 +448,19 @@ struct Coroutine {
   uint32_t flags;
 };
 
+// `Coroutine.flags` bitfield.
+enum {
+  // When set, the runtime owns the coroutine frame and will call `vtable->destroy(coro)` exactly
+  // once after completion or cancellation.
+  CORO_FLAG_RUNTIME_OWNS_FRAME = 1u << 0,
+};
+
 PromiseRef rt_async_spawn(CoroutineRef coro);
 // Like rt_async_spawn, but enqueues the coroutine's first resume as a microtask instead of running
 // synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
 PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
+// Cancel all queued runtime-owned coroutine frames.
+void rt_async_cancel_all(void);
 
 // Drive the async runtime. Returns true if any work was performed.
 bool rt_async_poll(void);

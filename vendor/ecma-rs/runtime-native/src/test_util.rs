@@ -28,6 +28,7 @@ pub use crate::unhandled_rejection::PromiseRejectionEvent;
 pub fn reset_runtime_state() {
   async_rt::clear_state_for_tests();
   crate::unhandled_rejection::clear_state_for_tests();
+  crate::async_runtime::clear_state_for_tests();
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
   crate::roots::global_persistent_handle_table().clear_for_tests();

@@ -31,6 +31,7 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_promise_reject(p: PromiseRef)`
 - `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
+- `rt_async_cancel_all()`
 - `rt_async_poll() -> bool`
 - `rt_async_set_strict_await_yields(strict: bool)`
 
@@ -152,6 +153,50 @@ observe them as structured errors.
 - A coroutine suspends by returning `Await(p)` from its `resume` function; the runtime registers a
   microtask reaction on `p` to resume the coroutine when it settles.
 
+### Coroutine frames
+
+Every coroutine frame is a `#[repr(C)]` struct whose first field (at offset `0`) is a
+[`Coroutine`](../src/async_abi.rs) header:
+
+- `coro.vtable`: points to a static `CoroutineVTable` for the generated coroutine type.
+- `coro.promise`: result promise (written by the runtime before first resume).
+- `coro.next_waiter`: reserved for the runtime (e.g. intrusive wait lists); generated code should
+  initialize this to null.
+- `coro.flags`: runtime-controlled flags.
+
+### Frame ownership (`coro.flags`)
+
+The ownership of a coroutine frame is determined by the `CORO_FLAG_RUNTIME_OWNS_FRAME` bit in
+`coro.flags`:
+
+- **If `CORO_FLAG_RUNTIME_OWNS_FRAME` is set**:
+  - The frame is **heap-owned by the runtime**.
+  - The runtime will call `(*coro.vtable).destroy(coro)` **exactly once** after:
+    - the coroutine completes (after `resume` returns `Complete`), or
+    - the coroutine is cancelled via `rt_async_cancel_all`.
+- **If `CORO_FLAG_RUNTIME_OWNS_FRAME` is not set**:
+  - The frame is **caller-owned** (typically stack-temporary).
+  - The runtime must **never** call `destroy`.
+
+### Suspension rule (stack frames)
+
+A stack/caller-owned coroutine frame must not be stored by the runtime across turns.
+
+In practice this means:
+
+- A coroutine that yields `CoroutineStepTag::Await` must have `CORO_FLAG_RUNTIME_OWNS_FRAME` set.
+- In debug builds, `runtime-native` will abort with a clear message if a coroutine yields `Await`
+  without the flag, because this would otherwise lead to use-after-return UB.
+
+### Cancellation (`rt_async_cancel_all`)
+
+`rt_async_cancel_all` is a teardown helper that destroys all runtime-owned coroutine frames that are
+currently queued/owned by the runtime. It must not double-destroy frames even if:
+
+- a coroutine is accidentally enqueued multiple times,
+- cancellation is requested after completion,
+- promise settlement schedules a stale resume.
+
 ### Spawning APIs
 
 #### `rt_async_spawn`
@@ -160,7 +205,7 @@ observe them as structured errors.
 PromiseRef rt_async_spawn(CoroutineRef coro);
 ```
 
-- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise`.
+- Allocates/initializes the coroutine's result promise and writes it to `coro->promise`.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
 
@@ -170,9 +215,9 @@ PromiseRef rt_async_spawn(CoroutineRef coro);
 PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
 ```
 
-- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise` (same as
+- Allocates/initializes the coroutine's result promise and writes it to `coro->promise` (same as
   `rt_async_spawn`).
-- Enqueues the coroutine’s *first resume* as a **microtask**.
+- Enqueues the coroutine's *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
   a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
 
@@ -200,11 +245,11 @@ This API exists for Web-standard semantics that require guaranteed asynchronous 
 LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);
 ```
 
-- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise`.
+- Allocates/initializes the coroutine's result promise and writes it to `coro->promise`.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
 
-This is the default “eager start” behavior.
+This is the default \"eager start\" behavior.
 
 #### `rt_async_spawn_deferred_legacy` (microtask-style)
 
@@ -212,9 +257,9 @@ This is the default “eager start” behavior.
 LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);
 ```
 
-- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise` (same as
+- Allocates/initializes the coroutine's result promise and writes it to `coro->promise` (same as
   `rt_async_spawn_legacy`).
-- Enqueues the coroutine’s *first resume* as a **microtask**.
+- Enqueues the coroutine's *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
   a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll_legacy`).
 
