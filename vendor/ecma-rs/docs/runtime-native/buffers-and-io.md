@@ -53,7 +53,7 @@ contain a handle/pointer to the backing store, plus view metadata (offset/len).
 
 ### 2) Pin-count protocol for in-flight I/O
 
-Each `BackingStore` maintains a **pin count** (`pin_count: AtomicUsize`).
+Each `BackingStore` maintains a **pin count** (`pin_count: AtomicU32`).
 
 An I/O operation that submits a buffer to the OS must:
 
@@ -126,11 +126,13 @@ This is not the only possible API, but whatever we implement must enforce the
 invariants above.
 
 ```rust
+use core::sync::atomic::AtomicU32;
+
 /// Non-moving bytes backing an ArrayBuffer-like object.
 struct BackingStore {
   base: NonNull<u8>,
   len: usize,
-  pin_count: AtomicUsize,
+  pin_count: AtomicU32,
   // ... external memory accounting metadata ...
 }
 
