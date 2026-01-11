@@ -1,10 +1,7 @@
 use hir_js::{
-  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind,
+  ArrayElement, BinaryOp, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind,
   StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
-
-#[cfg(feature = "typed")]
-use hir_js::BinaryOp;
 
 use crate::api::ApiId;
 use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
@@ -99,6 +96,45 @@ fn parse_simple_method_call_untyped(
   };
 
   Some((member.object, *prop, arg0.expr))
+}
+
+fn is_null_or_undefined_expr(lowered: &LowerResult, body: &hir_js::Body, expr: ExprId) -> bool {
+  let expr = strip_transparent_wrappers(body, expr);
+  let Some(expr) = body.exprs.get(expr.0 as usize) else {
+    return false;
+  };
+  match &expr.kind {
+    ExprKind::Literal(hir_js::Literal::Null) => true,
+    ExprKind::Literal(hir_js::Literal::Undefined) => true,
+    ExprKind::Ident(name) => lowered.names.resolve(*name) == Some("undefined"),
+    _ => false,
+  }
+}
+
+fn guard_clause_subject(lowered: &LowerResult, body: &hir_js::Body, test: ExprId) -> Option<ExprId> {
+  let test = strip_transparent_wrappers(body, test);
+  let test_expr = body.exprs.get(test.0 as usize)?;
+  match &test_expr.kind {
+    ExprKind::Unary {
+      op: UnaryOp::Not,
+      expr,
+    } => Some(strip_transparent_wrappers(body, *expr)),
+    ExprKind::Binary { op, left, right } => {
+      if !matches!(op, BinaryOp::Equality | BinaryOp::StrictEquality) {
+        return None;
+      }
+      let left = strip_transparent_wrappers(body, *left);
+      let right = strip_transparent_wrappers(body, *right);
+      if is_null_or_undefined_expr(lowered, body, right) {
+        Some(left)
+      } else if is_null_or_undefined_expr(lowered, body, left) {
+        Some(right)
+      } else {
+        None
+      }
+    }
+    _ => None,
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,7 +532,8 @@ pub fn recognize_patterns_best_effort_untyped(
           if array.rest.is_some() {
             continue;
           }
-          if array.elements.iter().any(|e| e.is_none()) {
+          let binding_count = array.elements.iter().flatten().count();
+          if binding_count == 0 {
             continue;
           }
           if array
@@ -510,7 +547,7 @@ pub fn recognize_patterns_best_effort_untyped(
           patterns.push(RecognizedPattern::ArrayDestructure {
             stmt: stmt_id,
             pat: pat_id,
-            arity: array.elements.len(),
+            arity: binding_count,
             source,
           });
         }
@@ -521,14 +558,7 @@ pub fn recognize_patterns_best_effort_untyped(
         alternate: None,
       } => {
         let if_stmt_id = stmt_id;
-        let Some(test_expr) = body_ref.exprs.get(test.0 as usize) else {
-          return;
-        };
-        let ExprKind::Unary {
-          op: UnaryOp::Not,
-          expr,
-        } = &test_expr.kind
-        else {
+        let Some(subject) = guard_clause_subject(lowered, body_ref, *test) else {
           return;
         };
 
@@ -541,14 +571,14 @@ pub fn recognize_patterns_best_effort_untyped(
             StmtKind::Return(_) => {
               patterns.push(RecognizedPattern::GuardClause {
                 stmt: if_stmt_id,
-                test: *expr,
+                test: subject,
                 kind: GuardKind::Return,
               });
             }
             StmtKind::Throw(_) => {
               patterns.push(RecognizedPattern::GuardClause {
                 stmt: if_stmt_id,
-                test: *expr,
+                test: subject,
                 kind: GuardKind::Throw,
               });
             }
@@ -603,12 +633,24 @@ pub fn recognize_patterns_best_effort_untyped(
     }
 
     if let ExprKind::Object(obj) = &expr.kind {
-      let spread_count = obj
-        .properties
-        .iter()
-        .filter(|p| matches!(p, ObjectProperty::Spread(_)))
-        .count();
-      if spread_count > 0 {
+      let mut spread_count = 0usize;
+      let mut valid = true;
+      for prop in &obj.properties {
+        match prop {
+          ObjectProperty::Spread(_) => spread_count += 1,
+          ObjectProperty::KeyValue { key, .. } => {
+            if matches!(key, hir_js::ObjectKey::Computed(_)) {
+              valid = false;
+              break;
+            }
+          }
+          ObjectProperty::Getter { .. } | ObjectProperty::Setter { .. } => {
+            valid = false;
+            break;
+          }
+        }
+      }
+      if valid && spread_count > 0 {
         patterns.push(RecognizedPattern::ObjectSpread {
           expr: expr_id,
           spread_count,
@@ -1053,7 +1095,8 @@ pub fn recognize_patterns_typed(
           if array.rest.is_some() {
             continue;
           }
-          if array.elements.iter().any(|e| e.is_none()) {
+          let binding_count = array.elements.iter().flatten().count();
+          if binding_count == 0 {
             continue;
           }
           if array
@@ -1067,7 +1110,7 @@ pub fn recognize_patterns_typed(
           patterns.push(RecognizedPattern::ArrayDestructure {
             stmt: stmt_id,
             pat: pat_id,
-            arity: array.elements.len(),
+            arity: binding_count,
             source,
           });
         }
@@ -1078,14 +1121,7 @@ pub fn recognize_patterns_typed(
         alternate: None,
       } => {
         let if_stmt_id = stmt_id;
-        let Some(test_expr) = body_ref.exprs.get(test.0 as usize) else {
-          return;
-        };
-        let ExprKind::Unary {
-          op: UnaryOp::Not,
-          expr,
-        } = &test_expr.kind
-        else {
+        let Some(subject) = guard_clause_subject(lowered, body_ref, *test) else {
           return;
         };
 
@@ -1098,14 +1134,14 @@ pub fn recognize_patterns_typed(
             StmtKind::Return(_) => {
               patterns.push(RecognizedPattern::GuardClause {
                 stmt: if_stmt_id,
-                test: *expr,
+                test: subject,
                 kind: GuardKind::Return,
               });
             }
             StmtKind::Throw(_) => {
               patterns.push(RecognizedPattern::GuardClause {
                 stmt: if_stmt_id,
-                test: *expr,
+                test: subject,
                 kind: GuardKind::Throw,
               });
             }
@@ -1203,12 +1239,24 @@ pub fn recognize_patterns_typed(
     }
 
     if let ExprKind::Object(obj) = &expr.kind {
-      let spread_count = obj
-        .properties
-        .iter()
-        .filter(|p| matches!(p, ObjectProperty::Spread(_)))
-        .count();
-      if spread_count > 0 {
+      let mut spread_count = 0usize;
+      let mut valid = true;
+      for prop in &obj.properties {
+        match prop {
+          ObjectProperty::Spread(_) => spread_count += 1,
+          ObjectProperty::KeyValue { key, .. } => {
+            if matches!(key, hir_js::ObjectKey::Computed(_)) {
+              valid = false;
+              break;
+            }
+          }
+          ObjectProperty::Getter { .. } | ObjectProperty::Setter { .. } => {
+            valid = false;
+            break;
+          }
+        }
+      }
+      if valid && spread_count > 0 {
         patterns.push(RecognizedPattern::ObjectSpread {
           expr: expr_id,
           spread_count,
