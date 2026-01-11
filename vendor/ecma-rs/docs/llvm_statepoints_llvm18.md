@@ -1,0 +1,210 @@
+# LLVM 18 `gc.statepoint` IR (opaque pointers) and `.llvm_stackmaps`
+
+This document captures the **LLVM 18.1.x verifier-accepted** IR form for
+`@llvm.experimental.gc.statepoint` under **opaque pointers** (the default in LLVM
+18). It exists so `native-js` can emit statepoints without relying on
+`llc --disable-verify`.
+
+The repository includes a minimal working fixture:
+
+* `tests/fixtures/llvm/statepoint_min.ll`
+
+That fixture:
+
+1. Assembles with `llvm-as-18` with full verification.
+2. Compiles with `llc-18 -filetype=obj` to an object containing a
+   `.llvm_stackmaps` section.
+3. Uses `"gc-live"` roots and `gc.relocate` indices in a verifier-correct way.
+
+## Non-negotiable requirements (LLVM 18)
+
+### 1) The containing function must be a GC function
+
+Any function containing a statepoint must have a GC strategy name:
+
+```llvm
+define void @f(...) gc "statepoint-example" { ... }
+```
+
+If you omit `gc "..."`, LLVM 18 will abort during module verification with an
+error like:
+
+```
+LLVM ERROR: unsupported GC:
+```
+
+For our purposes, `"statepoint-example"` is sufficient (it enables the statepoint
+lowering + stackmap emission pipeline).
+
+### 2) GC pointers must be in a GC address space (addrspace(1))
+
+Under `"statepoint-example"`, LLVM treats **`addrspace(1)` pointers** as GC
+pointers. This affects:
+
+* the types in the `"gc-live"` bundle
+* `gc.relocate` return type
+* `gc.result` return type (when the callee returns a GC pointer)
+
+If you try to use `ptr` in addrspace(0) with `gc.relocate`, the verifier rejects
+it:
+
+```
+gc.relocate: must return gc pointer
+```
+
+### 3) The statepoint callee operand must have `elementtype(...)`
+
+With opaque pointers, LLVM cannot recover the callee function type from a `ptr`.
+LLVM 18’s verifier therefore requires the callee operand passed to the statepoint
+to carry an explicit `elementtype`:
+
+```llvm
+ptr elementtype(ptr addrspace(1) (ptr addrspace(1))) @callee
+```
+
+If you omit it you will see:
+
+```
+gc.statepoint callee argument must have elementtype attribute
+```
+
+### 4) The final two `i32` operands are REQUIRED (and must be constant)
+
+In LLVM 18 the intrinsic still syntactically includes the legacy counts for
+inline transition + inline deopt operands, and the verifier insists they exist:
+
+* `numTransitionArgs` (constant `i32`)
+* `numDeoptArgs` (constant `i32`)
+
+If you omit them you’ll see errors like:
+
+* `gc.statepoint number of transition arguments must be constant integer`
+* `gc.statepoint number of deoptimization arguments must be constant integer`
+
+In LLVM 18 these inline forms are **rejected** (not merely warned): the verifier
+fails if either count is non-zero:
+
+* `gc.statepoint w/inline transition bundle is deprecated`
+* `gc.statepoint w/inline deopt operands is deprecated`
+
+So for LLVM 18 codegen, always emit:
+
+```llvm
+i32 0, i32 0
+```
+
+and use operand bundles (`"deopt"`, `"gc-transition"`) if you need those features.
+
+## Intrinsic declarations (LLVM 18)
+
+The exact overload suffixes matter:
+
+* `gc.statepoint.p0` — `p0` is the callee pointer address space (almost always 0)
+* `gc.result.pN` / `gc.relocate.pN` — `pN` is the **GC pointer address space**
+  (`N = 1` for `"statepoint-example"`)
+
+Canonical declarations (matching the fixture):
+
+```llvm
+declare token @llvm.experimental.gc.statepoint.p0(
+    i64 immarg, i32 immarg, ptr,
+    i32 immarg, i32 immarg, ...)
+
+declare ptr addrspace(1) @llvm.experimental.gc.result.p1(token)
+
+declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(
+    token, i32 immarg, i32 immarg)
+```
+
+## Verifier-correct statepoint call shape (LLVM 18)
+
+Conceptually, a statepoint call looks like:
+
+```llvm
+%tok = call token (i64, i32, ptr, i32, i32, ...)
+  @llvm.experimental.gc.statepoint.p0(
+    i64 <id>,
+    i32 <num_patch_bytes>,
+    ptr elementtype(<callee fn type>) <callee>,
+    i32 <num_call_args>,
+    i32 <flags>,
+    ; <num_call_args> call arguments...
+    ...,
+    i32 0,  ; numTransitionArgs (required, must be const 0 in LLVM 18)
+    i32 0)  ; numDeoptArgs      (required, must be const 0 in LLVM 18)
+  [ "gc-live"(<gcptr0>, <gcptr1>, ...),
+    "deopt"(<val0>, <val1>, ...)?,
+    "gc-transition"(<val0>, ...)? ]
+```
+
+Notes:
+
+* `<id>` becomes the StackMap **Record ID** (`llvm-readobj --stackmap` prints it).
+* `<num_patch_bytes>` and `<flags>` are almost always `0` for our usage.
+* Operand bundles are written as a **single** bracket list with comma-separated
+  bundles:
+
+  ```llvm
+  [ "deopt"(i32 123), "gc-live"(ptr addrspace(1) %root) ]
+  ```
+
+  (LLVM IR does **not** accept multiple trailing `[...] [...]` bundle groups.)
+
+## `gc.relocate` index mapping (LLVM 18)
+
+`gc.relocate` picks entries from the `"gc-live"` list using **0-based indices**.
+The verifier bounds-checks these indices.
+
+* `base_idx` — which `"gc-live"` entry is the *base* pointer (object reference)
+* `derived_idx` — which `"gc-live"` entry is the *derived* pointer (may be the
+  same as base for non-interior pointers)
+
+Example:
+
+```llvm
+[ "gc-live"(ptr addrspace(1) %obj, ptr addrspace(1) %derived) ]
+
+; Relocate the base pointer itself:
+%obj.reloc = call ptr addrspace(1)
+  @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 0)
+
+; Relocate an interior pointer (derived from %obj):
+%derived.reloc = call ptr addrspace(1)
+  @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 1)
+```
+
+## What to expect in `.llvm_stackmaps`
+
+Compile the fixture and inspect the stackmap:
+
+```bash
+llvm-as-18 tests/fixtures/llvm/statepoint_min.ll -o /tmp/sp.bc
+llc-18 -filetype=obj /tmp/sp.bc -o /tmp/sp.o
+llvm-readobj-18 --stackmap /tmp/sp.o
+llvm-objdump-18 -d --no-show-raw-insn /tmp/sp.o
+```
+
+Key observations (x86_64):
+
+* `LLVM StackMap Version: 3`
+* A `Record ID` matches the statepoint `<id>` immediate.
+* `instruction offset` is the **return address** (the offset of the instruction
+  *after* the call) relative to the function start.
+* GC roots typically show up as locations like:
+
+  ```
+  Indirect [R#7 + <off>], size: 8
+  ```
+
+  On x86_64, `R#7` is DWARF register 7 (`RSP`), so this means the root was spilled
+  to the stack at `[rsp + off]` at the safepoint.
+
+Frame-pointer note:
+
+* Depending on optimization level and code shape, LLVM may report locations
+  relative to `RSP`, `RBP`, or in registers.
+* If the runtime wants more predictable frame layouts, compile GC functions with
+  a frame pointer (`-fno-omit-frame-pointer` / `frame-pointer="all"`). Stackmaps
+  remain valid either way; the runtime just needs to interpret the register
+  numbers in the record.
+
