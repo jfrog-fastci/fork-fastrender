@@ -147,7 +147,7 @@ This allows the runtime to load stackmaps without scanning memory or parsing `/p
 Hardening notes:
 
 * `runtime-native/link/stackmaps.ld` is written for lld/GNU ld linker scripts (it uses `SECTIONS` +
-  `INSERT`). Linkers like **mold** do not support these scripts; use GNU ld or lld (`-fuse-ld=lld`)
+  `INSERT`). Linkers like **mold** do not support these scripts; use GNU ld or lld (e.g. `-fuse-ld=lld-18`)
   when injecting the fragment.
 * For **GNU ld** in **PIE/DSO** mode, inserting the stackmaps output section “after `.text`” can
   place it in the same LOAD segment as `.text`, producing an RWX segment once the stackmaps need to

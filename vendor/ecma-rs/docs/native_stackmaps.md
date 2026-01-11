@@ -47,7 +47,7 @@ It also defines stable boundary symbols for runtime discovery (see below).
 > Note: `runtime-native/link/stackmaps.ld` is injected via the GNU ld/LLD linker-script
 > `INSERT` mechanism (anchored at `INSERT BEFORE .data;`). If you use a linker that
 > doesn't support `INSERT` (some
-> alternative linkers do not), switch to GNU ld or lld (e.g. `clang -fuse-ld=lld`),
+> alternative linkers do not), switch to GNU ld or lld (e.g. `clang-18 -fuse-ld=lld-18`),
 > or avoid `--gc-sections`.
 The repository’s wrapper does this for you:
 
