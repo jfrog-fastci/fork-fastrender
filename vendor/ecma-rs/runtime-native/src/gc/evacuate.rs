@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::mem;
 use std::ptr;
 use std::time::Instant;
@@ -30,9 +29,6 @@ impl GcHeap {
     {
       let mut evac = Evacuator {
         heap: self,
-        worklist: VecDeque::new(),
-        #[cfg(any(debug_assertions, feature = "gc_debug"))]
-        forwarded: Vec::new(),
       };
 
       roots.for_each_root_slot(&mut |slot| {
@@ -48,13 +44,6 @@ impl GcHeap {
       remembered.for_each_remembered_obj(&mut |obj| {
         evac.visit_obj(obj);
       });
-
-      while let Some(obj) = evac.worklist.pop_front() {
-        evac.visit_obj(obj);
-      }
-
-      #[cfg(any(debug_assertions, feature = "gc_debug"))]
-      evac.heap.verify_forwarding_pairs(&evac.forwarded);
     }
 
     // All nursery pointers reachable from roots/remembered objects should now be
@@ -82,20 +71,17 @@ impl GcHeap {
 
 struct Evacuator<'a> {
   heap: &'a mut GcHeap,
-  worklist: VecDeque<*mut u8>,
-  #[cfg(any(debug_assertions, feature = "gc_debug"))]
-  forwarded: Vec<(*mut u8, *mut u8)>,
 }
 
 impl Evacuator<'_> {
-  fn evacuate(&mut self, obj: *mut u8) -> *mut u8 {
+  fn evacuate(&mut self, obj: *mut u8) -> (*mut u8, bool) {
     debug_assert!(self.heap.is_in_nursery(obj));
 
     // SAFETY: `obj` is a valid GC object in the nursery.
     unsafe {
       let header = &mut *(obj as *mut ObjHeader);
       if header.is_forwarded() {
-        return header.forwarding_ptr();
+        return (header.forwarding_ptr(), false);
       }
 
       let size = super::obj_size(obj);
@@ -105,10 +91,12 @@ impl Evacuator<'_> {
       ptr::copy_nonoverlapping(obj, new_obj, size);
       header.set_forwarding_ptr(new_obj);
       #[cfg(any(debug_assertions, feature = "gc_debug"))]
-      self.forwarded.push((obj, new_obj));
+      {
+        // Minor GC must not allocate; validate evacuation on the fly instead of building a list.
+        self.heap.verify_forwarding_pairs(&[(obj, new_obj)]);
+      }
 
-      self.worklist.push_back(new_obj);
-      new_obj
+      (new_obj, true)
     }
   }
 }
@@ -123,10 +111,15 @@ impl Tracer for Evacuator<'_> {
     }
 
     if self.heap.is_in_nursery(obj) {
-      let new_obj = self.evacuate(obj);
+      let (new_obj, is_new) = self.evacuate(obj);
       // SAFETY: `slot` is valid and writable.
       unsafe {
         *slot = new_obj;
+      }
+      if is_new {
+        // Depth-first evacuation: immediately scan the promoted copy to avoid allocating a worklist
+        // (GC must not allocate).
+        self.visit_obj(new_obj);
       }
     }
   }
