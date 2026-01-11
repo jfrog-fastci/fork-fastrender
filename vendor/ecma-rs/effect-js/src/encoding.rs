@@ -73,6 +73,7 @@ struct UntypedOracle;
 
 trait TypeOracle {
   fn receiver_is_string(&self, body: BodyId, expr: ExprId) -> bool;
+  fn receiver_is_number(&self, body: BodyId, expr: ExprId) -> bool;
   fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool;
 
   #[cfg(feature = "typed")]
@@ -83,6 +84,10 @@ trait TypeOracle {
 
 impl TypeOracle for UntypedOracle {
   fn receiver_is_string(&self, _body: BodyId, _expr: ExprId) -> bool {
+    false
+  }
+
+  fn receiver_is_number(&self, _body: BodyId, _expr: ExprId) -> bool {
     false
   }
 
@@ -103,6 +108,10 @@ impl TypeOracle for TypedOracle<'_> {
     type_is_string(self.types, body, expr)
   }
 
+  fn receiver_is_number(&self, body: BodyId, expr: ExprId) -> bool {
+    type_is_number(self.types, body, expr)
+  }
+
   fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool {
     type_is_string(self.types, body, expr)
   }
@@ -115,6 +124,21 @@ impl TypeOracle for TypedOracle<'_> {
 #[cfg(feature = "typed")]
 fn type_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, expr: ExprId) -> bool {
   types.expr_is_string(body, expr)
+}
+
+#[cfg(feature = "typed")]
+fn type_is_number(types: &dyn crate::types::TypeProvider, body: BodyId, expr: ExprId) -> bool {
+  use crate::types::TypeKindSummary;
+
+  let Some(ty) = types.expr_type(body, expr) else {
+    return false;
+  };
+
+  match types.type_kind(ty) {
+    Some(TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_)) => true,
+    Some(TypeKindSummary::Ref { def, .. }) => types.def_name(def).as_deref() == Some("Number"),
+    _ => false,
+  }
 }
 
 struct BodyAnalyzer<'a, O> {
@@ -228,27 +252,45 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       return StringEncoding::Unknown;
     };
 
-    if !self.oracle.receiver_is_string(self.body_id, member.object) {
-      return StringEncoding::Unknown;
-    }
+    if self.oracle.receiver_is_string(self.body_id, member.object) {
+      let recv_enc = self.encoding_of(member.object);
 
-    let recv_enc = self.encoding_of(member.object);
-
-    let api_key = format!("String.prototype.{prop_name}");
-    if let Some(enc) = self.encoding_via_kb(&api_key, recv_enc) {
-      return enc;
-    }
-
-    match prop_name {
-      "slice" => recv_enc,
-      "toLowerCase" | "toUpperCase" => {
-        if recv_enc == StringEncoding::Ascii {
-          StringEncoding::Ascii
-        } else {
-          StringEncoding::Unknown
-        }
+      let api_key = format!("String.prototype.{prop_name}");
+      if let Some(enc) = self.encoding_via_kb(&api_key, recv_enc) {
+        return enc;
       }
-      _ => StringEncoding::Unknown,
+
+      match prop_name {
+        "slice" => recv_enc,
+        "toString" => recv_enc,
+        "concat" => {
+          if recv_enc != StringEncoding::Ascii {
+            return StringEncoding::Unknown;
+          }
+          for arg in &call.args {
+            if arg.spread || self.encoding_of(arg.expr) != StringEncoding::Ascii {
+              return StringEncoding::Unknown;
+            }
+          }
+          StringEncoding::Ascii
+        }
+        "toLowerCase" | "toUpperCase" => {
+          if recv_enc == StringEncoding::Ascii {
+            StringEncoding::Ascii
+          } else {
+            StringEncoding::Unknown
+          }
+        }
+        _ => StringEncoding::Unknown,
+      }
+    } else if self.oracle.receiver_is_number(self.body_id, member.object) {
+      match prop_name {
+        // `Number.prototype.toString()` always returns ASCII digits/sign/exponent forms.
+        "toString" => StringEncoding::Ascii,
+        _ => StringEncoding::Unknown,
+      }
+    } else {
+      StringEncoding::Unknown
     }
   }
 
@@ -318,7 +360,10 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       "ascii" => Some(StringEncoding::Ascii),
       "latin1" => Some(StringEncoding::Latin1),
       "utf8" => Some(StringEncoding::Utf8),
-      "unknown" => Some(StringEncoding::Unknown),
+      // `"unknown"` means the knowledge base has no useful encoding information.
+      // Returning `None` allows caller-specific fallbacks (e.g. refining
+      // `String.prototype.concat` when all operands are ASCII).
+      "unknown" => None,
       "same_as_input" => Some(input),
       _ => None,
     }

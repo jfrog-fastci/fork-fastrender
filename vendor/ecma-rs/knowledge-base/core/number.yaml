@@ -19,3 +19,15 @@
       flags: ""
       throws: Maybe
   purity: Pure
+
+- name: Number.prototype.toString
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+  properties:
+    encoding.output: ascii

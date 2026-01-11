@@ -111,6 +111,31 @@ fn url_pathname_is_ascii_via_kb_property_get() {
   assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
 }
 
+#[test]
+fn new_number_to_string_is_ascii_via_kb() {
+  let lower = hir_js::lower_from_source("new Number(42).toString();").unwrap();
+  let root_body_id = lower.hir.root_body;
+  let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+
+  let expr_id = find_first_expr(root_body, |kind| {
+    matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new)
+  });
+
+  let entries = parse_api_semantics_yaml_str(
+    r#"
+- name: Number.prototype.toString
+  properties:
+    encoding.output: ascii
+"#,
+  )
+  .unwrap();
+  let kb = ApiDatabase::from_entries(entries);
+  let results = analyze_string_encodings(&lower, &kb);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
 #[cfg(feature = "typed")]
 #[test]
 fn to_lowercase_preserves_ascii() {
@@ -180,7 +205,6 @@ u.pathname;
   let root_body = lowered.body(root_body_id).expect("root body exists");
 
   let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Member(_)));
-
   let types = TypedProgram::from_program(Arc::clone(&program), file);
   let entries = parse_api_semantics_yaml_str(
     r#"
@@ -188,6 +212,84 @@ u.pathname;
   kind: property_get
   properties:
     encoding.output: ascii
+"#,
+  )
+  .unwrap();
+  let kb = ApiDatabase::from_entries(entries);
+  let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
+#[cfg(feature = "typed")]
+#[test]
+fn number_to_string_is_ascii() {
+  use effect_js::typed::TypedProgram;
+  use std::sync::Arc;
+  use typecheck_ts::{FileKey, MemoryHost, Program};
+
+  let key = FileKey::new("index.ts");
+  let mut host = MemoryHost::new();
+  host.insert(key.clone(), "const n: number = 42; n.toString();");
+
+  let program = Arc::new(Program::new(host, vec![key.clone()]));
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "typecheck diagnostics: {diagnostics:#?}"
+  );
+
+  let file = program.file_id(&key).expect("index.ts loaded");
+  let lowered = program.hir_lowered(file).expect("HIR lowered");
+  let root_body_id = lowered.root_body();
+  let root_body = lowered.body(root_body_id).expect("root body exists");
+
+  let expr_id = find_first_expr(root_body, |kind| {
+    matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new)
+  });
+
+  let types = TypedProgram::from_program(Arc::clone(&program), file);
+  let kb = KnowledgeBase::default();
+  let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
+#[cfg(feature = "typed")]
+#[test]
+fn string_concat_ascii_is_ascii() {
+  use effect_js::typed::TypedProgram;
+  use std::sync::Arc;
+  use typecheck_ts::{FileKey, MemoryHost, Program};
+
+  let key = FileKey::new("index.ts");
+  let mut host = MemoryHost::new();
+  host.insert(key.clone(), "\"a\".concat(\"b\");");
+
+  let program = Arc::new(Program::new(host, vec![key.clone()]));
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "typecheck diagnostics: {diagnostics:#?}"
+  );
+
+  let file = program.file_id(&key).expect("index.ts loaded");
+  let lowered = program.hir_lowered(file).expect("HIR lowered");
+  let root_body_id = lowered.root_body();
+  let root_body = lowered.body(root_body_id).expect("root body exists");
+
+  let expr_id = find_first_expr(root_body, |kind| {
+    matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new)
+  });
+
+  let types = TypedProgram::from_program(Arc::clone(&program), file);
+  let entries = parse_api_semantics_yaml_str(
+    r#"
+- name: String.prototype.concat
+  properties:
+    encoding.output: unknown
 "#,
   )
   .unwrap();
