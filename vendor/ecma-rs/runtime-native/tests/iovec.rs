@@ -123,6 +123,25 @@ mod unix {
   }
 
   #[test]
+  fn iovecs_pin_backing_stores_and_block_detach() {
+    let mut buf = ArrayBuffer::new_zeroed(8).unwrap();
+    let view = Uint8Array::view(&buf, 2, 4).unwrap();
+
+    let ranges = vec![
+      IoVecRange::whole_array_buffer(&buf),
+      IoVecRange::uint8_array(&view),
+    ];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+
+    // Any pin guard (including those held by iovec descriptors) must block detach/transfer/resize.
+    assert_eq!(buf.detach(), Err(ArrayBufferError::Pinned));
+
+    drop(pinned);
+    buf.detach().unwrap();
+    assert!(buf.is_detached());
+  }
+
+  #[test]
   fn writev_readv_uint8array_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let (read_fd, write_fd) = pipe()?;
 
