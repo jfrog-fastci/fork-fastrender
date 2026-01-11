@@ -1,0 +1,32 @@
+# Navigator APIs (user agent, beacon, etc).
+
+- name: navigator.userAgent
+  kind: getter
+  aliases:
+    - navigator.userAgent
+    - window.navigator.userAgent
+    - globalThis.navigator.userAgent
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: navigator.sendBeacon
+  kind: function
+  aliases:
+    - navigator.sendBeacon
+    - window.navigator.sendBeacon
+    - globalThis.navigator.sendBeacon
+  since: "baseline"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
