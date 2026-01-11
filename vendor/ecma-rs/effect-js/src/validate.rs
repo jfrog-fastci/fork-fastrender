@@ -457,6 +457,22 @@ mod tests {
   }
 
   #[test]
+  fn flags_pure_with_global_write_as_inconsistent() {
+    let db = ApiDatabase::from_entries([api(
+      "document.createElement",
+      EffectTemplate::Custom(EffectSet::WRITES_GLOBAL),
+      PurityTemplate::Pure,
+      &[],
+    )]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::InconsistentPurityEffects { .. }
+    )));
+  }
+
+  #[test]
   fn effects_base_accepts_global_tokens() {
     let db = ApiDatabase::from_entries([api(
       "queue.drain",
@@ -471,6 +487,29 @@ mod tests {
       )],
     )]);
     validate(&db).expect("global effects.base tokens are accepted");
+  }
+
+  #[test]
+  fn purity_kind_pure_with_global_write_as_inconsistent() {
+    let mut api = api(
+      "document.createElement",
+      EffectTemplate::Custom(EffectSet::WRITES_GLOBAL),
+      PurityTemplate::Impure,
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![JsonValue::String("writes_global".to_string())]),
+      )],
+    );
+    api
+      .properties
+      .insert("purity.kind".to_string(), JsonValue::String("pure".to_string()));
+    let db = ApiDatabase::from_entries([api]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::InconsistentPurityEffects { .. }
+    )));
   }
 
   #[test]
