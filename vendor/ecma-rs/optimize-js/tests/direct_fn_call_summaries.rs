@@ -231,3 +231,54 @@ fn direct_fn_call_param_no_escape_is_respected_with_spread_args() {
     "expected allocation to remain local when callee param does not escape (even with spread args)"
   );
 }
+
+#[test]
+fn direct_fn_call_param_escape_is_propagated_with_spread_before_arg() {
+  let src = r#"
+    const g = (x, y) => { globalSink(x); y; };
+    const f = (a, arr) => { g(...arr, a); };
+    const o = {};
+    const arr = unknownArray();
+    f(o, arr);
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  let analyses = annotate_program(&mut program);
+
+  let alloc = find_top_level_object_alloc(&program);
+  let escape = analyses
+    .escape
+    .get(&FunctionKey::TopLevel)
+    .expect("escape results for top-level");
+
+  assert_eq!(
+    escape.get(&alloc),
+    Some(&EscapeState::GlobalEscape),
+    "expected allocation to escape when passed after a spread (it may flow into an escaping callee parameter)"
+  );
+}
+
+#[test]
+fn direct_fn_call_param_no_escape_through_captured_callee_is_respected() {
+  let src = r#"
+    const g = (x) => { x; };
+    const f = (a) => { g(a); };
+    const o = {};
+    f(o);
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  let analyses = annotate_program(&mut program);
+
+  let alloc = find_top_level_object_alloc(&program);
+  let escape = analyses
+    .escape
+    .get(&FunctionKey::TopLevel)
+    .expect("escape results for top-level");
+
+  assert_eq!(
+    escape.get(&alloc),
+    Some(&EscapeState::NoEscape),
+    "expected allocation to remain local when param only flows into a captured callee that does not escape it"
+  );
+}
