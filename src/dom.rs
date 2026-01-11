@@ -5741,25 +5741,6 @@ impl<'a> ElementRef<'a> {
     pushed
   }
 
-  fn subtree_has_content(node: &DomNode) -> bool {
-    // Avoid recursion to prevent stack overflows in pathological trees (e.g., fuzzing or malformed
-    // DOM inputs that violate our usual structural assumptions about where shadow roots/documents
-    // can appear).
-    let mut stack: Vec<&DomNode> = vec![node];
-    while let Some(current) = stack.pop() {
-      match &current.node_type {
-        DomNodeType::Text { .. } => return true,
-        DomNodeType::Element { .. } | DomNodeType::Slot { .. } => return true,
-        DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. } => {
-          for child in current.children.iter().rev() {
-            stack.push(child);
-          }
-        }
-      }
-    }
-    false
-  }
-
   fn sibling_position(
     &self,
     context: &mut selectors::matching::MatchingContext<FastRenderSelectorImpl>,
@@ -8192,7 +8173,18 @@ impl<'a> Element for ElementRef<'a> {
     if self.node.is_template_element() {
       return true;
     }
-    !self.node.children.iter().any(Self::subtree_has_content)
+    // https://www.w3.org/TR/selectors-4/#empty-pseudo
+    //
+    // `:empty` is defined in terms of child nodes in the DOM tree.
+    // Shadow roots are separate node trees and must not affect `:empty` matching on the shadow host.
+    for child in self.node.children.iter() {
+      match child.node_type {
+        DomNodeType::Text { .. } => return false,
+        DomNodeType::Element { .. } | DomNodeType::Slot { .. } => return false,
+        DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. } => {}
+      }
+    }
+    true
   }
 
   fn is_root(&self) -> bool {
@@ -11873,31 +11865,6 @@ mod tests {
   }
 
   #[test]
-  fn deep_subtree_has_content_does_not_overflow_stack() {
-    // `:empty` uses `subtree_has_content` to treat shadow roots/documents as transparent wrappers
-    // while still short-circuiting for normal element/text nodes. Keep this non-recursive so
-    // pathological DOM shapes cannot overflow the call stack.
-    let depth = 20_000usize;
-    let mut node = DomNode {
-      node_type: DomNodeType::Text {
-        content: "x".to_string(),
-      },
-      children: vec![],
-    };
-    for _ in 0..depth {
-      node = DomNode {
-        node_type: DomNodeType::ShadowRoot {
-          mode: ShadowRootMode::Open,
-          delegates_focus: false,
-        },
-        children: vec![node],
-      };
-    }
-
-    assert!(ElementRef::subtree_has_content(&node));
-  }
-
-  #[test]
   fn has_relative_selector_ancestor_bloom_rejects_by_ancestor_chain() {
     // Contains `.a`, `.b` and many `.c` nodes, but `.b` is not a descendant of `.a`,
     // so `.a .b .c` can never match.
@@ -12665,6 +12632,38 @@ mod tests {
     assert!(matches(&empty, &[], &PseudoClass::Empty));
     assert!(!matches(&whitespace, &[], &PseudoClass::Empty));
     assert!(!matches(&child, &[], &PseudoClass::Empty));
+
+    // Shadow roots are separate node trees; the shadow host's light tree can still be empty.
+    let shadow_host = element(
+      "div",
+      vec![DomNode {
+        node_type: DomNodeType::ShadowRoot {
+          mode: ShadowRootMode::Open,
+          delegates_focus: false,
+        },
+        children: vec![element("span", vec![])],
+      }],
+    );
+    assert!(matches(&shadow_host, &[], &PseudoClass::Empty));
+
+    let shadow_host_with_light_child = element(
+      "div",
+      vec![
+        DomNode {
+          node_type: DomNodeType::ShadowRoot {
+            mode: ShadowRootMode::Open,
+            delegates_focus: false,
+          },
+          children: vec![element("span", vec![])],
+        },
+        element("span", vec![]),
+      ],
+    );
+    assert!(!matches(
+      &shadow_host_with_light_child,
+      &[],
+      &PseudoClass::Empty
+    ));
   }
 
   #[test]
