@@ -479,10 +479,12 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
   match stackmaps.lookup(caller_ra) {
     Some(callsite) => {
-      // Prefer the captured stackmap-semantics SP for the top managed frame. On x86_64 the callee
-      // entry RSP points at the return address (8 bytes lower than the stackmap base), so we store
-      // the correct post-call SP in `ctx.sp`.
-      let caller_sp = (ctx.sp != 0).then_some(ctx.sp as u64);
+      // Prefer the captured stackmap-semantics SP for the top managed frame.
+      //
+      // If `ctx.sp` is missing, we can still derive the stackmap base from `ctx.sp_entry`:
+      // - x86_64: `sp = sp_entry + 8` (return address pushed by `call`)
+      // - aarch64: `sp = sp_entry` (`bl` does not push a return address)
+      let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
       enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp, &mut visit)?;
     }
     None => {
@@ -644,7 +646,7 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
     // Prefer the captured stackmap-semantics SP for the top managed frame (see the note in
     // `walk_gc_roots_from_safepoint_context`).
-    let caller_sp = (ctx.sp != 0).then_some(ctx.sp as u64);
+    let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
     let pairs = enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp)?;
     if !pairs.is_empty() {
       visit_frame_reloc_pairs(caller_ra, &pairs);
@@ -786,6 +788,30 @@ fn location_uses_sp(loc: &Location) -> bool {
       ..
     }
   )
+}
+
+#[inline]
+fn caller_sp_override_from_safepoint_ctx(ctx: &crate::arch::SafepointContext) -> Option<u64> {
+  if ctx.sp != 0 {
+    return Some(ctx.sp as u64);
+  }
+
+  if ctx.sp_entry == 0 {
+    return None;
+  }
+
+  let sp_entry = ctx.sp_entry as u64;
+  #[cfg(target_arch = "x86_64")]
+  {
+    // x86_64 `call` pushes the return address, so callee-entry RSP points at the return address and
+    // the stackmap base is `RSP + 8`.
+    Some(sp_entry.saturating_add(arch::WORD))
+  }
+  #[cfg(target_arch = "aarch64")]
+  {
+    // AArch64 `bl` does not push a return address; SP is unchanged.
+    Some(sp_entry)
+  }
 }
 
 fn enumerate_roots_for_frame(

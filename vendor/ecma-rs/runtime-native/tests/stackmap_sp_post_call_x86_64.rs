@@ -134,6 +134,164 @@ fn sp_relative_stackmap_locations_use_post_call_rsp_for_pair_walker() {
   assert_eq!(visited, vec![(slot_addr, slot_addr)]);
 }
 
+#[test]
+fn sp_relative_stackmap_locations_resolve_offsets_0_and_8_using_post_call_rsp() {
+  // Stackmap with one callsite record and two spilled roots at [RSP + 0] and [RSP + 8].
+  let stackmaps = StackMaps::parse(&build_stackmaps_two_sp_roots(/*stack_size*/ 40)).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("one callsite");
+
+  // Fake stack memory.
+  let mut stack = vec![0u8; 256];
+  let base = stack.as_mut_ptr() as usize;
+
+  // Simulate entering a safepoint callee:
+  //   rsp_entry -> [return address]
+  let sp_entry = align_up(base + 64, 8);
+  unsafe {
+    write_u64(sp_entry, callsite_ra);
+  }
+
+  // Stackmap semantics: base SP is *post-call* (return address popped).
+  let sp_post_call = sp_entry + 8;
+
+  // Root slots are relative to that post-call SP.
+  let slot0 = sp_post_call;
+  let slot1 = sp_post_call + 8;
+  unsafe {
+    write_u64(slot0, 0x1111_1111_1111_1111);
+    write_u64(slot1, 0x2222_2222_2222_2222);
+  }
+
+  // Minimal terminal frame record so we don't walk older frames.
+  let fp = align_up(base + 160, 16);
+  unsafe {
+    write_u64(fp + 0, 0);
+    write_u64(fp + 8, 0);
+  }
+
+  let ctx = SafepointContext {
+    sp_entry,
+    sp: sp_post_call,
+    fp,
+    ip: callsite_ra as usize,
+  };
+
+  let mut visited: Vec<usize> = Vec::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  unsafe {
+    walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+
+  visited.sort_unstable();
+  visited.dedup();
+  assert_eq!(visited, vec![slot0, slot1]);
+}
+
+#[test]
+fn sp_relative_stackmap_locations_work_with_unknown_stack_size_in_top_frame() {
+  // Regression: when `stack_size` is unknown (u64::MAX), the top frame must still be scannable
+  // because we have a captured stackmap-semantics SP (`SafepointContext.sp`).
+  let stackmaps =
+    StackMaps::parse(&build_stackmaps_two_sp_roots(/*stack_size*/ u64::MAX)).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("one callsite");
+
+  let mut stack = vec![0u8; 256];
+  let base = stack.as_mut_ptr() as usize;
+
+  let sp_entry = align_up(base + 64, 8);
+  unsafe {
+    write_u64(sp_entry, callsite_ra);
+  }
+  let sp_post_call = sp_entry + 8;
+
+  let slot0 = sp_post_call;
+  let slot1 = sp_post_call + 8;
+  unsafe {
+    write_u64(slot0, 0x3333_3333_3333_3333);
+    write_u64(slot1, 0x4444_4444_4444_4444);
+  }
+
+  let fp = align_up(base + 160, 16);
+  unsafe {
+    write_u64(fp + 0, 0);
+    write_u64(fp + 8, 0);
+  }
+
+  let ctx = SafepointContext {
+    sp_entry,
+    sp: sp_post_call,
+    fp,
+    ip: callsite_ra as usize,
+  };
+
+  let mut visited: Vec<usize> = Vec::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  unsafe {
+    walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+
+  visited.sort_unstable();
+  visited.dedup();
+  assert_eq!(visited, vec![slot0, slot1]);
+}
+
+#[test]
+fn sp_relative_stackmap_locations_can_derive_post_call_rsp_from_sp_entry_when_sp_missing() {
+  // When `SafepointContext.sp` is missing, the runtime can still derive the stackmap base from
+  // `sp_entry`. On x86_64: `sp = sp_entry + 8`.
+  let stackmaps =
+    StackMaps::parse(&build_stackmaps_two_sp_roots(/*stack_size*/ u64::MAX)).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("one callsite");
+
+  let mut stack = vec![0u8; 256];
+  let base = stack.as_mut_ptr() as usize;
+
+  let sp_entry = align_up(base + 64, 8);
+  unsafe {
+    write_u64(sp_entry, callsite_ra);
+  }
+  let sp_post_call = sp_entry + 8;
+
+  let slot0 = sp_post_call;
+  let slot1 = sp_post_call + 8;
+  unsafe {
+    write_u64(slot0, 0x5555_5555_5555_5555);
+    write_u64(slot1, 0x6666_6666_6666_6666);
+  }
+
+  let fp = align_up(base + 160, 16);
+  unsafe {
+    write_u64(fp + 0, 0);
+    write_u64(fp + 8, 0);
+  }
+
+  let ctx = SafepointContext {
+    sp_entry,
+    sp: 0,
+    fp,
+    ip: callsite_ra as usize,
+  };
+
+  let mut visited: Vec<usize> = Vec::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  unsafe {
+    walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+
+  visited.sort_unstable();
+  visited.dedup();
+  assert_eq!(visited, vec![slot0, slot1]);
+}
+
 fn build_stackmaps_one_sp_root(offset: i32) -> Vec<u8> {
   // Minimal StackMap v3 section containing a single function record and a single
   // callsite record. The record is shaped like an LLVM 18 statepoint:
@@ -186,6 +344,80 @@ fn build_stackmaps_one_sp_root(offset: i32) -> Vec<u8> {
   out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
   out.extend_from_slice(&0u16.to_le_bytes()); // reserved
   out.extend_from_slice(&offset.to_le_bytes());
+
+  // Align to 8 for the live-out header.
+  while out.len() % 8 != 0 {
+    out.push(0);
+  }
+
+  // LiveOuts (none): padding + num_live_outs.
+  out.extend_from_slice(&0u16.to_le_bytes()); // padding
+  out.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+
+  // Align to 8 after live-outs.
+  while out.len() % 8 != 0 {
+    out.push(0);
+  }
+
+  out
+}
+
+fn build_stackmaps_two_sp_roots(stack_size: u64) -> Vec<u8> {
+  // Minimal StackMap v3 section containing a single function record and a single callsite record.
+  // The record is shaped like an LLVM 18 statepoint:
+  //
+  // - 3 leading constants (callconv, flags, deopt_count)
+  // - followed by two (base, derived) gc-live pairs
+  //
+  // Each pair uses `Indirect [SP + off]` with base==derived so we don't need derived-pointer
+  // relocation logic in this test.
+  let mut out = Vec::new();
+
+  // Header.
+  out.push(3); // version
+  out.push(0); // reserved0
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+  out.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_records
+
+  // One function record.
+  out.extend_from_slice(&0x1000u64.to_le_bytes()); // address
+  out.extend_from_slice(&stack_size.to_le_bytes()); // stack_size
+  out.extend_from_slice(&1u64.to_le_bytes()); // record_count
+
+  // One record.
+  out.extend_from_slice(&0xabcdef00u64.to_le_bytes()); // patchpoint_id
+  out.extend_from_slice(&0x10u32.to_le_bytes()); // instruction_offset (=> callsite PC=0x1010)
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  out.extend_from_slice(&7u16.to_le_bytes()); // num_locations (3 header + 4 gc locations)
+
+  // 3 leading constants (statepoint header). Values are irrelevant for this test.
+  for _ in 0..3 {
+    out.extend_from_slice(&[4, 0]); // Constant, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&0u16.to_le_bytes()); // dwarf_reg
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0i32.to_le_bytes()); // small const
+  }
+
+  // Root 0: Indirect [SP + 0] (base + derived).
+  for _ in 0..2 {
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0i32.to_le_bytes()); // offset
+  }
+
+  // Root 1: Indirect [SP + 8] (base + derived).
+  for _ in 0..2 {
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&8i32.to_le_bytes()); // offset
+  }
 
   // Align to 8 for the live-out header.
   while out.len() % 8 != 0 {
