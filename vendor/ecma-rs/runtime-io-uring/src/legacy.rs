@@ -7,12 +7,18 @@ mod linux {
     use std::mem::MaybeUninit;
     use std::os::unix::io::RawFd;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use io_uring::{opcode, squeue, types, IoUring};
 
     use crate::driver::OpId;
+    use crate::pool::{LeasedBuf, ProvidedBufPool};
     use crate::timeout::duration_to_timespec;
+
+    const INTERNAL_USER_DATA: u64 = 0;
+    const IORING_CQE_F_BUFFER: u32 = 1 << 0;
+    const IORING_CQE_BUFFER_SHIFT: u32 = 16;
 
     fn cstring_from_path(path: &Path) -> io::Result<CString> {
         use std::os::unix::ffi::OsStrExt;
@@ -38,6 +44,15 @@ mod linux {
             buf: Vec<u8>,
             /// Extra resources to keep alive for the op's lifetime.
             keep_alive: Option<Box<dyn Any + Send + Sync>>,
+        },
+        RecvWithBufSelect {
+            fd: RawFd,
+            pool: ProvidedBufPool,
+        },
+        ReadWithBufSelect {
+            fd: RawFd,
+            offset: u64,
+            pool: ProvidedBufPool,
         },
         OpenAt {
             dirfd: RawFd,
@@ -77,6 +92,14 @@ mod linux {
                 buf,
                 keep_alive: Some(Box::new(keep_alive)),
             }
+        }
+
+        pub fn recv_with_buf_select(fd: RawFd, pool: ProvidedBufPool) -> Self {
+            Self::RecvWithBufSelect { fd, pool }
+        }
+
+        pub fn read_with_buf_select(fd: RawFd, offset: u64, pool: ProvidedBufPool) -> Self {
+            Self::ReadWithBufSelect { fd, offset, pool }
         }
 
         pub fn openat(dirfd: RawFd, path: &Path, flags: i32, mode: u32) -> io::Result<Self> {
@@ -159,6 +182,23 @@ mod linux {
                 PreparedOp::Read { fd, buf, .. } => {
                     opcode::Read::new(types::Fd(*fd), buf.as_mut_ptr(), buf.len() as _).build()
                 }
+                PreparedOp::RecvWithBufSelect { fd, pool } => opcode::Recv::new(
+                    types::Fd(*fd),
+                    std::ptr::null_mut(),
+                    pool.buf_size() as u32,
+                )
+                .buf_group(pool.buf_group())
+                .build()
+                .flags(squeue::Flags::BUFFER_SELECT),
+                PreparedOp::ReadWithBufSelect { fd, offset, pool } => opcode::Read::new(
+                    types::Fd(*fd),
+                    std::ptr::null_mut(),
+                    pool.buf_size() as u32,
+                )
+                .offset(*offset)
+                .buf_group(pool.buf_group())
+                .build()
+                .flags(squeue::Flags::BUFFER_SELECT),
                 PreparedOp::OpenAt {
                     dirfd,
                     path,
@@ -193,6 +233,7 @@ mod linux {
     #[derive(Debug)]
     pub enum Completion {
         Op { id: OpId, res: i32, op: PreparedOp },
+        ProvidedBuf { id: OpId, buf: LeasedBuf },
         Timeout { id: OpId, target: OpId, res: i32 },
         Cancel { id: OpId, target: OpId, res: i32 },
     }
@@ -203,11 +244,16 @@ mod linux {
         Cancel { target: OpId },
     }
 
-    pub struct Driver {
-        pub(crate) ring: IoUring,
+    struct Inner {
+        ring: IoUring,
         next_id: u64,
         ops: HashMap<OpId, OpState>,
         ready: VecDeque<Completion>,
+    }
+
+    #[derive(Clone)]
+    pub struct Driver {
+        inner: Arc<Mutex<Inner>>,
     }
 
     impl Driver {
@@ -217,37 +263,92 @@ mod linux {
 
         pub fn new(entries: u32) -> io::Result<Self> {
             Ok(Self {
-                ring: IoUring::new(entries)?,
-                next_id: 1,
-                ops: HashMap::new(),
-                ready: VecDeque::new(),
+                inner: Arc::new(Mutex::new(Inner {
+                    ring: IoUring::new(entries)?,
+                    next_id: 1,
+                    ops: HashMap::new(),
+                    ready: VecDeque::new(),
+                })),
             })
         }
 
-        fn alloc_id(&mut self) -> OpId {
-            let id = OpId::from_u64(self.next_id);
-            self.next_id = self.next_id.wrapping_add(1);
-            id
+        fn alloc_id(inner: &mut Inner) -> OpId {
+            loop {
+                let id = OpId::from_u64(inner.next_id);
+                inner.next_id = inner.next_id.wrapping_add(1);
+                if id.as_u64() != INTERNAL_USER_DATA {
+                    return id;
+                }
+            }
         }
 
-        pub fn submit(&mut self, mut op: PreparedOp) -> io::Result<OpId> {
-            let op_id = self.alloc_id();
+        pub(crate) fn submit_provide_buffers(
+            &self,
+            addr: *mut u8,
+            len: usize,
+            nbufs: u16,
+            buf_group: u16,
+            buf_id: u16,
+        ) -> io::Result<()> {
+            let len_i32: i32 = len.try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buffer length must fit into i32 for IORING_OP_PROVIDE_BUFFERS",
+                )
+            })?;
 
-            let entry = op.build_sqe().user_data(op_id.as_u64());
+            let entry = opcode::ProvideBuffers::new(addr, len_i32, nbufs, buf_group, buf_id)
+                .build()
+                .user_data(INTERNAL_USER_DATA);
+
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+
             {
-                let mut sq = self.ring.submission();
+                let mut sq = inner.ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 1 {
                     return Err(Self::submission_queue_full());
                 }
 
-                self.ops.insert(op_id, OpState::Target { op });
+                unsafe {
+                    sq.push(&entry).unwrap();
+                }
+            }
+
+            inner.ring.submit()?;
+            Ok(())
+        }
+
+        pub fn submit(&mut self, mut op: PreparedOp) -> io::Result<OpId> {
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+            let op_id = Self::alloc_id(inner);
+
+            let entry = op.build_sqe().user_data(op_id.as_u64());
+            {
+                let ring = &mut inner.ring;
+                let ops = &mut inner.ops;
+
+                let mut sq = ring.submission();
+                let available = sq.capacity() - sq.len();
+                if available < 1 {
+                    return Err(Self::submission_queue_full());
+                }
+
+                ops.insert(op_id, OpState::Target { op });
 
                 unsafe {
                     sq.push(&entry).unwrap();
                 }
             }
-            self.ring.submit()?;
+            inner.ring.submit()?;
 
             Ok(op_id)
         }
@@ -287,8 +388,14 @@ mod linux {
             mut op: PreparedOp,
             timeout: Duration,
         ) -> io::Result<OpWithTimeout> {
-            let op_id = self.alloc_id();
-            let timeout_id = self.alloc_id();
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+
+            let op_id = Self::alloc_id(inner);
+            let timeout_id = Self::alloc_id(inner);
 
             let entry = op
                 .build_sqe()
@@ -303,21 +410,24 @@ mod linux {
                 .user_data(timeout_id.as_u64());
 
             {
-                let mut sq = self.ring.submission();
+                let ring = &mut inner.ring;
+                let ops = &mut inner.ops;
+
+                let mut sq = ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 2 {
                     return Err(Self::submission_queue_full());
                 }
 
-                self.ops.insert(op_id, OpState::Target { op });
-                self.ops.insert(timeout_id, OpState::Timeout { target: op_id, _ts: ts });
+                ops.insert(op_id, OpState::Target { op });
+                ops.insert(timeout_id, OpState::Timeout { target: op_id, _ts: ts });
 
                 unsafe {
                     sq.push(&entry).unwrap();
                     sq.push(&timeout_entry).unwrap();
                 }
             }
-            self.ring.submit()?;
+            inner.ring.submit()?;
 
             Ok(OpWithTimeout { op_id, timeout_id })
         }
@@ -330,54 +440,90 @@ mod linux {
         ///
         /// The target op still delivers its own CQE, typically `-ECANCELED` if the cancellation won.
         pub fn cancel(&mut self, target: OpId) -> io::Result<OpId> {
-            let cancel_id = self.alloc_id();
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+            let cancel_id = Self::alloc_id(inner);
 
             let entry = opcode::AsyncCancel::new(target.as_u64())
                 .build()
                 .user_data(cancel_id.as_u64());
 
             {
-                let mut sq = self.ring.submission();
+                let ring = &mut inner.ring;
+                let ops = &mut inner.ops;
+
+                let mut sq = ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 1 {
                     return Err(Self::submission_queue_full());
                 }
 
-                self.ops.insert(cancel_id, OpState::Cancel { target });
+                ops.insert(cancel_id, OpState::Cancel { target });
 
                 unsafe {
                     sq.push(&entry).unwrap();
                 }
             }
-            self.ring.submit()?;
+            inner.ring.submit()?;
 
             Ok(cancel_id)
         }
 
         pub fn wait(&mut self) -> io::Result<Completion> {
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+
             loop {
-                if let Some(c) = self.ready.pop_front() {
+                if let Some(c) = inner.ready.pop_front() {
                     return Ok(c);
                 }
 
-                self.ring.submit_and_wait(1)?;
+                inner.ring.submit_and_wait(1)?;
 
-                let cq = self.ring.completion();
+                let cq = inner.ring.completion();
                 for cqe in cq {
                     let id = OpId::from_u64(cqe.user_data());
                     let res = cqe.result();
+                    let flags = cqe.flags();
 
-                    let state = match self.ops.remove(&id) {
+                    let state = match inner.ops.remove(&id) {
                         Some(state) => state,
                         None => continue,
                     };
 
                     match state {
-                        OpState::Target { op } => self.ready.push_back(Completion::Op { id, res, op }),
+                        OpState::Target { mut op } => match &mut op {
+                            PreparedOp::RecvWithBufSelect { pool, .. }
+                            | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                                if res < 0 {
+                                    inner.ready.push_back(Completion::Op { id, res, op });
+                                    continue;
+                                }
+
+                                if flags & IORING_CQE_F_BUFFER == 0 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        "missing buffer id in CQE for buf-select op",
+                                    ));
+                                }
+                                let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
+                                let lease = pool.lease(buf_id, res as usize)?;
+                                inner.ready.push_back(Completion::ProvidedBuf { id, buf: lease });
+                            }
+                            _ => inner.ready.push_back(Completion::Op { id, res, op }),
+                        },
                         OpState::Timeout { target, .. } => {
-                            self.ready.push_back(Completion::Timeout { id, target, res })
+                            inner.ready.push_back(Completion::Timeout { id, target, res })
                         }
-                        OpState::Cancel { target } => self.ready.push_back(Completion::Cancel { id, target, res }),
+                        OpState::Cancel { target } => {
+                            inner.ready.push_back(Completion::Cancel { id, target, res })
+                        }
                     }
                 }
             }
@@ -386,14 +532,32 @@ mod linux {
 
     pub fn is_link_timeout_supported(driver: &Driver) -> io::Result<bool> {
         let mut probe = io_uring::Probe::new();
-        driver.ring.submitter().register_probe(&mut probe)?;
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner.ring.submitter().register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::LinkTimeout::CODE))
     }
 
     pub fn is_async_cancel_supported(driver: &Driver) -> io::Result<bool> {
         let mut probe = io_uring::Probe::new();
-        driver.ring.submitter().register_probe(&mut probe)?;
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner.ring.submitter().register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::AsyncCancel::CODE))
+    }
+
+    pub fn is_provide_buffers_supported(driver: &Driver) -> io::Result<bool> {
+        let mut probe = io_uring::Probe::new();
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner.ring.submitter().register_probe(&mut probe)?;
+        Ok(probe.is_supported(opcode::ProvideBuffers::CODE))
     }
 }
 
@@ -467,6 +631,10 @@ mod non_linux {
     }
 
     pub fn is_async_cancel_supported(_driver: &Driver) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn is_provide_buffers_supported(_driver: &Driver) -> io::Result<bool> {
         Ok(false)
     }
 }

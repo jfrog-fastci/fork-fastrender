@@ -1,0 +1,296 @@
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use crate::Driver;
+
+    /// Statistics for a [`ProvidedBufPool`].
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PoolStats {
+        pub nbufs: usize,
+        pub buf_size: usize,
+        /// Buffers currently available for selection by the kernel.
+        pub in_kernel: usize,
+        /// Buffers currently held by userspace as `LeasedBuf`s.
+        pub leased: usize,
+        /// Number of times a `LeasedBuf` was dropped and its buffer was successfully
+        /// re-provided back to the kernel.
+        pub reprovided: usize,
+    }
+
+    struct Inner {
+        driver: Driver,
+        buf_group: u16,
+        buf_size: usize,
+        nbufs: u16,
+        storage: Box<[u8]>,
+        leased_map: Mutex<Vec<bool>>,
+        in_kernel: AtomicUsize,
+        leased: AtomicUsize,
+        reprovided: AtomicUsize,
+    }
+
+    /// A pool of stable buffers "provided" to the kernel for buffer selection.
+    ///
+    /// Reads/recvs can be submitted without passing a per-operation pointer. The kernel selects an
+    /// available buffer from the pool, writes into it, and returns the chosen `buffer_id` in the
+    /// CQE flags.
+    ///
+    /// The buffers are allocated in stable memory (`Box<[u8]>`); the backing allocation address
+    /// never changes for the lifetime of the pool.
+    #[derive(Clone)]
+    pub struct ProvidedBufPool {
+        inner: Arc<Inner>,
+    }
+
+    impl std::fmt::Debug for ProvidedBufPool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ProvidedBufPool")
+                .field("buf_group", &self.buf_group())
+                .field("buf_size", &self.buf_size())
+                .field("nbufs", &self.nbufs())
+                .field("stats", &self.stats())
+                .finish()
+        }
+    }
+
+    impl ProvidedBufPool {
+        pub fn new(driver: &Driver, buf_group: u16, buf_size: usize, nbufs: u16) -> io::Result<Self> {
+            if nbufs == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "nbufs must be > 0"));
+            }
+            if buf_size == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buf_size must be > 0",
+                ));
+            }
+            if buf_size > i32::MAX as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buf_size must fit into i32 for IORING_OP_PROVIDE_BUFFERS",
+                ));
+            }
+
+            let total_len = buf_size.checked_mul(nbufs as usize).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "buffer pool too large")
+            })?;
+
+            let storage = vec![0u8; total_len].into_boxed_slice();
+            let leased_map = vec![false; nbufs as usize];
+
+            let pool = Self {
+                inner: Arc::new(Inner {
+                    driver: driver.clone(),
+                    buf_group,
+                    buf_size,
+                    nbufs,
+                    storage,
+                    leased_map: Mutex::new(leased_map),
+                    in_kernel: AtomicUsize::new(0),
+                    leased: AtomicUsize::new(0),
+                    reprovided: AtomicUsize::new(0),
+                }),
+            };
+
+            // Provide the full, contiguous buffer slab in one operation.
+            pool.inner.driver.submit_provide_buffers(
+                pool.inner.storage.as_ptr() as *mut u8,
+                buf_size,
+                nbufs,
+                buf_group,
+                0,
+            )?;
+            pool.inner.in_kernel.store(nbufs as usize, Ordering::Relaxed);
+
+            Ok(pool)
+        }
+
+        pub fn buf_group(&self) -> u16 {
+            self.inner.buf_group
+        }
+
+        pub fn buf_size(&self) -> usize {
+            self.inner.buf_size
+        }
+
+        pub fn nbufs(&self) -> u16 {
+            self.inner.nbufs
+        }
+
+        pub fn stats(&self) -> PoolStats {
+            PoolStats {
+                nbufs: self.inner.nbufs as usize,
+                buf_size: self.inner.buf_size,
+                in_kernel: self.inner.in_kernel.load(Ordering::Relaxed),
+                leased: self.inner.leased.load(Ordering::Relaxed),
+                reprovided: self.inner.reprovided.load(Ordering::Relaxed),
+            }
+        }
+
+        pub(crate) fn lease(&self, buf_id: u16, filled_len: usize) -> io::Result<LeasedBuf> {
+            if buf_id >= self.inner.nbufs {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "kernel returned out-of-range buffer id",
+                ));
+            }
+            if filled_len > self.inner.buf_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "kernel wrote more than buf_size",
+                ));
+            }
+
+            {
+                let mut leased_map = self
+                    .inner
+                    .leased_map
+                    .lock()
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "leased_map mutex poisoned"))?;
+                if leased_map[buf_id as usize] {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "kernel reused a buffer id that is still leased",
+                    ));
+                }
+                leased_map[buf_id as usize] = true;
+            }
+
+            self.inner.in_kernel.fetch_sub(1, Ordering::Relaxed);
+            self.inner.leased.fetch_add(1, Ordering::Relaxed);
+
+            Ok(LeasedBuf {
+                pool: self.clone(),
+                buf_id,
+                len: filled_len,
+            })
+        }
+
+        fn buf_ptr(&self, buf_id: u16) -> *mut u8 {
+            // Safe: buf_id is range-checked by callers; storage is stable for the lifetime of the pool.
+            let offset = buf_id as usize * self.inner.buf_size;
+            unsafe { self.inner.storage.as_ptr().add(offset) as *mut u8 }
+        }
+
+        fn buf_slice(&self, buf_id: u16, len: usize) -> &[u8] {
+            let offset = buf_id as usize * self.inner.buf_size;
+            &self.inner.storage[offset..offset + len]
+        }
+
+        fn return_to_kernel(&self, buf_id: u16) -> io::Result<()> {
+            let res = self.inner.driver.submit_provide_buffers(
+                self.buf_ptr(buf_id),
+                self.inner.buf_size,
+                1,
+                self.inner.buf_group,
+                buf_id,
+            );
+
+            {
+                let mut leased_map = self
+                    .inner
+                    .leased_map
+                    .lock()
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "leased_map mutex poisoned"))?;
+                leased_map[buf_id as usize] = false;
+            }
+
+            self.inner.leased.fetch_sub(1, Ordering::Relaxed);
+            if res.is_ok() {
+                self.inner.in_kernel.fetch_add(1, Ordering::Relaxed);
+                self.inner.reprovided.fetch_add(1, Ordering::Relaxed);
+            }
+            res
+        }
+    }
+
+    /// A buffer selected by the kernel from a [`ProvidedBufPool`].
+    ///
+    /// When dropped, the buffer is automatically re-provided back to the kernel so it can be
+    /// reused for future reads.
+    pub struct LeasedBuf {
+        pool: ProvidedBufPool,
+        buf_id: u16,
+        len: usize,
+    }
+
+    impl LeasedBuf {
+        pub fn buf_id(&self) -> u16 {
+            self.buf_id
+        }
+
+        pub fn len(&self) -> usize {
+            self.len
+        }
+
+        pub fn as_slice(&self) -> &[u8] {
+            self.pool.buf_slice(self.buf_id, self.len)
+        }
+
+        /// Pointer to the filled prefix of the underlying stable buffer.
+        ///
+        /// Intended for future "external buffer" (zero-copy) GC integration.
+        pub fn as_ptr(&self) -> *const u8 {
+            self.as_slice().as_ptr()
+        }
+    }
+
+    impl std::fmt::Debug for LeasedBuf {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("LeasedBuf")
+                .field("buf_id", &self.buf_id)
+                .field("len", &self.len)
+                .finish()
+        }
+    }
+
+    impl Drop for LeasedBuf {
+        fn drop(&mut self) {
+            // Best-effort in Drop. If this fails, future reads may return ENOBUFS due to pool
+            // exhaustion.
+            let _ = self.pool.return_to_kernel(self.buf_id);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+#[cfg(not(target_os = "linux"))]
+mod non_linux {
+    use std::io;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PoolStats;
+
+    #[derive(Clone, Debug)]
+    pub struct ProvidedBufPool;
+
+    #[derive(Debug)]
+    pub struct LeasedBuf;
+
+    impl ProvidedBufPool {
+        pub fn new(
+            _driver: &crate::Driver,
+            _buf_group: u16,
+            _buf_size: usize,
+            _nbufs: u16,
+        ) -> io::Result<Self> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "io_uring is only supported on Linux",
+            ))
+        }
+
+        pub fn stats(&self) -> PoolStats {
+            PoolStats
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use non_linux::*;
+

@@ -248,6 +248,7 @@ fn explicit_cancel_vs_timeout_race() {
           seen_cancel = true;
         }
       }
+      _ => {}
     }
   }
 
