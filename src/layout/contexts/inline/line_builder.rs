@@ -2910,6 +2910,7 @@ fn collect_line_baselines(
       *first = Some(absolute);
     }
     *last = Some(absolute);
+    return;
   }
   for child in fragment.children.iter() {
     collect_line_baselines(child, current_offset, first, last);
@@ -6649,6 +6650,27 @@ mod tests {
       (acc.line_height() - line_height).abs() < 1e-3,
       "line box should respect authored line-height even when font metrics are taller"
     );
+  }
+
+  #[test]
+  fn inline_block_baseline_ignores_nested_line_fragments() {
+    let nested_line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), 5.0, vec![]);
+    let nested_inline_block = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 2.0, 0.0, 0.0),
+      1,
+      vec![nested_line],
+    );
+    let outer_line =
+      FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), 10.0, vec![nested_inline_block]);
+    let root =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![outer_line]);
+
+    let mut first = None;
+    let mut last = None;
+    collect_line_baselines(&root, 0.0, &mut first, &mut last);
+
+    assert_eq!(first, Some(10.0));
+    assert_eq!(last, Some(10.0));
   }
 
   fn make_builder(width: f32) -> LineBuilder<'static> {
