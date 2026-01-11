@@ -9,7 +9,8 @@ use llvm_sys::core::{
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction,
-  LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetReturnType, LLVMGetStringAttributeAtIndex,
+  LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetParamTypes, LLVMGetReturnType,
+  LLVMGetStringAttributeAtIndex,
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
   LLVMInstructionEraseFromParent, LLVMInstructionRemoveFromParent, LLVMInt64TypeInContext, LLVMIsAConstantExpr,
   LLVMIsAFunction, LLVMIsAInstruction, LLVMIsABitCastInst, LLVMIsFunctionVarArg, LLVMPositionBuilderAtEnd,
@@ -293,6 +294,17 @@ fn ensure_rt_gc_safepoint_slow_decl(module: &Module<'_>) -> Result<LLVMValueRef,
       let param_count = LLVMCountParamTypes(fn_ty);
       let varargs = LLVMIsFunctionVarArg(fn_ty) != 0;
       if LLVMGetTypeKind(ret_ty) != LLVMTypeKind::LLVMVoidTypeKind || param_count != 1 || varargs {
+        return Err(PassError::IncompatibleSafepointSlowSignature {
+          name: "rt_gc_safepoint_slow".to_string(),
+        });
+      }
+
+      let mut params = [ptr::null_mut()];
+      LLVMGetParamTypes(fn_ty, params.as_mut_ptr());
+      let param_ty = params[0];
+      if LLVMGetTypeKind(param_ty) != LLVMTypeKind::LLVMIntegerTypeKind
+        || LLVMGetIntTypeWidth(param_ty) != 64
+      {
         return Err(PassError::IncompatibleSafepointSlowSignature {
           name: "rt_gc_safepoint_slow".to_string(),
         });
