@@ -2448,6 +2448,42 @@ impl AbsoluteLayout {
   }
 
   #[test]
+  fn layout_absolute_replaced_top_bottom_auto_height_resolves_intrinsic_ratio_and_auto_margins() {
+    let layout = AbsoluteLayout::new();
+    let cb = create_containing_block(300.0, 200.0);
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.left = LengthOrAuto::px(0.0);
+    style.top = LengthOrAuto::px(0.0);
+    style.bottom = LengthOrAuto::px(0.0);
+    style.width = LengthOrAuto::Auto;
+    style.height = LengthOrAuto::Auto;
+    style.max_width = Length::px(100.0);
+    style.margin_top_auto = true;
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(200.0, 100.0), Point::ZERO);
+    input.is_replaced = true;
+
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+
+    assert!(
+      (result.size.width - 100.0).abs() < 0.001,
+      "expected max-width to clamp the auto width"
+    );
+    assert!(
+      (result.size.height - 50.0).abs() < 0.001,
+      "expected height:auto to follow the intrinsic ratio (200/100) after width clamping"
+    );
+    assert!(
+      (result.position.y - 150.0).abs() < 0.001,
+      "expected margin-top:auto to consume remaining inset space and bottom-align the box"
+    );
+    assert!((result.margins.top - 150.0).abs() < 0.001);
+    assert!((result.margins.bottom - 0.0).abs() < 0.001);
+  }
+
+  #[test]
   fn test_layout_absolute_shrink_to_fit_uses_preferred_width() {
     let layout = AbsoluteLayout::new();
     let mut style = default_style();

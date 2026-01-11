@@ -16431,6 +16431,48 @@ mod tests {
   }
 
   #[test]
+  fn measure_cache_does_not_merge_tiny_width_differences_that_flip_wrapping() {
+    use crate::geometry::Size as GeoSize;
+    use taffy::style::AvailableSpace;
+
+    // Regression: measure-cache snapping should not coalesce small width differences so
+    // aggressively that it changes line-wrapping decisions. (Discord marketing CTA buttons are
+    // sensitive to ~1px differences.)
+    let viewport = GeoSize::new(1200.0, 800.0);
+    let avail = taffy::geometry::Size {
+      width: AvailableSpace::Definite(260.0),
+      height: AvailableSpace::MaxContent,
+    };
+
+    let key_260 = super::measure_cache_key(
+      &taffy::geometry::Size {
+        width: Some(260.0),
+        height: None,
+      },
+      &avail,
+      viewport,
+      false,
+    );
+    let key_261_5 = super::measure_cache_key(
+      &taffy::geometry::Size {
+        width: Some(261.5),
+        height: None,
+      },
+      &taffy::geometry::Size {
+        width: AvailableSpace::Definite(261.5),
+        height: AvailableSpace::MaxContent,
+      },
+      viewport,
+      false,
+    );
+
+    assert_ne!(
+      key_260.0, key_261_5.0,
+      "260px and 261.5px definite widths must not share a cache key"
+    );
+  }
+
+  #[test]
   fn height_depends_on_available_height_ignores_percent_flex_basis_for_row_flex_containers() {
     let mut style = ComputedStyle::default();
     style.flex_basis = FlexBasis::Length(Length::percent(0.0));
