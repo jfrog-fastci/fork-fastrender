@@ -1,9 +1,10 @@
 use inkwell::context::AsContextRef as _;
 use inkwell::context::Context;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::types::AsTypeRef as _;
-use inkwell::OptimizationLevel;
 use inkwell::values::AsValueRef as _;
+use inkwell::OptimizationLevel;
 use native_js::gc::statepoint::StatepointEmitter;
 use native_js::llvm::gc;
 use object::{Object, ObjectSection};
@@ -36,7 +37,11 @@ fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
   let entry0 = context.append_basic_block(caller0, "entry");
   builder.position_at_end(entry0);
   unsafe {
-    let mut sp = StatepointEmitter::new((&context).as_ctx_ref(), module.as_mut_ptr(), gc_ptr_ty.as_type_ref());
+    let mut sp = StatepointEmitter::new(
+      (&context).as_ctx_ref(),
+      module.as_mut_ptr(),
+      gc_ptr_ty.as_type_ref(),
+    );
     let _ = sp.emit_statepoint_call(builder.as_mut_ptr(), callee0.as_value_ref(), &[], &[]);
   }
   builder.build_return(None).expect("build return");
@@ -51,7 +56,11 @@ fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
   let p = caller1.get_first_param().unwrap().into_pointer_value();
 
   unsafe {
-    let mut sp = StatepointEmitter::new((&context).as_ctx_ref(), module.as_mut_ptr(), gc_ptr_ty.as_type_ref());
+    let mut sp = StatepointEmitter::new(
+      (&context).as_ctx_ref(),
+      module.as_mut_ptr(),
+      gc_ptr_ty.as_type_ref(),
+    );
     // NOTE: `p` is passed only as a call argument, not as an explicit `gc_live` root.
     let _ = sp.emit_statepoint_call(
       builder.as_mut_ptr(),
@@ -63,7 +72,10 @@ fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
   builder.build_return(None).expect("build return");
 
   if let Err(err) = module.verify() {
-    panic!("module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    panic!(
+      "module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
   }
 
   let triple = TargetMachine::get_default_triple();
@@ -81,6 +93,18 @@ fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
   module.set_triple(&triple);
   module.set_data_layout(&tm.get_target_data().get_data_layout());
 
+  // Ensure the call-arg root survives basic IR cleanup passes. `gc.relocate` is a pure call, so if
+  // its result is unused LLVM can DCE it and drop the corresponding root from `.llvm_stackmaps`
+  // unless the emitter explicitly anchors it.
+  module
+    .run_passes("instcombine,dce", &tm, PassBuilderOptions::create())
+    .unwrap_or_else(|err| {
+      panic!(
+        "failed to run instcombine,dce: {err}\n\nIR:\n{}",
+        module.print_to_string()
+      )
+    });
+
   let tmp = tempdir().expect("failed to create tempdir");
   let obj = tmp.path().join("statepoint_call_args_stackmap.o");
   tm.write_to_file(&module, FileType::Object, &obj)
@@ -91,7 +115,8 @@ fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
   let section = file
     .section_by_name(".llvm_stackmaps")
     .expect("expected .llvm_stackmaps section");
-  let stackmap = StackMap::parse(section.data().expect("read .llvm_stackmaps")).expect("parse stackmap v3");
+  let stackmap =
+    StackMap::parse(section.data().expect("read .llvm_stackmaps")).expect("parse stackmap v3");
 
   assert!(
     stackmap.records.len() >= 2,

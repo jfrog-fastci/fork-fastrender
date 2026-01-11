@@ -102,7 +102,7 @@ fn push_reaction(promise: *mut PromiseHeader, node: *mut crate::promise_reaction
     return;
   }
 
-  let reactions = unsafe { &(*promise).reactions };
+  let reactions = unsafe { &(*promise).waiters };
   loop {
     let head = reactions.load(Ordering::Acquire) as *mut crate::promise_reactions::PromiseReactionNode;
     unsafe {
@@ -122,7 +122,7 @@ fn drain_reactions(promise: *mut PromiseHeader) {
     return;
   }
 
-  let reactions = unsafe { &(*promise).reactions };
+  let reactions = unsafe { &(*promise).waiters };
   let mut head = reactions.swap(0, Ordering::AcqRel) as *mut crate::promise_reactions::PromiseReactionNode;
   if head.is_null() {
     return;

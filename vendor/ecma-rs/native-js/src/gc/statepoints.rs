@@ -48,13 +48,18 @@ use inkwell::types::{BasicTypeEnum, FunctionType, PointerType};
 use inkwell::values::AsValueRef;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue};
 use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMConstInt,
-  LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
-  LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetModuleContext,
-  LLVMGlobalGetValueType, LLVMInt32TypeInContext, LLVMInt64TypeInContext,
-  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMLookupIntrinsicID, LLVMSetInstructionCallConv, LLVMTypeOf,
+  LLVMAddCallSiteAttribute, LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildCallWithOperandBundles,
+  LLVMBuildStore, LLVMConstInt, LLVMCreateBuilderInContext, LLVMCreateOperandBundle,
+  LLVMCreateTypeAttribute, LLVMDisposeBuilder, LLVMDisposeOperandBundle, LLVMGetBasicBlockParent,
+  LLVMGetEnumAttributeKindForName, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction,
+  LLVMGetInsertBlock, LLVMGetIntrinsicDeclaration, LLVMGetModuleContext,
+  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMInt32TypeInContext,
+  LLVMInt64TypeInContext, LLVMLookupIntrinsicID, LLVMPositionBuilderAtEnd,
+  LLVMPositionBuilderBefore, LLVMSetInstructionCallConv, LLVMSetVolatile, LLVMTypeOf,
 };
-use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef};
+use llvm_sys::prelude::{
+  LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef,
+};
 use llvm_sys::LLVMCallConv;
 use llvm_sys::LLVMTypeKind;
 
@@ -110,6 +115,7 @@ pub struct StatepointIntrinsics<'ctx> {
   module: LLVMModuleRef,
   // NOTE: Keep the context around for attribute creation.
   context: LLVMContextRef,
+  alloca_builder: LLVMBuilderRef,
 
   statepoint_intrinsic_id: u32,
   gc_result_intrinsic_id: u32,
@@ -120,6 +126,8 @@ pub struct StatepointIntrinsics<'ctx> {
   statepoint_decls: HashMap<usize, LLVMValueRef>,
   gc_result_decls: HashMap<usize, LLVMValueRef>,
   gc_relocate_decls: HashMap<usize, LLVMValueRef>,
+  // Per-function sinks used to keep `gc.relocate` results for auto-rooted call arguments alive.
+  call_arg_sinks: HashMap<(usize, usize), LLVMValueRef>,
 
   _marker: PhantomData<&'ctx ()>,
 }
@@ -142,19 +150,30 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
       let gc_relocate_intrinsic_id =
         LLVMLookupIntrinsicID(gc_relocate_name.as_ptr().cast(), gc_relocate_name.len());
 
-      let elementtype_attr_kind = LLVMGetEnumAttributeKindForName(
-        b"elementtype".as_ptr().cast(),
-        "elementtype".len(),
-      );
+      let elementtype_attr_kind =
+        LLVMGetEnumAttributeKindForName(b"elementtype".as_ptr().cast(), "elementtype".len());
 
-      assert!(statepoint_intrinsic_id != 0, "missing LLVM intrinsic: gc.statepoint");
-      assert!(gc_result_intrinsic_id != 0, "missing LLVM intrinsic: gc.result");
-      assert!(gc_relocate_intrinsic_id != 0, "missing LLVM intrinsic: gc.relocate");
-      assert!(elementtype_attr_kind != 0, "missing LLVM attribute kind: elementtype");
+      assert!(
+        statepoint_intrinsic_id != 0,
+        "missing LLVM intrinsic: gc.statepoint"
+      );
+      assert!(
+        gc_result_intrinsic_id != 0,
+        "missing LLVM intrinsic: gc.result"
+      );
+      assert!(
+        gc_relocate_intrinsic_id != 0,
+        "missing LLVM intrinsic: gc.relocate"
+      );
+      assert!(
+        elementtype_attr_kind != 0,
+        "missing LLVM attribute kind: elementtype"
+      );
 
       Self {
         module: module_ref,
         context: context_ref,
+        alloca_builder: LLVMCreateBuilderInContext(context_ref),
         statepoint_intrinsic_id,
         gc_result_intrinsic_id,
         gc_relocate_intrinsic_id,
@@ -162,9 +181,43 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
         statepoint_decls: HashMap::new(),
         gc_result_decls: HashMap::new(),
         gc_relocate_decls: HashMap::new(),
+        call_arg_sinks: HashMap::new(),
         _marker: PhantomData,
       }
     }
+  }
+
+  unsafe fn get_call_arg_sink_alloca(
+    &mut self,
+    builder: LLVMBuilderRef,
+    ptr_ty: LLVMTypeRef,
+  ) -> LLVMValueRef {
+    let bb = LLVMGetInsertBlock(builder);
+    debug_assert!(!bb.is_null(), "builder has no insert block");
+    let func = LLVMGetBasicBlockParent(bb);
+    debug_assert!(!func.is_null(), "insert block has no parent function");
+
+    let key = (func as usize, ptr_ty as usize);
+    if let Some(&alloca) = self.call_arg_sinks.get(&key) {
+      return alloca;
+    }
+
+    let entry: LLVMBasicBlockRef = LLVMGetFirstBasicBlock(func);
+    debug_assert!(!entry.is_null(), "function has no entry block");
+    let first = LLVMGetFirstInstruction(entry);
+    if first.is_null() {
+      LLVMPositionBuilderAtEnd(self.alloca_builder, entry);
+    } else {
+      LLVMPositionBuilderBefore(self.alloca_builder, first);
+    }
+
+    let alloca = LLVMBuildAlloca(
+      self.alloca_builder,
+      ptr_ty,
+      b"gc_call_arg_sink\0".as_ptr().cast(),
+    );
+    self.call_arg_sinks.insert(key, alloca);
+    alloca
   }
 
   fn get_statepoint_decl(&mut self, callee_ptr_ty: PointerType<'ctx>) -> LLVMValueRef {
@@ -278,18 +331,14 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     // Fixed args: (i64 id, i32 patch_bytes, ptr callee, i32 num_call_args, i32 flags, ...)
     let mut args: Vec<LLVMValueRef> = Vec::with_capacity(5 + call_args.len() + 2);
     unsafe {
-       args.push(LLVMConstInt(i64_ty, statepoint_id, 0));
-       // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
-       args.push(LLVMConstInt(i32_ty, 0, 0));
-       args.push(callee.ptr.as_value_ref());
-       args.push(LLVMConstInt(
-         i32_ty,
-         call_args.len() as u64,
-         0,
-       ));
-       // flags (LLVM 18 verifier currently accepts only 0..=3; project default is 0).
-       args.push(LLVMConstInt(i32_ty, 0, 0));
-     }
+      args.push(LLVMConstInt(i64_ty, statepoint_id, 0));
+      // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
+      args.push(LLVMConstInt(i32_ty, 0, 0));
+      args.push(callee.ptr.as_value_ref());
+      args.push(LLVMConstInt(i32_ty, call_args.len() as u64, 0));
+      // flags (LLVM 18 verifier currently accepts only 0..=3; project default is 0).
+      args.push(LLVMConstInt(i32_ty, 0, 0));
+    }
 
     // Call args.
     for arg in call_args {
@@ -319,13 +368,16 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
       idx
     };
 
-    let mut ptr_indices: Vec<(u32, u32, PointerType<'ctx>)> =
+    let mut relocated_derived: HashMap<LLVMValueRef, ()> =
+      HashMap::with_capacity(live_gc_ptrs.len());
+    // Whether each relocation corresponds to an auto-rooted call argument.
+    let mut ptr_indices: Vec<(u32, u32, PointerType<'ctx>, bool)> =
       Vec::with_capacity(live_gc_ptrs.len() + call_args.len());
-    let mut relocated_derived: HashMap<LLVMValueRef, ()> = HashMap::with_capacity(live_gc_ptrs.len());
+
     for live in live_gc_ptrs {
       let base_idx = intern_gc_live(live.base.as_value_ref());
       let derived_idx = intern_gc_live(live.derived.as_value_ref());
-      ptr_indices.push((base_idx, derived_idx, live.derived.get_type()));
+      ptr_indices.push((base_idx, derived_idx, live.derived.get_type(), false));
       relocated_derived.insert(live.derived.as_value_ref(), ());
     }
 
@@ -338,7 +390,7 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
         {
           let idx = intern_gc_live(v);
           if !relocated_derived.contains_key(&v) {
-            ptr_indices.push((idx, idx, PointerValue::new(v).get_type()));
+            ptr_indices.push((idx, idx, PointerValue::new(v).get_type(), true));
             relocated_derived.insert(v, ());
           }
         }
@@ -374,8 +426,11 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     // Add the required `elementtype(<callee fn ty>)` parameter attribute to the callee pointer
     // argument (3rd parameter, 1-based in LLVM's attribute indexing).
     unsafe {
-      let attr =
-        LLVMCreateTypeAttribute(self.context, self.elementtype_attr_kind, callee.ty.as_type_ref());
+      let attr = LLVMCreateTypeAttribute(
+        self.context,
+        self.elementtype_attr_kind,
+        callee.ty.as_type_ref(),
+      );
       LLVMAddCallSiteAttribute(statepoint_token, 3, attr);
     }
 
@@ -398,7 +453,7 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     });
 
     let mut relocated = Vec::with_capacity(ptr_indices.len());
-    for (base_idx, derived_idx, derived_ty) in ptr_indices {
+    for (base_idx, derived_idx, derived_ty, is_call_arg) in ptr_indices {
       let gc_relocate_decl = self.get_gc_relocate_decl(derived_ty);
       let gc_relocate_fn_ty = unsafe { LLVMGlobalGetValueType(gc_relocate_decl) };
 
@@ -423,10 +478,29 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
         LLVMSetInstructionCallConv(inst, LLVMCallConv::LLVMColdCallConv as u32);
       }
 
+      // Keep relocates for GC-pointer call arguments alive: even if the relocated value is not used
+      // after the statepoint, the `(base, derived)` location pair must stay in the stackmap record
+      // so the runtime can update the argument slot/register while executing inside the callee.
+      if is_call_arg {
+        unsafe {
+          let sink = self.get_call_arg_sink_alloca(builder.as_mut_ptr(), derived_ty.as_type_ref());
+          let store = LLVMBuildStore(builder.as_mut_ptr(), inst, sink);
+          LLVMSetVolatile(store, 1);
+        }
+      }
+
       relocated.push(unsafe { PointerValue::new(inst) });
     }
 
     (ret_val, relocated)
+  }
+}
+
+impl Drop for StatepointIntrinsics<'_> {
+  fn drop(&mut self) {
+    unsafe {
+      LLVMDisposeBuilder(self.alloca_builder);
+    }
   }
 }
 
@@ -461,18 +535,15 @@ mod tests {
     let entry = ctx.append_basic_block(caller, "entry");
     builder.position_at_end(entry);
 
-    let gc_arg = caller
-      .get_nth_param(0)
-      .expect("gc")
-      .into_pointer_value();
+    let gc_arg = caller.get_nth_param(0).expect("gc").into_pointer_value();
     gc_arg.set_name("gc");
-    let raw_arg = caller
-      .get_nth_param(1)
-      .expect("raw")
-      .into_pointer_value();
+    let raw_arg = caller.get_nth_param(1).expect("raw").into_pointer_value();
     raw_arg.set_name("raw");
 
-    let callee = StatepointCallee::new(callee_fn.as_global_value().as_pointer_value(), callee_fn.get_type());
+    let callee = StatepointCallee::new(
+      callee_fn.as_global_value().as_pointer_value(),
+      callee_fn.get_type(),
+    );
     let call_args: [BasicMetadataValueEnum<'_>; 2] = [gc_arg.into(), raw_arg.into()];
 
     let mut intrinsics = StatepointIntrinsics::new(&module);
@@ -492,9 +563,7 @@ mod tests {
       .lines()
       .find(|line| line.contains("gc.statepoint") && line.contains("\"gc-live\""))
       .expect("expected a gc.statepoint line with gc-live bundle");
-    let live_sub = &statepoint_line[statepoint_line
-      .find("\"gc-live\"")
-      .expect("gc-live bundle")..];
+    let live_sub = &statepoint_line[statepoint_line.find("\"gc-live\"").expect("gc-live bundle")..];
     assert!(
       live_sub.contains("%gc"),
       "expected gc pointer to appear in gc-live bundle: {statepoint_line}"

@@ -1,4 +1,5 @@
 use inkwell::context::Context;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::gc::statepoints::{StatepointCallee, StatepointIntrinsics};
@@ -43,8 +44,8 @@ fn stackmap_locations_include_gc_pointer_call_args() {
   );
   builder.build_return(None).expect("build return");
 
-  // define ptr addrspace(1) @caller1(ptr addrspace(1) %p) gc "coreclr"
-  let caller1_ty = gc_ptr_ty.fn_type(&[gc_ptr_ty.into()], false);
+  // define void @caller1(ptr addrspace(1) %p) gc "coreclr"
+  let caller1_ty = void_ty.fn_type(&[gc_ptr_ty.into()], false);
   let caller1 = module.add_function("caller1", caller1_ty, None);
   gc::set_default_gc_strategy(&caller1).expect("GC strategy contains NUL byte");
   let entry1 = context.append_basic_block(caller1, "entry");
@@ -61,9 +62,7 @@ fn stackmap_locations_include_gc_pointer_call_args() {
     None,
   );
   assert_eq!(relocated.len(), 1);
-  builder
-    .build_return(Some(&relocated[0]))
-    .expect("build return");
+  builder.build_return(None).expect("build return");
 
   if let Err(err) = module.verify() {
     panic!(
@@ -86,6 +85,18 @@ fn stackmap_locations_include_gc_pointer_call_args() {
     .expect("create target machine");
   module.set_triple(&triple);
   module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  // Ensure the call-arg root survives basic IR cleanup passes. `gc.relocate` is a pure call, so if
+  // its result is unused LLVM can DCE it and drop the corresponding root from `.llvm_stackmaps`
+  // unless the emitter explicitly anchors it.
+  module
+    .run_passes("instcombine,dce", &tm, PassBuilderOptions::create())
+    .unwrap_or_else(|err| {
+      panic!(
+        "failed to run instcombine,dce: {err}\n\nIR:\n{}",
+        module.print_to_string()
+      )
+    });
 
   let tmp = tempdir().expect("failed to create tempdir");
   let obj = tmp.path().join("statepoints_call_args_stackmap.o");

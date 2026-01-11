@@ -1,15 +1,18 @@
 use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMConstInt,
-  LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
-  LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetPointerAddressSpace,
-  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIntTypeInContext,
-  LLVMLookupIntrinsicID, LLVMTypeOf,
+  LLVMAddCallSiteAttribute, LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildCallWithOperandBundles,
+  LLVMBuildStore, LLVMConstInt, LLVMCreateBuilderInContext, LLVMCreateOperandBundle,
+  LLVMCreateTypeAttribute, LLVMDisposeBuilder, LLVMDisposeOperandBundle, LLVMGetBasicBlockParent,
+  LLVMGetEnumAttributeKindForName, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction,
+  LLVMGetInsertBlock, LLVMGetIntrinsicDeclaration, LLVMGetPointerAddressSpace, LLVMGetReturnType,
+  LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIntTypeInContext, LLVMLookupIntrinsicID,
+  LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMSetVolatile, LLVMTypeOf,
 };
 use llvm_sys::prelude::{
-  LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMOperandBundleRef, LLVMTypeRef, LLVMValueRef,
+  LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMOperandBundleRef,
+  LLVMTypeRef, LLVMValueRef,
 };
 use llvm_sys::{LLVMCallConv, LLVMTypeKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 
 use crate::llvm::gc::GC_ADDR_SPACE;
@@ -54,6 +57,7 @@ pub struct StatepointCall {
 pub struct StatepointEmitter {
   ctx: LLVMContextRef,
   module: LLVMModuleRef,
+  alloca_builder: LLVMBuilderRef,
   statepoint_intrinsic_id: u32,
   gc_result_intrinsic_id: u32,
   gc_relocate_intrinsic_id: u32,
@@ -63,6 +67,9 @@ pub struct StatepointEmitter {
   statepoint_decls: HashMap<usize, IntrinsicDecl>,
   gc_result_decls: HashMap<usize, IntrinsicDecl>,
   gc_relocate_decls: HashMap<usize, IntrinsicDecl>,
+  // Per-function sinks used to keep `gc.relocate` results for auto-rooted call arguments alive
+  // across DCE passes (see `emit_statepoint_call_indirect`).
+  call_arg_sinks: HashMap<(usize, usize), LLVMValueRef>,
 }
 
 #[derive(Copy, Clone)]
@@ -75,6 +82,7 @@ impl StatepointEmitter {
   pub unsafe fn new(ctx: LLVMContextRef, module: LLVMModuleRef, gc_ptr_ty: LLVMTypeRef) -> Self {
     let i32_ty = LLVMIntTypeInContext(ctx, 32);
     let i64_ty = LLVMIntTypeInContext(ctx, 64);
+    let alloca_builder = LLVMCreateBuilderInContext(ctx);
 
     let statepoint_name = b"llvm.experimental.gc.statepoint";
     let gc_result_name = b"llvm.experimental.gc.result";
@@ -87,9 +95,18 @@ impl StatepointEmitter {
     let gc_relocate_intrinsic_id =
       LLVMLookupIntrinsicID(gc_relocate_name.as_ptr().cast(), gc_relocate_name.len());
 
-    assert!(statepoint_intrinsic_id != 0, "missing LLVM intrinsic: gc.statepoint");
-    assert!(gc_result_intrinsic_id != 0, "missing LLVM intrinsic: gc.result");
-    assert!(gc_relocate_intrinsic_id != 0, "missing LLVM intrinsic: gc.relocate");
+    assert!(
+      statepoint_intrinsic_id != 0,
+      "missing LLVM intrinsic: gc.statepoint"
+    );
+    assert!(
+      gc_result_intrinsic_id != 0,
+      "missing LLVM intrinsic: gc.result"
+    );
+    assert!(
+      gc_relocate_intrinsic_id != 0,
+      "missing LLVM intrinsic: gc.relocate"
+    );
 
     let elementtype_attr_kind =
       LLVMGetEnumAttributeKindForName("elementtype\0".as_ptr().cast(), "elementtype".len());
@@ -101,6 +118,7 @@ impl StatepointEmitter {
     let mut out = Self {
       ctx,
       module,
+      alloca_builder,
       statepoint_intrinsic_id,
       gc_result_intrinsic_id,
       gc_relocate_intrinsic_id,
@@ -110,12 +128,46 @@ impl StatepointEmitter {
       statepoint_decls: HashMap::new(),
       gc_result_decls: HashMap::new(),
       gc_relocate_decls: HashMap::new(),
+      call_arg_sinks: HashMap::new(),
     };
 
     // Pre-warm the `gc.relocate` cache for the project's canonical GC pointer type so most call
     // sites avoid a lookup.
     out.get_gc_relocate_decl(gc_ptr_ty);
     out
+  }
+
+  unsafe fn get_call_arg_sink_alloca(
+    &mut self,
+    builder: LLVMBuilderRef,
+    ptr_ty: LLVMTypeRef,
+  ) -> LLVMValueRef {
+    let bb = LLVMGetInsertBlock(builder);
+    debug_assert!(!bb.is_null(), "builder has no insert block");
+    let func = LLVMGetBasicBlockParent(bb);
+    debug_assert!(!func.is_null(), "insert block has no parent function");
+
+    let key = (func as usize, ptr_ty as usize);
+    if let Some(&alloca) = self.call_arg_sinks.get(&key) {
+      return alloca;
+    }
+
+    let entry: LLVMBasicBlockRef = LLVMGetFirstBasicBlock(func);
+    debug_assert!(!entry.is_null(), "function has no entry block");
+    let first = LLVMGetFirstInstruction(entry);
+    if first.is_null() {
+      LLVMPositionBuilderAtEnd(self.alloca_builder, entry);
+    } else {
+      LLVMPositionBuilderBefore(self.alloca_builder, first);
+    }
+
+    let alloca = LLVMBuildAlloca(
+      self.alloca_builder,
+      ptr_ty,
+      b"gc_call_arg_sink\0".as_ptr().cast(),
+    );
+    self.call_arg_sinks.insert(key, alloca);
+    alloca
   }
 
   unsafe fn get_statepoint_decl(&mut self, callee_ptr_ty: LLVMTypeRef) -> IntrinsicDecl {
@@ -209,7 +261,14 @@ impl StatepointEmitter {
       "base_indices must match gc_live length"
     );
     let callee_fn_ty = LLVMGlobalGetValueType(callee);
-    self.emit_statepoint_call_indirect(builder, callee, callee_fn_ty, call_args, gc_live, base_indices)
+    self.emit_statepoint_call_indirect(
+      builder,
+      callee,
+      callee_fn_ty,
+      call_args,
+      gc_live,
+      base_indices,
+    )
   }
 
   /// Emit `gc.statepoint` for an *indirect* callee (`ptr %fp`).
@@ -273,7 +332,8 @@ impl StatepointEmitter {
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_deopt_args
 
     // Attach `elementtype(...)` to the callee operand (required under opaque pointers).
-    let elementtype_attr = LLVMCreateTypeAttribute(self.ctx, self.elementtype_attr_kind, callee_fn_ty);
+    let elementtype_attr =
+      LLVMCreateTypeAttribute(self.ctx, self.elementtype_attr_kind, callee_fn_ty);
 
     let statepoint = {
       let callee_ptr_ty = LLVMTypeOf(callee_ptr);
@@ -285,18 +345,29 @@ impl StatepointEmitter {
     //   1) all explicit `gc_live` values (caller-provided order),
     //   2) then unique `ptr addrspace(1)` call args in call-arg order.
     let mut gc_live_values: Vec<LLVMValueRef> = gc_live.to_vec();
-    let mut gc_live_index: HashMap<LLVMValueRef, u32> = HashMap::with_capacity(gc_live_values.len());
+    let mut gc_live_index: HashMap<LLVMValueRef, u32> =
+      HashMap::with_capacity(gc_live_values.len());
     for (idx, &v) in gc_live_values.iter().enumerate() {
       gc_live_index.insert(v, idx as u32);
     }
 
     let mut extra_base_indices: Vec<u32> = Vec::new();
+    // Indices within `gc_live_values` that correspond to GC-pointer call arguments. We must keep
+    // their `gc.relocate` calls alive even if the relocated value is otherwise unused, or IR
+    // optimizations can DCE the relocate and drop the root from the stackmap record.
+    //
+    // Repro:
+    //   - emit statepoint with a GC pointer call arg,
+    //   - emit `gc.relocate` but don't use its result,
+    //   - run `opt -passes=instcombine,dce` => relocate removed, stackmap loses the root.
+    let mut call_arg_indices: HashSet<u32> = HashSet::new();
     for &arg in call_args {
       let ty = LLVMTypeOf(arg);
       if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
         && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
       {
-        if gc_live_index.contains_key(&arg) {
+        if let Some(&idx) = gc_live_index.get(&arg) {
+          call_arg_indices.insert(idx);
           continue;
         }
         let idx = gc_live_values.len() as u32;
@@ -304,6 +375,7 @@ impl StatepointEmitter {
         gc_live_index.insert(arg, idx);
         // Base == derived for call arguments (we don't track interior ptrs here).
         extra_base_indices.push(idx);
+        call_arg_indices.insert(idx);
       }
     }
 
@@ -382,6 +454,14 @@ impl StatepointEmitter {
           .as_ptr(),
       );
       llvm_sys::core::LLVMSetInstructionCallConv(relocate, LLVMCallConv::LLVMColdCallConv as u32);
+
+      // Ensure relocates for call-arg roots are not DCE'd even when their value is not used by the
+      // caller after the statepoint.
+      if call_arg_indices.contains(&(derived_idx as u32)) {
+        let sink = self.get_call_arg_sink_alloca(builder, derived_ptr_ty);
+        let store = LLVMBuildStore(builder, relocate, sink);
+        LLVMSetVolatile(store, 1);
+      }
       relocated_all.push(relocate);
     }
 
@@ -411,6 +491,14 @@ impl StatepointEmitter {
       "emit_statepoint_call_void used with non-void callee"
     );
     relocated
+  }
+}
+
+impl Drop for StatepointEmitter {
+  fn drop(&mut self) {
+    unsafe {
+      LLVMDisposeBuilder(self.alloca_builder);
+    }
   }
 }
 
