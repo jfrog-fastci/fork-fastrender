@@ -1,5 +1,5 @@
-; Generated with LLVM 18 (llc-18) and extracted via:
-;   llvm-objcopy-18 --dump-section .llvm_stackmaps=stackmaps_v3.bin <obj>
+; Regenerate `stackmaps_v3.bin` with:
+;   bash tests/fixtures/gen.sh
 ;
 ; The IR is intentionally tiny but exercises all StackMap v3 location kinds.
 

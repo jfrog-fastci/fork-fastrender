@@ -1,9 +1,7 @@
 ; LLVM 18 patchpoint fixture with non-empty live-out list.
 ;
-; Generated with:
-;   llvm-as-18 patchpoint_liveouts.ll -o patchpoint_liveouts.bc
-;   llc-18 patchpoint_liveouts.bc -filetype=obj -o patchpoint_liveouts.o
-;   llvm-objcopy-18 --dump-section .llvm_stackmaps=patchpoint_liveouts.bin patchpoint_liveouts.o
+; Regenerate `patchpoint_liveouts.bin` with:
+;   bash tests/fixtures/gen.sh
 
 ; ModuleID = 'patchpoint_liveouts_fixture'
 target triple = "x86_64-unknown-linux-gnu"
