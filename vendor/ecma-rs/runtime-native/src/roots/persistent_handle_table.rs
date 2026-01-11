@@ -51,6 +51,13 @@ impl PersistentHandleTable {
     self.inner.set(id, ptr)
   }
 
+  /// Returns the number of currently-live handles in the table.
+  ///
+  /// This is intended for debugging/tests; it performs an O(n) scan of the slot table.
+  pub fn live_count(&self) -> usize {
+    self.inner.live_count()
+  }
+
   /// Enumerate all live pointer slots.
   ///
   /// This is intended to be used by the GC while the world is stopped, so it can trace/update

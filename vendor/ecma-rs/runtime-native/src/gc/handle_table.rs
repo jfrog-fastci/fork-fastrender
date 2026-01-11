@@ -223,6 +223,18 @@ impl<T> HandleTable<T> {
     }
   }
 
+  /// Returns the number of currently-live handles in the table.
+  ///
+  /// This is intended for debugging/tests; it performs an O(n) scan of the slot table.
+  pub fn live_count(&self) -> usize {
+    let inner = self.inner.read();
+    inner
+      .slots
+      .iter()
+      .filter(|slot| matches!(slot, Slot::Live { .. }))
+      .count()
+  }
+
   /// Update the pointer stored in `id`'s slot.
   ///
   /// Returns `true` if `id` was live and successfully updated.

@@ -908,6 +908,11 @@ GC object pointer and keep it alive while queued:
 - `rt_queue_microtask_rooted(cb, data)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the microtask runs.
+- `rt_promise_then_rooted_legacy(p, on_settle, data)`
+  - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+  - The runtime registers a strong GC root for `data` until the promise settles and the callback
+    runs.
+  - When invoking `on_settle`, the runtime passes the *current* pointer (after any relocation).
 - `rt_set_timeout_rooted(cb, data, delay_ms)` / `rt_set_interval_rooted(cb, data, interval_ms)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the timer fires or is cleared.
