@@ -669,7 +669,7 @@ PromiseRef rt_async_spawn(CoroutineId coro);
   `promise` field.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
- - The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
+- The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
 
 #### `rt_async_spawn_deferred` (microtask-style)
 
@@ -682,7 +682,7 @@ PromiseRef rt_async_spawn_deferred(CoroutineId coro);
 - Enqueues the coroutine’s *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
   a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
- - The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
+- The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
 
 This API exists for Web-standard semantics that require guaranteed asynchronous execution, including:
 
