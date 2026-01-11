@@ -48,7 +48,7 @@ fn enforce_force_frame_pointers() {
   }
 
   let flags = rustflags();
-  if has_force_frame_pointers_yes(&flags) {
+  if force_frame_pointers_setting(&flags) == Some(true) {
     return;
   }
 
@@ -107,22 +107,53 @@ fn rustflags() -> Vec<String> {
   Vec::new()
 }
 
-fn has_force_frame_pointers_yes(flags: &[String]) -> bool {
+fn force_frame_pointers_setting(flags: &[String]) -> Option<bool> {
   // Accept both spellings:
-  // - `-Cforce-frame-pointers=yes`
-  // - `-C force-frame-pointers=yes`
+  // - `-Cforce-frame-pointers=yes` / `-Cforce-frame-pointers=no`
+  // - `-C force-frame-pointers=yes` / `-C force-frame-pointers=no`
+  //
+  // If the flag is specified multiple times, the *last* one wins (mirroring rustc behavior).
+  let mut setting = None;
   let mut i = 0usize;
   while i < flags.len() {
     let flag = &flags[i];
-    if flag == "-Cforce-frame-pointers=yes" {
-      return true;
+
+    if flag == "-C" {
+      if let Some(next) = flags.get(i + 1) {
+        if let Some(v) = parse_force_frame_pointers_opt(next) {
+          setting = Some(v);
+        }
+      }
+      i += 2;
+      continue;
     }
-    if flag == "-C" && flags.get(i + 1).map(String::as_str) == Some("force-frame-pointers=yes") {
-      return true;
+
+    if let Some(rest) = flag.strip_prefix("-C") {
+      if let Some(v) = parse_force_frame_pointers_opt(rest) {
+        setting = Some(v);
+      }
     }
+
     i += 1;
   }
-  false
+  setting
+}
+
+fn parse_force_frame_pointers_opt(opt: &str) -> Option<bool> {
+  let opt = opt.trim();
+  if !opt.starts_with("force-frame-pointers") {
+    return None;
+  }
+
+  let rest = &opt["force-frame-pointers".len()..];
+  if rest.is_empty() || rest == "=yes" {
+    return Some(true);
+  }
+  if rest == "=no" {
+    return Some(false);
+  }
+
+  None
 }
 
 fn maybe_enable_stackmaps_linker_symbols() {
