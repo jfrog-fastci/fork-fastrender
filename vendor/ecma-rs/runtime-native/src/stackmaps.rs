@@ -115,8 +115,14 @@ impl StackMap {
     // passes the entire `.llvm_stackmaps` output section (which may contain
     // multiple concatenated blobs), fail fast instead of silently dropping the
     // trailing records.
-    if section.get(len..).map_or(false, |tail| tail.iter().any(|&b| b != 0)) {
-      return Err(StackMapError::TrailingNonZeroBytes { offset: len });
+    if let Some(tail) = section.get(len..) {
+      // Some toolchains may leave a short non-zero tail (< header size) due to
+      // alignment noise. Such a tail cannot contain another StackMap v3 header,
+      // so ignore it. Any longer non-zero tail likely indicates the caller
+      // passed a linker-concatenated section containing multiple blobs.
+      if tail.len() >= STACKMAP_HEADER_SIZE && tail.iter().any(|&b| b != 0) {
+        return Err(StackMapError::TrailingNonZeroBytes { offset: len });
+      }
     }
     Ok(map)
   }
@@ -253,8 +259,9 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     // Linkers may insert 0-filled alignment padding between concatenated input
     // sections. Skip that padding to find the next `version=3` blob header.
     //
-    // Note: we only skip *zero* bytes here. Any other trailing/non-header bytes
-    // indicate a malformed section and should surface as a parse error.
+    // Note: we only skip *zero* bytes here. If the remaining tail is shorter
+    // than a StackMap v3 header (16 bytes), it cannot start another blob; ignore
+    // it (some toolchains leave short non-zero alignment noise).
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
@@ -1129,6 +1136,28 @@ mod tests {
     push_u32(buf, num_records);
   }
 
+  fn minimal_blob(function_addr: u64, patchpoint_id: u64, instruction_offset: u32) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, function_addr);
+    push_u64(&mut bytes, 32);
+    push_u64(&mut bytes, 1);
+
+    // Record (no locations / no liveouts).
+    push_u64(&mut bytes, patchpoint_id);
+    push_u32(&mut bytes, instruction_offset);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    bytes
+  }
+
   #[test]
   fn parse_minimal_valid_stackmaps_index() {
     let mut bytes: Vec<u8> = Vec::new();
@@ -1230,28 +1259,6 @@ mod tests {
 
   #[test]
   fn parse_all_supports_concatenated_stackmap_blobs() {
-    fn minimal_blob(function_addr: u64, patchpoint_id: u64, instruction_offset: u32) -> Vec<u8> {
-      let mut bytes: Vec<u8> = Vec::new();
-      build_header(&mut bytes, 1, 0, 1);
-
-      // Function record.
-      push_u64(&mut bytes, function_addr);
-      push_u64(&mut bytes, 32);
-      push_u64(&mut bytes, 1);
-
-      // Record (no locations / no liveouts).
-      push_u64(&mut bytes, patchpoint_id);
-      push_u32(&mut bytes, instruction_offset);
-      push_u16(&mut bytes, 0);
-      push_u16(&mut bytes, 0);
-      align_to_8_with(&mut bytes, 0);
-      push_u16(&mut bytes, 0);
-      push_u16(&mut bytes, 0);
-      align_to_8_with(&mut bytes, 0);
-
-      bytes
-    }
-
     let blob_a = minimal_blob(0x1000, 1, 0x10);
     let blob_b = minimal_blob(0x2000, 2, 0x20);
     let mut concat = blob_a.clone();
@@ -1266,6 +1273,23 @@ mod tests {
     // Ensure the per-blob callsite indexes are still correct.
     assert!(sm.lookup(0x1010).is_some());
     assert!(sm.lookup(0x2020).is_some());
+  }
+
+  #[test]
+  fn stackmap_parse_rejects_concatenated_blobs() {
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x2000, 2, 0x20);
+    let mut concat = blob_a.clone();
+    // Simulate linker padding between input sections.
+    concat.extend_from_slice(&[0u8; 8]);
+    concat.extend_from_slice(&blob_b);
+
+    let err = StackMap::parse(&concat).unwrap_err();
+    assert!(
+      matches!(err, StackMapError::TrailingNonZeroBytes { offset } if offset == blob_a.len()),
+      "expected TrailingNonZeroBytes at offset {}, got {err:?}",
+      blob_a.len()
+    );
   }
 
   #[test]
