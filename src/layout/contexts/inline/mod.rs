@@ -6718,7 +6718,7 @@ impl InlineFormattingContext {
     resolved_justify: TextJustify,
     indent_offset: f32,
     inline_vertical: bool,
-    strut_metrics: &BaselineMetrics,
+    _strut_metrics: &BaselineMetrics,
     relative_cb: &ContainingBlock,
     mut anchor_positions: Option<&mut HashMap<usize, Point>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
@@ -6940,7 +6940,15 @@ impl InlineFormattingContext {
             );
     }
 
-    let anchor_block_position = block_offset + line.baseline - strut_metrics.baseline_offset;
+    // Absolute/fixed descendants with `top/bottom: auto` fall back to their "static position"
+    // (CSS 2.1 §10.3.7/§10.6.4). For inline-level positioned elements, the static position is
+    // defined in terms of the top margin edge of a hypothetical in-flow box.
+    //
+    // We approximate this by anchoring to the top of the line box rather than the baseline.
+    // This matches real-world patterns (e.g. absolutely positioned `<img>` placeholders inside an
+    // inline formatting context) and avoids anchoring positioned elements to the line baseline,
+    // which would incorrectly push them towards the bottom of tall line boxes.
+    let anchor_block_position = block_offset;
     let line_origin = Point::new(line.left_offset, block_offset);
 
     for (i, positioned) in items.iter().enumerate() {
