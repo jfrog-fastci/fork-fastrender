@@ -1,5 +1,9 @@
 /* Linker script fragment (Linux/ELF) for retaining and exposing LLVM stack maps.
  *
+ * This is the **lld-oriented** variant. GNU ld users should prefer
+ * `runtime-native/link/stackmaps_gnuld.ld` (GNU ld differs in how it assigns
+ * output sections to PT_LOAD segments; see that file for details).
+ *
  * Why a linker script at all?
  * - LLVM emits stackmap metadata into a `.llvm_stackmaps` section.
  * - GNU ld/LLD only auto-define `__start_<section>` / `__stop_<section>` for
@@ -26,17 +30,17 @@
  * Placement:
  * - This output section is writable (to allow dynamic relocations under PIE/DSO).
  * - We anchor the fragment at `INSERT AFTER .text;`.
-  *   - `.text` is always present (while `.rodata`/`.data` can be absent in minimal
-  *     links and cause lld/ld errors when used as `INSERT` anchors).
-  *   - lld enforces that its RELRO sections (`.dynamic`, `.got`, `.relro_padding`,
+ *   - `.text` is always present (while `.rodata`/`.data` can be absent in minimal
+ *     links and cause lld/ld errors when used as `INSERT` anchors).
+ *   - lld enforces that its RELRO sections (`.dynamic`, `.got`, `.relro_padding`,
  *     ...) are contiguous, and it errors if an `INSERT` tries to place any other
  *     output section inside that block, so `.dynamic`/`.got` are not usable anchors.
  *
-  *   GNU ld note: inserting a writable stackmaps section immediately after `.text`
-  *   can be unsafe under PIE — GNU ld may merge it into the executable text
-  *   PT_LOAD, producing an RWX segment once relocations require the segment to be
-  *   writable. For GNU ld + PIE, use `runtime-native/link/stackmaps_gnuld.ld` (or
-  *   `scripts/native_link.sh`, which selects the appropriate fragment).
+ *   GNU ld note: inserting a writable stackmaps section immediately after `.text`
+ *   can be unsafe under PIE — GNU ld may merge it into the executable text PT_LOAD,
+ *   producing an RWX segment once relocations require the segment to be writable.
+ *   For GNU ld + PIE, use `runtime-native/link/stackmaps_gnuld.ld` (or
+ *   `scripts/native_link.sh`, which selects the appropriate fragment).
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.

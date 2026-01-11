@@ -221,11 +221,30 @@ int main(void) {
   // (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`, plus legacy aliases).
   //
   // When linking from C directly (bypassing Cargo/rustc), we must pass the same
-  // script to the linker.
+  // linker-script fragment to the system linker.
+  //
+  // The correct fragment depends on which linker the system C toolchain drives:
+  // - GNU ld: use `link/stackmaps_gnuld.ld` (inserting after `.text` can produce an RWX PT_LOAD).
+  // - lld: use `link/stackmaps.ld` (lld keeps `.data.rel.ro.*` out of the executable segment).
   let stackmaps_ld = if cfg!(target_os = "linux") {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let linker_version_out = Command::new(&cc)
+      .args(["-Wl,--version"])
+      .output()
+      .unwrap_or_else(|e| panic!("failed to query linker version via {cc}: {e}"));
+    let linker_version = format!(
+      "{}{}",
+      String::from_utf8_lossy(&linker_version_out.stdout),
+      String::from_utf8_lossy(&linker_version_out.stderr),
+    );
+    let cc_uses_lld = linker_version.to_ascii_lowercase().contains("lld");
+
+    let lld_script = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("link")
       .join("stackmaps.ld");
+    let gnuld_script = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("link")
+      .join("stackmaps_gnuld.ld");
+    let path = if cc_uses_lld { lld_script } else { gnuld_script };
     assert!(
       path.exists(),
       "missing stackmaps linker script at {}",
