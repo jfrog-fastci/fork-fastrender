@@ -245,6 +245,12 @@ pub fn analyze_inline_callback(
   let cb_body_data = lowered.body(cb_body)?;
   let func = cb_body_data.function.as_ref()?;
 
+  let arguments_object_available = !is_arrow
+    && !func
+      .params
+      .iter()
+      .any(|param| pat_binds_text(cb_body_data, lowered.names.as_ref(), param.pat, "arguments"));
+
   let index_param = func.params.get(1).and_then(|param| {
     let pat = cb_body_data.pats.get(param.pat.0 as usize)?;
     match pat.kind {
@@ -265,7 +271,7 @@ pub fn analyze_inline_callback(
     lowered,
     kb,
     body: cb_body,
-    is_arrow,
+    arguments_object_available,
     index_param,
     array_param,
     uses_index: false,
@@ -277,6 +283,9 @@ pub fn analyze_inline_callback(
 
   match &func.body {
     FunctionBody::Block(stmts) => {
+      // The function body is a lexical scope; declarations inside it are hoisted
+      // for the purposes of name resolution.
+      analyzer.shadow_stack[0] = analyzer.scan_shadow_in_stmts(cb_body_data, stmts);
       for stmt in stmts {
         analyzer.visit_stmt(cb_body_data, *stmt);
       }
@@ -330,7 +339,7 @@ struct CallbackAnalyzer<'a> {
   lowered: &'a hir_js::LowerResult,
   kb: &'a KnowledgeBase,
   body: BodyId,
-  is_arrow: bool,
+  arguments_object_available: bool,
   index_param: Option<NameId>,
   array_param: Option<NameId>,
   uses_index: bool,
@@ -344,6 +353,7 @@ struct CallbackAnalyzer<'a> {
 struct ShadowScope {
   shadow_index: bool,
   shadow_array: bool,
+  shadow_arguments: bool,
 }
 
 impl CallbackAnalyzer<'_> {
@@ -362,11 +372,12 @@ impl CallbackAnalyzer<'_> {
 
   fn scan_shadow_in_stmts(&self, body: &Body, stmts: &[StmtId]) -> ShadowScope {
     let mut scope = ShadowScope::default();
-    if self.index_param.is_none() && self.array_param.is_none() {
+    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available {
       return scope;
     }
     let index = self.index_param;
     let array = self.array_param;
+    let track_arguments = self.arguments_object_available;
     for stmt_id in stmts {
       let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
         continue;
@@ -386,6 +397,14 @@ impl CallbackAnalyzer<'_> {
               scope.shadow_array = true;
             }
           }
+          if track_arguments
+            && var
+              .declarators
+              .iter()
+              .any(|d| pat_binds_text(body, self.lowered.names.as_ref(), d.pat, "arguments"))
+          {
+            scope.shadow_arguments = true;
+          }
         }
         StmtKind::Decl(def_id) => {
           let Some(def) = self.lowered.def(*def_id) else {
@@ -397,6 +416,9 @@ impl CallbackAnalyzer<'_> {
           if Some(def.name) == array {
             scope.shadow_array = true;
           }
+          if track_arguments && self.lowered.names.resolve(def.name) == Some("arguments") {
+            scope.shadow_arguments = true;
+          }
         }
         _ => continue,
       };
@@ -406,11 +428,12 @@ impl CallbackAnalyzer<'_> {
 
   fn scan_shadow_in_switch(&self, body: &Body, cases: &[SwitchCase]) -> ShadowScope {
     let mut scope = ShadowScope::default();
-    if self.index_param.is_none() && self.array_param.is_none() {
+    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available {
       return scope;
     }
     let index = self.index_param;
     let array = self.array_param;
+    let track_arguments = self.arguments_object_available;
     for case in cases {
       for stmt_id in &case.consequent {
         let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
@@ -431,6 +454,14 @@ impl CallbackAnalyzer<'_> {
                 scope.shadow_array = true;
               }
             }
+            if track_arguments
+              && var
+                .declarators
+                .iter()
+                .any(|d| pat_binds_text(body, self.lowered.names.as_ref(), d.pat, "arguments"))
+            {
+              scope.shadow_arguments = true;
+            }
           }
           StmtKind::Decl(def_id) => {
             let Some(def) = self.lowered.def(*def_id) else {
@@ -442,6 +473,9 @@ impl CallbackAnalyzer<'_> {
             if Some(def.name) == array {
               scope.shadow_array = true;
             }
+            if track_arguments && self.lowered.names.resolve(def.name) == Some("arguments") {
+              scope.shadow_arguments = true;
+            }
           }
           _ => continue,
         }
@@ -452,22 +486,23 @@ impl CallbackAnalyzer<'_> {
 
   fn scan_shadow_in_var_decl(&self, body: &Body, var: &VarDecl) -> ShadowScope {
     let mut scope = ShadowScope::default();
-    let Some(index) = self.index_param else {
-      if let Some(array) = self.array_param {
-        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
-          scope.shadow_array = true;
-        }
+    if let Some(index) = self.index_param {
+      if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+        scope.shadow_index = true;
       }
-      return scope;
-    };
-
-    if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
-      scope.shadow_index = true;
     }
     if let Some(array) = self.array_param {
       if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
         scope.shadow_array = true;
       }
+    }
+    if self.arguments_object_available
+      && var
+        .declarators
+        .iter()
+        .any(|d| pat_binds_text(body, self.lowered.names.as_ref(), d.pat, "arguments"))
+    {
+      scope.shadow_arguments = true;
     }
     scope
   }
@@ -484,6 +519,11 @@ impl CallbackAnalyzer<'_> {
         scope.shadow_array = true;
       }
     }
+    if self.arguments_object_available
+      && pat_binds_text(body, self.lowered.names.as_ref(), pat, "arguments")
+    {
+      scope.shadow_arguments = true;
+    }
     scope
   }
 
@@ -493,6 +533,9 @@ impl CallbackAnalyzer<'_> {
     }
     if Some(name) == self.array_param {
       return self.shadow_stack.iter().any(|s| s.shadow_array);
+    }
+    if self.arguments_object_available && self.lowered.names.resolve(name) == Some("arguments") {
+      return self.shadow_stack.iter().any(|s| s.shadow_arguments);
     }
     false
   }
@@ -1010,7 +1053,10 @@ impl CallbackAnalyzer<'_> {
   }
 
   fn record_ident(&mut self, name: NameId) {
-    if !self.is_arrow && self.lowered.names.resolve(name) == Some("arguments") {
+    if self.arguments_object_available
+      && self.lowered.names.resolve(name) == Some("arguments")
+      && !self.name_is_shadowed(name)
+    {
       self.uses_index = true;
       self.uses_array = true;
     }
@@ -1058,6 +1104,38 @@ fn pat_binds_name(body: &Body, pat: PatId, name: NameId) -> bool {
     }
     PatKind::Rest(inner) => pat_binds_name(body, **inner, name),
     PatKind::Assign { target, .. } => pat_binds_name(body, *target, name),
+    PatKind::AssignTarget(_) => false,
+  }
+}
+
+fn pat_binds_text(body: &Body, names: &hir_js::NameInterner, pat: PatId, text: &str) -> bool {
+  let Some(pat) = body.pats.get(pat.0 as usize) else {
+    return false;
+  };
+  match &pat.kind {
+    PatKind::Ident(id) => names.resolve(*id) == Some(text),
+    PatKind::Array(arr) => {
+      for element in arr.elements.iter().flatten() {
+        if pat_binds_text(body, names, element.pat, text) {
+          return true;
+        }
+      }
+      arr
+        .rest
+        .is_some_and(|rest| pat_binds_text(body, names, rest, text))
+    }
+    PatKind::Object(obj) => {
+      for prop in &obj.props {
+        if pat_binds_text(body, names, prop.value, text) {
+          return true;
+        }
+      }
+      obj
+        .rest
+        .is_some_and(|rest| pat_binds_text(body, names, rest, text))
+    }
+    PatKind::Rest(inner) => pat_binds_text(body, names, **inner, text),
+    PatKind::Assign { target, .. } => pat_binds_text(body, names, *target, text),
     PatKind::AssignTarget(_) => false,
   }
 }
@@ -1132,6 +1210,36 @@ mod tests {
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(true));
     assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_shadowing_arguments_does_not_count_as_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { let arguments = []; return arguments[0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_arguments_param_does_not_count_as_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (arguments) { return arguments[0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
   }
 
   #[test]
