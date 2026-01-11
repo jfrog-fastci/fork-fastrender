@@ -12,12 +12,25 @@ pub struct ApiSemantics {
 
   #[serde(default)]
   pub purity: PurityTemplate,
+
+  /// Arbitrary key/value metadata for downstream analyses.
+  ///
+  /// `effect-js` uses this for optional string encoding semantics such as:
+  /// - `encoding.output: same_as_input`
+  /// - `encoding.preserves_input_if: ascii`
+  ///
+  /// Values are strings to keep the schema stable and easy to author.
+  #[serde(default)]
+  pub properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApiDatabase {
   apis: BTreeMap<String, ApiSemantics>,
 }
+
+/// Backwards-compatible alias used by analysis passes.
+pub type KnowledgeBase = ApiDatabase;
 
 impl ApiDatabase {
   pub fn from_entries(entries: impl IntoIterator<Item = ApiSemantics>) -> Self {
@@ -190,6 +203,7 @@ purity: DependsOnCallback
       name: "x".to_string(),
       effects: EffectTemplate::Pure,
       purity: PurityTemplate::Pure,
+      properties: BTreeMap::new(),
     }]);
 
     assert_eq!(db.get("x").unwrap().purity, PurityTemplate::Pure);

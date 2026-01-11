@@ -1,6 +1,7 @@
 #![deny(missing_debug_implementations)]
 
 mod api;
+pub mod encoding;
 mod recognize;
 mod resolve;
 
@@ -10,6 +11,7 @@ pub mod typed;
 use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 
 pub use api::ApiId;
+pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 pub use recognize::{recognize_patterns_untyped, RecognizedPattern};
 
 #[cfg(feature = "typed")]
