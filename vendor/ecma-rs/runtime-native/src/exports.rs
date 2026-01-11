@@ -1077,9 +1077,11 @@ pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
 /// object base pointer.
 #[no_mangle]
 pub unsafe extern "C" fn rt_handle_alloc_h(slot: crate::roots::GcHandle) -> u64 {
-  crate::roots::global_persistent_handle_table()
-    .alloc_from_slot(slot)
-    .to_u64()
+  abort_on_panic(|| unsafe {
+    crate::roots::global_persistent_handle_table()
+      .alloc_from_slot(slot)
+      .to_u64()
+  })
 }
 
 /// Free a persistent handle created by [`rt_handle_alloc`].
@@ -1122,8 +1124,9 @@ pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
 /// object base pointer.
 #[no_mangle]
 pub unsafe extern "C" fn rt_handle_store_h(handle: u64, slot: crate::roots::GcHandle) {
-  let _ =
-    crate::roots::global_persistent_handle_table().set_from_slot(HandleId::from_u64(handle), slot);
+  abort_on_panic(|| unsafe {
+    let _ = crate::roots::global_persistent_handle_table().set_from_slot(HandleId::from_u64(handle), slot);
+  })
 }
 
 #[cfg(feature = "gc_stats")]
@@ -1165,7 +1168,7 @@ pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
 /// object base pointer.
 #[no_mangle]
 pub unsafe extern "C" fn rt_weak_add_h(slot: crate::roots::GcHandle) -> u64 {
-  crate::gc::weak::global_weak_add_from_slot(slot).as_u64()
+  abort_on_panic(|| unsafe { crate::gc::weak::global_weak_add_from_slot(slot).as_u64() })
 }
 
 /// Resolve a weak handle back to a pointer, or null if the referent is dead/cleared.
@@ -3213,7 +3216,7 @@ pub unsafe extern "C" fn rt_promise_then_rooted_h(
   on_settle: extern "C" fn(*mut u8),
   data: crate::roots::GcHandle,
 ) {
-  unsafe { rt_promise_then_rooted_h_legacy(p, on_settle, data) }
+  abort_on_panic(|| unsafe { rt_promise_then_rooted_h_legacy(p, on_settle, data) })
 }
 
 #[no_mangle]
