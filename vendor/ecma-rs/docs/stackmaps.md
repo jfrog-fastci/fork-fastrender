@@ -128,9 +128,9 @@ For LLVM 18 statepoints lowered by `rewrite-statepoints-for-gc`, stackmap record
 structure:
 
 1. **3 constant header locations**:
-   - `callconv` (expected 0 in this project)
-   - `flags` (expected 0; verifier accepts 0..3)
-   - `deopt_count` (expected 0; deopt operands are not supported)
+   - `callconv` (call convention ID; commonly `0` for C, `8` for `fastcc`)
+   - `flags` (the `gc.statepoint` `flags` immarg; verifier accepts `0..=3`)
+   - `deopt_count` (number of `"deopt"` operand locations; GC ignores these but must skip them)
 2. Then `deopt_count` deopt operand locations (not GC roots).
 3. Then **2 locations per `gc.relocate` call**: `(base, derived)`
 
