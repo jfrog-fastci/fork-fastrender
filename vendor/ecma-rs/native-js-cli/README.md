@@ -210,7 +210,9 @@ different builtin handling).
   `NaN` / `Infinity` / `-Infinity`
 
 Note: today this flag only affects the legacy `--pipeline project` emitter. The
-typechecked `--pipeline checked` backend currently always lowers these intrinsics.
+typechecked `--pipeline checked` backend has different builtin handling and does
+not support `--no-builtins` (currently it only recognizes the `print(number)`
+intrinsic statement, and it is always enabled).
 
 ## Supported language subset (`--pipeline project`, current)
 
