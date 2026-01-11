@@ -160,3 +160,21 @@ fn full_mode_lowers_runtime_ts_constructs() {
     "expected lowered enum to include string literal \"B\", got: {output}"
   );
 }
+
+#[test]
+fn full_mode_lowers_import_equals_and_export_assignment() {
+  let src = r#"
+    import x = require("y");
+    export = x;
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert!(
+    output.contains("require(\"y\")") || output.contains("require('y')"),
+    "expected lowered import= to include require call, got: {output}"
+  );
+  assert!(
+    output.contains("module.exports"),
+    "expected lowered export= to include module.exports assignment, got: {output}"
+  );
+}
