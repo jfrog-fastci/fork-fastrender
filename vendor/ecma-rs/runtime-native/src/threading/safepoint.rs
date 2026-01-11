@@ -1,3 +1,4 @@
+use crate::arch::SafepointContext;
 use crate::threading::registry;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -7,6 +8,10 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
+
+extern "C" {
+  fn rt_gc_safepoint_slow(requested_epoch: u64);
+}
 
 struct SafepointCoordinator {
   /// Global GC/safepoint epoch.
@@ -65,11 +70,26 @@ pub fn rt_gc_safepoint() {
     return;
   }
 
-  rt_gc_safepoint_slow(epoch);
+  // Safety: `rt_gc_safepoint_slow` is part of the runtime and follows the
+  // platform C ABI.
+  unsafe {
+    rt_gc_safepoint_slow(epoch);
+  }
 }
 
+/// Rust implementation of the safepoint slow path.
+///
+/// This is called via the architecture-specific assembly shim `rt_gc_safepoint_slow`, which
+/// captures the caller's stack pointer / frame pointer / return address before any Rust
+/// prologue can mutate them.
+#[no_mangle]
 #[cold]
-fn rt_gc_safepoint_slow(requested_epoch: u64) {
+extern "C" fn rt_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const SafepointContext) {
+  // Safety: the assembly wrapper passes a valid pointer to an initialized
+  // `SafepointContext` on its stack.
+  let ctx = unsafe { *ctx };
+
+  registry::set_current_thread_safepoint_context(ctx);
   // Publish that we've observed the stop-the-world request.
   registry::set_current_thread_safepoint_epoch_observed(requested_epoch);
   notify_state_change();

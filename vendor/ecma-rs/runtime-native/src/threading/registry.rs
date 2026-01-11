@@ -1,3 +1,4 @@
+use crate::arch::SafepointContext;
 use crate::threading::safepoint;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -28,8 +29,9 @@ pub enum ThreadKind {
 
 /// Optional stack bounds metadata for precise stack scanning.
 ///
-/// Currently unused, but kept so GC integration can store per-thread stack
-/// ranges (and potentially platform-specific metadata) in the registry.
+/// This is populated on platforms where we can query thread stack bounds (Linux
+/// via `pthread_getattr_np`). It is used by future precise GC stack scanning and
+/// by tests that validate safepoint context capture.
 #[derive(Clone, Copy, Debug)]
 pub struct StackBounds {
   pub lo: usize,
@@ -50,6 +52,12 @@ pub struct ThreadState {
 
   /// The last GC safepoint epoch observed by this thread.
   safepoint_epoch_observed: AtomicU64,
+
+  /// Captured mutator context for the most recent safepoint slow path entry.
+  ///
+  /// This is published *before* updating `safepoint_epoch_observed` so the GC can safely read it
+  /// after observing the epoch barrier.
+  safepoint_context: Mutex<Option<SafepointContext>>,
 
   stack_bounds: Mutex<Option<StackBounds>>,
 }
@@ -77,6 +85,10 @@ impl ThreadState {
 
   pub fn stack_bounds(&self) -> Option<StackBounds> {
     *self.stack_bounds.lock().unwrap()
+  }
+
+  pub fn safepoint_context(&self) -> Option<SafepointContext> {
+    *self.safepoint_context.lock().unwrap()
   }
 }
 
@@ -125,7 +137,8 @@ impl ThreadRegistry {
       os_thread_id: current_os_thread_id(),
       parked: AtomicBool::new(false),
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
-      stack_bounds: Mutex::new(None),
+      safepoint_context: Mutex::new(None),
+      stack_bounds: Mutex::new(current_stack_bounds()),
     });
 
     {
@@ -254,6 +267,14 @@ pub(crate) fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
   state.safepoint_epoch_observed.store(epoch, Ordering::Release);
 }
 
+pub(crate) fn set_current_thread_safepoint_context(ctx: SafepointContext) {
+  let Some(state) = current_thread_state() else {
+    return;
+  };
+
+  *state.safepoint_context.lock().unwrap() = Some(ctx);
+}
+
 /// Best-effort OS thread id for debugging.
 fn current_os_thread_id() -> u64 {
   #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -271,5 +292,32 @@ fn current_os_thread_id() -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tid.hash(&mut hasher);
     hasher.finish()
+  }
+}
+
+fn current_stack_bounds() -> Option<StackBounds> {
+  #[cfg(any(target_os = "linux", target_os = "android"))]
+  unsafe {
+    let mut attr: libc::pthread_attr_t = std::mem::zeroed();
+    if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
+      return None;
+    }
+
+    let mut stack_addr: *mut libc::c_void = std::ptr::null_mut();
+    let mut stack_size: libc::size_t = 0;
+    let res = libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size);
+    libc::pthread_attr_destroy(&mut attr);
+    if res != 0 {
+      return None;
+    }
+
+    let lo = stack_addr as usize;
+    let hi = lo.checked_add(stack_size as usize)?;
+    Some(StackBounds { lo, hi })
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  {
+    None
   }
 }

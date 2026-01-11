@@ -9,6 +9,7 @@
 //! - `include/runtime_native.h` for the stable C ABI surface.
 
 pub mod abi;
+pub mod arch;
 pub mod gc;
 pub mod immix;
 pub mod nursery;
