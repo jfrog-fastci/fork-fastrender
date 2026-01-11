@@ -1,6 +1,6 @@
 #[cfg(unix)]
 mod unix {
-  use runtime_native::buffer::{ArrayBuffer, Uint8Array};
+  use runtime_native::buffer::{ArrayBuffer, ArrayBufferError, TypedArrayError, Uint8Array};
   use runtime_native::io::{IoVecRange, PinnedIoVec, PinnedMsgHdr};
   use std::os::unix::io::RawFd;
   use std::io;
@@ -100,6 +100,26 @@ mod unix {
 
     std::thread::spawn(move || drop(pinned)).join().unwrap();
     assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
+  fn iovec_range_builders_reject_detached_buffers() {
+    let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+    let view = Uint8Array::view(&buf, 0, 4).unwrap();
+    buf.detach().unwrap();
+
+    assert!(matches!(
+      IoVecRange::array_buffer(&buf, 0, 0),
+      Err(runtime_native::io::iovec::IoVecError::ArrayBuffer(
+        ArrayBufferError::Detached
+      ))
+    ));
+    assert!(matches!(
+      IoVecRange::uint8_array_range(&view, 0, 0),
+      Err(runtime_native::io::iovec::IoVecError::TypedArray(
+        TypedArrayError::Buffer(ArrayBufferError::Detached)
+      ))
+    ));
   }
 
   #[test]

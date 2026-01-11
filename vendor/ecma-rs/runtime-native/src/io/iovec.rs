@@ -42,6 +42,9 @@ pub enum IoVecRange<'a> {
 
 impl<'a> IoVecRange<'a> {
   pub fn array_buffer(buffer: &'a ArrayBuffer, offset: usize, len: usize) -> Result<Self, IoVecError> {
+    if buffer.is_detached() {
+      return Err(IoVecError::ArrayBuffer(ArrayBufferError::Detached));
+    }
     let end = offset
       .checked_add(len)
       .ok_or(IoVecError::ArrayBuffer(ArrayBufferError::Range))?;
@@ -68,6 +71,9 @@ impl<'a> IoVecRange<'a> {
   }
 
   pub fn uint8_array_range(view: &'a Uint8Array, offset: usize, len: usize) -> Result<Self, IoVecError> {
+    if view.is_detached() {
+      return Err(IoVecError::TypedArray(TypedArrayError::Buffer(ArrayBufferError::Detached)));
+    }
     let end = offset
       .checked_add(len)
       .ok_or(IoVecError::TypedArray(TypedArrayError::Range))?;
@@ -96,6 +102,7 @@ enum PinGuard {
 /// 1) the `iovec[]` descriptor array is host-owned (`Box<[iovec]>`) and therefore has a stable
 ///    address for the lifetime of this value.
 /// 2) each `iov_base` points into a pinned backing store (see [`ArrayBuffer::pin`]).
+#[must_use = "PinnedIoVec must be kept alive to keep backing stores pinned and iovec pointers valid"]
 #[derive(Debug)]
 pub struct PinnedIoVec {
   // NOTE: keep `iovecs` before `pins` so pinned backing stores outlive the `iovec[]` descriptors.
@@ -222,6 +229,7 @@ pub type IoVecList = PinnedIoVec;
 /// user-provided pointers inside the struct point into:
 /// - heap-owned, stable allocations (`Box<msghdr>`, optional `Vec<u8>` for `msg_control` / `msg_name`)
 /// - pinned backing stores (via the owned [`PinnedIoVec`])
+#[must_use = "PinnedMsgHdr must be kept alive to keep msghdr/iovec pointers valid"]
 #[derive(Debug)]
 pub struct PinnedMsgHdr {
   hdr: Box<libc::msghdr>,
