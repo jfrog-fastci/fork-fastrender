@@ -114,12 +114,20 @@ extract_call_return_offset_from_objdump() {
   printf '%d' "$((0x${next_hex} - 0x${start_hex}))"
 }
 
-extract_nop_run_start_end_hex_from_objdump() {
+extract_nop_region_offsets_ending_at() {
   local objdump_out="$1"
   local func="$2"
+  local want_end_off="$3"
 
-  local out
-  out="$(
+  local fn_start_hex
+  fn_start_hex="$(
+    printf '%s\n' "${objdump_out}" |
+      awk -v f="${func}" '$0 ~ "<"f">:" {print $1; exit}'
+  )"
+  [[ -n "${fn_start_hex}" ]] || die "failed to locate function header for ${func} in objdump output"
+
+  local runs
+  runs="$(
     printf '%s\n' "${objdump_out}" |
       awk -v f="${func}" '
         $0 ~ "<"f">:" {in_func=1; next}
@@ -128,6 +136,7 @@ extract_nop_run_start_end_hex_from_objdump() {
           addr=$1
           sub(":", "", addr)
           inst=$2
+
           if (!in_nops && inst ~ /^nop/) {
             nop_start=addr
             in_nops=1
@@ -135,13 +144,26 @@ extract_nop_run_start_end_hex_from_objdump() {
           }
           if (in_nops && inst !~ /^nop/) {
             print nop_start " " addr
-            exit
+            in_nops=0
           }
         }
       '
   )"
-  [[ -n "${out}" ]] || die "failed to find a contiguous NOP region in ${func} disassembly"
-  printf '%s' "${out}"
+
+  local start_hex end_hex start_off end_off
+  while read -r start_hex end_hex; do
+    [[ -n "${start_hex}" && -n "${end_hex}" ]] || continue
+    start_off="$((0x${start_hex} - 0x${fn_start_hex}))"
+    end_off="$((0x${end_hex} - 0x${fn_start_hex}))"
+    if (( end_off == want_end_off )); then
+      printf '%d %d' "${start_off}" "${end_off}"
+      return 0
+    fi
+  done <<<"${runs}"
+
+  echo "=== disassembly ===" >&2
+  echo "${objdump_out}" >&2
+  die "failed to find a NOP region in ${func} disassembly ending at offset ${want_end_off}"
 }
 
 extract_instruction_offset() {
@@ -222,21 +244,13 @@ if (( RET_A != OFF_A )); then
   die "fixture A: expected stackmap instruction offset to equal call return address; got stackmap=${OFF_A}, disasm=${RET_A}"
 fi
 
-read -r NOP_START_HEX NOP_END_HEX <<<"$(extract_nop_run_start_end_hex_from_objdump "${DIS_B}" "test")"
-NOP_START_DEC="$((0x${NOP_START_HEX}))"
-NOP_END_DEC="$((0x${NOP_END_HEX}))"
-NOP_LEN="$((NOP_END_DEC - NOP_START_DEC))"
+NOP_REGION="$(extract_nop_region_offsets_ending_at "${DIS_B}" "test" "${OFF_B}")"
+read -r NOP_START_OFF NOP_END_OFF <<<"${NOP_REGION}"
+NOP_LEN="$((NOP_END_OFF - NOP_START_OFF))"
 if (( NOP_LEN < PATCH_BYTES_B )); then
   echo "=== disassembly B ===" >&2
   echo "${DIS_B}" >&2
-  die "fixture B: expected contiguous NOP region length >= ${PATCH_BYTES_B}, got ${NOP_LEN} (start=0x${NOP_START_HEX}, end=0x${NOP_END_HEX})"
-fi
-if (( NOP_END_DEC != OFF_B )); then
-  echo "=== disassembly B ===" >&2
-  echo "${DIS_B}" >&2
-  echo "=== stackmap B ===" >&2
-  echo "${STACKMAP_B}" >&2
-  die "fixture B: expected stackmap instruction offset to match end of NOP region; got stackmap=${OFF_B}, nop_end=${NOP_END_DEC}"
+  die "fixture B: expected contiguous NOP region length >= ${PATCH_BYTES_B}, got ${NOP_LEN} (nop_start_off=${NOP_START_OFF}, nop_end_off=${NOP_END_OFF})"
 fi
 
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
