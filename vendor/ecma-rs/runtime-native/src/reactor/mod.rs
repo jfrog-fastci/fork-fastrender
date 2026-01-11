@@ -348,17 +348,31 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 
   impl ReactorSys {
     pub(super) fn new_with_waker() -> io::Result<(ReactorSys, super::Waker)> {
-      let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-      if epoll_fd == -1 {
-        return Err(io::Error::last_os_error());
-      }
+      let epoll_fd = loop {
+        let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        if epoll_fd != -1 {
+          break epoll_fd;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
+      };
       // SAFETY: just created fd.
       let epoll = unsafe { OwnedFd::from_raw_fd(epoll_fd) };
 
-      let eventfd_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-      if eventfd_fd == -1 {
-        return Err(io::Error::last_os_error());
-      }
+      let eventfd_fd = loop {
+        let eventfd_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if eventfd_fd != -1 {
+          break eventfd_fd;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
+      };
       let eventfd = unsafe { OwnedFd::from_raw_fd(eventfd_fd) };
 
       let sys = ReactorSys { epoll, eventfd };

@@ -13,11 +13,18 @@ pub struct Epoll {
 impl Epoll {
   #[allow(dead_code)]
   pub fn new() -> io::Result<Self> {
-    // SAFETY: syscall.
-    let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-    if fd < 0 {
-      return Err(io::Error::last_os_error());
-    }
+    let fd = loop {
+      // SAFETY: syscall.
+      let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+      if fd >= 0 {
+        break fd;
+      }
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return Err(err);
+    };
     // SAFETY: `fd` is owned.
     Ok(Self { fd: unsafe { OwnedFd::from_raw_fd(fd) } })
   }
@@ -104,11 +111,18 @@ pub struct EventFd {
 
 impl EventFd {
   pub fn new() -> io::Result<Self> {
-    // SAFETY: syscall.
-    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-    if fd < 0 {
-      return Err(io::Error::last_os_error());
-    }
+    let fd = loop {
+      // SAFETY: syscall.
+      let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+      if fd >= 0 {
+        break fd;
+      }
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return Err(err);
+    };
     // SAFETY: `fd` is owned.
     Ok(Self { fd: unsafe { OwnedFd::from_raw_fd(fd) } })
   }

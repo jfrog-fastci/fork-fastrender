@@ -60,19 +60,33 @@ struct Entry {
 
 impl Reactor {
   pub fn new() -> io::Result<Self> {
-    // SAFETY: syscall, checked for -1.
-    let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-    if epoll_fd < 0 {
-      return Err(io::Error::last_os_error());
-    }
+    let epoll_fd = loop {
+      // SAFETY: syscall, checked for -1.
+      let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+      if epoll_fd >= 0 {
+        break epoll_fd;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
     // SAFETY: `epoll_fd` is freshly created and owned by us.
     let epoll_fd = unsafe { OwnedFd::from_raw_fd(epoll_fd) };
 
-    // SAFETY: syscall, checked for -1.
-    let wakeup_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    if wakeup_fd < 0 {
-      return Err(io::Error::last_os_error());
-    }
+    let wakeup_fd = loop {
+      // SAFETY: syscall, checked for -1.
+      let wakeup_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+      if wakeup_fd >= 0 {
+        break wakeup_fd;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
     // SAFETY: `wakeup_fd` is freshly created and owned by us.
     let wakeup_fd = unsafe { OwnedFd::from_raw_fd(wakeup_fd) };
 
