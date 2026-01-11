@@ -113,6 +113,13 @@ and lowers a handful of builtins:
 Passing `--no-builtins` makes these calls fail with `builtins disabled` so you
 can test the non-builtin path.
 
+`console.log` / `print` formatting (current):
+
+- arguments are printed left-to-right, separated by a single space
+- a trailing newline is always printed
+- numbers are formatted similar to `printf("%g")`, but special-cased for
+  `NaN` / `Infinity` / `-Infinity`
+
 ## Supported language subset (current)
 
 This CLI exercises the **minimal** IR emitter in `native-js` (it is not the
