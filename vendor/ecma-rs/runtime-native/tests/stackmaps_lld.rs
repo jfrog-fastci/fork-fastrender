@@ -26,11 +26,22 @@ fn lld_linker_script_defines_stackmaps_range_symbols() {
     // lld + linker-script behavior.
     return;
   };
-  if !has_cmd("clang-18") || !has_cmd("ld.lld-18") {
+  let Some(clang) = find_cmd(&["clang-18", "clang"]) else {
     // Allow building in minimal environments; this test is specifically about
     // lld + linker-script behavior.
     return;
-  }
+  };
+  let Some(lld_fuse) = (if has_cmd("ld.lld-18") {
+    Some("lld-18")
+  } else if has_cmd("ld.lld") {
+    Some("lld")
+  } else {
+    None
+  }) else {
+    // Allow building in minimal environments; this test is specifically about
+    // lld + linker-script behavior.
+    return;
+  };
 
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let stackmaps_ld = crate_dir.join("link/stackmaps.ld");
@@ -118,7 +129,7 @@ fn main() {
   rustflags.push_str(&format!(
     // Speed up the nested build: we only care about the link result (symbols +
     // section retention), not debug info.
-    "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+    "-C debuginfo=0 -C linker={clang} -C link-arg=-fuse-ld={lld_fuse} -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
   ));
 
