@@ -177,6 +177,11 @@ pub fn scan_roots(
 ///   - the *captured* top-frame register context (`top_regs.rsp`), or
 ///   - a known fixed frame size (`stack_size`) so we can reconstruct callsite RSP as
 ///     `rsp = fp + 8 - stack_size` (LLVM 18 convention).
+///
+/// Note: this `stack_size`-based reconstruction does **not** account for per-callsite SP
+/// adjustments (e.g. outgoing stack arguments). It is only valid when the callsite SP matches the
+/// function's fixed frame size. Runtime stack walking should prefer deriving callsite SP from the
+/// callee frame pointer (`callee_fp + 16`) when walking a full FP chain (see `stackwalk_fp`).
 #[cfg(target_arch = "x86_64")]
 pub fn slot_addr_x86_64(
   fp: u64,
@@ -329,20 +334,20 @@ fn add_i32(base: u64, offset: i32) -> Option<u64> {
 /// Compute the caller-frame stack pointer value used as the base for LLVM stackmap
 /// `Indirect [SP + off]` locations on AArch64.
 ///
-/// Empirically on LLVM 18 with frame pointers enabled (`-frame-pointer=all`):
-/// - The function prologue saves `(FP, LR)` as a 16-byte pair and sets `FP` to
-///   point at that pair.
-/// - `stack_size` in the stackmap function record matches the amount of stack
-///   space reserved by the prologue (including that 16-byte frame record).
+/// Empirically on LLVM 18 with frame pointers enabled (`-frame-pointer=all`), a typical prologue:
+/// - saves `(FP, LR)` as a 16-byte pair and sets `FP` to point at that pair, and
+/// - reports a fixed `stack_size` equal to the full frame size (including that 16-byte record).
 ///
-/// That means at a statepoint callsite, the caller's `SP` value is:
+/// When the callsite `SP` matches the function's fixed frame size (i.e. no outgoing-argument pushes
+/// or other per-callsite adjustments), this lets us derive the stackmap `SP` base from `FP` and
+/// `stack_size`:
 ///
 /// ```text
-/// sp_at_call = fp + 16 - stack_size
+/// sp_callsite = fp + 16 - stack_size
 /// ```
 ///
-/// because `fp + 16` points just above the saved `(FP, LR)` pair and `stack_size`
-/// accounts for the full frame size below that point.
+/// Note: this `stack_size`-based reconstruction is not reliable for arbitrary callsites. Frame-
+/// pointer stack walking in `runtime-native` uses `caller_sp_callsite = callee_fp + 16` instead.
 pub fn compute_sp_aarch64(fp: usize, stack_size: u64) -> usize {
   let stack_size: usize = stack_size
     .try_into()
