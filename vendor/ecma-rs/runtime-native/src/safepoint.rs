@@ -136,18 +136,6 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   // - stackmap lookup / stack walking does not crash when available
   let mut roots = 0usize;
   let _ = threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |_| roots += 1);
-
-  // Also include stack roots for the coordinator thread (if it's a registered mutator). These are
-  // not covered by `for_each_root_slot_world_stopped` since the coordinator is not stopped.
-  if let Some(thread) = threading::registry::current_thread_state() {
-    if let Some(ctx) = thread.safepoint_context() {
-      let bounds = thread
-        .stack_bounds()
-        .and_then(|b| StackBounds::new(b.lo as u64, b.hi as u64).ok());
-      let _ =
-        visit_reloc_pairs_from_safepoint_context_with_bounds(&ctx, bounds, &mut |_, _| roots += 1);
-    }
-  }
   let _ = roots;
 
   f();
