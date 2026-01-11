@@ -66,6 +66,17 @@ fn build_test_ir() -> String {
     .emit_runtime_call(&builder, RuntimeFn::WriteBarrier, &[obj.into(), field.into()], "wb")
     .expect("emit write barrier");
 
+  // NoGC range write barrier: should also remain a normal call.
+  let len = context.i64_type().const_int(8, false);
+  rt
+    .emit_runtime_call(
+      &builder,
+      RuntimeFn::WriteBarrierRange,
+      &[obj.into(), field.into(), len.into()],
+      "wbr",
+    )
+    .expect("emit write barrier range");
+
   // MayGC call: should become a statepoint after `rewrite-statepoints-for-gc`.
   let size = context.i64_type().const_int(16, false);
   let shape = context.i32_type().const_zero();
@@ -77,6 +88,12 @@ fn build_test_ir() -> String {
     .left()
     .expect("rt_alloc returns value")
     .into_pointer_value();
+
+  // KeepAlive is NoGC and must not be rewritten into a statepoint even when it uses a value
+  // produced by a MayGC call.
+  rt
+    .emit_runtime_call(&builder, RuntimeFn::KeepAliveGcRef, &[allocated.into()], "keep_alive")
+    .expect("emit keep-alive");
 
   builder.build_return(Some(&allocated)).expect("ret");
 
@@ -118,6 +135,23 @@ fn alloc_is_statepointed_write_barrier_is_not() {
     assert!(
       !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_write_barrier_gc")),
       "rt_write_barrier_gc should not be statepointed:\n{line}\n\n{ir}"
+    );
+  }
+
+  assert!(ir.contains("call void @rt_write_barrier_range_gc"));
+  for line in ir.lines() {
+    assert!(
+      !(line.contains("@llvm.experimental.gc.statepoint")
+        && line.contains("@rt_write_barrier_range_gc")),
+      "rt_write_barrier_range_gc should not be statepointed:\n{line}\n\n{ir}"
+    );
+  }
+
+  assert!(ir.contains("call void @rt_keep_alive_gc_ref_gc"));
+  for line in ir.lines() {
+    assert!(
+      !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_keep_alive_gc_ref_gc")),
+      "rt_keep_alive_gc_ref_gc should not be statepointed:\n{line}\n\n{ir}"
     );
   }
 
