@@ -578,6 +578,8 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       // No defining targets.
       InstTyp::PropAssign
       | InstTyp::CondGoto
+      | InstTyp::Return
+      | InstTyp::Throw
       | InstTyp::ForeignStore
       | InstTyp::UnknownStore
       | InstTyp::_Label
