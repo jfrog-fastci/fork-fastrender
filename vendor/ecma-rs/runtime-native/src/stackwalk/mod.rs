@@ -109,10 +109,7 @@ fn find_nearest_managed_cursor_with(
   // When walking raw frame pointers, bound reads to the current thread's stack range when possible.
   // This avoids potentially crashing by dereferencing bogus `fp_caller` values if the FP chain is
   // corrupted.
-  let bounds = crate::thread_stack::current_thread_stack_bounds()
-    .ok()
-    .and_then(|b| StackBounds::new(b.low as u64, b.high as u64).ok())
-    .or_else(|| StackBounds::current_thread().ok());
+  let bounds = StackBounds::current_thread().ok();
 
   // Skip frames until we find a return address that belongs to managed code (has a stackmap entry).
   let mut fp_cur = start_fp;
@@ -232,51 +229,13 @@ impl StackBounds {
   }
 
   /// Returns the stack bounds for the current pthread.
-  #[cfg(any(target_os = "linux", target_os = "android"))]
+  #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
   pub fn current_thread() -> Result<Self, StackBoundsError> {
-    // SAFETY: `pthread_getattr_np` fills the attr struct; we destroy it afterwards.
-    unsafe {
-      let mut attr: libc::pthread_attr_t = core::mem::zeroed();
-      let rc = libc::pthread_getattr_np(libc::pthread_self(), &mut attr);
-      if rc != 0 {
-        return Err(StackBoundsError::OsError(rc));
-      }
-
-      let mut stack_addr: *mut core::ffi::c_void = core::ptr::null_mut();
-      let mut stack_size: usize = 0;
-      let rc = libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size);
-      let _ = libc::pthread_attr_destroy(&mut attr);
-      if rc != 0 {
-        return Err(StackBoundsError::OsError(rc));
-      }
-      let lo = stack_addr as usize as u64;
-      let hi = lo
-        .checked_add(stack_size as u64)
-        .ok_or(StackBoundsError::InvalidRange)?;
-      StackBounds::new(lo, hi)
-    }
-  }
-
-  /// Returns the stack bounds for the current pthread.
-  #[cfg(target_os = "macos")]
-  pub fn current_thread() -> Result<Self, StackBoundsError> {
-    // SAFETY: `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` return the (high) stack
-    // address and the stack size for the calling thread.
-    unsafe {
-      let thread = libc::pthread_self();
-      let stack_addr = libc::pthread_get_stackaddr_np(thread);
-      if stack_addr.is_null() {
-        return Err(StackBoundsError::InvalidRange);
-      }
-      let hi = stack_addr as usize as u64;
-      let stack_size = libc::pthread_get_stacksize_np(thread) as u64;
-      if stack_size == 0 {
-        return Err(StackBoundsError::InvalidRange);
-      }
-      let lo = hi
-        .checked_sub(stack_size)
-        .ok_or(StackBoundsError::InvalidRange)?;
-      StackBounds::new(lo, hi)
+    match crate::thread_stack::current_thread_stack_bounds() {
+      Ok(b) => StackBounds::new(b.low as u64, b.high as u64).map_err(|_| StackBoundsError::InvalidRange),
+      Err(crate::thread_stack::Error::UnsupportedTarget { .. }) => Err(StackBoundsError::UnsupportedPlatform),
+      Err(crate::thread_stack::Error::Pthread { code, .. }) => Err(StackBoundsError::OsError(code)),
+      Err(_) => Err(StackBoundsError::InvalidRange),
     }
   }
 
