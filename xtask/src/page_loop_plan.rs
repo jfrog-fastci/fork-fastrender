@@ -175,11 +175,10 @@ pub fn build_inspect_frag_command(
     cmd.env("FASTR_DETERMINISTIC_PAINT", "1");
   }
   if std::env::var_os("FASTR_WEB_FONT_WAIT_MS").is_none() {
-    // Match `render_fixtures` defaults: when diffing against Chrome baselines we render the
-    // pre-swap state for `font-display: swap` web fonts (unless the caller overrides
-    // `FASTR_WEB_FONT_WAIT_MS` explicitly).
-    let default_wait_ms = if args.patch_html_for_chrome_baseline { "0" } else { "500" };
-    cmd.env("FASTR_WEB_FONT_WAIT_MS", default_wait_ms);
+    // Match `render_fixtures` defaults: wait briefly for `font-display: swap` web fonts so
+    // `inspect_frag` overlays/JSON dumps are aligned with both FastRender fixture renders and the
+    // Chrome baseline harness (which uses a `--virtual-time-budget`).
+    cmd.env("FASTR_WEB_FONT_WAIT_MS", "500");
   }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_HINTING").is_none() {
     // Match `render_fixtures` defaults when diffing against Chrome baselines.

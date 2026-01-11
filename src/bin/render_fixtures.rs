@@ -387,12 +387,13 @@ fn fixture_runtime_toggles_from_env_map(
   // When diffing against Chrome baselines, align with Chrome's screenshot timing for
   // `font-display: swap` fonts.
   //
-  // In particular, real-world pages can include many swap-mode web fonts; Chrome's headless
-  // `--screenshot` flow (even with a virtual time budget) may capture before those faces have
-  // swapped in, so waiting here can introduce large layout shifts in FastRender-only output.
+  // `xtask chrome-baseline-fixtures` captures screenshots with a small `--virtual-time-budget`
+  // (5s when JS is disabled), which usually allows swap-mode web fonts to load and trigger the
+  // reflow before the screenshot is taken.
   //
-  // Set `FASTR_WEB_FONT_WAIT_MS` explicitly to opt into "post-swap" rendering for debugging.
-  let default_web_font_wait_ms = if patch_html_for_chrome_baseline { "0" } else { "500" };
+  // Wait briefly by default so fixture renders match that post-swap state. Callers can set
+  // `FASTR_WEB_FONT_WAIT_MS=0` to force the pre-swap render when needed.
+  let default_web_font_wait_ms = "500";
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| default_web_font_wait_ms.to_string());
@@ -2087,12 +2088,12 @@ mod tests {
   }
 
   #[test]
-  fn fixture_runtime_toggles_defaults_web_font_wait_ms_based_on_patch_mode() {
+  fn fixture_runtime_toggles_defaults_web_font_wait_ms_to_500() {
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
     assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
 
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
-    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("0"));
+    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
 
     let mut raw = HashMap::new();
     raw.insert("FASTR_WEB_FONT_WAIT_MS".to_string(), "123".to_string());

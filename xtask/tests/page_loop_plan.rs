@@ -229,6 +229,44 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
 }
 
 #[test]
+fn page_loop_inspect_frag_defaults_web_font_wait_ms_to_500() {
+  let repo_root = repo_root();
+  let fixture_html = repo_root.join("tests/pages/fixtures/example.com/index.html");
+  let overlay_png = repo_root.join("target/page_loop_test_out/example.com.png");
+
+  let cmd = build_inspect_frag_command(
+    &repo_root,
+    false,
+    &InspectFragCommandArgs {
+      fixture_html,
+      overlay_png: Some(overlay_png),
+      dump_json_dir: None,
+      filter_selector: None,
+      filter_id: None,
+      dump_custom_properties: false,
+      custom_property_prefix: Vec::new(),
+      custom_properties_limit: None,
+      patch_html_for_chrome_baseline: true,
+      viewport: (1040, 1240),
+      dpr: 1.0,
+      media: "screen".to_string(),
+      timeout: 60,
+    },
+  );
+
+  // `build_inspect_frag_command` respects an existing FASTR_WEB_FONT_WAIT_MS override in the parent
+  // environment, so only assert the default when the host hasn't provided one.
+  if std::env::var_os("FASTR_WEB_FONT_WAIT_MS").is_none() {
+    assert_eq!(
+      cmd_env(&cmd, "FASTR_WEB_FONT_WAIT_MS").as_deref(),
+      Some("500")
+    );
+  } else {
+    assert_eq!(cmd_env(&cmd, "FASTR_WEB_FONT_WAIT_MS"), None);
+  }
+}
+
+#[test]
 fn page_loop_build_command_in_debug_omits_release_flag() {
   let repo_root = repo_root();
   let cmd = build_bins_command(&repo_root, true, &["render_fixtures"]);
