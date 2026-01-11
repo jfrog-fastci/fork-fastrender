@@ -209,6 +209,8 @@ mod appearance_none_form_control_strut;
 mod input_height_includes_padding_with_content_box;
 mod search_input_width_100_percent_uses_border_box;
 mod submit_input_specified_size_uses_border_box;
+mod input_submit_width_uses_border_box;
+mod input_submit_empty_value_uses_empty_label;
 mod progress_meter_intrinsic_sizing;
 mod field_sizing_intrinsic_sizing;
 mod fragmentation;
