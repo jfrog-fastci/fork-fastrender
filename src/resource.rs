@@ -17987,6 +17987,13 @@ mod tests {
 
   #[test]
   fn http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
     let Some(listener) = try_bind_localhost(
       "http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests",
     ) else {
@@ -18100,6 +18107,199 @@ mod tests {
         ("PUT".to_string(), "/final".to_string()),
       ],
       "expected CORS preflight for each redirect target",
+    );
+  }
+
+  #[test]
+  fn http_fetcher_does_not_preflight_redirect_followups_when_authorization_is_suppressed() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping http_fetcher_does_not_preflight_redirect_followups_when_authorization_is_suppressed: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(start_listener) = try_bind_localhost(
+      "http_fetcher_does_not_preflight_redirect_followups_when_authorization_is_suppressed_start",
+    ) else {
+      return;
+    };
+    let Some(final_listener) = try_bind_localhost(
+      "http_fetcher_does_not_preflight_redirect_followups_when_authorization_is_suppressed_final",
+    ) else {
+      return;
+    };
+
+    let start_addr = start_listener.local_addr().unwrap();
+    let final_addr = final_listener.local_addr().unwrap();
+    let location = format!("http://{final_addr}/final");
+
+    let start_handle = thread::spawn(move || {
+      start_listener.set_nonblocking(true).unwrap();
+      let mut received: Vec<(String, String)> = Vec::new();
+      let start = Instant::now();
+
+      while start.elapsed() < Duration::from_secs(2) && received.len() < 4 {
+        let (mut stream, _) = match start_listener.accept() {
+          Ok(res) => res,
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+          }
+          Err(err) => panic!("accept start_listener: {err}"),
+        };
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let request = read_http_request(&mut stream)
+          .unwrap()
+          .expect("expected HTTP request");
+        let req_str = String::from_utf8_lossy(&request);
+        let request_line = req_str.lines().next().unwrap_or("").trim_end_matches('\r');
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_ascii_uppercase();
+        let target = parts.next().unwrap_or("").to_string();
+        let path = Url::parse(&target)
+          .ok()
+          .map(|url| url.path().to_string())
+          .unwrap_or(target);
+        received.push((method.clone(), path.clone()));
+
+        match (method.as_str(), path.as_str()) {
+          ("OPTIONS", "/start") => {
+            let headers = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Methods: GET\r\n",
+              "Access-Control-Allow-Headers: authorization\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+          }
+          ("GET", "/start") => {
+            let headers = format!(
+              "HTTP/1.1 302 Found\r\nLocation: {location}\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            // After the redirect response, the follow-up request should go to the other listener.
+            break;
+          }
+          _ => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+        }
+      }
+
+      received
+    });
+
+    let final_handle = thread::spawn(move || {
+      final_listener.set_nonblocking(true).unwrap();
+      let mut received: Vec<(String, String)> = Vec::new();
+      let mut final_get_request = String::new();
+      let start = Instant::now();
+
+      while start.elapsed() < Duration::from_secs(2) && received.len() < 4 {
+        let (mut stream, _) = match final_listener.accept() {
+          Ok(res) => res,
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+          }
+          Err(err) => panic!("accept final_listener: {err}"),
+        };
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let request = read_http_request(&mut stream)
+          .unwrap()
+          .expect("expected HTTP request");
+        let req_str = String::from_utf8_lossy(&request);
+        let request_line = req_str.lines().next().unwrap_or("").trim_end_matches('\r');
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_ascii_uppercase();
+        let target = parts.next().unwrap_or("").to_string();
+        let path = Url::parse(&target)
+          .ok()
+          .map(|url| url.path().to_string())
+          .unwrap_or(target);
+        received.push((method.clone(), path.clone()));
+
+        match (method.as_str(), path.as_str()) {
+          ("GET", "/final") => {
+            final_get_request = req_str.to_string();
+            let body = b"ok";
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+            break;
+          }
+          // A correct implementation should *not* preflight the redirected request, because the
+          // `Authorization` header is redirect-suppressed for cross-origin redirects.
+          ("OPTIONS", "/final") => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+          _ => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+        }
+      }
+
+      (received, final_get_request)
+    });
+
+    let client_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = format!("http://{start_addr}/start");
+    let user_headers = vec![("Authorization".to_string(), "Bearer secret".to_string())];
+
+    let fetch = FetchRequest::new(&url, FetchDestination::Fetch).with_client_origin(&client_origin);
+    let request = HttpRequest {
+      fetch,
+      method: "GET",
+      redirect: web_fetch::RequestRedirect::Follow,
+      headers: &user_headers,
+      body: None,
+    };
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let res = fetcher.fetch_http_request(request);
+
+    let start_received = start_handle.join().unwrap();
+    let (final_received, final_get_request) = final_handle.join().unwrap();
+
+    let res = res.expect("fetch should follow redirect and succeed");
+    assert_eq!(res.bytes, b"ok");
+
+    assert_eq!(
+      start_received,
+      vec![
+        ("OPTIONS".to_string(), "/start".to_string()),
+        ("GET".to_string(), "/start".to_string()),
+      ],
+      "expected preflight+GET on initial URL",
+    );
+    assert_eq!(
+      final_received,
+      vec![("GET".to_string(), "/final".to_string())],
+      "redirect follow-up should not be preflighted",
+    );
+
+    let lower = final_get_request.to_ascii_lowercase();
+    assert!(
+      !lower.contains("authorization:"),
+      "expected Authorization header to be suppressed on redirect follow-up, got:\n{final_get_request}"
     );
   }
 
