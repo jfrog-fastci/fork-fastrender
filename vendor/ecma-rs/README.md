@@ -25,6 +25,14 @@ Today the repo contains:
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
 
+## Native compiler (EXEC.plan)
+
+This repository also includes a detailed execution plan for a future **TypeScript → native** compiler (and a strict TS dialect intended to make AOT compilation feasible).
+
+- [`docs/native_compiler_quickstart.md`](./docs/native_compiler_quickstart.md) — strict-native rules, system checks, strict-native typecheck CLI usage, and the `vm-js` oracle harness flow.
+
+The source of truth for requirements and scope is [`EXEC.plan.md`](./EXEC.plan.md).
+
 ## Quick start
 
 If you're setting up a checkout for TypeScript conformance / differential testing and you have [`just`](https://github.com/casey/just) + Node.js installed:
