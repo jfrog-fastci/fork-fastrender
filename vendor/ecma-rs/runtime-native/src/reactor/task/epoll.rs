@@ -445,8 +445,12 @@ fn drain_eventfd(fd: RawFd) -> io::Result<()> {
     let res =
       unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
 
-    if res >= 0 {
+    if res == 8 {
       continue;
+    }
+    if res >= 0 {
+      // eventfd reads are expected to be atomic (8 bytes). Treat EOF/short reads as drained.
+      return Ok(());
     }
 
     let err = io::Error::last_os_error();
