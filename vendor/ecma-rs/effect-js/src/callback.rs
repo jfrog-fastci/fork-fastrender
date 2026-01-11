@@ -1691,7 +1691,7 @@ mod tests {
 
   #[test]
   fn callback_models_kb_getter_effects() {
-    use effect_model::{EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
+    use effect_model::{EffectTemplate, PurityTemplate};
     use knowledge_base::{ApiDatabase, ApiId, ApiKind, ApiSemantics};
     use std::collections::BTreeMap;
 
@@ -1701,10 +1701,7 @@ mod tests {
         name: "Foo".to_string(),
         aliases: Vec::new(),
         effects: EffectTemplate::Custom(EffectSet::ALLOCATES),
-        effect_summary: EffectSummary {
-          flags: EffectSet::ALLOCATES,
-          throws: ThrowBehavior::Never,
-        },
+        effect_summary: EffectSet::ALLOCATES.to_effect_summary(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -1722,10 +1719,7 @@ mod tests {
         name: "Foo.prototype.bar".to_string(),
         aliases: Vec::new(),
         effects: EffectTemplate::Custom(EffectSet::IO),
-        effect_summary: EffectSummary {
-          flags: EffectSet::IO,
-          throws: ThrowBehavior::Never,
-        },
+        effect_summary: EffectSet::IO.to_effect_summary(),
         purity: PurityTemplate::Impure,
         async_: None,
         idempotent: None,
@@ -2143,7 +2137,7 @@ mod tests {
 
   #[test]
   fn depends_on_args_respects_api_effect_summary_base_flags() {
-    use effect_model::{EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
+    use effect_model::{EffectTemplate, PurityTemplate};
     use knowledge_base::{ApiDatabase, ApiId, ApiKind, ApiSemantics};
     use std::collections::BTreeMap;
 
@@ -2155,10 +2149,7 @@ mod tests {
         base: EffectSet::empty(),
         args: vec![0],
       },
-      effect_summary: EffectSummary {
-        flags: EffectSet::NONDETERMINISTIC,
-        throws: ThrowBehavior::Never,
-      },
+      effect_summary: EffectSet::NONDETERMINISTIC.to_effect_summary(),
       purity: PurityTemplate::DependsOnArgs {
         base: Purity::Pure,
         args: vec![0],
