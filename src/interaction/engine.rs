@@ -2058,7 +2058,10 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
-fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option<Arc<ComputedStyle>> {
+fn style_for_styled_node_id(
+  box_tree: &BoxTree,
+  styled_node_id: usize,
+) -> Option<Arc<ComputedStyle>> {
   // Multiple box nodes can map back to the same styled node id (e.g. anonymous wrappers,
   // fragmentation, etc). For interaction purposes we only need a representative computed style
   // (currently just text direction for caret movement), so prefer the first non-pseudo box style.
