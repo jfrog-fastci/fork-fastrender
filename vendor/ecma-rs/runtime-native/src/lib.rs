@@ -7,11 +7,12 @@
 //!
 //! Note:
 //! - `rt_alloc` / `rt_alloc_array` return **object base pointers** into the GC heap.
-//!   - Nursery allocations are movable and may be relocated by minor GC.
+//!   - Nursery allocations are movable and may be relocated by minor GC (evacuation).
 //!   - Objects are promoted into the old generation (Immix); large objects are allocated in the
 //!     Large Object Space (LOS).
 //! - `rt_alloc_pinned` allocates pinned objects in the LOS; pinned objects are never moved.
-//! - `rt_gc_collect` triggers a stop-the-world collection and may relocate nursery objects.
+//! - `rt_gc_collect` triggers a stop-the-world collection (minor evacuation + major mark/sweep) and
+//!   may relocate nursery objects.
 //! - The exported write barrier is implemented and performs young-range checks + sets the per-object
 //!   remembered bit and records newly-remembered objects into a process-global remembered set (see
 //!   `docs/write_barrier.md`).

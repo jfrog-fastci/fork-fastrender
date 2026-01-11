@@ -260,9 +260,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
-  abort_on_panic(|| {
-    crate::rt_alloc::alloc_pinned(size, shape)
-  })
+  abort_on_panic(|| crate::rt_alloc::alloc_pinned(size, shape))
 }
 
 #[no_mangle]
@@ -331,6 +329,9 @@ pub extern "C" fn rt_thread_init(kind: u32) {
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_thread_init();
 
+    // Ensure the global GC heap is initialized outside stop-the-world GC. Tests assert that
+    // `rt_gc_collect` performs no lazy allocations after thread init.
+    crate::rt_alloc::ensure_global_heap_init();
     threading::register_current_thread(thread_kind_from_abi(kind));
   })
 }
@@ -355,6 +356,10 @@ pub extern "C" fn rt_thread_register(kind: RtThreadKind) -> u64 {
   abort_on_panic(|| {
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_thread_init();
+
+    // Match `rt_thread_init`: make sure GC heap singletons are created before any stop-the-world
+    // collection is requested.
+    crate::rt_alloc::ensure_global_heap_init();
 
     let kind = match kind {
       RtThreadKind::RT_THREAD_MAIN => threading::ThreadKind::Main,
@@ -798,10 +803,9 @@ mod write_barrier_tests {
 
 /// Trigger a GC cycle.
 ///
-/// Current milestone runtime:
-/// - Performs a cooperative stop-the-world handshake across registered threads.
-/// - Invokes the stackmap-based root enumeration hook (if stackmaps are available).
-/// - Does *not* yet run a full GC algorithm (mark/copy/etc).
+/// This entrypoint coordinates a cooperative stop-the-world (STW) safepoint across registered
+/// threads, enumerates all GC roots (stackmap roots + registered root slots), and runs a full heap
+/// collection (minor nursery evacuation + major mark/sweep).
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_gc_collect() {
@@ -883,7 +887,32 @@ pub extern "C" fn rt_gc_collect() {
       crate::threading::safepoint::notify_state_change();
     }
 
-    crate::safepoint::with_world_stopped_requested(stop_epoch, || {});
+    crate::safepoint::with_world_stopped_requested(stop_epoch, move || {
+      struct AbiRootSet {
+        stop_epoch: u64,
+      }
+
+       impl crate::gc::RootSet for AbiRootSet {
+         fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+           // Roots for stopped mutator threads + global roots/handles.
+           crate::threading::safepoint::for_each_root_slot_world_stopped(self.stop_epoch, |slot| {
+             f(slot);
+           })
+           .unwrap_or_else(|err| {
+             eprintln!("rt_gc_collect: failed to enumerate roots: {err:?}");
+             std::process::abort();
+           });
+         }
+       }
+
+      let mut remembered = global_remset::WorldStoppedRememberedSet::new();
+      let mut roots = AbiRootSet { stop_epoch };
+
+      let res = crate::rt_alloc::with_heap_lock_world_stopped(|heap| heap.collect_major(&mut roots, &mut remembered));
+      if res.is_err() {
+        std::process::abort();
+      }
+    });
   })
 }
 

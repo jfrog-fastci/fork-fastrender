@@ -194,6 +194,9 @@ pub extern "C" fn rt_debug_validate_heap() {
     if SHAPE_TABLE.get().is_none() {
       panic!("rt_debug_validate_heap: shape table not registered");
     }
+    // Ensure the global heap has been initialized so debug tooling (like `rt_gc_get_young_range`)
+    // reports a valid nursery range.
+    crate::rt_alloc::ensure_global_heap_init();
   })
 }
 
@@ -355,6 +358,13 @@ mod tests {
     assert_eq!(weird_desc.ptr_offsets(), WEIRD_PTR_OFFSETS);
 
     unsafe {
+      // `rt_alloc` requires the current thread be registered so it can participate in stop-the-world
+      // safepoints if allocation triggers GC.
+      let was_registered = crate::threading::registry::current_thread_id().is_some();
+      if !was_registered {
+        crate::rt_thread_init(0);
+      }
+
       // Allocate objects via the runtime ABI (`rt_alloc`) so we exercise the shape table wiring.
       let wrapper = crate::rt_alloc(weird_desc.size, weird);
       let should_live = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
@@ -376,10 +386,14 @@ mod tests {
         seen.push(slot as usize);
       });
 
-      let expected_slot = base
-        .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
-        .cast::<*mut u8>() as usize;
-      assert_eq!(seen, vec![expected_slot]);
+       let expected_slot = base
+         .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
+         .cast::<*mut u8>() as usize;
+       assert_eq!(seen, vec![expected_slot]);
+
+      if !was_registered {
+        crate::rt_thread_deinit();
+      }
     }
   }
-}
+}  

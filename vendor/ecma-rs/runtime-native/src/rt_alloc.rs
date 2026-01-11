@@ -6,7 +6,6 @@
 //!
 //! The hot path performs no global locking.
 //! Slow paths (Immix hole reservation, LOS allocation, GC) are serialized.
-#![allow(dead_code)]
 
 use crate::abi::RtShapeId;
 use crate::array;
@@ -75,6 +74,7 @@ impl ImmixCursor {
 struct ThreadAlloc {
   nursery: ThreadNursery,
   immix: ImmixCursor,
+  gc_epoch_observed: u64,
 }
 
 impl ThreadAlloc {
@@ -82,6 +82,7 @@ impl ThreadAlloc {
     Self {
       nursery: ThreadNursery::new(),
       immix: ImmixCursor::new(),
+      gc_epoch_observed: 0,
     }
   }
 
@@ -153,6 +154,22 @@ fn nursery(global: &GlobalHeap) -> &NurserySpace {
   unsafe { &(*(global.heap as *mut crate::gc::GcHeap)).nursery }
 }
 
+/// Ensure the process-global heap is initialized and that the write barrier's young range matches
+/// its nursery.
+///
+/// Tests may reset the exported young range (`rt_gc_set_young_range`) between runs; allocator entry
+/// points call this to restore the correct range.
+pub(crate) fn ensure_global_heap_init() {
+  let global = global_heap();
+  unsafe {
+    let nursery = &(*(global.heap as *mut crate::gc::GcHeap)).nursery;
+    YOUNG_SPACE
+      .start
+      .store(nursery.start() as usize, Ordering::Release);
+    YOUNG_SPACE.end.store(nursery.end() as usize, Ordering::Release);
+  }
+}
+
 #[inline]
 fn current_mark_epoch(global: &GlobalHeap) -> u8 {
   // SAFETY: `mark_epoch` is only mutated during stop-the-world GC. Mutator threads only read it
@@ -160,7 +177,33 @@ fn current_mark_epoch(global: &GlobalHeap) -> u8 {
   unsafe { (*(global.heap as *mut crate::gc::GcHeap)).mark_epoch }
 }
 
+#[inline]
+fn refresh_tls_after_gc(epoch: u64) {
+  TLS_ALLOC.with(|alloc| unsafe {
+    let alloc = &mut *alloc.get();
+    if alloc.gc_epoch_observed != epoch {
+      // Any stop-the-world GC resets the nursery bump pointer, invalidating outstanding TLAB
+      // reservations. Clear cached alloc state lazily on the first allocation after a GC cycle.
+      alloc.clear_after_major();
+      alloc.gc_epoch_observed = epoch;
+    }
+  });
+}
+
 fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
+  let global = global_heap();
+  let _guard = global.heap_lock.lock();
+  // SAFETY: `_guard` serializes access to the non-thread-safe parts of `GcHeap`.
+  let heap = unsafe { &mut *(global.heap as *mut crate::gc::GcHeap) };
+  f(heap)
+}
+
+/// Run `f` with exclusive access to the global heap while the world is stopped.
+///
+/// # Safety contract
+/// Callers must ensure a stop-the-world (STW) safepoint is active: this must not run concurrently
+/// with mutator threads.
+pub(crate) fn with_heap_lock_world_stopped<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
   let global = global_heap();
   let _guard = global.heap_lock.lock();
   // SAFETY: `_guard` serializes access to the non-thread-safe parts of `GcHeap`.
@@ -205,6 +248,8 @@ pub(crate) fn on_thread_unregistered(_id: ThreadId) {
 pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
+  ensure_global_heap_init();
+  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
   let size = shape_desc.size as usize;
@@ -251,6 +296,8 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
 pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
+  ensure_global_heap_init();
+  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
     crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
@@ -325,6 +372,8 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
 pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
+  ensure_global_heap_init();
+  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
   let size = shape_desc.size as usize;

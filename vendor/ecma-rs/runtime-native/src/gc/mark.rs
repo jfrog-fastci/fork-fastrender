@@ -201,16 +201,15 @@ impl Marker<'_> {
       return;
     }
 
-    // Major GC runs a minor GC first, so ideally it should not see nursery pointers. Still, handle
-    // them defensively: if the nursery object was forwarded, follow the forwarding pointer;
-    // otherwise treat it as a dead/stale pointer and ignore it.
+    // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
+    // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
     loop {
       if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
         return;
       }
 
       if self.heap.is_in_nursery(obj) {
-        // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
+        // SAFETY: `obj` is a valid pointer into this heap's nursery.
         unsafe {
           let header = &*(obj as *const ObjHeader);
           if header.is_forwarded() {
@@ -348,19 +347,20 @@ impl Tracer for Compactor<'_> {
       return;
     }
 
-    // Major GC runs a minor GC first, so it should not see nursery pointers. Still, handle them
-    // defensively by following forwarding pointers (or ignoring dead/stale nursery refs).
+    // `collect_major` runs `collect_minor` first, so in the common case there should be no nursery
+    // pointers left. Handle them (and any stale/foreign pointers) defensively anyway.
     loop {
       if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
         return;
       }
 
       if self.heap.is_in_nursery(obj) {
-        // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
+        // SAFETY: `obj` is a valid pointer into this heap's nursery.
         unsafe {
           let header = &*(obj as *const ObjHeader);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
+            // SAFETY: `slot` is valid and writable.
             *slot = obj;
             continue;
           }
@@ -375,6 +375,7 @@ impl Tracer for Compactor<'_> {
         let header = &*(obj as *const ObjHeader);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
+          // SAFETY: `slot` is valid and writable.
           *slot = obj;
           continue;
         }

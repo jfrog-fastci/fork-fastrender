@@ -17,6 +17,7 @@ use core::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::ObjHeader;
+use super::RememberedSet;
 use super::SimpleRememberedSet;
 use crate::threading::registry;
 
@@ -250,4 +251,76 @@ pub fn remset_drain_into(dst: &mut SimpleRememberedSet) {
       dst.remember(obj);
     });
   });
+}
+
+/// A `RememberedSet` adapter over the process-global remembered-set buffer.
+///
+/// This exists so stop-the-world GC can scan old→young edges without allocating:
+/// the backing storage is a fixed-capacity global array used by the write barrier.
+///
+/// # Stop-the-world requirement
+/// This must only be used while mutators are stopped; otherwise the write barrier could mutate the
+/// global buffer concurrently.
+pub(crate) struct WorldStoppedRememberedSet;
+
+impl WorldStoppedRememberedSet {
+  #[inline]
+  pub(crate) fn new() -> Self {
+    Self
+  }
+}
+
+impl RememberedSet for WorldStoppedRememberedSet {
+  fn for_each_remembered_obj(&mut self, f: &mut dyn FnMut(*mut u8)) {
+    let set = remembered_set();
+    let len = set
+      .len
+      .load(Ordering::Acquire)
+      .min(REMEMBERED_SET_CAPACITY);
+    for i in 0..len {
+      let obj = set.entries[i].load(Ordering::Acquire) as *mut u8;
+      if obj.is_null() {
+        continue;
+      }
+      if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+        std::process::abort();
+      }
+      f(obj);
+    }
+  }
+
+  fn clear(&mut self) {
+    let set = remembered_set();
+    let len = set.len.swap(0, Ordering::AcqRel).min(REMEMBERED_SET_CAPACITY);
+    for i in 0..len {
+      let obj = set.entries[i].swap(0, Ordering::AcqRel) as *mut u8;
+      if obj.is_null() {
+        continue;
+      }
+      if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+        std::process::abort();
+      }
+      // SAFETY: Entries originate from the write barrier contract (object base pointers).
+      unsafe {
+        (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
+      }
+    }
+  }
+
+  fn on_promoted_object(&mut self, obj: *mut u8, has_young_refs: bool) {
+    if obj.is_null() {
+      return;
+    }
+    if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+      std::process::abort();
+    }
+    if has_young_refs {
+      remset_add(obj);
+    } else {
+      // SAFETY: `obj` is expected to be an object base pointer.
+      unsafe {
+        (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
+      }
+    }
+  }
 }
