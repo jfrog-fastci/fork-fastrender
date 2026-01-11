@@ -66,6 +66,17 @@ impl LlvmToolchain {
   ) -> Result<()> {
     let out = Command::new(&self.clang)
       .arg(opt_level.clang_flag())
+      // LLVM statepoint stackmaps can legally report gc-live roots as `Register` locations (often
+      // callee-saved registers). That is only safe if the GC entry stub captures the full register
+      // file before running any code that may clobber those registers.
+      //
+      // Our runtime-native helpers are normal Rust functions; their prologue may save/repurpose
+      // callee-saved registers before invoking the collector. Force LLVM to materialize GC roots in
+      // caller-owned stack slots by disabling CSR-based root passing in the backend.
+      .arg("-mllvm")
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("-mllvm")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg("-c")
       .arg(ll_path)
       .arg("-o")
@@ -150,4 +161,3 @@ fn find_in_path(exe_name: &str) -> Option<PathBuf> {
   }
   None
 }
-

@@ -1,3 +1,5 @@
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
@@ -5,16 +7,35 @@ use inkwell::OptimizationLevel;
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::Location;
 use runtime_native::stackmaps::StackMap;
-use runtime_native::statepoints::StatepointRecord;
+use runtime_native::statepoints::{StatepointRecord, LLVM18_STATEPOINT_HEADER_CONSTANTS};
+use std::collections::BTreeMap;
 
 fn assert_no_register_gc_roots(stackmap: &StackMap) {
   let mut gc_locs = 0usize;
+  let mut sp_records = 0usize;
+  let mut roots_hist: BTreeMap<usize, usize> = BTreeMap::new();
 
   for rec in &stackmap.records {
     let Ok(sp) = StatepointRecord::new(rec) else {
       // Not a statepoint record (could be a patchpoint); ignore.
       continue;
     };
+    sp_records += 1;
+    *roots_hist.entry(sp.gc_pair_count()).or_default() += 1;
+
+    // This fixture intentionally contains only statepoints without deopt operands, so the stackmap
+    // location count must be `3 header constants + 2 * gc_pairs`.
+    assert_eq!(
+      sp.header().deopt_count, 0,
+      "fixture invariant: expected statepoint deopt_count=0 (record_id=0x{:x})",
+      rec.patchpoint_id
+    );
+    assert_eq!(
+      rec.locations.len(),
+      LLVM18_STATEPOINT_HEADER_CONSTANTS + 2 * sp.gc_pair_count(),
+      "fixture invariant: unexpected statepoint stackmap location count (record_id=0x{:x})",
+      rec.patchpoint_id
+    );
 
     for pair in sp.gc_pairs() {
       for loc in [&pair.base, &pair.derived] {
@@ -39,6 +60,20 @@ in native-js LLVM init.",
   }
 
   assert!(gc_locs > 0, "test bug: expected at least one GC root location");
+  assert_eq!(
+    sp_records, 12,
+    "fixture invariant: expected 12 statepoint records (6 in @inner, 6 in @outer), got {sp_records}"
+  );
+  assert_eq!(
+    sp_records,
+    stackmap.records.len(),
+    "fixture invariant: expected all stackmap records to be statepoints"
+  );
+  assert_eq!(
+    roots_hist,
+    BTreeMap::from([(1, 2), (2, 2), (3, 2), (4, 2), (6, 4)]),
+    "fixture invariant: unexpected gc root pair histogram"
+  );
 }
 
 #[test]
