@@ -889,6 +889,13 @@ impl ProgramState {
             }
           }
         }
+        if flow_result.call_signatures.len() == result.call_signatures.len() {
+          for (idx, sig) in flow_result.call_signatures.iter().enumerate() {
+            if matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_)) {
+              result.call_signatures[idx] = *sig;
+            }
+          }
+        }
         if flow_result.pat_types.len() == result.pat_types.len() {
           for (idx, ty) in flow_result.pat_types.iter().enumerate() {
             if *ty != prim.unknown {
@@ -1137,6 +1144,10 @@ impl ProgramState {
             ret_ty = store.union(vec![ret_ty, prim.undefined]);
           }
           result.expr_types[call_idx] = ret_ty;
+          if call_idx < result.call_signatures.len() {
+            result.call_signatures[call_idx] =
+              resolution.signature.or(resolution.contextual_signature);
+          }
           if resolution.diagnostics.is_empty() {
             result.diagnostics.retain(|diag| {
               !(diag.primary.file == span.file

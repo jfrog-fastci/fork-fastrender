@@ -7,6 +7,7 @@ use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use typecheck_ts::check::caches::CheckerCaches;
 use typecheck_ts::check::hir_body::{check_body, AstIndex};
 use typecheck_ts::lib_support::ScriptTarget;
+use typecheck_ts::{FileKey, MemoryHost, Program};
 use types_ts_interned::{
   ObjectType, Param, PropData, PropKey, Property, Shape, Signature, SignatureId, TypeId, TypeKind,
   TypeStore,
@@ -103,6 +104,59 @@ fn overload_call_records_selected_signature() {
   assert_eq!(sig.params.len(), 1);
   assert_eq!(sig.params[0].ty, prim.string);
   assert_eq!(sig.ret, prim.string);
+}
+
+#[test]
+fn narrowing_updates_call_signature_in_checked_body() {
+  let source = r#"
+declare function foo(x: string): string;
+declare function foo(x: number): number;
+
+export function f(x: string | number) {
+  if (typeof x === "string") {
+    return foo(x);
+  }
+  return foo(x);
+}
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let _diagnostics = program.check();
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let call_sites: Vec<u32> = source
+    .match_indices("foo(x)")
+    .map(|(idx, _)| idx as u32)
+    .collect();
+  assert_eq!(call_sites.len(), 2, "expected 2 foo(x) call sites");
+
+  let sigs_for = |call_start: u32| -> (SignatureId, String) {
+    let call_offset = call_start + 3; // points at `(` in `foo(x)`
+    let sig_id = program
+      .call_signature_at(file, call_offset)
+      .expect("call signature recorded");
+    let callee_ty = program
+      .type_at(file, call_start)
+      .expect("callee identifier type");
+    let sig = program
+      .call_signatures(callee_ty)
+      .into_iter()
+      .find(|info| info.id == sig_id)
+      .unwrap_or_else(|| panic!("missing signature info for {sig_id:?}"));
+    (
+      sig_id,
+      program.display_type(sig.signature.params[0].ty).to_string(),
+    )
+  };
+
+  let (sig_then, param_then) = sigs_for(call_sites[0]);
+  let (sig_else, param_else) = sigs_for(call_sites[1]);
+
+  assert_ne!(sig_then, sig_else, "expected branch calls to pick distinct overloads");
+  assert_eq!(param_then, "string");
+  assert_eq!(param_else, "number");
 }
 
 #[test]
@@ -203,4 +257,3 @@ fn optional_chain_call_records_signature() {
   assert_eq!(sig.params[0].ty, prim.number);
   assert_eq!(sig.ret, prim.string);
 }
-

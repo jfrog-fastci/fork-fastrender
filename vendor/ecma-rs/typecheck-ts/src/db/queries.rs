@@ -1151,6 +1151,13 @@ pub mod body_check {
             }
           }
         }
+        if flow_result.call_signatures.len() == result.call_signatures.len() {
+          for (idx, sig) in flow_result.call_signatures.iter().enumerate() {
+            if matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_)) {
+              result.call_signatures[idx] = *sig;
+            }
+          }
+        }
         if flow_result.pat_types.len() == result.pat_types.len() {
           for (idx, ty) in flow_result.pat_types.iter().enumerate() {
             if *ty != prim.unknown {

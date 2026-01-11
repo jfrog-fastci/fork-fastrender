@@ -7476,6 +7476,8 @@ struct FlowBodyChecker<'a> {
   relate: RelateCtx<'a>,
   instantiation_cache: InstantiationCache,
   expr_types: Vec<TypeId>,
+  call_signatures: Vec<Option<SignatureId>>,
+  call_signature_conflicts: Vec<bool>,
   optional_chain_exec_types: Vec<Option<TypeId>>,
   pat_types: Vec<TypeId>,
   expr_spans: Vec<TextRange>,
@@ -8179,6 +8181,8 @@ impl<'a> FlowBodyChecker<'a> {
   ) -> Self {
     let prim = store.primitive_ids();
     let expr_types = vec![prim.unknown; body.exprs.len()];
+    let call_signatures = vec![None; body.exprs.len()];
+    let call_signature_conflicts = vec![false; body.exprs.len()];
     let optional_chain_exec_types = vec![None; body.exprs.len()];
     let mut bindings = BindingCollector::collect(body, flow_bindings);
     let mut pat_types = vec![prim.unknown; body.pats.len()];
@@ -8234,6 +8238,8 @@ impl<'a> FlowBodyChecker<'a> {
       relate,
       instantiation_cache: InstantiationCache::default(),
       expr_types,
+      call_signatures,
+      call_signature_conflicts,
       optional_chain_exec_types,
       pat_types,
       expr_spans,
@@ -8251,11 +8257,10 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn into_result(self) -> BodyCheckResult {
-    let call_signatures = vec![None; self.expr_types.len()];
     BodyCheckResult {
       body: self.body_id,
       expr_types: self.expr_types,
-      call_signatures,
+      call_signatures: self.call_signatures,
       pat_types: self.pat_types,
       expr_spans: self.expr_spans,
       pat_spans: self.pat_spans,
@@ -9806,6 +9811,23 @@ impl<'a> FlowBodyChecker<'a> {
         resolution.signature,
         TypeDisplay::new(&self.store, resolution.return_type)
       );
+    }
+
+    if let Some(sig_id) = resolution.signature.or(resolution.contextual_signature) {
+      let idx = expr_id.0 as usize;
+      if idx < self.call_signatures.len() && !self.call_signature_conflicts[idx] {
+        match &mut self.call_signatures[idx] {
+          None => {
+            self.call_signatures[idx] = Some(sig_id);
+          }
+          Some(existing) => {
+            if *existing != sig_id {
+              self.call_signatures[idx] = None;
+              self.call_signature_conflicts[idx] = true;
+            }
+          }
+        }
+      }
     }
 
     let mut ret_ty = resolution.return_type;
