@@ -946,8 +946,8 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0); // no locations
     align_to_8_with(&mut bytes, 0); // align before live-out header (no-op here)
-    push_u16(&mut bytes, 0); // no liveouts
-    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0); // padding
+    push_u16(&mut bytes, 0); // num_liveouts
     align_to_8_with(&mut bytes, 0);
 
     let sm = StackMap::parse(&bytes).unwrap();

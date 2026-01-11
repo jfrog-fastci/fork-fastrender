@@ -2,6 +2,7 @@ use std::alloc::handle_alloc_error;
 use std::alloc::Layout;
 use std::mem;
 use std::ptr;
+use std::time::Duration;
 
 use super::roots::RootHandle;
 use super::roots::RootHandles;
@@ -37,6 +38,11 @@ pub struct GcStats {
   pub major_collections: usize,
   pub bytes_allocated_young: usize,
   pub bytes_allocated_old: usize,
+  pub last_major_live_bytes: usize,
+  pub last_minor_pause: Duration,
+  pub last_major_pause: Duration,
+  pub total_minor_pause: Duration,
+  pub total_major_pause: Duration,
 }
 
 pub struct GcHeap {

@@ -31,7 +31,13 @@ impl BumpCursor {
 pub struct ImmixSpace {
   blocks: Vec<Block>,
   block_by_start: HashMap<usize, usize>,
-  free_blocks: Vec<usize>,
+  /// Blocks indexed by the size (in lines) of their largest free hole.
+  ///
+  /// This acts as an availability structure so allocation can find space without
+  /// linearly scanning all blocks.
+  ///
+  /// Index `i` contains blocks whose current `largest_hole_lines == i`.
+  available_by_hole: Vec<Vec<usize>>,
   bump: BumpCursor,
 }
 
@@ -40,7 +46,7 @@ impl ImmixSpace {
     Self {
       blocks: Vec::new(),
       block_by_start: HashMap::new(),
-      free_blocks: Vec::new(),
+      available_by_hole: vec![Vec::new(); super::LINES_PER_BLOCK + 1],
       bump: BumpCursor::new(),
     }
   }
@@ -52,7 +58,7 @@ impl ImmixSpace {
 
   #[inline]
   pub fn free_block_count(&self) -> usize {
-    self.free_blocks.len()
+    self.available_by_hole[super::LINES_PER_BLOCK].len()
   }
 
   pub fn contains(&self, ptr: *mut u8) -> bool {
@@ -76,6 +82,19 @@ impl ImmixSpace {
       .sum()
   }
 
+  /// Returns the number of bytes whose lines are currently marked in the line map.
+  ///
+  /// During major GC this represents a line-granularity approximation of live bytes.
+  /// During normal allocation it represents the amount of space consumed by
+  /// allocations (including internal fragmentation to line boundaries).
+  pub fn line_map_used_bytes(&self) -> usize {
+    self
+      .blocks
+      .iter()
+      .map(|block| bitmap::used_lines(&block.line_map) * LINE_SIZE)
+      .sum()
+  }
+
   pub fn block_metrics(&self, block_id: usize) -> Option<crate::immix::BlockMetrics> {
     self.blocks.get(block_id).map(|block| block.metrics())
   }
@@ -88,20 +107,20 @@ impl ImmixSpace {
     let Self {
       blocks,
       block_by_start,
-      free_blocks,
+      available_by_hole,
       bump,
     } = self;
-    alloc_old_with_cursor(blocks, block_by_start, free_blocks, bump, size, align)
+    alloc_old_with_cursor(blocks, block_by_start, available_by_hole, bump, size, align)
   }
 
   pub fn alloc_old_with_cursor(&mut self, bump: &mut BumpCursor, size: usize, align: usize) -> Option<*mut u8> {
     let Self {
       blocks,
       block_by_start,
-      free_blocks,
+      available_by_hole,
       bump: _,
     } = self;
-    alloc_old_with_cursor(blocks, block_by_start, free_blocks, bump, size, align)
+    alloc_old_with_cursor(blocks, block_by_start, available_by_hole, bump, size, align)
   }
 
   /// Clear all line maps in preparation for a full-heap marking pass.
@@ -109,7 +128,9 @@ impl ImmixSpace {
     for block in &mut self.blocks {
       block.clear_line_map();
     }
-    self.free_blocks.clear();
+    for bucket in &mut self.available_by_hole {
+      bucket.clear();
+    }
     self.bump.reset();
   }
 
@@ -138,10 +159,13 @@ impl ImmixSpace {
 
   /// Finalize marking: identify fully free blocks and rebuild the free list.
   pub fn finalize_after_marking(&mut self) {
-    self.free_blocks.clear();
+    for bucket in &mut self.available_by_hole {
+      bucket.clear();
+    }
     for (i, block) in self.blocks.iter().enumerate() {
-      if block.is_empty() {
-        self.free_blocks.push(i);
+      let largest = bitmap::largest_hole_lines(&block.line_map);
+      if largest > 0 {
+        self.available_by_hole[largest].push(i);
       }
     }
     self.bump.reset();
@@ -157,7 +181,7 @@ fn align_up(addr: usize, align: usize) -> usize {
 fn alloc_old_with_cursor(
   blocks: &mut Vec<Block>,
   block_by_start: &mut HashMap<usize, usize>,
-  free_blocks: &mut Vec<usize>,
+  available_by_hole: &mut Vec<Vec<usize>>,
   bump: &mut BumpCursor,
   size: usize,
   align: usize,
@@ -178,7 +202,7 @@ fn alloc_old_with_cursor(
 
   loop {
     if bump.block_id.is_none() {
-      acquire_hole(blocks, block_by_start, free_blocks, bump, min_lines)?;
+      acquire_hole(blocks, block_by_start, available_by_hole, bump, min_lines)?;
     }
 
     let cursor_addr = bump.cursor as usize;
@@ -198,25 +222,26 @@ fn alloc_old_with_cursor(
       // allocated into, ensure the additional lines are still free. This keeps
       // `alloc_old_with_cursor` safe to use with multiple interleaved cursors
       // in a single `ImmixSpace`.
-      if end_line > bump.claimed_line_limit {
-        let check_start = bump.claimed_line_limit.max(start_line);
-        if let Some(conflict_line) = (check_start..end_line)
-          .find(|&line| bitmap::is_line_marked(&block.line_map, line))
-        {
-          if let Some((hole_start, hole_end)) =
-            bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines)
-          {
-            let start = block_start + (hole_start * LINE_SIZE);
-            let limit = block_start + (hole_end * LINE_SIZE);
-            bump.cursor = start as *mut u8;
-            bump.limit = limit as *mut u8;
-            bump.claimed_line_limit = hole_start;
-            continue;
-          }
-          bump.reset();
-          continue;
-        }
-      }
+       if end_line > bump.claimed_line_limit {
+         let check_start = bump.claimed_line_limit.max(start_line);
+         if let Some(conflict_line) = (check_start..end_line)
+           .find(|&line| bitmap::is_line_marked(&block.line_map, line))
+         {
+           if let Some((hole_start, hole_end)) =
+             bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines)
+           {
+             let start = block_start + (hole_start * LINE_SIZE);
+             let limit = block_start + (hole_end * LINE_SIZE);
+             bump.cursor = start as *mut u8;
+             bump.limit = limit as *mut u8;
+             bump.claimed_line_limit = hole_start;
+             continue;
+           }
+           release_block(blocks, available_by_hole, bump);
+           bump.reset();
+           continue;
+         }
+       }
 
       // Mark all lines consumed by the allocation, including alignment padding.
       let block = &mut blocks[block_id];
@@ -238,6 +263,7 @@ fn alloc_old_with_cursor(
       bump.limit = limit as *mut u8;
       bump.claimed_line_limit = hole_start;
     } else {
+      release_block(blocks, available_by_hole, bump);
       bump.reset();
     }
   }
@@ -246,20 +272,14 @@ fn alloc_old_with_cursor(
 fn acquire_hole(
   blocks: &mut Vec<Block>,
   block_by_start: &mut HashMap<usize, usize>,
-  free_blocks: &mut Vec<usize>,
+  available_by_hole: &mut Vec<Vec<usize>>,
   bump: &mut BumpCursor,
   min_lines: usize,
 ) -> Option<()> {
-  if let Some(block_id) = free_blocks.pop() {
-    let start = blocks[block_id].start_addr();
-    bump.block_id = Some(block_id);
-    bump.cursor = start as *mut u8;
-    bump.limit = (start + BLOCK_SIZE) as *mut u8;
-    bump.claimed_line_limit = 0;
-    return Some(());
-  }
-
-  for block_id in 0..blocks.len() {
+  // Preserve the original allocator's behavior of preferring fully-free blocks
+  // first (this keeps allocation bump-fast in the common case and avoids
+  // needlessly fragmenting partially-live blocks).
+  while let Some(block_id) = available_by_hole[super::LINES_PER_BLOCK].pop() {
     let block = &blocks[block_id];
     if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, 0, min_lines) {
       let start = block.start_addr() + (hole_start * LINE_SIZE);
@@ -269,6 +289,33 @@ fn acquire_hole(
       bump.limit = limit as *mut u8;
       bump.claimed_line_limit = hole_start;
       return Some(());
+    }
+    // Stale entry (should be rare): reinsert according to current metrics.
+    let largest = bitmap::largest_hole_lines(&block.line_map);
+    if largest > 0 {
+      available_by_hole[largest].push(block_id);
+    }
+  }
+
+  // Fall back to partially-free blocks.
+  for hole_lines in min_lines..super::LINES_PER_BLOCK {
+    while let Some(block_id) = available_by_hole[hole_lines].pop() {
+      let block = &blocks[block_id];
+      if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, 0, min_lines) {
+        let start = block.start_addr() + (hole_start * LINE_SIZE);
+        let limit = block.start_addr() + (hole_end * LINE_SIZE);
+        bump.block_id = Some(block_id);
+        bump.cursor = start as *mut u8;
+        bump.limit = limit as *mut u8;
+        bump.claimed_line_limit = hole_start;
+        return Some(());
+      }
+
+      // Stale bucket entry: recompute and reinsert if the block still has space.
+      let largest = bitmap::largest_hole_lines(&block.line_map);
+      if largest > 0 {
+        available_by_hole[largest].push(block_id);
+      }
     }
   }
 
@@ -284,6 +331,17 @@ fn acquire_hole(
   bump.limit = (start + BLOCK_SIZE) as *mut u8;
   bump.claimed_line_limit = 0;
   Some(())
+}
+
+fn release_block(blocks: &mut Vec<Block>, available_by_hole: &mut Vec<Vec<usize>>, bump: &mut BumpCursor) {
+  let Some(block_id) = bump.block_id else {
+    return;
+  };
+  let block = &blocks[block_id];
+  let largest = bitmap::largest_hole_lines(&block.line_map);
+  if largest > 0 {
+    available_by_hole[largest].push(block_id);
+  }
 }
 
 #[cfg(test)]

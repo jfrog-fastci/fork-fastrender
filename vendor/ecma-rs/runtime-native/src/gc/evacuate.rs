@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::mem;
 use std::ptr;
+use std::time::Instant;
 
 use super::roots::RememberedSet;
 use super::roots::RootSet;
@@ -18,6 +19,7 @@ impl GcHeap {
   /// concurrent mutators and that the provided root/remembered sets remain
   /// stable for the duration of the call.
   pub fn collect_minor(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
+    let start = Instant::now();
     self.stats.minor_collections += 1;
 
     // Snapshot nursery usage so we can optionally poison the previously-used
@@ -71,6 +73,10 @@ impl GcHeap {
     }
     remembered.clear();
     run_weak_cleanups(self);
+
+    let pause = start.elapsed();
+    self.stats.last_minor_pause = pause;
+    self.stats.total_minor_pause += pause;
   }
 }
 

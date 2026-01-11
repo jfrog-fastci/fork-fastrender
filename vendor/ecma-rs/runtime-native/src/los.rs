@@ -83,6 +83,17 @@ impl LargeObjectSpace {
     freed
   }
 
+  pub(crate) fn live_bytes(&self, current_epoch: u8) -> usize {
+    let mut live = 0usize;
+    self.for_each_object(|obj, size| unsafe {
+      let hdr = &*(obj as *const ObjHeader);
+      if hdr.is_marked(current_epoch) {
+        live += size;
+      }
+    });
+    live
+  }
+
   pub(crate) fn contains(&self, ptr: *mut u8) -> bool {
     let mut found = false;
     self.for_each_object(|obj, _size| {

@@ -7,6 +7,7 @@ use super::weak::run_weak_cleanups;
 use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::GcHeap;
+use std::time::Instant;
 
 impl GcHeap {
   /// Perform a full-heap major collection using a mark-region algorithm over
@@ -22,6 +23,7 @@ impl GcHeap {
   pub fn collect_major(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
     self.collect_minor(roots, remembered);
     self.stats.major_collections += 1;
+    let start = Instant::now();
 
     // Toggle the epoch so we can treat previous marks as "unmarked" without
     // clearing every object header.
@@ -56,8 +58,13 @@ impl GcHeap {
     self.process_weak_handles_major(epoch);
     process_global_weak_handles_major(self, epoch);
     run_weak_cleanups(self);
+    self.stats.last_major_live_bytes = self.immix.line_map_used_bytes() + self.los.live_bytes(epoch);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);
+
+    let pause = start.elapsed();
+    self.stats.last_major_pause = pause;
+    self.stats.total_major_pause += pause;
   }
 }
 

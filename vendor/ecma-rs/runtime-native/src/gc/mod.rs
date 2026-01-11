@@ -23,20 +23,6 @@ pub use weak::WeakHandles;
 pub use young::YoungSpace;
 
 pub(crate) use young::YOUNG_SPACE;
-use crate::trap;
-
-/// Align `value` up to the next multiple of `align` (power-of-two).
-///
-/// This is used in a few places (e.g. fixed-size GC object layouts) where we
-/// need stable object sizes that satisfy alignment requirements.
-#[inline]
-pub(crate) fn align_up(value: usize, align: usize) -> usize {
-  debug_assert!(align.is_power_of_two());
-  value
-    .checked_add(align - 1)
-    .map(|v| v & !(align - 1))
-    .unwrap_or_else(|| trap::rt_trap_invalid_arg("align_up overflow"))
-}
 
 /// Object header that prefixes every GC-managed allocation.
 ///
@@ -271,3 +257,6 @@ pub(crate) unsafe fn obj_size(mut obj: *mut u8) -> usize {
 
 #[cfg(any(debug_assertions, feature = "gc_debug"))]
 mod verify;
+
+#[cfg(test)]
+mod tests;
