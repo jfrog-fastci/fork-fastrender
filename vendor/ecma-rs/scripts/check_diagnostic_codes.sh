@@ -45,7 +45,7 @@ collect "${RG_COMMON[@]}" 'DiagnosticCode::from\(\s*"([^"]+)"' --replace '$1'
 collect "${RG_COMMON[@]}" 'Code::new\(\s*"([^"]+)"' --replace '$1'
 
 # optimize-js helpers.
-collect "${RG_COMMON[@]}" 'diagnostic_with_(?:span|range)\(\s*"([^"]+)"' --replace '$1'
+collect "${RG_COMMON[@]}" '\bdiagnostic_with_(?:span|range)\(\s*[^,\n]+,\s*"([^"]+)"' --replace '$1'
 
 # hir-js lowering helpers (`ctx.warn("LOWER0003", ...)`).
 collect "${RG_COMMON[@]}" '\.warn\(\s*"([A-Z0-9]+)"' --replace '$1'
