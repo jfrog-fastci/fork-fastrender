@@ -18,10 +18,10 @@ fn decompile_flat_il_supports_nonzero_entry_label() {
       bblocks,
       entry: 1,
     },
+    params: Vec::new(),
     stats: Default::default(),
   };
 
   let stmts = decompile_function(&func).expect("decompile");
   assert!(stmts.is_empty());
 }
-
