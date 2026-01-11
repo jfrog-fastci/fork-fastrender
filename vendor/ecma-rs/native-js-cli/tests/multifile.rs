@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -9,8 +11,58 @@ use tempfile::tempdir;
 // timeout generous to avoid flaky `<interrupted>` failures.
 const CLI_TIMEOUT: Duration = Duration::from_secs(180);
 
-fn native_js_cli() -> Command {
-  assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
+const MAX_CONCURRENT_NATIVE_JS_CLI_TESTS: usize = 4;
+static NATIVE_JS_CLI_TESTS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+struct CodegenPermit;
+
+impl CodegenPermit {
+  fn acquire() -> Self {
+    loop {
+      let current = NATIVE_JS_CLI_TESTS_IN_FLIGHT.load(Ordering::Acquire);
+      if current < MAX_CONCURRENT_NATIVE_JS_CLI_TESTS {
+        if NATIVE_JS_CLI_TESTS_IN_FLIGHT
+          .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+          .is_ok()
+        {
+          return Self;
+        }
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+  }
+}
+
+impl Drop for CodegenPermit {
+  fn drop(&mut self) {
+    NATIVE_JS_CLI_TESTS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+  }
+}
+
+struct PermitCommand {
+  _permit: CodegenPermit,
+  inner: Command,
+}
+
+impl Deref for PermitCommand {
+  type Target = Command;
+
+  fn deref(&self) -> &Self::Target {
+    &self.inner
+  }
+}
+
+impl DerefMut for PermitCommand {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.inner
+  }
+}
+
+fn native_js_cli() -> PermitCommand {
+  PermitCommand {
+    _permit: CodegenPermit::acquire(),
+    inner: assert_cmd::cargo::cargo_bin_cmd!("native-js-cli"),
+  }
 }
 
 #[test]
