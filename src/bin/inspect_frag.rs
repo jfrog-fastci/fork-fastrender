@@ -1384,7 +1384,10 @@ fn run(args: Args) -> Result<(), DynError> {
   let input = load_input_document(&args)?;
 
   media_prefs.apply_env();
-  let runtime_toggles = RuntimeToggles::from_env();
+  let raw_runtime = std::env::vars()
+    .filter(|(k, _)| k.starts_with("FASTR_"))
+    .collect::<HashMap<_, _>>();
+  let runtime_toggles = inspect_runtime_toggles_from_env_map(raw_runtime, args.patch_html_for_chrome_baseline);
   let _runtime_guard = runtime::set_runtime_toggles(Arc::new(runtime_toggles.clone()));
 
   let fetcher = build_fetcher(&args)?;
@@ -1682,6 +1685,23 @@ fn run(args: Args) -> Result<(), DynError> {
   Ok(())
 }
 
+fn inspect_runtime_toggles_from_env_map(
+  mut raw: HashMap<String, String>,
+  patch_html_for_chrome_baseline: bool,
+) -> RuntimeToggles {
+  // Keep `inspect_frag --patch-html-for-chrome-baseline` aligned with the Chrome baseline harness.
+  //
+  // In particular, FastRender defaults `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=1` (non-standard) to
+  // preserve historical fixture behavior, but that diverges from Chrome and can materially change
+  // layout (e.g. shrink-to-fit abspos boxes containing images).
+  if patch_html_for_chrome_baseline {
+    raw
+      .entry("FASTR_COMPAT_REPLACED_MAX_WIDTH_100".to_string())
+      .or_insert_with(|| "0".to_string());
+  }
+  RuntimeToggles::from_map(raw)
+}
+
 fn inspect_frag_font_config(args: &Args) -> FontConfig {
   let mut config = FontConfig::bundled_only();
   if args.system_fonts {
@@ -1807,6 +1827,20 @@ mod tests {
       input.html.contains(&expected_base),
       "expected patched HTML to include base href injection; expected fragment {expected_base:?}"
     );
+  }
+
+  #[test]
+  fn patch_html_for_chrome_baseline_defaults_replaced_max_width_compat_off() {
+    let toggles = inspect_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("0"));
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      "FASTR_COMPAT_REPLACED_MAX_WIDTH_100".to_string(),
+      "1".to_string(),
+    );
+    let toggles = inspect_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("1"));
   }
 
   #[test]

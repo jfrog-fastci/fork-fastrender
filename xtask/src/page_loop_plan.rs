@@ -201,6 +201,14 @@ pub fn build_inspect_frag_command(
     // (no reserved scrollbar gutters).
     cmd.env("FASTR_HIDE_SCROLLBARS", "1");
   }
+  if args.patch_html_for_chrome_baseline
+    && std::env::var_os("FASTR_COMPAT_REPLACED_MAX_WIDTH_100").is_none()
+  {
+    // Chrome's UA stylesheet does not apply a `max-width: 100%` compatibility default to replaced
+    // elements. Disable FastRender's non-standard default in fixture-chrome mode so diffs reflect
+    // renderer behavior rather than differing UA defaults.
+    cmd.env("FASTR_COMPAT_REPLACED_MAX_WIDTH_100", "0");
+  }
   cmd.arg(inspect_frag_exe);
   cmd.arg(&args.fixture_html);
   // `page-loop` renders offline fixtures; forbid HTTP(S) so inspect runs don't hang on stray remote

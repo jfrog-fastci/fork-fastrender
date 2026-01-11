@@ -384,15 +384,30 @@ fn fixture_runtime_toggles_from_env_map(
     .entry("FASTR_DETERMINISTIC_PAINT".to_string())
     .or_insert_with(|| "1".to_string());
 
-  // When diffing against Chrome baselines, align with Chrome's screenshot timing for
-  // `font-display: swap` fonts.
+  // FastRender includes a non-standard compatibility default `max-width: 100%` for replaced elements
+  // (`FASTR_COMPAT_REPLACED_MAX_WIDTH_100`, default enabled). This can materially change layout for
+  // absolutely-positioned/shrink-to-fit elements (e.g. allow an `<img>` to shrink instead of
+  // overflowing/clipping).
   //
+  // When diffing against Chrome baselines, prefer spec-correct defaults unless the caller
+  // explicitly opted back into the compatibility behavior.
+  if patch_html_for_chrome_baseline {
+    raw
+      .entry("FASTR_COMPAT_REPLACED_MAX_WIDTH_100".to_string())
+      .or_insert_with(|| "0".to_string());
+  }
+
   // `xtask chrome-baseline-fixtures` captures screenshots with a small `--virtual-time-budget`
-  // (5s when JS is disabled), which usually allows swap-mode web fonts to load and trigger the
-  // reflow before the screenshot is taken.
+  // (5s when JS is disabled). For offline fixtures this usually allows swap-mode web fonts to load
+  // and trigger the reflow before the screenshot is taken.
   //
-  // Wait briefly by default so fixture renders match that post-swap state. Callers can set
-  // `FASTR_WEB_FONT_WAIT_MS=0` to force the pre-swap render when needed.
+  // Wait briefly by default so fixture-chrome diffs are not dominated by fallback font
+  // metric/layout differences. Keep this timeout short: real-world pages can ship many swap-mode
+  // fonts, and waiting for *all* of them can be expensive and often unnecessary for the initial
+  // viewport.
+  //
+  // Set `FASTR_WEB_FONT_WAIT_MS` explicitly to opt out (`0`) or to wait longer when debugging font
+  // behavior.
   let default_web_font_wait_ms = "500";
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
@@ -2113,6 +2128,22 @@ mod tests {
     raw.insert("FASTR_TEXT_HINTING".to_string(), "0".to_string());
     let toggles = fixture_runtime_toggles_from_env_map(raw, true);
     assert_eq!(toggles.get("FASTR_TEXT_HINTING"), Some("0"));
+  }
+
+  #[test]
+  fn fixture_runtime_toggles_disables_replaced_max_width_compat_by_default_in_chrome_diff_mode() {
+    // Chrome baselines use spec-correct defaults; disable FastRender's non-standard
+    // `max-width:100%` replaced-element compatibility shim unless the caller explicitly opts in.
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("0"));
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      "FASTR_COMPAT_REPLACED_MAX_WIDTH_100".to_string(),
+      "1".to_string(),
+    );
+    let toggles = fixture_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), Some("1"));
   }
 
   #[test]
