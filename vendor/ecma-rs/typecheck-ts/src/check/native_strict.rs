@@ -1003,6 +1003,257 @@ pub fn validate_native_strict_body(
               }
             }
 
+            if let ExprKind::Member(member) = &callee.kind {
+              let prop_is_call =
+                object_key_is_ident(&member.property, call_name)
+                  || object_key_is_string(&member.property, "call")
+                  || object_key_is_literal_string(body, &member.property, "call");
+              let prop_is_apply =
+                object_key_is_ident(&member.property, apply_name)
+                  || object_key_is_string(&member.property, "apply")
+                  || object_key_is_literal_string(body, &member.property, "apply");
+              if prop_is_call || prop_is_apply {
+                if let Some(bound_expr) = body.exprs.get(member.object.0 as usize) {
+                  if let ExprKind::Call(bind_call) = &bound_expr.kind {
+                    if !bind_call.is_new
+                      && !bind_call.args.is_empty()
+                      && !bind_call.args.iter().any(|arg| arg.spread)
+                    {
+                      if let Some(bind_callee) = body.exprs.get(bind_call.callee.0 as usize) {
+                        if let ExprKind::Member(bind_member) = &bind_callee.kind {
+                          let prop_is_bind =
+                            object_key_is_ident(&bind_member.property, bind_name)
+                              || object_key_is_string(&bind_member.property, "bind")
+                              || object_key_is_literal_string(body, &bind_member.property, "bind");
+                          if prop_is_bind {
+                            let is_object_define_property = expr_is_builtin_member(
+                              body,
+                              bind_member.object,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              define_property_name,
+                              "defineProperty",
+                            );
+                            let is_reflect_define_property = expr_is_builtin_member(
+                              body,
+                              bind_member.object,
+                              global_this_name,
+                              reflect_name,
+                              "Reflect",
+                              define_property_name,
+                              "defineProperty",
+                            );
+                            let is_object_define_properties = expr_is_builtin_member(
+                              body,
+                              bind_member.object,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              define_properties_name,
+                              "defineProperties",
+                            );
+                            let is_object_assign = expr_is_builtin_member(
+                              body,
+                              bind_member.object,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              assign_name,
+                              "assign",
+                            );
+                            let is_define_property =
+                              is_object_define_property || is_reflect_define_property;
+                            if is_define_property || is_object_define_properties || is_object_assign
+                            {
+                              let bound_arity = bind_call.args.len().saturating_sub(1);
+                              let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+
+                              let mut report_if = |is_proto_mutation: bool| {
+                                if is_proto_mutation {
+                                  diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                    "prototype mutation is forbidden when `native_strict` is enabled",
+                                    Span::new(file, span),
+                                  ));
+                                }
+                              };
+
+                              if prop_is_call {
+                                let effective_arg = |i: usize| -> Option<hir_js::ExprId> {
+                                  if i < bound_arity {
+                                    bind_call
+                                      .args
+                                      .get(i + 1)
+                                      .filter(|arg| !arg.spread)
+                                      .map(|arg| arg.expr)
+                                  } else {
+                                    call
+                                      .args
+                                      .get((i - bound_arity) + 1)
+                                      .filter(|arg| !arg.spread)
+                                      .map(|arg| arg.expr)
+                                  }
+                                };
+
+                                if let Some(first_arg) = effective_arg(0) {
+                                  if is_define_property {
+                                    let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                      body,
+                                      first_arg,
+                                      prototype_name,
+                                      proto_name,
+                                    );
+                                    if !is_proto_mutation {
+                                      if let Some(key_arg) = effective_arg(1) {
+                                        if expr_is_const_string(body, key_arg, "prototype")
+                                          || expr_is_const_string(body, key_arg, "__proto__")
+                                        {
+                                          is_proto_mutation = true;
+                                        }
+                                      }
+                                    }
+                                    report_if(is_proto_mutation);
+                                  }
+                                  if is_object_define_properties {
+                                    if let Some(props_arg) = effective_arg(1) {
+                                      let is_proto_mutation = expr_chain_contains_proto_mutation(
+                                        body,
+                                        first_arg,
+                                        prototype_name,
+                                        proto_name,
+                                      ) || expr_is_object_literal_with_proto_key(
+                                        body,
+                                        props_arg,
+                                        prototype_name,
+                                        proto_name,
+                                      );
+                                      report_if(is_proto_mutation);
+                                    }
+                                  }
+                                  if is_object_assign {
+                                    let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                      body,
+                                      first_arg,
+                                      prototype_name,
+                                      proto_name,
+                                    );
+                                    if !is_proto_mutation {
+                                      let outer_sources = call
+                                        .args
+                                        .iter()
+                                        .skip(if bound_arity == 0 { 2 } else { 1 });
+                                      for source_arg in
+                                        bind_call.args.iter().skip(2).chain(outer_sources)
+                                      {
+                                        if source_arg.spread {
+                                          continue;
+                                        }
+                                        if expr_is_object_literal_with_proto_key(
+                                          body,
+                                          source_arg.expr,
+                                          prototype_name,
+                                          proto_name,
+                                        ) {
+                                          is_proto_mutation = true;
+                                          break;
+                                        }
+                                      }
+                                    }
+                                    report_if(is_proto_mutation);
+                                  }
+                                }
+                              } else if prop_is_apply {
+                                if let Some(args_array) =
+                                  call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                                {
+                                  if let Some(args_list) = array_literal_exprs(body, args_array) {
+                                    let effective_arg = |i: usize| -> Option<hir_js::ExprId> {
+                                      if i < bound_arity {
+                                        bind_call
+                                          .args
+                                          .get(i + 1)
+                                          .filter(|arg| !arg.spread)
+                                          .map(|arg| arg.expr)
+                                      } else {
+                                        args_list.get(i - bound_arity).copied()
+                                      }
+                                    };
+
+                                    if let Some(first_arg) = effective_arg(0) {
+                                      if is_define_property {
+                                        let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                          body,
+                                          first_arg,
+                                          prototype_name,
+                                          proto_name,
+                                        );
+                                        if !is_proto_mutation {
+                                          if let Some(key_arg) = effective_arg(1) {
+                                            if expr_is_const_string(body, key_arg, "prototype")
+                                              || expr_is_const_string(body, key_arg, "__proto__")
+                                            {
+                                              is_proto_mutation = true;
+                                            }
+                                          }
+                                        }
+                                        report_if(is_proto_mutation);
+                                      }
+                                      if is_object_define_properties {
+                                        if let Some(props_arg) = effective_arg(1) {
+                                          let is_proto_mutation = expr_chain_contains_proto_mutation(
+                                            body,
+                                            first_arg,
+                                            prototype_name,
+                                            proto_name,
+                                          ) || expr_is_object_literal_with_proto_key(
+                                            body,
+                                            props_arg,
+                                            prototype_name,
+                                            proto_name,
+                                          );
+                                          report_if(is_proto_mutation);
+                                        }
+                                      }
+                                      if is_object_assign {
+                                        let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                          body,
+                                          first_arg,
+                                          prototype_name,
+                                          proto_name,
+                                        );
+                                        if !is_proto_mutation {
+                                          let call_sources =
+                                            args_list.iter().skip(if bound_arity == 0 { 1 } else { 0 });
+                                          for source_arg in
+                                            bind_call.args.iter().skip(2).map(|arg| arg.expr).chain(call_sources.copied())
+                                          {
+                                            if expr_is_object_literal_with_proto_key(
+                                              body,
+                                              source_arg,
+                                              prototype_name,
+                                              proto_name,
+                                            ) {
+                                              is_proto_mutation = true;
+                                              break;
+                                            }
+                                          }
+                                        }
+                                        report_if(is_proto_mutation);
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
             if let ExprKind::Call(bound_call) = &callee.kind {
               if !bound_call.is_new
                 && !bound_call.args.is_empty()
