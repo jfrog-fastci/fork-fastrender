@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -139,7 +140,19 @@ impl LlvmToolchain {
 fn find_executable(names: &[&str]) -> Option<PathBuf> {
   for name in names {
     if let Some(p) = find_in_path(name) {
-      return Some(p);
+      // Ensure the resolved tool actually runs. Some environments may have a stray file in PATH
+      // (e.g. a non-executable wrapper), which `Path::is_file` would accept but `Command::new`
+      // would fail to spawn.
+      if Command::new(&p)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+      {
+        return Some(p);
+      }
     }
   }
   None
