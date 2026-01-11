@@ -182,11 +182,19 @@ impl PinnedIoVec {
   }
 
   pub fn as_iovec_ptr(&self) -> *const libc::iovec {
-    self.iovecs.as_ptr()
+    if self.iovecs.is_empty() {
+      core::ptr::null()
+    } else {
+      self.iovecs.as_ptr()
+    }
   }
 
   pub fn as_iovec_mut_ptr(&mut self) -> *mut libc::iovec {
-    self.iovecs.as_mut_ptr()
+    if self.iovecs.is_empty() {
+      core::ptr::null_mut()
+    } else {
+      self.iovecs.as_mut_ptr()
+    }
   }
 
   pub fn as_iovecs(&self) -> &[libc::iovec] {
