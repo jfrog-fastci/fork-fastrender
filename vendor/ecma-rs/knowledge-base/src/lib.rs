@@ -5,8 +5,12 @@ use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate, T
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+mod ids;
+pub use ids::ApiId;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApiSemantics {
+  #[serde(skip)]
+  pub id: ApiId,
   pub name: String,
 
   #[serde(default)]
@@ -124,8 +128,10 @@ impl<'de> Deserialize<'de> for ApiSemantics {
     let effect_summary = raw
       .effect_summary
       .unwrap_or_else(|| effect_template_to_summary(&raw.effects));
+    let id = ApiId::from_name(&raw.name);
 
     Ok(Self {
+      id,
       name: raw.name,
       aliases: raw.aliases,
       effects: raw.effects,
@@ -168,6 +174,8 @@ fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
 pub struct ApiDatabase {
   apis: BTreeMap<String, ApiSemantics>,
   aliases: BTreeMap<String, String>,
+  ids: BTreeMap<ApiId, String>,
+  sources: BTreeMap<String, String>,
 }
 
 /// Backwards-compatible alias used by analysis passes.
@@ -179,11 +187,19 @@ pub type Api = ApiSemantics;
 impl ApiDatabase {
   pub fn from_entries(entries: impl IntoIterator<Item = ApiSemantics>) -> Self {
     let mut apis = BTreeMap::new();
-    for api in entries {
+    for mut api in entries {
+      api.id = ApiId::from_name(&api.name);
       apis.insert(api.name.clone(), api);
     }
+    let sources = BTreeMap::new();
     let aliases = build_alias_map(&apis).unwrap_or_default();
-    Self { apis, aliases }
+    let ids = build_id_map(&apis, &sources).unwrap_or_default();
+    Self {
+      apis,
+      aliases,
+      ids,
+      sources,
+    }
   }
 
   pub fn get(&self, name_or_alias: &str) -> Option<&ApiSemantics> {
@@ -196,6 +212,24 @@ impl ApiDatabase {
       return Some(key.as_str());
     }
     self.aliases.get(name_or_alias).map(|s| s.as_str())
+  }
+
+  pub fn get_by_id(&self, id: ApiId) -> Option<&ApiSemantics> {
+    let name = self.ids.get(&id)?;
+    self.apis.get(name)
+  }
+
+  /// Resolve `name_or_alias` into the canonical [`ApiId`].
+  ///
+  /// Aliases take precedence over direct name matches so redundant alias entries
+  /// (e.g. `fs.readFile` alongside `node:fs.readFile`) resolve consistently.
+  pub fn id_of(&self, name_or_alias: &str) -> Option<ApiId> {
+    let canonical = self
+      .aliases
+      .get(name_or_alias)
+      .map(|s| s.as_str())
+      .unwrap_or(name_or_alias);
+    self.apis.get(canonical).map(|api| api.id)
   }
 
   pub fn iter(&self) -> impl Iterator<Item = (&str, &ApiSemantics)> {
@@ -229,11 +263,19 @@ impl ApiDatabase {
     }
 
     let aliases = build_alias_map(&apis)?;
-    Ok(Self { apis, aliases })
+    let ids = build_id_map(&apis, &sources)?;
+
+    Ok(Self {
+      apis,
+      aliases,
+      ids,
+      sources,
+    })
   }
 
   pub fn validate(&self) -> Result<(), KnowledgeBaseError> {
     build_alias_map(&self.apis)?;
+    build_id_map(&self.apis, &self.sources)?;
     self.warn_inconsistent_metadata();
     Ok(())
   }
@@ -301,6 +343,15 @@ pub enum KnowledgeBaseError {
     name: String,
     first: String,
     second: String,
+  },
+
+  #[error("API id collision 0x{id:x} between `{first_name}` ({first_source}) and `{second_name}` ({second_source})")]
+  ApiIdCollision {
+    id: u64,
+    first_name: String,
+    first_source: String,
+    second_name: String,
+    second_source: String,
   },
 
   #[error("duplicate alias `{alias}` for `{first}` and `{second}`")]
@@ -468,8 +519,10 @@ struct PurityDetailsRaw {
 fn normalize_api(raw: ApiRaw) -> ApiSemantics {
   let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
   let purity = normalize_purity(raw.purity);
+  let name = raw.name;
   ApiSemantics {
-    name: raw.name,
+    id: ApiId::from_name(&name),
+    name,
     aliases: raw.aliases,
     effects,
     effect_summary,
@@ -491,6 +544,7 @@ fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
   let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
   let purity = normalize_purity(raw.purity);
   ApiSemantics {
+    id: ApiId::from_name(&name),
     name,
     aliases: raw.aliases,
     effects,
@@ -696,6 +750,37 @@ fn parse_toml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
   Ok(module.apis.into_iter().map(normalize_api).collect())
 }
 
+fn build_id_map(
+  apis: &BTreeMap<String, ApiSemantics>,
+  sources: &BTreeMap<String, String>,
+) -> Result<BTreeMap<ApiId, String>, KnowledgeBaseError> {
+  let mut ids = BTreeMap::<ApiId, String>::new();
+
+  for api in apis.values() {
+    if let Some(prev) = ids.get(&api.id).filter(|prev| *prev != &api.name) {
+      let first_source = sources
+        .get(prev)
+        .cloned()
+        .unwrap_or_else(|| "<unknown>".to_string());
+      let second_source = sources
+        .get(&api.name)
+        .cloned()
+        .unwrap_or_else(|| "<unknown>".to_string());
+      return Err(KnowledgeBaseError::ApiIdCollision {
+        id: api.id.raw(),
+        first_name: prev.clone(),
+        first_source,
+        second_name: api.name.clone(),
+        second_source,
+      });
+    }
+
+    ids.insert(api.id, api.name.clone());
+  }
+
+  Ok(ids)
+}
+
 fn build_alias_map(
   apis: &BTreeMap<String, ApiSemantics>,
 ) -> Result<BTreeMap<String, String>, KnowledgeBaseError> {
@@ -714,12 +799,6 @@ fn build_alias_map(
       }
 
       if let Some(prev) = apis.get(alias) {
-        // Some modules materialize alias spellings as standalone entries (e.g. `fs.readFile`)
-        // alongside a canonical form (e.g. `node:fs.readFile`) that also lists the alias.
-        //
-        // When the semantics match, this is redundant but unambiguous: lookups can resolve the
-        // alias directly via the entry, so we skip building an alias mapping rather than treating
-        // it as an error.
         if semantics_match(prev, api) {
           continue;
         }
@@ -778,10 +857,14 @@ enum ApiSemanticsFile {
 /// - a YAML list of [`ApiSemantics`] objects.
 pub fn parse_api_semantics_yaml_str(yaml: &str) -> Result<Vec<ApiSemantics>, serde_yaml::Error> {
   let file: ApiSemanticsFile = serde_yaml::from_str(yaml)?;
-  Ok(match file {
+  let mut entries = match file {
     ApiSemanticsFile::One(one) => vec![one],
     ApiSemanticsFile::Many(many) => many,
-  })
+  };
+  for entry in &mut entries {
+    entry.id = ApiId::from_name(&entry.name);
+  }
+  Ok(entries)
 }
 #[cfg(test)]
 mod tests {
@@ -834,6 +917,7 @@ purity: DependsOnCallback
   #[test]
   fn database_indexes_by_name() {
     let db = ApiDatabase::from_entries([ApiSemantics {
+      id: ApiId::from_name("x"),
       name: "x".to_string(),
       aliases: vec![],
       effects: EffectTemplate::Pure,
@@ -852,6 +936,32 @@ purity: DependsOnCallback
     }]);
 
     assert_eq!(db.get("x").unwrap().purity, PurityTemplate::Pure);
+  }
+
+  #[test]
+  fn api_id_is_stable() {
+    assert_eq!(ApiId::from_name("JSON.parse").raw(), 0xfb13ab6e4fa1910a);
+  }
+
+  #[test]
+  fn load_default_has_unique_api_ids() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let mut ids = BTreeSet::new();
+    for (_, api) in kb.iter() {
+      assert!(ids.insert(api.id), "duplicate ApiId for {}", api.name);
+    }
+  }
+
+  #[test]
+  fn alias_lookup_resolves_to_canonical_id() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let alias = kb
+      .id_of("fs.readFile")
+      .expect("resolve alias name to ApiId");
+    let canonical = kb
+      .id_of("node:fs.readFile")
+      .expect("resolve canonical name to ApiId");
+    assert_eq!(alias, canonical);
   }
 
   #[test]
