@@ -265,16 +265,16 @@ fn box_shadow_figma_modal_smoke() {
         position: absolute;
         left: 0;
         top: 0;
-        width: 200px;
-        height: 200px;
+        width: 1040px;
+        height: 1240px;
         display: flex;
         align-items: center;
         justify-content: center;
         background: rgba(0, 0, 0, 0.3);
       }
       #modal {
-        width: 100px;
-        height: 60px;
+        width: 390px;
+        height: 354px;
         background: rgb(248, 248, 248);
         border-radius: 3px;
         box-shadow:
@@ -285,26 +285,30 @@ fn box_shadow_figma_modal_smoke() {
     <div id="container"><div id="modal"></div></div>
   "#;
 
-  let pixmap = render(html, 200, 200);
+  let pixmap = render(html, 1040, 1240);
 
   // Overlay background is deterministic: white blended with rgba(0,0,0,0.3).
   assert_eq!(rgba_at(&pixmap, 10, 10), (178, 178, 178, 255));
 
   // Modal interior should remain unaffected by outer shadows.
-  assert_eq!(rgba_at(&pixmap, 100, 100), (248, 248, 248, 255));
+  assert_eq!(rgba_at(&pixmap, 520, 620), (248, 248, 248, 255));
 
-  // Just outside the modal's left edge (modal is centered at x=50..150) should be darkened.
-  let (nr, ng, nb, na) = rgba_at(&pixmap, 49, 100);
+  // Just outside the modal's left edge (modal is centered at x=325..715) should be darkened.
+  let (nr, ng, nb, na) = rgba_at(&pixmap, 324, 620);
   assert_eq!(na, 255);
   assert!(nr < 178 && ng < 178 && nb < 178, "expected shadow to darken pixel");
 
   // Further away from the box, the shadow should decay back toward the overlay background.
-  let (fr, fg, fb, fa) = rgba_at(&pixmap, 30, 100);
+  let (fr, fg, fb, fa) = rgba_at(&pixmap, 290, 620);
   assert_eq!(fa, 255);
   assert!(
     fr > nr && fg > ng && fb > nb,
     "expected shadow to fade with distance"
   );
+
+  // Regression: box blur rounding can shift the shadow tail by 1 LSB. Chrome/Skia lands at this
+  // sample point (above the modal) a touch darker than our unbiased rounding, so keep matching it.
+  assert_eq!(rgba_at(&pixmap, 336, 434), (176, 176, 176, 255));
 }
 
 #[test]

@@ -1271,7 +1271,7 @@ fn box_blur_h(
     return Ok(());
   }
   let window = (radius * 2 + 1) as i32;
-  let half = window / 2;
+  let half = (window + 1) / 2;
   let div = FastDivU32::new(window as u32);
   let row_stride = width * 4;
   for y in 0..height {
@@ -1303,7 +1303,7 @@ fn box_blur_h_parallel(
     return Ok(());
   }
   let window = (radius * 2 + 1) as i32;
-  let half = window / 2;
+  let half = (window + 1) / 2;
   let div = FastDivU32::new(window as u32);
   let row_stride = width * 4;
   let min_len = blur_parallel_min_len(height);
@@ -1369,7 +1369,7 @@ fn box_blur_v(
     return Ok(());
   }
   let window = (radius * 2 + 1) as i32;
-  let half = window / 2;
+  let half = (window + 1) / 2;
   let div = FastDivU32::new(window as u32);
   let row_stride = width * 4;
   for x in 0..width {
@@ -1411,7 +1411,7 @@ fn box_blur_v_parallel(
   }
   const COLUMN_BLOCK: usize = 32;
   let window = (radius * 2 + 1) as i32;
-  let half = window / 2;
+  let half = (window + 1) / 2;
   let div = FastDivU32::new(window as u32);
   let blocks = (width + COLUMN_BLOCK - 1) / COLUMN_BLOCK;
   let dst_base = dst.as_mut_ptr() as usize;
