@@ -203,7 +203,23 @@ fn rejects_var_decl_without_initializer() {
     r#"
       let x: number;
       x = 1;
-      void x;
+      print(x);
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_uninitialized_for_loop_initializer() {
+  let err = validate(
+    r#"
+      for (let i: number; ; ) {
+        i = 0;
+        print(i);
+        break;
+      }
     "#,
     FileKind::Ts,
   )

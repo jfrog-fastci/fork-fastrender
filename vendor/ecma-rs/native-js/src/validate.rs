@@ -16,7 +16,9 @@
 use crate::codes;
 use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span};
-use hir_js::{Body, BodyId, BodyKind, ExprKind, FileKind, PatKind, StmtKind, UnaryOp, VarDeclKind};
+use hir_js::{
+  Body, BodyId, BodyKind, ExprKind, FileKind, ForInit, PatKind, StmtKind, UnaryOp, VarDeclKind,
+};
 use typecheck_ts::{Program, TypeKindSummary};
 
 /// Validate that all files reachable from `program`'s roots use only the strict
@@ -362,6 +364,18 @@ fn validate_body_syntax(
       }
       StmtKind::Switch { .. } => {
         push_unsupported_syntax(out, Span::new(file, stmt.span), "`switch` is not supported by native-js yet");
+      }
+      StmtKind::For {
+        init: Some(ForInit::Var(decl)),
+        ..
+      } => {
+        if decl.declarators.iter().any(|d| d.init.is_none()) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, stmt.span),
+            "variable declarations must have an initializer in native-js strict subset",
+          );
+        }
       }
       StmtKind::Var(decl) => match decl.kind {
         VarDeclKind::Using | VarDeclKind::AwaitUsing => {
