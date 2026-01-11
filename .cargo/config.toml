@@ -31,15 +31,13 @@ CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 # Force-disable any globally configured wrapper so `scripts/cargo_agent.sh` works reliably.
 rustc-wrapper = ""
 rustc-workspace-wrapper = ""
-# Use clang as the linker driver on Linux.
+# Use `clang` as the linker driver on Linux.
 #
-# We intentionally avoid pinning a specific linker implementation via
-# `-fuse-ld=...` because:
-# - Some environments ship a clang build that rejects `mold` as an invalid
-#   `-fuse-ld=` value (we previously tried `-fuse-ld=mold`).
-# - Not all CI/agent images have `lld` installed.
+# We intentionally avoid pinning a specific linker implementation via `-fuse-ld=...` because:
+# - Some environments don't ship with newer linkers like `mold`.
+# - `clang` errors out on unknown `-fuse-ld=` values.
 #
-# This keeps `cargo build/test` working out-of-the-box on minimal hosts while
-# still allowing developers/CI to opt into a faster linker via `RUSTFLAGS`.
+# The system default linker is reliably available, and developers/CI can still opt into a faster
+# linker via `RUSTFLAGS`.
 [target.'cfg(target_os = "linux")']
 linker = "clang"

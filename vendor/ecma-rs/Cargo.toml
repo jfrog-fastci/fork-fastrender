@@ -21,7 +21,6 @@ members = [
   "runtime-native",
   "vm-js",
   "runtime-js",
-  "runtime-native",
   "webidl",
   "webidl-vm-js",
   "types-ts-interned",

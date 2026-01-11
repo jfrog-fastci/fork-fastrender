@@ -19,6 +19,7 @@ pub mod statepoints;
 mod alloc;
 mod exports;
 mod interner;
+mod parallel;
 mod platform;
 mod string;
 mod trap;
@@ -30,6 +31,20 @@ pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
 pub use string::*;
+
+use std::sync::OnceLock;
+
+struct Runtime {
+  parallel: parallel::ParallelRuntime,
+}
+
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn rt_ensure_init() -> &'static Runtime {
+  RUNTIME.get_or_init(|| Runtime {
+    parallel: parallel::ParallelRuntime::new(),
+  })
+}
 
 /// Request a stop-the-world GC safepoint.
 ///

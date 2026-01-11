@@ -111,4 +111,3 @@ void rt_coro_await(RtCoroutineHeader* coro, PromiseRef awaited, uint32_t next_st
 #endif
 
 #endif // ECMA_RS_RUNTIME_NATIVE_H
-

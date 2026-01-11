@@ -89,4 +89,3 @@ pub struct RtCoroutineHeader {
   /// Error produced by the last `await` (valid when `await_is_error == 1`).
   pub await_error: ValueRef,
 }
-

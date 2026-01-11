@@ -40,6 +40,17 @@ cc -std=c99 \
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
 
+## Parallel ABI (placeholder)
+
+The AOT compiler may emit calls to `rt_parallel_spawn` / `rt_parallel_join` for parallel work
+splitting. The ABI shape is stable:
+
+- `TaskId` is a fixed-width 64-bit identifier (`uint64_t` in C), independent of pointer width.
+- `rt_parallel_spawn` returns a `TaskId`.
+- `rt_parallel_join` takes a `TaskId*` + `size_t` count.
+
+The scheduler implementation itself is intentionally minimal for now; the ABI is the contract.
+
 ## Coroutine ABI
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is

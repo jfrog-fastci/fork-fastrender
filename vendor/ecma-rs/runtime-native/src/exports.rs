@@ -5,7 +5,6 @@ use crate::abi::TaskId;
 use crate::abi::ValueRef;
 use crate::alloc;
 use crate::async_rt;
-use crate::trap;
 
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
@@ -36,22 +35,26 @@ pub extern "C" fn rt_write_barrier(_obj: *mut u8, _field: *mut u8) {}
 pub extern "C" fn rt_gc_collect() {}
 
 #[no_mangle]
-pub extern "C" fn rt_parallel_spawn(_task: extern "C" fn(*mut u8), _data: *mut u8) -> TaskId {
-  trap::rt_trap_unimplemented("rt_parallel_spawn")
+pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
+  let rt = crate::rt_ensure_init();
+  rt.parallel.spawn(task, data)
 }
 
 #[no_mangle]
-pub extern "C" fn rt_parallel_join(_tasks: *const TaskId, _count: usize) {
-  trap::rt_trap_unimplemented("rt_parallel_join")
+pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
+  let rt = crate::rt_ensure_init();
+  rt.parallel.join(tasks, count)
 }
 
 #[no_mangle]
 pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  let _ = crate::rt_ensure_init();
   async_rt::coroutine::async_spawn(coro)
 }
 
 #[no_mangle]
 pub extern "C" fn rt_async_poll() -> bool {
+  let _ = crate::rt_ensure_init();
   async_rt::poll()
 }
 
