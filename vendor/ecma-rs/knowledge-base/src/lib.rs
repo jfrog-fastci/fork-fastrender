@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 use serde::{de::Error as _, Deserialize, Serialize};
@@ -216,7 +218,7 @@ impl ApiDatabase {
       apis.insert(api.name.clone(), api);
     }
     let sources = BTreeMap::new();
-    let aliases = build_alias_map(&apis).unwrap_or_default();
+    let aliases = build_alias_map(&apis, &sources).unwrap_or_default();
     let ids = build_id_map(&apis, &sources).unwrap_or_default();
     Self {
       apis,
@@ -286,7 +288,57 @@ impl ApiDatabase {
       }
     }
 
-    let aliases = build_alias_map(&apis)?;
+    let aliases = build_alias_map(&apis, &sources)?;
+    let ids = build_id_map(&apis, &sources)?;
+
+    Ok(Self {
+      apis,
+      aliases,
+      ids,
+      sources,
+    })
+  }
+
+  /// Load knowledge base modules directly from an on-disk `knowledge-base/` directory.
+  ///
+  /// The loader scans `core/`, `node/`, `web/`, and `ecosystem/` under `root`, and accepts
+  /// `.yaml`/`.yml`/`.toml` files.
+  pub fn load_from_dir(root: &Path) -> Result<Self, KnowledgeBaseError> {
+    let mut files = Vec::new();
+    for top in ["core", "node", "web", "ecosystem"] {
+      let dir = root.join(top);
+      if dir.exists() {
+        collect_kb_files(&dir, root, &mut files)?;
+      }
+    }
+    files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+    let mut apis = BTreeMap::<String, ApiSemantics>::new();
+    let mut sources = BTreeMap::<String, String>::new();
+
+    for file in files {
+      let contents = fs::read_to_string(&file.abs_path).map_err(|err| KnowledgeBaseError::Io {
+        path: file.abs_path.display().to_string(),
+        source: err,
+      })?;
+      let parsed = match file.format {
+        BundledKbFormat::Yaml => parse_yaml_str(&file.rel_path, &contents),
+        BundledKbFormat::Toml => parse_toml_str(&file.rel_path, &contents),
+      }?;
+      for api in parsed {
+        if let Some(prev) = sources.get(&api.name) {
+          return Err(KnowledgeBaseError::DuplicateApi {
+            name: api.name,
+            first: prev.clone(),
+            second: file.rel_path.clone(),
+          });
+        }
+        sources.insert(api.name.clone(), file.rel_path.clone());
+        apis.insert(api.name.clone(), api);
+      }
+    }
+
+    let aliases = build_alias_map(&apis, &sources)?;
     let ids = build_id_map(&apis, &sources)?;
 
     Ok(Self {
@@ -298,7 +350,7 @@ impl ApiDatabase {
   }
 
   pub fn validate(&self) -> Result<(), KnowledgeBaseError> {
-    let aliases = build_alias_map(&self.apis)?;
+    let aliases = build_alias_map(&self.apis, &self.sources)?;
     debug_assert_eq!(
       aliases, self.aliases,
       "ApiDatabase internal alias map is out of sync; please rebuild the database"
@@ -359,6 +411,13 @@ mod bundled_kb {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnowledgeBaseError {
+  #[error("failed to read knowledge base file `{path}`: {source}")]
+  Io {
+    path: String,
+    #[source]
+    source: std::io::Error,
+  },
+
   #[error("failed to parse knowledge base file `{path}` as {format}: {source}")]
   Parse {
     path: String,
@@ -386,11 +445,15 @@ pub enum KnowledgeBaseError {
     second_source: String,
   },
 
-  #[error("duplicate alias `{alias}` for `{first}` and `{second}`")]
+  #[error(
+    "duplicate alias `{alias}` for `{first_name}` ({first_source}) and `{second_name}` ({second_source})"
+  )]
   DuplicateAlias {
     alias: String,
-    first: String,
-    second: String,
+    first_name: String,
+    first_source: String,
+    second_name: String,
+    second_source: String,
   },
 }
 
@@ -788,16 +851,16 @@ fn normalize_ident(raw: &str) -> String {
 
 fn parse_bundled_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
   match file.format {
-    BundledKbFormat::Yaml => parse_yaml_file(file),
-    BundledKbFormat::Toml => parse_toml_file(file),
+    BundledKbFormat::Yaml => parse_yaml_str(file.path, file.contents),
+    BundledKbFormat::Toml => parse_toml_str(file.path, file.contents),
   }
 }
 
-fn parse_yaml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
-  let value: serde_yaml::Value = serde_yaml::from_str(file.contents).map_err(|err| {
+fn parse_yaml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
+  let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|err| {
     KnowledgeBaseError::Parse {
-      path: file.path.to_string(),
-      format: file.format,
+      path: path.to_string(),
+      format: BundledKbFormat::Yaml,
       source: Box::new(err),
     }
   })?;
@@ -806,8 +869,8 @@ fn parse_yaml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
     serde_yaml::Value::Sequence(_) => {
       let apis: Vec<ApiRaw> = serde_yaml::from_value(value).map_err(|err| {
         KnowledgeBaseError::Parse {
-          path: file.path.to_string(),
-          format: file.format,
+          path: path.to_string(),
+          format: BundledKbFormat::Yaml,
           source: Box::new(err),
         }
       })?;
@@ -818,16 +881,17 @@ fn parse_yaml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
         || map.contains_key(&serde_yaml::Value::String("schema_version".to_string()));
 
       if is_schema_module {
-        let module: ModuleRaw = serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| {
-          KnowledgeBaseError::Parse {
-            path: file.path.to_string(),
-            format: file.format,
-            source: Box::new(err),
-          }
-        })?;
+        let module: ModuleRaw =
+          serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| {
+            KnowledgeBaseError::Parse {
+              path: path.to_string(),
+              format: BundledKbFormat::Yaml,
+              source: Box::new(err),
+            }
+          })?;
         if module.schema != 1 {
           return Err(KnowledgeBaseError::UnsupportedSchema {
-            path: file.path.to_string(),
+            path: path.to_string(),
             schema: module.schema,
           });
         }
@@ -836,8 +900,8 @@ fn parse_yaml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
         let apis: BTreeMap<String, ApiBodyRaw> =
           serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| {
             KnowledgeBaseError::Parse {
-              path: file.path.to_string(),
-              format: file.format,
+              path: path.to_string(),
+              format: BundledKbFormat::Yaml,
               source: Box::new(err),
             }
           })?;
@@ -853,15 +917,15 @@ fn parse_yaml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
   }
 }
 
-fn parse_toml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
-  let module: ModuleRaw = toml::from_str(file.contents).map_err(|err| KnowledgeBaseError::Parse {
-    path: file.path.to_string(),
-    format: file.format,
+fn parse_toml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
+  let module: ModuleRaw = toml::from_str(contents).map_err(|err| KnowledgeBaseError::Parse {
+    path: path.to_string(),
+    format: BundledKbFormat::Toml,
     source: Box::new(err),
   })?;
   if module.schema != 1 {
     return Err(KnowledgeBaseError::UnsupportedSchema {
-      path: file.path.to_string(),
+      path: path.to_string(),
       schema: module.schema,
     });
   }
@@ -902,6 +966,7 @@ fn build_id_map(
 
 fn build_alias_map(
   apis: &BTreeMap<String, ApiSemantics>,
+  sources: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, KnowledgeBaseError> {
   let mut aliases = BTreeMap::<String, String>::new();
 
@@ -924,8 +989,16 @@ fn build_alias_map(
 
         return Err(KnowledgeBaseError::DuplicateAlias {
           alias: alias.to_string(),
-          first: prev.name.clone(),
-          second: api.name.clone(),
+          first_name: prev.name.clone(),
+          first_source: sources
+            .get(&prev.name)
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_string()),
+          second_name: api.name.clone(),
+          second_source: sources
+            .get(&api.name)
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_string()),
         });
       }
 
@@ -934,8 +1007,16 @@ fn build_alias_map(
         Some(prev) => {
           return Err(KnowledgeBaseError::DuplicateAlias {
             alias: alias.to_string(),
-            first: prev.clone(),
-            second: api.name.clone(),
+            first_name: prev.clone(),
+            first_source: sources
+              .get(prev)
+              .cloned()
+              .unwrap_or_else(|| "<unknown>".to_string()),
+            second_name: api.name.clone(),
+            second_source: sources
+              .get(&api.name)
+              .cloned()
+              .unwrap_or_else(|| "<unknown>".to_string()),
           })
         }
         None => {}
@@ -945,6 +1026,60 @@ fn build_alias_map(
   }
 
   Ok(aliases)
+}
+
+#[derive(Debug, Clone)]
+struct DiskKbFile {
+  rel_path: String,
+  abs_path: PathBuf,
+  format: BundledKbFormat,
+}
+
+fn collect_kb_files(dir: &Path, root: &Path, out: &mut Vec<DiskKbFile>) -> Result<(), KnowledgeBaseError> {
+  for entry in fs::read_dir(dir).map_err(|err| KnowledgeBaseError::Io {
+    path: dir.display().to_string(),
+    source: err,
+  })? {
+    let entry = entry.map_err(|err| KnowledgeBaseError::Io {
+      path: dir.display().to_string(),
+      source: err,
+    })?;
+    let path = entry.path();
+    let ty = entry.file_type().map_err(|err| KnowledgeBaseError::Io {
+      path: path.display().to_string(),
+      source: err,
+    })?;
+    if ty.is_dir() {
+      collect_kb_files(&path, root, out)?;
+      continue;
+    }
+    if !ty.is_file() {
+      continue;
+    }
+
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+      continue;
+    };
+    let ext = ext.to_ascii_lowercase();
+    let format = match ext.as_str() {
+      "yaml" | "yml" => BundledKbFormat::Yaml,
+      "toml" => BundledKbFormat::Toml,
+      _ => continue,
+    };
+
+    let rel_path = path
+      .strip_prefix(root)
+      .unwrap_or(&path)
+      .to_string_lossy()
+      .replace('\\', "/");
+
+    out.push(DiskKbFile {
+      rel_path,
+      abs_path: path,
+      format,
+    });
+  }
+  Ok(())
 }
 
 fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
@@ -1270,6 +1405,20 @@ purity:
 
     // This entry lives in `core/example.toml` and exercises the TOML loader.
     assert!(kb.get("Math.ceil").is_some());
+  }
+
+  #[test]
+  fn load_from_dir_matches_bundled_default() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let disk = KnowledgeBase::load_from_dir(&root).expect("load knowledge base from dir");
+    disk.validate().expect("validate dir-loaded knowledge base");
+
+    let bundled = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    bundled.validate().expect("validate bundled knowledge base");
+
+    let disk_names: Vec<_> = disk.iter().map(|(name, _)| name.to_string()).collect();
+    let bundled_names: Vec<_> = bundled.iter().map(|(name, _)| name.to_string()).collect();
+    assert_eq!(disk_names, bundled_names);
   }
 
   #[test]

@@ -6,6 +6,10 @@ The default (bundled) knowledge base is built from files under `core/`, `node/`,
 `ecosystem/`. Files are bundled into the crate at build time (`build.rs`), and loaded with
 `ApiDatabase::load_default()` / `KnowledgeBase::load_default()`.
 
+For development tooling that wants to load directly from the repository checkout (without relying on
+the embedded bundle), use `ApiDatabase::load_from_dir(root)` where `root` is the `knowledge-base/`
+crate directory.
+
 ## Naming conventions
 
 Canonical names should be stable and globally unique.
