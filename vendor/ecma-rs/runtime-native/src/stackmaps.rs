@@ -237,11 +237,8 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   let mut off: usize = 0;
 
   while off < bytes.len() {
-    // Skip alignment/trailing padding (linkers fill with zeros).
-    while off < bytes.len() && bytes[off] == 0 {
-      off += 1;
-    }
-    if off >= bytes.len() {
+    // Trailing padding is usually 0-filled.
+    if bytes[off..].iter().all(|b| *b == 0) {
       break;
     }
 
@@ -251,7 +248,14 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     }
 
     out.push(map);
-    off += len;
+    off = off.checked_add(len).ok_or(StackMapError::UnexpectedEof)?;
+
+    // Linkers align concatenated input sections; `.llvm_stackmaps` uses 8-byte alignment.
+    let aligned = off.checked_add(7).ok_or(StackMapError::UnexpectedEof)? & !7;
+    if aligned > bytes.len() {
+      return Err(StackMapError::UnexpectedEof);
+    }
+    off = aligned;
   }
 
   Ok(out)
