@@ -1,7 +1,7 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::arch;
-use runtime_native::stackmaps::StackMaps;
+use runtime_native::stackmaps::{StackMaps, StackSize};
 use runtime_native::stackwalk::StackBounds;
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 
@@ -187,11 +187,8 @@ fn fixture_stack_enumerates_root_pairs_from_stackmaps_with_callsite_sp_adjustmen
   // Regression guard: ensure our synthetic frame pointers model a callsite with extra SP adjustment
   // (e.g. outgoing stack args) such that reconstructing SP from `stack_size` would be wrong for
   // non-top frames.
-  let stack_size = match callsites[1].1.stack_size {
-    runtime_native::stackmaps::StackSize::Known(v) => v,
-    runtime_native::stackmaps::StackSize::Unknown => {
-      panic!("fixture must not use stack_size=Unknown for this regression");
-    }
+  let StackSize::Known(stack_size) = callsites[1].1.stack_size else {
+    panic!("fixture must not use StackSize::Unknown for this regression");
   };
   let old_locals = stack_size.checked_sub(8).expect("stack_size < FP_RECORD_SIZE");
   let old_sp = (caller2_fp as u64)

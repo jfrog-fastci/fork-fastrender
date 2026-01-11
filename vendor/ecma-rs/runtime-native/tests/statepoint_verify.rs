@@ -324,3 +324,102 @@ fn stackmaps_parse_runs_statepoint_verifier() {
     other => panic!("expected StatepointVerify error, got {other:?}"),
   }
 }
+
+fn push_u8(buf: &mut Vec<u8>, v: u8) {
+  buf.push(v);
+}
+
+fn push_u16(buf: &mut Vec<u8>, v: u16) {
+  buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_u32(buf: &mut Vec<u8>, v: u32) {
+  buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_u64(buf: &mut Vec<u8>, v: u64) {
+  buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_i32(buf: &mut Vec<u8>, v: i32) {
+  buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn align_to_8(buf: &mut Vec<u8>) {
+  while buf.len() % 8 != 0 {
+    buf.push(0);
+  }
+}
+
+fn push_constant_location(buf: &mut Vec<u8>, value: i32) {
+  // kind = Constant (LLVM stackmap kind 4)
+  push_u8(buf, 4);
+  push_u8(buf, 0); // reserved
+  push_u16(buf, 8); // size
+  push_u16(buf, 0); // dwarf reg (unused)
+  push_u16(buf, 0); // reserved
+  push_i32(buf, value);
+}
+
+#[test]
+fn statepoints_only_verifies_all_statepoint_patchpoint_ids() {
+  // This stackmap contains two `gc.statepoint`-shaped records. `native-js` uses a
+  // monotonically increasing patchpoint id starting at 0xABCDEF00, so
+  // `VerifyMode::StatepointsOnly` must not only accept the first record.
+  let mut bytes = Vec::<u8>::new();
+
+  // Header.
+  push_u8(&mut bytes, 3); // version
+  push_u8(&mut bytes, 0); // reserved0
+  push_u16(&mut bytes, 0); // reserved1
+  push_u32(&mut bytes, 1); // num_functions
+  push_u32(&mut bytes, 0); // num_constants
+  push_u32(&mut bytes, 2); // num_records
+
+  // Function record.
+  push_u64(&mut bytes, 0x1000); // address
+  push_u64(&mut bytes, 0); // stack_size
+  push_u64(&mut bytes, 2); // record_count
+
+  // Record 0: valid statepoint header.
+  push_u64(&mut bytes, LLVM_STATEPOINT_PATCHPOINT_ID);
+  push_u32(&mut bytes, 0); // instruction_offset
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 3); // num_locations
+  push_constant_location(&mut bytes, 0); // callconv
+  push_constant_location(&mut bytes, 0); // flags
+  push_constant_location(&mut bytes, 0); // deopt_count
+  align_to_8(&mut bytes);
+  push_u16(&mut bytes, 0); // live-out padding
+  push_u16(&mut bytes, 0); // num_liveouts
+  align_to_8(&mut bytes);
+
+  // Record 1: same layout, different patchpoint id, but with invalid flags so the verifier will
+  // error only if it actually checks this record.
+  push_u64(&mut bytes, LLVM_STATEPOINT_PATCHPOINT_ID + 1);
+  push_u32(&mut bytes, 0x10); // instruction_offset
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 3); // num_locations
+  push_constant_location(&mut bytes, 0); // callconv
+  push_constant_location(&mut bytes, 4); // flags (invalid; must be 0..=3)
+  push_constant_location(&mut bytes, 0); // deopt_count
+  align_to_8(&mut bytes);
+  push_u16(&mut bytes, 0); // live-out padding
+  push_u16(&mut bytes, 0); // num_liveouts
+  align_to_8(&mut bytes);
+
+  let stackmap = StackMap::parse(&bytes).unwrap();
+  let err = verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap_err();
+
+  assert_eq!(err.patchpoint_id, LLVM_STATEPOINT_PATCHPOINT_ID + 1);
+  assert_eq!(err.location_index, Some(1));
+  assert!(err.message.contains("2-bit mask"));
+  assert!(err.message.contains("got 4"));
+}
