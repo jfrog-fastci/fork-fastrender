@@ -251,6 +251,33 @@ Some embeddings require stable object addresses (FFI / host references). The run
 Pinned objects are allocated in the GC heap's non-moving large-object space (LOS): they are still
 traced and reclaimed when unreachable, but are never relocated.
 
+## Native async ABI (CoroutineId handles + PromiseHeader prefix)
+
+`runtime-native` exposes a stable native async/await ABI intended for LLVM-lowered `async` state
+machines (see `docs/async_abi.md` and `include/runtime_native.h`):
+
+- Coroutines are `#[repr(C)]` frames prefixed by `struct Coroutine` at offset 0.
+- Result promises are allocations prefixed by `PromiseHeader` at offset 0 (payload layout is owned by
+  codegen; the runtime only relies on the header prefix).
+
+### Why `CoroutineId` (handle) instead of `Coroutine*` (pointer)?
+
+Coroutine frames may be relocated by a moving/compacting GC and may be stored in runtime queues
+(microtasks, promise reaction lists) across turns. As a result, the ABI uses a stable `CoroutineId`
+(`u64`) handle:
+
+- Allocate a handle via the persistent handle table:
+  `CoroutineId id = rt_handle_alloc((GcPtr)coro_ptr);`
+- The runtime **consumes** the handle passed to `rt_async_spawn*` and frees it on completion or
+  cancellation.
+- All runtime scheduling sites reload the coroutine pointer via `rt_handle_load(id)` before resuming.
+
+### Coroutine frame ownership
+
+If `CORO_FLAG_RUNTIME_OWNS_FRAME` is set in `coro.flags`, the runtime calls `vtable->destroy(coro)`
+exactly once on completion or cancellation. Stack/caller-owned frames must not suspend; they must
+complete synchronously and are never destroyed by the runtime.
+
 ## Legacy async runtime GC roots
 
 The crate currently contains a **legacy** async runtime (`rt_async_spawn_legacy`) that is used by
@@ -454,8 +481,9 @@ FIFO by driving the event loop (e.g. `rt_async_poll()`; `rt_async_poll_legacy()`
 alias).
 
 Note: `runtime-native` is migrating to a native Promise/Coroutine ABI based on a `PromiseHeader`
-prefix. The current event loop used by tests and legacy codegen is driven by
-`rt_async_poll()` (`rt_async_poll_legacy()` is a compatibility alias).
+prefix. The native ABI entrypoints (`rt_async_spawn*`) and the legacy entrypoints
+(`rt_async_spawn*_legacy`) are driven by the same JS-shaped event loop (`rt_async_poll` /
+`rt_async_poll_legacy` are identical).
 
 ## Microtask ABI (queueMicrotask)
 
