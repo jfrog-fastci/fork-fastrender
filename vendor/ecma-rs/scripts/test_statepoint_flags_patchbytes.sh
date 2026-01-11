@@ -189,9 +189,23 @@ extract_instruction_offset() {
 extract_location2_constant() {
   local stackmap="$1"
   local val
-  val="$(printf '%s\n' "${stackmap}" | awk '/#2: Constant/ {print $3; exit}')"
-  val="${val%,}"
-  [[ "${val}" =~ ^[0-9]+$ ]] || die "failed to parse '#2: Constant' from llvm-readobj output"
+  val="$(
+    printf '%s\n' "${stackmap}" | awk '
+      /#2: Constant / {
+        v=$3
+        sub(/,/, "", v)
+        print v
+        exit
+      }
+      /#2: (ConstIndex|ConstantIndex) / {
+        if (match($0, /\(([0-9-]+)\)/, m)) {
+          print m[1]
+          exit
+        }
+      }
+    '
+  )"
+  [[ "${val}" =~ ^-?[0-9]+$ ]] || die "failed to parse '#2' constant value from llvm-readobj output"
   printf '%s' "${val}"
 }
 
