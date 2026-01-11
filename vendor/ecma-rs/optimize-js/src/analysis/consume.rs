@@ -28,18 +28,16 @@ fn should_consume_var(var: u32, live_out: &HashSet<u32>, ownership: &OwnershipRe
  
 pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
   let live_outs = calculate_live_outs(cfg, &HashMap::default(), &HashSet::default());
+  let empty_live_out: HashSet<u32> = HashSet::default();
 
   let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
   labels.sort_unstable();
- 
+  
   for label in labels {
     let insts_len = cfg.bblocks.get(label).len();
     for inst_idx in 0..insts_len {
-      let live_out = live_outs
-        .get(&(label, inst_idx))
-        .cloned()
-        .unwrap_or_default();
- 
+      let live_out = live_outs.get(&(label, inst_idx)).unwrap_or(&empty_live_out);
+  
       let inst = &mut cfg.bblocks.get_mut(label)[inst_idx];
       inst.meta.in_place_hint = None;
  
