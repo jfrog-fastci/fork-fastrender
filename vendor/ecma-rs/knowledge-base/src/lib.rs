@@ -882,7 +882,6 @@ struct EffectsDetailsRaw {
   // rejecting older files.
   #[serde(default)]
   depends_on_args: Vec<usize>,
-
   #[serde(default)]
   template: Option<String>,
 
