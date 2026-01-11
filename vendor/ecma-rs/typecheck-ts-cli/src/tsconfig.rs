@@ -353,6 +353,12 @@ fn merge_raw_compiler_options(
   base: RawCompilerOptions,
   overlay: RawCompilerOptions,
 ) -> RawCompilerOptions {
+  let merged_native_strict = overlay
+    .native_strict
+    .or(overlay.strict_native)
+    .or(base.native_strict)
+    .or(base.strict_native);
+
   RawCompilerOptions {
     target: overlay.target.or(base.target),
     module: overlay.module.or(base.module),
@@ -374,8 +380,8 @@ fn merge_raw_compiler_options(
     no_unchecked_indexed_access: overlay
       .no_unchecked_indexed_access
       .or(base.no_unchecked_indexed_access),
-    strict_native: overlay.strict_native.or(base.strict_native),
-    native_strict: overlay.native_strict.or(base.native_strict),
+    strict_native: None,
+    native_strict: merged_native_strict,
     no_lib: overlay.no_lib.or(base.no_lib),
     no_default_lib: overlay.no_default_lib.or(base.no_default_lib),
     use_define_for_class_fields: overlay
@@ -466,11 +472,9 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   if let Some(value) = raw.no_unchecked_indexed_access {
     options.no_unchecked_indexed_access = value;
   }
-  if let Some(value) = raw.strict_native {
-    options.strict_native = value;
-  }
-  if let Some(value) = raw.native_strict {
+  if let Some(value) = raw.native_strict.or(raw.strict_native) {
     options.native_strict = value;
+    options.strict_native = value;
   }
 
   if let Some(types) = raw.types.as_ref() {

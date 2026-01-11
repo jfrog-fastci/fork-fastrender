@@ -55,6 +55,14 @@ fn strict_native_json_includes_compiler_option() {
     Some(true),
     "expected compiler_options.strict_native=true, got {json:?}"
   );
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("native_strict"))
+      .and_then(|v| v.as_bool()),
+    Some(true),
+    "expected compiler_options.native_strict=true, got {json:?}"
+  );
 }
 
 #[test]
@@ -139,6 +147,43 @@ dict[key];
 }
 
 #[test]
+fn native_strict_json_includes_legacy_compiler_option() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(&entry, "let x: any = 1;\n").expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--native-strict")
+    .arg("--json")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .get_output()
+    .stdout
+    .clone();
+
+  let json: Value = serde_json::from_slice(&output).expect("valid JSON output");
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("native_strict"))
+      .and_then(|v| v.as_bool()),
+    Some(true),
+    "expected compiler_options.native_strict=true, got {json:?}"
+  );
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("strict_native"))
+      .and_then(|v| v.as_bool()),
+    Some(true),
+    "expected compiler_options.strict_native=true, got {json:?}"
+  );
+}
+
+#[test]
 fn native_strict_tsconfig_enables_strict_diagnostics() {
   let tmp = tempdir().expect("temp dir");
   let tsconfig = tmp.path().join("tsconfig.json");
@@ -162,4 +207,134 @@ fn native_strict_tsconfig_enables_strict_diagnostics() {
     .assert()
     .failure()
     .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
+
+#[test]
+fn tsconfig_native_strict_aliases_override_across_extends() {
+  let tmp = tempdir().expect("temp dir");
+  let base = tmp.path().join("base.json");
+  let tsconfig = tmp.path().join("tsconfig.json");
+  let entry = tmp.path().join("main.ts");
+
+  fs::write(
+    &base,
+    r#"{
+  "compilerOptions": { "nativeStrict": true },
+  "files": ["main.ts"]
+}
+"#,
+  )
+  .expect("write base.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "extends": "./base.json",
+  "compilerOptions": { "strictNative": false }
+}
+"#,
+  )
+  .expect("write tsconfig.json");
+  fs::write(
+    &entry,
+    r#"
+declare function eval(code: string): unknown;
+eval("1+1");
+"#,
+  )
+  .expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--project")
+    .arg(tsconfig.as_os_str())
+    .arg("--json")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let json: Value = serde_json::from_slice(&output).expect("valid JSON output");
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("native_strict"))
+      .and_then(|v| v.as_bool()),
+    Some(false),
+    "expected compiler_options.native_strict=false, got {json:?}"
+  );
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("strict_native"))
+      .and_then(|v| v.as_bool()),
+    Some(false),
+    "expected compiler_options.strict_native=false, got {json:?}"
+  );
+}
+
+#[test]
+fn tsconfig_strict_native_aliases_override_across_extends() {
+  let tmp = tempdir().expect("temp dir");
+  let base = tmp.path().join("base.json");
+  let tsconfig = tmp.path().join("tsconfig.json");
+  let entry = tmp.path().join("main.ts");
+
+  fs::write(
+    &base,
+    r#"{
+  "compilerOptions": { "strictNative": true },
+  "files": ["main.ts"]
+}
+"#,
+  )
+  .expect("write base.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "extends": "./base.json",
+  "compilerOptions": { "nativeStrict": false }
+}
+"#,
+  )
+  .expect("write tsconfig.json");
+  fs::write(
+    &entry,
+    r#"
+declare function eval(code: string): unknown;
+eval("1+1");
+"#,
+  )
+  .expect("write main.ts");
+
+  let output = typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--project")
+    .arg(tsconfig.as_os_str())
+    .arg("--json")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+  let json: Value = serde_json::from_slice(&output).expect("valid JSON output");
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("native_strict"))
+      .and_then(|v| v.as_bool()),
+    Some(false),
+    "expected compiler_options.native_strict=false, got {json:?}"
+  );
+  assert_eq!(
+    json
+      .get("compiler_options")
+      .and_then(|o| o.get("strict_native"))
+      .and_then(|v| v.as_bool()),
+    Some(false),
+    "expected compiler_options.strict_native=false, got {json:?}"
+  );
 }

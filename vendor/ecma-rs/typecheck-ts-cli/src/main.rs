@@ -590,10 +590,8 @@ fn build_compiler_options(
   if args.no_unchecked_indexed_access {
     options.no_unchecked_indexed_access = true;
   }
-  if args.strict_native {
+  if args.strict_native || args.native_strict {
     options.strict_native = true;
-  }
-  if args.native_strict {
     options.native_strict = true;
   }
 
