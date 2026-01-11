@@ -29,6 +29,21 @@ impl<T> GcAwareMutex<T> {
     }
   }
 
+  /// Lock this mutex without participating in GC-safe region transitions.
+  ///
+  /// This is intended for **stop-the-world GC coordinator** code that may need to
+  /// acquire a `GcAwareMutex` while the global GC epoch is odd.
+  ///
+  /// Unlike [`Self::lock`], this method:
+  /// - does **not** enter a GC-safe region while blocking, and
+  /// - does **not** retry/avoid returning while stop-the-world is active.
+  ///
+  /// Callers must ensure it is safe to block here (typically because the world is
+  /// already stopped and no mutator can hold the lock while parked at a safepoint).
+  pub fn lock_for_gc(&self) -> MutexGuard<'_, T> {
+    self.inner.lock()
+  }
+
   pub fn into_inner(self) -> T {
     self.inner.into_inner()
   }

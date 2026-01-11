@@ -156,7 +156,7 @@ pub(crate) fn run_weak_cleanups(heap: &mut GcHeap) {
   // time under the mutex, then invoke it after releasing the lock.
   let mut idx = 0usize;
   loop {
-    let Some(cleanup) = WEAK_CLEANUPS.lock().get(idx).copied() else {
+    let Some(cleanup) = WEAK_CLEANUPS.lock_for_gc().get(idx).copied() else {
       break;
     };
     cleanup(heap);
@@ -180,7 +180,7 @@ pub(crate) fn global_weak_remove(handle: WeakHandle) {
 }
 
 pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
-  let mut handles = GLOBAL_WEAK_HANDLES.lock();
+  let mut handles = GLOBAL_WEAK_HANDLES.lock_for_gc();
 
   handles.for_each_slot_mut(|slot| {
     let obj = *slot;
@@ -203,7 +203,7 @@ pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
 }
 
 pub(crate) fn process_global_weak_handles_major(heap: &GcHeap, epoch: u8) {
-  let mut handles = GLOBAL_WEAK_HANDLES.lock();
+  let mut handles = GLOBAL_WEAK_HANDLES.lock_for_gc();
 
   handles.for_each_slot_mut(|slot| {
     let mut obj = *slot;

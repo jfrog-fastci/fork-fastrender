@@ -145,30 +145,15 @@ impl RootRegistry {
 
   /// Enumerate all registered root slots.
   pub fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
-    // During a stop-the-world (STW) pause, mutator threads may still be running
-    // in GC-safe ("native") regions and can be blocked contending on this mutex.
-    //
-    // `GcAwareMutex::lock()` intentionally refuses to return while a STW epoch is
-    // active, so the GC coordinator must avoid calling it for root enumeration.
-    // Instead, spin on `try_lock()` until the registry becomes available.
-    //
-    // This is safe because:
-    // - STW root enumeration is expected to run while no mutator is executing
-    //   GC-heap-accessing code.
-    // - GC-aware mutex users release the lock before waiting for the world to
-    //   resume, so the lock should become available promptly.
     if crate::threading::safepoint::current_epoch() & 1 == 1 {
-      loop {
-        if let Some(mut inner) = self.inner.try_lock() {
-          for slot in &mut inner.slots {
-            let Some(entry) = slot.entry.as_mut() else {
-              continue;
-            };
-            f(entry.slot_ptr());
-          }
-          return;
-        }
-        std::thread::yield_now();
+      // Root enumeration runs during stop-the-world (odd epoch). `GcAwareMutex::lock()` refuses to
+      // return while the epoch is odd, so the GC coordinator must use `lock_for_gc()`.
+      let mut inner = self.inner.lock_for_gc();
+      for slot in &mut inner.slots {
+        let Some(entry) = slot.entry.as_mut() else {
+          continue;
+        };
+        f(entry.slot_ptr());
       }
     } else {
       let mut inner = self.inner.lock();
