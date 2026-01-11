@@ -5,28 +5,10 @@
       "engine": "rust",
       "code": "TC4001",
       "file": "/eval.ts",
-      "start": 0,
-      "end": 4,
+      "start": 52,
+      "end": 56,
       "severity": "error",
       "message": "`eval` is forbidden when `native_strict` is enabled"
-    },
-    {
-      "engine": "rust",
-      "code": "TC4000",
-      "file": "/eval.ts",
-      "start": 0,
-      "end": 13,
-      "severity": "error",
-      "message": "`any` is forbidden when `native_strict` is enabled"
-    },
-    {
-      "engine": "rust",
-      "code": "TC4000",
-      "file": "/eval.ts",
-      "start": 0,
-      "end": 13,
-      "severity": "error",
-      "message": "forbidden `any` type"
     }
   ]
 }
