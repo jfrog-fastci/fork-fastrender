@@ -1,3 +1,21 @@
+- name: node:buffer.Buffer
+  kind: constructor
+  aliases:
+    - buffer.Buffer
+    - Buffer
+  since: "v0.1.0"
+  effects:
+    base: [alloc, nondeterministic, may_throw, unknown]
+    template: unknown
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
 - name: node:buffer.Buffer.from
   kind: function
   aliases:
