@@ -12,6 +12,13 @@
  * lld does not create an empty `.rodata` output section, and will error if an
  * `INSERT AFTER .rodata` fragment is used when the input objects don't
  * contribute any `.rodata` (common in minimal binaries/tests).
+ *
+ * Note: placing this output section "inside" the default RELRO block (e.g.
+ * `INSERT BEFORE .dynamic`) would be more intuitive, but lld will error with:
+ *
+ *   section: .dynamic is not contiguous with other relro sections
+ *
+ * if we inject a custom output section between its built-in RELRO sections.
  */
 
 SECTIONS
