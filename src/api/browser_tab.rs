@@ -2667,6 +2667,7 @@ impl BrowserTabHost {
         ScriptType::Unknown => "unknown",
       },
     );
+    span.arg_bool("integrity_attr_present", spec.integrity_attr_present);
 
     // HTML: module scripts are fetched in CORS mode by default. The `crossorigin` attribute only
     // controls the *credentials mode* ("anonymous" vs "use-credentials"). For classic scripts, CORS
@@ -2675,6 +2676,36 @@ impl BrowserTabHost {
       ScriptType::Module => Some(spec.crossorigin.unwrap_or(crate::resource::CorsMode::Anonymous)),
       _ => spec.crossorigin,
     };
+    span.arg_str(
+      "cors_mode",
+      match cors_mode {
+        None => "none",
+        Some(crate::resource::CorsMode::Anonymous) => "anonymous",
+        Some(crate::resource::CorsMode::UseCredentials) => "use-credentials",
+      },
+    );
+
+    let effective_destination = match spec.script_type {
+      ScriptType::Module => FetchDestination::ScriptCors,
+      _ => destination,
+    };
+    span.arg_str(
+      "destination",
+      match effective_destination {
+        FetchDestination::Document => "document",
+        FetchDestination::DocumentNoUser => "document_no_user",
+        FetchDestination::Iframe => "iframe",
+        FetchDestination::Style => "style",
+        FetchDestination::StyleCors => "style_cors",
+        FetchDestination::Script => "script",
+        FetchDestination::ScriptCors => "script_cors",
+        FetchDestination::Image => "image",
+        FetchDestination::ImageCors => "image_cors",
+        FetchDestination::Font => "font",
+        FetchDestination::Other => "other",
+        FetchDestination::Fetch => "fetch",
+      },
+    );
 
     // Subresource Integrity (SRI) enforcement. When the `integrity` attribute is present, we must
     // reject the script if the metadata is invalid or the fetched bytes do not match.
@@ -2706,6 +2737,28 @@ impl BrowserTabHost {
       None
     };
 
+    // Populate a FetchRequest for trace metadata and for real network fetches.
+    let mut req = FetchRequest::new(url, effective_destination);
+    if let Some(referrer) = self.document_url.as_deref() {
+      req = req.with_referrer_url(referrer);
+    }
+    if let Some(origin) = self.document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
+    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
+    req = req.with_referrer_policy(effective_referrer_policy);
+    if let Some(cors_mode) = cors_mode {
+      req = req.with_credentials_mode(cors_mode.credentials_mode());
+    }
+    span.arg_str(
+      "credentials_mode",
+      match req.credentials_mode {
+        crate::resource::FetchCredentialsMode::Omit => "omit",
+        crate::resource::FetchCredentialsMode::SameOrigin => "same-origin",
+        crate::resource::FetchCredentialsMode::Include => "include",
+      },
+    );
+
     let override_source = self
       .external_script_sources
       .lock()
@@ -2727,22 +2780,6 @@ impl BrowserTabHost {
     }
 
     let fetcher = self.document.fetcher();
-    let effective_destination = match spec.script_type {
-      ScriptType::Module => FetchDestination::ScriptCors,
-      _ => destination,
-    };
-    let mut req = FetchRequest::new(url, effective_destination);
-    if let Some(referrer) = self.document_url.as_deref() {
-      req = req.with_referrer_url(referrer);
-    }
-    if let Some(origin) = self.document_origin.as_ref() {
-      req = req.with_client_origin(origin);
-    }
-    let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
-    req = req.with_referrer_policy(effective_referrer_policy);
-    if let Some(cors_mode) = cors_mode {
-      req = req.with_credentials_mode(cors_mode.credentials_mode());
-    }
 
     let max_fetch = self.js_execution_options.max_script_bytes.saturating_add(1);
     let resource = fetcher.fetch_partial_with_request(req, max_fetch)?;

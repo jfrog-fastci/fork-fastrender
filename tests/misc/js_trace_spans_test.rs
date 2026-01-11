@@ -162,6 +162,8 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
   let mut names: Vec<&str> = Vec::new();
   let mut script_execute_type = None;
   let mut script_fetch_type = None;
+  let mut script_fetch_destination = None;
+  let mut script_fetch_credentials_mode = None;
   for event in events {
     if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
       names.push(name);
@@ -173,6 +175,16 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
           .or(script_execute_type);
       }
       if name == "js.script.fetch" {
+        script_fetch_destination = event
+          .get("args")
+          .and_then(|args| args.get("destination"))
+          .and_then(|v| v.as_str())
+          .or(script_fetch_destination);
+        script_fetch_credentials_mode = event
+          .get("args")
+          .and_then(|args| args.get("credentials_mode"))
+          .and_then(|v| v.as_str())
+          .or(script_fetch_credentials_mode);
         script_fetch_type = event
           .get("args")
           .and_then(|args| args.get("script_type"))
@@ -203,6 +215,16 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     script_fetch_type,
     Some("classic"),
     "expected js.script.fetch span to include args.script_type=classic"
+  );
+  assert_eq!(
+    script_fetch_destination,
+    Some("script"),
+    "expected js.script.fetch span to include args.destination=script"
+  );
+  assert_eq!(
+    script_fetch_credentials_mode,
+    Some("include"),
+    "expected js.script.fetch span to include args.credentials_mode=include"
   );
   assert_eq!(
     script_execute_type,
