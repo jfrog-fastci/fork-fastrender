@@ -31,6 +31,7 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_promise_reject(p: PromiseRef)`
 - `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_poll() -> bool`
+- `rt_async_set_strict_await_yields(strict: bool)`
 
 ### Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 

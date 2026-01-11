@@ -801,7 +801,9 @@ pub extern "C" fn rt_async_poll_legacy() -> bool {
 /// Default is `false` (fast-path).
 #[no_mangle]
 pub extern "C" fn rt_async_set_strict_await_yields(strict: bool) {
-  async_rt::set_strict_await_yields(strict);
+  abort_on_panic(|| {
+    async_rt::set_strict_await_yields(strict);
+  })
 }
 
 #[no_mangle]
