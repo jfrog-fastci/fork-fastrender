@@ -391,8 +391,8 @@ error[NJS0009]: property access is not supported by native-js yet
   for the current list.
 - Even after `validate_strict_subset` passes, the current HIR→LLVM lowering is
   still minimal and may fail later during codegen with `NJS01xx` diagnostics
-  (`NJS0100..NJS0124`; see
-  [`native-js/src/codegen/mod.rs`](../native-js/src/codegen/mod.rs)).
+  (see [`native-js/src/codegen/mod.rs`](../native-js/src/codegen/mod.rs) for the
+  current list).
 
 #### HIR codegen subset (current)
 
@@ -420,6 +420,9 @@ smoke-test subset:
   - comparisons/equality: `<`, `<=`, `>`, `>=`, `==`, `!=`, `===`, `!==`
   - assignment to identifiers (`=`, `+=`, `-=`, `*=`, `/=`, `%=`)
   - updates (`++x`, `x++`, `--x`, `x--`)
+  - direct calls to global functions by identifier (`foo(a, b)`), with limitations:
+    - no optional calls / `new` / spreads
+    - only non-void calls are supported by this backend
 - For non-void `main`, the returned `i32` value becomes the executable’s exit code (like C `main`).
 
 ## Tests

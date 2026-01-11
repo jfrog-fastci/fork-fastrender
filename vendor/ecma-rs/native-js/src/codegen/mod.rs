@@ -18,10 +18,10 @@
 //! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
 //! - `NJS0105`: unsupported unary operator
 //! - `NJS0106`: unsupported binary operator
-//! - `NJS0107`: unsupported expression / assignment / update operator in `main`
+//! - `NJS0107`: unsupported expression in the current codegen subset
 //! - `NJS0112`: statement id out of bounds
-//! - `NJS0113`: unsupported statement / variable declaration kind in `main`
-//! - `NJS0114`: unknown identifier in `main`
+//! - `NJS0113`: unsupported statement / variable declaration kind in the current codegen subset
+//! - `NJS0114`: unknown identifier in codegen
 //! - `NJS0115`: not all control-flow paths in `main` return a value
 //! - `NJS0116`: `return` without a value is only supported when `main` returns `void`/`undefined`
 //! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
@@ -32,6 +32,14 @@
 //! - `NJS0122`: `continue` is only supported inside loops
 //! - `NJS0123`: failed to resolve call signature for exported `main`
 //! - `NJS0124`: only labeled loops are supported in native-js codegen
+//! - `NJS0130`: failed to resolve identifier/callee during codegen
+//! - `NJS0132`: unsupported assignment target
+//! - `NJS0134`: unsupported assignment operator
+//! - `NJS0140`: failed to resolve definition kind for a global/import binding
+//! - `NJS0141`: unresolved import binding (or cyclic import resolution)
+//! - `NJS0142`: unsupported global binding kind in codegen
+//! - `NJS0144`: unsupported call syntax in codegen subset
+//! - `NJS0145`: call to unknown function (or void call not supported)
 //!
 //! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
 //! (`NJS0108..NJS0111`).
