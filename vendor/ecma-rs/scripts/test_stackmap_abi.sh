@@ -44,6 +44,22 @@ LLVM_OBJDUMP="$(find_llvm_tool llvm-objdump)" || true
 [[ -n "${LLVM_READOBJ}" ]] || fail "llvm-readobj (LLVM 18) not found in PATH"
 [[ -n "${LLVM_OBJDUMP}" ]] || fail "llvm-objdump (LLVM 18) not found in PATH"
 
+require_llvm18() {
+  local tool="$1"
+  local out
+  out="$("${tool}" --version 2>/dev/null || true)"
+
+  # Some LLVM builds print the version on line 1 ("Ubuntu LLVM version 18.1.x"),
+  # others print it on line 2 ("LLVM (http://llvm.org/):" then "LLVM version 18.1.x").
+  if ! grep -Eq 'version 18\.' <<<"${out}"; then
+    fail "expected LLVM 18.x (${tool}), got: $(echo "${out}" | head -n2 | tr '\n' ' ')"
+  fi
+}
+
+require_llvm18 "${LLC}"
+require_llvm18 "${LLVM_READOBJ}"
+require_llvm18 "${LLVM_OBJDUMP}"
+
 [[ -f "${FIXTURE_LL}" ]] || fail "fixture not found: ${FIXTURE_LL}"
 
 # Keep temp files under target/ so we don't dirty the working tree.
