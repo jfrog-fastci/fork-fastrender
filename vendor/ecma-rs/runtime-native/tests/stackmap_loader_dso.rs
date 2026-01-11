@@ -153,7 +153,7 @@ fn rename_stackmaps_section_to_data_rel_ro(objcopy: &str, readobj: &str, obj: &P
 enum StackmapsLinkerScript {
   /// GNU ld-only fragment (`INSERT BEFORE .dynamic`) to avoid RWX in PIE/DSO mode.
   GnuLd,
-  /// lld-friendly fragment (`INSERT AFTER .text`).
+  /// lld-friendly fragment (`INSERT BEFORE .dynamic`) to keep stackmaps in RELRO-friendly data.
   Lld,
 }
 
