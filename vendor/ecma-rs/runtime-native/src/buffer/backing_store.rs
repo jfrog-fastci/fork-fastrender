@@ -439,7 +439,6 @@ impl Drop for BorrowGuardWrite {
 /// host is doing I/O/FFI using the raw pointer.
 #[must_use = "PinnedBackingStore must be kept alive to keep the backing store pinned"]
 #[derive(Debug)]
-#[must_use]
 pub struct PinnedBackingStore {
   store: BackingStore,
 }
