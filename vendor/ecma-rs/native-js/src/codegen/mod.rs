@@ -355,9 +355,16 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       }
     }
 
-    let mut files: Vec<FileId> = visited.into_iter().collect();
-    files.sort_by_key(|id| id.0);
-    files
+    // Use file keys (usually canonical paths) for deterministic iteration order.
+    //
+    // `FileId` assignment order depends on the host/program load order, which can vary based on
+    // resolution and is not a great input for deterministic IR emission.
+    let mut files: Vec<(String, FileId)> = visited
+      .into_iter()
+      .map(|id| (file_label(self.program, id), id))
+      .collect();
+    files.sort_by(|(a_label, a), (b_label, b)| a_label.cmp(b_label).then_with(|| a.0.cmp(&b.0)));
+    files.into_iter().map(|(_, id)| id).collect()
   }
 
   fn collect_exported_defs(&mut self, files: &[FileId]) {
