@@ -480,6 +480,37 @@ fn supports_importing_from_export_all_reexports() {
 }
 
 #[test]
+fn supports_importing_through_multi_hop_reexport_chain() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let b = dir.path().join("b.ts");
+  let c = dir.path().join("c.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &dep,
+    "console.log(\"dep\");\nexport function value(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+  fs::write(&b, "export * from './dep';\n").unwrap();
+  fs::write(&c, "export { value as other } from './b';\n").unwrap();
+  fs::write(
+    &main,
+    "import {other} from './c';\nexport function main(){console.log(other(20,22));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\n42\n"));
+}
+
+#[test]
 fn supports_importing_from_renamed_reexports() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
