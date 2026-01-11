@@ -419,6 +419,15 @@ fn bitwise_and_shift_and_comma_operators_work() {
           && ((a & -b) === 0xbf2ed51fb554100cd330000ac6004080n)
           && ((~a) === -0xbf2ed51ff75d380fd3be813ec6185781n)
           && ((~(-a)) === 0xbf2ed51ff75d380fd3be813ec618577fn);
+        ok = ok
+          && ((-1n << 128n) === -0x100000000000000000000000000000000n)
+          && ((-1n >> -128n) === -0x100000000000000000000000000000000n)
+          && ((-0x246n << -128n) === -1n)
+          && ((0x246n << 129n) === 0x48c00000000000000000000000000000000n);
+        var c = 0x123456789abcdef0fedcba9876543212345678n;
+        ok = ok
+          && ((c >> 128n) === 0x123456n)
+          && ((c << 64n) === 0x123456789abcdef0fedcba98765432123456780000000000000000n);
         var mix = false;
         try { 1n & 1; } catch(e) { mix = e.name === "TypeError"; }
         ok = ok && mix;

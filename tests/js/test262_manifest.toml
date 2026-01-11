@@ -41,27 +41,12 @@ glob = "language/expressions/left-shift/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/left-shift/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt shifts are bounded; test requires full BigInt range."
-
-[[expectations]]
 glob = "language/expressions/right-shift/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/right-shift/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt shifts are bounded; test requires full BigInt range."
-
-[[expectations]]
 glob = "language/expressions/unsigned-right-shift/**"
 status = "pass"
-
-[[expectations]]
-id = "language/expressions/unsigned-right-shift/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt literal parsing is bounded; test requires full BigInt range."
 
 [[expectations]]
 glob = "language/expressions/comma/**"

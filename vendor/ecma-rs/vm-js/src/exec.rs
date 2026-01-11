@@ -3694,11 +3694,10 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_lit_bigint(&self, expr: &LitBigIntExpr) -> Result<Value, VmError> {
-    let mag: u128 = expr
-      .value
-      .parse()
-      .map_err(|_| VmError::Unimplemented("BigInt literal out of range"))?;
-    Ok(Value::BigInt(JsBigInt::from_u128(mag)))
+    let Some(b) = JsBigInt::from_decimal_str(&expr.value) else {
+      return Err(VmError::Unimplemented("BigInt literal out of range"));
+    };
+    Ok(Value::BigInt(b))
   }
 
   fn eval_lit_bool(&self, expr: &LitBoolExpr) -> Result<Value, VmError> {
@@ -5167,50 +5166,40 @@ impl<'a> Evaluator<'a> {
               )?);
             }
 
-            let Some(a) = a.try_to_i128() else {
-              return Err(VmError::Unimplemented("BigInt shift out of range"));
-            };
-            let Some(b) = b.try_to_i128() else {
-              return Err(VmError::Unimplemented("BigInt shift out of range"));
-            };
-            // BigInt shift operators treat negative shift counts as shifting in the opposite
-            // direction (e.g. `x << -1n` is `x >> 1n`), matching the ECMAScript semantics.
-            let shift_mag = if b == i128::MIN {
-              1u128 << 127
-            } else if b < 0 {
-              (-b) as u128
-            } else {
-              b as u128
-            };
-            let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX);
-
-            let shr = |value: i128, shift: u32| match value.checked_shr(shift) {
-              Some(v) => v,
-              None => {
-                // Shifting right by >= bit width yields `-1` for negative values, else `0`.
-                if value < 0 { -1 } else { 0 }
+            let (shift_negative, shift) = match b.try_to_i128() {
+              Some(shift_i) => {
+                let shift_mag: u128 = if shift_i == i128::MIN {
+                  1u128 << 127
+                } else if shift_i < 0 {
+                  (-shift_i) as u128
+                } else {
+                  shift_i as u128
+                };
+                let shift = u32::try_from(shift_mag).unwrap_or(u32::MAX).min(256);
+                (shift_i < 0, shift)
               }
+              None => (b.is_negative(), 256),
             };
 
             match expr.operator {
               OperatorName::BitwiseLeftShift => {
-                if b < 0 {
-                  Ok(Value::BigInt(JsBigInt::from_i128(shr(a, shift))))
+                if shift_negative {
+                  Ok(Value::BigInt(a.shr(shift)))
                 } else {
                   let Some(out) = a.checked_shl(shift) else {
                     return Err(VmError::Unimplemented("BigInt left shift overflow"));
                   };
-                  Ok(Value::BigInt(JsBigInt::from_i128(out)))
+                  Ok(Value::BigInt(out))
                 }
               }
               OperatorName::BitwiseRightShift => {
-                if b < 0 {
+                if shift_negative {
                   let Some(out) = a.checked_shl(shift) else {
                     return Err(VmError::Unimplemented("BigInt left shift overflow"));
                   };
-                  Ok(Value::BigInt(JsBigInt::from_i128(out)))
+                  Ok(Value::BigInt(out))
                 } else {
-                  Ok(Value::BigInt(JsBigInt::from_i128(shr(a, shift))))
+                  Ok(Value::BigInt(a.shr(shift)))
                 }
               }
               OperatorName::BitwiseUnsignedRightShift => unreachable!(),
