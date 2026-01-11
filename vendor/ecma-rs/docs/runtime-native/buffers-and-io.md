@@ -106,9 +106,34 @@ all I/O backends. Violations are memory safety bugs.
   no longer in use.
 - **Bounds checked:** Creating a pinned slice checks `offset + len <=
   byte_length` with overflow checking.
-- **Exactly-once completion:** Each I/O op transitions through a single
-  completion path; the JS promise is settled **exactly once** (resolve or
-  reject), even if cancellation races with completion.
+ - **Exactly-once completion:** Each I/O op transitions through a single
+   completion path; the JS promise is settled **exactly once** (resolve or
+   reject), even if cancellation races with completion.
+
+## Vectored I/O (`iovec[]` / `msghdr`)
+
+Some syscalls and async APIs require **descriptor structs** in addition to the underlying byte
+buffers:
+
+- `readv` / `writev` take an `iovec[]` array.
+- `sendmsg` / `recvmsg` (and io_uring `SendMsg`/`RecvMsg`) take an `msghdr` which contains:
+  - an `iovec[]` array (`msg_iov`)
+  - optional `msg_name` (sockaddr bytes) and `msg_control` (ancillary data) buffers.
+
+For synchronous syscalls the kernel typically copies some metadata, but for async APIs (and across
+platforms) the safe contract is:
+
+> the in-flight op owns all descriptor memory **and** pins all underlying buffers.
+
+`runtime-native` provides GC-safe helpers that satisfy this contract:
+
+- `io::PinnedIoVec` / `io::IoVecList`: owns a heap-allocated `Box<[libc::iovec]>` and holds
+  backing-store pin guards for each referenced buffer range.
+- `io::PinnedMsgHdr` (unix-only): owns a heap-allocated `Box<libc::msghdr>` plus the `PinnedIoVec`
+  it points to, and optional `msg_name` / `msg_control` buffers.
+
+These types are `Send` so they can be moved into I/O worker threads or stored in in-flight op
+records until completion/cancellation.
 
 ### GC integration invariants
 

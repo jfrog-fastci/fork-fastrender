@@ -9,6 +9,8 @@ mod unix {
   #[derive(Debug)]
   struct Fd(RawFd);
 
+  fn assert_send<T: Send>() {}
+
   impl Drop for Fd {
     fn drop(&mut self) {
       unsafe {
@@ -79,6 +81,25 @@ mod unix {
     assert_eq!(&out, b"hello world");
 
     Ok(())
+  }
+
+  #[test]
+  fn pinned_iovecs_are_send() {
+    assert_send::<PinnedIoVec>();
+    assert_send::<PinnedMsgHdr>();
+  }
+
+  #[test]
+  fn pinned_iovecs_drop_on_other_thread_releases_pins() {
+    let buf = ArrayBuffer::new_zeroed(16).unwrap();
+    assert_eq!(buf.pin_count(), 0);
+
+    let ranges = vec![IoVecRange::whole_array_buffer(&buf)];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+    assert_eq!(buf.pin_count(), 1);
+
+    std::thread::spawn(move || drop(pinned)).join().unwrap();
+    assert_eq!(buf.pin_count(), 0);
   }
 
   #[test]

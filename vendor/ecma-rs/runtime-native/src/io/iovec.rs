@@ -104,9 +104,14 @@ pub struct PinnedIoVec {
   pins: Box<[PinGuard]>,
 }
 
-// Safety: `PinnedIoVec` is an owned syscall descriptor array containing raw pointers into pinned
-// backing stores. It is valid to move it across threads for async I/O submission/completion; the
-// backing stores remain alive and stable for as long as this value is alive.
+// SAFETY: `PinnedIoVec` is an owned descriptor list intended for in-flight I/O ops. The `iovec[]`
+// array contains raw pointers, but they are valid for the lifetime of this value because:
+// - the descriptor memory is heap-owned (`Box<[iovec]>`), and
+// - each `iov_base` points into a pinned, non-moving backing store held alive by the owned pin
+//   guards.
+//
+// Moving the value across threads transfers ownership of the pins. Any concurrent access to the
+// pointed-to bytes is the caller's responsibility.
 unsafe impl Send for PinnedIoVec {}
 
 impl PinnedIoVec {
@@ -227,9 +232,9 @@ pub struct PinnedMsgHdr {
   control: Option<Vec<u8>>,
 }
 
-// Safety: `PinnedMsgHdr` is an owned syscall descriptor containing raw pointers into pinned backing
-// stores and other owned buffers (`msg_name`, `msg_control`). It is valid to move this struct
-// across threads for async I/O submission/completion.
+// SAFETY: `PinnedMsgHdr` owns all descriptor memory (`msghdr`, `iovec[]`, optional name/control
+// buffers) and pins all underlying backing stores. It is safe to move across threads for in-flight
+// operations; any synchronization of the pointed-to data is the caller's responsibility.
 #[cfg(unix)]
 unsafe impl Send for PinnedMsgHdr {}
 
