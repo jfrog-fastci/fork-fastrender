@@ -189,7 +189,7 @@ pub fn build_inspect_frag_command(
   }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA").is_none() {
     // Keep inspect overlays aligned with `render_fixtures` fixture-chrome mode defaults.
-    cmd.env("FASTR_TEXT_SUBPIXEL_AA", "1");
+    cmd.env("FASTR_TEXT_SUBPIXEL_AA", "0");
   }
   if args.patch_html_for_chrome_baseline
     && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA_GAMMA").is_none()

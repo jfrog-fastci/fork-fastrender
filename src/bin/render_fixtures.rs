@@ -423,12 +423,16 @@ fn fixture_runtime_toggles_from_env_map(
   raw
     .entry("FASTR_TEXT_HINTING".to_string())
     .or_insert_with(|| default_hinting.to_string());
-  // Chrome typically uses LCD/subpixel anti-aliasing for text. FastRender's default tiny-skia
-  // glyph rasterization is grayscale AA, so enable a subpixel mode for fixture-vs-Chrome diffs.
-  let default_subpixel_aa = if patch_html_for_chrome_baseline { "1" } else { "0" };
+  // Interactive Chrome typically uses LCD/subpixel anti-aliasing for text, but the headless
+  // screenshot pipeline used by `xtask chrome-baseline-fixtures` / `xtask page-loop` appears
+  // closer to grayscale AA. Enabling FastRender's LCD-style AA introduces colored fringes and
+  // tends to make fixture-vs-Chrome diffs worse, so keep it opt-in even when
+  // `--patch-html-for-chrome-baseline` is enabled.
+  //
+  // For manual inspection, callers can still enable it by setting `FASTR_TEXT_SUBPIXEL_AA=1`.
   raw
     .entry("FASTR_TEXT_SUBPIXEL_AA".to_string())
-    .or_insert_with(|| default_subpixel_aa.to_string());
+    .or_insert_with(|| "0".to_string());
   // Skia's LCD text pipeline includes gamma correction when converting mask coverage into device
   // pixels. Empirically, Chrome's headless screenshots already match FastRender's "raw coverage"
   // output; applying additional gamma correction tends to over-darken glyph edges and increases
@@ -2151,6 +2155,20 @@ mod tests {
     raw.insert("FASTR_TEXT_HINTING".to_string(), "0".to_string());
     let toggles = fixture_runtime_toggles_from_env_map(raw, true);
     assert_eq!(toggles.get("FASTR_TEXT_HINTING"), Some("0"));
+  }
+
+  #[test]
+  fn fixture_runtime_toggles_defaults_text_subpixel_aa_to_0() {
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
+    assert_eq!(toggles.get("FASTR_TEXT_SUBPIXEL_AA"), Some("0"));
+
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_TEXT_SUBPIXEL_AA"), Some("0"));
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string());
+    let toggles = fixture_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_TEXT_SUBPIXEL_AA"), Some("1"));
   }
 
   #[test]
