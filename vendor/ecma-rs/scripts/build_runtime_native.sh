@@ -20,7 +20,6 @@ fi
 
 include_dir="${ecma_rs_root}/runtime-native/include"
 stackmaps_ld="${ecma_rs_root}/runtime-native/stackmaps.ld"
-
 linker_script_line=""
 linker_script_flag=""
 if [[ "$(uname -s)" == "Linux" ]]; then

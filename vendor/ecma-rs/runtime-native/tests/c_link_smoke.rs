@@ -116,14 +116,18 @@ int main(void) {
   .expect("write smoke.c");
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-
-  // On Linux, `runtime-native` expects the final binary to export symbols that delimit the
-  // in-memory `.llvm_stackmaps` section (`__fastr_stackmaps_start/end`).
+  // On Linux/ELF, `runtime-native` expects the final binary to export symbols delimiting the
+  // (possibly empty) in-memory `.llvm_stackmaps` section.
   //
-  // When linking from C directly (bypassing Cargo/rustc), we must pass the same linker script
-  // fragment to define those symbols.
+  // When linking from C directly (bypassing Cargo/rustc), pass the same linker script fragment.
   let stackmaps_ld = if cfg!(target_os = "linux") {
-    Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld");
+    assert!(
+      path.exists(),
+      "missing stackmaps linker script at {}",
+      path.display()
+    );
+    Some(path)
   } else {
     None
   };
@@ -134,8 +138,8 @@ int main(void) {
     .arg("-I")
     .arg(&include_dir)
     .arg(&c_path)
-    .arg(&staticlib)
     .args(stackmaps_ld.as_ref().map(|p| format!("-Wl,-T,{}", p.display())))
+    .arg(&staticlib)
     .arg("-o")
     .arg(&bin_path);
 

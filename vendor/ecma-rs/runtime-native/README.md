@@ -14,6 +14,12 @@ From the `vendor/ecma-rs/` workspace root:
 bash scripts/cargo_agent.sh build --release -p runtime-native
 ```
 
+From the superproject repo root (or any cwd):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native --release
+```
+
 Or via the helper script (prints include/lib paths for downstream build systems):
 
 ```bash
@@ -34,6 +40,18 @@ cc -std=c99 \
   -I runtime-native/include \
   /path/to/program.c \
   target/release/libruntime_native.a \
+  -Wl,-T,runtime-native/stackmaps.ld \
+  -o program
+```
+
+If you want to force LLVM lld explicitly:
+
+```bash
+clang-18 -fuse-ld=lld-18 \
+  -I runtime-native/include \
+  /path/to/program.c \
+  target/release/libruntime_native.a \
+  -Wl,-T,runtime-native/stackmaps.ld \
   -o program
 ```
 
@@ -59,6 +77,10 @@ only when the `llvm_stackmaps_linker` Cargo feature is enabled.
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
+
+On Linux/ELF, `runtime-native/stackmaps.ld` defines the
+`__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols over the
+(possibly empty) `.llvm_stackmaps` section so the runtime can discover stack map metadata.
 
 ## Pinned allocations
 
