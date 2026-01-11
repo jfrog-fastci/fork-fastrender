@@ -11,7 +11,7 @@ use llvm_sys::core::{
   LLVMAddFunction, LLVMDisposeMessage, LLVMFunctionType, LLVMGetModuleContext, LLVMGetNamedFunction,
   LLVMVoidTypeInContext,
 };
-use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef};
+use llvm_sys::prelude::LLVMModuleRef;
 use llvm_sys::target::{
   LLVM_InitializeNativeAsmParser, LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
 };
@@ -33,19 +33,6 @@ extern "C" {
   fn LLVMGetErrorMessage(err: *mut c_void) -> *mut c_char;
   fn LLVMDisposeErrorMessage(msg: *mut c_char);
   fn LLVMConsumeError(err: *mut c_void);
-
-  fn LLVMCreateMemoryBufferWithMemoryRangeCopy(
-    input_data: *const c_char,
-    input_data_length: usize,
-    buffer_name: *const c_char,
-  ) -> *mut c_void; // LLVMMemoryBufferRef
-  fn LLVMDisposeMemoryBuffer(mem_buf: *mut c_void);
-  fn LLVMParseIRInContext(
-    context: LLVMContextRef,
-    mem_buf: *mut c_void,
-    out_module: *mut LLVMModuleRef,
-    out_message: *mut *mut c_char,
-  ) -> i32; // LLVMBool
 }
 
 /// Ensure the module contains the `gc.safepoint_poll` declaration that LLVM's
@@ -163,7 +150,23 @@ mod tests {
   use llvm_sys::core::{
     LLVMContextCreate, LLVMContextDispose, LLVMDisposeModule, LLVMPrintModuleToString,
   };
+  use llvm_sys::prelude::LLVMContextRef;
   use llvm_sys::target_machine::LLVMDisposeTargetMachine;
+
+  extern "C" {
+    fn LLVMCreateMemoryBufferWithMemoryRangeCopy(
+      input_data: *const c_char,
+      input_data_length: usize,
+      buffer_name: *const c_char,
+    ) -> *mut c_void; // LLVMMemoryBufferRef
+    fn LLVMDisposeMemoryBuffer(mem_buf: *mut c_void);
+    fn LLVMParseIRInContext(
+      context: LLVMContextRef,
+      mem_buf: *mut c_void,
+      out_module: *mut LLVMModuleRef,
+      out_message: *mut *mut c_char,
+    ) -> i32; // LLVMBool
+  }
 
   unsafe fn parse_ir(ir: &str) -> Result<(LLVMContextRef, LLVMModuleRef), String> {
     let ctx = LLVMContextCreate();

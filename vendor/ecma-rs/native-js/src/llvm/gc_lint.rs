@@ -9,7 +9,6 @@ use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMValueRef};
 use llvm_sys::{LLVMOpcode, LLVMTypeKind};
 use std::ffi::CStr;
 use std::fmt;
-use std::os::raw::c_char;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintRule {
@@ -369,6 +368,7 @@ mod tests {
   };
   use llvm_sys::ir_reader::LLVMParseIRInContext;
   use llvm_sys::prelude::LLVMContextRef;
+  use std::os::raw::c_char;
   use std::ffi::CString;
   use std::ptr;
 
