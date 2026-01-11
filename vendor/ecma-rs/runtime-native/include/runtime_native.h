@@ -759,6 +759,11 @@ void rt_async_block_on(PromiseRef p);
 LegacyPromiseRef rt_promise_new(void);
 void rt_promise_resolve(LegacyPromiseRef p, ValueRef value);
 void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+// Like `rt_promise_then`, but `data` is a GC-managed pointer that must remain alive across moving
+// collections until the callback runs.
+//
+// IMPORTANT: `data` must be the GC *object base pointer* (the same kind of pointer returned by
+// `rt_alloc` / stored in `ValueRef`), not an interior pointer into an object payload.
 void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
 
 // Forward declare legacy coroutine headers so compatibility aliases can use the type.
@@ -776,7 +781,9 @@ void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uin
 // alive (and relocatable) until `on_settle` runs.
 //
 // Contract:
-// - `data` must be the base pointer of a GC-managed object (start of ObjHeader).
+// - `data` must be the base pointer of a GC-managed object (start of ObjHeader). This is the same
+//   kind of pointer returned by `rt_alloc` / stored in `ValueRef` (not an interior pointer into an
+//   object payload).
 // - The runtime registers a strong GC root for `data` until the callback runs.
 // - When the callback runs, the runtime passes the *current* pointer (after any relocation).
 void rt_promise_then_rooted_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);

@@ -35,7 +35,8 @@ impl Root {
   /// Register `ptr` as a GC root.
   ///
   /// # Safety
-  /// `ptr` must be a valid pointer to a GC-managed object.
+  /// `ptr` must be a valid pointer to a GC-managed **object base pointer** (start of `ObjHeader`),
+  /// not an interior pointer into an object payload.
   pub unsafe fn new_unchecked(ptr: *mut u8) -> Self {
     let id = crate::roots::global_persistent_handle_table().alloc(ptr);
     Self {

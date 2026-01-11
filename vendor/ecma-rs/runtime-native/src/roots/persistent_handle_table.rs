@@ -13,6 +13,11 @@ use crate::gc::{HandleId, HandleTable};
 /// - Callers store the returned [`HandleId`] (convertible to/from `u64`) in their queued state.
 /// - The GC treats every live entry as a **root** and may update the stored pointer during
 ///   relocation/compaction under a stop-the-world (STW) pause.
+///
+/// # Pointer requirements
+/// Pointers stored in this table must be GC **object base pointers** (start of `ObjHeader`), not
+/// interior pointers into object payloads. The GC traces these as opaque object references and will
+/// interpret the pointed-to bytes as an `ObjHeader`.
 #[derive(Debug, Default)]
 pub struct PersistentHandleTable {
   inner: HandleTable<u8>,
