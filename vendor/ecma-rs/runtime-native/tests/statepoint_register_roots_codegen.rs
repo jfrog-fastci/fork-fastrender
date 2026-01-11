@@ -21,6 +21,7 @@ const AARCH64_TRIPLE: &str = "aarch64-unknown-linux-gnu";
 
 // Mitigation: do not allow statepoint GC roots to remain in callee-saved registers.
 // Required for frame-pointer-only stack walking without libunwind/ucontext.
+const LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE: &str = "--fixup-allow-gcptr-in-csr=false";
 const LCC_FIXUP_MAX_CSR_STATEPOINTS_0: &str = "--fixup-max-csr-statepoints=0";
 
 fn assert_cmd_available(bin: &str) {
@@ -298,6 +299,7 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
     for (cfg_idx, cfg) in cfgs.iter().enumerate() {
       let mut llc_flags = Vec::<&str>::new();
       llc_flags.push(cfg.opt);
+      llc_flags.push(LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE);
       llc_flags.push(LCC_FIXUP_MAX_CSR_STATEPOINTS_0);
       if let Some(fp) = cfg.frame_pointer {
         llc_flags.push(fp);
@@ -468,4 +470,77 @@ fn verifier_does_not_skip_custom_statepoint_ids() {
     .is_err(),
     "expected verifier to reject register roots even when statepoint-id is customized"
   );
+}
+
+#[test]
+fn fixup_allow_gcptr_in_csr_false_forces_spills() {
+  assert_cmd_available(LLVM_OPT);
+  assert_cmd_available(LLVM_LLC);
+
+  let tmp = TempDir::new().expect("create tmpdir");
+  let tmp = tmp.path();
+
+  let input_ll = path_in(tmp, "haz2.ll");
+  let rewritten_ll = path_in(tmp, "haz2.rewrite.ll");
+  write_file(
+    &input_ll,
+    &make_matrix_ir(
+      X86_64_TRIPLE,
+      /*max_roots=*/ 6,
+      /*add_pressure_variants=*/ false,
+      /*callsite_statepoint_id=*/ None,
+    ),
+  );
+  rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
+
+  // Unsafe flags: allow keeping some statepoint roots in callee-saved registers.
+  let dangerous_flags = &[
+    "-O3",
+    "--fixup-allow-gcptr-in-csr",
+    "--max-registers-for-gc-values=100",
+  ];
+
+  let dangerous_obj = path_in(tmp, "haz2_dangerous.o");
+  llc_to_obj(tmp, &rewritten_ll, &dangerous_obj, dangerous_flags);
+  let dangerous_section = read_section(&dangerous_obj, ".llvm_stackmaps");
+  let dangerous_sm = StackMap::parse(&dangerous_section).expect("parse dangerous stackmaps");
+  assert!(
+    has_register_roots(&dangerous_sm),
+    "expected dangerous flags={dangerous_flags:?} to produce at least one Register root"
+  );
+  assert!(
+    verify_statepoint_stackmap(
+      &dangerous_sm,
+      VerifyStatepointOptions {
+        arch: DwarfArch::X86_64,
+        mode: VerifyMode::StatepointsOnly,
+      },
+    )
+    .is_err(),
+    "expected verifier to reject register roots under dangerous flags"
+  );
+
+  // Mitigated flags: disallow passing statepoint roots in callee-saved registers entirely.
+  let mitigated_flags = &[
+    "-O3",
+    "--max-registers-for-gc-values=100",
+    LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE,
+  ];
+
+  let mitigated_obj = path_in(tmp, "haz2_mitigated.o");
+  llc_to_obj(tmp, &rewritten_ll, &mitigated_obj, mitigated_flags);
+  let mitigated_section = read_section(&mitigated_obj, ".llvm_stackmaps");
+  let mitigated_sm = StackMap::parse(&mitigated_section).expect("parse mitigated stackmaps");
+  assert!(
+    !has_register_roots(&mitigated_sm),
+    "did not expect Register roots under mitigated flags={mitigated_flags:?}"
+  );
+  verify_statepoint_stackmap(
+    &mitigated_sm,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap();
 }
