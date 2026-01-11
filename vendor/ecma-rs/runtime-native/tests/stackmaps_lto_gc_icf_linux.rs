@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol};
 use runtime_native::stackmaps::{parse_all_stackmaps, StackMap, StackMaps};
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use std::fs;
@@ -125,6 +125,14 @@ fn find_symbol<'data>(file: &object::File<'data>, name: &str) -> Option<u64> {
   None
 }
 
+fn segment_is_readable(flags: object::SegmentFlags) -> bool {
+  // PF_R on ELF is bit 2 (value 4).
+  match flags {
+    object::SegmentFlags::Elf { p_flags } => (p_flags & 4) != 0,
+    _ => true,
+  }
+}
+
 fn llvm_stackmaps_section(exe: &Path) -> Vec<u8> {
   let bytes = fs::read(exe).expect("read linked executable");
   let file = object::File::parse(&*bytes).expect("parse linked executable");
@@ -164,15 +172,67 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
     .section_by_name(".data.rel.ro.llvm_stackmaps")
     .or_else(|| file.section_by_name(".llvm_stackmaps"))
     .expect("missing stackmaps section (linker GC?)");
-  assert!(section.size() > 0, "expected non-empty stackmaps section");
+  let section_addr = section.address();
+  let section_size = section.size();
+  assert!(section_size > 0, "expected non-empty stackmaps section");
 
   if expect_linker_symbols {
-    for sym in ["__llvm_stackmaps_start", "__llvm_stackmaps_end"] {
-      assert!(
-        find_symbol(&file, sym).is_some(),
-        "missing {sym} in output binary"
-      );
+    const START_SYM: &str = "__start_llvm_stackmaps";
+    const STOP_SYM: &str = "__stop_llvm_stackmaps";
+    // Generic alias.
+    const GENERIC_START_SYM: &str = "__stackmaps_start";
+    const GENERIC_END_SYM: &str = "__stackmaps_end";
+    // Legacy aliases (kept for compatibility with older tooling).
+    const LEGACY_START_SYM: &str = "__llvm_stackmaps_start";
+    const LEGACY_END_SYM: &str = "__llvm_stackmaps_end";
+    const LEGACY_FASTR_START_SYM: &str = "__fastr_stackmaps_start";
+    const LEGACY_FASTR_END_SYM: &str = "__fastr_stackmaps_end";
+
+    let start = find_symbol(&file, START_SYM).expect("missing __start_llvm_stackmaps");
+    let stop = find_symbol(&file, STOP_SYM).expect("missing __stop_llvm_stackmaps");
+    let generic_start = find_symbol(&file, GENERIC_START_SYM).expect("missing __stackmaps_start");
+    let generic_end = find_symbol(&file, GENERIC_END_SYM).expect("missing __stackmaps_end");
+    let legacy_start = find_symbol(&file, LEGACY_START_SYM).expect("missing __llvm_stackmaps_start");
+    let legacy_end = find_symbol(&file, LEGACY_END_SYM).expect("missing __llvm_stackmaps_end");
+    let fastr_start =
+      find_symbol(&file, LEGACY_FASTR_START_SYM).expect("missing __fastr_stackmaps_start");
+    let fastr_end =
+      find_symbol(&file, LEGACY_FASTR_END_SYM).expect("missing __fastr_stackmaps_end");
+
+    assert_eq!(
+      start, section_addr,
+      "start symbol must equal the stackmaps section virtual address"
+    );
+    assert_eq!(
+      stop.checked_sub(start).unwrap(),
+      section_size,
+      "stop-start must equal the stackmaps section size"
+    );
+
+    assert_eq!(generic_start, start, "generic start symbol must match");
+    assert_eq!(generic_end, stop, "generic end symbol must match");
+    assert_eq!(legacy_start, start, "legacy start symbol must match");
+    assert_eq!(legacy_end, stop, "legacy end symbol must match");
+    assert_eq!(fastr_start, start, "fastr start symbol must match");
+    assert_eq!(fastr_end, stop, "fastr end symbol must match");
+
+    // Ensure the section is backed by a readable load segment so the runtime can
+    // read the bytes directly from memory.
+    let mut in_readable_segment = false;
+    let section_end = section_addr + section_size;
+    for seg in file.segments() {
+      let seg_addr = seg.address();
+      let seg_end = seg_addr + seg.size();
+      let flags = seg.flags();
+      if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+        in_readable_segment = true;
+        break;
+      }
     }
+    assert!(
+      in_readable_segment,
+      "stackmaps section not in a readable segment"
+    );
   }
 
   // Parse + validate (this runs statepoint verification in debug builds).
