@@ -169,6 +169,25 @@ fn accepts_print_statement() {
 }
 
 #[test]
+fn accepts_direct_function_call() {
+  let ok = validate(
+    r#"
+      function helper(x: number): number {
+        return x * 2;
+      }
+
+      function run(): number {
+        return helper(21);
+      }
+
+      run();
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
 fn accepts_basic_numeric_function() {
   let ok = validate(
     r#"

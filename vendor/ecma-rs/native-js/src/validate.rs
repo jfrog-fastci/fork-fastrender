@@ -61,7 +61,7 @@ fn validate_body(
   };
 
   validate_body_syntax(file, body_data, lowered, out);
-  validate_body_types(program, file, body, body_data, lowered, out);
+  validate_body_types(program, file, body, body_data, out);
 }
 
 fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_js::LowerResult, out: &mut Vec<Diagnostic>) {
@@ -122,6 +122,37 @@ fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_j
         push_unsupported_syntax(out, Span::new(file, expr.span), "`await` is not supported yet");
       }
       ExprKind::Call(call) => {
+        if call.optional {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "optional calls are not supported by native-js yet",
+          );
+        }
+        if call.args.iter().any(|arg| arg.spread) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "spread call arguments are not supported by native-js yet",
+          );
+        }
+
+        // Only allow the simplest call shape: `foo(a, b)` where `foo` is an identifier.
+        // (Calls through member access / indirect expressions aren't lowered yet.)
+        if !matches!(
+          body
+            .exprs
+            .get(call.callee.0 as usize)
+            .map(|e| &e.kind),
+          Some(ExprKind::Ident(_))
+        ) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "only direct identifier calls are supported by native-js yet",
+          );
+        }
+
         // Detect `eval(...)` and `Function(...)` / `new Function(...)` by callee identifier.
         if callee_is_ident(body, lowered, call.callee, "eval") {
           push_unsupported_syntax(out, Span::new(file, expr.span), "`eval()` is not supported");
@@ -132,6 +163,12 @@ fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_j
           } else {
             push_unsupported_syntax(out, Span::new(file, expr.span), "`Function()` is not supported");
           }
+        } else if call.is_new {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "`new` expressions are not supported by native-js yet",
+          );
         }
       }
       ExprKind::Ident(name) => {
@@ -254,22 +291,32 @@ fn validate_body_types(
   file: typecheck_ts::FileId,
   body: BodyId,
   hir: &Body,
-  lowered: &hir_js::LowerResult,
   out: &mut Vec<Diagnostic>,
 ) {
   let result = program.check_body(body);
 
-  // Intrinsics like `print(...)` are declared in host-provided `.d.ts` libs. Their identifiers have
-  // callable types, which are otherwise rejected by the strict subset validator. Allow these
-  // identifiers only when they are used as a direct call callee.
+  // Direct calls such as `foo(1)` require the callee identifier to have a callable type.
+  //
+  // The strict subset validator generally rejects callable/reference types, but in the direct-call
+  // lowering path we never materialize the function value; codegen resolves the callee as a symbol.
+  // Skip validating the callee identifier's type in this specific position so programs can call
+  // declared functions (and small host-provided intrinsics like `print(...)`) without enabling
+  // first-class function values.
   let mut skip_expr_type_check = vec![false; result.expr_types().len()];
   for expr in hir.exprs.iter() {
     if let ExprKind::Call(call) = &expr.kind {
-      if callee_is_ident(hir, lowered, call.callee, "print") {
-        let idx = call.callee.0 as usize;
-        if idx < skip_expr_type_check.len() {
-          skip_expr_type_check[idx] = true;
-        }
+      if call.optional || call.is_new || call.args.iter().any(|arg| arg.spread) {
+        continue;
+      }
+      let idx = call.callee.0 as usize;
+      if idx >= skip_expr_type_check.len() {
+        continue;
+      }
+      if matches!(
+        hir.exprs.get(idx).map(|e| &e.kind),
+        Some(ExprKind::Ident(_))
+      ) {
+        skip_expr_type_check[idx] = true;
       }
     }
   }
