@@ -42,8 +42,9 @@ fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
   // fragment can't rely on them existing. lld errors if an `INSERT` anchor
   // output section does not exist; the lld-oriented stackmaps linker fragment
-  // anchors at `.dynamic`, so this test links a shared object (which always has
-  // `.dynamic`) rather than a minimal static binary.
+  // anchors at `.dynamic`, but non-PIE `-nostdlib` links can omit `.dynamic`
+  // entirely, so this test links a minimal PIE executable to ensure the anchor
+  // is present.
   let asm = r#"
  .text
  .globl f
@@ -123,12 +124,12 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     .join("link")
     .join("stackmaps.ld");
 
-  // Link a minimal shared object (no stdlib/CRT) using our linker script
-  // fragment.
+  // Link a minimal PIE binary (no stdlib/CRT) using our linker script fragment.
   let status = Command::new(clang)
     .arg("-nostdlib")
     .arg(lld_flag)
-    .arg("-shared")
+    .arg("-pie")
+    .arg("-Wl,-e,f")
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.
