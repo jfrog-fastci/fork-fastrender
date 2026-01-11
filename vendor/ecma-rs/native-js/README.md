@@ -229,7 +229,8 @@ println!(\"wrote {}\", artifact.path.display());
 > import order for sibling imports). Re-export statements (`export { foo } from`,
 > `export * from`) are included in the runtime dependency graph for module
 > initialization ordering, but the entrypoint itself must still be a local
-> `export function main()` in the entry file.
+> `export function main()` in the entry file. Many import/export forms are still
+> not supported yet (e.g. default exports and namespace imports).
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by `native-js-cli --pipeline checked` and the `native-js`

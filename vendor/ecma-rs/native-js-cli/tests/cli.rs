@@ -655,6 +655,67 @@ fn checked_pipeline_run_prints_stdout() {
 }
 
 #[test]
+fn checked_pipeline_supports_import_and_call_across_modules() {
+  let tmp = TempDir::new().unwrap();
+  let math = tmp.path().join("math.ts");
+  fs::write(&math, "export function add(a:number,b:number): number { return a+b; }\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "import {add} from \"./math\";\nexport function main(): number { print(add(20, 22)); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
+fn checked_pipeline_supports_importing_from_reexport_modules() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export let x: number = 40;
+x += 2;
+"#,
+  )
+  .unwrap();
+
+  let reexport = tmp.path().join("reexport.ts");
+  fs::write(&reexport, r#"export { x } from "./dep";"#).unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { x } from "./reexport";
+export function main(): number { return x; }
+"#,
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(42)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn checked_pipeline_build_with_emit_llvm_writes_executable_and_ir_file() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
