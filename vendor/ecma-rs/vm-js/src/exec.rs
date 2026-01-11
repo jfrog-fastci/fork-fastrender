@@ -2198,6 +2198,7 @@ impl<'a> Evaluator<'a> {
       Stmt::Expr(expr_stmt) => self.eval_expr_stmt(scope, &expr_stmt.stx),
       Stmt::VarDecl(var_decl) => self.eval_var_decl(scope, &var_decl.stx),
       Stmt::ClassDecl(class_decl) => self.eval_class_decl(scope, class_decl),
+      Stmt::Debugger(_) => Ok(Completion::empty()),
       Stmt::Block(block) => self.eval_block_stmt(scope, &block.stx),
       Stmt::If(stmt) => self.eval_if(scope, &stmt.stx),
       // Import/export declarations are processed during module linking; their runtime evaluation is

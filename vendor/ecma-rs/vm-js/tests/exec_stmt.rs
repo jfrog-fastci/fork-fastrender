@@ -1,5 +1,5 @@
 use vm_js::{
-  Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions, MAX_PROTOTYPE_CHAIN,
+  Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmOptions, MAX_PROTOTYPE_CHAIN,
 };
 
 fn new_runtime() -> JsRuntime {
@@ -54,6 +54,13 @@ fn var_decl_and_if_statement_execute() {
     .exec_script(r#"var x = 1; if (x === 1) { x = 2; } x"#)
     .unwrap();
   assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn debugger_statement_is_noop() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"1; debugger;"#).unwrap();
+  assert_eq!(value, Value::Number(1.0));
 }
 
 #[test]
