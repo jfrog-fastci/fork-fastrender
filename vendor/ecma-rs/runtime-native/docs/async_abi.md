@@ -345,6 +345,11 @@ Both functions are **non-reentrant** by design (HTML-style microtask checkpoint 
 either function is called while a drain is already in progress (directly or indirectly, e.g. from
 within a microtask), the nested call is treated as a **no-op** and returns `false`.
 
+At the end of a microtask checkpoint the runtime:
+
+- processes promise rejection tracking (unhandled rejections), and
+- runs an optional checkpoint-end hook (used by tests; see `test_util::set_microtask_checkpoint_end_hook`).
+
 ### `rt_drain_microtasks` semantics
 
 `rt_drain_microtasks` runs *only* microtasks (no timers/reactor/macrotasks). Like the web platform,
@@ -827,6 +832,20 @@ This project supports both behaviors for `await`:
 - **Strict yield mode:** always yield on `await`, matching ECMAScript’s microtask timing.
 
 The runtime exposes this as a configuration knob (`set_strict_await_yields` in `runtime-native`).
+
+## Rejection tracking (implementation notes)
+
+Unhandled rejection reporting is processed at the **end of a microtask checkpoint**, matching the
+shape of HTML’s algorithms:
+
+- rejecting an unhandled promise adds it to an internal “about-to-be-notified” list
+- after draining microtasks, the runtime promotes remaining entries to the “unhandled” set
+- attaching a handler after that promotion produces a “rejection handled” notification
+
+The Rust test harness can observe these events via:
+
+- `runtime_native::test_util::drain_promise_rejection_events()` (legacy promises), and
+- `runtime_native::promise_api::{rt_take_unhandled_rejections, rt_take_rejection_handled}` (promise_api promises).
 
 ## Parallelism
 

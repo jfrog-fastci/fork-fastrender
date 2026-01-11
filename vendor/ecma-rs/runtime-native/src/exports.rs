@@ -25,10 +25,10 @@ use crate::BackingStoreAllocator;
 use crate::shape_table;
 #[cfg(feature = "gc_stats")]
 use crate::abi::RtGcStatsSnapshot;
+use crate::sync::GcAwareMutex;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
-use crate::sync::GcAwareMutex;
 use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;

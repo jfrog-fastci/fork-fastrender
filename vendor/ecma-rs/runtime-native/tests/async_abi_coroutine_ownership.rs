@@ -116,6 +116,10 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
   unsafe {
     let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
   }
+  assert!(
+    runtime_native::rt_handle_load(handle).is_null(),
+    "stack-owned coroutines must complete synchronously so the runtime can free the handle"
+  );
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
   assert!(runtime_native::rt_handle_load(handle).is_null());

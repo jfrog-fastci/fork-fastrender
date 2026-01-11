@@ -72,6 +72,9 @@ pub(crate) fn set_microtask_checkpoint_end_hook(hook: Option<MicrotaskCheckpoint
 }
 
 fn run_microtask_checkpoint_end_hook() {
+  // Process unhandled promise rejections at the end of a microtask checkpoint (HTML-shaped).
+  crate::promise_api::microtask_checkpoint_end();
+
   struct HookRestore(Option<MicrotaskCheckpointEndHook>);
 
   impl Drop for HookRestore {
@@ -122,7 +125,6 @@ pub fn rt_async_run_until_idle() -> bool {
 pub(crate) fn rt_async_run_until_idle_under_driver_guard() -> bool {
   run_microtask_checkpoint(|| crate::async_rt::run_until_idle_nonblocking_under_driver_guard())
 }
-
 /// Layout of the payload storage associated with a promise returned by
 /// `rt_parallel_spawn_promise`.
 ///

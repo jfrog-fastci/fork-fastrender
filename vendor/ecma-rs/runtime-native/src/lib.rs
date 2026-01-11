@@ -58,6 +58,7 @@ pub mod async_abi;
 pub mod async_rt;
 pub mod async_runtime;
 pub mod promise_reactions;
+pub mod promise_api;
 pub mod reactor;
 pub mod timer_wheel;
 pub mod clock;
@@ -138,7 +139,6 @@ pub use runtime_native_abi::{
   StringRef,
   TaskId,
 };
-
 pub use exports::*;
 pub use async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
