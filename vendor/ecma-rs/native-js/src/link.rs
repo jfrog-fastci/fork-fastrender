@@ -525,7 +525,10 @@ pub fn link_object_to_executable(
   let clang = find_program(&["clang-18", "clang"])
     .ok_or(crate::NativeJsError::ToolNotFound("clang-18/clang"))?;
 
-  let have_lld = find_program(&["ld.lld", "ld.lld-18", "lld-18", "lld"]).is_some();
+  // `clang -fuse-ld=lld{,-18}` selects the `ld.lld{,-18}` driver. Don't treat `lld`/`lld-18` as
+  // sufficient here: those binaries may exist without the `ld.lld` symlink, and `clang` won't find
+  // them under `-fuse-ld=...`.
+  let have_lld = find_program(&["ld.lld-18", "ld.lld"]).is_some();
 
   // Always inject the stackmaps linker script fragment:
   // - defines `__fastr_stackmaps_start/end` (and `__llvm_*` aliases)
