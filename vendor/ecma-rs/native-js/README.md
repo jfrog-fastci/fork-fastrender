@@ -515,7 +515,7 @@ matching the validator’s checks):
   - function/arrow expressions
   - some operators are not supported yet (non-exhaustive):
     - unary: `typeof`, `void`, `delete`
-    - binary: `**`, `>>>`, `&&`, `||`, `??`, `in`, `instanceof`, comma operator
+    - binary: `**`, `??`, `in`, `instanceof`
   - `switch`, `for..in`, and `for..of`
   - variable declarations without an initializer
   - calls:
