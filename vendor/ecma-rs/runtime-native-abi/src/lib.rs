@@ -946,6 +946,12 @@ mod tests {
       "missing PromiseHeader forward declaration"
     );
 
+    // Optional ABI surfaces are guarded in the handwritten C header; keep the generated header
+    // consistent so consumers don't accidentally call missing symbols in non-feature builds.
+    for guard in ["RUNTIME_NATIVE_GC_STATS", "RUNTIME_NATIVE_GC_DEBUG"] {
+      assert!(header.contains(guard), "missing `{guard}` guard in generated header");
+    }
+
     // Functions (key entrypoints).
     for func in [
       "rt_thread_init(",

@@ -143,6 +143,49 @@ fn main() {
     modified = true;
   }
 
+  // Mirror `runtime_native.h` feature guards for optional GC stats/debug APIs.
+  //
+  // These entrypoints are only exported when `runtime-native` is built with the corresponding
+  // Cargo features, so the C header uses a macro guard to avoid advertising unavailable symbols by
+  // default. `runtime_native_abi.h` is generated from Rust ABI declarations, so inject the same
+  // guards as a post-process step.
+  if !header.contains("RUNTIME_NATIVE_GC_STATS") {
+    if let Some(type_pos) = header.find("typedef struct RtGcStatsSnapshot {") {
+      header.insert_str(type_pos, "#ifdef RUNTIME_NATIVE_GC_STATS\n");
+      modified = true;
+      if let Some(end_rel) = header[type_pos..].find("} RtGcStatsSnapshot;") {
+        let end = type_pos + end_rel + "} RtGcStatsSnapshot;".len();
+        header.insert_str(end, "\n#endif\n");
+      }
+    }
+
+    if let Some(start) = header.find("extern void rt_gc_stats_snapshot") {
+      header.insert_str(start, "#ifdef RUNTIME_NATIVE_GC_STATS\n");
+      modified = true;
+      if let Some(reset_pos) = header[start..].find("extern void rt_gc_stats_reset") {
+        let reset_start = start + reset_pos;
+        if let Some(line_end_rel) = header[reset_start..].find('\n') {
+          let after_reset_line = reset_start + line_end_rel + 1;
+          header.insert_str(after_reset_line, "#endif\n");
+        }
+      }
+    }
+  }
+
+  if !header.contains("RUNTIME_NATIVE_GC_DEBUG") {
+    if let Some(start) = header.find("extern size_t rt_debug_shape_count") {
+      header.insert_str(start, "#ifdef RUNTIME_NATIVE_GC_DEBUG\n");
+      modified = true;
+      if let Some(end_rel) = header[start..].find("extern void rt_debug_validate_heap") {
+        let end_start = start + end_rel;
+        if let Some(line_end_rel) = header[end_start..].find('\n') {
+          let after_end_line = end_start + line_end_rel + 1;
+          header.insert_str(after_end_line, "#endif\n");
+        }
+      }
+    }
+  }
+
   // cbindgen does not currently emit foreign `extern` statics. The runtime exports
   // `RT_GC_EPOCH` as a link-visible symbol used by codegen for fast safepoint
   // polling; inject an extern declaration so the generated header is complete.
