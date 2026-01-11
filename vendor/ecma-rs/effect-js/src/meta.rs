@@ -38,7 +38,8 @@ pub fn parallelizable_at_callsite(api: &Api, callsite: &CallSiteInfo) -> bool {
     || api.name.ends_with(".filter")
   {
     return callsite.callback_is_pure.unwrap_or(false)
-      && !callsite.callback_uses_index.unwrap_or(false);
+      && !callsite.callback_uses_index.unwrap_or(false)
+      && !callsite.callback_uses_array.unwrap_or(false);
   }
   if has_semantics(api, "Reduce") || api.name.ends_with(".reduce") {
     return callsite.callback_is_pure.unwrap_or(false)
@@ -100,6 +101,22 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map((x, i) => i);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(!parallelizable_at_callsite(api, &callsite));
+  }
+
+  #[test]
+  fn parallelizable_heuristic_array_map_array_callback() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.map").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i, a) => a.length);",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
