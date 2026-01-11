@@ -27,13 +27,11 @@ use std::fmt;
 ///
 /// The StackMap record stores this value in its `patchpoint_id` field.
 ///
-/// LLVM uses this constant ID when callsites are not annotated with the
-/// `"statepoint-id"` directive attribute. When directives are used, the StackMap
-/// record's `patchpoint_id` is no longer a reliable discriminator for
-/// identifying statepoints.
+/// LLVM allows overriding `"statepoint-id"` per callsite, so `patchpoint_id` is not a reliable
+/// discriminator for identifying statepoints.
 ///
-/// The runtime verifier identifies statepoints by attempting to decode the
-/// record layout as a `gc.statepoint` (see [`looks_like_statepoint_record`] /
+/// Note: the runtime statepoint *decoder* does **not** depend on this value: stackmap records are
+/// decoded as statepoints based on their `locations[]` layout (see
 /// [`crate::statepoints::StatepointRecord`]).
 pub const LLVM_STATEPOINT_PATCHPOINT_ID: u64 = 0xABCDEF00;
 

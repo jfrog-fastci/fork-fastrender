@@ -237,7 +237,7 @@ impl ParallelRuntime {
     parallel_for_impl::parallel_for(self, start, end, body, data, chunking);
   }
 
-  fn worker_count(&self) -> usize {
+  pub(crate) fn worker_count(&self) -> usize {
     self.scheduler.worker_count
   }
 }
@@ -436,7 +436,19 @@ impl Scheduler {
                 return Outcome::Task(task);
               }
               Steal::Retry => return Outcome::Retry,
-              Steal::Empty => {}
+              Steal::Empty => {
+                // `steal_batch_and_pop` can fail to make progress when the victim only has a single
+                // task available. Fall back to stealing a single task to keep the pool
+                // work-conserving, which also avoids "no overlap" behavior in small-task cases.
+                match self.inner.stealers[victim].steal() {
+                  Steal::Success(task) => {
+                    crate::rt_trace::steals_succeeded_inc();
+                    return Outcome::Task(task);
+                  }
+                  Steal::Retry => return Outcome::Retry,
+                  Steal::Empty => {}
+                }
+              }
             }
           }
         }
@@ -537,7 +549,25 @@ fn worker_loop(
             threading::safepoint_poll();
             continue 'work;
           }
-          Steal::Empty => {}
+          Steal::Empty => {
+            // See comment in `Scheduler::try_pop`: `steal_batch_and_pop` may not steal from a
+            // victim with only one queued task. Fall back to stealing a single task to improve
+            // fairness and to allow small task sets to actually execute concurrently.
+            match inner.stealers[victim].steal() {
+              Steal::Success(task) => {
+                crate::rt_trace::steals_succeeded_inc();
+                spins = 0;
+                threading::safepoint_poll();
+                task.run();
+                continue 'work;
+              }
+              Steal::Retry => {
+                threading::safepoint_poll();
+                continue 'work;
+              }
+              Steal::Empty => {}
+            }
+          }
         }
       }
     }

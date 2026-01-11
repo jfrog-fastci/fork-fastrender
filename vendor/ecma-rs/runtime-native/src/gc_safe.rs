@@ -109,35 +109,34 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
 
     // Publish a safepoint context *before* advertising NativeSafe to the GC.
     //
-    // If we entered the GC-safe region from within runtime code, the current frame may not have an
-    // LLVM stackmap record. Recover the nearest managed callsite cursor by walking the frame-pointer
-    // chain so stackmap-based root enumeration (for this thread) can still succeed while it is
-    // blocked.
+    // If we entered the GC-safe region from within runtime-native code, the current callsite may
+    // not have an LLVM stackmap record. Recover the nearest managed callsite cursor by walking the
+    // frame-pointer chain so stackmap-based root enumeration (for this thread) can still succeed
+    // while it is blocked.
     //
-    // Important: call `arch::capture_safepoint_context` directly from this helper frame when
-    // stackmaps are unavailable. The capture shim intentionally skips *this* runtime frame to return
-    // a context for the outer caller frame that remains live while NativeSafe. Calling it through
-    // combinators like `Option::unwrap_or_else` can introduce an extra stack frame and break that
-    // contract.
-    let ctx = match crate::stackmap::try_stackmaps()
-      .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
-    {
-      Some(cursor) => {
-        let sp_callsite = cursor.sp.unwrap_or(0);
-        #[cfg(target_arch = "x86_64")]
-        let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-        #[cfg(not(target_arch = "x86_64"))]
-        let sp_entry = sp_callsite;
+    // Important: call `arch::capture_safepoint_context` directly from this helper frame. The
+    // capture shim intentionally skips *this* runtime frame to return a context for the outer
+    // caller frame that remains live while NativeSafe; calling it through wrappers can introduce an
+    // extra stack frame and break that contract.
+    let mut ctx = crate::arch::capture_safepoint_context();
+    if let Some(stackmaps) = crate::stackmap::try_stackmaps() {
+      if stackmaps.lookup(ctx.ip as u64).is_none() {
+        if let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) {
+          let sp_callsite = cursor.sp.unwrap_or(0);
+          #[cfg(target_arch = "x86_64")]
+          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+          #[cfg(not(target_arch = "x86_64"))]
+          let sp_entry = sp_callsite;
 
-        crate::arch::SafepointContext {
-          sp_entry: sp_entry as usize,
-          sp: sp_callsite as usize,
-          fp: cursor.fp as usize,
-          ip: cursor.pc as usize,
+          ctx = crate::arch::SafepointContext {
+            sp_entry: sp_entry as usize,
+            sp: sp_callsite as usize,
+            fp: cursor.fp as usize,
+            ip: cursor.pc as usize,
+          };
         }
       }
-      None => crate::arch::capture_safepoint_context(),
-    };
+    }
     registry::set_current_thread_safepoint_context(ctx);
 
     thread.native_safe_depth.store(1, Ordering::Release);

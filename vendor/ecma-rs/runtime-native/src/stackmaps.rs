@@ -755,9 +755,12 @@ impl<'a> CallSite<'a> {
   /// record layout and enumerates only the `(base, derived)` GC root pairs (the
   /// leading header constants and any deopt operands are ignored).
   ///
-  /// Derived pointers (where `base != derived`) are not supported by this API: callers that need
-  /// derived-pointer relocation must use the statepoint relocation-pair APIs (e.g.
-  /// [`CallSite::reloc_pairs`], or higher-level stack walking helpers that apply relocation).
+  /// Statepoint detection is **layout-based** (see [`crate::statepoints::looks_like_statepoint_record`])
+  /// and does not depend on `record.patchpoint_id` (the LLVM per-callsite `statepoint-id`).
+  ///
+  /// Note: for derived pointers where `base != derived`, this returns **only the base slots**.
+  /// Derived slots are not GC roots and require special relocation based on the corresponding base
+  /// (handled by `stackwalk_fp` / `gc.relocate` pairing).
   ///
   /// For non-statepoint records (those that do not match the LLVM 18 statepoint
   /// location layout), this falls back to scanning all locations and treating
@@ -775,14 +778,11 @@ impl<'a> CallSite<'a> {
   /// per-callsite `SP` derived from the callee frame pointer (see `stackwalk_fp`).
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
-    // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`.
-    //
-    // A statepoint record begins with the fixed-length LLVM 18 header prefix, which is a sequence
-    // of constant-like locations. Our codegen currently uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a
-    // convention, but LLVM does not contractually guarantee that value: callsites may override it
-    // via `"statepoint-id"`. Misclassifying a statepoint as a generic patchpoint would cause us to
-    // treat deopt operands as GC roots.
-    let looks_like_statepoint = crate::statepoints::looks_like_statepoint_record(self.record);
+    let statepoint = if crate::statepoints::looks_like_statepoint_record(self.record) {
+      crate::statepoints::StatepointRecord::new(self.record).ok()
+    } else {
+      None
+    };
 
     let sp_relative_to_fp_relative =
       |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
@@ -816,66 +816,32 @@ impl<'a> CallSite<'a> {
       }
     };
 
-    if looks_like_statepoint {
-      // If the record is marked with the (codegen-convention) statepoint patchpoint id, treat decode
-      // errors as fatal. Otherwise, fall back to the non-statepoint scanning path (some patchpoints
-      // may also start with constant operands).
-      let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
-        Ok(sp) => Some(sp),
-        Err(err) => {
-          if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-            return Err(err.into());
+    if let Some(statepoint) = statepoint {
+      for pair in statepoint.gc_pairs() {
+        let base = &pair.base;
+        let derived = &pair.derived;
+
+        // Strict mode: even though we only return the base slot, validate the derived location too
+        // so callers catch unsupported register roots / base registers early.
+        match *derived {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => {
+            let _ = location_fp_offset(dwarf_reg, offset)?;
           }
-          None
+          _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
         }
-      };
 
-      if let Some(statepoint) = statepoint {
-        for pair in statepoint.gc_pairs() {
-          let base = &pair.base;
-          let derived = &pair.derived;
+        let base_fp_off = match *base {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => location_fp_offset(dwarf_reg, offset)?,
 
-          let base_fp_off = match *base {
-            Location::Indirect {
-              dwarf_reg, offset, ..
-            } => location_fp_offset(dwarf_reg, offset)?,
+          // Strict mode: reject roots in registers / direct expressions / constants.
+          _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
+        };
 
-            // Strict mode: reject roots in registers / direct expressions / constants.
-            _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
-          };
-
-          let derived_fp_off = match *derived {
-            Location::Indirect {
-              dwarf_reg, offset, ..
-            } => location_fp_offset(dwarf_reg, offset)?,
-            _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
-          };
-
-          if base_fp_off != derived_fp_off {
-            return Err(StackMapError::DerivedPointerNotSupported {
-              base: base.clone(),
-              derived: derived.clone(),
-            });
-          }
-
-          out.push(base_fp_off);
-        }
-      } else {
-        for loc in &self.record.locations {
-          match *loc {
-            Location::Indirect {
-              dwarf_reg, offset, ..
-            } => {
-              out.push(location_fp_offset(dwarf_reg, offset)?);
-            }
-
-            // Ignore constants (used by statepoint headers and patchpoints).
-            Location::Constant { .. } | Location::ConstIndex { .. } => {}
-
-            // Strict mode: reject roots in registers / direct expressions.
-            _ => return Err(StackMapError::UnsupportedGcLocation { loc: loc.clone() }),
-          }
-        }
+        out.push(base_fp_off);
       }
     } else {
       for loc in &self.record.locations {
@@ -1781,7 +1747,7 @@ mod tests {
   }
 
   #[test]
-  fn derived_pointers_error_in_gc_root_rbp_offsets_strict() {
+  fn derived_pointers_return_base_offsets_in_gc_root_rbp_offsets_strict() {
     let mut bytes: Vec<u8> = Vec::new();
     build_header(&mut bytes, 1, 0, 1);
 
@@ -1836,10 +1802,12 @@ mod tests {
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
-    let err = callsite.gc_root_rbp_offsets_strict().unwrap_err();
-    assert!(
-      matches!(err, StackMapError::DerivedPointerNotSupported { .. }),
-      "expected DerivedPointerNotSupported, got {err:?}"
+    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    // base spill slot is [SP + 0], but derived pointer is in a separate slot. This API returns
+    // only the base slot.
+    assert_eq!(
+      callsite.gc_root_rbp_offsets_strict().unwrap(),
+      vec![fp_to_entry_sp - 40 + 0]
     );
   }
 
@@ -2165,15 +2133,16 @@ mod tests {
   }
 
   #[test]
-  fn statepoint_roots_base_not_equal_derived_errors() {
+  fn statepoint_roots_base_not_equal_derived_returns_base() {
     let bytes = build_stackmaps_with_statepoint_pair(8, 16);
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
 
-    let err = callsite.gc_root_rbp_offsets_strict().unwrap_err();
-    assert!(
-      matches!(err, StackMapError::DerivedPointerNotSupported { .. }),
-      "expected DerivedPointerNotSupported, got {err:?}"
+    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    // fp_off = fp_to_entry_sp - stack_size(32) + base_sp_off(8)
+    assert_eq!(
+      callsite.gc_root_rbp_offsets_strict().unwrap(),
+      vec![fp_to_entry_sp - 32 + 8]
     );
   }
 

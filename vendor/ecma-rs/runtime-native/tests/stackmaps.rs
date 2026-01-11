@@ -96,20 +96,15 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[test]
-fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
-  use runtime_native::stackmaps::{CallSite, StackMapRecord};
-  use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
-  use runtime_native::stackmaps::StackSize;
+fn assert_callsite_gc_root_rbp_offsets_strict_skips_deopt_operands(patchpoint_id: u64) {
+  use runtime_native::stackmaps::{CallSite, StackMapRecord, StackSize};
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
   //   1 deopt operand (Indirect, must NOT be treated as a root)
   //   1 GC (base, derived) pair
   let rec = StackMapRecord {
-    // Mark the record as a statepoint so `gc_root_rbp_offsets_strict` uses the statepoint layout
-    // decoder (which skips over deopt operands before enumerating GC pairs).
-    patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
+    patchpoint_id,
     instruction_offset: 0,
     locations: vec![
       Location::Constant { size: 8, value: 0 }, // callconv
@@ -149,9 +144,8 @@ fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn callsite_reloc_pairs_skip_deopt_operands() {
-  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+  use runtime_native::stackmaps::{CallSite, StackMapRecord, StackSize};
   use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
-  use runtime_native::stackmaps::StackSize;
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
@@ -212,9 +206,20 @@ fn callsite_reloc_pairs_skip_deopt_operands() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
+  assert_callsite_gc_root_rbp_offsets_strict_skips_deopt_operands(0);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands_with_nondefault_patchpoint_id() {
+  assert_callsite_gc_root_rbp_offsets_strict_skips_deopt_operands(123);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
-  use runtime_native::stackmaps::{CallSite, StackMapRecord};
-  use runtime_native::stackmaps::StackSize;
+  use runtime_native::stackmaps::{CallSite, StackMapRecord, StackSize};
 
   // Record that looks like a statepoint (3 constant headers + even tail), but uses a non-default
   // `patchpoint_id`.
@@ -294,3 +299,4 @@ fn callsite_reloc_pairs_require_statepoint_layout() {
   let pairs: Vec<_> = callsite.reloc_pairs().collect();
   assert!(pairs.is_empty());
 }
+
