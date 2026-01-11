@@ -3,16 +3,7 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::EffectSet;
 use crate::il::inst::{Arg, InstTyp};
 use crate::{FnId, Program};
-pub use effect_model::Purity;
-use effect_model::{EffectFlags, ThrowBehavior};
-
-/// `optimize-js` uses the canonical purity taxonomy from `effect-model`.
-///
-/// Note: We treat "unknown purity" as [`Purity::Impure`] in this pass (i.e. we
-/// stay conservative when we can't prove purity).
-pub(crate) fn is_default_purity(purity: &Purity) -> bool {
-  matches!(purity, Purity::Impure)
-}
+pub use crate::il::meta::Purity;
 
 pub fn purity_of_effects(effects: &EffectSet) -> Purity {
   purity_from_effects(effects)
@@ -48,26 +39,7 @@ impl FnPurityMap {
 }
 
 fn purity_from_effects(effects: &EffectSet) -> Purity {
-  if effects.unknown
-    || !effects.writes.is_empty()
-    || !matches!(effects.summary.throws, ThrowBehavior::Never)
-  {
-    return Purity::Impure;
-  }
-
-  if !effects.summary.flags.is_empty() {
-    // Allocating is only used when allocation is the *only* tracked effect.
-    if effects.summary.flags == EffectFlags::ALLOCATES && effects.reads.is_empty() {
-      return Purity::Allocating;
-    }
-    return Purity::Impure;
-  }
-
-  if !effects.reads.is_empty() {
-    return Purity::ReadOnly;
-  }
-
-  Purity::Pure
+  Purity::from_effects(effects)
 }
 
 pub fn compute_program_purity(program: &Program, effects: &FnEffectMap) -> FnPurityMap {
@@ -146,7 +118,7 @@ mod tests {
   use crate::OptimizationStats;
   use crate::ProgramFunction;
   use crate::TopLevelMode;
-  use effect_model::EffectFlags;
+  use effect_model::{EffectFlags, ThrowBehavior};
 
   fn cfg_with_single_call(callee: Arg) -> Cfg {
     let mut graph = CfgGraph::default();

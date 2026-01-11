@@ -3,7 +3,18 @@ use crate::analysis::ownership::OwnershipResult;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, ArgUseMode, InPlaceHint, InstTyp, OwnershipState};
 use ahash::{HashMap, HashSet};
- 
+
+fn is_consume_site(inst: &crate::il::inst::Inst, arg_idx: usize) -> bool {
+  match inst.t {
+    InstTyp::VarAssign => arg_idx == 0,
+    InstTyp::PropAssign => arg_idx == 2,
+    InstTyp::Call => arg_idx >= 1, // this + call args; callee is always borrowed
+    InstTyp::Return | InstTyp::Throw => arg_idx == 0,
+    InstTyp::ForeignStore | InstTyp::UnknownStore => arg_idx == 0,
+    _ => false,
+  }
+}
+
 fn ownership_of_var(ownership: &OwnershipResult, var: u32) -> OwnershipState {
   ownership
     .get(&var)
@@ -17,7 +28,7 @@ fn should_consume_var(var: u32, live_out: &HashSet<u32>, ownership: &OwnershipRe
  
 pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
   let live_outs = calculate_live_outs(cfg, &HashMap::default(), &HashSet::default());
- 
+
   let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
   labels.sort_unstable();
  
@@ -36,63 +47,28 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
       if inst.args.is_empty() {
         continue;
       }
- 
+
       let mut modes = vec![ArgUseMode::Borrow; inst.args.len()];
       let mut any_consume = false;
- 
-      match inst.t {
-        InstTyp::Return | InstTyp::Throw => {
-          if let Some(Arg::Var(var)) = inst.args.get(0) {
-            if ownership_of_var(ownership, *var) == OwnershipState::Owned {
-              modes[0] = ArgUseMode::Consume;
-              any_consume = true;
-            }
-          }
+
+      for (idx, arg) in inst.args.iter().enumerate() {
+        if !is_consume_site(inst, idx) {
+          continue;
         }
-        InstTyp::ForeignStore | InstTyp::UnknownStore => {
-          if let Some(Arg::Var(var)) = inst.args.get(0) {
-            if should_consume_var(*var, &live_out, ownership) {
-              modes[0] = ArgUseMode::Consume;
-              any_consume = true;
-            }
-          }
+        let Arg::Var(var) = arg else {
+          continue;
+        };
+        if should_consume_var(*var, &live_out, ownership) {
+          modes[idx] = ArgUseMode::Consume;
+          any_consume = true;
         }
-        InstTyp::PropAssign => {
-          if let Some(Arg::Var(var)) = inst.args.get(2) {
-            if should_consume_var(*var, &live_out, ownership) {
-              modes[2] = ArgUseMode::Consume;
-              any_consume = true;
-            }
-          }
+      }
+
+      if inst.t == InstTyp::VarAssign && modes.get(0) == Some(&ArgUseMode::Consume) {
+        if let (Some(Arg::Var(src)), Some(&tgt)) = (inst.args.get(0), inst.tgts.get(0)) {
+          inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *src, tgt });
         }
-        InstTyp::Call => {
-          // args layout: [callee, this, arg0, ...]
-          // NOTE: we currently treat the callee as always borrowed.
-          for (idx, arg) in inst.args.iter().enumerate().skip(1) {
-            let Arg::Var(var) = arg else {
-              continue;
-            };
-            if should_consume_var(*var, &live_out, ownership) {
-              modes[idx] = ArgUseMode::Consume;
-              any_consume = true;
-            }
-          }
-        }
-        InstTyp::VarAssign => {
-          if let (Some(Arg::Var(var)), Some(&tgt)) = (inst.args.get(0), inst.tgts.get(0)) {
-            if should_consume_var(*var, &live_out, ownership) {
-              modes[0] = ArgUseMode::Consume;
-              any_consume = true;
-              inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *var, tgt });
-            }
-          }
-        }
-        // SSA merge nodes do not consume.
-        InstTyp::Phi => {}
-        // Conservative default: do not consume args for other ops yet.
-        _ => {}
-      };
- 
+      }
       if any_consume {
         debug_assert!(
           modes.iter().any(|m| matches!(m, ArgUseMode::Consume)),
