@@ -26,16 +26,18 @@ use vm_js::{
   GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks,
 };
+use vm_js::iterator;
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
-/// Hard cap on how many entries `AbortSignal.any(signals)` will process.
+/// Hard cap on how many signals `AbortSignal.any(signals)` will consume from the provided iterable.
 ///
-/// This is a hostile-input guardrail: `AbortSignal.any` is specified to take a `sequence`, so callers
-/// can pass an object with an arbitrarily large `length` and force the host to perform unbounded
-/// work. Real-world uses are small (usually a handful of signals).
-const MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS: u32 = 10_000;
+/// This is a hostile-input guardrail: the `signals` argument is specified as a WebIDL `sequence`,
+/// meaning the caller controls an *iterable*. That iterable can be extremely large or even infinite,
+/// so we cap the number of values we will consume. Keep this low enough that worst-case iteration
+/// stays practical even in debug builds (the `vm-js` iterator helpers currently allocate per-step).
+const MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS: u32 = 1_024;
 const ABORT_SIGNAL_ANY_TOO_MANY_SIGNALS_ERROR: &str = "AbortSignal.any input is too large";
 
 fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
@@ -98,6 +100,24 @@ fn require_object(this: Value, err: &'static str) -> Result<GcObject, VmError> {
 fn require_abort_signal(scope: &mut Scope<'_>, this: Value, err: &'static str) -> Result<GcObject, VmError> {
   let obj = require_object(this, err)?;
   let brand = get_own_data_prop(scope, obj, SIGNAL_BRAND_KEY)?;
+  if matches!(brand, Value::Bool(true)) {
+    Ok(obj)
+  } else {
+    Err(VmError::TypeError(err))
+  }
+}
+
+fn require_abort_signal_with_brand_key(
+  scope: &mut Scope<'_>,
+  this: Value,
+  brand_key: &PropertyKey,
+  err: &'static str,
+) -> Result<GcObject, VmError> {
+  let obj = require_object(this, err)?;
+  let brand = scope
+    .heap()
+    .object_get_own_data_property_value(obj, brand_key)?
+    .unwrap_or(Value::Undefined);
   if matches!(brand, Value::Bool(true)) {
     Ok(obj)
   } else {
@@ -529,10 +549,8 @@ fn abort_signal_static_any_native(
 ) -> Result<Value, VmError> {
   let proto = signal_proto_from_callee(scope, callee)?;
 
-  let seq = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(seq_obj) = seq else {
-    return Err(VmError::TypeError("AbortSignal.any requires an object argument"));
-  };
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut record = iterator::get_iterator(vm, host_ctx, host_hooks, scope, iterable)?;
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
@@ -542,69 +560,135 @@ fn abort_signal_static_any_native(
   set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
   set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
 
-  let length_key = alloc_key(scope, "length")?;
-  let length_val = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, seq_obj, length_key)?;
-  let mut length = scope.heap_mut().to_number(length_val)?;
-  if !length.is_finite() || length.is_nan() || length < 0.0 {
-    length = 0.0;
-  }
-  let length = length.trunc().min(u32::MAX as f64) as u32;
-  if length > MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS {
-    return Err(VmError::TypeError(ABORT_SIGNAL_ANY_TOO_MANY_SIGNALS_ERROR));
-  }
+  // Pre-allocate frequently accessed property keys so we do not repeatedly allocate strings while
+  // consuming large iterables.
+  let signal_brand_key = alloc_key(scope, SIGNAL_BRAND_KEY)?;
+  let aborted_key = alloc_key(scope, "aborted")?;
+  let reason_key = alloc_key(scope, "reason")?;
 
-  for idx in 0..length {
-    let key_s = scope.alloc_string(&idx.to_string())?;
-    scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-    let item = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, seq_obj, key)?;
-    let source_signal =
-      require_abort_signal(scope, item, "AbortSignal.any input is not an AbortSignal")?;
+  // Root all collected signals on the stack so:
+  // - aborted reasons remain reachable,
+  // - we can delay `addEventListener` side effects until after we've validated input bounds.
+  let mut sources: Vec<GcObject> = Vec::new();
+  let mut count: u32 = 0;
 
-    // If already aborted, synchronously create an already-aborted composite signal.
-    let aborted_key = alloc_key(scope, "aborted")?;
-    let aborted = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, aborted_key)?;
-    if scope.heap().to_boolean(aborted)? {
-      let reason_key = alloc_key(scope, "reason")?;
-      let reason = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, reason_key)?;
-      scope.push_root(reason)?;
-      abort_signal(
-        vm,
-        scope,
-        host_ctx,
-        host_hooks,
-        signal,
-        reason,
-        /* dispatch_event */ false,
-      )?;
-      return Ok(Value::Object(signal));
+  let mut pre_aborted_reason: Option<Value> = None;
+  let mut pre_aborted = false;
+
+  let collect_result: Result<(), VmError> = (|| {
+    loop {
+      // `AbortSignal.any` can be invoked with extremely large iterables. Ensure VM budgets apply even
+      // while we're running this native loop: some iterators (notably `IteratorKind::Array`) do not
+      // execute any JS bytecode per step, so the VM would otherwise not observe deadline/fuel
+      // exhaustion until we return to the interpreter.
+      vm.tick()?;
+
+      let Some(item) = iterator::iterator_step_value(vm, host_ctx, host_hooks, scope, &mut record)? else {
+        break;
+      };
+      count += 1;
+      if count > MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS {
+        return Err(VmError::TypeError(ABORT_SIGNAL_ANY_TOO_MANY_SIGNALS_ERROR));
+      }
+
+      let (source_signal, aborted_now, reason_now) = {
+        // Root the yielded value while we validate it and read its state.
+        let mut iter_scope = scope.reborrow();
+        iter_scope.push_root(item)?;
+        let source_signal = require_abort_signal_with_brand_key(
+          &mut iter_scope,
+          item,
+          &signal_brand_key,
+          "AbortSignal.any input is not an AbortSignal",
+        )?;
+
+        let aborted_val = iter_scope
+          .heap()
+          .object_get_own_data_property_value(source_signal, &aborted_key)?
+          .unwrap_or(Value::Undefined);
+        let aborted_now = iter_scope.heap().to_boolean(aborted_val)?;
+
+        if aborted_now {
+          let reason_now = iter_scope
+            .heap()
+            .object_get_own_data_property_value(source_signal, &reason_key)?
+            .unwrap_or(Value::Undefined);
+          (source_signal, true, Some(reason_now))
+        } else {
+          (source_signal, false, None)
+        }
+      };
+
+      // Root the source signal for the duration of this call so it can't be GC'd even if it isn't
+      // reachable from user code.
+      scope.push_root(Value::Object(source_signal))?;
+      sources.push(source_signal);
+
+      if aborted_now {
+        pre_aborted = true;
+        pre_aborted_reason = reason_now;
+        break;
+      }
     }
+    Ok(())
+  })();
 
-    // Otherwise, add an abort listener that aborts the composite signal.
-    let listener_call_id = vm.register_native_call(abort_any_listener_native)?;
-    let name = scope.alloc_string("AbortSignal.any listener")?;
-    scope.push_root(Value::String(name))?;
-    let listener = scope.alloc_native_function_with_slots(
+  if let Err(err) = collect_result {
+    // Abrupt completion: best-effort iterator close.
+    let _ = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
+    return Err(err);
+  }
+
+  // If an input signal is already aborted, synchronously create an already-aborted composite signal.
+  if pre_aborted {
+    let _ = iterator::iterator_close(vm, host_ctx, host_hooks, scope, &record);
+    let reason = pre_aborted_reason.unwrap_or(Value::Undefined);
+    abort_signal(
+      vm,
+      scope,
+      host_ctx,
+      host_hooks,
+      signal,
+      reason,
+      /* dispatch_event */ false,
+    )?;
+    return Ok(Value::Object(signal));
+  }
+
+  // Otherwise, add abort listeners that forward the reason to the composite signal.
+  let listener_call_id = vm.register_native_call(abort_any_listener_native)?;
+  let func_proto = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("missing intrinsics"))?
+    .function_prototype();
+
+  for source_signal in sources {
+    let mut listener_scope = scope.reborrow();
+    listener_scope.push_root(Value::Object(signal))?;
+    listener_scope.push_root(Value::Object(source_signal))?;
+
+    let name = listener_scope.alloc_string("AbortSignal.any listener")?;
+    listener_scope.push_root(Value::String(name))?;
+    let listener = listener_scope.alloc_native_function_with_slots(
       listener_call_id,
       None,
       name,
       1,
       &[Value::Object(signal), Value::Object(source_signal)],
     )?;
-    scope.heap_mut().object_set_prototype(
-      listener,
-      Some(vm.intrinsics().ok_or(VmError::Unimplemented("missing intrinsics"))?.function_prototype()),
-    )?;
-    scope.push_root(Value::Object(listener))?;
+    listener_scope
+      .heap_mut()
+      .object_set_prototype(listener, Some(func_proto))?;
+    listener_scope.push_root(Value::Object(listener))?;
 
-    let add_key = alloc_key(scope, "addEventListener")?;
-    let add = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, add_key)?;
-    if scope.heap().is_callable(add).unwrap_or(false) {
-      let type_s = scope.alloc_string("abort")?;
-      scope.push_root(Value::String(type_s))?;
+    let add_key = alloc_key(&mut listener_scope, "addEventListener")?;
+    let add = vm.get_with_host_and_hooks(host_ctx, &mut listener_scope, host_hooks, source_signal, add_key)?;
+    if listener_scope.heap().is_callable(add).unwrap_or(false) {
+      let type_s = listener_scope.alloc_string("abort")?;
+      listener_scope.push_root(Value::String(type_s))?;
       let _ = vm.call_with_host_and_hooks(
         host_ctx,
-        scope,
+        &mut listener_scope,
         host_hooks,
         add,
         Value::Object(source_signal),

@@ -1583,7 +1583,7 @@ __sig.addEventListener('abort', () => { globalThis.__events++; });
 fn abort_signal_any_aborts_when_input_signal_aborts_and_forwards_reason() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -1634,35 +1634,119 @@ globalThis.__same_reason = (s.reason === c2.signal.reason);
 }
 
 #[test]
-fn abort_signal_any_rejects_unbounded_sequence_lengths() -> Result<()> {
+fn abort_signal_any_accepts_iterables() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__events = 0;
+globalThis.__same_reason = false;
+
+const c1 = new AbortController();
+const c2 = new AbortController();
+
+const iterable = {
+  [Symbol.iterator]: function () {
+    let i = 0;
+    return {
+      next: function () {
+        i++;
+        if (i === 1) return { value: c1.signal, done: false };
+        if (i === 2) return { value: c2.signal, done: false };
+        return { value: undefined, done: true };
+      }
+    };
+  }
+};
+
+const s = AbortSignal.any(iterable);
+globalThis.__sig = s;
+s.addEventListener('abort', () => { globalThis.__events++; });
+
+c2.abort();
+globalThis.__same_reason = (s.reason === c2.signal.reason);
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (events, aborted, same_reason, reason_name) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let events = get_data_prop(&mut scope, global, "__events");
+    let same_reason = get_data_prop(&mut scope, global, "__same_reason");
+    let Value::Object(sig) = get_data_prop(&mut scope, global, "__sig") else {
+      return Err(Error::Other("expected __sig to be an object".to_string()));
+    };
+    let aborted = get_data_prop(&mut scope, sig, "aborted");
+    let Value::Object(reason) = get_data_prop(&mut scope, sig, "reason") else {
+      return Err(Error::Other(
+        "expected AbortSignal.any composite reason to be an object".to_string(),
+      ));
+    };
+    let reason_name_value = get_data_prop(&mut scope, reason, "name");
+    let reason_name = get_string(scope.heap(), reason_name_value);
+    (events, aborted, same_reason, reason_name)
+  };
+
+  assert_eq!(events, Value::Number(1.0));
+  assert_eq!(aborted, Value::Bool(true));
+  assert_eq!(same_reason, Value::Bool(true));
+  assert_eq!(reason_name, "AbortError");
+  Ok(())
+}
+
+#[test]
+fn abort_signal_any_rejects_iterables_longer_than_limit() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 globalThis.__err_name = "";
+globalThis.__err_message = "";
 try {
-  // Hostile input: a huge length would otherwise cause unbounded work.
-  AbortSignal.any({ length: 1000000000 });
+  // Hostile input: an iterable can be unbounded or infinite. `AbortSignal.any` must cap how many
+  // entries it will consume.
+  //
+  // Use a dense Array so iteration stays cheap even in debug builds: `Array.prototype[@@iterator]`
+  // is implemented natively by the `vm-js` backend. (`Array.prototype.fill` is not available in
+  // this minimal JS runtime, so build it manually.)
+  const c = new AbortController();
+  const signals = [];
+  for (let i = 0; i < 1025; i++) signals.push(c.signal);
+  AbortSignal.any(signals);
   globalThis.__err_name = "no throw";
 } catch (e) {
   globalThis.__err_name = e && e.name;
+  globalThis.__err_message = e && e.message;
 }
 "#,
   )?;
 
-  let name = {
+  let (name, message) = {
     let window = host.window_mut();
     let global = window.global_object();
     let (_vm, heap) = window.vm_and_heap_mut();
     let mut scope = heap.scope();
     let err_value = get_data_prop(&mut scope, global, "__err_name");
-    get_string(scope.heap(), err_value)
+    let msg_value = get_data_prop(&mut scope, global, "__err_message");
+    (
+      get_string(scope.heap(), err_value),
+      get_string(scope.heap(), msg_value),
+    )
   };
   assert_eq!(name, "TypeError");
+  assert_eq!(message, "AbortSignal.any input is too large");
   Ok(())
 }
 
