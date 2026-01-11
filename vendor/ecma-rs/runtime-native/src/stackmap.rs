@@ -247,14 +247,19 @@ impl StackMapRecord {
       locations.push(parse_location(r, constants)?);
     }
 
-    // After `Locations[]`, StackMap v3 pads so the live-outs array starts on an
+    // After `Locations[]`, StackMap v3 pads so the live-out header starts on an
     // 8-byte boundary.
-    r.pad_to_align_after(/* upcoming field size */ 2, 8)?;
+    //
+    // The live-out header itself is:
+    //   u16 Padding;
+    //   u16 NumLiveOuts;
+    r.pad_to_align(8)?;
+    let _padding = r.read_u16()?;
     let num_live_outs = r.read_u16()? as usize;
     for _ in 0..num_live_outs {
       let _dwarf_reg_num = r.read_u16()?;
-      let _size = r.read_u8()?;
       let _reserved = r.read_u8()?;
+      let _size = r.read_u8()?;
     }
     r.pad_to_align(8)?;
 
@@ -605,17 +610,6 @@ impl<'a> Reader<'a> {
 
   fn pad_to_align(&mut self, align: usize) -> Result<(), StackMapError> {
     while self.pos % align != 0 {
-      let offset = self.pos;
-      let b = self.read_u8()?;
-      if b != 0 {
-        return Err(StackMapError::NonZeroPaddingByte { offset, byte: b });
-      }
-    }
-    Ok(())
-  }
-
-  fn pad_to_align_after(&mut self, field_size: usize, align: usize) -> Result<(), StackMapError> {
-    while (self.pos + field_size) % align != 0 {
       let offset = self.pos;
       let b = self.read_u8()?;
       if b != 0 {

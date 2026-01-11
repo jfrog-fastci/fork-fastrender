@@ -130,19 +130,25 @@ impl StackMap {
         )?);
       }
 
-      // StackMap v3 aligns the live-out header to 8 bytes after the locations
-      // array. This means there may be padding between the last location and
-      // `num_live_outs` when `num_locations * sizeof(Location)` is not 8-byte
-      // aligned (e.g. odd number of 12-byte Location entries).
+      // StackMap v3 aligns the *live-out header* to an 8-byte boundary after the
+      // locations array.
+      //
+      // The live-out header itself is:
+      //   u16 Padding;
+      //   u16 NumLiveOuts;
+      //
+      // This means there may be padding between the last location and the header
+      // when `num_locations * sizeof(Location)` is not 8-byte aligned (e.g. odd
+      // number of 12-byte Location entries).
       c.align_to(8)?;
 
+      let _padding = c.read_u16()?;
       let num_live_outs = c.read_u16()? as usize;
-      let _reserved = c.read_u16()?;
       let mut live_outs = Vec::with_capacity(num_live_outs);
       for _ in 0..num_live_outs {
         let dwarf_reg = c.read_u16()?;
-        let size = c.read_u8()?;
         let _reserved = c.read_u8()?;
+        let size = c.read_u8()?;
         live_outs.push(LiveOut { dwarf_reg, size });
       }
 
