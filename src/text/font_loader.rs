@@ -1758,18 +1758,15 @@ impl FontContext {
     ranges.is_empty() || (ranges.len() == 1 && ranges[0] == (0, 0x10ffff))
   }
 
-  fn unicode_range_used_intersection_count(ranges: &[(u32, u32)], used: &[u32]) -> usize {
-    if used.is_empty() {
-      return 0;
-    }
-    if Self::is_full_unicode_range(ranges) {
-      return used.len();
+  fn merge_unicode_ranges(ranges: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    if ranges.is_empty() {
+      return Vec::new();
     }
 
     let mut sorted = ranges.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-    let mut merged: Vec<(u32, u32)> = Vec::new();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(sorted.len());
     for (start, end) in sorted {
       if let Some((_, merged_end)) = merged.last_mut() {
         if start <= merged_end.saturating_add(1) {
@@ -1781,10 +1778,22 @@ impl FontContext {
     }
 
     merged
-      .into_iter()
+  }
+
+  #[inline]
+  fn unicode_range_merged_used_intersection_count(merged_ranges: &[(u32, u32)], used: &[u32]) -> usize {
+    if used.is_empty() {
+      return 0;
+    }
+    if merged_ranges.is_empty() {
+      return used.len();
+    }
+
+    merged_ranges
+      .iter()
       .map(|(start, end)| {
-        let start_idx = used.partition_point(|cp| *cp < start);
-        let end_idx = used.partition_point(|cp| *cp <= end);
+        let start_idx = used.partition_point(|cp| *cp < *start);
+        let end_idx = used.partition_point(|cp| *cp <= *end);
         end_idx.saturating_sub(start_idx)
       })
       .sum()
@@ -1816,7 +1825,14 @@ impl FontContext {
     };
 
     let local_only = !allow_remote;
-    let mut subset_candidates: Vec<(usize, usize)> = Vec::new();
+    #[derive(Debug)]
+    struct SubsetCandidate {
+      order: usize,
+      overlap: usize,
+      merged_ranges: Vec<(u32, u32)>,
+    }
+
+    let mut subset_candidates: Vec<SubsetCandidate> = Vec::new();
     let mut unknown_local_candidates: Vec<usize> = Vec::new();
     let mut unknown_remote_candidates: Vec<usize> = Vec::new();
 
@@ -1834,10 +1850,14 @@ impl FontContext {
         }
 
         if !Self::is_full_unicode_range(&face.unicode_ranges) {
-          let overlap =
-            Self::unicode_range_used_intersection_count(&face.unicode_ranges, used_codepoints);
+          let merged_ranges = Self::merge_unicode_ranges(&face.unicode_ranges);
+          let overlap = Self::unicode_range_merged_used_intersection_count(&merged_ranges, used_codepoints);
           if overlap > 0 {
-            subset_candidates.push((order, overlap));
+            subset_candidates.push(SubsetCandidate {
+              order,
+              overlap,
+              merged_ranges,
+            });
           }
           continue;
         }
@@ -1859,17 +1879,79 @@ impl FontContext {
     } else if subset_candidates.len() <= max_subset_fonts {
       let mut indices: Vec<usize> = subset_candidates
         .into_iter()
-        .map(|(order, _)| order)
+        .map(|candidate| candidate.order)
         .collect();
       indices.sort_unstable();
       indices
     } else {
-      subset_candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-      subset_candidates.truncate(max_subset_fonts);
-      let mut indices: Vec<usize> = subset_candidates
-        .into_iter()
-        .map(|(order, _)| order)
-        .collect();
+      let mut uncovered: Vec<u32> = used_codepoints.to_vec();
+      let mut remaining = subset_candidates;
+      let mut indices: Vec<usize> = Vec::with_capacity(max_subset_fonts);
+
+      while indices.len() < max_subset_fonts {
+        let mut best_idx: Option<usize> = None;
+        let mut best_added = 0usize;
+        for (idx, candidate) in remaining.iter().enumerate() {
+          let added = Self::unicode_range_merged_used_intersection_count(&candidate.merged_ranges, &uncovered);
+          if added == 0 {
+            continue;
+          }
+          match best_idx {
+            None => {
+              best_idx = Some(idx);
+              best_added = added;
+            }
+            Some(current_best) => {
+              let best_order = remaining[current_best].order;
+              if added > best_added || (added == best_added && candidate.order < best_order) {
+                best_idx = Some(idx);
+                best_added = added;
+              }
+            }
+          }
+        }
+
+        let Some(best_idx) = best_idx else {
+          break;
+        };
+
+        let candidate = remaining.swap_remove(best_idx);
+        indices.push(candidate.order);
+
+        if uncovered.is_empty() {
+          break;
+        }
+
+        let mut next_uncovered: Vec<u32> = Vec::with_capacity(uncovered.len());
+        let mut range_iter = candidate.merged_ranges.iter();
+        let mut current_range = range_iter.next().copied();
+        for cp in uncovered {
+          while let Some((_, end)) = current_range {
+            if cp <= end {
+              break;
+            }
+            current_range = range_iter.next().copied();
+          }
+          if let Some((start, end)) = current_range {
+            if cp >= start && cp <= end {
+              continue;
+            }
+          }
+          next_uncovered.push(cp);
+        }
+        uncovered = next_uncovered;
+      }
+
+      if indices.len() < max_subset_fonts && !remaining.is_empty() {
+        remaining.sort_by(|a, b| b.overlap.cmp(&a.overlap).then_with(|| a.order.cmp(&b.order)));
+        for candidate in remaining {
+          if indices.len() >= max_subset_fonts {
+            break;
+          }
+          indices.push(candidate.order);
+        }
+      }
+
       indices.sort_unstable();
       indices
     };
@@ -5720,6 +5802,37 @@ mod tests {
     let selected =
       FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 0, 2);
     assert_eq!(selected, vec![0, 1]);
+  }
+
+  #[test]
+  fn web_font_subset_cap_preserves_rare_codepoints() {
+    let mut used_codepoints: Vec<u32> = (0x0041..=0x005a).collect();
+    used_codepoints.push(0xF002);
+
+    let mut faces: Vec<FontFaceRule> = (0..100)
+      .map(|i| FontFaceRule {
+        family: Some("AsciiFamily".to_string()),
+        sources: vec![FontFaceSource::url(format!(
+          "https://example.com/ascii{}.woff2",
+          i
+        ))],
+        unicode_ranges: vec![(0x0041, 0x005a)],
+        ..Default::default()
+      })
+      .collect();
+
+    faces.push(FontFaceRule {
+      family: Some("RareFamily".to_string()),
+      sources: vec![FontFaceSource::url(
+        "https://example.com/rare.woff2".to_string(),
+      )],
+      unicode_ranges: vec![(0xF002, 0xF002)],
+      ..Default::default()
+    });
+
+    let selected =
+      FontContext::select_web_font_faces_for_load(&faces, None, true, true, &used_codepoints, 0, 2);
+    assert_eq!(selected, vec![0, 100]);
   }
 
   #[test]
