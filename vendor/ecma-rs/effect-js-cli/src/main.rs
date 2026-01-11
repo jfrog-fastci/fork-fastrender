@@ -5,8 +5,9 @@ use effect_js::{
   ApiId, RecognizedPattern,
 };
 use hir_js::{ExprId, ExprKind, FileKind, ObjectKey};
-use knowledge_base::{ApiKind, KnowledgeBase};
+use knowledge_base::{ApiKind, KnowledgeBase, TargetEnv, WebPlatform};
 use parse_js::{parse_with_options, ParseOptions};
+use semver::Version;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -21,8 +22,37 @@ struct Cli {
   #[arg(long, global = true, value_name = "DIR")]
   kb_dir: Option<PathBuf>,
 
+  /// Target Node.js version to use when selecting versioned KB entries.
+  ///
+  /// Accepts either `vMAJOR.MINOR.PATCH` or a lenient form like `20` / `20.3` / `v20`.
+  #[arg(long, global = true, value_name = "VERSION", conflicts_with = "web_platform")]
+  node_version: Option<String>,
+
+  /// Target web platform to use when selecting platform-specific KB entries.
+  #[arg(long, global = true, value_name = "PLATFORM", value_enum, conflicts_with = "node_version")]
+  web_platform: Option<WebPlatformArg>,
+
   #[command(subcommand)]
   command: Command,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+enum WebPlatformArg {
+  Generic,
+  Chrome,
+  Firefox,
+  Safari,
+}
+
+impl From<WebPlatformArg> for WebPlatform {
+  fn from(value: WebPlatformArg) -> Self {
+    match value {
+      WebPlatformArg::Generic => WebPlatform::Generic,
+      WebPlatformArg::Chrome => WebPlatform::Chrome,
+      WebPlatformArg::Firefox => WebPlatform::Firefox,
+      WebPlatformArg::Safari => WebPlatform::Safari,
+    }
+  }
 }
 
 #[derive(Subcommand, Debug)]
@@ -59,16 +89,22 @@ enum KbCommand {
 }
 
 fn main() {
-  let Cli { kb_dir, command } = Cli::parse();
+  let Cli {
+    kb_dir,
+    node_version,
+    web_platform,
+    command,
+  } = Cli::parse();
   let kb_dir = kb_dir.as_deref();
+  let target = parse_target_env(node_version.as_deref(), web_platform);
 
   match command {
-    Command::Kb { command } => run_kb(kb_dir, command),
-    Command::Analyze { file, ts, tsx } => run_analyze(kb_dir, file, ts, tsx),
+    Command::Kb { command } => run_kb(kb_dir, &target, command),
+    Command::Analyze { file, ts, tsx } => run_analyze(kb_dir, &target, file, ts, tsx),
   }
 }
 
-fn run_kb(kb_dir: Option<&Path>, command: KbCommand) {
+fn run_kb(kb_dir: Option<&Path>, target: &TargetEnv, command: KbCommand) {
   let kb = load_kb_or_exit(kb_dir);
   match command {
     KbCommand::List => {
@@ -77,14 +113,14 @@ fn run_kb(kb_dir: Option<&Path>, command: KbCommand) {
       }
     }
     KbCommand::Show { name } => {
-      let Some(entry) = kb.get(&name) else {
+      let Some(entry) = kb.api_for_target(&name, target) else {
         eprintln!("unknown API entry: {name}");
         exit(2);
       };
 
       println!("name: {}", entry.name);
       println!("id: 0x{:x}", entry.id.raw());
-      if let Some(src) = kb.source_of(&name) {
+      if let Some(src) = kb.source_for_target(&name, target) {
         println!("source: {src}");
       }
       if !entry.aliases.is_empty() {
@@ -144,7 +180,7 @@ fn run_kb(kb_dir: Option<&Path>, command: KbCommand) {
   }
 }
 
-fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
+fn run_analyze(kb_dir: Option<&Path>, target: &TargetEnv, file: PathBuf, ts: bool, tsx: bool) {
   let source = fs::read_to_string(&file).unwrap_or_else(|err| {
     eprintln!("failed to read {}: {err}", file.display());
     std::process::exit(2);
@@ -184,16 +220,16 @@ fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
   if kb_calls.is_empty() {
     println!("(no resolved calls)");
   } else {
-      for call in kb_calls {
-        let Some(entry) = kb.get(&call.api) else {
-          println!(
-            "[{}..{}] {} => {}",
-            call.span.start, call.span.end, call.call_text, call.api
-          );
-          continue;
-        };
-        let source = kb.source_of(&call.api).unwrap_or("<unknown>");
+    for call in kb_calls {
+      let Some(entry) = kb.api_for_target(&call.api, target) else {
         println!(
+          "[{}..{}] {} => {}",
+          call.span.start, call.span.end, call.call_text, call.api
+        );
+        continue;
+      };
+      let source = kb.source_for_target(&call.api, target).unwrap_or("<unknown>");
+      println!(
           "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
           call.span.start,
           call.span.end,
@@ -213,8 +249,8 @@ fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
   } else {
     for call in builtin_calls {
       // Show KB details when available; otherwise fall back to the canonical API name.
-      if let Some(entry) = kb.get(call.api.as_str()) {
-        let source = kb.source_of(call.api.as_str()).unwrap_or("<unknown>");
+      if let Some(entry) = kb.api_for_target(call.api.as_str(), target) {
+        let source = kb.source_for_target(call.api.as_str(), target).unwrap_or("<unknown>");
         println!(
           "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
           call.span.start,
@@ -261,6 +297,49 @@ fn load_kb_or_exit(kb_dir: Option<&Path>) -> KnowledgeBase {
     exit(1);
   });
   kb
+}
+
+fn parse_target_env(node_version: Option<&str>, web_platform: Option<WebPlatformArg>) -> TargetEnv {
+  if let Some(raw) = node_version {
+    let Some(version) = parse_lenient_version(raw) else {
+      eprintln!("invalid --node-version: {raw}");
+      exit(2);
+    };
+    return TargetEnv::Node { version };
+  }
+
+  if let Some(platform) = web_platform {
+    return TargetEnv::Web {
+      platform: platform.into(),
+    };
+  }
+
+  TargetEnv::Unknown
+}
+
+fn parse_lenient_version(raw: &str) -> Option<Version> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.strip_prefix('v').unwrap_or(raw);
+
+  if let Ok(v) = Version::parse(raw) {
+    return Some(v);
+  }
+
+  let mut it = raw.split('.');
+  let major_str = it.next()?;
+  let minor_str = it.next();
+  let patch_str = it.next();
+  if it.next().is_some() {
+    return None;
+  }
+
+  let major = major_str.parse::<u64>().ok()?;
+  let minor = minor_str.map(|s| s.parse::<u64>().ok()).unwrap_or(Some(0))?;
+  let patch = patch_str.map(|s| s.parse::<u64>().ok()).unwrap_or(Some(0))?;
+  Some(Version::new(major, minor, patch))
 }
 
 #[derive(Debug, Clone)]
