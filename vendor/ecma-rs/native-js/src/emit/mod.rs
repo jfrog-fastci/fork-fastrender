@@ -17,6 +17,9 @@ use inkwell::targets::{
   CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use inkwell::OptimizationLevel;
+use llvm_sys::support::LLVMParseCommandLineOptions;
+use std::ffi::CString;
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -36,7 +39,10 @@ pub enum EmitError {
   },
 
   #[error("failed to emit LLVM module as {file_type:?}: {message}")]
-  CodegenBuffer { file_type: FileType, message: String },
+  CodegenBuffer {
+    file_type: FileType,
+    message: String,
+  },
 }
 
 /// Runs the native-js LLVM pass pipeline and writes an object file.
@@ -45,7 +51,12 @@ pub enum EmitError {
 /// `verify<safepoint-ir>`) before invoking LLVM codegen. The rewrite pass is what
 /// causes LLVM to emit `llvm.experimental.gc.statepoint.*` intrinsics and, during
 /// object emission, a `.llvm_stackmaps` section.
-pub fn write_object_file(module: &Module<'_>, target_machine: &TargetMachine, path: &Path) -> Result<(), EmitError> {
+pub fn write_object_file(
+  module: &Module<'_>,
+  target_machine: &TargetMachine,
+  path: &Path,
+) -> Result<(), EmitError> {
+  ensure_targets_initialized();
   passes::rewrite_statepoints_for_gc(module, target_machine)?;
 
   target_machine
@@ -63,6 +74,25 @@ static TARGETS_INITIALIZED: Once = Once::new();
 
 fn ensure_targets_initialized() {
   TARGETS_INITIALIZED.call_once(|| {
+    // LLVM can legally keep `gc.statepoint` roots in callee-saved registers and
+    // describe them as `Register` locations in `.llvm_stackmaps`. Our runtime's
+    // initial stack walking strategy is frame-pointer-only and does not use
+    // unwind-based register reconstruction, so we must force spills.
+    //
+    // Equivalent to:
+    //   llc-18 --fixup-max-csr-statepoints=0
+    //
+    // `LLVMParseCommandLineOptions` configures global codegen flags for this
+    // process; do it once before any TargetMachine emits code.
+    let argv = [
+      CString::new("native-js").expect("argv[0]"),
+      CString::new("--fixup-max-csr-statepoints=0").expect("argv[1]"),
+    ];
+    let argv_ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
+    unsafe {
+      LLVMParseCommandLineOptions(argv_ptrs.len() as i32, argv_ptrs.as_ptr(), std::ptr::null());
+    }
+
     // `initialize_native` registers the host target (Linux x86_64 on the agent
     // machines) and enables code generation.
     Target::initialize_native(&InitializationConfig::default())
@@ -105,8 +135,12 @@ pub fn emit_bitcode(module: &Module<'_>) -> Vec<u8> {
 pub fn emit_object(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
   ensure_targets_initialized();
 
-  let target_ref = Target::from_triple(&target.triple)
-    .unwrap_or_else(|err| panic!("failed to resolve LLVM target from triple {}: {err}", target.triple));
+  let target_ref = Target::from_triple(&target.triple).unwrap_or_else(|err| {
+    panic!(
+      "failed to resolve LLVM target from triple {}: {err}",
+      target.triple
+    )
+  });
   let machine = target_ref
     .create_target_machine(
       &target.triple,
@@ -138,17 +172,19 @@ pub fn emit_object_with_statepoints(
     triple: target.triple.to_string(),
     message: err.to_string(),
   })?;
-  let machine = target_ref.create_target_machine(
-    &target.triple,
-    &target.cpu,
-    &target.features,
-    target.opt_level,
-    target.reloc_mode,
-    target.code_model,
-  ).ok_or_else(|| EmitError::TargetMachine {
-    triple: target.triple.to_string(),
-    message: "failed to create LLVM TargetMachine".to_string(),
-  })?;
+  let machine = target_ref
+    .create_target_machine(
+      &target.triple,
+      &target.cpu,
+      &target.features,
+      target.opt_level,
+      target.reloc_mode,
+      target.code_model,
+    )
+    .ok_or_else(|| EmitError::TargetMachine {
+      triple: target.triple.to_string(),
+      message: "failed to create LLVM TargetMachine".to_string(),
+    })?;
 
   module.set_triple(&target.triple);
   module.set_data_layout(&machine.get_target_data().get_data_layout());
@@ -193,24 +229,29 @@ pub fn emit_asm(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
     .to_vec()
 }
 
-pub fn emit_asm_with_statepoints(module: &Module<'_>, target: TargetConfig) -> Result<Vec<u8>, EmitError> {
+pub fn emit_asm_with_statepoints(
+  module: &Module<'_>,
+  target: TargetConfig,
+) -> Result<Vec<u8>, EmitError> {
   ensure_targets_initialized();
 
   let target_ref = Target::from_triple(&target.triple).map_err(|err| EmitError::TargetMachine {
     triple: target.triple.to_string(),
     message: err.to_string(),
   })?;
-  let machine = target_ref.create_target_machine(
-    &target.triple,
-    &target.cpu,
-    &target.features,
-    target.opt_level,
-    target.reloc_mode,
-    target.code_model,
-  ).ok_or_else(|| EmitError::TargetMachine {
-    triple: target.triple.to_string(),
-    message: "failed to create LLVM TargetMachine".to_string(),
-  })?;
+  let machine = target_ref
+    .create_target_machine(
+      &target.triple,
+      &target.cpu,
+      &target.features,
+      target.opt_level,
+      target.reloc_mode,
+      target.code_model,
+    )
+    .ok_or_else(|| EmitError::TargetMachine {
+      triple: target.triple.to_string(),
+      message: "failed to create LLVM TargetMachine".to_string(),
+    })?;
 
   module.set_triple(&target.triple);
   module.set_data_layout(&machine.get_target_data().get_data_layout());
