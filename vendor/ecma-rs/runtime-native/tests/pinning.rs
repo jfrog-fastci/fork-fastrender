@@ -143,15 +143,9 @@ fn detach_transfer_and_resize_are_blocked_while_pinned() {
   let pinned = buffer.pin().unwrap();
   assert_eq!(buffer.pin_count(), 1);
 
-  assert_eq!(
-    buffer.detach(),
-    Err(ArrayBufferError::Pinned)
-  );
+  assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
   assert_eq!(buffer.transfer().unwrap_err(), ArrayBufferError::Pinned);
-  assert_eq!(
-    buffer.resize(16),
-    Err(ArrayBufferError::Pinned)
-  );
+  assert_eq!(buffer.resize(16), Err(ArrayBufferError::Pinned));
 
   drop(pinned);
   assert_eq!(buffer.pin_count(), 0);
