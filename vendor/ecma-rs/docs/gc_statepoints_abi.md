@@ -224,21 +224,28 @@ loaded image (i.e. without having to apply relocations itself).
 To keep the first runtime implementation small and predictable, we define a
 supported subset of LLVM stackmap location forms.
 
-**The initial runtime stack scanner only supports GC root locations that are:**
+**The current runtime stack scanner only supports GC root locations that are:**
 
 - **8-byte values** (full machine pointer sized), and
 - stored in **memory** at a location computed as:
-  - base register = **RBP** (DWARF regnum for `RBP`), and
+  - location kind = **`Indirect`** (an addressable spill slot), and
+  - base register = **SP or FP** (DWARF regnum for stack pointer or frame pointer), and
   - an **immediate signed offset**.
 
-In LLVM stackmap terminology, this corresponds to `Direct` locations with base
-reg = `RBP`.
+In LLVM stackmap terminology, this corresponds to `Indirect [SP + off]` and
+`Indirect [FP + off]` locations.
+
+**Important:** for `Indirect [SP + off]`, LLVM's `SP` is the **caller** stack
+pointer value at the stackmap record PC (the callsite return address), not the
+callee-entry SP. On x86_64 this differs by 8 bytes because `call` pushes the
+return address. The runtime must therefore publish a **post-call** SP for
+stackmap evaluation (see `runtime-native/src/arch/mod.rs` and
+`docs/gc-stackmaps-stackwalking.md`).
 
 Not supported (codegen must avoid until runtime grows support):
 
-- SP/RSP-relative locations (requires capturing `RSP` at the safepoint)
-- live GC pointers in registers
-- non-trivial `Indirect` locations
+- live GC pointers in registers (`Register` locations)
+- non-addressable values (`Direct`, `Constant`, `ConstIndex`) as GC roots
 - non-8-byte pointer encodings (compressed pointers, vector lanes, etc.)
 
 The `native-js` backend must treat any emission of unsupported location kinds as
@@ -249,13 +256,17 @@ a **codegen bug**.
 LLVM stack map records can describe arbitrary live values. For GC scanning we
 need *only* GC references.
 
-**Initial ABI rule:** at every safepoint we use for GC, the stack map record’s
-`Locations[]` list must correspond to **GC references only** (the statepoint
-`"gc-live"` set), and every such reference must be present exactly once.
+For LLVM 18 `gc.statepoint` records, the stack map `Locations[]` list is
+structured and includes non-root metadata:
 
-This keeps the runtime scanner simple: it treats each location as a GC pointer
-slot to load/trace/update. If later we add deoptimization or other stack map
-uses, the contract and parser must be extended accordingly.
+- 3 leading constant header locations (`callconv`, `flags`, `deopt_count`)
+- `deopt_count` deopt operand locations (not GC roots; ignored by the GC)
+- then 2 locations per GC-live value: `(base, derived)` pairs corresponding to
+  `gc.relocate` results.
+
+The runtime must decode this layout and enumerate GC roots from the base/derived
+pairs. Derived (interior) pointers are not traced as independent roots; moving
+GC must relocate the base slot and recompute the derived value relative to it.
 
 ---
 
@@ -337,17 +348,29 @@ scanning stops; Rust frames are not scanned (see §5).
 
 ### 3.4 Location evaluation (supported subset)
 
-Given a stack map location describing a stack slot as:
+Given a stack map location describing a pointer spill slot as:
 
-- `base_reg = RBP`
+- `Kind = Indirect`
+- `base_reg = SP` or `FP`
 - `offset = k` (signed 32-bit)
 - `size = 8`
 
 then:
 
 ```
-addr = fp + k
+addr = base + k
 ```
+
+Where:
+
+- if `base_reg == FP`: `base = caller_fp`
+- if `base_reg == SP`: `base = caller_sp_callsite`
+
+`caller_sp_callsite` is the caller's stack pointer value at the stackmap record
+PC (the callsite return address). When walking frames via frame pointers, this
+can be derived from the callee frame pointer as `callee_fp + 16` (x86_64 SysV
+and AArch64 with frame pointers enabled). When a thread is stopped inside the
+safepoint callee, the runtime captures/publishes this callsite SP directly.
 
 The value at `addr` is treated as a GC pointer (possibly tagged; tagging is part
 of the object model and must be applied consistently by codegen + GC).
@@ -416,8 +439,9 @@ LiveOut (4 bytes):
   u8  Reserved
 ```
 
-For supported `Direct` locations, `DwarfRegNum` must equal `RBP` and
-`OffsetOrSmallConst` is the signed byte offset from `RBP` to the stack slot.
+For supported `Indirect` locations, `DwarfRegNum` must equal the stack pointer
+or frame pointer DWARF register number (`SP`/`FP`), and `OffsetOrSmallConst` is
+the signed byte offset from that base to the spill slot.
 
 #### Building the record key
 
@@ -582,25 +606,26 @@ Requirements for this strategy:
 If LLVM encodes explicit base↔derived relationships in stack map records, the
 runtime may use that instead of computing deltas from raw values.
 
-### 6.2 Known unknowns (must be resolved by experiments on LLVM 18)
+### 6.2 Observed LLVM 18 encoding (used by the runtime)
 
-The project must run experiments and update this doc with the observed facts for
-LLVM 18:
+LLVM 18 `.llvm_stackmaps` explicitly encodes base/derived relationships for
+statepoints:
 
-- Does `.llvm_stackmaps` explicitly encode base/derived relationships for
-  statepoints, and if so, how?
-- When `llvm-readobj --stackmap` prints entries, how are derived pointers
-  distinguished from base pointers?
-- Are derived pointers always present alongside their base pointers, or can LLVM
-  emit a derived pointer without the base being listed as live?
-- Do offsets represent:
-  - stack-slot offsets from RBP, or
-  - something else for certain location kinds?
+- Statepoint stackmap records start with the standard 3-constant header and any
+  deopt operand locations (see §2.5).
+- The remaining locations are a sequence of `(base, derived)` pairs, one pair
+  per `gc.relocate` use in the frame.
+- For non-interior pointers, LLVM may emit duplicate locations where
+  `base == derived`.
+- A base slot may be reused across multiple pairs (multiple derived pointers can
+  share one base).
 
-Until these are answered, codegen must conservatively ensure:
+For `Indirect` locations, the `offset` is a signed byte offset from the DWARF
+base register value (`SP` or `FP`). For `Indirect [SP + off]`, `SP` uses the
+caller stack pointer at the stackmap record PC (callsite return address).
 
-- every derived pointer has a corresponding base pointer also included in the
-  GC-live set at that safepoint.
+Codegen must ensure every derived pointer has its base pointer also present in
+the GC-live set at that safepoint.
 
 ---
 
@@ -637,7 +662,7 @@ At minimum:
 - [ ] Every TS→TS call lowered via `gc.statepoint`
 - [ ] Poll safepoints exist for long-running loops (backedges and/or prologues)
 - [ ] `.llvm_stackmaps` present in final binary and not stripped
-- [ ] Stack map GC root locations are RBP-relative `Direct` slots (no RSP, no regs)
+- [ ] Stack map GC root locations are pointer-sized `Indirect` spill slots relative to SP/FP (no Register/Direct roots)
 - [ ] Derived pointers: base pointers are also present in GC-live sets
 
 ### 7.3 Common failure modes
@@ -655,11 +680,11 @@ At minimum:
    - cause: `frame-pointer=all` not set for all TS code (or LTO merged in code
      built without it).
 
-4. **RSP-relative or register locations in stack maps**
+4. **Register roots or unsupported stackmap location kinds**
    - symptom: runtime cannot interpret locations; either aborts (by design) or
-     silently misses roots if incorrectly handled.
+     misses roots if incorrectly handled.
    - cause: codegen/runtime mismatch; need either runtime support or stricter
-     codegen constraints.
+     codegen constraints (e.g. keep GC roots in addressable spill slots).
 
 5. **`.llvm_stackmaps` missing in release builds**
    - symptom: lookup table empty; GC cannot scan.
