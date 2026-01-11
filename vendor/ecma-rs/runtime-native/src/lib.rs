@@ -397,8 +397,6 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRe
 pub extern "C" fn rt_async_poll() -> bool {
   crate::ffi::abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
-    // The async runtime is typically driven by the main thread/event loop.
-    crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
     if crate::async_runtime::has_error() {
       return false;
     }

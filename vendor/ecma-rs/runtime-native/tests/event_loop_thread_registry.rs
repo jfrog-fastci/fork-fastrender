@@ -79,7 +79,7 @@ fn event_loop_registers_main_thread_and_participates_in_stop_the_world() {
   let poller = std::thread::spawn(move || {
     poll_tid_tx.send(current_os_thread_id()).unwrap();
     // This call should register the event-loop thread as `ThreadKind::Main`.
-    let _pending = runtime_native::rt_async_poll_legacy();
+    let _pending = runtime_native::rt_async_poll();
     poll_returned_tx.send(()).unwrap();
     poll_exit_rx.recv().unwrap();
     threading::unregister_current_thread();
@@ -169,7 +169,7 @@ fn event_loop_registers_main_thread_and_participates_in_stop_the_world() {
   let (external_exit_tx, external_exit_rx) = mpsc::channel::<()>();
   let external = std::thread::spawn(move || {
     external_tid_tx.send(current_os_thread_id()).unwrap();
-    let _pending = runtime_native::rt_async_poll_legacy();
+    let _pending = runtime_native::rt_async_poll();
     external_ready_tx.send(()).unwrap();
     external_exit_rx.recv().unwrap();
     threading::unregister_current_thread();
