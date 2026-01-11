@@ -48,7 +48,7 @@ fn resolves_static_known_calls() {
   let json_call = find_call_expr(body, json_call_span);
   let resolved = resolve_call(&lower, body_id, body, json_call, &db, None).expect("resolve JSON");
   assert_eq!(resolved.api, "JSON.parse");
-  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
+  assert_eq!(resolved.api_id, ApiId::from_name("JSON.parse"));
   assert_eq!(resolved.args.len(), 1);
 
   let promise_call_span = range_of(source, "Promise.all([])");
@@ -56,7 +56,7 @@ fn resolves_static_known_calls() {
   let resolved =
     resolve_call(&lower, body_id, body, promise_call, &db, None).expect("resolve Promise");
   assert_eq!(resolved.api, "Promise.all");
-  assert_eq!(resolved.api_id, Some(ApiId::PromiseAll));
+  assert_eq!(resolved.api_id, ApiId::from_name("Promise.all"));
   assert_eq!(resolved.args.len(), 1);
 
   let promise_race_span = range_of(source, "Promise.race([])");
@@ -64,7 +64,7 @@ fn resolves_static_known_calls() {
   let resolved =
     resolve_call(&lower, body_id, body, promise_race, &db, None).expect("resolve Promise.race");
   assert_eq!(resolved.api, "Promise.race");
-  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.api_id, ApiId::from_name("Promise.race"));
   assert_eq!(resolved.args.len(), 1);
 
   let json_parse_computed_span = range_of(source, "JSON[\"parse\"](\"x\")");
@@ -72,7 +72,7 @@ fn resolves_static_known_calls() {
   let resolved =
     resolve_call(&lower, body_id, body, json_parse_computed, &db, None).expect("resolve JSON[\"parse\"]");
   assert_eq!(resolved.api, "JSON.parse");
-  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
+  assert_eq!(resolved.api_id, ApiId::from_name("JSON.parse"));
   assert_eq!(resolved.args.len(), 1);
 
   let fetch_computed_span = range_of(source, "globalThis[\"fetch\"](\"x\")");
@@ -80,7 +80,7 @@ fn resolves_static_known_calls() {
   let resolved =
     resolve_call(&lower, body_id, body, fetch_computed, &db, None).expect("resolve globalThis[\"fetch\"]");
   assert_eq!(resolved.api, "fetch");
-  assert_eq!(resolved.api_id, Some(ApiId::Fetch));
+  assert_eq!(resolved.api_id, ApiId::from_name("fetch"));
   assert_eq!(resolved.args.len(), 1);
 }
 
@@ -103,7 +103,7 @@ fn resolves_known_api_call_nodes() {
   let resolved = resolve_call(&rewritten, body_id, rewritten_body, json_call, &db, None)
     .expect("resolve rewritten JSON.parse");
   assert_eq!(resolved.api, "JSON.parse");
-  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
+  assert_eq!(resolved.api_id, ApiId::from_name("JSON.parse"));
   assert_eq!(resolved.receiver, None);
   assert_eq!(resolved.args.len(), 1);
 }
@@ -121,7 +121,7 @@ fn resolves_semantic_array_find_calls_untyped() {
   let call_expr = find_call_expr(body, call_span);
   let resolved = resolve_call(&lower, body_id, body, call_expr, &db, None).expect("resolve find");
   assert_eq!(resolved.api, "Array.prototype.find");
-  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.api_id, ApiId::from_name("Array.prototype.find"));
   assert_eq!(resolved.args.len(), 1);
   let recv = resolved.receiver.expect("receiver");
   match &body.exprs[recv.0 as usize].kind {
@@ -165,14 +165,14 @@ fn resolves_typed_array_prototype_methods() {
   let resolved =
     resolve_call(lower, body_id, body, call_expr, &db, Some(&types)).expect("resolve map");
   assert_eq!(resolved.api, "Array.prototype.map");
-  assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
+  assert_eq!(resolved.api_id, ApiId::from_name("Array.prototype.map"));
 
   let computed_call_span = range_of(source, "xs[\"map\"](x => x + 1)");
   let computed_call_expr = find_call_expr(body, computed_call_span);
   let resolved = resolve_call(lower, body_id, body, computed_call_expr, &db, Some(&types))
     .expect("resolve xs[\"map\"]");
   assert_eq!(resolved.api, "Array.prototype.map");
-  assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
+  assert_eq!(resolved.api_id, ApiId::from_name("Array.prototype.map"));
 }
 
 #[cfg(feature = "typed")]
@@ -222,54 +222,54 @@ xs.find(x => x === 1);
   let resolved =
     resolve_call(lower, body_id, body, map_has, &db, Some(&types)).expect("resolve Map.has");
   assert_eq!(resolved.api, "Map.prototype.has");
-  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeHas));
+  assert_eq!(resolved.api_id, ApiId::from_name("Map.prototype.has"));
 
   let map_has_computed_span = range_of(source, "m[\"has\"](\"a\")");
   let map_has_computed = find_call_expr(body, map_has_computed_span);
   let resolved = resolve_call(lower, body_id, body, map_has_computed, &db, Some(&types))
     .expect("resolve m[\"has\"]");
   assert_eq!(resolved.api, "Map.prototype.has");
-  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeHas));
+  assert_eq!(resolved.api_id, ApiId::from_name("Map.prototype.has"));
 
   let map_get_span = range_of(source, "m.get(\"a\")");
   let map_get = find_call_expr(body, map_get_span);
   let resolved =
     resolve_call(lower, body_id, body, map_get, &db, Some(&types)).expect("resolve Map.get");
   assert_eq!(resolved.api, "Map.prototype.get");
-  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeGet));
+  assert_eq!(resolved.api_id, ApiId::from_name("Map.prototype.get"));
 
   let map_set_span = range_of(source, "m.set(\"a\", 1)");
   let map_set = find_call_expr(body, map_set_span);
   let resolved =
     resolve_call(lower, body_id, body, map_set, &db, Some(&types)).expect("resolve Map.set");
   assert_eq!(resolved.api, "Map.prototype.set");
-  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.api_id, ApiId::from_name("Map.prototype.set"));
 
   let string_trim_span = range_of(source, "s.trim()");
   let string_trim = find_call_expr(body, string_trim_span);
   let resolved =
     resolve_call(lower, body_id, body, string_trim, &db, Some(&types)).expect("resolve String.trim");
   assert_eq!(resolved.api, "String.prototype.trim");
-  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.api_id, ApiId::from_name("String.prototype.trim"));
 
   let array_find_span = range_of(source, "xs.find(x => x === 1)");
   let array_find = find_call_expr(body, array_find_span);
   let resolved =
     resolve_call(lower, body_id, body, array_find, &db, Some(&types)).expect("resolve Array.find");
   assert_eq!(resolved.api, "Array.prototype.find");
-  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.api_id, ApiId::from_name("Array.prototype.find"));
 
   let promise_then_span = range_of(source, "p.then(x => x + 1)");
   let promise_then = find_call_expr(body, promise_then_span);
   let resolved = resolve_call(lower, body_id, body, promise_then, &db, Some(&types))
     .expect("resolve Promise.then");
   assert_eq!(resolved.api, "Promise.prototype.then");
-  assert_eq!(resolved.api_id, Some(ApiId::PromisePrototypeThen));
+  assert_eq!(resolved.api_id, ApiId::from_name("Promise.prototype.then"));
 
   let promise_then_computed_span = range_of(source, "p[\"then\"](x => x + 1)");
   let promise_then_computed = find_call_expr(body, promise_then_computed_span);
   let resolved = resolve_call(lower, body_id, body, promise_then_computed, &db, Some(&types))
     .expect("resolve p[\"then\"]");
   assert_eq!(resolved.api, "Promise.prototype.then");
-  assert_eq!(resolved.api_id, Some(ApiId::PromisePrototypeThen));
+  assert_eq!(resolved.api_id, ApiId::from_name("Promise.prototype.then"));
 }

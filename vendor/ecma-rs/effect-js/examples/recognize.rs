@@ -84,12 +84,15 @@ fn format_kb_semantics(db: &ApiDatabase, api: &str) -> String {
 fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
   match pat {
     RecognizedPattern::CanonicalCall { call, api } => {
-      let api_name = api.as_str();
+      let api_name = db
+        .get_by_id(*api)
+        .map(|sem| sem.name.clone())
+        .unwrap_or_else(|| format!("id: 0x{:x}", api.raw()));
       format!(
         "CanonicalCall(call={}, api={}, {})",
         call.0,
         api_name,
-        format_kb_semantics(db, api_name)
+        format_kb_semantics(db, &api_name)
       )
     }
     RecognizedPattern::MapFilterReduce {

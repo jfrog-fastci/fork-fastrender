@@ -3,7 +3,7 @@ use hir_js::{
   StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
 
-use crate::api::ApiId;
+use knowledge_base::ApiId;
 use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -481,6 +481,7 @@ pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<Re
   };
 
   let mut patterns = Vec::new();
+  let json_parse = ApiId::from_name("JSON.parse");
 
   // 1) Canonical call sites that are safe to resolve from HIR alone (e.g. JSON.parse).
   for (idx, _expr) in body_ref.exprs.iter().enumerate() {
@@ -506,7 +507,7 @@ pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<Re
         let Some(init) = decl.init else {
           continue;
         };
-        if resolve_api_call_untyped(lowered, body, init) == Some(ApiId::JsonParse) {
+        if resolve_api_call_untyped(lowered, body, init) == Some(json_parse) {
           patterns.push(RecognizedPattern::JsonParseTyped { call: init, target });
         }
       }
@@ -883,12 +884,15 @@ fn promise_all_fetch_match_untyped(
 ) -> Option<PromiseAllFetchMatch> {
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
+  let promise_all = ApiId::from_name("Promise.all");
+  let fetch = ApiId::from_name("fetch");
+  let array_map = ApiId::from_name("Array.prototype.map");
 
   #[cfg(feature = "hir-semantic-ops")]
   if let ExprKind::PromiseAll { promises } = &call.kind {
     let fetch_call_count = promises
       .iter()
-      .filter(|expr_id| resolve_api_call_untyped(lowered, body, **expr_id) == Some(ApiId::Fetch))
+      .filter(|expr_id| resolve_api_call_untyped(lowered, body, **expr_id) == Some(fetch))
       .count();
     return (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
       // `hir-js` lowers `Promise.all([..])` into a `PromiseAll { promises }` node
@@ -900,7 +904,7 @@ fn promise_all_fetch_match_untyped(
     });
   }
 
-  if resolve_api_call_untyped(lowered, body, call_expr) != Some(ApiId::PromiseAll) {
+  if resolve_api_call_untyped(lowered, body, call_expr) != Some(promise_all) {
     return None;
   }
 
@@ -925,7 +929,7 @@ fn promise_all_fetch_match_untyped(
         match element {
           ArrayElement::Expr(expr_id) => {
             let expr_id = strip_transparent_wrappers(body_ref, *expr_id);
-            if resolve_api_call_untyped(lowered, body, expr_id) == Some(ApiId::Fetch) {
+            if resolve_api_call_untyped(lowered, body, expr_id) == Some(fetch) {
               fetch_call_count += 1;
             }
           }
@@ -943,9 +947,7 @@ fn promise_all_fetch_match_untyped(
       if map_call.optional || map_call.is_new {
         return None;
       }
-      if resolve_api_call_best_effort_untyped(lowered, body, arg_expr_id)
-        != Some(ApiId::ArrayPrototypeMap)
-      {
+      if resolve_api_call_best_effort_untyped(lowered, body, arg_expr_id) != Some(array_map) {
         return None;
       }
 
@@ -988,11 +990,11 @@ fn promise_all_fetch_match_untyped(
 
           let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
           let fetch_call_count =
-            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(fetch) {
               1
             } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
               let expr = strip_transparent_wrappers(cb_body, expr);
-              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(fetch) {
                 1
               } else {
                 return None;
@@ -1041,11 +1043,11 @@ fn promise_all_fetch_match_untyped(
 
           let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
           let fetch_call_count =
-            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(fetch) {
               1
             } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
               let expr = strip_transparent_wrappers(cb_body, expr);
-              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(fetch) {
                 1
               } else {
                 return None;
@@ -1299,6 +1301,9 @@ pub fn recognize_patterns_typed(
   types: &impl crate::types::TypeProvider,
 ) -> Vec<RecognizedPattern> {
   use crate::resolve::resolve_api_call_typed;
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let map_has = ApiId::from_name("Map.prototype.has");
+  let map_get = ApiId::from_name("Map.prototype.get");
 
   let Some(body_ref) = lowered.body(body) else {
     return Vec::new();
@@ -1532,7 +1537,7 @@ pub fn recognize_patterns_typed(
         // Only require the *base* receiver to be a proven array. The checker may
         // leave intermediate call result types as `unknown`, but the chain is
         // still safe if it starts from a known array/readonly-array.
-        && resolve_api_call_typed(lowered, body, chain[0].0, types) == Some(ApiId::ArrayPrototypeMap)
+        && resolve_api_call_typed(lowered, body, chain[0].0, types) == Some(array_map)
       {
         patterns.push(RecognizedPattern::MapFilterReduce {
           base,
@@ -1597,8 +1602,8 @@ pub fn recognize_patterns_typed(
       let test = strip_transparent_wrappers(body_ref, *test);
       let consequent = strip_transparent_wrappers(body_ref, *consequent);
 
-      if resolve_api_call_typed(lowered, body, test, types) == Some(ApiId::MapPrototypeHas)
-        && resolve_api_call_typed(lowered, body, consequent, types) == Some(ApiId::MapPrototypeGet)
+      if resolve_api_call_typed(lowered, body, test, types) == Some(map_has)
+        && resolve_api_call_typed(lowered, body, consequent, types) == Some(map_get)
       {
         if let Some((map, key)) = map_get_or_default_conditional(
           lowered,
@@ -1625,7 +1630,7 @@ pub fn recognize_patterns_typed(
       }
 
       let left = strip_transparent_wrappers(body_ref, *left);
-      if resolve_api_call_typed(lowered, body, left, types) != Some(ApiId::MapPrototypeGet) {
+      if resolve_api_call_typed(lowered, body, left, types) != Some(map_get) {
         continue;
       }
 
@@ -1775,9 +1780,12 @@ fn promise_all_fetch_match_typed(
   types: &impl crate::types::TypeProvider,
 ) -> Option<PromiseAllFetchMatch> {
   use crate::resolve::resolve_api_call_typed;
+  let promise_all = ApiId::from_name("Promise.all");
+  let fetch = ApiId::from_name("fetch");
+  let array_map = ApiId::from_name("Array.prototype.map");
 
   let body_ref = lowered.body(body)?;
-  if resolve_api_call_typed(lowered, body, call_expr, types) != Some(ApiId::PromiseAll) {
+  if resolve_api_call_typed(lowered, body, call_expr, types) != Some(promise_all) {
     return None;
   }
 
@@ -1803,7 +1811,7 @@ fn promise_all_fetch_match_typed(
         match element {
           ArrayElement::Expr(expr_id) => {
             let expr_id = strip_transparent_wrappers(body_ref, *expr_id);
-            if resolve_api_call_untyped(lowered, body, expr_id) == Some(ApiId::Fetch) {
+            if resolve_api_call_untyped(lowered, body, expr_id) == Some(fetch) {
               fetch_call_count += 1;
             }
           }
@@ -1821,7 +1829,7 @@ fn promise_all_fetch_match_typed(
       if map_call.optional || map_call.is_new {
         return None;
       }
-      if resolve_api_call_typed(lowered, body, arg_expr_id, types) != Some(ApiId::ArrayPrototypeMap) {
+      if resolve_api_call_typed(lowered, body, arg_expr_id, types) != Some(array_map) {
         return None;
       }
 
@@ -1863,7 +1871,7 @@ fn promise_all_fetch_match_typed(
           }?;
 
           let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
-          if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+          if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(fetch) {
             return Some(PromiseAllFetchMatch {
               urls_expr: strip_transparent_wrappers(body_ref, member.object),
               map_call: Some(arg_expr_id),
@@ -1873,7 +1881,7 @@ fn promise_all_fetch_match_typed(
 
           if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
             let expr = strip_transparent_wrappers(cb_body, expr);
-            if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+            if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(fetch) {
               return Some(PromiseAllFetchMatch {
                 urls_expr: strip_transparent_wrappers(body_ref, member.object),
                 map_call: Some(arg_expr_id),

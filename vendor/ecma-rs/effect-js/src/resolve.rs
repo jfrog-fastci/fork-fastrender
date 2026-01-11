@@ -1,10 +1,9 @@
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayElement;
-use knowledge_base::ApiDatabase;
+use knowledge_base::{ApiDatabase, ApiId};
 use smallvec::SmallVec;
 
-use crate::api::ApiId;
 use crate::types::TypeProvider;
 
 fn expr<'a>(lowered: &'a LowerResult, body: BodyId, id: ExprId) -> Option<&'a hir_js::Expr> {
@@ -15,13 +14,21 @@ fn ident_name<'a>(lowered: &'a LowerResult, name: hir_js::NameId) -> Option<&'a 
   lowered.names.resolve(name)
 }
 
-pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<ApiId> {
+pub fn resolve_api_call_untyped(
+  lowered: &LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+) -> Option<ApiId> {
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
 
+  let fetch = ApiId::from_name("fetch");
+  let promise_all = ApiId::from_name("Promise.all");
+  let json_parse = ApiId::from_name("JSON.parse");
+
   #[cfg(feature = "hir-semantic-ops")]
   if matches!(&call.kind, ExprKind::PromiseAll { .. }) {
-    return Some(ApiId::PromiseAll);
+    return Some(promise_all);
   }
 
   let ExprKind::Call(call) = &call.kind else {
@@ -35,7 +42,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
   match &callee.kind {
     ExprKind::Ident(name) => {
       if ident_name(lowered, *name) == Some("fetch") {
-        return Some(ApiId::Fetch);
+        return Some(fetch);
       }
     }
     ExprKind::Member(member) => {
@@ -53,7 +60,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
             ident_name(lowered, *obj_name),
             Some("globalThis" | "window" | "self" | "global")
           ) {
-            return Some(ApiId::Fetch);
+            return Some(fetch);
           }
         }
       }
@@ -64,7 +71,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
         match &obj.kind {
           ExprKind::Ident(obj_name) => {
             if ident_name(lowered, *obj_name) == Some("Promise") {
-              return Some(ApiId::PromiseAll);
+              return Some(promise_all);
             }
           }
           ExprKind::Member(inner) => {
@@ -81,7 +88,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
                 ident_name(lowered, *base_name),
                 Some("globalThis" | "window" | "self" | "global")
               ) {
-                return Some(ApiId::PromiseAll);
+                return Some(promise_all);
               }
             }
           }
@@ -95,7 +102,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
         match &obj.kind {
           ExprKind::Ident(obj_name) => {
             if ident_name(lowered, *obj_name) == Some("JSON") {
-              return Some(ApiId::JsonParse);
+              return Some(json_parse);
             }
           }
           ExprKind::Member(inner) => {
@@ -112,7 +119,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
                 ident_name(lowered, *base_name),
                 Some("globalThis" | "window" | "self" | "global")
               ) {
-                return Some(ApiId::JsonParse);
+                return Some(json_parse);
               }
             }
           }
@@ -145,9 +152,9 @@ pub fn resolve_api_call_best_effort_untyped(
 
   #[cfg(feature = "hir-semantic-ops")]
   match &call.kind {
-    ExprKind::ArrayMap { .. } => return Some(ApiId::ArrayPrototypeMap),
-    ExprKind::ArrayFilter { .. } => return Some(ApiId::ArrayPrototypeFilter),
-    ExprKind::ArrayReduce { .. } => return Some(ApiId::ArrayPrototypeReduce),
+    ExprKind::ArrayMap { .. } => return Some(ApiId::from_name("Array.prototype.map")),
+    ExprKind::ArrayFilter { .. } => return Some(ApiId::from_name("Array.prototype.filter")),
+    ExprKind::ArrayReduce { .. } => return Some(ApiId::from_name("Array.prototype.reduce")),
     _ => {}
   }
 
@@ -169,9 +176,9 @@ pub fn resolve_api_call_best_effort_untyped(
   let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
   match prop {
-    "map" => Some(ApiId::ArrayPrototypeMap),
-    "filter" => Some(ApiId::ArrayPrototypeFilter),
-    "reduce" => Some(ApiId::ArrayPrototypeReduce),
+    "map" => Some(ApiId::from_name("Array.prototype.map")),
+    "filter" => Some(ApiId::from_name("Array.prototype.filter")),
+    "reduce" => Some(ApiId::from_name("Array.prototype.reduce")),
     _ => None,
   }
 }
@@ -202,9 +209,11 @@ fn receiver_is_array_method_receiver(
     return false;
   }
 
+  let map = ApiId::from_name("Array.prototype.map");
+  let filter = ApiId::from_name("Array.prototype.filter");
   matches!(
     resolve_api_call_typed(lowered, body, recv, types),
-    Some(ApiId::ArrayPrototypeMap | ApiId::ArrayPrototypeFilter)
+    Some(api) if api == map || api == filter
   )
 }
 
@@ -241,13 +250,13 @@ pub fn resolve_api_call_typed(
   #[cfg(feature = "hir-semantic-ops")]
   match &call.kind {
     ExprKind::ArrayMap { array, .. } if receiver_is_array(types, body, *array) => {
-      return Some(ApiId::ArrayPrototypeMap);
+      return Some(ApiId::from_name("Array.prototype.map"));
     }
     ExprKind::ArrayFilter { array, .. } if receiver_is_array(types, body, *array) => {
-      return Some(ApiId::ArrayPrototypeFilter);
+      return Some(ApiId::from_name("Array.prototype.filter"));
     }
     ExprKind::ArrayReduce { array, .. } if receiver_is_array(types, body, *array) => {
-      return Some(ApiId::ArrayPrototypeReduce);
+      return Some(ApiId::from_name("Array.prototype.reduce"));
     }
     _ => {}
   }
@@ -271,22 +280,32 @@ pub fn resolve_api_call_typed(
 
   match prop {
     "map" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      Some(ApiId::ArrayPrototypeMap)
+      Some(ApiId::from_name("Array.prototype.map"))
     }
     "filter" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      Some(ApiId::ArrayPrototypeFilter)
+      Some(ApiId::from_name("Array.prototype.filter"))
     }
     "reduce" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      Some(ApiId::ArrayPrototypeReduce)
+      Some(ApiId::from_name("Array.prototype.reduce"))
     }
     "forEach" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      Some(ApiId::ArrayPrototypeForEach)
+      Some(ApiId::from_name("Array.prototype.forEach"))
     }
-    "toLowerCase" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeToLowerCase),
-    "split" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeSplit),
-    "get" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
-    "has" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeHas),
-    "then" if receiver_is_named_ref(types, body, member.object, "Promise") => Some(ApiId::PromisePrototypeThen),
+    "toLowerCase" if receiver_is_string(types, body, member.object) => {
+      Some(ApiId::from_name("String.prototype.toLowerCase"))
+    }
+    "split" if receiver_is_string(types, body, member.object) => {
+      Some(ApiId::from_name("String.prototype.split"))
+    }
+    "get" if receiver_is_named_ref(types, body, member.object, "Map") => {
+      Some(ApiId::from_name("Map.prototype.get"))
+    }
+    "has" if receiver_is_named_ref(types, body, member.object, "Map") => {
+      Some(ApiId::from_name("Map.prototype.has"))
+    }
+    "then" if receiver_is_named_ref(types, body, member.object, "Promise") => {
+      Some(ApiId::from_name("Promise.prototype.then"))
+    }
     _ => None,
   }
 }
@@ -311,8 +330,8 @@ pub struct ResolvedCall {
   pub call: ExprId,
   /// Canonical knowledge-base API name (e.g. `JSON.parse`, `node:fs.readFile`).
   pub api: String,
-  /// Stable identifier for a small curated subset of high-value APIs.
-  pub api_id: Option<ApiId>,
+  /// Stable identifier for the resolved API.
+  pub api_id: ApiId,
   pub receiver: Option<ExprId>,
   pub args: Vec<ExprId>,
 }
@@ -330,7 +349,7 @@ pub fn resolve_call(
   #[cfg(feature = "hir-semantic-ops")]
   match &expr.kind {
     ExprKind::PromiseAll { promises } => {
-      let api = db.get(ApiId::PromiseAll.as_str())?;
+      let api = db.get("Promise.all")?;
 
       // `hir-js` lowers `Promise.all([..])` into `PromiseAll { promises }`,
       // discarding the wrapper array-literal expression. Prefer to recover the
@@ -361,7 +380,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: Some(ApiId::PromiseAll),
+        api_id: api.id,
         receiver: None,
         args: arg0.into_iter().collect(),
       });
@@ -397,27 +416,27 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: ApiId::from_kb_name(&api.name),
+        api_id: api.id,
         receiver: None,
         args: arg0.into_iter().collect(),
       });
     }
     ExprKind::ArrayMap { array, callback } => {
-      let api = db.get(ApiId::ArrayPrototypeMap.as_str())?;
+      let api = db.get("Array.prototype.map")?;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: Some(ApiId::ArrayPrototypeMap),
+        api_id: api.id,
         receiver: Some(*array),
         args: vec![*callback],
       });
     }
     ExprKind::ArrayFilter { array, callback } => {
-      let api = db.get(ApiId::ArrayPrototypeFilter.as_str())?;
+      let api = db.get("Array.prototype.filter")?;
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: Some(ApiId::ArrayPrototypeFilter),
+        api_id: api.id,
         receiver: Some(*array),
         args: vec![*callback],
       });
@@ -427,7 +446,7 @@ pub fn resolve_call(
       callback,
       init,
     } => {
-      let api = db.get(ApiId::ArrayPrototypeReduce.as_str())?;
+      let api = db.get("Array.prototype.reduce")?;
       let mut args = vec![*callback];
       if let Some(init) = init {
         args.push(*init);
@@ -435,7 +454,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: Some(ApiId::ArrayPrototypeReduce),
+        api_id: api.id,
         receiver: Some(*array),
         args,
       });
@@ -445,7 +464,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: ApiId::from_kb_name(&api.name),
+        api_id: api.id,
         receiver: Some(*array),
         args: vec![*callback],
       });
@@ -455,7 +474,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: ApiId::from_kb_name(&api.name),
+        api_id: api.id,
         receiver: Some(*array),
         args: vec![*callback],
       });
@@ -465,7 +484,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: ApiId::from_kb_name(&api.name),
+        api_id: api.id,
         receiver: Some(*array),
         args: vec![*callback],
       });
@@ -477,7 +496,7 @@ pub fn resolve_call(
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
-        api_id: ApiId::from_kb_name(&api.name),
+        api_id: api.id,
         receiver: None,
         args: args.clone(),
       });
@@ -505,7 +524,7 @@ pub fn resolve_call(
         return Some(ResolvedCall {
           call: call_expr,
           api: api.name.clone(),
-          api_id: ApiId::from_kb_name(&api.name),
+          api_id: api.id,
           receiver: None,
           args: call.args.iter().map(|arg| arg.expr).collect(),
         });
@@ -518,9 +537,10 @@ pub fn resolve_call(
           return None;
         };
         let api = resolve_imported_ident_call(db, typed, lower, *name, body_id, callee, name_str)?;
+        let api_id = db.id_of(&api)?;
         return Some(ResolvedCall {
           call: call_expr,
-          api_id: ApiId::from_kb_name(&api),
+          api_id,
           api,
           receiver: None,
           args: call.args.iter().map(|arg| arg.expr).collect(),
@@ -545,7 +565,7 @@ pub fn resolve_call(
           return Some(ResolvedCall {
             call: call_expr,
             api: api.name.clone(),
-            api_id: ApiId::from_kb_name(&api.name),
+            api_id: api.id,
             receiver: Some(receiver),
             args: call.args.iter().map(|arg| arg.expr).collect(),
           });
@@ -557,9 +577,10 @@ pub fn resolve_call(
         // Rule C: imported namespace/default/named-object bindings.
         if let Some(typed) = types.and_then(|types| types.as_typed_program()) {
           if let Some(api) = resolve_imported_member_call(db, typed, lower, body, body_id, callee) {
+            let api_id = db.id_of(&api)?;
             return Some(ResolvedCall {
               call: call_expr,
-              api_id: ApiId::from_kb_name(&api),
+              api_id,
               api,
               receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
@@ -579,21 +600,21 @@ pub fn resolve_call(
         //
         // Note: Filter out non-function entries (e.g. `Array.prototype.length`)
         // since we're resolving call expressions here.
-        let resolve_prototype_call = |prefix: &str| -> Option<(String, Option<ApiId>)> {
+        let resolve_prototype_call = |prefix: &str| -> Option<&knowledge_base::ApiSemantics> {
           let candidate = format!("{prefix}.prototype.{prop}");
           let api = db.get(&candidate)?;
           if !matches!(api.kind, knowledge_base::ApiKind::Function) {
             return None;
           }
-          Some((api.name.clone(), ApiId::from_kb_name(&api.name)))
+          Some(api)
         };
 
         if receiver_is_array_method_receiver(lower, body_id, member.object, types) {
-          if let Some((api, api_id)) = resolve_prototype_call("Array") {
+          if let Some(api) = resolve_prototype_call("Array") {
             return Some(ResolvedCall {
               call: call_expr,
-              api,
-              api_id,
+              api: api.name.clone(),
+              api_id: api.id,
               receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
             });
@@ -601,11 +622,11 @@ pub fn resolve_call(
         }
 
         if types.expr_is_string(body_id, member.object) {
-          if let Some((api, api_id)) = resolve_prototype_call("String") {
+          if let Some(api) = resolve_prototype_call("String") {
             return Some(ResolvedCall {
               call: call_expr,
-              api,
-              api_id,
+              api: api.name.clone(),
+              api_id: api.id,
               receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
             });
@@ -613,11 +634,11 @@ pub fn resolve_call(
         }
 
         if types.expr_is_named_ref(body_id, member.object, "Map") {
-          if let Some((api, api_id)) = resolve_prototype_call("Map") {
+          if let Some(api) = resolve_prototype_call("Map") {
             return Some(ResolvedCall {
               call: call_expr,
-              api,
-              api_id,
+              api: api.name.clone(),
+              api_id: api.id,
               receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
             });
@@ -625,11 +646,11 @@ pub fn resolve_call(
         }
 
         if types.expr_is_named_ref(body_id, member.object, "Promise") {
-          if let Some((api, api_id)) = resolve_prototype_call("Promise") {
+          if let Some(api) = resolve_prototype_call("Promise") {
             return Some(ResolvedCall {
               call: call_expr,
-              api,
-              api_id,
+              api: api.name.clone(),
+              api_id: api.id,
               receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
             });
@@ -990,20 +1011,44 @@ pub fn resolve_member(
 
   let api = match prop {
     "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
-      ApiId::ArrayPrototypeLength
+      ApiId::from_name("Array.prototype.length")
     }
-    "length" if receiver_is_string(types, body, member.object) => ApiId::StringPrototypeLength,
-    "size" if receiver_is_named_ref(types, body, member.object, "Map") => ApiId::MapPrototypeSize,
-    "size" if receiver_is_named_ref(types, body, member.object, "Set") => ApiId::SetPrototypeSize,
-    "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
-    "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
-    "origin" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeOrigin,
-    "protocol" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeProtocol,
-    "host" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHost,
-    "hostname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHostname,
-    "port" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePort,
-    "search" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeSearch,
-    "hash" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHash,
+    "length" if receiver_is_string(types, body, member.object) => {
+      ApiId::from_name("String.prototype.length")
+    }
+    "href" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.href")
+    }
+    "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.pathname")
+    }
+    "origin" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.origin")
+    }
+    "protocol" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.protocol")
+    }
+    "host" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.host")
+    }
+    "hostname" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.hostname")
+    }
+    "port" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.port")
+    }
+    "search" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.search")
+    }
+    "hash" if receiver_is_named_ref(types, body, member.object, "URL") => {
+      ApiId::from_name("URL.prototype.hash")
+    }
+    "size" if receiver_is_named_ref(types, body, member.object, "Map") => {
+      ApiId::from_name("Map.prototype.size")
+    }
+    "size" if receiver_is_named_ref(types, body, member.object, "Set") => {
+      ApiId::from_name("Set.prototype.size")
+    }
     _ => return None,
   };
 
@@ -1043,7 +1088,7 @@ mod tests {
 
     let resolved = resolve_call(&lowered, body_id, body, call_expr, &db, None).expect("resolved");
     assert_eq!(resolved.api, "fetch");
-    assert_eq!(resolved.api_id, Some(ApiId::Fetch));
+    assert_eq!(resolved.api_id, ApiId::from_name("fetch"));
   }
 
   #[test]
@@ -1053,7 +1098,7 @@ mod tests {
     let (body_id, call_expr) = first_stmt_expr(&lowered);
     assert_eq!(
       resolve_api_call_untyped(&lowered, body_id, call_expr),
-      Some(ApiId::Fetch)
+      Some(ApiId::from_name("fetch"))
     );
   }
 
@@ -1064,7 +1109,7 @@ mod tests {
     let (body_id, call_expr) = first_stmt_expr(&lowered);
     assert_eq!(
       resolve_api_call_untyped(&lowered, body_id, call_expr),
-      Some(ApiId::PromiseAll)
+      Some(ApiId::from_name("Promise.all"))
     );
   }
 
@@ -1075,7 +1120,7 @@ mod tests {
     let (body_id, call_expr) = first_stmt_expr(&lowered);
     assert_eq!(
       resolve_api_call_untyped(&lowered, body_id, call_expr),
-      Some(ApiId::JsonParse)
+      Some(ApiId::from_name("JSON.parse"))
     );
   }
 }

@@ -325,7 +325,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
           crate::resolve::resolve_member(self.lowered, self.body_id, expr_id, types)
         {
           return self
-            .encoding_via_kb(resolved.api.as_str(), StringEncoding::Unknown)
+            .encoding_via_kb_id(resolved.api, StringEncoding::Unknown)
             .unwrap_or(StringEncoding::Unknown);
         }
       }

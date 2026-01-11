@@ -54,19 +54,21 @@ fn recognizes_map_get_or_default_conditional() {
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
   let patterns = recognize_patterns_typed(&lowered, root_body, &types);
+  let map_has = ApiId::from_name("Map.prototype.has");
+  let map_get = ApiId::from_name("Map.prototype.get");
 
   // Call resolution: `m.has(k)` and `m.get(k)` should resolve to Map prototype APIs.
   assert!(
     patterns.iter().any(|pat| matches!(
       pat,
-      RecognizedPattern::CanonicalCall { call, api: ApiId::MapPrototypeHas } if *call == test
+      RecognizedPattern::CanonicalCall { call, api } if *call == test && *api == map_has
     )),
     "expected conditional test call to resolve to Map.prototype.has"
   );
   assert!(
     patterns.iter().any(|pat| matches!(
       pat,
-      RecognizedPattern::CanonicalCall { call, api: ApiId::MapPrototypeGet } if *call == consequent
+      RecognizedPattern::CanonicalCall { call, api } if *call == consequent && *api == map_get
     )),
     "expected conditional consequent call to resolve to Map.prototype.get"
   );

@@ -63,24 +63,19 @@ pub fn recognize_pattern_tables(
   for (idx, expr) in body.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     resolved_call[idx] = match &expr.kind {
-      ExprKind::Call(_) => resolve_call(lowered, body_id, body, expr_id, db, types).and_then(|c| c.api_id),
+      ExprKind::Call(_) => resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id),
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::PromiseAll { .. }
       | ExprKind::ArrayMap { .. }
       | ExprKind::ArrayFilter { .. }
-      | ExprKind::ArrayReduce { .. } => {
-        resolve_call(lowered, body_id, body, expr_id, db, types).and_then(|c| c.api_id)
-      }
+      | ExprKind::ArrayReduce { .. } => resolve_call(lowered, body_id, body, expr_id, db, types).map(|c| c.api_id),
       #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayChain { array, ops } => {
-        let _ = array;
-        match ops.last() {
-          Some(hir_js::ArrayChainOp::Map(_)) => Some(ApiId::ArrayPrototypeMap),
-          Some(hir_js::ArrayChainOp::Filter(_)) => Some(ApiId::ArrayPrototypeFilter),
-          Some(hir_js::ArrayChainOp::Reduce(..)) => Some(ApiId::ArrayPrototypeReduce),
-          _ => None,
-        }
-      }
+      ExprKind::ArrayChain { ops, .. } => match ops.last() {
+        Some(hir_js::ArrayChainOp::Map(_)) => Some(ApiId::from_name("Array.prototype.map")),
+        Some(hir_js::ArrayChainOp::Filter(_)) => Some(ApiId::from_name("Array.prototype.filter")),
+        Some(hir_js::ArrayChainOp::Reduce(..)) => Some(ApiId::from_name("Array.prototype.reduce")),
+        _ => None,
+      },
       _ => None,
     };
   }
@@ -89,6 +84,8 @@ pub fn recognize_pattern_tables(
 
   let mut patterns: Vec<Vec<RecognizedPatternId>> = vec![Vec::new(); body.exprs.len()];
   let mut recognized: Vec<RecognizedPattern> = Vec::new();
+  let array_reduce = ApiId::from_name("Array.prototype.reduce");
+  let promise_all = ApiId::from_name("Promise.all");
 
   for expr_idx in 0..body.exprs.len() {
     let expr_id = ExprId(expr_idx as u32);
@@ -101,7 +98,7 @@ pub fn recognize_pattern_tables(
     }
 
     // MapFilterReduce.
-    if resolved_call[expr_idx] == Some(ApiId::ArrayPrototypeReduce) {
+    if resolved_call[expr_idx] == Some(array_reduce) {
       if let Some(pattern_rec) =
         recognize_map_filter_reduce(body_id, body, expr_id, &resolved_call, types)
       {
@@ -112,7 +109,7 @@ pub fn recognize_pattern_tables(
     }
 
     // PromiseAllFetch.
-    if resolved_call[expr_idx] == Some(ApiId::PromiseAll) {
+    if resolved_call[expr_idx] == Some(promise_all) {
       if let Some(pattern_rec) = recognize_promise_all_fetch(
         lowered,
         body_id,
@@ -209,6 +206,7 @@ fn collect_typed_json_parse_targets(
   let Some(types) = types else {
     return vec![None; body.exprs.len()];
   };
+  let json_parse = ApiId::from_name("JSON.parse");
 
   let mut results: Vec<Option<(ExprId, TypeId)>> = vec![None; body.exprs.len()];
 
@@ -225,7 +223,7 @@ fn collect_typed_json_parse_targets(
           continue;
         };
 
-        if resolved_call.get(init.0 as usize).copied().flatten() != Some(ApiId::JsonParse) {
+        if resolved_call.get(init.0 as usize).copied().flatten() != Some(json_parse) {
           continue;
         }
 
@@ -346,17 +344,12 @@ fn recognize_map_filter_reduce(
     callback: reduce_callback,
     init: reduce_init,
   }];
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let array_filter = ApiId::from_name("Array.prototype.filter");
 
   loop {
     let ExprKind::Call(call) = &body.exprs.get(cur.0 as usize)?.kind else {
       break;
-    };
-
-    let api = resolved_call.get(cur.0 as usize).copied().flatten();
-    let op = match api {
-      Some(ApiId::ArrayPrototypeMap) => ApiId::ArrayPrototypeMap,
-      Some(ApiId::ArrayPrototypeFilter) => ApiId::ArrayPrototypeFilter,
-      _ => break,
     };
 
     if call.optional || call.is_new || call.args.len() != 1 {
@@ -367,15 +360,18 @@ fn recognize_map_filter_reduce(
     }
     let callback = call.args[0].expr;
 
+    let api = resolved_call.get(cur.0 as usize).copied().flatten();
+    let op = match api {
+      Some(id) if id == array_map => ArrayOp::Map { callback },
+      Some(id) if id == array_filter => ArrayOp::Filter { callback },
+      _ => break,
+    };
+
     let ExprKind::Member(callee) = &body.exprs.get(call.callee.0 as usize)?.kind else {
       return None;
     };
 
-    ops_rev.push(match op {
-      ApiId::ArrayPrototypeMap => ArrayOp::Map { callback },
-      ApiId::ArrayPrototypeFilter => ArrayOp::Filter { callback },
-      _ => unreachable!(),
-    });
+    ops_rev.push(op);
     cur = callee.object;
   }
 
@@ -420,6 +416,8 @@ fn recognize_promise_all_fetch(
   let Some(types) = types else {
     return None;
   };
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let fetch = ApiId::from_name("fetch");
 
   let ExprKind::Call(promise_all) = &body.exprs.get(promise_all_call.0 as usize)?.kind else {
     return None;
@@ -433,7 +431,7 @@ fn recognize_promise_all_fetch(
   let promises_expr = promise_all.args[0].expr;
 
   // Promise.all(arg0) where arg0 is `urls.map(...)`.
-  if resolved_call.get(promises_expr.0 as usize).copied().flatten() != Some(ApiId::ArrayPrototypeMap) {
+  if resolved_call.get(promises_expr.0 as usize).copied().flatten() != Some(array_map) {
     return None;
   }
   let (urls, callback_expr) = match &body.exprs.get(promises_expr.0 as usize)?.kind {
@@ -480,8 +478,8 @@ fn recognize_promise_all_fetch(
 
   // The arrow function expression body must be a strict `fetch(url)` call.
   if resolve_call(lowered, *callback_body, cb_body, fetch_call_expr, db, Some(types))
-    .and_then(|c| c.api_id)
-    != Some(ApiId::Fetch)
+    .map(|c| c.api_id)
+    != Some(fetch)
   {
     return None;
   }

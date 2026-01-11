@@ -264,22 +264,26 @@ fn run_analyze(
     println!("(no resolved calls)");
   } else {
     for call in builtin_calls {
-      // Show KB details when available; otherwise fall back to the canonical API name.
-      if let Some(entry) = kb.api_for_target(call.api.as_str(), target) {
-        let source = kb.source_for_target(call.api.as_str(), target).unwrap_or("<unknown>");
+      // Show KB details when available; otherwise fall back to the stable ApiId.
+      if let Some(entry_any) = kb.get_by_id(call.api) {
+        let entry = kb.api_for_target(&entry_any.name, target).unwrap_or(entry_any);
+        let source = kb.source_for_target(&entry_any.name, target).unwrap_or("<unknown>");
         println!(
           "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
           call.span.start,
           call.span.end,
           call.call_text,
-          call.api,
+          entry.name,
           entry.effects,
           entry.purity,
         );
       } else {
         println!(
-          "[{}..{}] {} => {}",
-          call.span.start, call.span.end, call.call_text, call.api
+          "[{}..{}] {} => id: 0x{:x}",
+          call.span.start,
+          call.span.end,
+          call.call_text,
+          call.api.raw()
         );
       }
     }
@@ -441,10 +445,10 @@ fn resolve_calls_best_effort_builtin(lowered: &hir_js::LowerResult) -> Vec<Resol
     }
   }
   out.sort_by(|a, b| {
-    (a.span.start, a.span.end, a.api.as_str(), a.call_text.as_str()).cmp(&(
+    (a.span.start, a.span.end, a.api.raw(), a.call_text.as_str()).cmp(&(
       b.span.start,
       b.span.end,
-      b.api.as_str(),
+      b.api.raw(),
       b.call_text.as_str(),
     ))
   });

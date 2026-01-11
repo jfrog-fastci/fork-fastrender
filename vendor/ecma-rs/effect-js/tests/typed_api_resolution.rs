@@ -75,6 +75,14 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let types = TypedProgram::from_program(Arc::clone(&program), file);
   let patterns = recognize_patterns_typed(&lowered, root_body, &types);
 
+  let array_map = ApiId::from_name("Array.prototype.map");
+  let array_for_each = ApiId::from_name("Array.prototype.forEach");
+  let string_to_lower = ApiId::from_name("String.prototype.toLowerCase");
+  let string_split = ApiId::from_name("String.prototype.split");
+  let map_get = ApiId::from_name("Map.prototype.get");
+  let map_has = ApiId::from_name("Map.prototype.has");
+  let promise_then = ApiId::from_name("Promise.prototype.then");
+
   let apis: Vec<ApiId> = patterns
     .iter()
     .filter_map(|pat| match pat {
@@ -83,16 +91,13 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
     })
     .collect();
 
-  assert!(apis.contains(&ApiId::ArrayPrototypeMap));
-  assert!(apis.contains(&ApiId::ArrayPrototypeForEach));
-  assert!(apis.contains(&ApiId::StringPrototypeToLowerCase));
-  assert!(apis.contains(&ApiId::StringPrototypeSplit));
-  assert!(apis.contains(&ApiId::MapPrototypeGet));
-  assert!(apis.contains(&ApiId::MapPrototypeHas));
-  assert!(apis.contains(&ApiId::StringPrototypeSplit));
-  assert!(apis.contains(&ApiId::MapPrototypeGet));
-  assert!(apis.contains(&ApiId::MapPrototypeHas));
-  assert!(apis.contains(&ApiId::PromisePrototypeThen));
+  assert!(apis.contains(&array_map));
+  assert!(apis.contains(&array_for_each));
+  assert!(apis.contains(&string_to_lower));
+  assert!(apis.contains(&string_split));
+  assert!(apis.contains(&map_get));
+  assert!(apis.contains(&map_has));
+  assert!(apis.contains(&promise_then));
 
   let find_member_call = |recv_expected: &str, prop_expected: &str| -> ExprId {
     body
@@ -141,7 +146,7 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(
     !patterns.iter().any(|pat| matches!(
       pat,
-      RecognizedPattern::CanonicalCall { call, api: ApiId::ArrayPrototypeMap } if *call == any_val_map_call
+      RecognizedPattern::CanonicalCall { call, api } if *call == any_val_map_call && *api == array_map
     )),
     "anyVal.map should not resolve to Array.prototype.map"
   );
@@ -150,31 +155,31 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let alias_arr_map_call = find_member_call("aliasArr", "map");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api: ApiId::ArrayPrototypeMap } if *call == alias_arr_map_call
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_arr_map_call && *api == array_map
   )));
 
   let alias_str_lower_call = find_member_call("aliasStr", "toLowerCase");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api: ApiId::StringPrototypeToLowerCase } if *call == alias_str_lower_call
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_str_lower_call && *api == string_to_lower
   )));
 
   let alias_map_get_call = find_member_call("aliasMap", "get");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api: ApiId::MapPrototypeGet } if *call == alias_map_get_call
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_map_get_call && *api == map_get
   )));
 
   let alias_map_has_call = find_member_call("aliasMap", "has");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api: ApiId::MapPrototypeHas } if *call == alias_map_has_call
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_map_has_call && *api == map_has
   )));
 
   let alias_promise_then_call = find_member_call("aliasPromise", "then");
   assert!(patterns.iter().any(|pat| matches!(
     pat,
-    RecognizedPattern::CanonicalCall { call, api: ApiId::PromisePrototypeThen } if *call == alias_promise_then_call
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_promise_then_call && *api == promise_then
   )));
 
   // Typed-only patterns should be emitted only when types confirm the receiver.

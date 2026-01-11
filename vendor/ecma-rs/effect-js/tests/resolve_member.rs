@@ -1,6 +1,7 @@
 #![cfg(feature = "typed")]
 
 use effect_js::{analyze_body_tables_typed, resolve_member};
+use effect_js::ApiId;
 use hir_js::{ExprId, ExprKind, ObjectKey};
 use std::sync::Arc;
 use effect_js::typed::TypedProgram;
@@ -172,7 +173,7 @@ fn resolves_known_member_reads_typed() {
   let computed_length = find_computed_member_expr(&lowered, body, "xs", "length");
 
   let resolved_pathname = resolve_member(&lowered, root_body, pathname, &types).expect("resolve u.pathname");
-  assert_eq!(resolved_pathname.api.as_str(), "URL.prototype.pathname");
+  assert_eq!(resolved_pathname.api, ApiId::from_name("URL.prototype.pathname"));
   assert_eq!(resolved_pathname.member, pathname);
   let ExprKind::Member(member) = &body.exprs[pathname.0 as usize].kind else {
     panic!("expected member expression for u.pathname");
@@ -180,113 +181,116 @@ fn resolves_known_member_reads_typed() {
   assert_eq!(resolved_pathname.receiver, member.object);
 
   let resolved_href = resolve_member(&lowered, root_body, href, &types).expect("resolve u.href");
-  assert_eq!(resolved_href.api.as_str(), "URL.prototype.href");
+  assert_eq!(resolved_href.api, ApiId::from_name("URL.prototype.href"));
 
   let resolved_origin =
     resolve_member(&lowered, root_body, origin, &types).expect("resolve u.origin");
-  assert_eq!(resolved_origin.api.as_str(), "URL.prototype.origin");
+  assert_eq!(resolved_origin.api, ApiId::from_name("URL.prototype.origin"));
 
   let resolved_protocol =
     resolve_member(&lowered, root_body, protocol, &types).expect("resolve u.protocol");
-  assert_eq!(resolved_protocol.api.as_str(), "URL.prototype.protocol");
+  assert_eq!(resolved_protocol.api, ApiId::from_name("URL.prototype.protocol"));
 
   let resolved_host = resolve_member(&lowered, root_body, host, &types).expect("resolve u.host");
-  assert_eq!(resolved_host.api.as_str(), "URL.prototype.host");
+  assert_eq!(resolved_host.api, ApiId::from_name("URL.prototype.host"));
 
   let resolved_hostname =
     resolve_member(&lowered, root_body, hostname, &types).expect("resolve u.hostname");
-  assert_eq!(resolved_hostname.api.as_str(), "URL.prototype.hostname");
+  assert_eq!(resolved_hostname.api, ApiId::from_name("URL.prototype.hostname"));
 
   let resolved_port = resolve_member(&lowered, root_body, port, &types).expect("resolve u.port");
-  assert_eq!(resolved_port.api.as_str(), "URL.prototype.port");
+  assert_eq!(resolved_port.api, ApiId::from_name("URL.prototype.port"));
 
   let resolved_search =
     resolve_member(&lowered, root_body, search, &types).expect("resolve u.search");
-  assert_eq!(resolved_search.api.as_str(), "URL.prototype.search");
+  assert_eq!(resolved_search.api, ApiId::from_name("URL.prototype.search"));
 
   let resolved_hash = resolve_member(&lowered, root_body, hash, &types).expect("resolve u.hash");
-  assert_eq!(resolved_hash.api.as_str(), "URL.prototype.hash");
+  assert_eq!(resolved_hash.api, ApiId::from_name("URL.prototype.hash"));
 
   let resolved_str_length =
     resolve_member(&lowered, root_body, str_length, &types).expect("resolve s.length");
-  assert_eq!(resolved_str_length.api.as_str(), "String.prototype.length");
+  assert_eq!(resolved_str_length.api, ApiId::from_name("String.prototype.length"));
 
   let resolved_computed_str_length =
     resolve_member(&lowered, root_body, computed_str_length, &types).expect("resolve s[\"length\"]");
-  assert_eq!(resolved_computed_str_length.api.as_str(), "String.prototype.length");
+  assert_eq!(resolved_computed_str_length.api, ApiId::from_name("String.prototype.length"));
 
   let resolved_map_size =
     resolve_member(&lowered, root_body, map_size, &types).expect("resolve m.size");
-  assert_eq!(resolved_map_size.api.as_str(), "Map.prototype.size");
+  assert_eq!(resolved_map_size.api, ApiId::from_name("Map.prototype.size"));
 
   let resolved_computed_map_size =
     resolve_member(&lowered, root_body, computed_map_size, &types).expect("resolve m[\"size\"]");
-  assert_eq!(resolved_computed_map_size.api.as_str(), "Map.prototype.size");
+  assert_eq!(resolved_computed_map_size.api, ApiId::from_name("Map.prototype.size"));
 
   let resolved_set_size =
     resolve_member(&lowered, root_body, set_size, &types).expect("resolve set.size");
-  assert_eq!(resolved_set_size.api.as_str(), "Set.prototype.size");
+  assert_eq!(resolved_set_size.api, ApiId::from_name("Set.prototype.size"));
 
   let resolved_computed_set_size =
     resolve_member(&lowered, root_body, computed_set_size, &types).expect("resolve set[\"size\"]");
-  assert_eq!(resolved_computed_set_size.api.as_str(), "Set.prototype.size");
+  assert_eq!(resolved_computed_set_size.api, ApiId::from_name("Set.prototype.size"));
 
   let resolved_length = resolve_member(&lowered, root_body, length, &types).expect("resolve xs.length");
-  assert_eq!(resolved_length.api.as_str(), "Array.prototype.length");
+  assert_eq!(resolved_length.api, ApiId::from_name("Array.prototype.length"));
 
   let resolved_computed_length =
     resolve_member(&lowered, root_body, computed_length, &types).expect("resolve xs[\"length\"]");
-  assert_eq!(resolved_computed_length.api.as_str(), "Array.prototype.length");
+  assert_eq!(resolved_computed_length.api, ApiId::from_name("Array.prototype.length"));
 
   let resolved_computed_pathname =
     resolve_member(&lowered, root_body, computed_pathname, &types).expect("resolve u[\"pathname\"]");
-  assert_eq!(resolved_computed_pathname.api.as_str(), "URL.prototype.pathname");
+  assert_eq!(
+    resolved_computed_pathname.api,
+    ApiId::from_name("URL.prototype.pathname")
+  );
 
   // Ensure side tables are wired up as well.
   let tables = analyze_body_tables_typed(&lowered, &types);
   let root_tables = tables.get(&root_body).expect("root body tables");
   assert_eq!(
-    root_tables.resolved_member[pathname.0 as usize].map(|api| api.as_str()),
-    Some("URL.prototype.pathname")
+    root_tables.resolved_member[pathname.0 as usize],
+    Some(ApiId::from_name("URL.prototype.pathname"))
   );
   assert_eq!(
-    root_tables.resolved_member[origin.0 as usize].map(|api| api.as_str()),
-    Some("URL.prototype.origin")
+    root_tables.resolved_member[origin.0 as usize],
+    Some(ApiId::from_name("URL.prototype.origin"))
   );
   assert_eq!(
-    root_tables.resolved_member[length.0 as usize].map(|api| api.as_str()),
-    Some("Array.prototype.length")
+    root_tables.resolved_member[length.0 as usize],
+    Some(ApiId::from_name("Array.prototype.length"))
   );
   assert_eq!(
-    root_tables.resolved_member[computed_length.0 as usize].map(|api| api.as_str()),
-    Some("Array.prototype.length")
+    root_tables.resolved_member[str_length.0 as usize],
+    Some(ApiId::from_name("String.prototype.length"))
   );
   assert_eq!(
-    root_tables.resolved_member[str_length.0 as usize].map(|api| api.as_str()),
-    Some("String.prototype.length")
+    root_tables.resolved_member[computed_length.0 as usize],
+    Some(ApiId::from_name("Array.prototype.length"))
   );
   assert_eq!(
-    root_tables.resolved_member[computed_str_length.0 as usize].map(|api| api.as_str()),
-    Some("String.prototype.length")
+    root_tables.resolved_member[computed_str_length.0 as usize],
+    Some(ApiId::from_name("String.prototype.length"))
   );
   assert_eq!(
-    root_tables.resolved_member[map_size.0 as usize].map(|api| api.as_str()),
-    Some("Map.prototype.size")
+    root_tables.resolved_member[map_size.0 as usize],
+    Some(ApiId::from_name("Map.prototype.size"))
   );
   assert_eq!(
-    root_tables.resolved_member[computed_map_size.0 as usize].map(|api| api.as_str()),
-    Some("Map.prototype.size")
+    root_tables.resolved_member[computed_map_size.0 as usize],
+    Some(ApiId::from_name("Map.prototype.size"))
   );
   assert_eq!(
-    root_tables.resolved_member[set_size.0 as usize].map(|api| api.as_str()),
-    Some("Set.prototype.size")
+    root_tables.resolved_member[set_size.0 as usize],
+    Some(ApiId::from_name("Set.prototype.size"))
   );
   assert_eq!(
-    root_tables.resolved_member[computed_set_size.0 as usize].map(|api| api.as_str()),
-    Some("Set.prototype.size")
+    root_tables.resolved_member[computed_set_size.0 as usize],
+    Some(ApiId::from_name("Set.prototype.size"))
   );
   assert_eq!(
-    root_tables.resolved_member[computed_pathname.0 as usize].map(|api| api.as_str()),
-    Some("URL.prototype.pathname")
+    root_tables.resolved_member[computed_pathname.0 as usize],
+    Some(ApiId::from_name("URL.prototype.pathname"))
   );
 }
