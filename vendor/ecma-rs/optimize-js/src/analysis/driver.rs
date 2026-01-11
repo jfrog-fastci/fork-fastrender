@@ -296,8 +296,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
   use crate::compile_source;
-  use crate::il::inst::{Arg, InstTyp, OwnershipState};
+  use crate::il::inst::{Arg, Const, Inst, InstTyp, OwnershipState, StringEncoding};
+  use crate::{OptimizationStats, Program, ProgramFunction};
   use crate::TopLevelMode;
 
   fn any_inst(program: &Program, pred: impl Fn(&Inst) -> bool) -> bool {
@@ -363,6 +365,71 @@ mod tests {
         .get(&FunctionKey::TopLevel)
         .is_some_and(|r| r.entry_state(top_cfg.entry).is_reachable()),
       "expected nullability analysis results for top-level entry block"
+    );
+  }
+
+  fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+    let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
+    let mut graph = CfgGraph::default();
+    for &(from, to) in edges {
+      graph.connect(from, to);
+    }
+    for &label in &labels {
+      if !graph.contains(label) {
+        // Ensure the node exists even if it has no edges.
+        graph.connect(label, label);
+        graph.disconnect(label, label);
+      }
+    }
+    let mut bblocks = CfgBBlocks::default();
+    for (label, insts) in blocks.iter() {
+      bblocks.add(*label, insts.clone());
+    }
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  #[test]
+  fn analyze_program_computes_encoding_results() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::var_assign(0, Arg::Const(Const::Str("hello".to_string()))),
+          Inst::var_assign(1, Arg::Const(Const::Str("π".to_string()))),
+        ],
+      )],
+      &[],
+    );
+    let program = Program {
+      functions: Vec::new(),
+      top_level: ProgramFunction {
+        debug: None,
+        body: cfg,
+        stats: OptimizationStats::default(),
+      },
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let analyses = analyze_program(&program);
+    let encoding = analyses
+      .encoding
+      .get(&FunctionKey::TopLevel)
+      .expect("top-level encoding results missing");
+
+    assert_eq!(
+      encoding.encoding_at_exit(0, 0),
+      StringEncoding::Ascii,
+      "expected ASCII string literal to be classified as Ascii"
+    );
+    assert_eq!(
+      encoding.encoding_at_exit(0, 1),
+      StringEncoding::Utf8,
+      "expected non-ASCII string literal to be classified as Utf8"
     );
   }
 }
