@@ -27,7 +27,8 @@ exactly once in the completion path.
 
 ### Driver drop (policy B)
 
-Drivers must not be dropped while operations are still in-flight:
+Drivers must not be dropped while operations are still in-flight (including internal ops such as
+buffer provisioning):
 
 - In debug builds, dropping a driver with in-flight ops **panics** (unless already unwinding).
 - In release builds, dropping a driver with in-flight ops **leaks** the ring + in-flight state to

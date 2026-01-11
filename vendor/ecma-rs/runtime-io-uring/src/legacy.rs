@@ -1100,16 +1100,16 @@ mod linux {
             }
 
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak/panic.
-            let (ops_len, multishots_len) = {
+            let (ops_len, multishots_len, internal_in_flight) = {
                 let mut guard = match self.inner.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
                 guard.poll_completions();
-                (guard.ops.len(), guard.multishots.len())
+                (guard.ops.len(), guard.multishots.len(), guard.internal_in_flight)
             };
 
-            if ops_len == 0 && multishots_len == 0 {
+            if ops_len == 0 && multishots_len == 0 && internal_in_flight == 0 {
                 return;
             }
 
@@ -1119,10 +1119,10 @@ mod linux {
             if (cfg!(debug_assertions) || cfg!(feature = "debug_stability"))
                 && !std::thread::panicking()
             {
-                let total = ops_len + multishots_len;
+                let total = ops_len + multishots_len + internal_in_flight;
                 panic!(
                     "runtime-io-uring: dropping legacy Driver with {total} in-flight ops \
-                     ({ops_len} single-shot, {multishots_len} multishot); \
+                     ({ops_len} single-shot, {multishots_len} multishot, {internal_in_flight} internal); \
                      drive to completion (and/or cancel) before drop"
                 );
             }
@@ -1202,6 +1202,45 @@ mod linux {
             .submitter()
             .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::ProvideBuffers::CODE))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn is_uring_unavailable(err: &io::Error) -> bool {
+            matches!(
+                err.raw_os_error(),
+                Some(libc::ENOSYS) | Some(libc::EPERM) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP)
+            )
+        }
+
+        #[test]
+        fn drop_counts_internal_in_flight_ops() {
+            let driver = match Driver::new(8) {
+                Ok(d) => d,
+                Err(e) if is_uring_unavailable(&e) => return,
+                Err(e) => return Err(e).unwrap(),
+            };
+
+            {
+                let mut guard = driver.inner.lock().unwrap_or_else(|e| e.into_inner());
+                guard.internal_in_flight = 1;
+            }
+
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(driver)));
+            if cfg!(debug_assertions) || cfg!(feature = "debug_stability") {
+                assert!(
+                    res.is_err(),
+                    "dropping a legacy Driver with in-flight internal ops should panic in debug builds"
+                );
+            } else {
+                assert!(
+                    res.is_ok(),
+                    "dropping a legacy Driver with in-flight internal ops should not panic in release builds"
+                );
+            }
+        }
     }
 }
 
