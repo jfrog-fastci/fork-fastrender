@@ -29,6 +29,9 @@ invokes `clang` to produce a temporary executable, and then runs it.
 > `typecheck-ts` to discover the module graph and export maps (so it can compile
 > multi-file projects with `import { ... } from "./mod"`).
 >
+> The CLI does not currently treat TypeScript type errors as fatal for code
+> generation; `typecheck-ts` is only used for reachability/module metadata.
+>
 > The input is parsed as a TypeScript **module** (`Dialect::Ts` +
 > `SourceType::Module`).
 
@@ -331,6 +334,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
 - `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
+  - not supported with `run` (it would mix with program stdout)
 - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
 - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
