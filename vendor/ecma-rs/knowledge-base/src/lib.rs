@@ -1714,6 +1714,24 @@ purity: Impure
   }
 
   #[test]
+  fn load_from_sources_preserves_effect_summary_override() {
+    let yaml = r#"
+schema: 1
+apis:
+  - name: x
+    effects:
+      template: pure
+    effect_summary: "IO | MAY_THROW"
+    purity: Impure
+"#;
+    let kb = ApiDatabase::load_from_sources(&[("test.yaml", yaml)]).expect("load test module");
+    let api = kb.get("x").expect("x exists in DB");
+    assert!(api.effect_summary.flags.contains(EffectSet::IO));
+    assert!(!api.effect_summary.flags.contains(EffectSet::MAY_THROW));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
   fn parse_yaml_schema_module_v1() {
     let yaml = include_str!("../core/json.yaml");
     let entries = parse_api_semantics_yaml_str(yaml).expect("parse core/json.yaml");
