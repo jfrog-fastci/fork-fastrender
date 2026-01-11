@@ -9,7 +9,6 @@ use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::async_runtime::PromiseLayout;
-use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_runtime;
@@ -324,24 +323,14 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
   };
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc_array(len, spec.elem_size);
+  let _ = spec;
 
-  let size = array::checked_total_bytes(len, spec.elem_size)
-    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
-
-  let obj = alloc::alloc_bytes_zeroed(size, 16, "rt_alloc_array");
-  // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
-  unsafe {
-    let header = &mut *(obj as *mut ObjHeader);
-    header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-    header.meta.store(0, Ordering::Relaxed);
-
-    let arr = &mut *(obj as *mut RtArrayHeader);
-    arr.len = len;
-    arr.elem_size = spec.elem_size as u32;
-    arr.elem_flags = spec.elem_flags;
+  // Don't let panics unwind across the extern "C" boundary.
+  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc_array(len, elem_size)));
+  match res {
+    Ok(ptr) => ptr,
+    Err(_) => std::process::abort(),
   }
-
-  obj
 }
 
 #[no_mangle]

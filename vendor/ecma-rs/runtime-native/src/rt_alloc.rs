@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use crate::abi::RtShapeId;
+use crate::array;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;
 use crate::gc::{ObjHeader, TypeDescriptor, YOUNG_SPACE};
 use crate::immix::LINE_SIZE;
@@ -241,6 +242,57 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
 
   // Nursery exhausted: fall back to old-gen allocation.
   alloc_old(size, align, type_desc, epoch)
+}
+
+pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
+  ensure_thread_registered_for_alloc();
+  crate::threading::safepoint_poll();
+
+  let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
+    crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
+  };
+  let size = array::checked_total_bytes(len, spec.elem_size)
+    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
+
+  let align = mem::align_of::<array::RtArrayHeader>().max(16);
+  let global = global_heap();
+  let epoch = current_mark_epoch(global);
+
+  if size > IMMIX_MAX_OBJECT_SIZE {
+    return with_heap_lock_mutator(|heap| {
+      let obj = heap.los.alloc(size, align);
+      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+      unsafe {
+        let arr = &mut *(obj as *mut array::RtArrayHeader);
+        arr.len = len;
+        arr.elem_size = spec.elem_size as u32;
+        arr.elem_flags = spec.elem_flags;
+      }
+      obj
+    });
+  }
+
+  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
+    (*alloc.get()).nursery.alloc(size, align, nursery(global))
+  }) {
+    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+    unsafe {
+      let arr = &mut *(obj as *mut array::RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
+    }
+    return obj;
+  }
+
+  let obj = alloc_old(size, align, &array::RT_ARRAY_TYPE_DESC, epoch);
+  unsafe {
+    let arr = &mut *(obj as *mut array::RtArrayHeader);
+    arr.len = len;
+    arr.elem_size = spec.elem_size as u32;
+    arr.elem_flags = spec.elem_flags;
+  }
+  obj
 }
 
 pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
