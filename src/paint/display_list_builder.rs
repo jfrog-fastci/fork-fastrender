@@ -9924,7 +9924,17 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
   ) -> Option<f32> {
     match thickness {
-      TextDecorationThickness::Auto => None,
+      TextDecorationThickness::Auto => {
+        // `text-decoration-thickness: auto` is UA-defined. Keep legacy behavior stable by mapping
+        // to a simple font-size-relative default (clamped to >=1px) rather than relying on
+        // font-provided underline thickness, which can vary across fonts/platforms.
+        let font_size = if style.font_size.is_finite() {
+          style.font_size.max(0.0)
+        } else {
+          0.0
+        };
+        Some((font_size * 0.1).max(1.0))
+      }
       // `from-font` uses per-font underline/strikeout thickness, so let the caller fall back to
       // `DecorationMetrics::{underline_thickness,strike_thickness}`.
       TextDecorationThickness::FromFont => None,
@@ -10687,6 +10697,126 @@ impl DisplayListBuilder {
     (width, stroke_color)
   }
 
+  fn missing_image_icon_size(content_rect: Rect) -> f32 {
+    if !content_rect.width().is_finite() || !content_rect.height().is_finite() {
+      return 0.0;
+    }
+    let icon_inset = 2.0;
+    let max_icon_size = 16.0;
+    let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
+    let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
+    let icon_size = (available_w.min(available_h) * 0.5)
+      .floor()
+      .clamp(0.0, max_icon_size);
+    if icon_size >= 8.0 { icon_size } else { 0.0 }
+  }
+
+  fn emit_inside_border_rect(&mut self, rect: Rect, color: Rgba) {
+    if !rect.width().is_finite() || !rect.height().is_finite() {
+      return;
+    }
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    // Chrome's 1px border sits inside the image box. Using `StrokeRect` here would center the
+    // stroke on the edge, which gets clipped/anti-aliased and ends up darker than browsers.
+    let thickness: f32 = 1.0;
+    let th = thickness.min(h);
+    let tw = thickness.min(w);
+    let x = rect.x();
+    let y = rect.y();
+    let bottom_y = y + h - th;
+    let right_x = x + w - tw;
+
+    self.list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(x, y, w, th),
+      color,
+    }));
+    if bottom_y > y {
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(x, bottom_y, w, th),
+        color,
+      }));
+    }
+
+    self.list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(x, y, tw, h),
+      color,
+    }));
+    if right_x > x {
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(right_x, y, tw, h),
+        color,
+      }));
+    }
+  }
+
+  fn emit_broken_image_icon(&mut self, icon_rect: Rect) {
+    let inner_rect = Rect::from_xywh(
+      icon_rect.x() + 1.0,
+      icon_rect.y() + 1.0,
+      (icon_rect.width() - 2.0).max(0.0),
+      (icon_rect.height() - 2.0).max(0.0),
+    );
+
+    if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: inner_rect,
+        color: Rgba::WHITE,
+      }));
+
+      // Sky.
+      let sky_h = (inner_rect.height() * 0.62)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if sky_h > 0.0 {
+        self.list.push(DisplayItem::FillRect(FillRectItem {
+          rect: Rect::from_xywh(inner_rect.x(), inner_rect.y(), inner_rect.width(), sky_h),
+          color: Rgba::rgb(198, 216, 244),
+        }));
+      }
+
+      // Ground.
+      let ground_h = (inner_rect.height() * 0.3)
+        .floor()
+        .clamp(0.0, inner_rect.height());
+      if ground_h > 0.0 {
+        self.list.push(DisplayItem::FillRect(FillRectItem {
+          rect: Rect::from_xywh(
+            inner_rect.x(),
+            inner_rect.y() + inner_rect.height() - ground_h,
+            inner_rect.width(),
+            ground_h,
+          ),
+          color: Rgba::rgb(88, 174, 57),
+        }));
+      }
+
+      // "Sun" highlight.
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
+        color: Rgba::WHITE,
+      }));
+    }
+
+    self.emit_inside_border_rect(icon_rect, Rgba::rgb(163, 163, 163));
+  }
+
+  fn measure_text_advance_width(&mut self, text: &str, style: &ComputedStyle) -> Option<f32> {
+    let shaped = self.shaper.shape(text, style, &self.font_ctx).ok()?;
+    let mut runs = shaped;
+    InlineTextItem::apply_spacing_to_runs(
+      &mut runs,
+      text,
+      style.letter_spacing,
+      style.word_spacing,
+    );
+    Some(runs.iter().map(|run| run.advance).sum())
+  }
+
   fn emit_replaced_placeholder(
     &mut self,
     replaced_type: &ReplacedType,
@@ -10710,6 +10840,12 @@ impl DisplayListBuilder {
         ..
       }
     ) {
+      return;
+    }
+    // When `<img>` has an `alt` attribute, browsers render a combined broken-image icon + alt text
+    // fallback. `emit_alt_text` handles that rendering so the icon can be positioned relative to
+    // the text (respecting `text-align`).
+    if matches!(replaced_type, ReplacedType::Image { alt: Some(_), .. }) {
       return;
     }
 
@@ -10780,50 +10916,6 @@ impl DisplayListBuilder {
       }
       return;
     }
-
-    fn emit_inside_border(list: &mut DisplayList, rect: Rect, color: Rgba) {
-      if !rect.width().is_finite() || !rect.height().is_finite() {
-        return;
-      }
-      let w = rect.width().max(0.0);
-      let h = rect.height().max(0.0);
-      if w <= 0.0 || h <= 0.0 {
-        return;
-      }
-
-      // Chrome's 1px border sits inside the image box. Using `StrokeRect` here would center the
-      // stroke on the edge, which gets clipped/anti-aliased and ends up darker than browsers.
-      let thickness: f32 = 1.0;
-      let th = thickness.min(h);
-      let tw = thickness.min(w);
-      let x = rect.x();
-      let y = rect.y();
-      let bottom_y = y + h - th;
-      let right_x = x + w - tw;
-
-      list.push(DisplayItem::FillRect(FillRectItem {
-        rect: Rect::from_xywh(x, y, w, th),
-        color,
-      }));
-      if bottom_y > y {
-        list.push(DisplayItem::FillRect(FillRectItem {
-          rect: Rect::from_xywh(x, bottom_y, w, th),
-          color,
-        }));
-      }
-
-      list.push(DisplayItem::FillRect(FillRectItem {
-        rect: Rect::from_xywh(x, y, tw, h),
-        color,
-      }));
-      if right_x > x {
-        list.push(DisplayItem::FillRect(FillRectItem {
-          rect: Rect::from_xywh(right_x, y, tw, h),
-          color,
-        }));
-      }
-    }
-
     match replaced_type {
       // Chrome renders a broken-image icon inside a small 1px-bordered square and leaves the
       // image box itself transparent. Drawing a full-frame placeholder border creates large
@@ -10832,68 +10924,15 @@ impl DisplayListBuilder {
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
         let icon_inset = 2.0;
-        let max_icon_size = 16.0;
-        let icon_size = {
-          let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
-          let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
-          (available_w.min(available_h) * 0.5)
-            .floor()
-            .clamp(0.0, max_icon_size)
-        };
-        // The broken-image icon is UA-defined; Chrome appears to suppress it when the available
-        // space is too small (e.g. narrow banner images). Keep the minimum size large enough to
-        // avoid flooding small content rects with extra paint items.
-        if icon_size >= 8.0 {
+        let icon_size = Self::missing_image_icon_size(content_rect);
+        if icon_size > 0.0 {
           let icon_rect = Rect::from_xywh(
             content_rect.x() + icon_inset,
             content_rect.y() + icon_inset,
             icon_size,
             icon_size,
           );
-          let inner_rect = Rect::from_xywh(
-            icon_rect.x() + 1.0,
-            icon_rect.y() + 1.0,
-            (icon_rect.width() - 2.0).max(0.0),
-            (icon_rect.height() - 2.0).max(0.0),
-          );
-
-          if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
-            self.list.push(DisplayItem::FillRect(FillRectItem {
-              rect: inner_rect,
-              color: Rgba::WHITE,
-            }));
-
-            // Sky.
-            let sky_h = (inner_rect.height() * 0.62).floor().clamp(0.0, inner_rect.height());
-            if sky_h > 0.0 {
-              self.list.push(DisplayItem::FillRect(FillRectItem {
-                rect: Rect::from_xywh(inner_rect.x(), inner_rect.y(), inner_rect.width(), sky_h),
-                color: Rgba::rgb(198, 216, 244),
-              }));
-            }
-
-            // Ground.
-            let ground_h = (inner_rect.height() * 0.3).floor().clamp(0.0, inner_rect.height());
-            if ground_h > 0.0 {
-              self.list.push(DisplayItem::FillRect(FillRectItem {
-                rect: Rect::from_xywh(
-                  inner_rect.x(),
-                  inner_rect.y() + inner_rect.height() - ground_h,
-                  inner_rect.width(),
-                  ground_h,
-                ),
-                color: Rgba::rgb(88, 174, 57),
-              }));
-            }
-
-            // "Sun" highlight.
-            self.list.push(DisplayItem::FillRect(FillRectItem {
-              rect: Rect::from_xywh(inner_rect.x() + 2.0, inner_rect.y() + 2.0, 3.0, 3.0),
-              color: Rgba::WHITE,
-            }));
-          }
-
-          emit_inside_border(&mut self.list, icon_rect, Rgba::rgb(163, 163, 163));
+          self.emit_broken_image_icon(icon_rect);
         }
       }
       _ => {
@@ -12906,7 +12945,7 @@ impl DisplayListBuilder {
     //
     // Keep the behavior stable by matching the placeholder icon sizing rules from
     // `emit_replaced_placeholder`.
-    let text_rect = if matches!(
+    let ok = if matches!(
       fragment.content,
       FragmentContent::Replaced {
         replaced_type: ReplacedType::Image { .. },
@@ -12914,34 +12953,61 @@ impl DisplayListBuilder {
       }
     ) {
       let icon_inset = 2.0;
-      let max_icon_size = 16.0;
-      let icon_size = {
-        let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
-        let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
-        (available_w.min(available_h) * 0.5)
-          .floor()
-          .clamp(0.0, max_icon_size)
-      };
-      // Leave room for the icon plus a small gap. When the icon isn't drawn, still inset the text
-      // slightly so it doesn't abut the border.
-      let icon_gap = if icon_size > 0.0 { 2.0 } else { 0.0 };
-      let left_inset = icon_inset + icon_size + icon_gap;
-      let right_inset = icon_inset;
-      let top_inset = icon_inset;
-      let bottom_inset = icon_inset;
+      let icon_gap = 2.0;
+      let icon_size = Self::missing_image_icon_size(content_rect);
 
-      let w = (content_rect.width() - left_inset - right_inset).max(0.0);
-      let h = (content_rect.height() - top_inset - bottom_inset).max(0.0);
-      Rect::from_xywh(
-        content_rect.x() + left_inset,
-        content_rect.y() + top_inset,
-        w,
-        h,
-      )
+      let content_inner_rect = Rect::from_xywh(
+        content_rect.x() + icon_inset,
+        content_rect.y() + icon_inset,
+        (content_rect.width() - icon_inset * 2.0).max(0.0),
+        (content_rect.height() - icon_inset * 2.0).max(0.0),
+      );
+
+      if icon_size > 0.0 {
+        let mut icon_x = content_inner_rect.x();
+        let trimmed_alt = trim_ascii_whitespace(alt);
+        if !trimmed_alt.is_empty() {
+          if let Some(style) = style {
+            if let Some(text_width) = self.measure_text_advance_width(trimmed_alt, style) {
+              let group_width = icon_size + icon_gap + text_width;
+              icon_x = match Self::effective_text_align(style) {
+                crate::style::types::TextAlign::Center => {
+                  content_inner_rect.x()
+                    + ((content_inner_rect.width() - group_width).max(0.0) / 2.0)
+                }
+                crate::style::types::TextAlign::Right => {
+                  content_inner_rect.x() + (content_inner_rect.width() - group_width).max(0.0)
+                }
+                _ => content_inner_rect.x(),
+              };
+            }
+          }
+        }
+
+        let icon_rect = Rect::from_xywh(icon_x, content_inner_rect.y(), icon_size, icon_size);
+        self.emit_broken_image_icon(icon_rect);
+
+        let text_x = icon_x + icon_size + icon_gap;
+        let text_rect = Rect::from_xywh(
+          text_x,
+          content_inner_rect.y(),
+          (content_inner_rect.x() + content_inner_rect.width() - text_x).max(0.0),
+          content_inner_rect.height(),
+        );
+
+        let override_style = style.map(|style| {
+          let mut clone = style.clone();
+          clone.text_align = crate::style::types::TextAlign::Start;
+          clone
+        });
+        let style_ref = override_style.as_ref().map(|s| s as &ComputedStyle).or(style);
+        self.emit_text_with_style(alt, style_ref, text_rect)
+      } else {
+        self.emit_text_with_style(alt, style, content_inner_rect)
+      }
     } else {
-      content_rect
+      self.emit_text_with_style(alt, style, content_rect)
     };
-    let ok = self.emit_text_with_style(alt, style, text_rect);
     if clip_contents.is_some() {
       self.list.push(DisplayItem::PopClip);
     }
@@ -18380,6 +18446,83 @@ mod tests {
       (text.origin.x - expected_x).abs() < 0.01,
       "expected missing-image alt text to start at x≈{}, got x={}",
       expected_x,
+      text.origin.x
+    );
+  }
+
+  #[test]
+  fn missing_image_alt_text_centers_icon_and_text_together() {
+    use crate::style::types::TextAlign;
+
+    let mut style = ComputedStyle::default();
+    style.color = Rgba::BLACK;
+    style.font_size = 12.0;
+    style.text_align = TextAlign::Center;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: String::new(),
+          alt: Some("alt".to_string()),
+          loading: Default::default(),
+          decoding: ImageDecodingAttribute::Auto,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    let text = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Text(text) => Some(text),
+        _ => None,
+      })
+      .expect("Expected text item for alt fallback");
+
+    let border_x = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::FillRect(fill)
+          if fill.color == Rgba::rgb(163, 163, 163)
+            && (fill.rect.y() - 2.0).abs() < 0.01
+            && (fill.rect.height() - 1.0).abs() < 0.01
+            && (fill.rect.width() - 16.0).abs() < 0.01 =>
+        {
+          Some(fill.rect.x())
+        }
+        _ => None,
+      })
+      .expect("Expected broken-image icon border fill");
+
+    let icon_inset = 2.0;
+    let icon_size = 16.0;
+    let icon_gap = 2.0;
+    let inner_width = 200.0 - icon_inset * 2.0;
+    let group_width = icon_size + icon_gap + text.advance_width;
+    let expected_icon_x = icon_inset + ((inner_width - group_width).max(0.0) / 2.0);
+    assert!(
+      (border_x - expected_icon_x).abs() < 0.5,
+      "expected centered broken-image icon at x≈{}, got x={}",
+      expected_icon_x,
+      border_x
+    );
+    assert!(
+      (text.origin.x - (expected_icon_x + icon_size + icon_gap)).abs() < 0.5,
+      "expected centered missing-image alt text to start at x≈{}, got x={}",
+      expected_icon_x + icon_size + icon_gap,
       text.origin.x
     );
   }
