@@ -166,6 +166,19 @@ bash scripts/cargo_agent.sh test -p native-oracle-harness
 Expected output is standard `cargo test` output.
 Today the harness asserts that fixtures erase to JS and execute successfully in the oracle runtime; native-vs-oracle comparison is expected to be added later.
 
+#### Optional: enable the `optimize-js` TS→JS fallback
+
+If a fixture uses TS syntax that `emit-js`’s erasure emitter cannot handle yet, you can enable the heavier fallback:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --features optimize-js-fallback
+```
+
+This switches the erasure step to:
+
+- try `emit-js` first, then
+- compile + decompile via `optimize-js` when needed.
+
 ### Related native pipeline smoke tests (LLVM)
 
 In addition to the oracle harness, there are two native bring-up CLIs:
@@ -246,5 +259,11 @@ Guidelines for fixtures:
 
 - Keep them **deterministic**: avoid real time, randomness, networking, and filesystem access unless explicitly mocked.
 - Avoid host APIs: `runtime-js`/`vm-js` do not provide browser/Node globals like `console` by default.
+
+To add a new fixture:
+
+1. Create a new `*.ts` file under `vendor/ecma-rs/fixtures/native_oracle/`.
+2. Ensure it parses as a **script** (no top-level `import`/`export`).
+3. Run the harness tests (see section 3).
 
 For exact discovery/execution rules, see `native-oracle-harness/src/lib.rs` (the crate has a self-test that discovers and runs these fixtures).
