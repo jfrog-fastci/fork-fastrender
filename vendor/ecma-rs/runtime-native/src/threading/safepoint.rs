@@ -83,7 +83,8 @@ fn wake_all_gc_wakers() {
 }
 
 /// Current global safepoint epoch (monotonically increasing).
-pub(crate) fn current_epoch() -> u64 {
+#[doc(hidden)]
+pub fn current_epoch() -> u64 {
   RT_GC_EPOCH.load(Ordering::Acquire)
 }
 

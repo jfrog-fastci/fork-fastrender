@@ -16,6 +16,7 @@ use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::shape_table;
 use crate::threading;
+use crate::threading::registry;
 use crate::Runtime;
 use crate::Thread;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -161,6 +162,18 @@ pub extern "C" fn rt_thread_deinit() {
 pub extern "C" fn rt_gc_safepoint() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_safepoint();
+
+  // `rt_gc_safepoint` is only meaningful for threads that have been registered
+  // with `rt_thread_init`. For non-attached threads we treat this as a no-op in
+  // release builds (and assert in debug builds).
+  if registry::current_thread_id().is_none() {
+    debug_assert!(
+      false,
+      "rt_gc_safepoint called from a thread that is not registered (rt_thread_init was not called)"
+    );
+    return;
+  }
+
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
@@ -328,6 +341,17 @@ pub extern "C" fn rt_gc_collect() {
       }
       return;
     };
+
+    // If `rt_gc_collect` is called from an attached mutator thread, publish the
+    // initiator's safepoint context before waiting for other threads. This keeps
+    // the initiator's stack eligible for stackmap-based root enumeration while
+    // the world is stopped.
+    if registry::current_thread_id().is_some() {
+      let ctx = crate::arch::capture_safepoint_context();
+      registry::set_current_thread_safepoint_context(ctx);
+      registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
+      crate::threading::safepoint::notify_state_change();
+    }
 
     crate::safepoint::with_world_stopped_requested(stop_epoch, || {});
   }));

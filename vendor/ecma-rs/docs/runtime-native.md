@@ -348,7 +348,7 @@ guarantee `max(16, shape_align)` alignment for every allocation.
 1) Every runtime call that can safepoint/allocate (`MayGC`) is emitted as an LLVM
    **statepoint** so stackmaps record the exact live GC roots.
 2) Loop backedges (and similar long-running regions) include explicit polling
-   safepoints via `rt_gc_safepoint`.
+   safepoints via an inline epoch poll that calls `rt_gc_safepoint` on mismatch.
 3) The `"gc-live"` operand bundle passed to each statepoint includes **only**
    GC references (pointers) and is in a stable, documented order.
 
