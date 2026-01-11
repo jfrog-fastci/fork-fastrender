@@ -385,7 +385,13 @@ fn finalize_registered_custom_properties_for_var_substitution(
     (height, width)
   };
   crate::style::cascade::finalize_registered_custom_properties_with_bases(
-    style, viewport, width, height, inline, block,
+    style,
+    viewport,
+    None,
+    width,
+    height,
+    inline,
+    block,
   );
 }
 

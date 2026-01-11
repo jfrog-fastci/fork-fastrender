@@ -74,6 +74,7 @@ use crate::layout::taffy_integration::{
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::clamp_with_order;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
+use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
   active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
@@ -1222,7 +1223,7 @@ impl GridFormattingContext {
     } else {
       None
     };
-    resolve_length_with_percentage_metrics(
+    resolve_length_with_percentage_metrics_and_root_font_metrics(
       length,
       base,
       self.viewport_size,
@@ -1230,6 +1231,7 @@ impl GridFormattingContext {
       style.root_font_size,
       Some(style),
       Some(&self.font_context),
+      self.factory.root_font_metrics(),
     )
     .unwrap_or(0.0)
   }
@@ -1416,7 +1418,7 @@ impl GridFormattingContext {
     percentage_base: Option<f32>,
     style: &ComputedStyle,
   ) -> Option<f32> {
-    resolve_length_with_percentage_metrics(
+    resolve_length_with_percentage_metrics_and_root_font_metrics(
       length,
       percentage_base,
       self.viewport_size,
@@ -1424,6 +1426,7 @@ impl GridFormattingContext {
       style.root_font_size,
       Some(style),
       Some(&self.font_context),
+      self.factory.root_font_metrics(),
     )
   }
 
@@ -4042,7 +4045,7 @@ impl GridFormattingContext {
         if len.has_percentage() {
           return None;
         }
-        resolve_length_with_percentage_metrics(
+        resolve_length_with_percentage_metrics_and_root_font_metrics(
           *len,
           None,
           self.viewport_size,
@@ -4050,6 +4053,7 @@ impl GridFormattingContext {
           style.root_font_size,
           Some(style),
           Some(&self.font_context),
+          self.factory.root_font_metrics(),
         )
       }
       LengthUnit::Percent => None,

@@ -11701,6 +11701,97 @@ impl FastRender {
     } else {
       None
     };
+
+    // Compute the root element's font metrics once per render pass so root font-relative units
+    // (`rex`/`rch`/`rcap`/`ric`/`rlh`) resolve against the actual root font and computed line-height.
+    //
+    // This must happen after web fonts have been loaded (and any deterministic wait has completed)
+    // so the metrics reflect the faces that will be used during shaping/layout.
+    let root_font_metrics = {
+      let root_element = find_document_element_node(&styled_tree).unwrap_or(&styled_tree);
+      crate::layout::utils::compute_root_font_metrics(
+        root_element.styles.as_ref(),
+        layout_viewport,
+        &self.font_context,
+      )
+    };
+    self.font_context.set_root_font_metrics(root_font_metrics);
+
+    // Registered custom properties (`@property`) substitute their computed typed values when used
+    // via `var()`. Canonicalization during cascade does not have access to the root element's font
+    // metrics (web fonts load after cascade), so re-canonicalize typed values once the root metrics
+    // are available.
+    //
+    // If a typed custom property changes (e.g. `--len: 1rcap`), recompute var()-dependent
+    // declarations so properties like `width: var(--len)` reflect the updated value before box
+    // generation/layout.
+    {
+      let viewport = layout_viewport;
+      let viewport_width = if viewport.width.is_finite() {
+        viewport.width.max(0.0)
+      } else {
+        0.0
+      };
+      let viewport_height = if viewport.height.is_finite() {
+        viewport.height.max(0.0)
+      } else {
+        0.0
+      };
+      let default_parent = ComputedStyle::default();
+      fn canonicalize_node(
+        node: &mut StyledNode,
+        parent: &ComputedStyle,
+        viewport: Size,
+        viewport_width: f32,
+        viewport_height: f32,
+        root_font_metrics: Option<crate::style::RootFontMetrics>,
+      ) {
+        let (viewport_inline, viewport_block) = if crate::style::inline_axis_is_horizontal(node.styles.writing_mode)
+        {
+          (viewport_width, viewport_height)
+        } else {
+          (viewport_height, viewport_width)
+        };
+
+        let typed_changed = {
+          let styles = std::sync::Arc::make_mut(&mut node.styles);
+          crate::style::cascade::finalize_registered_custom_properties_with_bases(
+            styles,
+            viewport,
+            root_font_metrics,
+            viewport_width,
+            viewport_height,
+            viewport_inline,
+            viewport_block,
+          )
+        };
+        if typed_changed {
+          let styles = std::sync::Arc::make_mut(&mut node.styles);
+          styles.recompute_var_dependent_properties(parent, viewport);
+        }
+
+        let parent_styles = node.styles.as_ref();
+        for child in node.children.iter_mut() {
+          canonicalize_node(
+            child,
+            parent_styles,
+            viewport,
+            viewport_width,
+            viewport_height,
+            root_font_metrics,
+          );
+        }
+      }
+      canonicalize_node(
+        &mut styled_tree,
+        &default_parent,
+        viewport,
+        viewport_width,
+        viewport_height,
+        root_font_metrics,
+      );
+    }
+
     let viewport_scrollbars = resolve_viewport_scrollbar_params(&styled_tree);
 
     if let Some(rec) = stats.as_deref_mut() {
@@ -11979,6 +12070,13 @@ impl FastRender {
       self.font_context.clone(),
       self.image_cache.clone(),
     );
+    // Root metrics are computed during cascade (after web fonts are available), but the layout
+    // engine is re-created per render pass to reflect the current viewport configuration. Re-apply
+    // root metrics to the new engine so used-value resolution for root font-relative units
+    // (`rex`/`rch`/`rcap`/`ric`/`rlh`) remains spec-accurate during layout.
+    self
+      .layout_engine
+      .set_root_font_metrics(root_font_metrics);
     intrinsic_cache_clear();
     let report_intrinsic = toggles.truthy("FASTR_INTRINSIC_STATS");
     let report_layout_cache = toggles.truthy("FASTR_LAYOUT_CACHE_STATS");
@@ -18846,6 +18944,7 @@ fn build_container_query_context(
   let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
 
   let viewport = Size::new(media_ctx.viewport_width, media_ctx.viewport_height);
+  let root_font_metrics = font_context.root_font_metrics();
 
   fn safe_font_size(style: &ComputedStyle) -> (f32, f32) {
     let font_size = style
@@ -18868,6 +18967,7 @@ fn build_container_query_context(
     percentage_base: f32,
     style: &ComputedStyle,
     viewport: Size,
+    root_font_metrics: Option<crate::style::RootFontMetrics>,
   ) -> f32 {
     let (font_size, root_font_size) = safe_font_size(style);
     let percentage_base = percentage_base
@@ -18880,12 +18980,14 @@ fn build_container_query_context(
           .then_some(viewport.width.max(0.0))
       });
     length
-      .resolve_with_context(
+      .resolve_with_context_for_writing_mode_and_root_font_metrics(
         percentage_base,
         viewport.width,
         viewport.height,
         font_size,
         root_font_size,
+        style.writing_mode,
+        root_font_metrics,
       )
       .unwrap_or(0.0)
   }
@@ -18926,6 +19028,7 @@ fn build_container_query_context(
     containers: &mut HashMap<usize, ContainerQueryInfo>,
     parent_content_width: f32,
     viewport: Size,
+    root_font_metrics: Option<crate::style::RootFontMetrics>,
     include_scroll_state: bool,
     viewport_scroll_box_id: usize,
   ) {
@@ -18949,10 +19052,13 @@ fn build_container_query_context(
       0.0
     };
 
-    let padding_left = resolve_padding(style.padding_left, percentage_base, style, viewport);
-    let padding_right = resolve_padding(style.padding_right, percentage_base, style, viewport);
-    let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport);
-    let padding_bottom = resolve_padding(style.padding_bottom, percentage_base, style, viewport);
+    let padding_left =
+      resolve_padding(style.padding_left, percentage_base, style, viewport, root_font_metrics);
+    let padding_right =
+      resolve_padding(style.padding_right, percentage_base, style, viewport, root_font_metrics);
+    let padding_top = resolve_padding(style.padding_top, percentage_base, style, viewport, root_font_metrics);
+    let padding_bottom =
+      resolve_padding(style.padding_bottom, percentage_base, style, viewport, root_font_metrics);
 
     let mut padding_left = padding_left;
     let mut padding_right = padding_right;
@@ -18974,12 +19080,14 @@ fn build_container_query_context(
     let (font_size, root_font_size) = safe_font_size(style);
     let resolve_border = |len: Length| {
       len
-        .resolve_with_context(
+        .resolve_with_context_for_writing_mode_and_root_font_metrics(
           None,
           viewport.width,
           viewport.height,
           font_size,
           root_font_size,
+          style.writing_mode,
+          root_font_metrics,
         )
         .unwrap_or(0.0)
     };
@@ -19096,6 +19204,7 @@ fn build_container_query_context(
         containers,
         child_base,
         viewport,
+        root_font_metrics,
         include_scroll_state,
         viewport_scroll_box_id,
       );
@@ -19112,6 +19221,7 @@ fn build_container_query_context(
         containers,
         child_base,
         viewport,
+        root_font_metrics,
         include_scroll_state,
         viewport_scroll_box_id,
       );
@@ -19129,12 +19239,14 @@ fn build_container_query_context(
     &mut containers,
     viewport.width,
     viewport,
+    root_font_metrics,
     include_scroll_state,
     box_tree.root.id,
   );
 
   ContainerQueryContext {
     base_media: media_ctx.clone(),
+    root_font_metrics,
     containers,
   }
 }
@@ -24797,6 +24909,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -24893,6 +25006,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -24968,6 +25082,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25050,6 +25165,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25136,6 +25252,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25224,6 +25341,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25318,6 +25436,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25410,6 +25529,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }
@@ -25491,6 +25611,7 @@ mod tests {
       );
       ContainerQueryContext {
         base_media: media_ctx.clone(),
+        root_font_metrics: None,
         containers,
       }
     }

@@ -6,7 +6,6 @@ use crate::geometry::{Point, Rect, Size};
 use crate::style::computed::PositionedStyle;
 use crate::style::types::BoxSizing;
 use crate::style::types::ContainIntrinsicSizeAxis;
-use crate::style::types::FontSizeAdjustMetric;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::Overflow;
@@ -20,12 +19,14 @@ use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
 use crate::style::values::resolve_length_calc_with_resolver;
 use crate::style::ComputedStyle;
+use crate::style::RootFontMetrics;
 use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
-use crate::text::root_font_metrics::RootFontMetrics;
+use rustybuzz::Variation;
+use ttf_parser::Tag;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::fragment_tree::{FragmentNode, ScrollbarReservation};
 
@@ -39,12 +40,13 @@ pub fn resolve_length_with_percentage(
   font_size: f32,
   root_font_size: f32,
 ) -> Option<f32> {
-  resolve_length_with_percentage_metrics(
+  resolve_length_with_percentage_metrics_and_root_font_metrics(
     length,
     percentage_base,
     viewport,
     font_size,
     root_font_size,
+    None,
     None,
     None,
   )
@@ -60,6 +62,30 @@ pub fn resolve_length_with_percentage_metrics(
   style: Option<&ComputedStyle>,
   font_context: Option<&FontContext>,
 ) -> Option<f32> {
+  resolve_length_with_percentage_metrics_and_root_font_metrics(
+    length,
+    percentage_base,
+    viewport,
+    font_size,
+    root_font_size,
+    style,
+    font_context,
+    None,
+  )
+}
+
+/// Resolves a length using percentage base, viewport, optional metric-aware font resolution, and
+/// optional root font metrics (for `rex`/`rch`/`rcap`/`ric`/`rlh`).
+pub fn resolve_length_with_percentage_metrics_and_root_font_metrics(
+  length: Length,
+  percentage_base: Option<f32>,
+  viewport: Size,
+  font_size: f32,
+  root_font_size: f32,
+  style: Option<&ComputedStyle>,
+  font_context: Option<&FontContext>,
+  root_font_metrics: Option<RootFontMetrics>,
+) -> Option<f32> {
   if length.unit == LengthUnit::Calc {
     return length.calc.as_ref().and_then(|calc| match calc {
       LengthCalc::Linear(calc) => resolve_calc_length_with_percentage_metrics(
@@ -70,6 +96,7 @@ pub fn resolve_length_with_percentage_metrics(
         root_font_size,
         style,
         font_context,
+        root_font_metrics,
       ),
       LengthCalc::Expr(_) => resolve_length_calc_with_resolver(
         *calc,
@@ -87,6 +114,7 @@ pub fn resolve_length_with_percentage_metrics(
             root_px,
             style,
             font_context,
+            root_font_metrics,
           )
         },
       ),
@@ -116,6 +144,32 @@ pub fn resolve_length_with_percentage_metrics(
       style,
       font_context,
     )
+  } else if matches!(
+    length.unit,
+    LengthUnit::Rex | LengthUnit::Rch | LengthUnit::Rcap | LengthUnit::Ric | LengthUnit::Rlh
+  ) {
+    if !root_font_size.is_finite() {
+      return None;
+    }
+    let root_metrics = root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
+    let resolved = match length.unit {
+      LengthUnit::Rex => length.value * root_metrics.map(|m| m.root_x_height_px).unwrap_or(root_font_size * 0.5),
+      LengthUnit::Rch => {
+        length.value * root_metrics.map(|m| m.root_ch_advance_px).unwrap_or(root_font_size * 0.5)
+      }
+      LengthUnit::Rcap => {
+        length.value * root_metrics.map(|m| m.root_cap_height_px).unwrap_or(root_font_size * 0.7)
+      }
+      LengthUnit::Ric => length.value * root_metrics.map(|m| m.root_ic_advance_px).unwrap_or(root_font_size),
+      LengthUnit::Rlh => {
+        length.value
+          * root_metrics
+            .map(|m| m.root_used_line_height_px)
+            .unwrap_or(root_font_size * 1.2)
+      }
+      _ => length.value,
+    };
+    Some(resolved)
   } else if length.unit.is_font_relative() {
     if !font_size.is_finite() || !root_font_size.is_finite() {
       return None;
@@ -176,6 +230,7 @@ fn resolve_calc_length_with_percentage_metrics(
   root_font_size: f32,
   style: Option<&ComputedStyle>,
   font_context: Option<&FontContext>,
+  root_font_metrics: Option<RootFontMetrics>,
 ) -> Option<f32> {
   if !viewport.width.is_finite()
     || !viewport.height.is_finite()
@@ -187,6 +242,7 @@ fn resolve_calc_length_with_percentage_metrics(
 
   let percentage_base = percentage_base.filter(|b| b.is_finite());
   let mut line_height_px: Option<f32> = None;
+  let root_metrics = root_font_metrics.or_else(|| font_context.and_then(|ctx| ctx.root_font_metrics()));
 
   let mut resolve_term = |term: &crate::style::values::CalcTerm| -> Option<f32> {
     match term.unit {
@@ -209,6 +265,36 @@ fn resolve_calc_length_with_percentage_metrics(
         });
         Some(term.value * lh)
       }
+      LengthUnit::Rex => Some(
+        term.value
+          * root_metrics
+            .map(|m| m.root_x_height_px)
+            .unwrap_or(root_font_size * 0.5),
+      ),
+      LengthUnit::Rch => Some(
+        term.value
+          * root_metrics
+            .map(|m| m.root_ch_advance_px)
+            .unwrap_or(root_font_size * 0.5),
+      ),
+      LengthUnit::Rcap => Some(
+        term.value
+          * root_metrics
+            .map(|m| m.root_cap_height_px)
+            .unwrap_or(root_font_size * 0.7),
+      ),
+      LengthUnit::Ric => Some(
+        term.value
+          * root_metrics
+            .map(|m| m.root_ic_advance_px)
+            .unwrap_or(root_font_size),
+      ),
+      LengthUnit::Rlh => Some(
+        term.value
+          * root_metrics
+            .map(|m| m.root_used_line_height_px)
+            .unwrap_or(root_font_size * 1.2),
+      ),
       unit if unit.is_font_relative() => match (style, font_context) {
         (Some(style), Some(ctx)) => Some(resolve_font_relative_length(
           Length::new(term.value, unit),
@@ -832,6 +918,7 @@ pub fn resolve_font_relative_length(
     style.writing_mode,
     style.text_orientation,
     font_context,
+    Some(style),
   )
 }
 
@@ -857,6 +944,7 @@ pub fn resolve_font_relative_length_for_positioned(
     style.writing_mode,
     TextOrientation::Mixed,
     font_context,
+    None,
   )
 }
 
@@ -879,6 +967,7 @@ fn compute_font_relative_metrics(
   writing_mode: WritingMode,
   text_orientation: TextOrientation,
   font_context: &FontContext,
+  style_for_variations: Option<&ComputedStyle>,
 ) -> FontRelativeMetrics {
   let face_style = match font_style {
     CssFontStyle::Normal => FontFaceStyle::Normal,
@@ -900,29 +989,97 @@ fn compute_font_relative_metrics(
     matches!(text_orientation, TextOrientation::Mixed | TextOrientation::Upright);
 
   if let Some(font) = maybe_font {
-    let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
-    let x_height =
-      font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ExHeight) * used_size;
-    let cap_height =
-      font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::CapHeight) * used_size;
+    const IDEOGRAPH: char = '\u{6C34}'; // U+6C34 '水'
 
-    let ch_width_ratio = font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ChWidth);
-    let ch_width = ch_width_ratio * used_size;
-    let ch_height_ratio = crate::text::face_cache::with_face(&font, |face| {
+    fn ratio_from_units(units_per_em: u16, units: i16) -> Option<f32> {
+      if units_per_em == 0 {
+        return None;
+      }
+      let ratio = units as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    }
+
+    fn glyph_h_advance_ratio(face: &ttf_parser::Face<'_>, ch: char) -> Option<f32> {
       let units_per_em = face.units_per_em();
       if units_per_em == 0 {
         return None;
       }
-      let glyph_id = face.glyph_index('0')?;
+      let glyph_id = face.glyph_index(ch)?;
+      if glyph_id.0 == 0 {
+        return None;
+      }
+      let advance = face.glyph_hor_advance(glyph_id)?;
+      let ratio = advance as f32 / (units_per_em as f32);
+      (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+    }
+
+    fn glyph_v_advance_ratio(face: &ttf_parser::Face<'_>, ch: char) -> Option<f32> {
+      let units_per_em = face.units_per_em();
+      if units_per_em == 0 {
+        return None;
+      }
+      let glyph_id = face.glyph_index(ch)?;
       if glyph_id.0 == 0 {
         return None;
       }
       let advance = face.glyph_ver_advance(glyph_id)?;
       let ratio = advance as f32 / (units_per_em as f32);
       (ratio.is_finite() && ratio > 0.0).then_some(ratio)
-    })
-    .flatten()
-    .unwrap_or(ch_width_ratio);
+    }
+
+    let authored_variations =
+      style_for_variations.map(crate::text::variations::authored_variations_from_style);
+    let variations: Vec<Variation> = match (style_for_variations, authored_variations.as_deref()) {
+      (Some(style), Some(authored)) => crate::text::face_cache::with_face(&font, |face| {
+        crate::text::variations::collect_variations_for_face(face, style, &font, font_size, authored)
+      })
+      .unwrap_or_else(|| authored.to_vec()),
+      _ => Vec::new(),
+    };
+    let coords: Vec<(Tag, f32)> = variations.iter().map(|v| (v.tag, v.value)).collect();
+
+    let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
+    let metrics = if coords.is_empty() {
+      font.metrics().ok()
+    } else {
+      font
+        .metrics_with_variations(&coords)
+        .or_else(|_| font.metrics())
+        .ok()
+    };
+
+    let x_height_ratio = metrics
+      .as_ref()
+      .and_then(|m| m.x_height.and_then(|xh| ratio_from_units(m.units_per_em, xh)))
+      .unwrap_or(0.5);
+    let x_height = x_height_ratio * used_size;
+
+    let cap_height_ratio = metrics
+      .as_ref()
+      .and_then(|m| {
+        m.cap_height
+          .and_then(|ch| ratio_from_units(m.units_per_em, ch))
+          .or_else(|| ratio_from_units(m.units_per_em, m.ascent))
+      })
+      .unwrap_or(0.7);
+    let cap_height = cap_height_ratio * used_size;
+
+    let (ch_width_ratio, ch_height_ratio, ic_width_ratio, ic_height_ratio) =
+      crate::text::face_cache::with_face(&font, |face| {
+        let mut face = face.clone();
+        crate::text::variations::apply_rustybuzz_variations(&mut face, &variations);
+
+        let ch_width = glyph_h_advance_ratio(&face, '0');
+        let ch_height = glyph_v_advance_ratio(&face, '0').or_else(|| ch_width);
+        let ic_width = glyph_h_advance_ratio(&face, IDEOGRAPH);
+        let ic_height = glyph_v_advance_ratio(&face, IDEOGRAPH).or_else(|| ic_width);
+        (ch_width, ch_height, ic_width, ic_height)
+      })
+      .unwrap_or((None, None, None, None));
+
+    let ch_width_ratio = ch_width_ratio.unwrap_or(0.5);
+    let ch_height_ratio = ch_height_ratio.unwrap_or(ch_width_ratio);
+    let ch_width = ch_width_ratio * used_size;
     let ch_height = ch_height_ratio * used_size;
     let ch_advance = if inline_axis_is_horizontal || !digit_is_upright_in_vertical {
       ch_width
@@ -930,14 +1087,16 @@ fn compute_font_relative_metrics(
       ch_height
     };
 
-    let ic_metric = if inline_axis_is_horizontal {
-      FontSizeAdjustMetric::IcWidth
+    let ic_width_ratio = ic_width_ratio.unwrap_or(1.0);
+    let ic_height_ratio = ic_height_ratio.unwrap_or(ic_width_ratio);
+    let ic_ratio = if inline_axis_is_horizontal {
+      ic_width_ratio
     } else if ideograph_is_upright_in_vertical {
-      FontSizeAdjustMetric::IcHeight
+      ic_height_ratio
     } else {
-      FontSizeAdjustMetric::IcWidth
+      ic_width_ratio
     };
-    let ic_advance = font.font_size_adjust_metric_ratio_or_fallback(ic_metric) * used_size;
+    let ic_advance = ic_ratio * used_size;
 
     FontRelativeMetrics {
       used_size,
@@ -1055,6 +1214,7 @@ pub(crate) fn compute_root_font_metrics(
     root_style.writing_mode,
     root_style.text_orientation,
     font_context,
+    Some(root_style),
   );
 
   let normal_line_height = scaled_metrics_for_style(root_style, font_context)
@@ -1126,6 +1286,7 @@ fn resolve_font_relative_length_with_params(
   writing_mode: WritingMode,
   text_orientation: TextOrientation,
   font_context: &FontContext,
+  style_for_variations: Option<&ComputedStyle>,
 ) -> f32 {
   let metrics = compute_font_relative_metrics(
     font_size,
@@ -1137,6 +1298,7 @@ fn resolve_font_relative_length_with_params(
     writing_mode,
     text_orientation,
     font_context,
+    style_for_variations,
   );
 
   let root_metrics = font_context.root_font_metrics();

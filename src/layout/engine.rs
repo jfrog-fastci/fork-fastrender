@@ -918,6 +918,14 @@ impl LayoutEngine {
     self.factory.reset_cached_formatting_contexts();
   }
 
+  pub(crate) fn root_font_metrics(&self) -> Option<crate::style::RootFontMetrics> {
+    self.factory.root_font_metrics()
+  }
+
+  pub(crate) fn set_root_font_metrics(&self, metrics: Option<crate::style::RootFontMetrics>) {
+    self.factory.set_root_font_metrics(metrics);
+  }
+
   /// Performs layout on an entire box tree
   ///
   /// This is the main entry point for layout. It takes a box tree

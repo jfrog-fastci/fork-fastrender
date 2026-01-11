@@ -76,6 +76,7 @@ use crate::layout::taffy_integration::{
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
+use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
   active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
@@ -1313,7 +1314,7 @@ impl FormattingContext for FlexFormattingContext {
         .has_percentage()
         .then(|| constraints.block_percentage_base)
         .flatten();
-      let resolved = resolve_length_with_percentage_metrics(
+      let resolved = resolve_length_with_percentage_metrics_and_root_font_metrics(
         *specified,
         percentage_base,
         viewport_size,
@@ -1321,6 +1322,7 @@ impl FormattingContext for FlexFormattingContext {
         style.root_font_size,
         Some(style),
         Some(&self.font_context),
+        self.factory.root_font_metrics(),
       )?;
       if !resolved.is_finite() {
         return None;
@@ -7406,7 +7408,7 @@ impl FlexFormattingContext {
           .then(|| constraints.inline_percentage_base.or_else(|| constraints.width()))
           .flatten()
           .filter(|b| b.is_finite());
-        let resolved = resolve_length_with_percentage_metrics(
+        let resolved = resolve_length_with_percentage_metrics_and_root_font_metrics(
           *specified,
           percentage_base,
           self.viewport_size,
@@ -7414,6 +7416,7 @@ impl FlexFormattingContext {
           container_style.root_font_size,
           Some(container_style),
           Some(&self.font_context),
+          self.factory.root_font_metrics(),
         )?;
         if !resolved.is_finite() {
           return None;
@@ -7436,7 +7439,7 @@ impl FlexFormattingContext {
           .has_percentage()
           .then(|| constraints.block_percentage_base)
           .flatten();
-        let resolved = resolve_length_with_percentage_metrics(
+        let resolved = resolve_length_with_percentage_metrics_and_root_font_metrics(
           *specified,
           percentage_base,
           self.viewport_size,
@@ -7444,6 +7447,7 @@ impl FlexFormattingContext {
           container_style.root_font_size,
           Some(container_style),
           Some(&self.font_context),
+          self.factory.root_font_metrics(),
         )?;
         if !resolved.is_finite() {
           return None;
@@ -7605,11 +7609,12 @@ impl FlexFormattingContext {
     taffy_style: &mut taffy::style::Style,
   ) {
     let percentage_base = percentage_base.filter(|b| b.is_finite());
+    let root_font_metrics = self.factory.root_font_metrics();
     let resolve_calc = |len: Length| -> Option<f32> {
       if len.unit != LengthUnit::Calc || !len.has_percentage() {
         return None;
       }
-      resolve_length_with_percentage_metrics(
+      resolve_length_with_percentage_metrics_and_root_font_metrics(
         len,
         percentage_base,
         self.viewport_size,
@@ -7617,6 +7622,7 @@ impl FlexFormattingContext {
         style.root_font_size,
         Some(style),
         Some(&self.font_context),
+        root_font_metrics,
       )
     };
 
@@ -7743,7 +7749,7 @@ impl FlexFormattingContext {
       .has_percentage()
       .then_some(container_inner_main_size)
       .flatten();
-    let resolved = resolve_length_with_percentage_metrics(
+    let resolved = resolve_length_with_percentage_metrics_and_root_font_metrics(
       *len,
       percentage_base,
       self.viewport_size,
@@ -7751,6 +7757,7 @@ impl FlexFormattingContext {
       style.root_font_size,
       Some(style),
       Some(&self.font_context),
+      self.factory.root_font_metrics(),
     );
     if let Some(px) = resolved {
       if px.is_finite() {
@@ -7779,6 +7786,8 @@ impl FlexFormattingContext {
       (None, None)
     };
 
+    let root_font_metrics = self.factory.root_font_metrics();
+
     // Padding/border percentages resolve against the containing block's physical width.
     let inline_edges_base = base_width;
     let inline_edges_base_px = inline_edges_base
@@ -7787,7 +7796,7 @@ impl FlexFormattingContext {
       .max(0.0);
 
     let resolve_len = |len: Length, base: Option<f32>| -> Option<f32> {
-      resolve_length_with_percentage_metrics(
+      resolve_length_with_percentage_metrics_and_root_font_metrics(
         len,
         base.filter(|b| b.is_finite()),
         self.viewport_size,
@@ -7795,6 +7804,7 @@ impl FlexFormattingContext {
         style.root_font_size,
         Some(style),
         Some(&self.font_context),
+        root_font_metrics,
       )
     };
 
@@ -12575,7 +12585,7 @@ impl FlexFormattingContext {
         if len.has_percentage() {
           return None;
         }
-        resolve_length_with_percentage_metrics(
+        resolve_length_with_percentage_metrics_and_root_font_metrics(
           *len,
           None,
           self.viewport_size,
@@ -12583,6 +12593,7 @@ impl FlexFormattingContext {
           style.root_font_size,
           Some(style),
           Some(&self.font_context),
+          self.factory.root_font_metrics(),
         )
       }
       LengthUnit::Percent => None,
@@ -12739,7 +12750,7 @@ impl FlexFormattingContext {
     } else {
       None
     };
-    resolve_length_with_percentage_metrics(
+    resolve_length_with_percentage_metrics_and_root_font_metrics(
       length,
       base,
       self.viewport_size,
@@ -12747,6 +12758,7 @@ impl FlexFormattingContext {
       style.root_font_size,
       Some(style),
       Some(&self.font_context),
+      self.factory.root_font_metrics(),
     )
     .unwrap_or(0.0)
   }

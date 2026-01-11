@@ -32,6 +32,7 @@ use crate::layout::engine::{LayoutParallelDebugCollector, LayoutParallelism};
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::table::TableFormattingContext;
+use crate::style::RootFontMetrics;
 use crate::layout::taffy_integration::{
   taffy_template_cache_limit, taffy_template_cache_limit_for_box_tree, TaffyAdapterKind,
   TaffyNodeCache,
@@ -40,6 +41,7 @@ use crate::style::display::FormattingContextType;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::BoxNode;
+use parking_lot::RwLock;
 use selectors::context::QuirksMode;
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
@@ -135,6 +137,7 @@ pub struct FormattingContextFactory {
   image_cache: ImageCache,
   viewport_size: crate::geometry::Size,
   viewport_scroll: Point,
+  root_font_metrics: Arc<RwLock<Option<RootFontMetrics>>>,
   quirks_mode: QuirksMode,
   nearest_positioned_cb: ContainingBlock,
   viewport_fixed_cb: ContainingBlock,
@@ -275,6 +278,7 @@ impl FormattingContextFactory {
       image_cache: ImageCache::new(),
       viewport_size,
       viewport_scroll: Point::ZERO,
+      root_font_metrics: Arc::new(RwLock::new(None)),
       quirks_mode: QuirksMode::NoQuirks,
       nearest_positioned_cb,
       viewport_fixed_cb,
@@ -288,6 +292,14 @@ impl FormattingContextFactory {
       layout_parallel_debug: None,
       cached_contexts: CachedFormattingContexts::fresh(),
     }
+  }
+
+  pub(crate) fn root_font_metrics(&self) -> Option<RootFontMetrics> {
+    *self.root_font_metrics.read()
+  }
+
+  pub(crate) fn set_root_font_metrics(&self, metrics: Option<RootFontMetrics>) {
+    *self.root_font_metrics.write() = metrics;
   }
 
   /// Returns a copy of this factory configured with a viewport scroll offset.

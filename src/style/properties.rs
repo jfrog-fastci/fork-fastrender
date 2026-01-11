@@ -8553,6 +8553,7 @@ impl ComputedStyle {
     let ctx = CustomPropertyComputeContext {
       font_size: self.font_size,
       root_font_size: self.root_font_size,
+      root_font_metrics: None,
       line_height,
       viewport,
       current_color: self.color,
@@ -20912,26 +20913,26 @@ fn length_from_token(token: &Token) -> Option<Length> {
   match token {
     Token::Dimension {
       value, ref unit, ..
-      } => {
-        let unit = unit.as_ref().to_ascii_lowercase();
-        match unit.as_str() {
-          "px" => Some(Length::px(*value)),
-          "em" => Some(Length::em(*value)),
-          "rem" => Some(Length::rem(*value)),
-          "ex" => Some(Length::ex(*value)),
-          "ch" => Some(Length::ch(*value)),
-          "lh" => Some(Length::new(*value, LengthUnit::Lh)),
-          "cap" => Some(Length::new(*value, LengthUnit::Cap)),
-          "ic" => Some(Length::new(*value, LengthUnit::Ic)),
-          "rex" => Some(Length::new(*value, LengthUnit::Rex)),
-          "rch" => Some(Length::new(*value, LengthUnit::Rch)),
-          "rcap" => Some(Length::new(*value, LengthUnit::Rcap)),
-          "ric" => Some(Length::new(*value, LengthUnit::Ric)),
-          "rlh" => Some(Length::new(*value, LengthUnit::Rlh)),
-          "pt" => Some(Length::pt(*value)),
-          "pc" => Some(Length::pc(*value)),
-          "in" => Some(Length::inches(*value)),
-          "cm" => Some(Length::cm(*value)),
+    } => {
+      let unit = unit.as_ref().to_ascii_lowercase();
+      match unit.as_str() {
+        "px" => Some(Length::px(*value)),
+        "em" => Some(Length::em(*value)),
+        "rem" => Some(Length::rem(*value)),
+        "ex" => Some(Length::ex(*value)),
+        "ch" => Some(Length::ch(*value)),
+        "lh" => Some(Length::new(*value, LengthUnit::Lh)),
+        "cap" => Some(Length::new(*value, LengthUnit::Cap)),
+        "ic" => Some(Length::new(*value, LengthUnit::Ic)),
+        "rex" => Some(Length::new(*value, LengthUnit::Rex)),
+        "rch" => Some(Length::new(*value, LengthUnit::Rch)),
+        "rcap" => Some(Length::new(*value, LengthUnit::Rcap)),
+        "ric" => Some(Length::new(*value, LengthUnit::Ric)),
+        "rlh" => Some(Length::new(*value, LengthUnit::Rlh)),
+        "pt" => Some(Length::pt(*value)),
+        "pc" => Some(Length::pc(*value)),
+        "in" => Some(Length::inches(*value)),
+        "cm" => Some(Length::cm(*value)),
         "mm" => Some(Length::mm(*value)),
         "q" => Some(Length::q(*value)),
         "vh" => Some(Length::new(*value, LengthUnit::Vh)),

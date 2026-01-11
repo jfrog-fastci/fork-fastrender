@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 
 use crate::geometry::Size;
 use crate::style::color::Rgba;
+use crate::style::RootFontMetrics;
 use cssparser::{ParseError, Parser, ParserInput, ToCss, Token};
 
 /// CSS length units
@@ -890,9 +891,35 @@ impl LengthCalc {
     font_size_px: f32,
     root_font_size_px: f32,
   ) -> Option<f32> {
+    self.resolve_with_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      None,
+    )
+  }
+
+  pub fn resolve_with_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    root_font_metrics: Option<RootFontMetrics>,
+  ) -> Option<f32> {
     match self {
       LengthCalc::Linear(calc) => {
-        calc.resolve(percentage_base, viewport_width, viewport_height, font_size_px, root_font_size_px)
+        calc.resolve_with_root_font_metrics(
+          percentage_base,
+          viewport_width,
+          viewport_height,
+          font_size_px,
+          root_font_size_px,
+          root_font_metrics,
+        )
       }
       LengthCalc::Expr(id) => resolve_length_calc_expr(
         LengthCalc::Expr(*id),
@@ -901,6 +928,7 @@ impl LengthCalc {
         viewport_height,
         font_size_px,
         root_font_size_px,
+        root_font_metrics,
       ),
     }
   }
@@ -914,14 +942,36 @@ impl LengthCalc {
     root_font_size_px: f32,
     inline_axis_is_horizontal: bool,
   ) -> Option<f32> {
+    self.resolve_for_inline_axis_with_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      inline_axis_is_horizontal,
+      None,
+    )
+  }
+
+  pub(crate) fn resolve_for_inline_axis_with_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    inline_axis_is_horizontal: bool,
+    root_font_metrics: Option<RootFontMetrics>,
+  ) -> Option<f32> {
     match self {
-      LengthCalc::Linear(calc) => calc.resolve_for_inline_axis(
+      LengthCalc::Linear(calc) => calc.resolve_for_inline_axis_with_root_font_metrics(
         percentage_base,
         viewport_width,
         viewport_height,
         font_size_px,
         root_font_size_px,
         inline_axis_is_horizontal,
+        root_font_metrics,
       ),
       LengthCalc::Expr(_) => resolve_length_calc_with_resolver(
         *self,
@@ -931,7 +981,15 @@ impl LengthCalc {
         font_size_px,
         root_font_size_px,
         &|calc, pct, vw, vh, font_px, root_px| {
-          calc.resolve_for_inline_axis(pct, vw, vh, font_px, root_px, inline_axis_is_horizontal)
+          calc.resolve_for_inline_axis_with_root_font_metrics(
+            pct,
+            vw,
+            vh,
+            font_px,
+            root_px,
+            inline_axis_is_horizontal,
+            root_font_metrics,
+          )
         },
       ),
     }
@@ -1167,6 +1225,7 @@ fn resolve_length_calc_expr(
   viewport_height: f32,
   font_size_px: f32,
   root_font_size_px: f32,
+  root_font_metrics: Option<RootFontMetrics>,
 ) -> Option<f32> {
   resolve_length_calc_with_resolver(
     value,
@@ -1176,7 +1235,14 @@ fn resolve_length_calc_expr(
     font_size_px,
     root_font_size_px,
     &|calc, percentage_base, vw, vh, font_px, root_px| {
-      calc.resolve(percentage_base, vw, vh, font_px, root_px)
+      calc.resolve_with_root_font_metrics(
+        percentage_base,
+        vw,
+        vh,
+        font_px,
+        root_px,
+        root_font_metrics,
+      )
     },
   )
 }
@@ -1701,6 +1767,25 @@ impl CalcLength {
     font_size_px: f32,
     root_font_size_px: f32,
   ) -> Option<f32> {
+    self.resolve_with_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      None,
+    )
+  }
+
+  pub fn resolve_with_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    root_font_metrics: Option<RootFontMetrics>,
+  ) -> Option<f32> {
     if !viewport_width.is_finite()
       || !viewport_height.is_finite()
       || !font_size_px.is_finite()
@@ -1723,13 +1808,39 @@ impl CalcLength {
         LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
         LengthUnit::Ic => Some(term.value * font_size_px),
         LengthUnit::Rem => Some(term.value * root_font_size_px),
-        LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
-        LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
-        LengthUnit::Ric => Some(term.value * root_font_size_px),
+        LengthUnit::Rex => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_x_height_px)
+              .unwrap_or(root_font_size_px * 0.5),
+        ),
+        LengthUnit::Rch => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_ch_advance_px)
+              .unwrap_or(root_font_size_px * 0.5),
+        ),
+        LengthUnit::Rcap => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_cap_height_px)
+              .unwrap_or(root_font_size_px * 0.7),
+        ),
+        LengthUnit::Ric => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_ic_advance_px)
+              .unwrap_or(root_font_size_px),
+        ),
+        LengthUnit::Rlh => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_used_line_height_px)
+              .unwrap_or(root_font_size_px * 1.2),
+        ),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
-        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
       }
@@ -1809,6 +1920,27 @@ impl CalcLength {
     root_font_size_px: f32,
     inline_axis_is_horizontal: bool,
   ) -> Option<f32> {
+    self.resolve_for_inline_axis_with_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      inline_axis_is_horizontal,
+      None,
+    )
+  }
+
+  pub(crate) fn resolve_for_inline_axis_with_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    inline_axis_is_horizontal: bool,
+    root_font_metrics: Option<RootFontMetrics>,
+  ) -> Option<f32> {
     if !viewport_width.is_finite()
       || !viewport_height.is_finite()
       || !font_size_px.is_finite()
@@ -1856,13 +1988,39 @@ impl CalcLength {
         LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
         LengthUnit::Ic => Some(term.value * font_size_px),
         LengthUnit::Rem => Some(term.value * root_font_size_px),
-        LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
-        LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
-        LengthUnit::Ric => Some(term.value * root_font_size_px),
+        LengthUnit::Rex => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_x_height_px)
+              .unwrap_or(root_font_size_px * 0.5),
+        ),
+        LengthUnit::Rch => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_ch_advance_px)
+              .unwrap_or(root_font_size_px * 0.5),
+        ),
+        LengthUnit::Rcap => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_cap_height_px)
+              .unwrap_or(root_font_size_px * 0.7),
+        ),
+        LengthUnit::Ric => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_ic_advance_px)
+              .unwrap_or(root_font_size_px),
+        ),
+        LengthUnit::Rlh => Some(
+          term.value
+            * root_font_metrics
+              .map(|m| m.root_used_line_height_px)
+              .unwrap_or(root_font_size_px * 1.2),
+        ),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
-        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
       }
@@ -2712,7 +2870,7 @@ impl Length {
           return calc.terms().iter().map(|t| t.value).sum();
         }
         LengthCalc::Expr(id) => {
-          return resolve_length_calc_expr(LengthCalc::Expr(id), None, 0.0, 0.0, 0.0, 0.0)
+          return resolve_length_calc_expr(LengthCalc::Expr(id), None, 0.0, 0.0, 0.0, 0.0, None)
             .unwrap_or(0.0);
         }
       }
@@ -3073,6 +3231,27 @@ impl Length {
     root_font_size_px: f32,
     writing_mode: crate::style::types::WritingMode,
   ) -> Option<f32> {
+    self.resolve_with_context_for_writing_mode_and_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      writing_mode,
+      None,
+    )
+  }
+
+  pub fn resolve_with_context_for_writing_mode_and_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    writing_mode: crate::style::types::WritingMode,
+    root_font_metrics: Option<RootFontMetrics>,
+  ) -> Option<f32> {
     if !self.value.is_finite() {
       return None;
     }
@@ -3102,7 +3281,15 @@ impl Length {
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
 
     if let Some(calc) = self.calc {
-      return calc.resolve_for_inline_axis(percentage_base, vw, vh, font_px, root_px, inline_is_horizontal);
+      return calc.resolve_for_inline_axis_with_root_font_metrics(
+        percentage_base,
+        vw,
+        vh,
+        font_px,
+        root_px,
+        inline_is_horizontal,
+        root_font_metrics,
+      );
     }
 
     if self.unit.is_percentage() {
@@ -3111,11 +3298,22 @@ impl Length {
       self.resolve_with_viewport_for_writing_mode(vw, vh, writing_mode)
     } else if self.unit.is_font_relative() {
       match self.unit {
+        LengthUnit::Rex => root_font_metrics
+          .map(|m| self.value * m.root_x_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rch => root_font_metrics
+          .map(|m| self.value * m.root_ch_advance_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rcap => root_font_metrics
+          .map(|m| self.value * m.root_cap_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Ric => root_font_metrics
+          .map(|m| self.value * m.root_ic_advance_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rlh => root_font_metrics
+          .map(|m| self.value * m.root_used_line_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
         LengthUnit::Rem => self.resolve_with_font_size(root_px),
-        LengthUnit::Rex | LengthUnit::Rch => Some(self.value * root_px * 0.5),
-        LengthUnit::Rcap => Some(self.value * root_px * 0.7),
-        LengthUnit::Ric => Some(self.value * root_px),
-        LengthUnit::Rlh => Some(self.value * root_px * 1.2),
         _ => self.resolve_with_font_size(font_px),
       }
     } else if self.unit.is_absolute() {
@@ -3135,6 +3333,25 @@ impl Length {
     viewport_height: f32,
     font_size_px: f32,
     root_font_size_px: f32,
+  ) -> Option<f32> {
+    self.resolve_with_context_and_root_font_metrics(
+      percentage_base,
+      viewport_width,
+      viewport_height,
+      font_size_px,
+      root_font_size_px,
+      None,
+    )
+  }
+
+  pub fn resolve_with_context_and_root_font_metrics(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    root_font_metrics: Option<RootFontMetrics>,
   ) -> Option<f32> {
     if !self.value.is_finite() {
       return None;
@@ -3165,7 +3382,14 @@ impl Length {
     if let Some(calc) = self.calc {
       match calc {
         LengthCalc::Linear(calc) => {
-          return calc.resolve(percentage_base, vw, vh, font_px, root_px);
+          return calc.resolve_with_root_font_metrics(
+            percentage_base,
+            vw,
+            vh,
+            font_px,
+            root_px,
+            root_font_metrics,
+          );
         }
         LengthCalc::Expr(id) => {
           return resolve_length_calc_expr(
@@ -3175,6 +3399,7 @@ impl Length {
             vh,
             font_px,
             root_px,
+            root_font_metrics,
           );
         }
       }
@@ -3186,11 +3411,22 @@ impl Length {
       self.resolve_with_viewport(vw, vh)
     } else if self.unit.is_font_relative() {
       match self.unit {
+        LengthUnit::Rex => root_font_metrics
+          .map(|m| self.value * m.root_x_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rch => root_font_metrics
+          .map(|m| self.value * m.root_ch_advance_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rcap => root_font_metrics
+          .map(|m| self.value * m.root_cap_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Ric => root_font_metrics
+          .map(|m| self.value * m.root_ic_advance_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
+        LengthUnit::Rlh => root_font_metrics
+          .map(|m| self.value * m.root_used_line_height_px)
+          .or_else(|| self.resolve_with_font_size(root_px)),
         LengthUnit::Rem => self.resolve_with_font_size(root_px),
-        LengthUnit::Rex | LengthUnit::Rch => Some(self.value * root_px * 0.5),
-        LengthUnit::Rcap => Some(self.value * root_px * 0.7),
-        LengthUnit::Ric => Some(self.value * root_px),
-        LengthUnit::Rlh => Some(self.value * root_px * 1.2),
         _ => self.resolve_with_font_size(font_px),
       }
     } else if self.unit.is_absolute() {
@@ -3212,6 +3448,7 @@ impl Length {
     viewport_height: f32,
     font_size_px: f32,
     root_font_size_px: f32,
+    root_font_metrics: Option<RootFontMetrics>,
     cqw_base: f32,
     cqh_base: f32,
     cqi_base: f32,
@@ -3239,14 +3476,17 @@ impl Length {
         LengthUnit::Cap => value * font_size_px * 0.7,
         LengthUnit::Ic => value * font_size_px,
         LengthUnit::Rem => value * root_font_size_px,
-        LengthUnit::Rex | LengthUnit::Rch => value * root_font_size_px * 0.5,
-        LengthUnit::Rcap => value * root_font_size_px * 0.7,
-        LengthUnit::Ric => value * root_font_size_px,
+        // Root font-relative units require root font metrics, which may not be available during
+        // cascade (e.g. before web fonts are loaded). Preserve the authored unit until a metrics
+        // context is available so later canonicalization can resolve it accurately.
+        LengthUnit::Rex => value * root_font_metrics?.root_x_height_px,
+        LengthUnit::Rch => value * root_font_metrics?.root_ch_advance_px,
+        LengthUnit::Rcap => value * root_font_metrics?.root_cap_height_px,
+        LengthUnit::Ric => value * root_font_metrics?.root_ic_advance_px,
+        LengthUnit::Rlh => value * root_font_metrics?.root_used_line_height_px,
         // Treat `lh` as `normal` (1.2 * font-size) at computed-value time. This matches the
         // existing `Length::resolve_with_context` fallback for lack of full font metrics.
         LengthUnit::Lh => value * font_size_px * 1.2,
-        // Until root line-height metrics are plumbed, approximate `rlh` as `normal` on the root font size.
-        LengthUnit::Rlh => value * root_font_size_px * 1.2,
         // At this point container query units should have been resolved via
         // `resolve_container_query_units`. If any remain, bail out and preserve the original value.
         u if u.is_container_query_relative() => return None,
@@ -3677,6 +3917,7 @@ pub enum CustomPropertyTypedValue {
 pub(crate) struct CustomPropertyComputeContext {
   pub font_size: f32,
   pub root_font_size: f32,
+  pub root_font_metrics: Option<RootFontMetrics>,
   pub line_height: f32,
   pub viewport: Size,
   pub current_color: Rgba,
@@ -3854,38 +4095,42 @@ fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeCon
         length
       }
     }
-    LengthUnit::Rex | LengthUnit::Rch => {
-      if ctx.root_font_size.is_finite() {
-        Length::px(length.value * ctx.root_font_size * 0.5)
-      } else {
-        length
-      }
+    LengthUnit::Rex => {
+      // Root font-relative units depend on root font metrics, which are not always available
+      // during cascade (web fonts load after cascade). Preserve the authored unit until a root
+      // metrics context is available so later canonicalization can resolve it accurately.
+      ctx
+        .root_font_metrics
+        .map(|m| Length::px(length.value * m.root_x_height_px))
+        .unwrap_or(length)
+    }
+    LengthUnit::Rch => {
+      ctx
+        .root_font_metrics
+        .map(|m| Length::px(length.value * m.root_ch_advance_px))
+        .unwrap_or(length)
     }
     LengthUnit::Rcap => {
-      if ctx.root_font_size.is_finite() {
-        Length::px(length.value * ctx.root_font_size * 0.7)
-      } else {
-        length
-      }
+      ctx
+        .root_font_metrics
+        .map(|m| Length::px(length.value * m.root_cap_height_px))
+        .unwrap_or(length)
     }
     LengthUnit::Ric => {
-      if ctx.root_font_size.is_finite() {
-        Length::px(length.value * ctx.root_font_size)
-      } else {
-        length
-      }
+      ctx
+        .root_font_metrics
+        .map(|m| Length::px(length.value * m.root_ic_advance_px))
+        .unwrap_or(length)
+    }
+    LengthUnit::Rlh => {
+      ctx
+        .root_font_metrics
+        .map(|m| Length::px(length.value * m.root_used_line_height_px))
+        .unwrap_or(length)
     }
     LengthUnit::Lh => {
       if ctx.line_height.is_finite() {
         Length::px(length.value * ctx.line_height)
-      } else {
-        length
-      }
-    }
-    LengthUnit::Rlh => {
-      if ctx.root_font_size.is_finite() {
-        // Root `line-height` is not available in this pass; approximate `rlh` as `normal` (1.2em).
-        Length::px(length.value * ctx.root_font_size * 1.2)
       } else {
         length
       }
@@ -4064,25 +4309,39 @@ fn compute_custom_property_calc_term(
       value *= ctx.root_font_size;
       LengthUnit::Px
     }
-    LengthUnit::Rex | LengthUnit::Rch => {
-      if !ctx.root_font_size.is_finite() {
+    LengthUnit::Rex => {
+      let Some(metrics) = ctx.root_font_metrics else {
         return Some(term);
-      }
-      value *= ctx.root_font_size * 0.5;
+      };
+      value *= metrics.root_x_height_px;
+      LengthUnit::Px
+    }
+    LengthUnit::Rch => {
+      let Some(metrics) = ctx.root_font_metrics else {
+        return Some(term);
+      };
+      value *= metrics.root_ch_advance_px;
       LengthUnit::Px
     }
     LengthUnit::Rcap => {
-      if !ctx.root_font_size.is_finite() {
+      let Some(metrics) = ctx.root_font_metrics else {
         return Some(term);
-      }
-      value *= ctx.root_font_size * 0.7;
+      };
+      value *= metrics.root_cap_height_px;
       LengthUnit::Px
     }
     LengthUnit::Ric => {
-      if !ctx.root_font_size.is_finite() {
+      let Some(metrics) = ctx.root_font_metrics else {
         return Some(term);
-      }
-      value *= ctx.root_font_size;
+      };
+      value *= metrics.root_ic_advance_px;
+      LengthUnit::Px
+    }
+    LengthUnit::Rlh => {
+      let Some(metrics) = ctx.root_font_metrics else {
+        return Some(term);
+      };
+      value *= metrics.root_used_line_height_px;
       LengthUnit::Px
     }
     LengthUnit::Lh => {
@@ -4090,14 +4349,6 @@ fn compute_custom_property_calc_term(
         return Some(term);
       }
       value *= ctx.line_height;
-      LengthUnit::Px
-    }
-    LengthUnit::Rlh => {
-      if !ctx.root_font_size.is_finite() {
-        return Some(term);
-      }
-      // Root `line-height` is not available in this pass; approximate `rlh` as `normal` (1.2em).
-      value *= ctx.root_font_size * 1.2;
       LengthUnit::Px
     }
     LengthUnit::Calc => LengthUnit::Calc,

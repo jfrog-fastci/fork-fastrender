@@ -22,12 +22,15 @@ pub mod page;
 pub mod position;
 pub mod position_try;
 pub mod properties;
+pub mod root_font_metrics;
 pub mod string_set;
 pub mod style_set;
 pub mod types;
 pub mod used_codepoints;
 pub mod values;
 pub mod var_resolution;
+
+pub use root_font_metrics::RootFontMetrics;
 
 // Internal imports used by ComputedStyle
 use crate::css::types::BoxShadow;

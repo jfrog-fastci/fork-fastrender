@@ -437,6 +437,7 @@ fn container_query_matches(
             container,
             ctx.base_media.viewport_width,
             ctx.base_media.viewport_height,
+            ctx.root_font_metrics,
           ),
           ContainerSizeQuery::UnresolvedVars { text, .. } => {
             let value = PropertyValue::Custom(text.clone());
@@ -457,6 +458,7 @@ fn container_query_matches(
                     container,
                     ctx.base_media.viewport_width,
                     ctx.base_media.viewport_height,
+                    ctx.root_font_metrics,
                   ),
                   _ => QueryResult::Unknown,
                 }
@@ -552,6 +554,7 @@ fn resolve_container_query_length(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
+  root_font_metrics: Option<crate::style::RootFontMetrics>,
   line_height: f32,
   cqw_base: f32,
   cqh_base: f32,
@@ -664,29 +667,55 @@ fn resolve_container_query_length(
       &|linear, base, vw, vh, font_px, root_px| {
         let base = base.filter(|b| b.is_finite());
         let mut total = 0.0;
-        for term in linear.terms() {
-          let resolved = match term.unit {
-            LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
-            u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+         for term in linear.terms() {
+           let resolved = match term.unit {
+             LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+             u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+             u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
              LengthUnit::Em => Some(term.value * font_px),
              LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
              LengthUnit::Cap => Some(term.value * font_px * 0.7),
              LengthUnit::Ic => Some(term.value * font_px),
              LengthUnit::Rem => Some(term.value * root_px),
-             LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_px * 0.5),
-             LengthUnit::Rcap => Some(term.value * root_px * 0.7),
-             LengthUnit::Ric => Some(term.value * root_px),
+             LengthUnit::Rex => Some(
+               term.value
+                 * root_font_metrics
+                   .map(|m| m.root_x_height_px)
+                   .unwrap_or(root_px * 0.5),
+             ),
+             LengthUnit::Rch => Some(
+               term.value
+                 * root_font_metrics
+                   .map(|m| m.root_ch_advance_px)
+                   .unwrap_or(root_px * 0.5),
+             ),
+             LengthUnit::Rcap => Some(
+               term.value
+                 * root_font_metrics
+                   .map(|m| m.root_cap_height_px)
+                   .unwrap_or(root_px * 0.7),
+             ),
+             LengthUnit::Ric => Some(
+               term.value
+                 * root_font_metrics
+                   .map(|m| m.root_ic_advance_px)
+                   .unwrap_or(root_px),
+             ),
+             LengthUnit::Rlh => Some(
+               term.value
+                 * root_font_metrics
+                  .map(|m| m.root_used_line_height_px)
+                  .unwrap_or(root_px * 1.2),
+             ),
              LengthUnit::Lh => Some(term.value * line_height),
-             LengthUnit::Rlh => Some(term.value * root_px * 1.2),
              LengthUnit::Calc => None,
              _ => None,
            }?;
-          total += resolved;
-        }
-        Some(total)
-      },
-    );
+           total += resolved;
+         }
+         Some(total)
+       },
+     );
   }
 
   match length.unit {
@@ -695,9 +724,36 @@ fn resolve_container_query_length(
     LengthUnit::Rem => Some(length.value * root_font_size),
     LengthUnit::Cap => Some(length.value * font_size * 0.7),
     LengthUnit::Ic => Some(length.value * font_size),
-    LengthUnit::Rex | LengthUnit::Rch => Some(length.value * root_font_size * 0.5),
-    LengthUnit::Rcap => Some(length.value * root_font_size * 0.7),
-    LengthUnit::Ric => Some(length.value * root_font_size),
+    LengthUnit::Rex => Some(
+      length.value
+        * root_font_metrics
+          .map(|m| m.root_x_height_px)
+          .unwrap_or(root_font_size * 0.5),
+    ),
+    LengthUnit::Rch => Some(
+      length.value
+        * root_font_metrics
+          .map(|m| m.root_ch_advance_px)
+          .unwrap_or(root_font_size * 0.5),
+    ),
+    LengthUnit::Rcap => Some(
+      length.value
+        * root_font_metrics
+          .map(|m| m.root_cap_height_px)
+          .unwrap_or(root_font_size * 0.7),
+    ),
+    LengthUnit::Ric => Some(
+      length.value
+        * root_font_metrics
+          .map(|m| m.root_ic_advance_px)
+          .unwrap_or(root_font_size),
+    ),
+    LengthUnit::Rlh => Some(
+      length.value
+        * root_font_metrics
+          .map(|m| m.root_used_line_height_px)
+          .unwrap_or(root_font_size * 1.2),
+    ),
     LengthUnit::Percent => Some(length.value / 100.0 * inline?),
     LengthUnit::Vw => Some(length.value / 100.0 * vw?),
     LengthUnit::Vh => Some(length.value / 100.0 * vh?),
@@ -747,8 +803,6 @@ fn resolve_container_query_length(
     LengthUnit::Ch => Some(length.value * (font_size * 0.5)),
     // Container query length resolution uses the query container's computed `line-height`.
     LengthUnit::Lh => Some(length.value * line_height),
-    // Root line-height is not yet plumbed; approximate as `normal` on the root font size.
-    LengthUnit::Rlh => Some(length.value * root_font_size * 1.2),
     LengthUnit::Calc => None,
     _ => None,
   }
@@ -761,6 +815,7 @@ fn evaluate_container_size_feature(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
+  root_font_metrics: Option<crate::style::RootFontMetrics>,
   line_height: f32,
 ) -> QueryResult {
   let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
@@ -816,6 +871,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -842,6 +898,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -868,6 +925,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -895,6 +953,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -921,6 +980,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -947,6 +1007,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -975,6 +1036,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1001,6 +1063,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1027,6 +1090,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1054,6 +1118,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1080,6 +1145,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1106,6 +1172,7 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
         line_height,
         cqw_base,
         cqh_base,
@@ -1183,6 +1250,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
           cqw_base,
           cqh_base,
@@ -1209,6 +1277,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
           cqw_base,
           cqh_base,
@@ -1235,6 +1304,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
           cqw_base,
           cqh_base,
@@ -1261,6 +1331,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
           cqw_base,
           cqh_base,
@@ -1297,6 +1368,7 @@ fn evaluate_container_size_feature(
       viewport_height,
       font_size,
       root_font_size,
+      root_font_metrics,
       line_height,
     )
     .not(),
@@ -1310,6 +1382,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
         ) {
           QueryResult::False => return QueryResult::False,
@@ -1329,6 +1402,7 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          root_font_metrics,
           line_height,
         ) {
           QueryResult::True => return QueryResult::True,
@@ -1349,6 +1423,7 @@ fn evaluate_container_size_query(
   container: &ContainerQueryInfo,
   viewport_width: f32,
   viewport_height: f32,
+  root_font_metrics: Option<crate::style::RootFontMetrics>,
 ) -> QueryResult {
   // Container size queries reuse the media-query parser, but are evaluated against the query
   // container's size + font metrics. Viewport units (`vw`/`vh`/etc) resolve against the document
@@ -1372,12 +1447,13 @@ fn evaluate_container_size_query(
     crate::style::types::LineHeight::Number(mult) => font_size * *mult,
     crate::style::types::LineHeight::Percentage(pct) => font_size * (*pct / 100.0),
     crate::style::types::LineHeight::Length(len) => len
-      .resolve_with_context(
+      .resolve_with_context_and_root_font_metrics(
         Some(font_size),
         viewport_width,
         viewport_height,
         font_size,
         root_font_size,
+        root_font_metrics,
       )
       .unwrap_or(font_size * 1.2),
   };
@@ -1414,6 +1490,7 @@ fn evaluate_container_size_query(
       viewport_height,
       font_size,
       root_font_size,
+      root_font_metrics,
       line_height,
     ) {
       QueryResult::False => {
@@ -3515,6 +3592,7 @@ fn resolve_style_query_container_query_lengths(
   );
   let dummy_ctx = ContainerQueryContext {
     base_media: ctx.base_media.clone(),
+    root_font_metrics: ctx.root_font_metrics,
     containers,
   };
 
@@ -10586,6 +10664,12 @@ pub struct ContainerQueryInfo {
 #[derive(Debug, Clone)]
 pub struct ContainerQueryContext {
   pub base_media: MediaContext,
+  /// Root element font metrics used to resolve root font-relative units (`rex`/`rch`/`rcap`/`ric`/`rlh`)
+  /// inside container query length expressions.
+  ///
+  /// When unavailable (e.g. tests that construct container query contexts manually), callers fall back
+  /// to deterministic heuristics.
+  pub root_font_metrics: Option<crate::style::RootFontMetrics>,
   pub containers: HashMap<usize, ContainerQueryInfo>,
 }
 
@@ -21018,6 +21102,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -21209,6 +21294,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
@@ -21287,6 +21373,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
@@ -21430,6 +21517,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
@@ -21566,6 +21654,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
@@ -21740,6 +21829,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
@@ -21835,6 +21925,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -21910,6 +22001,7 @@ mod tests {
 
     let container_ctx = |inline_size| ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -22017,6 +22109,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -22201,6 +22294,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -22255,6 +22349,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::new(),
     };
 
@@ -22322,6 +22417,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([
         (
           1usize,
@@ -22415,6 +22511,7 @@ mod tests {
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
+      root_font_metrics: None,
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
@@ -22496,6 +22593,7 @@ mod tests {
     );
     let ctx = ContainerQueryContext {
       base_media: MediaContext::default(),
+      root_font_metrics: None,
       containers,
     };
 
@@ -22566,6 +22664,7 @@ mod tests {
     );
     let ctx = ContainerQueryContext {
       base_media: MediaContext::default(),
+      root_font_metrics: None,
       containers,
     };
 
@@ -22624,6 +22723,7 @@ mod tests {
     );
     let ctx = ContainerQueryContext {
       base_media: MediaContext::default(),
+      root_font_metrics: None,
       containers,
     };
 
@@ -22682,6 +22782,7 @@ mod tests {
     );
     let ctx = ContainerQueryContext {
       base_media: MediaContext::default(),
+      root_font_metrics: None,
       containers,
     };
 
@@ -33021,6 +33122,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     );
     let container_ctx = ContainerQueryContext {
       base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
       containers,
     };
 
@@ -33121,6 +33223,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     );
     let container_ctx = ContainerQueryContext {
       base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
       containers,
     };
 
@@ -33225,6 +33328,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     );
     let container_ctx = ContainerQueryContext {
       base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
       containers,
     };
 
@@ -33329,6 +33433,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     );
     let container_ctx = ContainerQueryContext {
       base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
       containers,
     };
 
@@ -33409,6 +33514,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     );
     let container_ctx = ContainerQueryContext {
       base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
       containers,
     };
 
@@ -36644,6 +36750,7 @@ pub(crate) fn resolve_container_query_font_size(
 pub(crate) fn finalize_registered_custom_properties_with_bases(
   styles: &mut ComputedStyle,
   viewport: Size,
+  root_font_metrics: Option<crate::style::RootFontMetrics>,
   cqw_base: f32,
   cqh_base: f32,
   cqi_base: f32,
@@ -36660,6 +36767,7 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
     typed: &CustomPropertyTypedValue,
     styles: &ComputedStyle,
     viewport: Size,
+    root_font_metrics: Option<crate::style::RootFontMetrics>,
     cqw_base: f32,
     cqh_base: f32,
     cqi_base: f32,
@@ -36674,6 +36782,7 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
           viewport.height,
           styles.font_size,
           styles.root_font_size,
+          root_font_metrics,
           cqw_base,
           cqh_base,
           cqi_base,
@@ -36706,7 +36815,14 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
           .iter()
           .map(|item| {
             canonicalize_typed_value(
-              item, styles, viewport, cqw_base, cqh_base, cqi_base, cqb_base,
+              item,
+              styles,
+              viewport,
+              root_font_metrics,
+              cqw_base,
+              cqh_base,
+              cqi_base,
+              cqb_base,
             )
           })
           .collect();
@@ -36731,7 +36847,14 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
     }
 
     let computed_typed = canonicalize_typed_value(
-      typed, styles, viewport, cqw_base, cqh_base, cqi_base, cqb_base,
+      typed,
+      styles,
+      viewport,
+      root_font_metrics,
+      cqw_base,
+      cqh_base,
+      cqi_base,
+      cqb_base,
     );
     let this_typed_changed = computed_typed != *typed;
     let computed = CustomPropertyValue::new(computed_typed.to_css(), Some(computed_typed));
@@ -36850,6 +36973,7 @@ fn finalize_registered_custom_properties_for_node(
   finalize_registered_custom_properties_with_bases(
     styles,
     viewport,
+    container_ctx.and_then(|ctx| ctx.root_font_metrics),
     bases.cqw,
     bases.cqh,
     bases.cqi,
