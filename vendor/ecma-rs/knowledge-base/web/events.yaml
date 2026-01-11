@@ -4,6 +4,10 @@
   kind: function
   aliases:
     - EventTarget.prototype.addEventListener
+    - window.addEventListener
+    - globalThis.addEventListener
+    - self.addEventListener
+    - document.addEventListener
   since: "baseline"
   effects: Unknown
   purity: Impure
@@ -16,12 +20,32 @@
   kind: function
   aliases:
     - EventTarget.prototype.removeEventListener
+    - window.removeEventListener
+    - globalThis.removeEventListener
+    - self.removeEventListener
+    - document.removeEventListener
   since: "baseline"
   effects: Unknown
   purity: Impure
   async: false
   parallelizable: false
   idempotent: true
+  deterministic: false
+
+- name: EventTarget.prototype.dispatchEvent
+  kind: function
+  aliases:
+    - EventTarget.prototype.dispatchEvent
+    - window.dispatchEvent
+    - globalThis.dispatchEvent
+    - self.dispatchEvent
+    - document.dispatchEvent
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
   deterministic: false
 
 - name: AbortController

@@ -1,0 +1,15 @@
+# Cookie access.
+
+# `document.cookie` acts as both a getter and setter. Model as a `value` so both
+# member reads and assignments can resolve to this entry.
+- name: document.cookie
+  kind: value
+  aliases:
+    - document.cookie
+  since: "baseline"
+  effects:
+    Custom:
+      # Reading/writing cookies interacts with external browser state.
+      flags: READS_GLOBAL | WRITES_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: Impure
