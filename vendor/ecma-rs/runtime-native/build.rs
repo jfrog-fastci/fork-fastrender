@@ -181,22 +181,6 @@ fn maybe_enable_stackmaps_linker_symbols() {
   let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
   let script = manifest_dir.join("link").join("stackmaps.ld");
 
-  // The repo defaults to `-fuse-ld=mold` for fast links, but mold does not
-  // support the GNU ld linker script features used by `stackmaps.ld`
-  // (SECTIONS/KEEP/INSERT). Force LLD so the script is accepted and stackmaps
-  // are not discarded under `--gc-sections`.
-  let lld_fuse = if Command::new("ld.lld-18")
-    .arg("--version")
-    .output()
-    .map(|out| out.status.success())
-    .unwrap_or(false)
-  {
-    "lld-18"
-  } else {
-    "lld"
-  };
-  println!("cargo:rustc-link-arg=-fuse-ld={lld_fuse}");
-
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.
   //
@@ -213,6 +197,37 @@ fn maybe_enable_stackmaps_linker_symbols() {
   // `.data.rel.ro.llvm_stackmaps` output section and causing `__start_llvm_stackmaps` /
   // `__stop_llvm_stackmaps` to incorrectly resolve to the empty one.
   let feature_enabled = std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_some();
+
+  // Prefer LLD when available: some linkers (notably `mold`) do not support the
+  // GNU ld/LLD linker script features used by `stackmaps.ld` (SECTIONS/KEEP/INSERT).
+  let lld_fuse = if Command::new("ld.lld-18")
+    .arg("--version")
+    .output()
+    .map(|out| out.status.success())
+    .unwrap_or(false)
+  {
+    Some("lld-18")
+  } else if Command::new("ld.lld")
+    .arg("--version")
+    .output()
+    .map(|out| out.status.success())
+    .unwrap_or(false)
+  {
+    Some("lld")
+  } else {
+    None
+  };
+  if let Some(lld_fuse) = lld_fuse {
+    if feature_enabled {
+      println!("cargo:rustc-link-arg=-fuse-ld={lld_fuse}");
+    } else {
+      println!("cargo:rustc-link-arg-tests=-fuse-ld={lld_fuse}");
+    }
+  } else if feature_enabled || rustflags().iter().any(|f| f.contains("fuse-ld=mold")) {
+    println!(
+      "cargo:warning=runtime-native: ld.lld not found; stackmaps linker script requires GNU ld/LLD and may fail with mold"
+    );
+  }
   if feature_enabled {
     // Apply to all targets (including tests) when the consumer opts in to linker-defined symbols.
     println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());

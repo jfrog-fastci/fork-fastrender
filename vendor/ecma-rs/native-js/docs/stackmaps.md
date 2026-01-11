@@ -32,9 +32,9 @@ retained.
 
 Notes:
 
-* The repo defaults to `-fuse-ld=mold` for fast Rust links, but mold does **not** support GNU ld
-  linker scripts (`SECTIONS`/`KEEP`/`INSERT`). When injecting the fragment, use lld (`-fuse-ld=lld`)
-  or GNU ld.
+* Some environments opt into `-fuse-ld=mold` for faster Rust links, but mold does **not** support GNU
+  ld linker scripts (`SECTIONS`/`KEEP`/`INSERT`). When injecting the fragment, use lld
+  (`-fuse-ld=lld`) or GNU ld.
 * GNU ld PIE/DSO builds should use `runtime-native/link/stackmaps_gnuld.ld` (instead of inserting
   stackmaps “after .text”) to avoid producing an RWX LOAD segment. `native_js::link` and
   `scripts/native_link.sh` handle this automatically.
