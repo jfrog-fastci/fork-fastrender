@@ -640,6 +640,15 @@ If you need PIE **without** `DT_TEXTREL`, apply Option C (relocate `.llvm_stackm
 before linking. The dynamic relocations will still be present (and must be, for correct stackmap
 addresses at runtime), but they will apply to a writable segment instead of requiring text relocs.
 
+One more GNU ld-specific hardening note: if your linker script inserts the stackmaps output section
+immediately after `.text` (common `INSERT AFTER .text` fragments) and you make that section writable
+for PIE relocation, GNU ld may place it in the same LOAD segment as `.text`, producing an **RWX**
+segment. To avoid RWX with GNU ld PIE builds, use:
+
+- `runtime-native/link/stackmaps_gnuld.ld`, or
+- `scripts/native_link.sh` (it selects the GNU ld fragment automatically when `ECMA_RS_NATIVE_PIE=1`
+  and `ECMA_RS_NATIVE_LINKER=ld`).
+
 ## Example link commands
 
 ### Default (non-PIE): debug (no section GC)
