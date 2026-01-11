@@ -3,6 +3,9 @@ use runtime_native::gc::HandleTable;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -347,6 +350,76 @@ fn stale_handle_ids_do_not_resolve_after_free_and_reuse() {
   unsafe {
     drop(Box::from_raw(p2.as_ptr()));
   }
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn with_stw_update_does_not_allow_mutator_to_run_during_stw_request() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let table = Arc::new(HandleTable::<u8>::new());
+  let start = Arc::new(AtomicUsize::new(0));
+  let ran = Arc::new(AtomicBool::new(false));
+
+  std::thread::scope(|scope| {
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+
+    let table_worker = Arc::clone(&table);
+    let start_worker = Arc::clone(&start);
+    let ran_worker = Arc::clone(&ran);
+    scope.spawn(move || {
+      threading::register_current_thread(ThreadKind::Worker);
+      ready_tx.send(()).unwrap();
+
+      // Busy-wait until the main thread requests STW.
+      while start_worker.load(Ordering::Acquire) == 0 {
+        std::hint::spin_loop();
+      }
+
+      // If STW is active, `with_stw_update` must not bypass safepoint polling for mutator threads.
+      // The closure must not run until the world is resumed.
+      table_worker.with_stw_update(|_| {
+        ran_worker.store(true, Ordering::Release);
+      });
+
+      // Ensure the thread cooperatively reaches the safepoint if STW is still active.
+      runtime_native::rt_gc_safepoint();
+      threading::unregister_current_thread();
+    });
+
+    ready_rx
+      .recv_timeout(TIMEOUT)
+      .expect("worker should register and signal ready");
+
+    let stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+    assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+    struct ResumeOnDrop;
+    impl Drop for ResumeOnDrop {
+      fn drop(&mut self) {
+        runtime_native::rt_gc_resume_world();
+      }
+    }
+    let _resume = ResumeOnDrop;
+
+    // Let the worker attempt `with_stw_update` while STW is active.
+    start.store(1, Ordering::Release);
+
+    assert!(
+      runtime_native::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+      "world failed to stop within timeout"
+    );
+
+    assert!(
+      !ran.load(Ordering::Acquire),
+      "`with_stw_update` closure ran on a mutator thread while stop-the-world was in progress"
+    );
+
+    runtime_native::rt_gc_resume_world();
+  });
 
   threading::unregister_current_thread();
 }

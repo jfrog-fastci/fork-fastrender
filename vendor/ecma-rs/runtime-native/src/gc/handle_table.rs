@@ -308,21 +308,17 @@ impl<T> HandleTable<T> {
   /// them to hit a cooperative safepoint poll.
   ///
   /// When a stop-the-world pause is active, [`HandleTable::with_stw_update`] intentionally avoids
-  /// the GC-aware lock's contended acquisition path (which waits for the world to resume) and
-  /// instead acquires the underlying `parking_lot::RwLock` directly via
-  /// [`GcAwareRwLock::write_for_gc`]. Under a correct STW pause there should be no running mutator
-  /// that can hold the lock indefinitely.
+  /// returning a lock guard to non-coordinator mutator threads while the epoch is odd. The GC-aware
+  /// lock allows the coordinator to acquire the write lock under STW while ensuring mutators that
+  /// attempt to take the lock during an in-progress STW request will instead enter the safepoint.
   pub fn with_stw_update<R>(&self, f: impl FnOnce(&mut HandleTableStwGuard<'_, T>) -> R) -> R {
-    let guard = if crate::threading::safepoint::current_epoch() & 1 == 1 {
-      // IMPORTANT: When stop-the-world is active, do *not* call `GcAwareRwLock::write()` because its
-      // contended slow path intentionally waits for the world to be resumed before returning a
-      // guard. Root enumeration/relocation runs *during* STW, so waiting for resume would deadlock.
-      self.inner.write_for_gc()
-    } else {
-      // Outside STW, use the GC-aware `write()` path so contended acquisition enters a GC-safe
-      // ("NativeSafe") region while blocked.
-      self.inner.write()
-    };
+    // IMPORTANT: use the GC-aware `write()` acquisition path, not `write_for_gc`.
+    //
+    // `GcAwareRwLock::write()`:
+    // - enters a GC-safe ("NativeSafe") region while blocked on contention, so STW doesn't deadlock,
+    // - does not return a guard to mutator threads while a stop-the-world epoch is active, and
+    // - allows the coordinator to lock during STW (required for root enumeration/relocation).
+    let guard = self.inner.write();
     let mut guard = HandleTableStwGuard { guard };
     f(&mut guard)
   }
