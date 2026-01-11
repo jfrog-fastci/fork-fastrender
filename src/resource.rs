@@ -3940,12 +3940,485 @@ pub struct HttpFetcher {
   reqwest_client: Arc<reqwest_blocking::Client>,
   cookie_jar: Arc<ReqwestCookieJar>,
   retry_policy: HttpRetryPolicy,
+  cors_preflight_cache: Arc<Mutex<CorsPreflightCache>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct HttpCacheValidators<'a> {
   etag: Option<&'a str>,
   last_modified: Option<&'a str>,
+}
+
+// ============================================================================
+// CORS preflight cache (Fetch Standard)
+// ============================================================================
+
+/// Default `Access-Control-Max-Age` value when the header is missing/invalid.
+///
+/// Fetch Standard: https://fetch.spec.whatwg.org/#cors-preflight-fetch (step 9.6).
+const CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS: u64 = 5;
+
+/// Max cap applied to `Access-Control-Max-Age`.
+///
+/// Fetch allows an "imposed limit on max-age". FastRender clamps to 2 hours to avoid unbounded
+/// in-memory cache growth and to keep behavior deterministic across runtimes.
+const CORS_PREFLIGHT_MAX_AGE_CAP_SECS: u64 = 2 * 60 * 60;
+
+fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-non-wildcard-request-header-name
+  name.eq_ignore_ascii_case("authorization")
+}
+
+#[derive(Debug, Clone)]
+struct CorsPreflightCacheEntry {
+  partition_key: Option<String>,
+  origin: String,
+  url: String,
+  expires_at: Instant,
+  credentials: bool,
+  method: Option<String>,
+  header_name: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct CorsPreflightCache {
+  entries: Vec<CorsPreflightCacheEntry>,
+}
+
+fn cors_preflight_expiry(now: Instant, max_age_secs: u64) -> Instant {
+  let duration = Duration::from_secs(max_age_secs);
+  now.checked_add(duration).unwrap_or(now)
+}
+
+fn cors_preflight_cache_entry_match(
+  entry: &CorsPreflightCacheEntry,
+  partition_key: Option<&str>,
+  origin: &str,
+  url: &str,
+  credentials_mode: FetchCredentialsMode,
+) -> bool {
+  if entry.partition_key.as_deref() != partition_key {
+    return false;
+  }
+  if entry.origin != origin {
+    return false;
+  }
+  if entry.url != url {
+    return false;
+  }
+
+  // Fetch Standard "cache entry match":
+  // - credentialed cache entries can match non-credentialed requests
+  // - non-credentialed entries do not match credentialed requests
+  entry.credentials || credentials_mode != FetchCredentialsMode::Include
+}
+
+fn cors_preflight_method_cache_entry_match(entry_method: Option<&str>, method: &str) -> bool {
+  let Some(entry_method) = entry_method else {
+    return false;
+  };
+  entry_method == "*" || entry_method.eq_ignore_ascii_case(method)
+}
+
+fn cors_preflight_header_name_cache_entry_match(entry_header: Option<&str>, header_name: &str) -> bool {
+  let Some(entry_header) = entry_header else {
+    return false;
+  };
+  if entry_header.eq_ignore_ascii_case(header_name) {
+    return true;
+  }
+  entry_header == "*" && !is_cors_non_wildcard_request_header_name(header_name)
+}
+
+impl CorsPreflightCache {
+  fn prune_expired(&mut self, now: Instant) {
+    self.entries.retain(|entry| entry.expires_at > now);
+  }
+
+  fn method_cache_entry_match(
+    &self,
+    partition_key: Option<&str>,
+    origin: &str,
+    url: &str,
+    credentials_mode: FetchCredentialsMode,
+    method: &str,
+  ) -> bool {
+    self.entries.iter().any(|entry| {
+      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method)
+    })
+  }
+
+  fn header_name_cache_entry_match(
+    &self,
+    partition_key: Option<&str>,
+    origin: &str,
+    url: &str,
+    credentials_mode: FetchCredentialsMode,
+    header_name: &str,
+  ) -> bool {
+    self.entries.iter().any(|entry| {
+      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), header_name)
+    })
+  }
+
+  fn update_or_insert_method(
+    &mut self,
+    now: Instant,
+    max_age_secs: u64,
+    partition_key: Option<&str>,
+    origin: &str,
+    url: &str,
+    credentials_mode: FetchCredentialsMode,
+    method: &str,
+  ) {
+    let expiry = cors_preflight_expiry(now, max_age_secs);
+
+    let mut updated_any = false;
+    for entry in &mut self.entries {
+      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method)
+      {
+        entry.expires_at = expiry;
+        updated_any = true;
+      }
+    }
+    if updated_any {
+      return;
+    }
+
+    self.entries.push(CorsPreflightCacheEntry {
+      partition_key: partition_key.map(str::to_string),
+      origin: origin.to_string(),
+      url: url.to_string(),
+      expires_at: expiry,
+      credentials: credentials_mode == FetchCredentialsMode::Include,
+      method: Some(method.to_string()),
+      header_name: None,
+    });
+  }
+
+  fn update_or_insert_header_name(
+    &mut self,
+    now: Instant,
+    max_age_secs: u64,
+    partition_key: Option<&str>,
+    origin: &str,
+    url: &str,
+    credentials_mode: FetchCredentialsMode,
+    header_name: &str,
+  ) {
+    let expiry = cors_preflight_expiry(now, max_age_secs);
+
+    let mut updated_any = false;
+    for entry in &mut self.entries {
+      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), header_name)
+      {
+        entry.expires_at = expiry;
+        updated_any = true;
+      }
+    }
+    if updated_any {
+      return;
+    }
+
+    self.entries.push(CorsPreflightCacheEntry {
+      partition_key: partition_key.map(str::to_string),
+      origin: origin.to_string(),
+      url: url.to_string(),
+      expires_at: expiry,
+      credentials: credentials_mode == FetchCredentialsMode::Include,
+      method: None,
+      header_name: Some(header_name.to_string()),
+    });
+  }
+}
+
+fn is_cors_safelisted_method(method: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-method
+  method.eq_ignore_ascii_case("GET")
+    || method.eq_ignore_ascii_case("HEAD")
+    || method.eq_ignore_ascii_case("POST")
+}
+
+fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-byte
+  if byte < 0x20 && byte != 0x09 {
+    return true;
+  }
+  matches!(
+    byte,
+    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D
+      | 0x7F
+  )
+}
+
+fn is_cors_safelisted_language_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  matches!(
+    byte,
+    b'0'..=b'9'
+      | b'A'..=b'Z'
+      | b'a'..=b'z'
+      | b' '
+      | b'*'
+      | b','
+      | b'-'
+      | b'.'
+      | b';'
+      | b'='
+  )
+}
+
+fn is_safelisted_range_header_value(value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
+  let trimmed = trim_http_whitespace(value);
+  let Some(rest) = trimmed
+    .strip_prefix("bytes=")
+    .or_else(|| trimmed.strip_prefix("Bytes="))
+    .or_else(|| trimmed.strip_prefix("BYTES="))
+  else {
+    return false;
+  };
+
+  let Some((start, end)) = rest.split_once('-') else {
+    return false;
+  };
+
+  if start.is_empty() {
+    return false;
+  }
+  if !start.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+  if !end.is_empty() && !end.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+
+  true
+}
+
+fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  if value.as_bytes().len() > 128 {
+    return false;
+  }
+
+  match name {
+    "accept" => !value
+      .as_bytes()
+      .iter()
+      .copied()
+      .any(is_cors_unsafe_request_header_byte),
+    "accept-language" | "content-language" => value
+      .as_bytes()
+      .iter()
+      .copied()
+      .all(is_cors_safelisted_language_byte),
+    "content-type" => {
+      if value
+        .as_bytes()
+        .iter()
+        .copied()
+        .any(is_cors_unsafe_request_header_byte)
+      {
+        return false;
+      }
+      let essence =
+        trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
+      matches!(
+        essence.as_str(),
+        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+      )
+    }
+    // Privileged APIs can attach a `Range` header without triggering preflight in browsers; treat it
+    // as safelisted when it follows the simple `bytes=<start>-<end>` syntax.
+    "range" => is_safelisted_range_header_value(value),
+    _ => false,
+  }
+}
+
+fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
+  // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-names
+  let mut unsafe_names: HashSet<String> = HashSet::new();
+  let mut potentially_unsafe: Vec<String> = Vec::new();
+  let mut safelist_value_size: usize = 0;
+
+  for (name, value) in headers {
+    let name = name.to_ascii_lowercase();
+    if !is_cors_safelisted_request_header(name.as_str(), value) {
+      unsafe_names.insert(name);
+    } else {
+      safelist_value_size = safelist_value_size.saturating_add(value.as_bytes().len());
+      potentially_unsafe.push(name);
+    }
+  }
+
+  if safelist_value_size > 1024 {
+    for name in potentially_unsafe {
+      unsafe_names.insert(name);
+    }
+  }
+
+  let mut out: Vec<String> = unsafe_names.into_iter().collect();
+  out.sort();
+  out
+}
+
+fn cors_preflight_extract_methods(
+  resource: &FetchedResource,
+) -> std::result::Result<Option<Vec<String>>, String> {
+  // https://fetch.spec.whatwg.org/#extract-header-list-values
+  let values = resource.header_values("access-control-allow-methods");
+  if values.is_empty() {
+    return Ok(None);
+  }
+
+  let mut out: Vec<String> = Vec::new();
+  for value in values {
+    for token in value.split(',') {
+      let token = trim_http_whitespace(token);
+      if token.is_empty() {
+        continue;
+      }
+      if token == "*" {
+        out.push("*".to_string());
+        continue;
+      }
+      if http::Method::from_bytes(token.as_bytes()).is_err() {
+        return Err(format!(
+          "CORS preflight failed: invalid Access-Control-Allow-Methods value {token:?}"
+        ));
+      }
+      out.push(token.to_string());
+    }
+  }
+  Ok(Some(out))
+}
+
+fn cors_preflight_extract_header_names(
+  resource: &FetchedResource,
+) -> std::result::Result<Option<Vec<String>>, String> {
+  // https://fetch.spec.whatwg.org/#extract-header-list-values
+  let values = resource.header_values("access-control-allow-headers");
+  if values.is_empty() {
+    return Ok(None);
+  }
+
+  let mut out: Vec<String> = Vec::new();
+  for value in values {
+    for token in value.split(',') {
+      let token = trim_http_whitespace(token);
+      if token.is_empty() {
+        continue;
+      }
+      if token == "*" {
+        out.push("*".to_string());
+        continue;
+      }
+      if http::header::HeaderName::from_bytes(token.as_bytes()).is_err() {
+        return Err(format!(
+          "CORS preflight failed: invalid Access-Control-Allow-Headers value {token:?}"
+        ));
+      }
+      out.push(token.to_ascii_lowercase());
+    }
+  }
+  Ok(Some(out))
+}
+
+fn cors_preflight_parse_max_age_secs(resource: &FetchedResource) -> Option<u64> {
+  // https://fetch.spec.whatwg.org/#cors-preflight-fetch
+  let values = resource.header_values("access-control-max-age");
+  match values.as_slice() {
+    [] => None,
+    [raw] => {
+      let raw = trim_http_whitespace(raw);
+      if raw.is_empty() {
+        None
+      } else {
+        raw.parse::<u64>().ok()
+      }
+    }
+    _ => None,
+  }
+}
+
+fn cors_preflight_contains_star(items: &[String]) -> bool {
+  items.iter().any(|item| item == "*")
+}
+
+fn cors_preflight_contains_token(items: &[String], token: &str) -> bool {
+  items.iter().any(|item| item.eq_ignore_ascii_case(token))
+}
+
+fn cors_preflight_validate_allow_methods(
+  request_method: &str,
+  request_method_safelisted: bool,
+  credentials_mode: FetchCredentialsMode,
+  allow_methods: Option<&[String]>,
+  response: &FetchedResource,
+  requested_url: &str,
+) -> Result<()> {
+  // https://fetch.spec.whatwg.org/#cors-preflight-fetch (steps 9.4)
+  if request_method_safelisted {
+    return Ok(());
+  }
+  let allow_methods = allow_methods.unwrap_or(&[]);
+  let explicit_allowed = cors_preflight_contains_token(allow_methods, request_method);
+  let wildcard_allowed = cors_preflight_contains_star(allow_methods);
+  if !explicit_allowed
+    && (credentials_mode == FetchCredentialsMode::Include || !wildcard_allowed)
+  {
+    return Err(response_resource_error(
+      response,
+      requested_url,
+      format!("CORS preflight blocked method {request_method}"),
+    ));
+  }
+  Ok(())
+}
+
+fn cors_preflight_validate_allow_headers(
+  request_headers: &[(String, String)],
+  unsafe_names: &[String],
+  credentials_mode: FetchCredentialsMode,
+  allow_headers: Option<&[String]>,
+  response: &FetchedResource,
+  requested_url: &str,
+) -> Result<()> {
+  // https://fetch.spec.whatwg.org/#cors-preflight-fetch (steps 9.5)
+  let allow_headers = allow_headers.unwrap_or(&[]);
+  let wildcard_allowed = cors_preflight_contains_star(allow_headers);
+
+  if request_headers
+    .iter()
+    .any(|(name, _)| is_cors_non_wildcard_request_header_name(name))
+    && !cors_preflight_contains_token(allow_headers, "authorization")
+  {
+    return Err(response_resource_error(
+      response,
+      requested_url,
+      "CORS preflight blocked non-wildcard Authorization header",
+    ));
+  }
+
+  for unsafe_name in unsafe_names {
+    if cors_preflight_contains_token(allow_headers, unsafe_name) {
+      continue;
+    }
+    if credentials_mode != FetchCredentialsMode::Include && wildcard_allowed {
+      continue;
+    }
+    return Err(response_resource_error(
+      response,
+      requested_url,
+      format!("CORS preflight blocked request header {unsafe_name}"),
+    ));
+  }
+  Ok(())
 }
 
 fn http_referer_header_value(
@@ -4523,6 +4996,198 @@ impl HttpFetcher {
         started,
       )
     })
+  }
+
+  fn maybe_run_cors_preflight(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    method: &str,
+    user_headers: &[(String, String)],
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<()> {
+    if destination.sec_fetch_mode() != "cors" {
+      return Ok(());
+    }
+
+    let Some(client_origin) = client_origin else {
+      // Without a client origin we cannot establish CORS semantics; mirror downstream behavior by
+      // skipping the preflight.
+      return Ok(());
+    };
+
+    let target_origin = origin_from_url(url).or_else(|| http_browser_tolerant_origin_from_url(url));
+    let Some(target_origin) = target_origin else {
+      return Ok(());
+    };
+    if client_origin.same_origin(&target_origin) {
+      return Ok(());
+    }
+
+    let unsafe_names = cors_unsafe_request_header_names(user_headers);
+    let method_safelisted = is_cors_safelisted_method(method);
+    if method_safelisted && unsafe_names.is_empty() {
+      return Ok(());
+    }
+
+    let origin_header_value = build_http_header_pairs(
+      url,
+      &self.user_agent,
+      &self.accept_language,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      destination,
+      Some(client_origin),
+      referrer_url,
+      referrer_policy,
+    )
+    .into_iter()
+    .find(|(name, _)| name.eq_ignore_ascii_case("origin"))
+    .map(|(_, value)| value)
+    .filter(|value| !value.is_empty());
+    let Some(origin_header_value) = origin_header_value else {
+      return Ok(());
+    };
+
+    let partition_key = cors_cache_partitioning_enabled().then(|| origin_header_value.clone());
+
+    let now = Instant::now();
+    let needs_method_entry = !method_safelisted;
+    {
+      let mut cache = self.cors_preflight_cache.lock().unwrap();
+      cache.prune_expired(now);
+
+      let missing_method_match = needs_method_entry
+        && !cache.method_cache_entry_match(
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentials_mode,
+          method,
+        );
+      let missing_header_match = unsafe_names.iter().any(|name| {
+        !cache.header_name_cache_entry_match(
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentials_mode,
+          name,
+        )
+      });
+
+      if !missing_method_match && !missing_header_match {
+        return Ok(());
+      }
+    }
+
+    let mut preflight_headers: Vec<(String, String)> = Vec::new();
+    preflight_headers.push(("Accept".to_string(), "*/*".to_string()));
+    preflight_headers.push((
+      "Access-Control-Request-Method".to_string(),
+      method.to_string(),
+    ));
+    if !unsafe_names.is_empty() {
+      preflight_headers.push((
+        "Access-Control-Request-Headers".to_string(),
+        unsafe_names.join(","),
+      ));
+    }
+
+    // Preflight requests must not include credentials regardless of the actual request mode.
+    let preflight_response = self.fetch_http_request_with_context(
+      kind,
+      destination,
+      url,
+      "OPTIONS",
+      web_fetch::RequestRedirect::Follow,
+      &preflight_headers,
+      None,
+      Some(client_origin),
+      referrer_url,
+      referrer_policy,
+      FetchCredentialsMode::Omit,
+    )?;
+
+    let status = preflight_response.status.unwrap_or(0);
+    if !(200..300).contains(&status) {
+      return Err(Error::Resource(
+        ResourceError::new(
+          url.to_string(),
+          format!("CORS preflight failed: HTTP status {status}"),
+        )
+        .with_status(status)
+        .with_final_url(response_final_url(&preflight_response, url)),
+      ));
+    }
+
+    if let Err(message) =
+      validate_cors_allow_origin(&preflight_response, url, Some(client_origin), credentials_mode)
+    {
+      return Err(response_resource_error(&preflight_response, url, message));
+    }
+
+    let allow_methods = cors_preflight_extract_methods(&preflight_response)
+      .map_err(|message| response_resource_error(&preflight_response, url, message))?;
+    let allow_headers = cors_preflight_extract_header_names(&preflight_response)
+      .map_err(|message| response_resource_error(&preflight_response, url, message))?;
+
+    cors_preflight_validate_allow_methods(
+      method,
+      method_safelisted,
+      credentials_mode,
+      allow_methods.as_deref(),
+      &preflight_response,
+      url,
+    )?;
+
+    cors_preflight_validate_allow_headers(
+      user_headers,
+      &unsafe_names,
+      credentials_mode,
+      allow_headers.as_deref(),
+      &preflight_response,
+      url,
+    )?;
+
+    let max_age_secs = cors_preflight_parse_max_age_secs(&preflight_response)
+      .unwrap_or(CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS)
+      .min(CORS_PREFLIGHT_MAX_AGE_CAP_SECS);
+
+    let now = Instant::now();
+    let mut cache = self.cors_preflight_cache.lock().unwrap();
+    cache.prune_expired(now);
+    if let Some(methods) = allow_methods.as_deref() {
+      for allowed in methods {
+        cache.update_or_insert_method(
+          now,
+          max_age_secs,
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentials_mode,
+          allowed,
+        );
+      }
+    }
+    if let Some(header_names) = allow_headers.as_deref() {
+      for allowed in header_names {
+        cache.update_or_insert_header_name(
+          now,
+          max_age_secs,
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentials_mode,
+          allowed,
+        );
+      }
+    }
+
+    Ok(())
   }
 
   fn fetch_http_request_with_context_inner(
@@ -8230,6 +8895,7 @@ impl Default for HttpFetcher {
       cookie_jar,
       policy,
       retry_policy: HttpRetryPolicy::default(),
+      cors_preflight_cache: Arc::new(Mutex::new(CorsPreflightCache::default())),
     }
   }
 }
@@ -8304,6 +8970,18 @@ impl ResourceFetcher for HttpFetcher {
         {
           return self.fetch_with_request(req.fetch);
         }
+
+        self.maybe_run_cors_preflight(
+          kind,
+          req.fetch.destination,
+          url,
+          req.method,
+          req.headers,
+          req.fetch.client_origin,
+          req.fetch.referrer_url,
+          req.fetch.referrer_policy,
+          req.fetch.credentials_mode,
+        )?;
 
         let mut res = self.fetch_http_request_with_context(
           kind,
