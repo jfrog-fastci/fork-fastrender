@@ -207,9 +207,13 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
     return;
   };
 
+  // The exported `rt_gc_safepoint` entrypoint is a tiny Rust wrapper on AArch64
+  // that branches to the real assembly implementation (`runtime_native_gc_safepoint_asm`).
+  // Disassemble that implementation symbol directly so we can assert it captures
+  // the caller FP/LR before calling into Rust.
   let output = Command::new(objdump)
     .arg("-d")
-    .arg("--disassemble-symbols=rt_gc_safepoint")
+    .arg("--disassemble-symbols=runtime_native_gc_safepoint_asm")
     .arg(&obj_path)
     .output()
     .unwrap_or_else(|e| panic!("failed to run {objdump}: {e}"));
@@ -222,10 +226,10 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
   let disasm = String::from_utf8_lossy(&output.stdout);
   assert!(
     disasm.contains("mov\tx0, x29") || disasm.contains("mov x0, x29"),
-    "expected `mov x0, x29` in rt_gc_safepoint stub, got:\n{disasm}"
+    "expected `mov x0, x29` in runtime_native_gc_safepoint_asm stub, got:\n{disasm}"
   );
   assert!(
     disasm.contains("mov\tx1, x30") || disasm.contains("mov x1, x30"),
-    "expected `mov x1, x30` in rt_gc_safepoint stub, got:\n{disasm}"
+    "expected `mov x1, x30` in runtime_native_gc_safepoint_asm stub, got:\n{disasm}"
   );
 }
