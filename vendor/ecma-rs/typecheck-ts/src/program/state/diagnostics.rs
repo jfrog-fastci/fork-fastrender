@@ -8,18 +8,38 @@ impl ProgramState {
 
     use derive_visitor::{Drive, Visitor};
     use parse_js::ast::node::Node;
+    use parse_js::ast::expr::Expr as AstExpr;
     use parse_js::ast::type_expr::TypeExpr;
 
     type TypeExprNode = Node<TypeExpr>;
+    type ExprNode = Node<AstExpr>;
 
     #[derive(Visitor)]
-    #[visitor(TypeExprNode(enter))]
+    #[visitor(TypeExprNode(enter), ExprNode(enter))]
     struct Collector<'a> {
       file: FileId,
       diags: &'a mut Vec<Diagnostic>,
     }
 
     impl<'a> Collector<'a> {
+      fn enter_expr_node(&mut self, node: &ExprNode) {
+        match node.stx.as_ref() {
+          AstExpr::TypeAssertion(inner) => {
+            self.diags.push(codes::STRICT_NATIVE_TYPE_ASSERTION.error(
+              "type assertions are not allowed in strict-native mode",
+              loc_to_span(self.file, inner.loc),
+            ));
+          }
+          AstExpr::NonNullAssertion(inner) => {
+            self.diags.push(codes::STRICT_NATIVE_NON_NULL_ASSERTION.error(
+              "non-null assertions are not allowed in strict-native mode",
+              loc_to_span(self.file, inner.loc),
+            ));
+          }
+          _ => {}
+        }
+      }
+
       fn enter_type_expr_node(&mut self, node: &TypeExprNode) {
         if !matches!(node.stx.as_ref(), TypeExpr::Any(_)) {
           return;

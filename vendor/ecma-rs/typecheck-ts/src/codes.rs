@@ -104,6 +104,32 @@ pub const STRICT_NATIVE_ANY: Code = Code::new(
   &[],
 );
 
+/// TN0002: Type assertions are not allowed in strict-native mode.
+///
+/// - Primary span: the type assertion expression (`x as T`, `<T>x`, or `x as const`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_TYPE_ASSERTION: Code = Code::new(
+  "TN0002",
+  "type assertions are not allowed in strict-native mode",
+  "type assertion expression",
+  &["primary: type assertion"],
+  &[],
+);
+
+/// TN0003: Non-null assertions are not allowed in strict-native mode.
+///
+/// - Primary span: the non-null assertion expression (`x!`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_NON_NULL_ASSERTION: Code = Code::new(
+  "TN0003",
+  "non-null assertions are not allowed in strict-native mode",
+  "non-null assertion expression",
+  &["primary: non-null assertion"],
+  &[],
+);
+
 /// TC0001: No libraries were loaded.
 ///
 /// - Primary span: zero-length span at the start of the checked file if known,

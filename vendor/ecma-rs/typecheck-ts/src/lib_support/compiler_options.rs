@@ -104,6 +104,7 @@ pub struct CompilerOptions {
   /// This is a repo-specific option intended for enforcing a stricter subset of
   /// TypeScript suitable for native tooling. When enabled, additional
   /// diagnostics with the `TN####` prefix may be produced.
+  #[cfg_attr(feature = "serde", serde(default))]
   pub strict_native: bool,
   /// Whether class fields follow ECMAScript `define` semantics (`Object.defineProperty`)
   /// or legacy assignment semantics.
