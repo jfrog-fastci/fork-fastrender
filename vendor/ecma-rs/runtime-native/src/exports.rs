@@ -28,6 +28,7 @@ use crate::shape_table;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
+use crate::rt_alloc as rt_alloc_mod;
 use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
