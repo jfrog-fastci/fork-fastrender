@@ -233,5 +233,9 @@ jobs:
             export RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes"
           fi
           cargo test -p runtime-native --test reactor_conformance --locked
+          # Run the kqueue-specific regression suite on macOS to ensure backend coverage beyond the
+          # portable conformance tests.
+          cargo test -p runtime-native --test reactor_kqueue --locked
           # Exercise the force-pipe wake fallback path on platforms that default to kqueue/EVFILT_USER.
           cargo test -p runtime-native --test reactor_conformance --locked --features force_pipe_wake
+          cargo test -p runtime-native --test reactor_kqueue_pipe_wake --locked --features force_pipe_wake
