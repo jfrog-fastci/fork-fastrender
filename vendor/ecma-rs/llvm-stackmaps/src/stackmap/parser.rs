@@ -41,10 +41,6 @@ impl<'a> Cursor<'a> {
         self.pos
     }
 
-    fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
-    }
-
     fn read_exact(&mut self, n: usize) -> Result<&'a [u8], ParseError> {
         let start = self.pos;
         let end = start.checked_add(n).ok_or_else(|| ParseError::new(start, "offset overflow"))?;
@@ -129,170 +125,74 @@ pub struct StackMaps {
 
 impl StackMaps {
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let mut c = Cursor::new(bytes);
+        let mut functions: Vec<StackMapFunction> = Vec::new();
+        let mut constants: Vec<u64> = Vec::new();
+        let mut records: Vec<StackMapRecord> = Vec::new();
+        let mut callsites: Vec<Callsite> = Vec::new();
 
-        let version = c.read_u8()?;
-        if version != 3 {
-            return Err(ParseError::new(
-                0,
-                format!("unsupported stackmap version {version} (expected 3)"),
-            ));
+        // `.llvm_stackmaps` in the final linked binary may contain one or more
+        // StackMap v3 blobs concatenated by the linker (one per object file),
+        // with zero-filled padding between blobs for section alignment.
+        //
+        // See `native-js/docs/stackmaps.md` in this repository for details.
+        let mut off = 0usize;
+        let mut seen_any_blob = false;
+        while off < bytes.len() {
+            // Skip alignment/trailing padding.
+            while off < bytes.len() && bytes[off] == 0 {
+                off += 1;
+            }
+            if off >= bytes.len() {
+                break;
+            }
+
+            let const_base = u32::try_from(constants.len())
+                .map_err(|_| ParseError::new(off, "constants table too large"))?;
+            let record_base = records.len();
+
+            let blob = parse_blob(&bytes[off..], const_base, record_base).map_err(|mut e| {
+                // Adjust blob-local errors to section offsets for clearer diagnostics.
+                e.offset = e.offset.saturating_add(off);
+                e
+            })?;
+            let (
+                blob_header,
+                blob_functions,
+                blob_constants,
+                mut blob_records,
+                mut blob_callsites,
+                blob_len,
+            ) = blob;
+            let _ = blob_header;
+
+            if blob_len == 0 {
+                return Err(ParseError::new(off, "parsed stackmap blob length is 0"));
+            }
+
+            functions.extend(blob_functions);
+            constants.extend(blob_constants);
+            records.append(&mut blob_records);
+            callsites.append(&mut blob_callsites);
+
+            off = off
+                .checked_add(blob_len)
+                .ok_or_else(|| ParseError::new(off, "offset overflow while advancing to next blob"))?;
+            seen_any_blob = true;
         }
-        let _reserved0 = c.read_u8()?;
-        let _reserved1 = c.read_u16()?;
 
-        let num_functions = c.read_u32()?;
-        let num_constants = c.read_u32()?;
-        let num_records = c.read_u32()?;
+        if !seen_any_blob {
+            return Err(ParseError::new(0, "empty .llvm_stackmaps section"));
+        }
 
         let header = StackMapHeader {
-            version,
-            num_functions,
-            num_constants,
-            num_records,
+            version: 3,
+            num_functions: u32::try_from(functions.len())
+                .map_err(|_| ParseError::new(0, "num_functions exceeds u32"))?,
+            num_constants: u32::try_from(constants.len())
+                .map_err(|_| ParseError::new(0, "num_constants exceeds u32"))?,
+            num_records: u32::try_from(records.len())
+                .map_err(|_| ParseError::new(0, "num_records exceeds u32"))?,
         };
-
-        let num_functions_usize = usize::try_from(num_functions).map_err(|_| {
-            ParseError::new(c.pos(), "num_functions does not fit in usize")
-        })?;
-        let num_constants_usize = usize::try_from(num_constants).map_err(|_| {
-            ParseError::new(c.pos(), "num_constants does not fit in usize")
-        })?;
-        let num_records_usize =
-            usize::try_from(num_records).map_err(|_| ParseError::new(c.pos(), "num_records does not fit in usize"))?;
-
-        let mut functions = Vec::with_capacity(num_functions_usize);
-        for _ in 0..num_functions_usize {
-            functions.push(StackMapFunction {
-                address: c.read_u64()?,
-                stack_size: c.read_u64()?,
-                record_count: c.read_u64()?,
-            });
-        }
-
-        let mut constants = Vec::with_capacity(num_constants_usize);
-        for _ in 0..num_constants_usize {
-            constants.push(c.read_u64()?);
-        }
-
-        let mut records = Vec::with_capacity(num_records_usize);
-        let mut callsites = Vec::with_capacity(num_records_usize);
-
-        let mut seen_records = 0usize;
-        for func in &functions {
-            let record_count = usize::try_from(func.record_count).map_err(|_| {
-                ParseError::new(c.pos(), "record_count does not fit in usize")
-            })?;
-
-            for _ in 0..record_count {
-                let record_start = c.pos();
-
-                let id = c.read_u64()?;
-                let instruction_offset = c.read_u32()?;
-                let _reserved = c.read_u16()?;
-                let num_locations = c.read_u16()? as usize;
-
-                let mut locations = Vec::with_capacity(num_locations);
-                for _ in 0..num_locations {
-                    let kind = c.read_u8()?;
-                    let _reserved0 = c.read_u8()?;
-                    let size = c.read_u16()?;
-                    let dwarf_reg = c.read_u16()?;
-                    let _reserved1 = c.read_u16()?;
-                    let offset_or_val = c.read_i32()?;
-
-                    // StackMap v3 LocationKind values (LLVM 18):
-                    //   1 = Register
-                    //   2 = Direct
-                    //   3 = Indirect
-                    //   4 = Constant
-                    //   5 = ConstantIndex
-                    let loc = match kind {
-                        1 => Location::Register { size, dwarf_reg },
-                        2 => Location::Direct {
-                            size,
-                            dwarf_reg,
-                            offset: offset_or_val,
-                        },
-                        3 => Location::Indirect {
-                            size,
-                            dwarf_reg,
-                            offset: offset_or_val,
-                        },
-                        4 => Location::Constant {
-                            size,
-                            value: i64::from(offset_or_val),
-                        },
-                        5 => {
-                            let idx = u32::try_from(offset_or_val).map_err(|_| {
-                                ParseError::new(
-                                    c.pos(),
-                                    format!("ConstantIndex is negative: {offset_or_val}"),
-                                )
-                            })?;
-                            let value = *constants.get(idx as usize).ok_or_else(|| {
-                                ParseError::new(
-                                    c.pos(),
-                                    format!(
-                                        "ConstantIndex {idx} out of bounds (constants len={})",
-                                        constants.len()
-                                    ),
-                                )
-                            })?;
-                            Location::ConstantIndex { size, index: idx, value }
-                        }
-                        other => {
-                            return Err(ParseError::new(
-                                c.pos(),
-                                format!("unknown location kind {other}"),
-                            ))
-                        }
-                    };
-                    locations.push(loc);
-                }
-
-                let num_live_outs = c.read_u16()? as usize;
-                let _reserved = c.read_u16()?;
-                let mut live_outs = Vec::with_capacity(num_live_outs);
-                for _ in 0..num_live_outs {
-                    let dwarf_reg = c.read_u16()?;
-                    let _reserved = c.read_u8()?;
-                    let size = c.read_u8()?;
-                    live_outs.push(LiveOut { dwarf_reg, size });
-                }
-
-                // Records are padded to 8-byte alignment.
-                c.align_to(8)?;
-
-                let callsite_pc = func
-                    .address
-                    .checked_add(u64::from(instruction_offset))
-                    .ok_or_else(|| ParseError::new(record_start, "callsite_pc overflow"))?;
-
-                let record_index = records.len();
-                records.push(StackMapRecord {
-                    id,
-                    instruction_offset,
-                    callsite_pc,
-                    locations,
-                    live_outs,
-                });
-                callsites.push(Callsite { pc: callsite_pc, record_index });
-
-                seen_records = seen_records
-                    .checked_add(1)
-                    .ok_or_else(|| ParseError::new(record_start, "record counter overflow"))?;
-            }
-        }
-
-        if seen_records != num_records_usize {
-            return Err(ParseError::new(
-                c.pos(),
-                format!(
-                    "record count mismatch: header says {num_records_usize}, parsed {seen_records}"
-                ),
-            ));
-        }
 
         // If multiple functions have overlapping address ranges (e.g. in an object file with
         // relocations stripped), the computed callsite PC may collide. That's ambiguous at runtime,
@@ -304,13 +204,6 @@ impl StackMaps {
                     0,
                     format!("duplicate callsite pc 0x{:x}", w[0].pc),
                 ));
-            }
-        }
-
-        if c.remaining() != 0 {
-            // There can be trailing padding in practice; tolerate it if it's all zeros.
-            if c.bytes[c.pos()..].iter().any(|&b| b != 0) {
-                return Err(ParseError::new(c.pos(), "trailing non-zero bytes"));
             }
         }
 
@@ -340,6 +233,193 @@ impl StackMaps {
         let rec = self.lookup(pc)?;
         StatepointRecordView::decode(rec)
     }
+}
+
+fn parse_blob(
+    bytes: &[u8],
+    const_base: u32,
+    record_base: usize,
+) -> Result<
+    (
+        StackMapHeader,
+        Vec<StackMapFunction>,
+        Vec<u64>,
+        Vec<StackMapRecord>,
+        Vec<Callsite>,
+        usize,
+    ),
+    ParseError,
+> {
+    let mut c = Cursor::new(bytes);
+
+    let version = c.read_u8()?;
+    if version != 3 {
+        return Err(ParseError::new(
+            0,
+            format!("unsupported stackmap version {version} (expected 3)"),
+        ));
+    }
+    let _reserved0 = c.read_u8()?;
+    let _reserved1 = c.read_u16()?;
+
+    let num_functions = c.read_u32()?;
+    let num_constants = c.read_u32()?;
+    let num_records = c.read_u32()?;
+
+    let header = StackMapHeader {
+        version,
+        num_functions,
+        num_constants,
+        num_records,
+    };
+
+    let num_functions_usize =
+        usize::try_from(num_functions).map_err(|_| ParseError::new(c.pos(), "num_functions does not fit in usize"))?;
+    let num_constants_usize =
+        usize::try_from(num_constants).map_err(|_| ParseError::new(c.pos(), "num_constants does not fit in usize"))?;
+    let num_records_usize =
+        usize::try_from(num_records).map_err(|_| ParseError::new(c.pos(), "num_records does not fit in usize"))?;
+
+    let mut functions = Vec::with_capacity(num_functions_usize);
+    for _ in 0..num_functions_usize {
+        functions.push(StackMapFunction {
+            address: c.read_u64()?,
+            stack_size: c.read_u64()?,
+            record_count: c.read_u64()?,
+        });
+    }
+
+    let mut constants = Vec::with_capacity(num_constants_usize);
+    for _ in 0..num_constants_usize {
+        constants.push(c.read_u64()?);
+    }
+
+    let mut records = Vec::with_capacity(num_records_usize);
+    let mut callsites = Vec::with_capacity(num_records_usize);
+
+    let mut seen_records = 0usize;
+    for func in &functions {
+        let record_count = usize::try_from(func.record_count)
+            .map_err(|_| ParseError::new(c.pos(), "record_count does not fit in usize"))?;
+
+        for _ in 0..record_count {
+            let record_start = c.pos();
+
+            let id = c.read_u64()?;
+            let instruction_offset = c.read_u32()?;
+            let _reserved = c.read_u16()?;
+            let num_locations = c.read_u16()? as usize;
+
+            let mut locations = Vec::with_capacity(num_locations);
+            for _ in 0..num_locations {
+                let kind = c.read_u8()?;
+                let _reserved0 = c.read_u8()?;
+                let size = c.read_u16()?;
+                let dwarf_reg = c.read_u16()?;
+                let _reserved1 = c.read_u16()?;
+                let offset_or_val = c.read_i32()?;
+
+                // StackMap v3 LocationKind values (LLVM 18):
+                //   1 = Register
+                //   2 = Direct
+                //   3 = Indirect
+                //   4 = Constant
+                //   5 = ConstantIndex
+                let loc = match kind {
+                    1 => Location::Register { size, dwarf_reg },
+                    2 => Location::Direct {
+                        size,
+                        dwarf_reg,
+                        offset: offset_or_val,
+                    },
+                    3 => Location::Indirect {
+                        size,
+                        dwarf_reg,
+                        offset: offset_or_val,
+                    },
+                    4 => Location::Constant {
+                        size,
+                        value: i64::from(offset_or_val),
+                    },
+                    5 => {
+                        let idx_local = u32::try_from(offset_or_val).map_err(|_| {
+                            ParseError::new(c.pos(), format!("ConstantIndex is negative: {offset_or_val}"))
+                        })?;
+                        let value = *constants.get(idx_local as usize).ok_or_else(|| {
+                            ParseError::new(
+                                c.pos(),
+                                format!(
+                                    "ConstantIndex {idx_local} out of bounds (constants len={})",
+                                    constants.len()
+                                ),
+                            )
+                        })?;
+                        let idx_global = const_base.checked_add(idx_local).ok_or_else(|| {
+                            ParseError::new(c.pos(), "ConstantIndex global index overflow")
+                        })?;
+                        Location::ConstantIndex {
+                            size,
+                            index: idx_global,
+                            value,
+                        }
+                    }
+                    other => {
+                        return Err(ParseError::new(
+                            c.pos(),
+                            format!("unknown location kind {other}"),
+                        ))
+                    }
+                };
+                locations.push(loc);
+            }
+
+            // Live-out header is aligned to an 8-byte boundary after the locations array.
+            c.align_to(8)?;
+            let _padding = c.read_u16()?;
+            let num_live_outs = c.read_u16()? as usize;
+
+            let mut live_outs = Vec::with_capacity(num_live_outs);
+            for _ in 0..num_live_outs {
+                let dwarf_reg = c.read_u16()?;
+                let _reserved = c.read_u8()?;
+                let size = c.read_u8()?;
+                live_outs.push(LiveOut { dwarf_reg, size });
+            }
+
+            // Records are padded to 8-byte alignment.
+            c.align_to(8)?;
+
+            let callsite_pc = func
+                .address
+                .checked_add(u64::from(instruction_offset))
+                .ok_or_else(|| ParseError::new(record_start, "callsite_pc overflow"))?;
+
+            let record_index = record_base
+                .checked_add(records.len())
+                .ok_or_else(|| ParseError::new(record_start, "record index overflow"))?;
+            records.push(StackMapRecord {
+                id,
+                instruction_offset,
+                callsite_pc,
+                locations,
+                live_outs,
+            });
+            callsites.push(Callsite { pc: callsite_pc, record_index });
+
+            seen_records = seen_records
+                .checked_add(1)
+                .ok_or_else(|| ParseError::new(record_start, "record counter overflow"))?;
+        }
+    }
+
+    if seen_records != num_records_usize {
+        return Err(ParseError::new(
+            c.pos(),
+            format!("record count mismatch: header says {num_records_usize}, parsed {seen_records}"),
+        ));
+    }
+
+    Ok((header, functions, constants, records, callsites, c.pos()))
 }
 
 #[cfg(test)]
@@ -387,11 +467,16 @@ mod tests {
         bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved1
         bytes.extend_from_slice(&(0i32).to_le_bytes()); // index 0
 
-        // Live-outs
-        bytes.extend_from_slice(&(0u16).to_le_bytes()); // num liveouts
-        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved
+        // StackMap v3 aligns the live-out header to 8 bytes after the locations array.
+        // Record size so far: 16 + 12 = 28; pad to 32.
+        bytes.extend_from_slice(&[0u8; 4]);
 
-        // Align record to 8 bytes (record size so far: 16 + 12 + 4 = 32, already aligned)
+        // Live-out header: u16 padding, u16 num_liveouts.
+        bytes.extend_from_slice(&(0xBEEF_u16).to_le_bytes()); // padding (ignored)
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // num liveouts
+
+        // Record end is 8-byte aligned; current record size after header is 36, so pad to 40.
+        bytes.extend_from_slice(&[0u8; 4]);
 
         let maps = StackMaps::parse(&bytes).unwrap();
         assert_eq!(maps.records.len(), 1);
@@ -407,5 +492,123 @@ mod tests {
             }
             other => panic!("unexpected location: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_live_outs_and_record_padding() {
+        // Build a blob with 2 records. Record #0 requires padding before the live-out header (due to
+        // an odd number of 12-byte locations) and also padding after the live-out array (even count
+        // of 4-byte live-out entries). If we mis-handle alignment, record #1 will not parse.
+        let mut bytes = Vec::new();
+
+        // Header
+        bytes.extend_from_slice(&[3, 0, 0, 0]);
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+        bytes.extend_from_slice(&(2u32).to_le_bytes()); // num records
+
+        // Function entry
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // addr
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+        bytes.extend_from_slice(&(2u64).to_le_bytes()); // record count
+
+        // Record #0: 1 location, 2 live-outs.
+        bytes.extend_from_slice(&(1u64).to_le_bytes()); // id
+        bytes.extend_from_slice(&(10u32).to_le_bytes()); // instruction offset
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved
+        bytes.extend_from_slice(&(1u16).to_le_bytes()); // num locations
+
+        // Location: Register
+        bytes.push(1); // kind
+        bytes.push(0); // reserved0
+        bytes.extend_from_slice(&(8u16).to_le_bytes()); // size
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reg
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved1
+        bytes.extend_from_slice(&(0i32).to_le_bytes()); // offset/val
+
+        // Pad to 8 before live-out header: record header (16) + loc (12) = 28 => +4.
+        bytes.extend_from_slice(&[0xAB; 4]);
+
+        // Live-out header: padding + num_liveouts.
+        bytes.extend_from_slice(&(0x1234u16).to_le_bytes());
+        bytes.extend_from_slice(&(2u16).to_le_bytes()); // two live-outs
+
+        // LiveOut #0
+        bytes.extend_from_slice(&(7u16).to_le_bytes());
+        bytes.push(0);
+        bytes.push(8);
+        // LiveOut #1
+        bytes.extend_from_slice(&(6u16).to_le_bytes());
+        bytes.push(0);
+        bytes.push(8);
+
+        // Pad record end to 8: liveout header+entries = 12, record total = 28+4+12=44 => +4.
+        bytes.extend_from_slice(&[0xCD; 4]);
+
+        // Record #1: 0 locations, 0 live-outs.
+        bytes.extend_from_slice(&(2u64).to_le_bytes()); // id
+        bytes.extend_from_slice(&(20u32).to_le_bytes()); // instruction offset
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+        // Already aligned; liveout header:
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // padding
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // num liveouts
+        // Pad record end to 8: record header 16 + liveout header 4 = 20 => +4.
+        bytes.extend_from_slice(&[0u8; 4]);
+
+        let maps = StackMaps::parse(&bytes).unwrap();
+        assert_eq!(maps.records.len(), 2);
+        assert_eq!(maps.callsites.len(), 2);
+
+        assert_eq!(maps.lookup(10).unwrap().id, 1);
+        assert_eq!(maps.lookup(20).unwrap().id, 2);
+
+        assert_eq!(maps.records[0].live_outs.len(), 2);
+        assert_eq!(maps.records[0].live_outs[0].dwarf_reg, 7);
+        assert_eq!(maps.records[0].live_outs[0].size, 8);
+    }
+
+    #[test]
+    fn parses_concatenated_stackmap_blobs() {
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+            // Live-out header (already aligned): padding + num_liveouts.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            // Align record end: 16 + 4 = 20 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob_a = build_blob(0x1000, 1, 0x10);
+        let blob_b = build_blob(0x2000, 2, 0x20);
+
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob_a);
+        section.extend_from_slice(&[0u8; 16]); // padding between blobs
+        section.extend_from_slice(&blob_b);
+        section.extend_from_slice(&[0u8; 8]); // trailing padding
+
+        let maps = StackMaps::parse(&section).unwrap();
+        assert_eq!(maps.records.len(), 2);
+        assert_eq!(maps.callsites.len(), 2);
+        assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
+        assert_eq!(maps.lookup(0x2020).unwrap().id, 2);
     }
 }
