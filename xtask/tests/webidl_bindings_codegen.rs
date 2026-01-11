@@ -147,6 +147,45 @@ fn vmjs_overload_dispatch_does_not_emit_usize_len_ge_zero_checks() {
 }
 
 #[test]
+fn legacy_overload_dispatch_generates_single_wrapper_for_optional_args() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  // Model `Window.alert(optional DOMString message = "")` which previously regressed in the legacy
+  // bindings (duplicate wrapper functions with the same Rust symbol name).
+  let idl = r#"
+    [Exposed=Window]
+    interface Window {
+      undefined alert(optional DOMString message = "");
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Window".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Legacy,
+  )
+  .unwrap();
+
+  assert_eq!(
+    out.matches("fn window_alert").count(),
+    1,
+    "expected exactly one legacy wrapper fn for Window.alert"
+  );
+}
+
+#[test]
 fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
