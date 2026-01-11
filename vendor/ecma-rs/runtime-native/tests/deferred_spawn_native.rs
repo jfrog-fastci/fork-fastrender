@@ -20,7 +20,7 @@ impl TestPromise {
     Self {
       header: PromiseHeader {
         state: AtomicU8::new(PromiseHeader::PENDING),
-        reactions: AtomicUsize::new(0),
+        waiters: AtomicUsize::new(0),
         flags: AtomicU8::new(0),
       },
       _padding: AtomicUsize::new(0),

@@ -78,12 +78,12 @@ pub(crate) unsafe fn promise_init(p: AbiPromiseRef) {
   }
   // Initialize to a clean pending state.
   (*header).state.store(PromiseHeader::PENDING, Ordering::Relaxed);
-  (*header).reactions.store(0, Ordering::Relaxed);
+  (*header).waiters.store(0, Ordering::Relaxed);
   (*header).flags.store(0, Ordering::Relaxed);
 }
 
 fn push_reaction(promise: *mut PromiseHeader, node: *mut PromiseReactionNode) {
-  let reactions = unsafe { &(*promise).reactions };
+  let reactions = unsafe { &(*promise).waiters };
   loop {
     let head = reactions.load(Ordering::Acquire) as *mut PromiseReactionNode;
     unsafe {
@@ -99,7 +99,7 @@ fn push_reaction(promise: *mut PromiseHeader, node: *mut PromiseReactionNode) {
 }
 
 fn drain_reactions(promise: *mut PromiseHeader) {
-  let reactions = unsafe { &(*promise).reactions };
+  let reactions = unsafe { &(*promise).waiters };
   let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
   if head.is_null() {
     return;

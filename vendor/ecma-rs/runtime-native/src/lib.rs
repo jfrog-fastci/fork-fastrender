@@ -116,6 +116,10 @@ mod trap;
 
 // Convenience re-exports of the stable runtime ABI types (single source of truth
 // lives in `runtime-native-abi`).
+//
+// Note: the native async/await ABI (`async_abi`) uses the names `PromiseRef` and
+// `Coroutine` for its concrete header types, so the opaque handle types from
+// `runtime-native-abi` are re-exported under distinct names to avoid collisions.
 pub use runtime_native_abi::{
   Coroutine as AbiCoroutine,
   InternedId,

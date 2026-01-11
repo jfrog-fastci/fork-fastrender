@@ -160,7 +160,7 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
   // Allocate a standalone awaited promise header.
   let awaited = Box::new(PromiseHeader {
     state: core::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
-    reactions: core::sync::atomic::AtomicUsize::new(0),
+    waiters: core::sync::atomic::AtomicUsize::new(0),
     flags: core::sync::atomic::AtomicU8::new(0),
   });
   let awaited_hdr: PromiseRef = Box::into_raw(awaited);

@@ -40,18 +40,16 @@ pub struct PromiseHeader {
   /// [`PromiseHeader::REJECTED`].
   pub state: AtomicU8,
 
-  /// Promise reaction list head.
-  ///
-  /// This is an intrusive singly-linked list of [`crate::promise_reactions::PromiseReactionNode`]
-  /// objects, stored as a raw pointer cast to `usize`.
-  ///
-  /// The list is pushed in LIFO order and drained by the runtime in FIFO order by reversing the
-  /// list before scheduling reaction jobs.
+  /// Waiter list head.
   ///
   /// Stored values:
-  /// - `0`: no reactions yet.
-  /// - `ptr`: a `*mut PromiseReactionNode` cast to `usize` (head of list).
-  pub reactions: AtomicUsize,
+  /// - `0`: no waiters registered yet.
+  /// - [`PromiseHeader::WAITERS_CLOSED`]: promise is settled and no longer accepts waiters.
+  /// - otherwise: a raw pointer to the head waiter node, cast to `usize`.
+  ///
+  /// Waiters are stored as an intrusive singly-linked list. For coroutine waiters, the waiter node
+  /// is the coroutine frame itself, and [`Coroutine::next_waiter`] is used as the link field.
+  pub waiters: AtomicUsize,
 
   /// Reserved for runtime flags (e.g. unhandled rejection tracking).
   pub flags: AtomicU8,
@@ -61,6 +59,13 @@ impl PromiseHeader {
   pub const PENDING: PromiseState = 0;
   pub const FULFILLED: PromiseState = 1;
   pub const REJECTED: PromiseState = 2;
+
+  /// Sentinel value stored in [`PromiseHeader::waiters`] once the promise has settled and will no
+  /// longer accept waiter registrations.
+  ///
+  /// This value must never alias a valid pointer. `1` is chosen because coroutine/waiter nodes are
+  /// at least pointer-aligned (and therefore cannot have an odd address).
+  pub const WAITERS_CLOSED: usize = 1;
 
   #[inline]
   pub fn load_state(&self) -> PromiseState {
@@ -184,7 +189,8 @@ pub struct Coroutine {
   /// Intrusive list pointer used by the runtime while the coroutine is suspended (e.g. awaiting a
   /// promise).
   ///
-  /// Generated code should initialize this to null.
+  /// This is used when the coroutine is registered as a waiter on a [`PromiseHeader`] via
+  /// [`PromiseHeader::waiters`]. Generated code should initialize this to null.
   pub next_waiter: CoroutineRef,
 
   /// Reserved for runtime flags (e.g. scheduled/running bits).

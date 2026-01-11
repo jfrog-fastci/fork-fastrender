@@ -42,7 +42,7 @@ impl RtPromise {
     Self {
       header: PromiseHeader {
         state: core::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
-        reactions: core::sync::atomic::AtomicUsize::new(0),
+        waiters: core::sync::atomic::AtomicUsize::new(0),
         flags: core::sync::atomic::AtomicU8::new(0),
       },
       value: AtomicUsize::new(0),
@@ -181,7 +181,7 @@ fn alloc_callback_reaction(
 }
 
 fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
-  let reactions = unsafe { &(*ptr).header.reactions };
+  let reactions = unsafe { &(*ptr).header.waiters };
   loop {
     let head = reactions.load(Ordering::Acquire) as *mut PromiseReactionNode;
     unsafe {
@@ -197,7 +197,7 @@ fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
 }
 
 fn drain_reactions(ptr: *mut RtPromise) {
-  let reactions = unsafe { &(*ptr).header.reactions };
+  let reactions = unsafe { &(*ptr).header.waiters };
   let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
   if head.is_null() {
     return;
@@ -485,7 +485,7 @@ pub(crate) fn debug_waiters_is_empty(p: PromiseRef) -> bool {
   if ptr.is_null() {
     return true;
   }
-  unsafe { &(*ptr).header.reactions }.load(Ordering::Acquire) == 0
+  unsafe { &(*ptr).header.waiters }.load(Ordering::Acquire) == 0
 }
 
 // -----------------------------------------------------------------------------

@@ -47,13 +47,13 @@ fn alloc_indexed_reaction(counters: *const AtomicUsize, idx: usize) -> *mut Prom
 
 unsafe fn push_reaction(p: PromiseHeaderRef, node: *mut PromiseReactionNode) {
   let hdr = unsafe { &*p };
-  let reactions = &hdr.reactions;
+  let waiters = &hdr.waiters;
   loop {
-    let head = reactions.load(Ordering::Acquire) as *mut PromiseReactionNode;
+    let head = waiters.load(Ordering::Acquire) as *mut PromiseReactionNode;
     unsafe {
       (*node).next = head;
     }
-    if reactions
+    if waiters
       .compare_exchange(head as usize, node as usize, Ordering::AcqRel, Ordering::Acquire)
       .is_ok()
     {
@@ -153,7 +153,7 @@ fn promise_settle_is_first_wins_and_wakes_reactions_once() {
   for _ in 0..ITERS {
     let mut promise = Box::new(PromiseHeader {
       state: AtomicU8::new(0),
-      reactions: AtomicUsize::new(0),
+      waiters: AtomicUsize::new(0),
       flags: AtomicU8::new(0),
     });
     let p_hdr: PromiseHeaderRef = &mut *promise;
@@ -202,7 +202,7 @@ fn promise_settle_is_first_wins_and_wakes_reactions_once() {
     // Promise must be settled and reactions drained.
     let st = promise.state.load(Ordering::Acquire);
     assert!(st == PromiseHeader::FULFILLED || st == PromiseHeader::REJECTED);
-    assert_eq!(promise.reactions.load(Ordering::Acquire), 0);
+    assert_eq!(promise.waiters.load(Ordering::Acquire), 0);
 
     // Losing/duplicate settle calls must be no-ops.
     assert!(!unsafe { runtime_native::rt_promise_try_fulfill(p) });
