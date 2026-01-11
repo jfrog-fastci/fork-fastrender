@@ -16,7 +16,8 @@ extern void rt_gc_collect(void);
 extern void rt_gc_safepoint(void);
 
 int main(void) {
-  // `rt_gc_safepoint` is intended to be called from threads registered with the runtime.
+  // `rt_gc_safepoint` is intended to be called from threads registered with the runtime (and
+  // asserts in debug builds if the current thread is not registered).
   rt_thread_init(3);
   rt_gc_safepoint();
   rt_gc_collect();

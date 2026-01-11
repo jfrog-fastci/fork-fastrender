@@ -63,6 +63,19 @@ pub struct GcLocationPair {
   pub derived: Location,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StatepointLocations<'a> {
+  pub prefix: &'a [Location],
+  pub pairs: &'a [GcLocationPair],
+}
+
+const _: () = {
+  // `GcLocationPair` is just 2 consecutive `Location` values. Stackmap records store
+  // `(base, derived)` pairs as adjacent locations, so we can safely view the tail
+  // slice as `&[GcLocationPair]`.
+  assert!(std::mem::align_of::<GcLocationPair>() == std::mem::align_of::<Location>());
+  assert!(std::mem::size_of::<GcLocationPair>() == 2 * std::mem::size_of::<Location>());
+};
 /// A view of a [`StackMapRecord`] interpreted as an LLVM `gc.statepoint`
 /// safepoint.
 pub struct StatepointRecord<'a> {
@@ -108,6 +121,15 @@ impl<'a> StatepointRecord<'a> {
   #[inline]
   pub fn gc_pair_count(&self) -> usize {
     self.gc_pairs().len()
+  }
+
+  /// Return the statepoint locations split into the 3-constant header prefix and the `(base,
+  /// derived)` GC-live pairs.
+  pub fn statepoint_locations(&self) -> StatepointLocations<'a> {
+    StatepointLocations {
+      prefix: &self.record.locations[..LLVM18_STATEPOINT_HEADER_CONSTANTS],
+      pairs: self.gc_pairs(),
+    }
   }
 
   pub fn gc_pairs(&self) -> &'a [GcLocationPair] {

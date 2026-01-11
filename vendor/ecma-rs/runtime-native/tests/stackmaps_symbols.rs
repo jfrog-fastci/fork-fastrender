@@ -43,6 +43,7 @@ fn stackmaps_discovered_via_exported_symbols() {
   //
   // Assert that our tiny fixture is present somewhere in that byte range (and therefore that the
   // exported start/end symbols really delimit the `.llvm_stackmaps` output section).
+  assert!(!bytes.is_empty(), "expected non-empty stackmaps symbol range");
   assert!(
     bytes.windows(FIXTURE.len()).any(|w| w == FIXTURE),
     "expected .llvm_stackmaps bytes to contain the test fixture (len={})",
