@@ -30,7 +30,9 @@ pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 pub use encoding::analyze_string_encodings_typed;
 pub use eval::{eval_api_call, CallSemantics, CallSiteInfo as EvalCallSiteInfo};
 pub use kb::load_default_api_database;
-pub use db::{CallSiteInfo, EffectDb};
+pub use db::{BodyTables, CallSiteInfo, EffectDb};
+#[cfg(feature = "typed")]
+pub use db::analyze_body_tables_typed;
 pub use patterns::{
   recognize_patterns, ExprPatternTables, RecognizePatternsResult, RecognizedPatternId,
   StmtPatternTables,
@@ -46,7 +48,10 @@ pub use recognize::recognize_patterns_typed;
 
 pub use resolve::{
   resolve_api_call_best_effort_untyped, resolve_api_call_untyped, resolve_call, ResolvedCall,
+  ResolvedMember,
 };
+#[cfg(feature = "typed")]
+pub use resolve::resolve_member;
 pub use types::TypeProvider;
 
 pub use knowledge_base::{Api, KnowledgeBase};

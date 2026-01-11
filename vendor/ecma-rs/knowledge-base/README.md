@@ -99,6 +99,17 @@ Supported formats:
 
 The loader selects a parser based on the file extension.
 
+## Property reads (`kind: property_get`)
+
+Most entries describe callable APIs (`kind: function`, `kind: constructor`, etc).
+
+For getter-like property reads such as `obj.prop`, use:
+
+- `kind: property_get`
+
+This lets analysis passes (e.g. `effect-js`) attach semantics to `ExprKind::Member` nodes, not just
+call expressions.
+
 ### TOML module example (schema v1)
 
 ```toml

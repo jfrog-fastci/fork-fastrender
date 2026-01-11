@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
 
+use crate::ApiId;
+
 #[derive(Debug, Clone)]
 pub struct EffectDb {
   kb: KnowledgeBase,
@@ -18,6 +20,14 @@ pub struct CallSiteInfo {
   pub callback_uses_array: Option<bool>,
   pub callback_is_associative: Option<bool>,
 }
+
+/// Per-body side tables produced by `effect-js` analyses.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BodyTables {
+  /// `ExprKind::Member` resolution table, indexed by `ExprId`.
+  pub resolved_member: Vec<Option<ApiId>>,
+}
+
 impl EffectDb {
   pub fn load_default() -> Result<Self> {
     // `knowledge-base` errors are not `Send + Sync` (they may wrap dyn errors),
@@ -33,4 +43,34 @@ impl EffectDb {
   pub fn kb(&self) -> &KnowledgeBase {
     &self.kb
   }
+}
+
+/// Compute per-body side tables using type information.
+#[cfg(feature = "typed")]
+pub fn analyze_body_tables_typed(
+  lowered: &hir_js::LowerResult,
+  types: &impl crate::types::TypeProvider,
+) -> std::collections::HashMap<hir_js::BodyId, BodyTables> {
+  use hir_js::{ExprId, ExprKind};
+  use std::collections::HashMap;
+
+  let mut out = HashMap::new();
+  for (&body_id, idx) in lowered.body_index.iter() {
+    let body = &lowered.bodies[*idx];
+    let mut tables = BodyTables {
+      resolved_member: vec![None; body.exprs.len()],
+    };
+
+    for (expr_idx, expr) in body.exprs.iter().enumerate() {
+      if !matches!(expr.kind, ExprKind::Member(_)) {
+        continue;
+      }
+      if let Some(res) = crate::resolve::resolve_member(lowered, body_id, ExprId(expr_idx as u32), types) {
+        tables.resolved_member[expr_idx] = Some(res.api);
+      }
+    }
+
+    out.insert(body_id, tables);
+  }
+  out
 }

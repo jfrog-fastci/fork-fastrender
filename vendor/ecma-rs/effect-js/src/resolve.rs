@@ -121,6 +121,16 @@ fn receiver_is_string(types: &impl crate::types::TypeProvider, body: BodyId, rec
 }
 
 #[cfg(feature = "typed")]
+fn receiver_is_named_ref(
+  types: &impl crate::types::TypeProvider,
+  body: BodyId,
+  recv: ExprId,
+  expected: &str,
+) -> bool {
+  types.expr_is_named_ref(body, recv, expected)
+}
+
+#[cfg(feature = "typed")]
 pub fn resolve_api_call_typed(
   lowered: &LowerResult,
   body: BodyId,
@@ -558,4 +568,51 @@ fn static_member_path(lower: &LowerResult, body: &Body, expr: ExprId) -> Option<
       _ => return None,
     }
   }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedMember {
+  pub member: ExprId,
+  pub api: ApiId,
+  pub receiver: ExprId,
+}
+
+/// Resolve a known property read (`obj.prop`) to a canonical [`ApiId`].
+///
+/// Typed-only and intentionally conservative:
+/// - skips optional chaining (`obj?.prop`)
+/// - skips computed keys (`obj[expr]`)
+#[cfg(feature = "typed")]
+pub fn resolve_member(
+  lowered: &LowerResult,
+  body: BodyId,
+  member_expr_id: ExprId,
+  types: &impl crate::types::TypeProvider,
+) -> Option<ResolvedMember> {
+  let body_ref = lowered.body(body)?;
+  let member_expr = body_ref.exprs.get(member_expr_id.0 as usize)?;
+  let ExprKind::Member(member) = &member_expr.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+
+  let ObjectKey::Ident(prop) = member.property else {
+    return None;
+  };
+  let prop = ident_name(lowered, prop)?;
+
+  let api = match prop {
+    "length" if receiver_is_array(types, body, member.object) => ApiId::ArrayPrototypeLength,
+    "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
+    "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
+    _ => return None,
+  };
+
+  Some(ResolvedMember {
+    member: member_expr_id,
+    api,
+    receiver: member.object,
+  })
 }

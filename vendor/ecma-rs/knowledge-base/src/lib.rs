@@ -15,6 +15,7 @@ pub use ids::ApiId;
 pub enum ApiKind {
   Function,
   Constructor,
+  #[serde(alias = "property", alias = "property_get")]
   Getter,
   Setter,
   Value,

@@ -73,7 +73,7 @@
 - name: URL.prototype.href
   aliases:
     - URL.prototype.href
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
@@ -85,7 +85,7 @@
 - name: URL.prototype.pathname
   aliases:
     - URL.prototype.pathname
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true

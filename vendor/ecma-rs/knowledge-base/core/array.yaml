@@ -107,3 +107,10 @@
     depends_on_args:
       base: Pure
       args: [0]
+
+- name: Array.prototype.length
+  kind: property_get
+  effects: Pure
+  purity: ReadOnly
+  properties:
+    returns: number

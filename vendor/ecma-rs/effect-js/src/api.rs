@@ -10,6 +10,7 @@ pub enum ApiId {
   ArrayPrototypeFilter,
   ArrayPrototypeReduce,
   ArrayPrototypeForEach,
+  ArrayPrototypeLength,
   StringPrototypeToLowerCase,
   StringPrototypeSplit,
   PromiseAll,
@@ -21,6 +22,8 @@ pub enum ApiId {
   MathSqrt,
   ObjectKeys,
   ConsoleLog,
+  UrlPrototypeHref,
+  UrlPrototypePathname,
 }
 
 impl ApiId {
@@ -30,6 +33,7 @@ impl ApiId {
       ApiId::ArrayPrototypeFilter => "Array.prototype.filter",
       ApiId::ArrayPrototypeReduce => "Array.prototype.reduce",
       ApiId::ArrayPrototypeForEach => "Array.prototype.forEach",
+      ApiId::ArrayPrototypeLength => "Array.prototype.length",
       ApiId::StringPrototypeToLowerCase => "String.prototype.toLowerCase",
       ApiId::StringPrototypeSplit => "String.prototype.split",
       ApiId::PromiseAll => "Promise.all",
@@ -41,6 +45,8 @@ impl ApiId {
       ApiId::MathSqrt => "Math.sqrt",
       ApiId::ObjectKeys => "Object.keys",
       ApiId::ConsoleLog => "console.log",
+      ApiId::UrlPrototypeHref => "URL.prototype.href",
+      ApiId::UrlPrototypePathname => "URL.prototype.pathname",
     }
   }
 
@@ -51,6 +57,7 @@ impl ApiId {
       "Array.prototype.filter" => ApiId::ArrayPrototypeFilter,
       "Array.prototype.reduce" => ApiId::ArrayPrototypeReduce,
       "Array.prototype.forEach" => ApiId::ArrayPrototypeForEach,
+      "Array.prototype.length" => ApiId::ArrayPrototypeLength,
       "String.prototype.toLowerCase" => ApiId::StringPrototypeToLowerCase,
       "String.prototype.split" => ApiId::StringPrototypeSplit,
       "Promise.all" => ApiId::PromiseAll,
@@ -62,6 +69,8 @@ impl ApiId {
       "Math.sqrt" => ApiId::MathSqrt,
       "Object.keys" => ApiId::ObjectKeys,
       "console.log" => ApiId::ConsoleLog,
+      "URL.prototype.href" => ApiId::UrlPrototypeHref,
+      "URL.prototype.pathname" => ApiId::UrlPrototypePathname,
       _ => return None,
     })
   }
