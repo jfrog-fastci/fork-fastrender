@@ -30,6 +30,7 @@ pub fn validate_native_strict_body(
   let call_name = name_interner.intern("call");
   let apply_name = name_interner.intern("apply");
   let bind_name = name_interner.intern("bind");
+  let construct_name = name_interner.intern("construct");
   let set_prototype_of_name = name_interner.intern("setPrototypeOf");
   let define_property_name = name_interner.intern("defineProperty");
   let define_properties_name = name_interner.intern("defineProperties");
@@ -396,7 +397,7 @@ pub fn validate_native_strict_body(
             .copied()
             .unwrap_or(callee.span);
 
-        if !call.is_new {
+          if !call.is_new {
           let direct_eval =
             matches!(&callee.kind, ExprKind::Ident(name) if *name == eval_name);
           let global_eval = match &callee.kind {
@@ -475,6 +476,76 @@ pub fn validate_native_strict_body(
                 ));
               }
             }
+
+            // `Reflect.apply(eval, ...)` / `Reflect.apply(Function, ...)` etc.
+            if let ExprKind::Member(member) = &callee.kind {
+              let obj_is_reflect = expr_is_ident_or_global_this_member(
+                body,
+                member.object,
+                global_this_name,
+                reflect_name,
+                "Reflect",
+              );
+              let prop_is_apply =
+                object_key_is_ident(&member.property, apply_name)
+                  || object_key_is_string(&member.property, "apply")
+                  || object_key_is_literal_string(body, &member.property, "apply");
+              if obj_is_reflect && prop_is_apply {
+                if let Some(target_arg) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) {
+                  let target_span = result
+                    .expr_spans
+                    .get(target_arg.0 as usize)
+                    .copied()
+                    .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
+                    .unwrap_or(callee_span);
+
+                  if expr_is_ident_or_global_this_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    eval_name,
+                    "eval",
+                  ) {
+                    diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                      "`eval` is forbidden when `native_strict` is enabled",
+                      Span::new(file, target_span),
+                    ));
+                  }
+                  if expr_is_ident_or_global_this_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    "Function",
+                  ) {
+                    diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                      "`Function` constructor is forbidden when `native_strict` is enabled",
+                      Span::new(file, target_span),
+                    ));
+                  }
+                  if expr_is_ident_or_global_this_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    proxy_name,
+                    "Proxy",
+                  ) || expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    proxy_name,
+                    "Proxy",
+                    revocable_name,
+                    "revocable",
+                  ) {
+                    diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                      "`Proxy` is forbidden when `native_strict` is enabled",
+                      Span::new(file, target_span),
+                    ));
+                  }
+                }
+              }
+            }
           }
 
           if expr_is_ident_or_global_this_member(
@@ -537,6 +608,46 @@ pub fn validate_native_strict_body(
                 "`Proxy` is forbidden when `native_strict` is enabled",
                 Span::new(file, callee_span),
               ));
+            }
+
+            // `Reflect.construct(Function, ...)` / `Reflect.construct(Proxy, ...)`.
+            let prop_is_construct =
+              object_key_is_ident(&member.property, construct_name)
+                || object_key_is_string(&member.property, "construct")
+                || object_key_is_literal_string(body, &member.property, "construct");
+            if obj_is_reflect && prop_is_construct {
+              if let Some(target_arg) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) {
+                let target_span = result
+                  .expr_spans
+                  .get(target_arg.0 as usize)
+                  .copied()
+                  .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
+                  .unwrap_or(callee_span);
+                if expr_is_ident_or_global_this_member(
+                  body,
+                  target_arg,
+                  global_this_name,
+                  function_name,
+                  "Function",
+                ) {
+                  diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                    "`Function` constructor is forbidden when `native_strict` is enabled",
+                    Span::new(file, target_span),
+                  ));
+                }
+                if expr_is_ident_or_global_this_member(
+                  body,
+                  target_arg,
+                  global_this_name,
+                  proxy_name,
+                  "Proxy",
+                ) {
+                  diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                    "`Proxy` is forbidden when `native_strict` is enabled",
+                    Span::new(file, target_span),
+                  ));
+                }
+              }
             }
 
             if (obj_is_object || obj_is_reflect)

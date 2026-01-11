@@ -37,6 +37,8 @@ declare const Object: {
 declare const Reflect: {
   setPrototypeOf: (o: object, p: object) => void;
   defineProperty: (o: object, key: string, desc: object) => void;
+  apply: (target: Function, this_arg: unknown, args: unknown[]) => unknown;
+  construct: (target: Function, args: unknown[]) => unknown;
 };
 
 declare const Proxy: {
@@ -126,6 +128,22 @@ fn native_strict_bans_eval_call() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_reflect_apply() {
+  let source = "Reflect.apply(eval, null, [\"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_new_function() {
   let source = "new Function(\"return 1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -148,6 +166,38 @@ fn native_strict_bans_function_call() {
   let needle = "Function.call";
   let start = source.find(needle).expect("callee") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_apply() {
+  let source = "Reflect.apply(Function, null, [\"return 1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_construct() {
+  let source = "Reflect.construct(Function, [\"return 1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
   assert!(
     diagnostics.iter().any(|diag| {
       diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
@@ -346,6 +396,39 @@ fn native_strict_bans_proxy_revocable_call() {
   let needle = "Proxy.revocable.call";
   let start = source.find(needle).expect("callee") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_proxy_revocable_via_reflect_apply() {
+  let source = "Reflect.apply(Proxy.revocable, null, [{}, {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Proxy.revocable";
+  let start = source.find(needle).expect("target") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_proxy_via_reflect_construct() {
+  let source = "Reflect.construct(Proxy, [{}, {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Proxy").expect("Proxy") as u32;
+  let span = TextRange::new(start, start + "Proxy".len() as u32);
   assert!(
     diagnostics.iter().any(|diag| {
       diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
