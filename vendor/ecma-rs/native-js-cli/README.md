@@ -261,6 +261,7 @@ future typechecked/HIR-based backend yet). Supported today:
   - `export function foo(...) { ... }`
   - `import { foo } from "./mod"` and `import { foo as bar } from "./mod"`
   - side-effect imports (`import "./mod"`) for module initialization ordering
+  - type-only imports/re-exports do not trigger module evaluation
   - re-exports (`export { foo } from "./mod"`, `export * from "./mod"`) for module initialization ordering
 
 Limitations:

@@ -228,7 +228,7 @@ println!(\"wrote {}\", artifact.path.display());
 > Note: the typechecked/HIR backend is still minimal, but it can now lower small
 > multi-file ES module programs: it codegens the entry file’s exported `main()`
 > plus transitive runtime `import` dependencies (including side-effect-only
-> imports), running module initializers in dependency order (matching source
+> imports; type-only imports/re-exports are ignored), running module initializers in dependency order (matching source
 > import order for sibling imports). Re-export statements (`export { foo } from`,
 > `export * from`) are included in the runtime dependency graph for module
 > initialization ordering, but the entrypoint itself must still be a local
