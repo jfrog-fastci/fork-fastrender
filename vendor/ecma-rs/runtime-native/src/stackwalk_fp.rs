@@ -216,6 +216,48 @@ fn conservative_scan_frame_words(
   conservative_scan_words(range, heap, |slot| visit(slot as *mut u8));
 }
 
+/// Base/derived slot pair for a GC pointer reported by an LLVM `gc.statepoint`.
+///
+/// LLVM stackmaps record *two* locations for every live GC pointer at a safepoint:
+/// the base pointer and the derived (possibly interior) pointer.
+///
+/// For non-interior pointers, LLVM typically emits duplicate locations where
+/// `base == derived`.
+#[derive(Clone, Copy, Debug)]
+pub struct StatepointRootPair {
+  pub base_slot: *mut usize,
+  pub derived_slot: *mut usize,
+}
+
+/// Relocate a (base, derived) pointer pair after a moving GC.
+///
+/// `relocate_base` must return the new (relocated) address for `base_old` (or
+/// `0` for `0`).
+///
+/// If both old pointers are non-null, the derived pointer is preserved relative
+/// to the base pointer:
+///
+/// `derived_new = relocated_base + (derived_old - base_old)`
+pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce(usize) -> usize) {
+  // Read the old values first (before we overwrite either slot).
+  let base_old = std::ptr::read_unaligned(pair.base_slot);
+  let derived_old = std::ptr::read_unaligned(pair.derived_slot);
+
+  let relocated_base = relocate_base(base_old);
+
+  // Preserve interior-pointer offset only when we have both a base and a derived.
+  // This keeps `null` pointers `null`, and avoids underflow for weird inputs.
+  let relocated_derived = if base_old != 0 && derived_old != 0 && relocated_base != 0 {
+    let offset = derived_old.wrapping_sub(base_old);
+    relocated_base.wrapping_add(offset)
+  } else {
+    0
+  };
+
+  std::ptr::write_unaligned(pair.base_slot, relocated_base);
+  std::ptr::write_unaligned(pair.derived_slot, relocated_derived);
+}
+
 /// Walk the frame-pointer chain and enumerate GC root slots using LLVM stackmaps.
 ///
 /// ## Assumptions / requirements
@@ -443,6 +485,113 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   walk_gc_roots_from_fp(caller_fp, bounds, stackmaps, visit)
 }
 
+/// Walk the frame-pointer chain and enumerate `(base_slot, derived_slot)` pairs using LLVM stackmaps.
+///
+/// This is a lower-level API than [`walk_gc_roots_from_fp`]: it reports the raw base/derived slot
+/// pairs as encoded in LLVM statepoint stackmaps.
+///
+/// Callers should generally prefer [`walk_gc_roots_from_fp`] for tracing, because it visits base
+/// root slots and updates derived slots automatically.
+pub unsafe fn walk_gc_root_pairs_from_fp(
+  start_fp: u64,
+  bounds: Option<StackBounds>,
+  stackmaps: &StackMaps,
+  mut visit: impl FnMut(StatepointRootPair),
+) -> Result<(), WalkError> {
+  if start_fp == 0 {
+    return Err(WalkError::NullStartFp);
+  }
+
+  let mut cur_fp = start_fp;
+  for depth in 0..MAX_FRAMES {
+    check_fp_alignment(cur_fp)?;
+    if let Some(bounds) = bounds {
+      check_fp_bounds(cur_fp, bounds)?;
+    }
+
+    // Frame layout:
+    // [FP + 0] = previous FP
+    // [FP + 8] = return address into caller
+    let caller_fp = read_u64(cur_fp + arch::FP_LINK_OFFSET);
+    let caller_ra = read_u64(cur_fp + arch::RA_OFFSET);
+
+    if caller_fp == 0 {
+      return Ok(());
+    }
+
+    check_fp_alignment(caller_fp)?;
+    if caller_fp <= cur_fp {
+      return Err(WalkError::NonMonotonicFp { cur_fp, caller_fp });
+    }
+
+    if let Some(bounds) = bounds {
+      check_fp_bounds(caller_fp, bounds)?;
+    }
+
+    if caller_ra == 0 {
+      return Err(WalkError::ReturnAddressIsNull { fp: cur_fp });
+    }
+
+    if !is_canonical_pc(caller_ra) {
+      return Err(WalkError::ReturnAddressNonCanonical {
+        fp: cur_fp,
+        return_addr: caller_ra,
+      });
+    }
+
+    if let Some(callsite) = stackmaps.lookup(caller_ra) {
+      enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+    }
+
+    cur_fp = caller_fp;
+
+    if depth + 1 == MAX_FRAMES {
+      break;
+    }
+  }
+
+  Err(WalkError::MaxDepth {
+    max_depth: MAX_FRAMES,
+  })
+}
+
+/// Walk GC root base/derived pairs for a thread parked in a stop-the-world safepoint.
+///
+/// This is the pair-oriented variant of [`walk_gc_roots_from_safepoint_context`].
+pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
+  ctx: &crate::arch::SafepointContext,
+  bounds: Option<StackBounds>,
+  stackmaps: &crate::StackMaps,
+  mut visit: impl FnMut(StatepointRootPair),
+) -> Result<(), WalkError> {
+  let caller_fp = ctx.fp as u64;
+  if caller_fp == 0 {
+    return Err(WalkError::NullStartFp);
+  }
+
+  check_fp_alignment(caller_fp)?;
+  if let Some(bounds) = bounds {
+    check_fp_bounds(caller_fp, bounds)?;
+  }
+
+  let caller_ra = ctx.ip as u64;
+  if caller_ra == 0 {
+    return Err(WalkError::ReturnAddressIsNull { fp: caller_fp });
+  }
+  if !is_canonical_pc(caller_ra) {
+    return Err(WalkError::ReturnAddressNonCanonical {
+      fp: caller_fp,
+      return_addr: caller_ra,
+    });
+  }
+
+  if let Some(callsite) = stackmaps.lookup(caller_ra) {
+    enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+  }
+
+  walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit)
+}
+
 #[inline]
 fn check_fp_bounds(fp: u64, bounds: StackBounds) -> Result<(), WalkError> {
   // We must be able to read:
@@ -664,6 +813,65 @@ fn enumerate_roots_for_frame_with_caller_sp(
       }
       fixup_idx += 1;
     }
+  }
+
+  Ok(())
+}
+
+fn enumerate_root_pairs_for_frame(
+  caller_fp: u64,
+  caller_ra: u64,
+  callsite: CallSite<'_>,
+  visit: &mut impl FnMut(StatepointRootPair),
+) -> Result<(), WalkError> {
+  let stack_size = callsite.stack_size;
+  if stack_size < arch::FP_RECORD_SIZE {
+    return Err(WalkError::InvalidStackSize {
+      return_addr: caller_ra,
+      stack_size,
+      fp_record_size: arch::FP_RECORD_SIZE,
+    });
+  }
+
+  let locals_size = stack_size - arch::FP_RECORD_SIZE;
+  let caller_sp_checked = caller_fp
+    .checked_sub(locals_size)
+    .ok_or(WalkError::StackPointerUnderflow {
+      caller_fp,
+      stack_size,
+      fp_record_size: arch::FP_RECORD_SIZE,
+    })?;
+
+  #[cfg(target_arch = "x86_64")]
+  let caller_sp = {
+    let sp = compute_rsp_x86_64(caller_fp as usize, stack_size) as u64;
+    debug_assert_eq!(sp, caller_sp_checked);
+    sp
+  };
+  #[cfg(target_arch = "aarch64")]
+  let caller_sp = caller_sp_checked;
+
+  let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
+    WalkError::InvalidStatepoint {
+      return_addr: caller_ra,
+      source,
+    }
+  })?;
+
+  let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(statepoint.gc_pair_count());
+  for pair in statepoint.gc_pairs() {
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)? as usize;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)? as usize;
+    pairs.push((base_slot, derived_slot));
+  }
+  pairs.sort_unstable();
+  pairs.dedup();
+
+  for (base_slot, derived_slot) in pairs {
+    visit(StatepointRootPair {
+      base_slot: base_slot as *mut usize,
+      derived_slot: derived_slot as *mut usize,
+    });
   }
 
   Ok(())

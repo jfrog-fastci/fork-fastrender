@@ -66,3 +66,32 @@ The tests:
 - run `opt-18 -passes=rewrite-statepoints-for-gc` + `llc-18`,
 - parse the resulting `.llvm_stackmaps` section,
 - and assert (via the runtime verifier) that GC roots are not reported as `Register`.
+
+## Base/Derived pointer pairs (derived / interior pointers)
+
+LLVM stackmaps record *two* locations per live GC pointer at a safepoint:
+
+- **base**: the address of the GC-managed object
+- **derived**: the value actually in machine state (may be an interior pointer)
+
+For non-interior pointers, LLVM typically emits **duplicate** base/derived locations (`base == derived`).
+
+If LLVM ever emits a real interior pointer at a safepoint, a moving collector must update both:
+
+```text
+base_new    = relocate(base_old)
+derived_new = base_new + (derived_old - base_old)
+```
+
+`runtime-native` encodes this via `StatepointRootPair` and `relocate_pair`.
+
+### Stackmap location layout for `"gc-live"(...)` (LLVM 18)
+
+For rewritten statepoints with a `"gc-live"(...)` operand bundle, LLVM currently emits stackmap *locations* in a predictable structure:
+
+1. **3 header locations** (constant zero)
+2. then **2 locations per live GC pointer**: `(base, derived)`
+
+`runtime-native::statepoints::StatepointRecord` enforces this layout (`LLVM18_STATEPOINT_HEADER_CONSTANTS = 3`),
+and `runtime-native::stackwalk_fp::walk_gc_root_pairs_from_fp` yields `StatepointRootPair` values for each
+`(base, derived)` pair.
