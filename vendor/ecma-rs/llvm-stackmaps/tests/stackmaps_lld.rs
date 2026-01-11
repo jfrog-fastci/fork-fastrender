@@ -28,10 +28,20 @@ fn lld_can_link_stackmaps_section_with_explicit_range_symbols() {
         // This test is specifically about lld + the linker script.
         return;
     };
-    if !has_cmd("clang-18") || !has_cmd("ld.lld-18") {
-        // This test is specifically about lld + the linker script.
+    let Some(clang) = find_cmd(&["clang-18", "clang"]) else {
+        eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
         return;
-    }
+    };
+    let Some(lld_fuse) = (if has_cmd("ld.lld-18") {
+        Some("lld-18")
+    } else if has_cmd("ld.lld") {
+        Some("lld")
+    } else {
+        None
+    }) else {
+        eprintln!("skipping: lld not found in PATH (need ld.lld-18 or ld.lld)");
+        return;
+    };
 
     let ws_root = workspace_root();
     let stackmaps_ld = ws_root.join("runtime-native").join("link").join("stackmaps.ld");
@@ -93,7 +103,7 @@ fn main() {
     // Speed up the nested build: we only care about the final link result (symbols + section
     // retention), not debug info.
     let rustflags = format!(
-        "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+        "-C debuginfo=0 -C linker={clang} -C link-arg=-fuse-ld={lld_fuse} -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
         stackmaps_ld.display()
     );
 
