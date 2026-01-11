@@ -27,6 +27,7 @@ graph TD
     parse_js_cli["parse-js-cli"]
     runtime_js["runtime-js"]
     runtime_native["runtime-native"]
+    runtime_native_abi["runtime-native-abi"]
     semantic_js["semantic-js"]
     stackmap["stackmap"]
     stackmap_context["stackmap-context"]
@@ -100,6 +101,7 @@ graph TD
     runtime_js --> diagnostics
     runtime_js --> parse_js
     runtime_js --> vm_js
+    runtime_native --> runtime_native_abi
     semantic_js --> diagnostics
     semantic_js --> hir_js
     semantic_js --> parse_js
