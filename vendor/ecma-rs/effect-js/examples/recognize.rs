@@ -14,6 +14,8 @@ fs.readFile("x", () => {});
 
 // Typed array chain pattern.
 const arr: number[] = [1, 2, 3];
+arr.filter(x => x > 1);
+arr.reduce((a, b) => a + b, 0);
 const total = arr
   .map(x => x + 1)
   .filter(x => x > 1)

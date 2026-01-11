@@ -79,6 +79,16 @@ for body_id in lowered.hir.bodies.iter().copied() {
 }
 ```
 
+### Untyped vs best-effort
+
+`effect-js` exposes two untyped entry points:
+
+- `recognize_patterns_untyped`: patterns that are safe to infer from HIR alone
+  (e.g. `JsonParseTyped` using a declared type annotation).
+- `recognize_patterns_best_effort_untyped`: a superset that includes additional
+  conservative heuristics such as `PromiseAllFetch` (which currently does not
+  require full typing).
+
 ### Typed patterns (`--features typed`)
 
 Enable `effect-js`'s `typed` feature and pass a `TypeProvider`:
