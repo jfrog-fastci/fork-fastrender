@@ -106,6 +106,7 @@ mod alloc;
 #[cfg(feature = "gc_stats")]
 mod gc_stats;
 mod blocking_pool;
+mod ffi;
 mod exports;
 mod interner;
 mod platform;
@@ -180,7 +181,7 @@ fn rt_ensure_init() -> &'static GlobalRuntime {
 /// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
 #[no_mangle]
 pub unsafe extern "C" fn rt_async_spawn(_coro: CoroutineRef) -> PromiseRef {
-  todo!("rt_async_spawn is not implemented yet")
+  crate::ffi::abort_on_panic(|| todo!("rt_async_spawn is not implemented yet"))
 }
 
 /// Drive the async scheduler/executor.
@@ -188,7 +189,7 @@ pub unsafe extern "C" fn rt_async_spawn(_coro: CoroutineRef) -> PromiseRef {
 /// Returns `true` if any work was performed.
 #[no_mangle]
 pub unsafe extern "C" fn rt_async_poll() -> bool {
-  todo!("rt_async_poll is not implemented yet")
+  crate::ffi::abort_on_panic(|| todo!("rt_async_poll is not implemented yet"))
 }
 
 /// Initialize a newly allocated promise header to the pending state.
@@ -200,7 +201,7 @@ pub unsafe extern "C" fn rt_async_poll() -> bool {
 /// `p` must point to a valid [`PromiseHeader`] at offset 0 of a promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
-  todo!("rt_promise_init is not implemented yet")
+  crate::ffi::abort_on_panic(|| todo!("rt_promise_init is not implemented yet"))
 }
 
 /// Mark a promise as fulfilled.
@@ -211,7 +212,7 @@ pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
 /// `p` must point to a valid promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
-  todo!("rt_promise_fulfill is not implemented yet")
+  crate::ffi::abort_on_panic(|| todo!("rt_promise_fulfill is not implemented yet"))
 }
 
 /// Mark a promise as rejected.
@@ -220,7 +221,7 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
 /// `p` must point to a valid promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
-  todo!("rt_promise_reject is not implemented yet")
+  crate::ffi::abort_on_panic(|| todo!("rt_promise_reject is not implemented yet"))
 }
 
 /// Request a stop-the-world GC safepoint.
@@ -268,6 +269,12 @@ pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
   0, 0, 0, 0, //
   0, 0, 0, 0, //
 ];
+
+#[cfg(test)]
+#[no_mangle]
+pub extern "C-unwind" fn rt_async_test_panic() {
+  crate::ffi::abort_on_panic(|| panic!("intentional panic to verify FFI abort boundary"))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1094,6 +1101,32 @@ mod tests {
 
       heap.collect_major(&mut roots, &mut remembered);
       assert_eq!(heap.los_object_count(), 0);
+    }
+  }
+
+  const CHILD_ENV: &str = "ECMA_RS_RUNTIME_NATIVE_PANIC_BOUNDARY_CHILD";
+
+  #[test]
+  fn exported_ffi_functions_abort_on_panic() {
+    if std::env::var_os(CHILD_ENV).is_some() {
+      rt_async_test_panic();
+      unreachable!("rt_async_test_panic must abort the process");
+    }
+
+    let exe = std::env::current_exe().expect("failed to get current test executable path");
+    let status = std::process::Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg("tests::exported_ffi_functions_abort_on_panic")
+      .status()
+      .expect("failed to spawn child test process");
+
+    assert!(!status.success());
+
+    #[cfg(unix)]
+    {
+      use std::os::unix::process::ExitStatusExt;
+      assert_eq!(status.signal(), Some(6));
     }
   }
 }

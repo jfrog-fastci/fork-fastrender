@@ -236,8 +236,12 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   let mut off: usize = 0;
 
   while off < bytes.len() {
-    // Trailing padding is usually 0-filled.
-    if bytes[off..].iter().all(|b| *b == 0) {
+    // Linkers may insert 0-filled alignment padding between concatenated input sections. Skip it
+    // so we always parse at a stackmap header (`version=3`).
+    while off < bytes.len() && bytes[off] == 0 {
+      off += 1;
+    }
+    if off >= bytes.len() {
       break;
     }
 

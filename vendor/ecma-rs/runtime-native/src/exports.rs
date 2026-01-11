@@ -10,6 +10,7 @@ use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
+use crate::ffi::abort_on_panic;
 use crate::gc::ObjHeader;
 use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
@@ -637,22 +638,20 @@ pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
 ) -> PromiseRef {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     crate::blocking_pool::spawn(task, data)
-  }));
-  match res {
-    Ok(p) => p,
-    Err(_) => std::process::abort(),
-  }
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
-  let _ = crate::rt_ensure_init();
-  ensure_event_loop_thread_registered();
-  async_rt::coroutine::async_spawn(coro)
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    async_rt::coroutine::async_spawn(coro)
+  })
 }
 
 /// Drive the runtime's async/event-loop queues.
@@ -662,9 +661,11 @@ pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> Promise
 /// at a time).
 #[no_mangle]
 pub extern "C" fn rt_async_poll_legacy() -> bool {
-  let _ = crate::rt_ensure_init();
-  ensure_event_loop_thread_registered();
-  async_rt::poll()
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    async_rt::poll()
+  })
 }
 
 /// Configure whether `await` on an already-settled promise yields to the microtask queue (strict JS
@@ -678,20 +679,22 @@ pub extern "C" fn rt_async_set_strict_await_yields(strict: bool) {
 
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
-  let _ = crate::rt_ensure_init();
-  ensure_event_loop_thread_registered();
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
 
-  extern "C" fn resolve_sleep(data: *mut u8) {
-    let promise = PromiseRef(data.cast());
-    async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
-  }
+    extern "C" fn resolve_sleep(data: *mut u8) {
+      let promise = PromiseRef(data.cast());
+      async_rt::promise::promise_resolve(promise, core::ptr::null_mut());
+    }
 
-  let promise = async_rt::promise::promise_new();
-  let _timer_id = async_rt::global().schedule_timer_in(
-    std::time::Duration::from_millis(delay_ms),
-    async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
-  );
-  promise
+    let promise = async_rt::promise::promise_new();
+    let _timer_id = async_rt::global().schedule_timer_in(
+      std::time::Duration::from_millis(delay_ms),
+      async_rt::Task::new(resolve_sleep, promise.0 as *mut u8),
+    );
+    promise
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -705,23 +708,29 @@ pub extern "C" fn rt_io_register(
   cb: extern "C" fn(u32, *mut u8),
   data: *mut u8,
 ) -> IoWatcherId {
-  let _ = crate::rt_ensure_init();
-  let Ok(id) = async_rt::global().register_io(fd, interests, cb, data) else {
-    return 0;
-  };
-  id.as_raw()
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    let Ok(id) = async_rt::global().register_io(fd, interests, cb, data) else {
+      return 0;
+    };
+    id.as_raw()
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
-  let _ = crate::rt_ensure_init();
-  let _ = async_rt::global().update_io(WatcherId::from_raw(id), interests);
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    let _ = async_rt::global().update_io(WatcherId::from_raw(id), interests);
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
-  let _ = crate::rt_ensure_init();
-  let _ = async_rt::global().deregister_fd(WatcherId::from_raw(id));
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    let _ = async_rt::global().deregister_fd(WatcherId::from_raw(id));
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -816,28 +825,34 @@ extern "C" fn web_timer_fire(data: *mut u8) {
 
 #[no_mangle]
 pub extern "C" fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8) {
-  async_rt::enqueue_microtask(cb, data);
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::enqueue_microtask(cb, data);
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId {
-  let id = alloc_web_timer_id();
-  let delay = Duration::from_millis(delay_ms);
-  let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
-  let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
-  let internal_id = async_rt::global().schedule_timer(deadline, task);
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
 
-  WEB_TIMERS.lock().insert(
-    id,
-    WebTimerState {
-      kind: WebTimerKind::Timeout,
-      cb,
-      data,
-      interval: Duration::ZERO,
-      internal_id,
-    },
-  );
-  id
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb,
+        data,
+        interval: Duration::ZERO,
+        internal_id,
+      },
+    );
+    id
+  })
 }
 
 #[no_mangle]
@@ -846,31 +861,37 @@ pub extern "C" fn rt_set_interval(
   data: *mut u8,
   interval_ms: u64,
 ) -> TimerId {
-  let id = alloc_web_timer_id();
-  let interval = Duration::from_millis(interval_ms);
-  let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
-  let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
-  let internal_id = async_rt::global().schedule_timer(deadline, task);
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
 
-  WEB_TIMERS.lock().insert(
-    id,
-    WebTimerState {
-      kind: WebTimerKind::Interval,
-      cb,
-      data,
-      interval,
-      internal_id,
-    },
-  );
-  id
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb,
+        data,
+        interval,
+        internal_id,
+      },
+    );
+    id
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_clear_timer(id: TimerId) {
-  let Some(st) = WEB_TIMERS.lock().remove(&id) else {
-    return;
-  };
-  let _ = async_rt::global().cancel_timer(st.internal_id);
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let Some(st) = WEB_TIMERS.lock().remove(&id) else {
+      return;
+    };
+    let _ = async_rt::global().cancel_timer(st.internal_id);
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -879,32 +900,42 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 
 #[no_mangle]
 pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_new()
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_new()
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve_legacy(p: PromiseRef, value: ValueRef) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_resolve(p, value)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_resolve(p, value)
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_reject(p, err)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_reject(p, err)
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_then(p, on_settle, data)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_then(p, on_settle, data)
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
-  ensure_event_loop_thread_registered();
-  async_rt::coroutine::coro_await(coro, awaited, next_state)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::coroutine::coro_await(coro, awaited, next_state)
+  })
 }
 
 // -----------------------------------------------------------------------------
