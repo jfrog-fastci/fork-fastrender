@@ -125,6 +125,7 @@ required_symbols=(
   rt_set_interval
   rt_clear_timer
   rt_io_register
+  rt_io_register_with_drop
   rt_io_update
   rt_io_unregister
 )
