@@ -110,13 +110,19 @@ Where:
 
 The first `i64 <ID>` becomes the StackMap record's `patchpoint_id` / `Record ID` (as printed by `llvm-readobj-18 --stackmap`).
 
-When using LLVM's `rewrite-statepoints-for-gc` pass (the `native-js` pipeline), LLVM 18 currently uses a fixed ID:
+By default, LLVM's `rewrite-statepoints-for-gc` pass uses a fixed ID:
 
 ```llvm
 i64 2882400000   ; 0xABCDEF00
 ```
 
-`runtime-native` uses this value to cheaply identify which stackmap records are statepoints.
+However, this ID is **not required to be constant**:
+
+- You can override it by attaching callsite string attributes before running `rewrite-statepoints-for-gc`
+  (see `docs/llvm_statepoint_directives.md`).
+- If you directly emit statepoints (instead of relying on the rewrite pass), you may use any `i64` IDs.
+
+`runtime-native` does **not** rely on `patchpoint_id` for normal operation; it looks up the right record by **return address** (`instruction_offset` interpretation below). The ID is primarily useful for debugging and for optional verification heuristics.
 
 ### Callee operand must use `elementtype(...)`
 
@@ -152,6 +158,29 @@ All GC values live across the safepoint must be listed in the `"gc-live"` operan
 ```
 
 Only GC-managed pointers (`ptr addrspace(1)`) belong in this bundle.
+
+### Non-void call returns: `gc.result`
+
+A statepoint call always returns a `token`, even if the wrapped callee returns a value.
+
+To recover the wrapped return value, emit a `gc.result` call with an overload matching the callee return type:
+
+```llvm
+; callee returns a GC pointer (addrspace(1))
+declare ptr addrspace(1) @llvm.experimental.gc.result.p1(token)
+
+; callee returns an integer
+declare i64 @llvm.experimental.gc.result.i64(token)
+```
+
+Example:
+
+```llvm
+%tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(...)
+%ret = call ptr addrspace(1) @llvm.experimental.gc.result.p1(token %tok)
+```
+
+If you use LLVM's `rewrite-statepoints-for-gc` pass, it inserts the required `gc.result.*` calls automatically. If you emit statepoints directly, you must emit `gc.result.*` yourself for any non-void wrapped call.
 
 ---
 
@@ -195,7 +224,7 @@ Key points:
 
 ### Interior pointer relocation (base + derived)
 
-If you have an interior pointer (derived from a base object pointer), **both** the base and derived values must be in `"gc-live"`, and `gc.relocate` must specify both indices:
+LLVM supports relocating derived (interior) pointers by rooting **both** the base and the derived pointer and using `gc.relocate` with `(base_idx, derived_idx)`:
 
 ```llvm
 ; base: the object pointer
@@ -226,8 +255,9 @@ If you have an interior pointer (derived from a base object pointer), **both** t
 
 #### When to root a derived pointer vs recompute it
 
-If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or
-an index value that is still available after the safepoint), it's usually better to:
+**Important:** `runtime-native` currently rejects derived pointers at safepoints (it requires `base` and `derived` to be the same spill slot). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
+
+If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
 1. Keep only the **base** pointer live across the safepoint (i.e. only base in `"gc-live"`).
 2. After the safepoint, use the *relocated base* to recompute the derived pointer with another
@@ -236,12 +266,7 @@ an index value that is still available after the safepoint), it's usually better
 This keeps stack maps smaller (fewer `"gc-live"` entries and fewer `gc.relocate` calls) and can make
 later optimization easier.
 
-Root a derived pointer (include it in `"gc-live"` and relocate it with `(base_idx, derived_idx)`)
-only when you *cannot* reliably recompute it after the safepoint, for example:
-
-- the offset/index is not materialized anymore (was computed in a different block and not kept live),
-- the derived pointer itself is passed around/stored and must remain usable after the safepoint,
-- you need to preserve multiple interior pointers where recomputing would be expensive or invasive.
+Once `runtime-native` supports derived pointers, rooting a derived pointer (include it in `"gc-live"` and relocate it with `(base_idx, derived_idx)`) is appropriate when you *cannot* reliably recompute it after the safepoint.
 
 ---
 
@@ -284,12 +309,13 @@ On ELF, the runtime locates stackmaps by taking the in-memory byte range of the 
 
 This repo supports two common ways to get that byte range:
 
-#### Option A (repo default): `runtime-native/stackmaps.ld` (`__llvm_stackmaps_start` / `__llvm_stackmaps_end`)
+#### Option A (repo default): `runtime-native/stackmaps.ld` (`__fastr_stackmaps_start` / `__fastr_stackmaps_end`)
 
 `runtime-native` ships a linker script fragment, `runtime-native/stackmaps.ld`, which:
 
 - `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
 - defines:
+  - `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (preferred names)
   - `__llvm_stackmaps_start`
   - `__llvm_stackmaps_end`
 
