@@ -45,6 +45,9 @@ impl ParallelRuntime {
 
   pub(crate) fn join(&self, tasks: *const TaskId, count: usize) {
     threading::register_current_thread(ThreadKind::External);
+    // If a stop-the-world is active, do not proceed into blocking waits or run
+    // additional mutator work until we've observed the safepoint request.
+    threading::safepoint_poll();
 
     if count == 0 {
       return;
@@ -85,6 +88,9 @@ impl ParallelRuntime {
     for task in &tasks {
       while !task.done.load(Ordering::Acquire) {
         if let Some(other) = self.scheduler.try_pop() {
+          // Before running mutator code, poll the GC safepoint (matches the
+          // worker thread loop behavior).
+          threading::safepoint_poll();
           other.run();
           continue;
         }
