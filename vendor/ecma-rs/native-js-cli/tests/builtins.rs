@@ -142,6 +142,24 @@ fn assert_supports_logical_not() {
 }
 
 #[test]
+fn logical_not_uses_truthiness_for_supported_primitives() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(
+    &path,
+    "console.log(!0, !1, !\"\", !\"x\", !undefined, !null);\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("true false true false true true\n"));
+}
+
+#[test]
 fn print_alias_prints_booleans() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
@@ -210,6 +228,38 @@ fn assert_supports_numeric_comparisons_and_logical_ops() {
     .assert()
     .success()
     .stdout(predicate::eq(""));
+}
+
+#[test]
+fn if_statement_uses_truthiness() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "if (0) { console.log(\"a\"); } else { console.log(\"b\"); }\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("b\n"));
+}
+
+#[test]
+fn while_statement_uses_truthiness() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(
+    &path,
+    "let x = 3;\nwhile (x) { console.log(x); x = x - 1; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("3\n2\n1\n"));
 }
 
 #[test]

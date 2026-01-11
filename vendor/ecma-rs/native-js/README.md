@@ -381,8 +381,8 @@ fields are reserved for the eventual LLVM-backed backend.
   - expression statements (`expr;`)
   - variable declarations (`const`/`let`/`var`) with simple identifier bindings
     - initializer is optional; missing initializers default to `undefined`
-  - `if (cond) { ... } else { ... }` (boolean conditions only)
-  - `while (cond) { ... }` (boolean conditions only)
+  - `if (cond) { ... } else { ... }` (uses JS truthiness for supported primitive types)
+  - `while (cond) { ... }` (uses JS truthiness for supported primitive types)
   - function declarations (top-level only; no nesting):
     - cannot be named `main` (reserved for the native entrypoint)
     - no `async` / generators
@@ -396,7 +396,7 @@ fields are reserved for the eventual LLVM-backed backend.
     - globals: `undefined`, `NaN`, `Infinity`
   - unary operators:
     - `-` / `+` (numbers only)
-    - `!` (booleans only)
+    - `!` (uses JS truthiness for supported primitive types)
   - numeric `+` / `-` / `*` / `/` (numbers only)
   - numeric comparisons: `<` / `<=` / `>` / `>=` (numbers only)
   - logical `&&` / `||` (booleans only; short-circuit evaluation)

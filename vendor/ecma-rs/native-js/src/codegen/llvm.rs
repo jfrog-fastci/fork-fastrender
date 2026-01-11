@@ -483,11 +483,7 @@ impl Codegen {
       }
       Stmt::If(if_stmt) => {
         let cond = self.compile_expr(&if_stmt.stx.test)?;
-        if cond.ty != Ty::Bool {
-          return Err(CodegenError::TypeError(
-            "`if` condition must be a boolean".to_string(),
-          ));
-        }
+        let cond_bool = self.emit_truthy_to_bool(cond)?;
 
         let then_label = self.fresh_block("if.then");
         let else_label = self.fresh_block("if.else");
@@ -501,7 +497,7 @@ impl Codegen {
 
         self.emit(format!(
           "  br i1 {}, label %{then_label}, label %{false_label}",
-          cond.ir
+          cond_bool
         ));
 
         self.emit(format!("{then_label}:"));
@@ -530,14 +526,10 @@ impl Codegen {
 
         self.emit(format!("{cond_label}:"));
         let cond = self.compile_expr(&while_stmt.stx.condition)?;
-        if cond.ty != Ty::Bool {
-          return Err(CodegenError::TypeError(
-            "`while` condition must be a boolean".to_string(),
-          ));
-        }
+        let cond_bool = self.emit_truthy_to_bool(cond)?;
         self.emit(format!(
           "  br i1 {}, label %{body_label}, label %{end_label}",
-          cond.ir
+          cond_bool
         ));
 
         self.emit(format!("{body_label}:"));
@@ -1048,13 +1040,9 @@ impl Codegen {
             Ok(arg)
           }
           OperatorName::LogicalNot => {
-            if arg.ty != Ty::Bool {
-              return Err(CodegenError::TypeError(
-                "unary `!` currently only supports booleans".to_string(),
-              ));
-            }
+            let arg_bool = self.emit_truthy_to_bool(arg)?;
             let out = self.tmp();
-            self.emit(format!("  {out} = xor i1 {}, true", arg.ir));
+            self.emit(format!("  {out} = xor i1 {arg_bool}, true"));
             Ok(Value {
               ty: Ty::Bool,
               ir: out,

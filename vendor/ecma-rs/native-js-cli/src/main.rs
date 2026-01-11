@@ -4,7 +4,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use diagnostics::paths::normalize_fs_path;
 use native_js::compiler::compile_llvm_ir_to_artifact;
 use native_js::{
-  compile_program, compile_project_to_llvm_ir, CompileOptions, EmitKind, NativeJsError,
+  compile_program, compile_project_to_llvm_ir, compile_typescript_to_llvm_ir, CompileOptions,
+  EmitKind, NativeJsError,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -456,6 +457,40 @@ fn load_program(input: &Path) -> Result<(DiskHost, Program, FileId), String> {
 }
 
 fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
+  let mut opts = CompileOptions::default();
+  opts.builtins = !cli.no_builtins;
+
+  // Fast path: for common single-file smoke tests (no explicit `--entry-fn`), avoid constructing a
+  // `typecheck-ts` program graph and instead use the pure `parse-js` emitter directly. This keeps
+  // the CLI responsive and prevents the builtins integration tests from timing out when run under
+  // heavy parallelism.
+  if cli.entry_fn.is_none() {
+    let source = match fs::read_to_string(input) {
+      Ok(s) => s,
+      Err(err) => {
+        eprintln!("failed to read {}: {err}", input.display());
+        exit(1);
+      }
+    };
+
+    match compile_typescript_to_llvm_ir(&source, opts.clone()) {
+      Ok(ir) => return ir,
+      Err(NativeJsError::Codegen(native_js::codegen::CodegenError::UnsupportedStmt)) => {
+        // Likely uses `import`/`export` constructs; fall back to the project compiler.
+      }
+      Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError(msg)))
+        if msg.contains("`main` is reserved") =>
+      {
+        // The project compiler namespaces user functions and supports exporting `main()` as an
+        // entrypoint; fall back to it.
+      }
+      Err(err) => {
+        eprintln!("{err}");
+        exit(1);
+      }
+    }
+  }
+
   let (host, program, entry_id) = load_program(input).unwrap_or_else(|err| {
     eprintln!("{err}");
     exit(1);
@@ -469,9 +504,6 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
   // Use `--pipeline checked` to compile with `native_js::compile_program`, which fails on type
   // errors and enforces the strict subset validator.
   let _diagnostics = program.check();
-
-  let mut opts = CompileOptions::default();
-  opts.builtins = !cli.no_builtins;
 
   match compile_project_to_llvm_ir(&program, &host, entry_id, opts, cli.entry_fn.as_deref()) {
     Ok(ir) => ir,
