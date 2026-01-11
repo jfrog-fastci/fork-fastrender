@@ -163,6 +163,10 @@ pub fn resolve_api_call_typed(
       Some(ApiId::ArrayPrototypeReduce)
     }
     "toLowerCase" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeToLowerCase),
+    "get" if types.expr_is_named_ref(body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
+    "then" if types.expr_is_named_ref(body, member.object, "Promise") => {
+      Some(ApiId::PromisePrototypeThen)
+    }
     _ => None,
   }
 }

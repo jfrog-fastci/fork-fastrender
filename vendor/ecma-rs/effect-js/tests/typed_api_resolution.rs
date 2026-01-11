@@ -62,6 +62,8 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
 
   assert!(apis.contains(&ApiId::ArrayPrototypeMap));
   assert!(apis.contains(&ApiId::StringPrototypeToLowerCase));
+  assert!(apis.contains(&ApiId::MapPrototypeGet));
+  assert!(apis.contains(&ApiId::PromisePrototypeThen));
 
   // Ensure we do not resolve prototype APIs when the receiver type is `any`.
   let any_val_map_call = body
@@ -104,6 +106,9 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(patterns
     .iter()
     .any(|pat| matches!(pat, RecognizedPattern::MapFilterReduce { .. })));
+  assert!(patterns
+    .iter()
+    .any(|pat| matches!(pat, RecognizedPattern::MapGetOrDefault { .. })));
 
   // JsonParseTyped relies on a declared annotation and should work without typing.
   let untyped = recognize_patterns_untyped(&lowered, root_body);
