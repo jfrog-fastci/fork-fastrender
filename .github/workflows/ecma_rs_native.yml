@@ -165,6 +165,10 @@ jobs:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
         run: |
           set -euo pipefail
+          # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+          if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+            export RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes"
+          fi
           # Only run the portable reactor conformance suite; `runtime-native` has other tests/benches
           # that may be heavier and are not needed for this workflow's goals.
           bash scripts/cargo_agent.sh test -p runtime-native --test reactor_conformance

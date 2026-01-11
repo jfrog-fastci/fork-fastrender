@@ -27,7 +27,7 @@ pub(crate) fn spawn_promise(
   layout: PromiseLayout,
 ) -> PromiseRef {
   // Ensure the async runtime is initialized so promise settlement can wake a
-  // thread blocked in `epoll_wait`.
+  // thread blocked in the platform reactor wait syscall (`epoll_wait`/`kevent`).
   let _ = crate::async_rt::global();
 
   // Register the caller thread for GC safepoints; this matches `ParallelRuntime::spawn`.
