@@ -77,6 +77,14 @@ pub enum WalkError {
     #[source]
     source: crate::statepoints::StatepointError,
   },
+  #[error(
+    "derived pointers are not supported at return address {return_addr:#x} (base={base:?}, derived={derived:?})"
+  )]
+  DerivedPointerNotSupported {
+    return_addr: u64,
+    base: Location,
+    derived: Location,
+  },
   #[error("unsupported GC root location {loc:?} at return address {return_addr:#x}")]
   UnsupportedGcLocation { return_addr: u64, loc: Location },
   #[error(
@@ -184,10 +192,20 @@ fn enumerate_roots_for_frame(
 
   // Collect + dedup within this frame to avoid double-visiting the same slot
   // (LLVM can emit duplicated locations for relocated values).
-  let mut slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pairs().len() * 2);
+  let mut slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pairs().len());
   for pair in statepoint.gc_pairs() {
+    // If base != derived, LLVM is describing an interior/derived pointer. We
+    // currently don't implement derived-pointer relocation, so fail fast to
+    // avoid silent GC corruption.
+    if pair.base != pair.derived {
+      return Err(WalkError::DerivedPointerNotSupported {
+        return_addr: caller_ra,
+        base: pair.base.clone(),
+        derived: pair.derived.clone(),
+      });
+    }
+
     slots.push(eval_root_location(caller_fp, caller_sp, caller_ra, pair.base)?);
-    slots.push(eval_root_location(caller_fp, caller_sp, caller_ra, pair.derived)?);
   }
   slots.sort_unstable();
   slots.dedup();
@@ -255,4 +273,3 @@ fn check_fp_alignment(fp: u64) -> Result<(), WalkError> {
   }
   Ok(())
 }
-

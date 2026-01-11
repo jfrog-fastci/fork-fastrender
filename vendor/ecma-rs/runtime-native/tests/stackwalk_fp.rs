@@ -104,6 +104,41 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   assert_eq!(visited, expected);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn derived_pointers_fail_fast() {
+  use runtime_native::WalkError;
+
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  // x86_64 FP_RECORD_SIZE=8.
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = align_up(base + 128, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, &stackmaps, |_| {}) };
+  match res {
+    Err(WalkError::DerivedPointerNotSupported { .. }) => {}
+    other => panic!("expected DerivedPointerNotSupported, got {other:?}"),
+  }
+}
+
 fn align_up(v: usize, align: usize) -> usize {
   (v + (align - 1)) & !(align - 1)
 }
@@ -118,6 +153,74 @@ fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
   } else {
     base.checked_sub((-offset) as u64)
   }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
+  // Minimal stackmap section containing one callsite record with one derived
+  // pointer pair (base and derived refer to different stack slots).
+  //
+  // This is used to assert the stack walker fails fast rather than treating a
+  // derived pointer like an independent GC root slot.
+  let mut out = Vec::new();
+
+  // Header.
+  out.push(3); // version
+  out.push(0); // reserved0
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+  out.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_records
+
+  // One function record.
+  out.extend_from_slice(&0x1000u64.to_le_bytes()); // address
+  out.extend_from_slice(&40u64.to_le_bytes()); // stack_size
+  out.extend_from_slice(&1u64.to_le_bytes()); // record_count
+
+  // One record.
+  out.extend_from_slice(&0xabcdef00u64.to_le_bytes()); // patchpoint_id
+  out.extend_from_slice(&0x10u32.to_le_bytes()); // instruction_offset
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  out.extend_from_slice(&5u16.to_le_bytes()); // num_locations
+
+  // 3 leading constants (statepoint header).
+  for _ in 0..3 {
+    out.extend_from_slice(&[4, 0]); // Constant, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&0u16.to_le_bytes()); // dwarf_reg
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0i32.to_le_bytes()); // small const
+  }
+
+  // base: Indirect [SP + 0]
+  out.extend_from_slice(&[3, 0]); // Indirect, reserved
+  out.extend_from_slice(&8u16.to_le_bytes()); // size
+  out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  out.extend_from_slice(&0i32.to_le_bytes()); // offset
+
+  // derived: Indirect [SP + 8] (different slot => derived pointer)
+  out.extend_from_slice(&[3, 0]); // Indirect, reserved
+  out.extend_from_slice(&8u16.to_le_bytes()); // size
+  out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  out.extend_from_slice(&8i32.to_le_bytes()); // offset
+
+  // Align to 8.
+  while out.len() % 8 != 0 {
+    out.push(0);
+  }
+
+  // LiveOuts (none).
+  out.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+
+  // Align to 8.
+  while out.len() % 8 != 0 {
+    out.push(0);
+  }
+
+  out
 }
 
 #[cfg(target_arch = "aarch64")]
