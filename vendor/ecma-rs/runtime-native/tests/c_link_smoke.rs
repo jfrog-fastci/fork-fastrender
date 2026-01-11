@@ -160,16 +160,60 @@ static void par_for_body(size_t i, uint8_t* data) {
   out[i] = (uint32_t)(i * 3u + 1u);
 }
 
- int main(void) {
-   rt_thread_init(0);
- 
-   // Touch the RT_THREAD TLS symbol so this smoke test also verifies that the
-   // runtime provides it for native codegen.
-   RT_THREAD = (Thread*)0;
- 
-   // Global root registration (word-sized slot).
-   static size_t global_root = 0;
-   rt_global_root_register(&global_root);
+typedef struct NativeAsyncSmokeCoro {
+  Coroutine header;
+  int* ran;
+  int* destroyed;
+} NativeAsyncSmokeCoro;
+
+static CoroutineStep native_async_smoke_resume(Coroutine* coro) {
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->ran) {
+    *c->ran = 1;
+  }
+  if (coro->promise == (PromiseRef)0) {
+    if (c->ran) {
+      *c->ran = 2;
+    }
+    return (CoroutineStep){RT_CORO_STEP_COMPLETE, (PromiseRef)0};
+  }
+  if (!rt_promise_try_fulfill(coro->promise)) {
+    if (c->ran) {
+      *c->ran = 3;
+    }
+  }
+  return (CoroutineStep){RT_CORO_STEP_COMPLETE, (PromiseRef)0};
+}
+
+static void native_async_smoke_destroy(CoroutineRef coro) {
+  // Stack-owned coroutine frames must never be destroyed by the runtime.
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->destroyed) {
+    *c->destroyed = 1;
+  }
+}
+
+static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
+  .resume = native_async_smoke_resume,
+  .destroy = native_async_smoke_destroy,
+  // Use conservative values: this smoke test treats PromiseHeader as opaque.
+  .promise_size = 64,
+  .promise_align = 16,
+  .promise_shape_id = 0,
+  .abi_version = RT_ASYNC_ABI_VERSION,
+  .reserved = {0, 0, 0, 0},
+};
+
+int main(void) {
+  rt_thread_init(0);
+
+  // Touch the RT_THREAD TLS symbol so this smoke test also verifies that the
+  // runtime provides it for native codegen.
+  RT_THREAD = (Thread*)0;
+
+  // Global root registration (word-sized slot).
+  static size_t global_root = 0;
+  rt_global_root_register(&global_root);
   rt_global_root_unregister(&global_root);
 
   static const RtShapeDescriptor kShapes[1] = {
@@ -251,6 +295,50 @@ static void par_for_body(size_t i, uint8_t* data) {
       rt_thread_deinit();
       return 2;
     }
+  }
+
+  // Native async ABI: spawn a coroutine via CoroutineId (persistent handle id).
+  //
+  // This is stack-owned and must complete synchronously; the runtime should *not*
+  // call `destroy`, but it must still free the CoroutineId handle.
+  int native_async_ran = 0;
+  int native_async_destroyed = 0;
+  NativeAsyncSmokeCoro native_async = {
+    .header =
+      {
+        .vtable = &NATIVE_ASYNC_SMOKE_VTABLE,
+        .promise = (PromiseRef)0,
+        .next_waiter = (Coroutine*)0,
+        .flags = 0,
+      },
+    .ran = &native_async_ran,
+    .destroyed = &native_async_destroyed,
+  };
+  CoroutineId native_async_id = rt_handle_alloc((GcPtr)&native_async);
+  PromiseRef native_promise = rt_async_spawn(native_async_id);
+  if (native_promise == (PromiseRef)0) {
+    rt_thread_deinit();
+    return 30;
+  }
+  if (native_async_destroyed != 0) {
+    rt_thread_deinit();
+    return 31;
+  }
+  if (native_async_ran != 1) {
+    rt_thread_deinit();
+    return 32;
+  }
+  if (native_promise != native_async.header.promise) {
+    rt_thread_deinit();
+    return 33;
+  }
+  if (rt_promise_try_fulfill(native_promise)) {
+    rt_thread_deinit();
+    return 34;
+  }
+  if (rt_handle_load((HandleId)native_async_id) != (GcPtr)0) {
+    rt_thread_deinit();
+    return 35;
   }
 
   rt_gc_safepoint();

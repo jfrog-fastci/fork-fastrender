@@ -70,6 +70,55 @@ static void par_for_body(size_t i, uint8_t* data) {
   out[i] = (uint32_t)(i * 3u + 1u);
 }
 
+// -----------------------------------------------------------------------------
+// Native async ABI smoke test (CoroutineId + rt_async_spawn)
+// -----------------------------------------------------------------------------
+typedef struct NativeAsyncSmokeCoro {
+  Coroutine header;
+  int* ran;
+  int* destroyed;
+} NativeAsyncSmokeCoro;
+
+static CoroutineStep native_async_smoke_resume(Coroutine* coro) {
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->ran) {
+    *c->ran = 1;
+  }
+  // The runtime must have written the result promise pointer before first resume.
+  if (coro->promise == NULL) {
+    if (c->ran) {
+      *c->ran = 2;
+    }
+    return (CoroutineStep){RT_CORO_STEP_COMPLETE, NULL};
+  }
+  // Fulfill the promise and complete. The runtime should then free the CoroutineId handle.
+  if (!rt_promise_try_fulfill(coro->promise)) {
+    if (c->ran) {
+      *c->ran = 3;
+    }
+  }
+  return (CoroutineStep){RT_CORO_STEP_COMPLETE, NULL};
+}
+
+static void native_async_smoke_destroy(CoroutineRef coro) {
+  // Stack-owned coroutine frames must never be destroyed by the runtime.
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->destroyed) {
+    *c->destroyed = 1;
+  }
+}
+
+static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
+  .resume = native_async_smoke_resume,
+  .destroy = native_async_smoke_destroy,
+  // Use conservative values: this smoke test treats PromiseHeader as opaque.
+  .promise_size = 64,
+  .promise_align = 16,
+  .promise_shape_id = 0,
+  .abi_version = RT_ASYNC_ABI_VERSION,
+  .reserved = {0, 0, 0, 0},
+};
+
 int main(void) {
   // The runtime expects mutator threads to register before executing compiled
   // code or participating in GC safepoints.
@@ -120,6 +169,32 @@ int main(void) {
   if (check(rt_handle_load(h) == NULL)) { rc = 10; goto done; }
   rt_handle_store(h, obj1);
   if (check(rt_handle_load(h) == NULL)) { rc = 11; goto done; }
+
+  // Native async ABI: allocate a CoroutineId handle and spawn a coroutine.
+  //
+  // This is stack-owned and must complete synchronously; the runtime should *not*
+  // call `destroy`, but it must still free the CoroutineId handle.
+  int async_ran = 0;
+  int async_destroyed = 0;
+  NativeAsyncSmokeCoro async_coro = {
+    .header =
+      {
+        .vtable = &NATIVE_ASYNC_SMOKE_VTABLE,
+        .promise = NULL,
+        .next_waiter = NULL,
+        .flags = 0,
+      },
+    .ran = &async_ran,
+    .destroyed = &async_destroyed,
+  };
+  CoroutineId coro_id = rt_handle_alloc((GcPtr)&async_coro);
+  PromiseRef p = rt_async_spawn(coro_id);
+  if (check(async_destroyed == 0)) { rc = 24; goto done; }
+  if (check(async_ran == 1)) { rc = 25; goto done; }
+  if (check(p != NULL)) { rc = 26; goto done; }
+  if (check(p == async_coro.header.promise)) { rc = 27; goto done; }
+  if (check(!rt_promise_try_fulfill(p))) { rc = 28; goto done; }
+  if (check(rt_handle_load(coro_id) == NULL)) { rc = 29; goto done; }
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
