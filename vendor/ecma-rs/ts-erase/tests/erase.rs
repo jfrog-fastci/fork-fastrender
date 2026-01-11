@@ -126,6 +126,51 @@ fn strict_native_mode_rejects_runtime_ts_constructs() {
 }
 
 #[test]
+fn strict_native_mode_rejects_decorators() {
+  let cases = [
+    ("@dec class C {}", "class decorator"),
+    ("class C { @dec m() {} }", "member decorator"),
+    ("class C { m(@dec x: any) {} }", "parameter decorator"),
+    ("const C = (@dec class C {});", "class expression decorator"),
+  ];
+
+  for (src, label) in cases {
+    let file = FileId(0);
+    let mut ast = parse_with_options(
+      src,
+      ParseOptions {
+        dialect: Dialect::Ts,
+        source_type: SourceType::Module,
+      },
+    )
+    .unwrap_or_else(|err| panic!("input should parse for {label}: {err}"));
+
+    let diagnostics = match erase_types_strict_native(file, SourceType::Module, &mut ast) {
+      Ok(()) => panic!("expected decorators to be rejected in strict-native mode for {label}"),
+      Err(diags) => diags,
+    };
+
+    assert!(
+      diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+      "expected MINIFYTS0001 diagnostic for {label}, got: {diagnostics:?}"
+    );
+
+    // Even though strict-native erasure returns an error, it should still clear decorator syntax so
+    // the partially-erased AST remains valid strict ECMAScript.
+    let output =
+      emit_top_level_diagnostic(file, &ast, EmitOptions::minified()).expect("emission should succeed");
+    parse_with_options(
+      &output,
+      ParseOptions {
+        dialect: Dialect::Ecma,
+        source_type: SourceType::Module,
+      },
+    )
+    .expect("decorator syntax should be erased from strict-native output");
+  }
+}
+
+#[test]
 fn strict_native_mode_erases_ambient_decls_and_this_params() {
   let src = r#"
     declare enum E { A }

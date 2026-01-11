@@ -1211,9 +1211,20 @@ fn strip_class_decl(
   if let Some(extends) = class_decl.stx.extends.take() {
     class_decl.stx.extends = Some(strip_expr(ctx, extends));
   }
-  for decorator in &mut class_decl.stx.decorators {
-    let expr = take_expr(&mut decorator.stx.expression);
-    decorator.stx.expression = strip_expr(ctx, expr);
+  if ctx.mode == TsEraseMode::StrictNative {
+    if let Some(first) = class_decl.stx.decorators.first() {
+      unsupported_ts(
+        ctx,
+        first.loc,
+        "decorators are not supported in strict native TypeScript erasure mode",
+      );
+    }
+    class_decl.stx.decorators.clear();
+  } else {
+    for decorator in &mut class_decl.stx.decorators {
+      let expr = take_expr(&mut decorator.stx.expression);
+      decorator.stx.expression = strip_expr(ctx, expr);
+    }
   }
   strip_class_members(
     ctx,
@@ -4076,9 +4087,20 @@ fn strip_param(ctx: &mut StripContext, param: &mut Node<ParamDecl>) {
   if let Some(default) = param.stx.default_value.take() {
     param.stx.default_value = Some(strip_expr(ctx, default));
   }
-  for decorator in &mut param.stx.decorators {
-    let expr = take_expr(&mut decorator.stx.expression);
-    decorator.stx.expression = strip_expr(ctx, expr);
+  if ctx.mode == TsEraseMode::StrictNative {
+    if let Some(first) = param.stx.decorators.first() {
+      unsupported_ts(
+        ctx,
+        first.loc,
+        "decorators are not supported in strict native TypeScript erasure mode",
+      );
+    }
+    param.stx.decorators.clear();
+  } else {
+    for decorator in &mut param.stx.decorators {
+      let expr = take_expr(&mut decorator.stx.expression);
+      decorator.stx.expression = strip_expr(ctx, expr);
+    }
   }
 }
 
@@ -4257,9 +4279,20 @@ fn strip_class_expr(ctx: &mut StripContext, class: Node<ClassExpr>) -> Node<Clas
   if let Some(extends) = class.stx.extends.take() {
     class.stx.extends = Some(strip_expr(ctx, extends));
   }
-  for decorator in &mut class.stx.decorators {
-    let expr = take_expr(&mut decorator.stx.expression);
-    decorator.stx.expression = strip_expr(ctx, expr);
+  if ctx.mode == TsEraseMode::StrictNative {
+    if let Some(first) = class.stx.decorators.first() {
+      unsupported_ts(
+        ctx,
+        first.loc,
+        "decorators are not supported in strict native TypeScript erasure mode",
+      );
+    }
+    class.stx.decorators.clear();
+  } else {
+    for decorator in &mut class.stx.decorators {
+      let expr = take_expr(&mut decorator.stx.expression);
+      decorator.stx.expression = strip_expr(ctx, expr);
+    }
   }
   strip_class_members(ctx, &mut class.stx.members, class.stx.extends.is_some());
   class
@@ -4785,9 +4818,20 @@ fn strip_class_member(
     }
     ClassOrObjKey::Direct(_) => {}
   }
-  for decorator in &mut member.stx.decorators {
-    let expr = take_expr(&mut decorator.stx.expression);
-    decorator.stx.expression = strip_expr(ctx, expr);
+  if ctx.mode == TsEraseMode::StrictNative {
+    if let Some(first) = member.stx.decorators.first() {
+      unsupported_ts(
+        ctx,
+        first.loc,
+        "decorators are not supported in strict native TypeScript erasure mode",
+      );
+    }
+    member.stx.decorators.clear();
+  } else {
+    for decorator in &mut member.stx.decorators {
+      let expr = take_expr(&mut decorator.stx.expression);
+      decorator.stx.expression = strip_expr(ctx, expr);
+    }
   }
   Some(member)
 }
