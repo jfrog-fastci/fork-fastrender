@@ -1253,7 +1253,8 @@ impl FormattingContext for FlexFormattingContext {
     // If the flex container itself is sized with intrinsic keywords, map the available space we
     // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
     // definite available size (fill-available), so only map min-/max-content here.
-    if constraints.used_border_box_width.is_none() {
+    let container_inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    if constraints.used_border_box_width.is_none() && container_inline_is_horizontal {
       match style.width_keyword {
         Some(IntrinsicSizeKeyword::MinContent) => {
           available_space.width = AvailableSpace::MinContent
@@ -1264,7 +1265,7 @@ impl FormattingContext for FlexFormattingContext {
         _ => {}
       }
     }
-    if constraints.used_border_box_height.is_none() {
+    if constraints.used_border_box_height.is_none() && !container_inline_is_horizontal {
       match style.height_keyword {
         Some(IntrinsicSizeKeyword::MinContent) => {
           available_space.height = AvailableSpace::MinContent
@@ -6981,39 +6982,52 @@ impl FlexFormattingContext {
       IntrinsicSizeKeyword::CalcSize(_) => None,
     };
 
-    if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_width(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
-            taffy_style.size.width = Dimension::length(self.border_box_to_taffy_style_size(
-              rebased,
-              style,
-              Axis::Horizontal,
-              percentage_base_for_edges,
-            ));
+    // CSS Sizing L3: min-/max-content keywords on the *block-size* axis behave like `auto`
+    // (min-content block size is equivalent to max-content block size for block containers / inline
+    // boxes). Taffy only understands resolved lengths for these keywords, so we pre-resolve
+    // min-/max-content *inline-size* keywords here but keep block-size keywords as `auto`. This
+    // avoids measuring block-size by forcing a min-content inline-size layout pass, which can
+    // spuriously inflate height due to extra wrapping (notably in CTA-style buttons).
+    let physical_width_is_inline = inline_is_horizontal;
+    let physical_height_is_inline = !inline_is_horizontal;
+
+    if physical_width_is_inline {
+      if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
+        match intrinsic_physical_width(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
+              taffy_style.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+                rebased,
+                style,
+                Axis::Horizontal,
+                percentage_base_for_edges,
+              ));
+            }
           }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
         }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
       }
     }
 
-    if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_height(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
-            taffy_style.size.height = Dimension::length(self.border_box_to_taffy_style_size(
-              rebased,
-              style,
-              Axis::Vertical,
-              percentage_base_for_edges,
-            ));
+    if physical_height_is_inline {
+      if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
+        match intrinsic_physical_height(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
+              taffy_style.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+                rebased,
+                style,
+                Axis::Vertical,
+                percentage_base_for_edges,
+              ));
+            }
           }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
         }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
       }
     }
 

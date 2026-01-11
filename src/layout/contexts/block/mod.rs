@@ -876,6 +876,15 @@ impl BlockFormattingContext {
         style.max_width_keyword,
       )
     };
+    // CSS Sizing L3: min-/max-content keywords on the *block-size* axis behave like `auto`
+    // (min-content block size is equivalent to max-content block size for block containers / inline
+    // boxes). Treat them as `auto` so we don't force a "min-content inline-size" reflow to measure
+    // height, which can spuriously inflate the used block-size due to extra wrapping.
+    let block_keyword = match block_keyword {
+      Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
+      | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
+      other => other,
+    };
     // Percentage block sizes resolve against the containing block's *definite* block-size
     // (CSS2.1 §10.5). Thread this through via `LayoutConstraints::block_percentage_base` so we can
     // keep the block-axis available space indefinite (in-flow content is allowed to overflow)
@@ -9357,6 +9366,13 @@ impl FormattingContext for BlockFormattingContext {
       style.height_keyword
     } else {
       style.width_keyword
+    };
+    // CSS Sizing L3: min-/max-content block-size is equivalent to max-content block-size for block
+    // containers / inline boxes, so `block-size: min-content|max-content` behaves like `auto`.
+    let block_keyword = match block_keyword {
+      Some(crate::style::types::IntrinsicSizeKeyword::MinContent)
+      | Some(crate::style::types::IntrinsicSizeKeyword::MaxContent) => None,
+      other => other,
     };
     let min_block_keyword = if inline_is_horizontal {
       style.min_height_keyword

@@ -126,6 +126,7 @@ mod flex_negative_margin_overlap;
 mod flex_item_used_border_box_override;
 mod flex_item_blockification_inline_replaced;
 mod flex_item_flex_container_intrinsic_main_size;
+mod flex_height_min_content_test;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
 mod flex_justify_content_overflow_unsafe;

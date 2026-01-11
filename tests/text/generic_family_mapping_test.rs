@@ -44,6 +44,28 @@ fn sans_serif_prefers_known_family_over_first_loaded_font() {
 }
 
 #[test]
+fn sans_serif_fallback_list_prefers_noto_over_liberation() {
+  // LinkedIn (and other real-world pages) rely on the UA default sans-serif/system-ui mapping.
+  // On common Linux environments, `fc-match sans-serif` resolves to Noto Sans, not Liberation Sans.
+  //
+  // FastRender resolves generic family defaults by scanning a deterministic fallback list.
+  // Ensure that list prefers Noto Sans so system-ui/sans-serif line wrapping matches Chrome.
+  let families = GenericFamily::SansSerif.fallback_families();
+  let noto_idx = families
+    .iter()
+    .position(|name| *name == "Noto Sans")
+    .expect("Noto Sans should be in the sans-serif fallback list");
+  let liberation_idx = families
+    .iter()
+    .position(|name| *name == "Liberation Sans")
+    .expect("Liberation Sans should be in the sans-serif fallback list");
+  assert!(
+    noto_idx < liberation_idx,
+    "expected Noto Sans to be preferred over Liberation Sans in the sans-serif fallback list (noto_idx={noto_idx}, liberation_idx={liberation_idx})"
+  );
+}
+
+#[test]
 fn system_ui_uses_named_fallbacks_before_generic_mapping() {
   let db = load_db_with_fonts(&[
     "tests/fonts/ColorTestCOLR.ttf",
@@ -79,10 +101,10 @@ fn ui_sans_serif_prefers_noto_sans_over_dejavu_when_both_available() {
 
   let noto_id = db
     .query("Noto Sans", FontWeight::NORMAL, FontStyle::Normal)
-    .expect("Noto Sans should be available");
-  let dejavu_id = db
+    .expect("Noto Sans fixture should be available");
+  let deja_vu_id = db
     .query("DejaVu Sans", FontWeight::NORMAL, FontStyle::Normal)
-    .expect("DejaVu Sans should be available");
+    .expect("DejaVu Sans fixture should be available");
 
   let chain = FallbackChain::new().add_generic(GenericFamily::UiSansSerif);
   let default_id = chain
@@ -91,7 +113,34 @@ fn ui_sans_serif_prefers_noto_sans_over_dejavu_when_both_available() {
     .inner();
 
   assert_eq!(default_id, noto_id);
-  assert_ne!(default_id, dejavu_id);
+  assert_ne!(default_id, deja_vu_id);
+}
+
+#[test]
+fn system_ui_prefers_noto_sans_over_dejavu_sans_when_available() {
+  let db = load_db_with_fonts(&[
+    "tests/fixtures/fonts/DejaVuSans-subset.ttf",
+    "tests/fixtures/fonts/NotoSans-subset.ttf",
+  ]);
+
+  let noto_id = db
+    .query("Noto Sans", FontWeight::NORMAL, FontStyle::Normal)
+    .expect("Noto Sans fixture should be available");
+  let deja_vu_id = db
+    .query("DejaVu Sans", FontWeight::NORMAL, FontStyle::Normal)
+    .expect("DejaVu Sans fixture should be available");
+
+  let chain = FallbackChain::new().add_generic(GenericFamily::SystemUi);
+  let default_id = chain
+    .resolve_default(&db)
+    .expect("system-ui should resolve a default font")
+    .inner();
+
+  assert_eq!(
+    default_id, noto_id,
+    "system-ui should prefer a modern sans face (Noto Sans) over DejaVu Sans when both are present"
+  );
+  assert_ne!(default_id, deja_vu_id);
 }
 
 #[test]
