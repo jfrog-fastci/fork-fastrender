@@ -745,17 +745,42 @@ pub fn compile_source_with_typecheck(
   type_program: std::sync::Arc<typecheck_ts::Program>,
   type_file: typecheck_ts::FileId,
 ) -> OptimizeResult<Program> {
+  compile_source_with_typecheck_cfg_options(
+    source,
+    mode,
+    debug,
+    type_program,
+    type_file,
+    CompileCfgOptions::default(),
+  )
+}
+
+/// Compile source text with optional `typecheck-ts` type information and explicit CFG options.
+///
+/// This helper is only available when the crate is built with the `typed`
+/// feature. If the provided type program does not contain usable type
+/// information for a particular expression, the optimizer falls back to the
+/// existing untyped behaviour.
+#[cfg(feature = "typed")]
+pub fn compile_source_with_typecheck_cfg_options(
+  source: &str,
+  mode: TopLevelMode,
+  debug: bool,
+  type_program: std::sync::Arc<typecheck_ts::Program>,
+  type_file: typecheck_ts::FileId,
+  options: CompileCfgOptions,
+) -> OptimizeResult<Program> {
   let matches_file_text = type_program
     .file_text(type_file)
     .map(|text| text.as_ref() == source)
     .unwrap_or(false);
 
   if matches_file_text {
-    return compile_file_with_typecheck(type_program, type_file, mode, debug);
+    return compile_file_with_typecheck_cfg_options(type_program, type_file, mode, debug, options);
   }
 
   let top_level_node = parse_source(source, SOURCE_FILE, mode)?;
-  Program::compile(top_level_node, mode, debug)
+  Program::compile_with_cfg_options(top_level_node, mode, debug, options)
 }
 
 /// Compile a file from a `typecheck-ts` [`typecheck_ts::Program`].
@@ -770,6 +795,23 @@ pub fn compile_file_with_typecheck(
   file: typecheck_ts::FileId,
   mode: TopLevelMode,
   debug: bool,
+) -> OptimizeResult<Program> {
+  compile_file_with_typecheck_cfg_options(program, file, mode, debug, CompileCfgOptions::default())
+}
+
+/// Compile a file from a `typecheck-ts` [`typecheck_ts::Program`] with explicit CFG options.
+///
+/// This reuses the `hir-js` lowering cached inside the type program so `BodyId`
+/// / `ExprId` values match the IDs used for type checking. If the type program
+/// does not have a cached lowering for `file`, the optimizer falls back to
+/// lowering the parsed AST itself.
+#[cfg(feature = "typed")]
+pub fn compile_file_with_typecheck_cfg_options(
+  program: std::sync::Arc<typecheck_ts::Program>,
+  file: typecheck_ts::FileId,
+  mode: TopLevelMode,
+  debug: bool,
+  cfg_options: CompileCfgOptions,
 ) -> OptimizeResult<Program> {
   let source = program.file_text(file).ok_or_else(|| {
     vec![Diagnostic::error(
@@ -786,14 +828,7 @@ pub fn compile_file_with_typecheck(
       file,
       lowered.as_ref(),
     );
-    Program::compile_with_lower(
-      top_level_node,
-      lowered,
-      mode,
-      debug,
-      types,
-      CompileCfgOptions::default(),
-    )
+    Program::compile_with_lower(top_level_node, lowered, mode, debug, types, cfg_options)
   } else {
     let lower = hir_js::lower_file(file, HirFileKind::Ts, &top_level_node);
     let types =
@@ -804,7 +839,7 @@ pub fn compile_file_with_typecheck(
       mode,
       debug,
       types,
-      CompileCfgOptions::default(),
+      cfg_options,
     )
   }
 }
@@ -817,6 +852,18 @@ pub fn compile_source_typed(
   mode: TopLevelMode,
   debug: bool,
 ) -> OptimizeResult<Program> {
+  compile_source_typed_cfg_options(source, mode, debug, CompileCfgOptions::default())
+}
+
+/// Compile and type-check a single source string using the bundled
+/// `typecheck-ts` memory host with explicit CFG options.
+#[cfg(feature = "typed")]
+pub fn compile_source_typed_cfg_options(
+  source: &str,
+  mode: TopLevelMode,
+  debug: bool,
+  cfg_options: CompileCfgOptions,
+) -> OptimizeResult<Program> {
   let mut host = typecheck_ts::MemoryHost::new();
   let file = typecheck_ts::FileKey::new("input.ts");
   host.insert(file.clone(), source);
@@ -825,7 +872,7 @@ pub fn compile_source_typed(
   let type_file = type_program
     .file_id(&file)
     .expect("typecheck program should know the inserted file");
-  compile_file_with_typecheck(type_program, type_file, mode, debug)
+  compile_file_with_typecheck_cfg_options(type_program, type_file, mode, debug, cfg_options)
 }
 
 fn collect_symbol_table(symbols: &JsSymbols, captured: &HashSet<SymbolId>) -> ProgramSymbols {
