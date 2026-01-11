@@ -128,7 +128,7 @@ pub fn validate_cors_allow_origin(
 mod tests {
   use super::{cors_enforcement_enabled, validate_cors_allow_origin};
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
-  use crate::resource::{origin_from_url, FetchCredentialsMode, FetchedResource};
+  use crate::resource::{origin_from_url, DocumentOrigin, FetchCredentialsMode, FetchedResource};
   use std::collections::HashMap;
   use std::sync::Arc;
 
@@ -255,6 +255,30 @@ mod tests {
       err.contains("does not match request origin"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn hostless_http_origin_treated_as_null_origin() {
+    let doc_origin = DocumentOrigin {
+      scheme: "https".to_string(),
+      host: None,
+      port: Some(443),
+    };
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("null".to_string());
+
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("null origin should be accepted for hostless http-like origins");
   }
 
   #[test]
