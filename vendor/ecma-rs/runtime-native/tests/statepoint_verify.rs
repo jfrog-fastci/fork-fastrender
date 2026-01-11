@@ -57,11 +57,18 @@ fn verifier_rejects_register_locations() {
   )
   .unwrap_err();
 
+  assert_eq!(err.patchpoint_id, 0xABCDEF00);
+  assert_eq!(err.location_index, Some(3));
+  let loc = err.location.expect("expected location details for VerifyError");
+  assert_eq!(loc.kind, "Register");
+  assert_eq!(loc.dwarf_reg, 7);
+  assert_eq!(loc.offset, 16);
+
   let msg = err.to_string();
   assert!(msg.contains("callsite"));
   assert!(msg.contains("patchpoint_id=0xabcdef00"));
   assert!(msg.contains("location[3]"));
   assert!(msg.contains("kind=Register"));
   assert!(msg.contains("dwarf_reg=7"));
-  assert!(msg.contains("offset=0"));
+  assert!(msg.contains("offset=16"));
 }

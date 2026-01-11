@@ -58,6 +58,9 @@ pub enum StackMapError {
 
   #[error("stack slot offset overflow computing rbp offset for stack_size={stack_size} off={off}")]
   StackSlotOffsetOverflow { stack_size: u64, off: i32 },
+
+  #[error(transparent)]
+  StatepointVerify(#[from] crate::statepoint_verify::VerifyError),
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +407,30 @@ impl StackMaps {
         expected,
         actual: raw.records.len(),
       });
+    }
+
+    // Fail fast if LLVM/codegen start emitting statepoint roots in registers or
+    // otherwise violate our spill-to-stack assumptions.
+    #[cfg(any(debug_assertions, feature = "verify-statepoints"))]
+    {
+      use crate::statepoint_verify::{
+        verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
+      };
+
+      #[cfg(target_arch = "x86_64")]
+      let arch = DwarfArch::X86_64;
+      #[cfg(target_arch = "aarch64")]
+      let arch = DwarfArch::AArch64;
+      #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+      compile_error!("statepoint stackmap verification only supports x86_64 and aarch64");
+
+      verify_statepoint_stackmap(
+        &raw,
+        VerifyStatepointOptions {
+          arch,
+          mode: VerifyMode::StatepointsOnly,
+        },
+      )?;
     }
 
     let mut callsites: Vec<CallsiteEntry> = Vec::with_capacity(raw.records.len());
