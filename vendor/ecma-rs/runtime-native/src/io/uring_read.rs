@@ -413,8 +413,9 @@ impl Drop for DriverInner {
     // the kernel is done.
     //
     // Best-effort: ignore send errors (driver thread may have already exited).
-    let _ = self.cmd_tx.send(Command::Shutdown);
-    wake_eventfd(self.wake_fd);
+    if self.cmd_tx.send(Command::Shutdown).is_ok() {
+      wake_eventfd(self.wake_fd);
+    }
 
     // Policy B (mirrors `runtime-io-uring`):
     // - In debug builds, dropping with in-flight ops is a bug: leak first, then panic (unless
@@ -527,8 +528,9 @@ impl UringDriver {
   }
 
   fn request_cancel(&self, id: u64) {
-    let _ = self.inner.cmd_tx.send(Command::Cancel { id });
-    self.signal();
+    if self.inner.cmd_tx.send(Command::Cancel { id }).is_ok() {
+      self.signal();
+    }
   }
 
   fn signal(&self) {
