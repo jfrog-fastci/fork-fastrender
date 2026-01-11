@@ -113,6 +113,9 @@ pub fn scan_reloc_pairs(
   // statepoints by decoding the StackMap record layout.
   //
   // If decode fails, treat it as a non-statepoint record and return an empty result.
+  if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
+    return Ok(Vec::new());
+  }
   let statepoint = match StatepointRecord::new(callsite.record) {
     Ok(sp) => sp,
     Err(_) => return Ok(Vec::new()),

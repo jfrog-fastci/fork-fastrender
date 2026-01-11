@@ -727,9 +727,12 @@ impl<'a> CallSite<'a> {
 
     // Note: `patchpoint_id` is not a reliable marker for LLVM `gc.statepoint` records (it can be
     // overridden via the `"statepoint-id"` callsite attribute and is not globally unique). Detect
-    // statepoints by decoding the StackMap record layout.
+    // statepoints by their structural prefix, then decode the full StackMap record layout.
     //
     // If decode fails, treat it as a non-statepoint record and yield no relocation pairs.
+    if !crate::statepoints::looks_like_statepoint_record(self.record) {
+      return RelocPairsIter::Empty;
+    }
     let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
       Ok(sp) => sp,
       Err(_) => return RelocPairsIter::Empty,
