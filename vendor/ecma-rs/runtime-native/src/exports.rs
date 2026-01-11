@@ -1542,7 +1542,6 @@ fn rt_io_set_last_error(code: u32) {
 /// This is `#[doc(hidden)]` because it is not part of the stable runtime-native
 /// C ABI.
 #[doc(hidden)]
-#[no_mangle]
 pub extern "C" fn rt_io_debug_take_last_error() -> u32 {
   abort_on_panic(|| {
     RT_IO_LAST_ERROR.with(|c| {
