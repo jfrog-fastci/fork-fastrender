@@ -44,7 +44,7 @@ fn dry_run_prints_expected_plan() {
     "expected fixture name in plan; got:\n{stdout}"
   );
   assert!(
-    stdout.contains("scripts/cargo_agent.sh build --release --bin render_fixtures"),
+    stdout.contains("scripts/cargo_agent.sh build --release --features avif --bin render_fixtures"),
     "expected render_fixtures build command to be present; got:\n{stdout}"
   );
   let render_line = stdout

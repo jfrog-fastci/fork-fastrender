@@ -68,6 +68,10 @@ fn page_loop_build_command_builds_required_bins_in_release() {
     args.iter().any(|arg| arg == "--release"),
     "expected --release in args, got {args:?}"
   );
+  assert!(
+    args.windows(2).any(|w| w == ["--features", "avif"]),
+    "expected page-loop build command to enable AVIF support (--features avif); got {args:?}"
+  );
   for bin in ["render_fixtures", "inspect_frag", "diff_renders"] {
     assert!(
       args.windows(2).any(|w| w == ["--bin", bin]),
@@ -226,6 +230,10 @@ fn page_loop_build_command_in_debug_omits_release_flag() {
   let cmd = build_bins_command(&repo_root, true, &["render_fixtures"]);
 
   let args = cmd_args(&cmd);
+  assert!(
+    args.windows(2).any(|w| w == ["--features", "avif"]),
+    "expected page-loop debug build command to enable AVIF support (--features avif); got {args:?}"
+  );
   assert!(
     !args.iter().any(|arg| arg == "--release"),
     "expected debug build command to omit --release, got {args:?}"

@@ -451,6 +451,9 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     if !args.debug {
       build_cmd.arg("--release");
     }
+    // Many real-world fixtures ship AVIF images. Build renderer binaries with AVIF support so diffs
+    // don't get dominated by missing image decoders.
+    build_cmd.args(["--features", "avif"]);
     if !args.no_fastrender {
       build_cmd.args(["--bin", "render_fixtures"]);
     }

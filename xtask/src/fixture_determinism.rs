@@ -334,6 +334,9 @@ pub fn run_fixture_determinism(args: FixtureDeterminismArgs) -> Result<()> {
     if !args.debug {
       build_cmd.arg("--release");
     }
+    // AVIF is common in real-world fixtures; build renderer binaries with AVIF support so
+    // determinism runs don't fail or render empty images for those cases.
+    build_cmd.args(["--features", "avif"]);
     build_cmd
       .args(["--bin", "render_fixtures"])
       .args(["--bin", "diff_renders"])

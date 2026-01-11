@@ -66,6 +66,10 @@ pub fn build_bins_command(repo_root: &Path, debug: bool, bins: &[&str]) -> Comma
   if !debug {
     cmd.arg("--release");
   }
+  // Many real-world fixtures ship AVIF images. Build the renderer binaries with AVIF support so
+  // `xtask page-loop --chrome` diffs reflect renderer/layout differences rather than missing image
+  // decoders.
+  cmd.args(["--features", "avif"]);
   for bin in bins {
     cmd.args(["--bin", bin]);
   }

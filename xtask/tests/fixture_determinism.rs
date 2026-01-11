@@ -51,6 +51,47 @@ fn write_stub_cargo(bin_dir: &Path) -> PathBuf {
   stub_cargo
 }
 
+fn write_stub_cargo_asserts_avif(bin_dir: &Path) -> PathBuf {
+  let stub_cargo = bin_dir.join("cargo");
+  fs::write(
+    &stub_cargo,
+    r#"#!/usr/bin/env sh
+set -eu
+
+subcommand="${1:-}"
+if [ "$subcommand" != "build" ]; then
+  echo "stub cargo: unexpected subcommand '$subcommand'" >&2
+  exit 2
+fi
+
+features=""
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --features=*) features="${arg#--features=}" ;;
+  esac
+  if [ "$prev" = "--features" ]; then
+    features="$arg"
+  fi
+  prev="$arg"
+done
+
+case ",${features}," in
+  *,avif,*) ;;
+  *)
+    echo "stub cargo: expected build to include --features avif, got '$features'" >&2
+    exit 2
+    ;;
+esac
+
+exit 0
+"#,
+  )
+  .expect("write stub cargo");
+  make_executable(&stub_cargo);
+  stub_cargo
+}
+
 const STUB_RENDER_FIXTURES: &str = r#"#!/usr/bin/env sh
 set -eu
 
@@ -255,13 +296,16 @@ fn run_fixture_determinism(
   out_dir: &Path,
   allow_differences: bool,
   debug: bool,
+  no_build: bool,
 ) -> std::process::Output {
   let mut cmd = Command::new(env!("CARGO_BIN_EXE_xtask"));
   cmd.current_dir(repo_root());
   cmd.env("PATH", prepend_path(bin_dir));
   cmd.env("CARGO_TARGET_DIR", target_dir);
   cmd.arg("fixture-determinism");
-  cmd.arg("--no-build");
+  if no_build {
+    cmd.arg("--no-build");
+  }
   if debug {
     cmd.arg("--debug");
   }
@@ -295,7 +339,15 @@ fn fixture_determinism_no_build_writes_report() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, false);
+  let output = run_fixture_determinism(
+    &bin_dir,
+    &target_dir,
+    &fixtures_dir,
+    &out_dir,
+    false,
+    false,
+    true,
+  );
   assert!(
     output.status.success(),
     "expected fixture-determinism to succeed.\nstdout:\n{}\nstderr:\n{}",
@@ -340,7 +392,15 @@ fn fixture_determinism_fails_when_differences_found() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, false);
+  let output = run_fixture_determinism(
+    &bin_dir,
+    &target_dir,
+    &fixtures_dir,
+    &out_dir,
+    false,
+    false,
+    true,
+  );
   assert!(
     !output.status.success(),
     "expected fixture-determinism to fail when differences are found.\nstdout:\n{}\nstderr:\n{}",
@@ -404,7 +464,15 @@ fn fixture_determinism_allow_differences_exits_zero() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, true, false);
+  let output = run_fixture_determinism(
+    &bin_dir,
+    &target_dir,
+    &fixtures_dir,
+    &out_dir,
+    true,
+    false,
+    true,
+  );
   assert!(
     output.status.success(),
     "expected fixture-determinism to exit 0 when --allow-differences is set.\nstdout:\n{}\nstderr:\n{}",
@@ -446,7 +514,15 @@ fn fixture_determinism_no_build_debug_profile_writes_report() {
   fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
   let out_dir = temp.path().join("out");
 
-  let output = run_fixture_determinism(&bin_dir, &target_dir, &fixtures_dir, &out_dir, false, true);
+  let output = run_fixture_determinism(
+    &bin_dir,
+    &target_dir,
+    &fixtures_dir,
+    &out_dir,
+    false,
+    true,
+    true,
+  );
   assert!(
     output.status.success(),
     "expected fixture-determinism --debug to succeed.\nstdout:\n{}\nstderr:\n{}",
@@ -460,5 +536,44 @@ fn fixture_determinism_no_build_debug_profile_writes_report() {
   assert!(
     out_dir.join("report.json").is_file(),
     "missing report.json in out dir"
+  );
+}
+
+#[test]
+#[cfg(unix)]
+fn fixture_determinism_build_includes_avif_feature() {
+  let temp = tempdir().expect("tempdir");
+  let bin_dir = temp.path().join("bin");
+  let target_dir = temp.path().join("target");
+  fs::create_dir_all(&bin_dir).expect("create stub bin dir");
+  fs::create_dir_all(target_dir.join("release")).expect("create stub target dir");
+
+  write_stub_cargo_asserts_avif(&bin_dir);
+  write_stub_render_fixtures(&target_dir);
+  write_stub_diff_renders(&target_dir, false);
+  write_stub_diff_snapshots(&target_dir);
+
+  let fixtures_dir = temp.path().join("fixtures");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+  let out_dir = temp.path().join("out");
+
+  let output = run_fixture_determinism(
+    &bin_dir,
+    &target_dir,
+    &fixtures_dir,
+    &out_dir,
+    false,
+    false,
+    false,
+  );
+  assert!(
+    output.status.success(),
+    "expected fixture-determinism to succeed when building with AVIF support.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    out_dir.join("report.html").is_file(),
+    "missing report.html in out dir"
   );
 }

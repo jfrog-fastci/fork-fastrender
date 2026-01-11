@@ -1800,8 +1800,15 @@ set -eu
 subcommand="${1:-}"
 
 bins=""
+features=""
 prev=""
 for arg in "$@"; do
+  case "$arg" in
+    --features=*) features="${arg#--features=}" ;;
+  esac
+  if [ "$prev" = "--features" ]; then
+    features="$arg"
+  fi
   if [ "$prev" = "--bin" ]; then
     if [ -z "$bins" ]; then
       bins="$arg"
@@ -1816,6 +1823,14 @@ done
 # executes them (and `render_fixtures`) directly. Emulate that by writing stub executables into the
 # target dir when we see corresponding `cargo build` invocations.
 if [ "$subcommand" = "build" ]; then
+  case ",${features}," in
+    *,avif,*) ;;
+    *)
+      echo "stub cargo: expected build to include --features avif, got '$features'" >&2
+      exit 2
+      ;;
+  esac
+
   out="${CARGO_TARGET_DIR:-target}"
   case "$out" in
     /*) ;;
