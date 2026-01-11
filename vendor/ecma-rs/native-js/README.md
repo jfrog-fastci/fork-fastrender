@@ -6,10 +6,9 @@ of TypeScript** to native code via LLVM.
 The crate can emit **LLVM IR** and (on Linux) can produce **object files** / a **native executable**
 by shelling out to `clang`/`lld` for linking.
 
-This crate is still early. The high-level AOT entrypoints are not wired up yet
-(`native_js::compile` returns `NativeJsError::UnsupportedFeature` and
-`Compiler::compile` returns `NativeJsError::Unimplemented`), but the crate
-already contains:
+This crate is still early. The typechecked pipeline is wired end-to-end
+(typecheck-ts → HIR/types → LLVM module → artifact), but the HIR→LLVM lowering is
+still under construction.
 
 - a minimal `parse-js`-driven **textual** LLVM IR emitter (`compile_typescript_to_llvm_ir`)
   used by the `native-js-cli` binary for smoke tests and IR debugging
@@ -178,35 +177,34 @@ The API is intentionally small and currently consists of:
   compile a small multi-file ES module project (subset) to textual LLVM IR
   using `typecheck-ts` for module resolution + export maps (used by
   `native-js-cli`).
-- `compile(&Program, &CompilerOptions) -> Result<CompilationOutput, NativeJsError>`:
-  AOT compilation entrypoint for a fully typechecked `typecheck-ts` `Program`.
-  (Currently returns `NativeJsError::UnsupportedFeature`.)
-- `CompilerOptions` / `CompilationOutput`: options/output types for `compile(...)`.
-- `Compiler`: entry point (configured with `CompileOptions`)
-- `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
-  (currently unimplemented)
-- `CompileOptions`: codegen configuration
+- `compile_program(&Program, FileId, &CompilerOptions) -> Result<Artifact, NativeJsError>`:
+  typechecked compilation entrypoint (creates an LLVM module + emits an artifact).
+- `CompilerOptions`: codegen configuration (with `CompileOptions` as a backwards-compatible alias)
+- `Artifact`: emitted output (path + kind)
 - `OptLevel`: optimization level (`O0`/`O1`/`O2`/`O3`/`Os`/`Oz`)
-- `EmitKind`: artifact kind (`LlvmIr`, `Object`, `Assembly`, `Executable`)
-- `NativeJsError`: shared error type for the native pipeline (parse errors,
-  codegen errors, typecheck diagnostics, missing toolchain/IO errors, and
-  unimplemented/unsupported features)
+- `EmitKind`: artifact kind (`LlvmIr`, `Bitcode`, `Object`, `Assembly`, `Executable`)
+- `NativeJsError`: error type (includes parse errors, codegen errors, and user-facing diagnostics)
 - `compiler::compile_typescript_to_artifact(...)`: convenience helper that turns the textual LLVM IR
   emitted by `compile_typescript_to_llvm_ir` into an on-disk artifact (including a Linux executable)
 
-Example (API shape):
+Example (typechecked entry point):
 
 ```rust
-use native_js::{CompileOptions, Compiler, EmitKind, OptLevel};
+use native_js::{compile_program, CompilerOptions, EmitKind};
+use typecheck_ts::{FileKey, MemoryHost, Program};
 
-let mut opts = CompileOptions::default();
-opts.opt_level = OptLevel::O2;
-opts.emit = EmitKind::Object;
-opts.debug = false;
+let mut host = MemoryHost::new();
+let key = FileKey::new("main.ts");
+host.insert(key.clone(), "export function main() { return 1 + 2; }");
 
-let compiler = Compiler::new(opts);
-// Note: currently returns NativeJsError::Unimplemented.
-compiler.compile()?;
+let program = Program::new(host, vec![key.clone()]);
+let entry = program.file_id(&key).unwrap();
+
+let mut opts = CompilerOptions::default();
+opts.emit = EmitKind::LlvmIr;
+let artifact = compile_program(&program, entry, &opts)?;
+
+println!(\"wrote {}\", artifact.path.display());
 ```
 
 > Note: the long-term typechecked/HIR backend is still under construction.
@@ -216,7 +214,6 @@ compiler.compile()?;
 >
 > `native_js::emit` provides the artifact emission helpers used by the HIR-based
 > backend and CLI.
-
 Example (generating LLVM IR via `CodeGen`):
 
 ```rust

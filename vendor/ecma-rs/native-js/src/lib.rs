@@ -48,33 +48,33 @@ pub mod compiler;
 pub mod codegen;
 pub mod codes;
 pub mod emit;
+pub mod eval;
 pub mod gc;
 pub mod link;
 pub mod llvm;
 pub mod poc;
+pub mod poc_stackmaps;
+mod project;
 pub mod resolve;
 pub mod runtime_abi;
 pub mod runtime_fn;
-pub mod poc_stackmaps;
 pub mod stackmaps;
 pub mod strict;
 pub mod validate;
-pub mod eval;
 
-mod project;
+mod error;
 mod stack_walking;
 
+pub use error::NativeJsError;
 pub use project::compile_project_to_llvm_ir;
+pub use resolve::Resolver;
 pub use stack_walking::CodeGen;
 
-use diagnostics::{Diagnostic, Severity};
 use llvm_sys as _;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use typecheck_ts::{DefId, FileId, Program};
-
-pub use resolve::Resolver;
 
 /// Optimization level to apply during compilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,8 @@ pub enum OptLevel {
 pub enum EmitKind {
   /// Emit LLVM IR (`.ll`) for debugging.
   LlvmIr,
+  /// Emit LLVM bitcode (`.bc`).
+  Bitcode,
   /// Emit an object file (`.o`).
   Object,
   /// Emit assembly (`.s`).
@@ -105,7 +107,7 @@ pub enum EmitKind {
 /// Options controlling native compilation.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct CompileOptions {
+pub struct CompilerOptions {
   /// The optimization level to use for codegen.
   pub opt_level: OptLevel,
   /// What kind of artifact to emit.
@@ -116,9 +118,14 @@ pub struct CompileOptions {
   pub debug: bool,
   /// If true, recognize and lower small builtin APIs such as `console.log` and `assert`.
   pub builtins: bool,
+  /// Explicit output path. When `None`, a temp file is created for the chosen [`EmitKind`].
+  pub output: Option<PathBuf>,
 }
 
-impl Default for CompileOptions {
+/// Backwards-compatible alias used by the parse-js based emitter.
+pub type CompileOptions = CompilerOptions;
+
+impl Default for CompilerOptions {
   fn default() -> Self {
     Self {
       opt_level: OptLevel::O2,
@@ -126,135 +133,36 @@ impl Default for CompileOptions {
       target: None,
       debug: false,
       builtins: true,
+      output: None,
     }
   }
 }
 
-/// Entry-point type for native compilation.
-#[derive(Debug)]
-pub struct Compiler {
-  options: CompileOptions,
+/// A successful compilation result.
+#[derive(Debug, Clone)]
+pub struct Artifact {
+  pub kind: EmitKind,
+  pub path: PathBuf,
+  /// Optional hint suitable for printing to stdout by CLIs.
+  pub stdout_hint: Option<String>,
 }
 
-impl Compiler {
-  pub fn new(options: CompileOptions) -> Self {
-    Self { options }
-  }
-
-  pub fn options(&self) -> &CompileOptions {
-    &self.options
-  }
-
-  /// Compile a program using the configured [`CompileOptions`].
-  ///
-  /// Note: TS/HIR lowering is not implemented yet.
-  pub fn compile(&self) -> Result<(), NativeJsError> {
-    Err(NativeJsError::Unimplemented)
-  }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum NativeJsError {
-  #[error("type checking failed")]
-  TypecheckFailed { diagnostics: Vec<Diagnostic> },
-
-  #[error("unsupported feature: {0}")]
-  UnsupportedFeature(String),
-
-  #[error("{0}")]
-  LlvmNotAvailable(String),
-
-  #[error("internal compiler error: {0}")]
-  Internal(String),
-
-  #[error(transparent)]
-  Parse(#[from] parse_js::error::SyntaxError),
-
-  #[error(transparent)]
-  Codegen(#[from] codegen::CodegenError),
-
-  #[error("native-js currently only supports linux for AOT executable emission (target_os={target_os})")]
-  UnsupportedPlatform { target_os: String },
-
-  #[error("failed to write output to {path}: {source}")]
-  Io {
-    path: std::path::PathBuf,
-    #[source]
-    source: std::io::Error,
-  },
-
-  #[error("failed to create temporary directory: {0}")]
-  TempDirCreateFailed(#[source] std::io::Error),
-
-  #[error("failed to spawn linker tool: {0}")]
-  LinkerSpawnFailed(#[source] std::io::Error),
-
-  #[error("linker failed: {cmd}\n{stderr}")]
-  LinkerFailed { cmd: String, stderr: String },
-
-  #[error("required tool not found in PATH: {0}")]
-  ToolNotFound(&'static str),
-
-  #[error("failed to load source for {file}: {reason}")]
-  FileText { file: String, reason: String },
-
-  #[error("missing HIR lowering for {file} (did you call `Program::check()`?)")]
-  MissingHirLowering { file: String },
-
-  #[error("module resolution failed: {from} -> {specifier}")]
-  UnresolvedImport { from: String, specifier: String },
-
-  #[error("missing export `{export}` in {file}")]
-  MissingExport { file: String, export: String },
-
-  #[error(
-    "export `{export}` in {file} has no local definition (re-exports/default exports are not supported)"
-  )]
-  UnsupportedExport { file: String, export: String },
-
-  #[error("cyclic module dependency detected: {cycle}")]
-  ModuleCycle { cycle: String },
-
-  #[error("native-js codegen is not implemented yet")]
-  Unimplemented,
-
-  #[error("LLVM error: {0}")]
-  Llvm(String),
-}
-
-/// Options for the top-level `native-js` AOT compilation API.
-#[derive(Clone, Debug, Default)]
-pub struct CompilerOptions {
-  /// Emit the textual LLVM IR for the compiled program.
-  pub emit_ir: bool,
-  /// Optional output location for produced artifacts.
-  pub output: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CompilationOutput {
-  /// Path to the produced artifact (executable/object file).
-  pub artifact: PathBuf,
-  /// Optional textual LLVM IR (when [`CompilerOptions::emit_ir`] is true).
-  pub llvm_ir: Option<String>,
-}
-
-pub fn compile(
+/// Compile a fully type-checked program starting from `entry`.
+///
+/// This is the "real" native compiler entry point: it consumes `typecheck-ts`'s checked HIR + type
+/// tables, runs strict-subset validation, builds an LLVM module, and emits an artifact.
+pub fn compile_program(
   program: &typecheck_ts::Program,
-  options: &CompilerOptions,
-) -> Result<CompilationOutput, NativeJsError> {
-  let diagnostics = program.check();
-  if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
-    return Err(NativeJsError::TypecheckFailed { diagnostics });
-  }
-
-  let _ = options;
-  Err(NativeJsError::UnsupportedFeature(
-    "native-js AOT compilation is not implemented yet".to_string(),
-  ))
+  entry: typecheck_ts::FileId,
+  opts: &CompilerOptions,
+) -> Result<Artifact, NativeJsError> {
+  compiler::compile_program(program, entry, opts)
 }
 
+/// Parse and compile a single TypeScript module to LLVM IR.
+///
+/// This is a lightweight, `parse-js`-driven emitter that does *not* use `typecheck-ts`.
+/// It exists mainly for debugging and for `native-js-cli` integration tests.
 pub fn compile_typescript_to_llvm_ir(
   source: &str,
   opts: CompileOptions,
@@ -316,11 +224,7 @@ fn sanitize_symbol_suffix(name: &str) -> String {
     }
   }
   // Avoid leading digits (LLVM accepts it, but it is less portable across tools).
-  if out
-    .chars()
-    .next()
-    .is_some_and(|ch| ch.is_ascii_digit())
-  {
+  if out.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
     out.insert(0, '_');
   }
   out

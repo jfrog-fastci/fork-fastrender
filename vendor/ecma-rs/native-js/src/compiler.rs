@@ -11,21 +11,27 @@ use crate::codes;
 use crate::emit::TargetConfig;
 use crate::llvm::expr::{FunctionCodegen, FunctionSymbol};
 use crate::llvm::{LlvmBackend, ValueKind};
-use crate::validate::validate_strict_subset;
-use crate::{compile_typescript_to_llvm_ir, emit, link, CompileOptions, EmitKind, NativeJsError, OptLevel};
-use diagnostics::{Diagnostic, Severity, Span, TextRange};
-use hir_js::{
-  Body, BodyId, DefId, DefKind, ExprId, FunctionBody, FunctionData, NameId, PatKind, StmtId, StmtKind,
+use crate::{
+  compile_typescript_to_llvm_ir, emit, link, Artifact, CompileOptions, CompilerOptions, EmitKind,
+  NativeJsError, OptLevel,
 };
+use diagnostics::{Diagnostic, Severity, Span, TextRange};
+use hir_js::{Body, BodyId, DefId, DefKind, ExprId, FunctionBody, FunctionData, NameId, PatKind, StmtId, StmtKind};
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
+use inkwell::module::Module;
 use inkwell::types::BasicType;
 use inkwell::values::BasicValueEnum;
 use inkwell::OptimizationLevel;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tempfile::TempDir;
-use typecheck_ts::{FileId, FileKey, Host, Program};
+use typecheck_ts::{BodyCheckResult, FileId, FileKey, Host, Program};
+
+const CODE_MISSING_HIR: &str = "NJS0201";
+const CODE_UNSUPPORTED_EMIT: &str = "NJS0202";
 
 /// Parse + typecheck a TypeScript program and then validate that it fits the
 /// strict native-js subset.
@@ -39,10 +45,10 @@ pub fn typecheck_and_validate_strict_subset(
 ) -> Result<Program, Vec<Diagnostic>> {
   let program = Program::new(host, roots);
   let diagnostics = program.check();
-  if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+  if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
     return Err(diagnostics);
   }
-  validate_strict_subset(&program)?;
+  crate::validate::validate_strict_subset(&program)?;
   Ok(program)
 }
 
@@ -80,7 +86,7 @@ pub fn compile_typescript_to_artifact(
       })
     }
 
-    EmitKind::Object | EmitKind::Assembly | EmitKind::Executable => {
+    EmitKind::Bitcode | EmitKind::Object | EmitKind::Assembly | EmitKind::Executable => {
       let context = Context::create();
       let module = parse_ir(&context, &ir)?;
 
@@ -91,6 +97,10 @@ pub fn compile_typescript_to_artifact(
       let target = target_config_from_opts(&opts);
 
       match opts.emit {
+        EmitKind::Bitcode => {
+          let bc = emit::emit_bitcode(&module);
+          write_file(&out_path, &bc)?;
+        }
         EmitKind::Object => {
           let obj =
             emit::emit_object_with_statepoints(&module, target).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
@@ -135,7 +145,10 @@ pub fn compile_typescript_to_artifact(
   }
 }
 
-fn parse_ir<'ctx>(context: &'ctx Context, ir: &str) -> Result<inkwell::module::Module<'ctx>, NativeJsError> {
+fn parse_ir<'ctx>(
+  context: &'ctx Context,
+  ir: &str,
+) -> Result<inkwell::module::Module<'ctx>, NativeJsError> {
   let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "module.ll");
   context
     .create_module_from_ir(buf)
@@ -181,6 +194,7 @@ fn resolve_output_path(
   let dir = TempDir::new().map_err(NativeJsError::TempDirCreateFailed)?;
   let filename = match emit {
     EmitKind::LlvmIr => "out.ll",
+    EmitKind::Bitcode => "out.bc",
     EmitKind::Object => "out.o",
     EmitKind::Assembly => "out.s",
     EmitKind::Executable => "out",
@@ -484,3 +498,224 @@ fn find_return_expr_in_stmts(body: &Body, stmts: &[StmtId]) -> Option<ExprId> {
   None
 }
 
+pub(crate) fn compile_program(
+  program: &Program,
+  entry: FileId,
+  opts: &CompilerOptions,
+) -> Result<Artifact, NativeJsError> {
+  let compiler = Compiler { program, entry, opts };
+  compiler.compile()
+}
+
+struct Compiler<'a> {
+  program: &'a Program,
+  entry: FileId,
+  opts: &'a CompilerOptions,
+}
+
+impl<'a> Compiler<'a> {
+  fn compile(&self) -> Result<Artifact, NativeJsError> {
+    self.ensure_typecheck_ok()?;
+    let loaded = self.load_hir_and_types()?;
+    self.validate_strict_subset()?;
+
+    let context = Context::create();
+    let module = self.build_llvm_module(&context, &loaded)?;
+
+    module
+      .verify()
+      .map_err(|e| NativeJsError::Llvm(format!("LLVM module verification failed: {e}")))?;
+
+    self.emit_artifact(&module)
+  }
+
+  fn ensure_typecheck_ok(&self) -> Result<(), NativeJsError> {
+    let diagnostics = self.program.check();
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+      return Err(NativeJsError::TypecheckFailed { diagnostics });
+    }
+    Ok(())
+  }
+
+  fn load_hir_and_types(&self) -> Result<LoadedProgram, NativeJsError> {
+    let lowered = self
+      .program
+      .hir_lowered(self.entry)
+      .ok_or_else(|| NativeJsError::Rejected {
+        diagnostics: vec![Diagnostic::error(
+          CODE_MISSING_HIR,
+          "failed to access lowered HIR for entry file",
+          Span::new(self.entry, TextRange::new(0, 0)),
+        )],
+      })?;
+
+    // Locate `export function main()` and validate its shape.
+    let entrypoint = crate::strict::entrypoint(self.program, self.entry)
+      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })?;
+
+    // Ensure type tables are materialized for bodies we intend to codegen.
+    //
+    // (The strict subset validator will also call `check_body` for every body it
+    // touches, but we materialize these explicitly since we know we'll need
+    // them for lowering.)
+    let mut checked_bodies: BTreeMap<BodyId, Arc<BodyCheckResult>> = BTreeMap::new();
+    let root_body = lowered.root_body();
+    checked_bodies.insert(root_body, self.program.check_body(root_body));
+    checked_bodies.insert(
+      entrypoint.main_body,
+      self.program.check_body(entrypoint.main_body),
+    );
+
+    Ok(LoadedProgram {
+      lowered,
+      checked_bodies,
+      entrypoint,
+    })
+  }
+
+  fn validate_strict_subset(&self) -> Result<(), NativeJsError> {
+    crate::validate::validate_strict_subset(self.program)
+      .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
+  }
+
+  fn build_llvm_module<'ctx>(
+    &self,
+    context: &'ctx Context,
+    _loaded: &LoadedProgram,
+  ) -> Result<Module<'ctx>, NativeJsError> {
+    // Placeholder: build an empty module with a stub `main` function.
+    //
+    // Real lowering from HIR + type tables will be added in follow-up tasks.
+    let module = context.create_module("native-js");
+    let builder = context.create_builder();
+
+    let i32_ty = context.i32_type();
+    let fn_ty = i32_ty.fn_type(&[], false);
+    let func = module.add_function("main", fn_ty, None);
+
+    let entry = context.append_basic_block(func, "entry");
+    builder.position_at_end(entry);
+    builder
+      .build_return(Some(&i32_ty.const_int(0, false)))
+      .expect("build ret");
+
+    Ok(module)
+  }
+
+  fn emit_artifact<'ctx>(&self, module: &Module<'ctx>) -> Result<Artifact, NativeJsError> {
+    match self.opts.emit {
+      EmitKind::LlvmIr => {
+        let path = self.output_path(".ll")?;
+        let ir = emit::emit_llvm_ir(module);
+        write_file(&path, ir.as_bytes())?;
+        Ok(Artifact {
+          kind: self.opts.emit,
+          path: path.clone(),
+          stdout_hint: Some(format!("wrote {}", path.display())),
+        })
+      }
+      EmitKind::Bitcode => {
+        let path = self.output_path(".bc")?;
+        let bytes = emit::emit_bitcode(module);
+        write_file(&path, bytes)?;
+        Ok(Artifact {
+          kind: self.opts.emit,
+          path: path.clone(),
+          stdout_hint: Some(format!("wrote {}", path.display())),
+        })
+      }
+      EmitKind::Object => {
+        let path = self.output_path(".o")?;
+        let bytes = emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts))
+          .map_err(|e| NativeJsError::Llvm(e.to_string()))?;
+        write_file(&path, bytes)?;
+        Ok(Artifact {
+          kind: self.opts.emit,
+          path: path.clone(),
+          stdout_hint: Some(format!("wrote {}", path.display())),
+        })
+      }
+      EmitKind::Assembly => {
+        let path = self.output_path(".s")?;
+        let bytes = emit::emit_asm_with_statepoints(module, target_config_from_opts(self.opts))
+          .map_err(|e| NativeJsError::Llvm(e.to_string()))?;
+        write_file(&path, bytes)?;
+        Ok(Artifact {
+          kind: self.opts.emit,
+          path: path.clone(),
+          stdout_hint: Some(format!("wrote {}", path.display())),
+        })
+      }
+      EmitKind::Executable => Err(NativeJsError::Unsupported {
+        message: "EmitKind::Executable is not implemented yet for the typechecked pipeline".to_string(),
+        diagnostics: vec![Diagnostic::error(
+          CODE_UNSUPPORTED_EMIT,
+          "EmitKind::Executable is not implemented yet for the typechecked pipeline",
+          Span::new(self.entry, TextRange::new(0, 0)),
+        )],
+      }),
+    }
+  }
+
+  fn output_path(&self, suffix: &str) -> Result<PathBuf, NativeJsError> {
+    if let Some(path) = self.opts.output.clone() {
+      if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+          std::fs::create_dir_all(parent).map_err(|err| NativeJsError::Io {
+            path: parent.to_path_buf(),
+            source: err,
+          })?;
+        }
+      }
+      return Ok(path);
+    }
+
+    let tmp = tempfile::Builder::new()
+      .prefix("native-js-")
+      .suffix(suffix)
+      .tempfile()
+      .map_err(NativeJsError::TempFileCreateFailed)?;
+    let (mut file, path) = tmp.keep()?;
+
+    // Ensure the file exists and is writable, even if the caller only ends up
+    // writing via `std::fs::write`.
+    file
+      .flush()
+      .map_err(NativeJsError::TempFileCreateFailed)?;
+
+    Ok(path)
+  }
+}
+
+struct LoadedProgram {
+  lowered: Arc<hir_js::LowerResult>,
+  checked_bodies: BTreeMap<BodyId, Arc<BodyCheckResult>>,
+  #[allow(dead_code)]
+  entrypoint: crate::strict::Entrypoint,
+}
+
+impl LoadedProgram {
+  #[allow(dead_code)]
+  fn hir_body(&self, id: BodyId) -> Option<&hir_js::Body> {
+    self.lowered.body(id)
+  }
+
+  #[allow(dead_code)]
+  fn body_check(&self, id: BodyId) -> Option<&Arc<BodyCheckResult>> {
+    self.checked_bodies.get(&id)
+  }
+
+  #[allow(dead_code)]
+  fn body_with_types(&self, id: BodyId) -> Option<BodyWithTypes<'_>> {
+    let hir = self.lowered.body(id)?;
+    let types = self.checked_bodies.get(&id)?.clone();
+    Some(BodyWithTypes { id, hir, types })
+  }
+}
+
+#[allow(dead_code)]
+struct BodyWithTypes<'a> {
+  id: BodyId,
+  hir: &'a hir_js::Body,
+  types: Arc<BodyCheckResult>,
+}
