@@ -63,6 +63,7 @@ graph TD
     hir_js --> parse_js
     knowledge_base --> effect_model
     megatest_harness --> diagnostics
+    megatest_harness --> emit_js
     megatest_harness --> hir_js
     megatest_harness --> optimize_js
     megatest_harness --> parse_js
