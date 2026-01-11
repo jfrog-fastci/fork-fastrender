@@ -100,9 +100,7 @@ pub mod statepoint_verify;
 #[allow(dead_code)]
 pub mod loom_promise_waiters;
 
-// Core object model used by the planned Immix + generational collector.
-pub mod metadata;
-pub mod object;
+// Shape/type registration table used by the GC and generated code.
 pub mod shape_table;
 
 mod alloc;
@@ -996,7 +994,6 @@ mod tests {
       rt_parallel_spawn(concurrency_probe, data_ptr),
       rt_parallel_spawn(concurrency_probe, data_ptr),
     ];
-
     // Worker threads are spawned lazily on first use. Avoid calling `rt_parallel_join` immediately:
     // the joiner thread can legitimately execute tasks itself, which makes overlap a race. Give
     // the worker pool time to start both tasks so we can observe overlap reliably.
