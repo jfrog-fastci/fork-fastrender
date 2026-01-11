@@ -1,4 +1,14 @@
 {
   "schema_version": 1,
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4005",
+      "file": "/as_assertion.ts",
+      "start": 40,
+      "end": 55,
+      "severity": "error",
+      "message": "unsafe type assertion: expression type is not assignable to the asserted type"
+    }
+  ]
 }

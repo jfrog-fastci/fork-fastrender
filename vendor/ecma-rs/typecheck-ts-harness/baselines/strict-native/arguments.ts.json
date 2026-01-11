@@ -3,19 +3,19 @@
   "diagnostics": [
     {
       "engine": "rust",
-      "code": "TC0005",
+      "code": "TC4004",
       "file": "/arguments.ts",
-      "start": 29,
-      "end": 38,
+      "start": 14,
+      "end": 23,
       "severity": "error",
-      "message": "unknown identifier `arguments`"
+      "message": "`arguments` is forbidden when `native_strict` is enabled"
     },
     {
       "engine": "rust",
       "code": "TC4004",
       "file": "/arguments.ts",
-      "start": 29,
-      "end": 38,
+      "start": 75,
+      "end": 84,
       "severity": "error",
       "message": "`arguments` is forbidden when `native_strict` is enabled"
     }

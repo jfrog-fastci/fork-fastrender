@@ -1,4 +1,3 @@
-const obj = { x: 1 };
+declare const obj: { x: number } | null;
 const n = obj!.x;
 void n;
-
