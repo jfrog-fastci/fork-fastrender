@@ -867,6 +867,8 @@ pub struct TextItem {
   /// Text color
   pub color: Rgba,
 
+  pub allow_subpixel_aa: bool,
+
   /// Text stroke width in CSS px (0 = none).
   pub stroke_width: f32,
 
@@ -932,6 +934,7 @@ impl Default for TextItem {
       cached_bounds: None,
       glyphs: Vec::new(),
       color: Rgba::default(),
+      allow_subpixel_aa: true,
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
       palette_index: 0,
@@ -1160,6 +1163,8 @@ pub struct ListMarkerItem {
   /// Text color
   pub color: Rgba,
 
+  pub allow_subpixel_aa: bool,
+
   /// Text stroke width in CSS px (0 = none).
   pub stroke_width: f32,
 
@@ -1221,6 +1226,7 @@ impl Default for ListMarkerItem {
       cached_bounds: None,
       glyphs: Vec::new(),
       color: Rgba::default(),
+      allow_subpixel_aa: true,
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
       palette_index: 0,

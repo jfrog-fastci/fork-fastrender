@@ -5302,6 +5302,7 @@ impl DisplayListRenderer {
       cached_bounds: item.cached_bounds,
       glyphs: item.glyphs.clone(),
       color: item.color,
+      allow_subpixel_aa: item.allow_subpixel_aa,
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
       palette_index: item.palette_index,
@@ -5327,6 +5328,7 @@ impl DisplayListRenderer {
       cached_bounds: scaled.cached_bounds,
       glyphs: scaled.glyphs,
       color: scaled.color,
+      allow_subpixel_aa: scaled.allow_subpixel_aa,
       stroke_width: scaled.stroke_width,
       stroke_color: scaled.stroke_color,
       shadows: scaled.shadows,
@@ -13694,6 +13696,7 @@ impl DisplayListRenderer {
       clip_mask: None,
       opacity: 1.0,
       blend_mode: SkiaBlendMode::SourceOver,
+      allow_subpixel_aa: false,
     };
 
     for run in &scaled_runs {
@@ -15581,6 +15584,7 @@ impl DisplayListRenderer {
       item.font_size,
       item.scale,
       item.rotation,
+      item.allow_subpixel_aa,
       item.color,
       item.stroke_width,
       item.stroke_color,
@@ -15592,7 +15596,7 @@ impl DisplayListRenderer {
       &item.variations,
     )?;
     if let Some(emphasis) = &item.emphasis {
-      self.render_emphasis(emphasis)?;
+      self.render_emphasis(emphasis, item.allow_subpixel_aa)?;
     }
     Ok(())
   }
@@ -15608,6 +15612,7 @@ impl DisplayListRenderer {
       cached_bounds: item.cached_bounds,
       glyphs: item.glyphs.clone(),
       color: item.color,
+      allow_subpixel_aa: item.allow_subpixel_aa,
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
       palette_index: item.palette_index,
@@ -16344,6 +16349,7 @@ impl DisplayListRenderer {
         opacity,
         blend_mode: SkiaBlendMode::SourceOver,
         clip_mask: None,
+        allow_subpixel_aa: item.allow_subpixel_aa,
       };
 
       // Ignore text rasterizer failures so shadows don't prevent painting the rest of the scene.
@@ -16421,7 +16427,7 @@ impl DisplayListRenderer {
     Ok(())
   }
 
-  fn render_emphasis(&mut self, emphasis: &TextEmphasis) -> Result<()> {
+  fn render_emphasis(&mut self, emphasis: &TextEmphasis, allow_subpixel_aa: bool) -> Result<()> {
     if emphasis.marks.is_empty() {
       return Ok(());
     }
@@ -16464,6 +16470,7 @@ impl DisplayListRenderer {
               run.font_size,
               1.0,
               crate::text::pipeline::RunRotation::None,
+              allow_subpixel_aa,
               emphasis.color,
               run.synthetic_bold,
               run.synthetic_oblique,

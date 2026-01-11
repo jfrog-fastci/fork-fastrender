@@ -963,6 +963,7 @@ pub struct TextRenderState<'a> {
   pub opacity: f32,
   /// Blend mode for the glyph draw.
   pub blend_mode: SkiaBlendMode,
+  pub allow_subpixel_aa: bool,
 }
 
 /// Optional stroke to apply when rasterizing text (e.g. `-webkit-text-stroke`).
@@ -979,6 +980,7 @@ impl<'a> Default for TextRenderState<'a> {
       clip_mask: None,
       opacity: 1.0,
       blend_mode: SkiaBlendMode::SourceOver,
+      allow_subpixel_aa: true,
     }
   }
 }
@@ -1839,6 +1841,7 @@ impl TextRasterizer {
             // This is intentionally guarded by a runtime toggle so golden tests remain stable.
             let mut used_subpixel = false;
             if self.subpixel_aa_enabled
+              && state.allow_subpixel_aa
               && state.blend_mode == SkiaBlendMode::SourceOver
               && rotation.is_none()
             {

@@ -156,6 +156,7 @@ mod user_agent_defaults_test;
 mod user_agent_test;
 mod var_dependent_recompute_test;
 mod var_resolution_test;
+mod vendor_font_smoothing_test;
 mod vendor_prefixed_properties_test;
 mod webkit_text_stroke_test;
 mod visual_keywords_case_insensitive_test;

@@ -1882,6 +1882,7 @@ fn color_glyph_shadow_matches_golden() {
       y_advance: 0.0,
     }],
     color: Rgba::WHITE,
+    allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     palette_overrides: Arc::new(Vec::new()),

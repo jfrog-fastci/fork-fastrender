@@ -6134,6 +6134,7 @@ impl DisplayListBuilder {
           let (stroke_width, stroke_color) = style_opt
             .map(|s| self.resolve_webkit_text_stroke_for_run(s, font_size))
             .unwrap_or_default();
+          let allow_subpixel_aa = style_opt.map(|s| s.allow_subpixel_aa).unwrap_or(true);
 
           if *is_marker {
             let item = ListMarkerItem {
@@ -6141,6 +6142,7 @@ impl DisplayListBuilder {
               cached_bounds: Some(cached_bounds),
               glyphs,
               color,
+              allow_subpixel_aa,
               stroke_width,
               stroke_color,
               shadows: shadows.clone(),
@@ -6155,6 +6157,7 @@ impl DisplayListBuilder {
               cached_bounds: Some(cached_bounds),
               glyphs,
               color,
+              allow_subpixel_aa,
               stroke_width,
               stroke_color,
               shadows: shadows.clone(),
@@ -7587,9 +7590,16 @@ impl DisplayListBuilder {
                   runs,
                   baseline_block,
                   baseline_inline,
+                  style.allow_subpixel_aa,
                 );
               } else {
-                self.collect_shaped_runs_for_text_clip(out, runs, baseline_inline, baseline_block);
+                self.collect_shaped_runs_for_text_clip(
+                  out,
+                  runs,
+                  baseline_inline,
+                  baseline_block,
+                  style.allow_subpixel_aa,
+                );
               }
             }
           }
@@ -9451,6 +9461,7 @@ impl DisplayListBuilder {
     emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_x = start_x;
+    let allow_subpixel_aa = style.map(|s| s.allow_subpixel_aa).unwrap_or(true);
     let mut counter = 0usize;
     for run in runs {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
@@ -9483,6 +9494,7 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color,
+        allow_subpixel_aa,
         stroke_width,
         stroke_color,
         palette_index: run.palette_index,
@@ -9514,6 +9526,7 @@ impl DisplayListBuilder {
     runs: &[ShapedRun],
     baseline_y: f32,
     start_x: f32,
+    allow_subpixel_aa: bool,
   ) {
     let mut pen_x = start_x;
     let mut counter = 0usize;
@@ -9534,6 +9547,7 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color: Rgba::WHITE,
+        allow_subpixel_aa,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -9566,6 +9580,7 @@ impl DisplayListBuilder {
     emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_inline = inline_start;
+    let allow_subpixel_aa = style.map(|s| s.allow_subpixel_aa).unwrap_or(true);
     let mut counter = 0usize;
     for run in runs {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
@@ -9599,6 +9614,7 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color,
+        allow_subpixel_aa,
         stroke_width,
         stroke_color,
         palette_index: run.palette_index,
@@ -9630,6 +9646,7 @@ impl DisplayListBuilder {
     runs: &[ShapedRun],
     block_baseline: f32,
     inline_start: f32,
+    allow_subpixel_aa: bool,
   ) {
     let mut pen_inline = inline_start;
     let mut counter = 0usize;
@@ -9651,6 +9668,7 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color: Rgba::WHITE,
+        allow_subpixel_aa,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -9684,6 +9702,7 @@ impl DisplayListBuilder {
     emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_x = start_x;
+    let allow_subpixel_aa = style.map(|s| s.allow_subpixel_aa).unwrap_or(true);
     let mut counter = 0usize;
     for run in runs {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
@@ -9716,6 +9735,7 @@ impl DisplayListBuilder {
         glyphs,
         font_size: run.font_size,
         color,
+        allow_subpixel_aa,
         stroke_width,
         stroke_color,
         shadows: shadows.to_vec(),
@@ -9751,6 +9771,7 @@ impl DisplayListBuilder {
     emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_inline = inline_start;
+    let allow_subpixel_aa = style.map(|s| s.allow_subpixel_aa).unwrap_or(true);
     let mut counter = 0usize;
     for run in runs {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
@@ -9784,6 +9805,7 @@ impl DisplayListBuilder {
         glyphs,
         font_size: run.font_size,
         color,
+        allow_subpixel_aa,
         stroke_width,
         stroke_color,
         shadows: shadows.to_vec(),
@@ -13529,6 +13551,7 @@ impl DisplayListBuilder {
   fn emit_naive_text(&mut self, text: &str, rect: Rect, style: Option<&ComputedStyle>) -> bool {
     let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
     let color = style.map(|s| s.color).unwrap_or(Rgba::BLACK);
+    let allow_subpixel_aa = style.map(|s| s.allow_subpixel_aa).unwrap_or(true);
     let shadows = Self::text_shadows_from_style(style, self.viewport);
     let char_width = font_size * 0.6;
     let advance_width = text.len() as f32 * char_width;
@@ -13560,6 +13583,7 @@ impl DisplayListBuilder {
       cached_bounds: Some(cached_bounds),
       glyphs,
       color,
+      allow_subpixel_aa,
       stroke_width,
       stroke_color,
       shadows,

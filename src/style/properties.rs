@@ -4983,6 +4983,8 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-justify"
       | "text-wrap"
       | "text-rendering"
+      | "-webkit-font-smoothing"
+      | "-moz-osx-font-smoothing"
       | "text-indent"
       | "text-decoration-skip-box"
       | "text-decoration-skip-ink"
@@ -7141,6 +7143,9 @@ pub(crate) fn apply_property_from_source(
     "text-align-last" => styles.text_align_last = source.text_align_last,
     "text-justify" => styles.text_justify = source.text_justify,
     "text-rendering" => styles.text_rendering = source.text_rendering,
+    "-webkit-font-smoothing" | "-moz-osx-font-smoothing" => {
+      styles.allow_subpixel_aa = source.allow_subpixel_aa
+    }
     "text-size-adjust" => styles.text_size_adjust = source.text_size_adjust,
     "text-wrap" => styles.text_wrap = source.text_wrap,
     "text-orientation" => {
@@ -13858,6 +13863,24 @@ fn apply_declaration_with_base_internal_with_order(
         } else {
           styles.text_rendering
         };
+      }
+    }
+    "-webkit-font-smoothing" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("antialiased") || kw.eq_ignore_ascii_case("none") {
+          styles.allow_subpixel_aa = false;
+        } else if kw.eq_ignore_ascii_case("subpixel-antialiased") || kw.eq_ignore_ascii_case("auto") {
+          styles.allow_subpixel_aa = true;
+        }
+      }
+    }
+    "-moz-osx-font-smoothing" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("grayscale") {
+          styles.allow_subpixel_aa = false;
+        } else if kw.eq_ignore_ascii_case("auto") {
+          styles.allow_subpixel_aa = true;
+        }
       }
     }
     "text-justify" => {

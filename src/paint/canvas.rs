@@ -1790,6 +1790,7 @@ impl Canvas {
         clip_mask: None,
         opacity: 1.0,
         blend_mode: SkiaBlendMode::SourceOver,
+        allow_subpixel_aa: false,
       };
 
       for run in runs {
@@ -1928,6 +1929,7 @@ impl Canvas {
       clip_mask,
       opacity: self.current_state.opacity,
       blend_mode: self.current_state.blend_mode,
+      allow_subpixel_aa: true,
     }
   }
 
@@ -3340,6 +3342,7 @@ impl Canvas {
       font_size,
       1.0,
       RunRotation::None,
+      true,
       color,
       synthetic_bold,
       synthetic_oblique,
@@ -3359,6 +3362,7 @@ impl Canvas {
     font_size: f32,
     run_scale: f32,
     rotation: RunRotation,
+    allow_subpixel_aa: bool,
     color: Rgba,
     synthetic_bold: f32,
     synthetic_oblique: f32,
@@ -3375,6 +3379,7 @@ impl Canvas {
         font_size,
         run_scale,
         rotation,
+        allow_subpixel_aa,
         color,
         None,
         synthetic_bold,
@@ -3396,6 +3401,7 @@ impl Canvas {
     font_size: f32,
     run_scale: f32,
     rotation: RunRotation,
+    allow_subpixel_aa: bool,
     color: Rgba,
     stroke_width: f32,
     stroke_color: Rgba,
@@ -3418,6 +3424,7 @@ impl Canvas {
         font_size,
         run_scale,
         rotation,
+        allow_subpixel_aa,
         color,
         stroke,
         synthetic_bold,
@@ -3439,6 +3446,7 @@ impl Canvas {
     font_size: f32,
     run_scale: f32,
     rotation: RunRotation,
+    allow_subpixel_aa: bool,
     color: Rgba,
     stroke: Option<TextStroke>,
     synthetic_bold: f32,
@@ -3454,7 +3462,8 @@ impl Canvas {
     }
 
     let hb_variations = Self::hb_variations(variations);
-    let state = self.current_text_state(self.current_state.clip_mask.as_deref());
+    let mut state = self.current_text_state(self.current_state.clip_mask.as_deref());
+    state.allow_subpixel_aa = allow_subpixel_aa;
 
     let positions: Vec<GlyphPosition> = glyphs
       .iter()
@@ -5266,6 +5275,7 @@ mod tests {
         16.0,
         1.0,
         RunRotation::None,
+        true,
         Rgba::TRANSPARENT,
         0.0,
         0.0,

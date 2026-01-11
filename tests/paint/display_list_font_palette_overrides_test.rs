@@ -214,6 +214,7 @@ fn render_legacy_text_shadows(
       opacity: 1.0,
       blend_mode: tiny_skia::BlendMode::SourceOver,
       clip_mask: None,
+      allow_subpixel_aa: true,
     };
 
     rasterizer

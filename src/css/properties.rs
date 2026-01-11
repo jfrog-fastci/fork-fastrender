@@ -513,6 +513,8 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-rendering",
   "text-size-adjust",
   "text-shadow",
+  "-webkit-font-smoothing",
+  "-moz-osx-font-smoothing",
   "-webkit-text-fill-color",
   "-webkit-text-stroke",
   "-webkit-text-stroke-width",

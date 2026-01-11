@@ -97,6 +97,7 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
     cached_bounds: None,
     glyphs: glyph_instances_from_text_run(&shaped),
     color: Rgba::BLACK,
+    allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     palette_index: shaped.palette_index,
