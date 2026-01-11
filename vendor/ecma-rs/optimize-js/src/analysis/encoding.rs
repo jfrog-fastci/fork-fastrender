@@ -276,16 +276,25 @@ pub fn annotate_cfg_encoding(cfg: &mut Cfg, result: &EncodingResult) {
   labels.sort_unstable();
 
   for label in labels {
-    let insts = cfg.bblocks.get_mut(label);
-    for inst in insts.iter_mut() {
-      let Some(&tgt) = inst.tgts.get(0) else {
+    let Some(block_state) = result.blocks.get(&label) else {
+      continue;
+    };
+    let mut analysis = EncodingAnalysis;
+    let mut state = block_state.entry.clone();
+
+    let insts_len = cfg.bblocks.get(label).len();
+    for inst_idx in 0..insts_len {
+      let encoding_for_inst = {
+        let inst = &cfg.bblocks.get(label)[inst_idx];
+        analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
+        inst.tgts.get(0).copied().map(|tgt| (tgt, state.get(tgt)))
+      };
+
+      let Some((_tgt, enc)) = encoding_for_inst else {
         continue;
       };
-      match result.encoding_at_exit(label, tgt) {
-        StringEncoding::Ascii | StringEncoding::Latin1 | StringEncoding::Utf8 => {
-          inst.meta.result_type.string_encoding = Some(result.encoding_at_exit(label, tgt));
-        }
-        StringEncoding::Unknown => {}
+      if matches!(enc, StringEncoding::Ascii | StringEncoding::Latin1 | StringEncoding::Utf8) {
+        cfg.bblocks.get_mut(label)[inst_idx].meta.result_type.string_encoding = Some(enc);
       }
     }
   }
@@ -464,6 +473,32 @@ mod tests {
     assert_eq!(
       inst.meta.result_type.string_encoding,
       Some(StringEncoding::Ascii)
+    );
+  }
+
+  #[test]
+  fn annotate_cfg_encoding_uses_per_instruction_states() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::var_assign(0, Arg::Const(Const::Str("hello".to_string()))),
+          Inst::var_assign(0, Arg::Const(Const::Str("π".to_string()))),
+        ],
+      )],
+      &[],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    annotate_cfg_encoding(&mut cfg, &result);
+
+    assert_eq!(
+      cfg.bblocks.get(0)[0].meta.result_type.string_encoding,
+      Some(StringEncoding::Ascii)
+    );
+    assert_eq!(
+      cfg.bblocks.get(0)[1].meta.result_type.string_encoding,
+      Some(StringEncoding::Utf8)
     );
   }
 
