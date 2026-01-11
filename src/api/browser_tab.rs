@@ -6222,9 +6222,13 @@ mod tests {
       </body></html>";
     let _ = tab.parse_html_streaming_and_schedule_scripts(html, Some("https://example.com/"), &RenderOptions::default())?;
 
-    assert!(
-      log.borrow().is_empty(),
-      "expected streaming parse to yield (not run the event loop) when scheduling fast async scripts"
+    // `parse_html_streaming_and_schedule_scripts` runs the event loop once when it yields for async
+    // script interleaving during navigations (document URL is provided). The async script should
+    // execute before parsing resumes and discovers later parser-inserted scripts.
+    assert_eq!(
+      &*log.borrow(),
+      &["script:A".to_string(), "microtask:A".to_string()],
+      "expected async script to execute before the parser continues"
     );
 
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
