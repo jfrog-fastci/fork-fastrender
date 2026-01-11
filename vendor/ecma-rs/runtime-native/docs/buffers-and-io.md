@@ -71,9 +71,9 @@ To obtain a `(ptr, len)` pair for kernel I/O:
   - `Uint8Array::pin()` / `Uint8Array::pin_range()` (or `ArrayBuffer::pin()` / `ArrayBuffer::pin_range()`)
     for **pointer stability only** (pin-count enforcement).
 
-`Uint8Array::as_ptr_range()` is *not* sufficient for async I/O: it does not pin
-the backing store, so the byte pointer can be invalidated by detach/transfer/resize
-or GC finalization while an operation is in flight.
+`Uint8Array::as_ptr_range()` is *not* sufficient for async I/O: it does not pin **or** borrow the
+backing store, so the byte pointer can be invalidated by detach/transfer/resize or GC finalization
+while an operation is in flight (and safe host reads/writes may violate the aliasing model).
 
 Pinned guards (`PinnedUint8Array`, `PinnedArrayBuffer`) increment the backing
 store pin count, keeping the bytes alive and forcing detach/transfer/resize to
