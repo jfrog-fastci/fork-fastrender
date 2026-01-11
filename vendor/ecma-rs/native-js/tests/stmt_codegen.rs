@@ -160,6 +160,22 @@ fn for_loop_init_test_update() {
 }
 
 #[test]
+fn for_loop_postfix_update_op() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let sum = 0;
+      for (let i = 0; i < 4; i++) {
+        sum = sum + i;
+      }
+      return sum;
+    }
+    "#,
+  );
+  assert_eq!(value, 6);
+}
+
+#[test]
 fn shadowing_in_nested_blocks() {
   let value = run_main(
     r#"
