@@ -20,7 +20,7 @@ use parse_js::ast::expr::pat::{ArrPat, ClassOrFuncName, IdPat, ObjPat, Pat};
 use parse_js::ast::expr::*;
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::import_export::{ExportName, ExportNames, ImportNames, ModuleExportImportName};
-use parse_js::ast::node::{Node, NodeAssocData};
+use parse_js::ast::node::{Node, NodeAssocData, TsDeclareVarStmt};
 use parse_js::ast::stmt::decl::{
   ClassDecl, FuncDecl, ParamDecl, PatDecl, VarDecl, VarDeclMode, VarDeclarator,
 };
@@ -676,6 +676,11 @@ fn strip_stmt_optional(
 fn strip_stmt(ctx: &mut StripContext, stmt: Node<Stmt>, is_top_level: bool) -> Vec<Node<Stmt>> {
   let loc = stmt.loc;
   let assoc = stmt.assoc;
+  if assoc.get::<TsDeclareVarStmt>().is_some() {
+    // TypeScript `declare` variable declarations are ambient/type-only and should
+    // not emit runtime JavaScript.
+    return vec![];
+  }
   match *stmt.stx {
     Stmt::Block(block) => {
       let mut block = block;

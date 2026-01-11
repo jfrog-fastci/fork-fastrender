@@ -694,7 +694,9 @@ impl<'a> Parser<'a> {
           | TT::KeywordAwait => {
             let mut decl = self.var_decl(ctx, VarDeclParseMode::Asi)?;
             decl.stx.export = true;
-            decl.into_wrapped()
+            let mut stmt = decl.into_wrapped();
+            stmt.assoc.set(crate::ast::node::TsDeclareVarStmt);
+            stmt
           }
           _ => return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax("declaration after export declare"))),
         }

@@ -131,6 +131,10 @@ fn strict_native_mode_erases_ambient_decls_and_this_params() {
     declare enum E { A }
     declare namespace N { export const x: number }
     export as namespace UMD;
+    declare const z: number;
+    declare let w: number;
+    declare var v: number;
+    export declare const exported: number;
     function f(this: any, x: number) { return x; }
     export const y = 1;
   "#;

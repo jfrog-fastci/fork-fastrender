@@ -29,6 +29,13 @@ pub struct NodeAssocData {
 #[derive(Clone, Copy, Debug)]
 pub struct ParenthesizedExpr;
 
+/// Marker attached to statement nodes that originated from a TypeScript `declare`
+/// variable declaration (e.g. `declare const x: number;` or `export declare var y: string;`).
+///
+/// These declarations are ambient/type-only and should not emit runtime JavaScript.
+#[derive(Clone, Copy, Debug)]
+pub struct TsDeclareVarStmt;
+
 /// Marker attached to an expression node that originated from a *cover grammar*
 /// "initialized name" (`IdentifierReference Initializer`) in an object literal.
 ///

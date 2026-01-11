@@ -312,20 +312,20 @@ impl<'a> Parser<'a> {
           .wrap(Stmt::ClassDecl),
       ),
       // TypeScript: declare var, declare const, declare let, declare using
-      TT::KeywordVar | TT::KeywordConst | TT::KeywordLet | TT::KeywordUsing => Ok(
-        self
-          .var_decl(ctx, VarDeclParseMode::Asi)?
-          .wrap(Stmt::VarDecl),
-      ),
+      TT::KeywordVar | TT::KeywordConst | TT::KeywordLet | TT::KeywordUsing => {
+        let decl = self.var_decl(ctx, VarDeclParseMode::Asi)?;
+        let mut stmt = decl.wrap(Stmt::VarDecl);
+        stmt.assoc.set(crate::ast::node::TsDeclareVarStmt);
+        Ok(stmt)
+      }
       // TypeScript: declare await using
       TT::KeywordAwait => {
         let [_, next] = self.peek_n::<2>();
         if next.typ == TT::KeywordUsing {
-          Ok(
-            self
-              .var_decl(ctx, VarDeclParseMode::Asi)?
-              .wrap(Stmt::VarDecl),
-          )
+          let decl = self.var_decl(ctx, VarDeclParseMode::Asi)?;
+          let mut stmt = decl.wrap(Stmt::VarDecl);
+          stmt.assoc.set(crate::ast::node::TsDeclareVarStmt);
+          Ok(stmt)
         } else {
           Err(
             self
