@@ -40001,13 +40001,15 @@ fn first_line_allows_property(property: &str) -> bool {
   if p == "font" || p.starts_with("font-") {
     return true;
   }
+  // CSS2.1 first-line allows the background properties. Keep this broad so shorthands like
+  // `background` (common in the wild) are honored instead of being silently ignored.
+  if p == "background" || p.starts_with("background-") {
+    return true;
+  }
   if matches!(
     p,
     "color" | "text-transform" | "letter-spacing" | "word-spacing" | "line-height"
   ) {
-    return true;
-  }
-  if p == "background-color" {
     return true;
   }
   if p.starts_with("text-decoration")
@@ -40032,16 +40034,15 @@ fn first_letter_allows_property(property: &str) -> bool {
   if first_line_allows_property(p) {
     return true;
   }
-  if p == "background-color" {
-    return true;
-  }
   if p == "float" {
     return true;
   }
   if p == "margin" || p.starts_with("margin-") || p == "padding" || p.starts_with("padding-") {
     return true;
   }
-  if p.starts_with("border-") {
+  // Border shorthands are common (`border: 1px solid ...`) and are permitted by the first-letter
+  // property whitelist in CSS2.1.
+  if p == "border" || p.starts_with("border-") {
     return true;
   }
   false

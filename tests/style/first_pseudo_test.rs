@@ -4,6 +4,7 @@ use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::float::Float;
 use fastrender::style::media::MediaContext;
+use fastrender::style::types::BorderStyle;
 use fastrender::style::types::CaseTransform;
 use fastrender::style::types::TextTransform;
 use fastrender::style::values::Length;
@@ -48,6 +49,14 @@ fn first_line_filters_non_applicable_properties() {
 }
 
 #[test]
+fn first_line_allows_background_shorthand() {
+  let rules = "p::first-line { background: rgb(200, 210, 220); }";
+  let p = styled_paragraph(rules, "<p>hello world</p>");
+  let line_style = p.first_line_styles.as_ref().expect("first-line styles");
+  assert_eq!(line_style.background_color, Rgba::rgb(200, 210, 220));
+}
+
+#[test]
 fn first_letter_inherits_first_line_and_keeps_box_properties() {
   let rules = "p::first-line { text-transform: uppercase; } p::first-letter { float: left; padding-right: 4px; margin-right: 6px; color: rgb(1,2,3); }";
   let p = styled_paragraph(rules, "<p>hello</p>");
@@ -62,4 +71,24 @@ fn first_letter_inherits_first_line_and_keeps_box_properties() {
     TextTransform::with_case(CaseTransform::Uppercase)
   );
   assert_eq!(letter_style.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
+fn first_letter_allows_border_shorthand() {
+  let rules = "p::first-letter { border: 2px solid rgb(9, 8, 7); }";
+  let p = styled_paragraph(rules, "<p>hello</p>");
+  let letter_style = p.first_letter_styles.as_ref().expect("first-letter styles");
+
+  assert_eq!(letter_style.border_top_width, Length::px(2.0));
+  assert_eq!(letter_style.border_right_width, Length::px(2.0));
+  assert_eq!(letter_style.border_bottom_width, Length::px(2.0));
+  assert_eq!(letter_style.border_left_width, Length::px(2.0));
+  assert_eq!(letter_style.border_top_style, BorderStyle::Solid);
+  assert_eq!(letter_style.border_right_style, BorderStyle::Solid);
+  assert_eq!(letter_style.border_bottom_style, BorderStyle::Solid);
+  assert_eq!(letter_style.border_left_style, BorderStyle::Solid);
+  assert_eq!(letter_style.border_top_color, Rgba::rgb(9, 8, 7));
+  assert_eq!(letter_style.border_right_color, Rgba::rgb(9, 8, 7));
+  assert_eq!(letter_style.border_bottom_color, Rgba::rgb(9, 8, 7));
+  assert_eq!(letter_style.border_left_color, Rgba::rgb(9, 8, 7));
 }

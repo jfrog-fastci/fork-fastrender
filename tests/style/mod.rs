@@ -50,6 +50,7 @@ mod explicit_no_namespace_selector_test;
 mod flex_keywords_case_insensitive_test;
 mod flex_property_test;
 mod field_sizing_property_test;
+mod first_pseudo_test;
 mod form_control_constraint_pseudo_test;
 mod form_validity_pseudo_test;
 mod font_size_absolute_keyword_test;
