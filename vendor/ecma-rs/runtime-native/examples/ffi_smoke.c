@@ -14,6 +14,28 @@ static void set_int(uint8_t* data) {
   *flag = 1;
 }
 
+typedef struct MicrotaskDropCtx {
+  int ran;
+  int dropped;
+} MicrotaskDropCtx;
+
+static void microtask_mark_ran(uint8_t* data) {
+  MicrotaskDropCtx* ctx = (MicrotaskDropCtx*)data;
+  ctx->ran = 1;
+}
+
+static void microtask_mark_dropped(uint8_t* data) {
+  MicrotaskDropCtx* ctx = (MicrotaskDropCtx*)data;
+  ctx->dropped = 1;
+}
+
+static GcPtr expected_root = NULL;
+static int rooted_microtask_ran = 0;
+
+static void microtask_check_root(uint8_t* data) {
+  rooted_microtask_ran = (data == expected_root) ? 1 : 2;
+}
+
 static void par_for_body(size_t i, uint8_t* data) {
   uint32_t* out = (uint32_t*)data;
   out[i] = (uint32_t)(i * 3u + 1u);
@@ -86,8 +108,22 @@ int main(void) {
   };
   rt_queue_microtask(mt);
   if (check(microtask_ran == 0)) { rc = 12; goto done; }
+
+  MicrotaskDropCtx drop_ctx = {0, 0};
+  rt_queue_microtask_with_drop(microtask_mark_ran, (uint8_t*)&drop_ctx, microtask_mark_dropped);
+  if (check(drop_ctx.ran == 0)) { rc = 14; goto done; }
+  if (check(drop_ctx.dropped == 0)) { rc = 15; goto done; }
+
+  expected_root = obj1;
+  rooted_microtask_ran = 0;
+  rt_queue_microtask_rooted(microtask_check_root, obj1);
+  if (check(rooted_microtask_ran == 0)) { rc = 18; goto done; }
+
   rt_drain_microtasks();
   if (check(microtask_ran == 1)) { rc = 13; goto done; }
+  if (check(drop_ctx.ran == 1)) { rc = 16; goto done; }
+  if (check(drop_ctx.dropped == 1)) { rc = 17; goto done; }
+  if (check(rooted_microtask_ran == 1)) { rc = 19; goto done; }
 
   enum { N = 4096 };
   uint32_t out[N];
