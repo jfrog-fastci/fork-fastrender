@@ -345,6 +345,7 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | Symbol | GC class | Notes |
 |---|---|---|
 | `rt_alloc` | MayGC | Allocates in the GC heap; may trigger GC and relocate nursery objects. |
+| `rt_alloc_pinned` | MayGC | Allocates a pinned object in the GC heap (LOS); may trigger GC and relocate nursery objects. |
 | `rt_alloc_array` | MayGC | Allocates in the GC heap; may trigger GC and relocate nursery objects. |
 | `rt_gc_poll` | NoGC | Cheap leaf poll used by backedge safepoints (codegen may also inline `RT_GC_EPOCH`). |
 | `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
