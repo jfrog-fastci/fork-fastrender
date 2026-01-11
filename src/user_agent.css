@@ -425,7 +425,9 @@ progress, meter {
 
 input::placeholder,
 textarea::placeholder {
-    opacity: 0.6;
+    /* Match Chromium's default placeholder behaviour: use a lighter text color rather than
+       applying opacity, so author-specified ::placeholder colors are not unintentionally dimmed. */
+    color: GrayText;
 }
 
 input[type="text"], input[type="password"], input[type="email"],

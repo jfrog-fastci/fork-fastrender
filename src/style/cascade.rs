@@ -39831,7 +39831,6 @@ fn compute_pseudo_element_styles(
       }
       PseudoElement::Placeholder => {
         styles.display = Display::Inline;
-        styles.opacity = 0.6;
       }
       _ => {
         styles.display = Display::Inline;

@@ -10,8 +10,12 @@ fn count_reddish(pixmap: &Pixmap) -> usize {
       let Some(px) = pixmap.pixel(x, y) else {
         continue;
       };
-      // Placeholder text is painted with ~60% alpha; once composited over an opaque background
-      // it can land well below 255 in the red channel. Keep the threshold generous.
+      // Placeholder text can be painted with reduced alpha (when `::placeholder` specifies
+      // `opacity`); once composited over an opaque background it can land well below 255 in the red
+      // channel. Keep the threshold generous.
+      //
+      // Note: placeholder opacity is only reduced when explicitly styled via `::placeholder
+      // { opacity: ... }`. The UA default uses a lighter text color instead of opacity.
       if px.red() > 80 && px.green() < 60 && px.blue() < 60 {
         total += 1;
       }
@@ -57,4 +61,3 @@ fn legacy_placeholder_not_shown_for_whitespace_value() {
     "expected no placeholder pixels when value contains whitespace (reddish={reddish})"
   );
 }
-
