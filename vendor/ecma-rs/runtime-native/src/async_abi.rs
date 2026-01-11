@@ -17,6 +17,12 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::RtShapeId;
 
+/// ABI version tag for the native coroutine ABI.
+///
+/// Generated code must set [`CoroutineVTable::abi_version`] to this value. The runtime validates the
+/// version before calling into compiler-provided function pointers.
+pub const RT_ASYNC_ABI_VERSION: u32 = 1;
+
 /// Promise state stored in [`PromiseHeader::state`].
 pub type PromiseState = u8;
 
@@ -144,7 +150,9 @@ pub struct CoroutineVTable {
   /// `rt_register_shape_table` (not the semantic `types_ts_interned::ShapeId`).
   pub promise_shape_id: RtShapeId,
 
-  /// ABI version for forward compatibility (generated code should set to `0` for now).
+  /// ABI version for forward compatibility.
+  ///
+  /// Generated code must set this to [`RT_ASYNC_ABI_VERSION`].
   pub abi_version: u32,
   /// Reserved for future ABI extensions; must be zeroed by generated code.
   pub reserved: [usize; 4],

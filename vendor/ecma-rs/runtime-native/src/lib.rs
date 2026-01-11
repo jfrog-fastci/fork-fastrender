@@ -196,6 +196,38 @@ fn rt_parallel() -> &'static parallel::ParallelRuntime {
     .get_or_init(|| parallel::ParallelRuntime::new())
 }
 
+#[inline]
+unsafe fn validate_async_abi_coro_vtable(coro: CoroutineRef) {
+  // Validate the compiler/runtime async ABI contract before we dereference any
+  // pointers or call into generated code. This prevents silent UB if the
+  // compiler and runtime evolve independently.
+  if coro.is_null() {
+    std::process::abort();
+  }
+  if (coro as usize) % core::mem::align_of::<crate::async_abi::Coroutine>() != 0 {
+    std::process::abort();
+  }
+
+  let vtable = (*coro).vtable;
+  if vtable.is_null() {
+    std::process::abort();
+  }
+  if (vtable as usize) % core::mem::align_of::<crate::async_abi::CoroutineVTable>() != 0 {
+    std::process::abort();
+  }
+
+  if (*vtable).abi_version != crate::async_abi::RT_ASYNC_ABI_VERSION {
+    std::process::abort();
+  }
+
+  if ((*vtable).promise_size as usize) < core::mem::size_of::<crate::async_abi::PromiseHeader>() {
+    std::process::abort();
+  }
+  if ((*vtable).promise_align as usize) < core::mem::align_of::<crate::async_abi::PromiseHeader>() {
+    std::process::abort();
+  }
+}
+
 /// Spawn an async coroutine and return its result promise.
 ///
 /// Generated code allocates a coroutine frame whose first field is a [`Coroutine`] header and calls
@@ -206,6 +238,7 @@ fn rt_parallel() -> &'static parallel::ParallelRuntime {
 /// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
 #[no_mangle]
 pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineRef) -> PromiseRef {
+  validate_async_abi_coro_vtable(coro);
   crate::ffi::abort_on_panic(|| crate::native_async::async_spawn(coro))
 }
 
@@ -218,6 +251,7 @@ pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineRef) -> PromiseRef {
 /// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
 #[no_mangle]
 pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef {
+  validate_async_abi_coro_vtable(coro);
   crate::ffi::abort_on_panic(|| crate::native_async::async_spawn_deferred(coro))
 }
 

@@ -457,6 +457,9 @@ typedef struct CoroutineStep {
 
 typedef CoroutineStep (*CoroutineResumeFn)(Coroutine*);
 
+// Async ABI version tag for coroutine frames/vtables.
+enum { RT_ASYNC_ABI_VERSION = 1 };
+
 struct CoroutineVTable {
   CoroutineResumeFn resume;
   // Destroy (drop + deallocate) a coroutine frame.
@@ -467,6 +470,7 @@ struct CoroutineVTable {
   uint32_t promise_size;
   uint32_t promise_align;
   RtShapeId promise_shape_id;
+  // Must equal `RT_ASYNC_ABI_VERSION`.
   uint32_t abi_version;
   uintptr_t reserved[4];
 };

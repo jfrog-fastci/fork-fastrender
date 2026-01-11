@@ -204,6 +204,17 @@ Every coroutine frame is a `#[repr(C)]` struct whose first field (at offset `0`)
   initialize this to null.
 - `coro.flags`: runtime-controlled flags.
 
+### ABI versioning (`CoroutineVTable::abi_version`)
+
+The native coroutine ABI is versioned via `RT_ASYNC_ABI_VERSION` (currently `1`).
+
+Codegen must set `CoroutineVTable::abi_version` to exactly this value. The runtime validates the
+version (and basic promise layout metadata) before dereferencing the vtable or calling into
+compiler-provided function pointers.
+
+Any validation failure is treated as a **fatal error**: the runtime calls `abort()` to fail fast and
+avoid undefined behavior if the compiler and runtime evolve independently.
+
 ### Frame ownership (`coro.flags`)
 
 The ownership of a coroutine frame is determined by the `CORO_FLAG_RUNTIME_OWNS_FRAME` bit in
