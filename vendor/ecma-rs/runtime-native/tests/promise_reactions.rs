@@ -7,7 +7,7 @@ use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 
 #[repr(C)]
@@ -21,14 +21,25 @@ static EMPTY_PTR_OFFSETS: [u32; 0] = [];
 
 fn ensure_shape_table() {
   SHAPE_TABLE_ONCE.call_once(|| unsafe {
-    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
-      size: mem::size_of::<GcBox<LogCoroutine>>() as u32,
-      align: 16,
-      flags: 0,
-      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
-      ptr_offsets_len: 0,
-      reserved: 0,
-    }];
+    static SHAPES: [RtShapeDescriptor; 2] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<LogCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      // Native async-ABI promise shape used by `ABI_CORO_VTABLE` (header + u32 payload).
+      RtShapeDescriptor {
+        size: mem::size_of::<AbiResultPromise>() as u32,
+        align: mem::align_of::<AbiResultPromise>() as u16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
     shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
   });
 }
@@ -220,14 +231,10 @@ struct AbiPromise {
 fn promise_fulfill_abi_drains_then_reactions() {
   let _rt = TestRuntimeGuard::new();
 
-  let promise = Box::new(AbiPromise {
-    header: PromiseHeader {
-      state: AtomicU8::new(123),
-      waiters: AtomicUsize::new(456),
-      flags: AtomicU8::new(7),
-    },
-    payload: 0,
-  });
+  let promise = Box::new(unsafe { mem::zeroed::<AbiPromise>() });
+  promise.header.state.store(123, Ordering::Release);
+  promise.header.waiters.store(456, Ordering::Release);
+  promise.header.flags.store(7, Ordering::Release);
   let promise = PromiseRef(Box::into_raw(promise).cast());
 
   unsafe {
@@ -306,7 +313,7 @@ static ABI_CORO_VTABLE: CoroutineVTable = CoroutineVTable {
   destroy: abi_coro_destroy,
   promise_size: core::mem::size_of::<AbiResultPromise>() as u32,
   promise_align: core::mem::align_of::<AbiResultPromise>() as u32,
-  promise_shape_id: runtime_native::RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(2),
   abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
@@ -314,6 +321,7 @@ static ABI_CORO_VTABLE: CoroutineVTable = CoroutineVTable {
 #[test]
 fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   let awaited = runtime_native::rt_promise_new_legacy();
   let awaited_header = awaited.0.cast::<PromiseHeader>();
@@ -321,17 +329,16 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   let completed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let then_ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  let coro = Box::new(AbiCoroutineFrame {
-    header: Coroutine {
-      vtable: &ABI_CORO_VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AbiCoroutineFrame {
+    header: unsafe { mem::zeroed() },
     state: 0,
     awaited: awaited_header,
     completed,
   });
+  coro.header.vtable = &ABI_CORO_VTABLE;
+  coro.header.promise = core::ptr::null_mut();
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
   let coro_ptr = Box::into_raw(coro);
 
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());

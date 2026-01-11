@@ -1886,30 +1886,14 @@ int main(void) {
     }
   }
 
-  #[repr(C)]
-  struct TestPromiseU64 {
-    header: async_abi::PromiseHeader,
-    payload: u64,
-  }
-
-  #[repr(C)]
-  struct TestCoroAwaitThenFulfill {
-    header: async_abi::Coroutine,
-    state: *mut AtomicUsize,
-    awaited: async_abi::PromiseRef,
-  }
-
-  unsafe extern "C" fn test_coro_destroy(coro: async_abi::CoroutineRef) {
-    if coro.is_null() {
-      return;
-    }
-    drop(Box::from_raw(coro as *mut TestCoroAwaitThenFulfill));
+  unsafe extern "C" fn test_coro_destroy(_coro: async_abi::CoroutineRef) {
+    // No-op: these unit tests allocate coroutine frames via `rt_alloc` (GC-managed / bump-allocated).
   }
 
   unsafe extern "C" fn test_coro_resume_await_then_fulfill(
     coro: *mut async_abi::Coroutine,
   ) -> async_abi::CoroutineStep {
-    let coro = coro as *mut TestCoroAwaitThenFulfill;
+    let coro = coro as *mut crate::shape_table::TestCoroAwaitThenFulfill;
     if coro.is_null() {
       return async_abi::CoroutineStep::complete();
     }
@@ -1944,9 +1928,9 @@ int main(void) {
   static TEST_CORO_VTABLE_U64: async_abi::CoroutineVTable = async_abi::CoroutineVTable {
     resume: test_coro_resume_await_then_fulfill,
     destroy: test_coro_destroy,
-    promise_size: core::mem::size_of::<TestPromiseU64>() as u32,
-    promise_align: core::mem::align_of::<TestPromiseU64>() as u32,
-    promise_shape_id: RtShapeId::INVALID,
+    promise_size: core::mem::size_of::<crate::shape_table::TestPromiseU64>() as u32,
+    promise_align: core::mem::align_of::<crate::shape_table::TestPromiseU64>() as u32,
+    promise_shape_id: crate::shape_table::TEST_PROMISE_U64_SHAPE_ID,
     abi_version: async_abi::RT_ASYNC_ABI_VERSION,
     reserved: [0; 4],
   };
@@ -1955,15 +1939,19 @@ int main(void) {
   fn native_async_spawn_awaits_and_resumes_after_promise_fulfill() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-      let mut awaited = Box::new(TestPromiseU64 {
-      header: async_abi::PromiseHeader {
-        state: core::sync::atomic::AtomicU8::new(123),
-        waiters: core::sync::atomic::AtomicUsize::new(456),
-        flags: core::sync::atomic::AtomicU8::new(7),
-      },
-      payload: 0,
-    });
-    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+    crate::shape_table::ensure_test_shape_table_registered();
+
+    let awaited_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestPromiseU64>(),
+      crate::shape_table::TEST_PROMISE_U64_SHAPE_ID,
+    )
+    .cast::<async_abi::PromiseHeader>();
+    assert!(!awaited_ptr.is_null());
+    unsafe {
+      (*awaited_ptr).state.store(123, Ordering::Release);
+      (*awaited_ptr).waiters.store(456, Ordering::Release);
+      (*awaited_ptr).flags.store(7, Ordering::Release);
+    }
 
     // Ensure `rt_promise_init` resets the header to a clean pending state.
     unsafe {
@@ -1977,20 +1965,22 @@ int main(void) {
     assert_eq!(unsafe { &*awaited_ptr }.flags.load(Ordering::Acquire), 0);
 
     let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
-    let coro = Box::new(TestCoroAwaitThenFulfill {
-      header: async_abi::Coroutine {
-        vtable: &TEST_CORO_VTABLE_U64,
-        promise: core::ptr::null_mut(),
-        next_waiter: core::ptr::null_mut(),
-        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
-      },
-      state: state_ptr,
-      awaited: awaited_ptr,
-    });
- 
-    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    // `rt_async_spawn` takes a stable `CoroutineId` handle (not a raw pointer) so the runtime can
-    // store it across async boundaries.
+
+    let coro_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestCoroAwaitThenFulfill>(),
+      crate::shape_table::TEST_CORO_AWAIT_THEN_FULFILL_SHAPE_ID,
+    )
+    .cast::<crate::shape_table::TestCoroAwaitThenFulfill>();
+    assert!(!coro_ptr.is_null());
+    unsafe {
+      (*coro_ptr).header.vtable = &TEST_CORO_VTABLE_U64;
+      (*coro_ptr).header.promise = core::ptr::null_mut();
+      (*coro_ptr).header.next_waiter = core::ptr::null_mut();
+      (*coro_ptr).header.flags = async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME;
+      (*coro_ptr).state = state_ptr;
+      (*coro_ptr).awaited = awaited_ptr;
+    }
+    let coro_ptr: CoroutineRef = coro_ptr.cast::<async_abi::Coroutine>();
     let handle = rt_handle_alloc(coro_ptr.cast());
     let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
@@ -2030,30 +2020,37 @@ int main(void) {
   fn native_async_spawn_fastpath_await_settled_promise() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-    let mut awaited = Box::new(TestPromiseU64 {
-      header: async_abi::PromiseHeader {
-        state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
-        waiters: core::sync::atomic::AtomicUsize::new(0),
-        flags: core::sync::atomic::AtomicU8::new(0),
-      },
-      payload: 0,
-    });
-    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+    crate::shape_table::ensure_test_shape_table_registered();
+
+    let awaited_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestPromiseU64>(),
+      crate::shape_table::TEST_PROMISE_U64_SHAPE_ID,
+    )
+    .cast::<async_abi::PromiseHeader>();
+    assert!(!awaited_ptr.is_null());
+    unsafe {
+      (*awaited_ptr)
+        .state
+        .store(async_abi::PromiseHeader::FULFILLED, Ordering::Release);
+    }
 
     let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
-    let coro = Box::new(TestCoroAwaitThenFulfill {
-      header: async_abi::Coroutine {
-        vtable: &TEST_CORO_VTABLE_U64,
-        promise: core::ptr::null_mut(),
-        next_waiter: core::ptr::null_mut(),
-        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
-      },
-      state: state_ptr,
-      awaited: awaited_ptr,
-    });
- 
-    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let handle = rt_handle_alloc(coro_ptr.cast::<u8>());
+    let coro_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestCoroAwaitThenFulfill>(),
+      crate::shape_table::TEST_CORO_AWAIT_THEN_FULFILL_SHAPE_ID,
+    )
+    .cast::<crate::shape_table::TestCoroAwaitThenFulfill>();
+    assert!(!coro_ptr.is_null());
+    unsafe {
+      (*coro_ptr).header.vtable = &TEST_CORO_VTABLE_U64;
+      (*coro_ptr).header.promise = core::ptr::null_mut();
+      (*coro_ptr).header.next_waiter = core::ptr::null_mut();
+      (*coro_ptr).header.flags = async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME;
+      (*coro_ptr).state = state_ptr;
+      (*coro_ptr).awaited = awaited_ptr;
+    }
+    let coro_ptr: CoroutineRef = coro_ptr.cast::<async_abi::Coroutine>();
+    let handle = rt_handle_alloc(coro_ptr.cast());
     let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
     assert!(rt_handle_load(handle).is_null());
@@ -2078,32 +2075,39 @@ int main(void) {
   fn native_async_spawn_strict_await_yields_to_microtask() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
+    crate::shape_table::ensure_test_shape_table_registered();
+
     rt_async_set_strict_await_yields(true);
 
-    let mut awaited = Box::new(TestPromiseU64 {
-      header: async_abi::PromiseHeader {
-        state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
-        waiters: core::sync::atomic::AtomicUsize::new(0),
-        flags: core::sync::atomic::AtomicU8::new(0),
-      },
-      payload: 0,
-    });
-    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+    let awaited_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestPromiseU64>(),
+      crate::shape_table::TEST_PROMISE_U64_SHAPE_ID,
+    )
+    .cast::<async_abi::PromiseHeader>();
+    assert!(!awaited_ptr.is_null());
+    unsafe {
+      (*awaited_ptr)
+        .state
+        .store(async_abi::PromiseHeader::FULFILLED, Ordering::Release);
+    }
 
     let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
-    let coro = Box::new(TestCoroAwaitThenFulfill {
-      header: async_abi::Coroutine {
-        vtable: &TEST_CORO_VTABLE_U64,
-        promise: core::ptr::null_mut(),
-        next_waiter: core::ptr::null_mut(),
-        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
-      },
-      state: state_ptr,
-      awaited: awaited_ptr,
-    });
- 
-    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let handle = rt_handle_alloc(coro_ptr.cast::<u8>());
+    let coro_ptr = crate::rt_alloc(
+      core::mem::size_of::<crate::shape_table::TestCoroAwaitThenFulfill>(),
+      crate::shape_table::TEST_CORO_AWAIT_THEN_FULFILL_SHAPE_ID,
+    )
+    .cast::<crate::shape_table::TestCoroAwaitThenFulfill>();
+    assert!(!coro_ptr.is_null());
+    unsafe {
+      (*coro_ptr).header.vtable = &TEST_CORO_VTABLE_U64;
+      (*coro_ptr).header.promise = core::ptr::null_mut();
+      (*coro_ptr).header.next_waiter = core::ptr::null_mut();
+      (*coro_ptr).header.flags = async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME;
+      (*coro_ptr).state = state_ptr;
+      (*coro_ptr).awaited = awaited_ptr;
+    }
+    let coro_ptr: CoroutineRef = coro_ptr.cast::<async_abi::Coroutine>();
+    let handle = rt_handle_alloc(coro_ptr.cast());
     let result = unsafe { rt_async_spawn(CoroutineId(handle)) };
     assert!(!result.is_null());
 

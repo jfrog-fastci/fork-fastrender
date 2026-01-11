@@ -3,11 +3,30 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
+use runtime_native::shape_table;
 use runtime_native::CoroutineId;
 use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::PromiseRef as AbiPromiseRef;
-use runtime_native::RtShapeId;
+use runtime_native::{RtShapeDescriptor, RtShapeId};
 use std::sync::Mutex;
+use std::sync::Once;
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+      size: core::mem::size_of::<PromiseHeader>() as u32,
+      align: core::mem::align_of::<PromiseHeader>() as u16,
+      flags: 0,
+      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+      ptr_offsets_len: 0,
+      reserved: 0,
+    }];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
   AbiPromiseRef(p.cast())
@@ -49,7 +68,7 @@ static ORDER_VTABLE: CoroutineVTable = CoroutineVTable {
   destroy: order_destroy,
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
-  promise_shape_id: RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(1),
   abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
@@ -57,6 +76,7 @@ static ORDER_VTABLE: CoroutineVTable = CoroutineVTable {
 #[test]
 fn native_async_promise_waiters_resume_in_fifo_order() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
@@ -67,30 +87,29 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
     runtime_native::rt_promise_init(abi_promise_from_header(awaited_ptr));
   }
 
-  let coro1 = Box::new(OrderCoro {
-    header: Coroutine {
-      vtable: &ORDER_VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro1 = Box::new(OrderCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     id: 1,
     log,
     awaited: awaited_ptr,
   });
-  let coro2 = Box::new(OrderCoro {
-    header: Coroutine {
-      vtable: &ORDER_VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  coro1.header.vtable = &ORDER_VTABLE;
+  coro1.header.promise = null_mut();
+  coro1.header.next_waiter = null_mut();
+  coro1.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
+
+  let mut coro2 = Box::new(OrderCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     id: 2,
     log,
     awaited: awaited_ptr,
   });
+  coro2.header.vtable = &ORDER_VTABLE;
+  coro2.header.promise = null_mut();
+  coro2.header.next_waiter = null_mut();
+  coro2.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   // Await registration order is defined by program order: coro1 then coro2.
   let coro1_ref = Box::into_raw(coro1) as CoroutineRef;
@@ -152,7 +171,7 @@ static SETTLED_AWAIT_VTABLE: CoroutineVTable = CoroutineVTable {
   destroy: settled_await_destroy,
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
-  promise_shape_id: RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(1),
   abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
@@ -160,6 +179,7 @@ static SETTLED_AWAIT_VTABLE: CoroutineVTable = CoroutineVTable {
 #[test]
 fn native_async_strict_await_yields_on_already_settled_promise() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
   runtime_native::rt_async_set_strict_await_yields(true);
 
   let awaited = Box::new(new_promise_header_pending());
@@ -170,17 +190,16 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
   }
 
   let mut completed = false;
-  let coro = Box::new(SettledAwaitCoro {
-    header: Coroutine {
-      vtable: &SETTLED_AWAIT_VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(SettledAwaitCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     completed: &mut completed,
     awaited: awaited_ptr,
   });
+  coro.header.vtable = &SETTLED_AWAIT_VTABLE;
+  coro.header.promise = null_mut();
+  coro.header.next_waiter = null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   let coro_ptr = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());
@@ -208,6 +227,7 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
 #[test]
 fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promise() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
   runtime_native::rt_async_set_strict_await_yields(false);
 
   let awaited = Box::new(new_promise_header_pending());
@@ -218,17 +238,16 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
   }
 
   let mut completed = false;
-  let coro = Box::new(SettledAwaitCoro {
-    header: Coroutine {
-      vtable: &SETTLED_AWAIT_VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(SettledAwaitCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     completed: &mut completed,
     awaited: awaited_ptr,
   });
+  coro.header.vtable = &SETTLED_AWAIT_VTABLE;
+  coro.header.promise = null_mut();
+  coro.header.next_waiter = null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   let coro_ptr = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());

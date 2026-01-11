@@ -1,7 +1,5 @@
 use core::mem::align_of;
 use core::mem::size_of;
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::AtomicUsize;
 
 use memoffset::offset_of;
 
@@ -10,6 +8,7 @@ use runtime_native::async_abi::CoroutineRef;
 use runtime_native::async_abi::CoroutineVTable;
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::async_abi::PromiseRef;
+use runtime_native::gc::ObjHeader;
 
 #[repr(C)]
 struct Promise<T> {
@@ -27,11 +26,17 @@ struct CoroutineFrame<Locals> {
 fn promise_header_layout_is_stable() {
   assert_eq!(align_of::<PromiseHeader>(), 8);
 
-  assert_eq!(offset_of!(PromiseHeader, state), 0);
-  assert_eq!(offset_of!(PromiseHeader, waiters), size_of::<usize>());
-  assert_eq!(offset_of!(PromiseHeader, flags), size_of::<usize>() * 2);
+  assert_eq!(offset_of!(PromiseHeader, state), size_of::<ObjHeader>());
+  assert_eq!(offset_of!(PromiseHeader, waiters), size_of::<ObjHeader>() + size_of::<usize>());
+  assert_eq!(
+    offset_of!(PromiseHeader, flags),
+    size_of::<ObjHeader>() + size_of::<usize>() * 2
+  );
 
-  assert_eq!(size_of::<PromiseHeader>(), size_of::<usize>() * 2 + 8);
+  assert_eq!(
+    size_of::<PromiseHeader>(),
+    size_of::<ObjHeader>() + size_of::<usize>() * 2 + 8
+  );
   assert_eq!(size_of::<PromiseHeader>() % align_of::<PromiseHeader>(), 0);
 }
 
@@ -40,12 +45,12 @@ fn coroutine_layout_is_stable() {
   let ptr_size = size_of::<usize>();
   let ptr_align = align_of::<usize>();
 
-  assert_eq!(offset_of!(Coroutine, vtable), 0);
-  assert_eq!(offset_of!(Coroutine, promise), ptr_size);
-  assert_eq!(offset_of!(Coroutine, next_waiter), ptr_size * 2);
-  assert_eq!(offset_of!(Coroutine, flags), ptr_size * 3);
+  assert_eq!(offset_of!(Coroutine, vtable), size_of::<ObjHeader>());
+  assert_eq!(offset_of!(Coroutine, promise), size_of::<ObjHeader>() + ptr_size);
+  assert_eq!(offset_of!(Coroutine, next_waiter), size_of::<ObjHeader>() + ptr_size * 2);
+  assert_eq!(offset_of!(Coroutine, flags), size_of::<ObjHeader>() + ptr_size * 3);
 
-  let raw_size = (3 * ptr_size) + size_of::<u32>();
+  let raw_size = size_of::<ObjHeader>() + (3 * ptr_size) + size_of::<u32>();
   let expected_size = (raw_size + (ptr_align - 1)) & !(ptr_align - 1);
   assert_eq!(align_of::<Coroutine>(), ptr_align);
   assert_eq!(size_of::<Coroutine>(), expected_size);
@@ -71,11 +76,7 @@ fn coroutine_vtable_layout_is_stable() {
 #[test]
 fn promise_ref_round_trip_casts() {
   let mut p: Promise<u64> = Promise {
-    header: PromiseHeader {
-      state: AtomicU8::new(PromiseHeader::PENDING),
-      waiters: AtomicUsize::new(0),
-      flags: AtomicU8::new(0),
-    },
+    header: unsafe { core::mem::zeroed() },
     payload: core::mem::MaybeUninit::uninit(),
   };
 
@@ -92,12 +93,7 @@ fn promise_ref_round_trip_casts() {
 #[test]
 fn coroutine_ref_round_trip_casts() {
   let mut frame: CoroutineFrame<u32> = CoroutineFrame {
-    coroutine: Coroutine {
-      vtable: core::ptr::null(),
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: 0,
-    },
+    coroutine: unsafe { core::mem::zeroed() },
     locals: 123,
   };
 

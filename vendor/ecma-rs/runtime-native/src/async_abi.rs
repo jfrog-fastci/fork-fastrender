@@ -1,25 +1,11 @@
 #![doc = include_str!("../docs/async_abi.md")]
 
-//! C-compatible async/await ABI for the native runtime.
-//!
-//! This module contains the shared layout contract between:
-//! - The compiler/codegen (which emits `Promise<T>` allocations and coroutine frames), and
-//! - The native runtime (which schedules coroutines and resolves/rejects promises).
-//!
-//! ## Layout invariants for generated code
-//! - Every generated `Promise<T>` allocation begins with a [`PromiseHeader`] at offset 0.
-//!   The payload `T` begins immediately after the header; the compiler chooses the full
-//!   allocation layout, but the runtime only relies on the header prefix.
-//! - Every generated coroutine frame begins with a [`Coroutine`] header at offset 0. The
-//!   coroutine's locals/state machine fields follow immediately after.
-//! - A coroutine must resolve/reject `coro.promise` itself before returning
-//!   [`CoroutineStepTag::Complete`] from its `resume` function.
-
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use crate::abi::RtShapeId;
-
 use static_assertions::{const_assert, const_assert_eq};
+
+use crate::abi::RtShapeId;
+use crate::gc::ObjHeader;
 
 /// ABI version tag for the native coroutine ABI.
 ///
@@ -38,6 +24,9 @@ pub type PromiseState = u8;
 /// - and safe to embed as a prefix in a larger allocation.
 #[repr(C, align(8))]
 pub struct PromiseHeader {
+  /// GC object header at offset 0 (object base pointer).
+  pub(crate) obj: ObjHeader,
+
   /// Current promise state.
   ///
   /// Values are [`PromiseHeader::PENDING`], [`PromiseHeader::FULFILLED`], or
@@ -190,6 +179,9 @@ pub struct CoroutineVTable {
 /// Header embedded at offset 0 of every generated coroutine frame.
 #[repr(C)]
 pub struct Coroutine {
+  /// GC object header at offset 0 (object base pointer).
+  pub(crate) obj: ObjHeader,
+
   pub vtable: *const CoroutineVTable,
 
   /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
@@ -233,18 +225,18 @@ pub type CoroutineRef = *mut Coroutine;
 // ---- Compile-time checks ----
 
 const_assert_eq!(core::mem::align_of::<PromiseHeader>(), 8);
-const_assert_eq!(core::mem::offset_of!(PromiseHeader, state), 0);
+const_assert_eq!(core::mem::offset_of!(PromiseHeader, state), core::mem::size_of::<ObjHeader>());
 const_assert_eq!(
   core::mem::offset_of!(PromiseHeader, waiters),
-  core::mem::size_of::<usize>()
+  core::mem::size_of::<ObjHeader>() + core::mem::size_of::<usize>()
 );
 const_assert_eq!(
   core::mem::offset_of!(PromiseHeader, flags),
-  core::mem::size_of::<usize>() * 2
+  core::mem::size_of::<ObjHeader>() + core::mem::size_of::<usize>() * 2
 );
 const_assert_eq!(
   core::mem::size_of::<PromiseHeader>(),
-  core::mem::size_of::<usize>() * 2 + 8
+  core::mem::size_of::<ObjHeader>() + core::mem::size_of::<usize>() * 2 + 8
 );
 const_assert!(
   core::mem::size_of::<PromiseHeader>() % core::mem::align_of::<PromiseHeader>() == 0
@@ -362,10 +354,13 @@ const _: () = {
   use core::mem::{align_of, offset_of, size_of};
 
   assert!(align_of::<PromiseHeader>() == 8);
-  assert!(size_of::<PromiseHeader>() == 24);
-  assert!(offset_of!(PromiseHeader, state) == 0);
-  assert!(offset_of!(PromiseHeader, waiters) == 8);
-  assert!(offset_of!(PromiseHeader, flags) == 16);
+  assert!(align_of::<PromiseHeader>() >= align_of::<ObjHeader>());
+  assert!(size_of::<ObjHeader>() == 2 * size_of::<usize>());
+
+  assert!(size_of::<PromiseHeader>() == size_of::<ObjHeader>() + size_of::<usize>() * 2 + 8);
+  assert!(offset_of!(PromiseHeader, state) == size_of::<ObjHeader>());
+  assert!(offset_of!(PromiseHeader, waiters) == size_of::<ObjHeader>() + size_of::<usize>());
+  assert!(offset_of!(PromiseHeader, flags) == size_of::<ObjHeader>() + 2 * size_of::<usize>());
 
   // Keep the Rust ABI layout in sync with `include/runtime_native.h`.
   const PTR: usize = size_of::<*const u8>();
@@ -375,21 +370,15 @@ const _: () = {
   let ptr_align = align_of::<usize>();
 
   // C header layout (`include/runtime_native.h`):
-  //   vtable ptr, promise ptr, next_waiter ptr, flags u32
+  //   gc prefix, vtable ptr, promise ptr, next_waiter ptr, flags u32
   assert!(align_of::<Coroutine>() == ptr_align);
-  assert!(offset_of!(Coroutine, vtable) == 0);
-  assert!(offset_of!(Coroutine, promise) == ptr_size);
-  assert!(offset_of!(Coroutine, next_waiter) == 2 * ptr_size);
-  assert!(offset_of!(Coroutine, flags) == 3 * ptr_size);
-  let raw_size = (3 * ptr_size) + size_of::<u32>();
+  assert!(offset_of!(Coroutine, vtable) == size_of::<ObjHeader>());
+  assert!(offset_of!(Coroutine, promise) == size_of::<ObjHeader>() + ptr_size);
+  assert!(offset_of!(Coroutine, next_waiter) == size_of::<ObjHeader>() + 2 * ptr_size);
+  assert!(offset_of!(Coroutine, flags) == size_of::<ObjHeader>() + 3 * ptr_size);
+  let raw_size = size_of::<ObjHeader>() + (3 * ptr_size) + size_of::<u32>();
   let expected_size = (raw_size + (ptr_align - 1)) & !(ptr_align - 1);
   assert!(size_of::<Coroutine>() == expected_size);
-
-  // `Coroutine` layout (vtable, promise, next_waiter, flags).
-  assert!(offset_of!(Coroutine, vtable) == 0);
-  assert!(offset_of!(Coroutine, promise) == PTR);
-  assert!(offset_of!(Coroutine, next_waiter) == PTR * 2);
-  assert!(offset_of!(Coroutine, flags) == PTR * 3);
 
   // `CoroutineVTable` layout (resume, destroy, promise_size/align/shape_id, abi_version, reserved).
   assert!(offset_of!(CoroutineVTable, resume) == 0);

@@ -47,6 +47,17 @@ typedef struct RtShapeDescriptor {
   uint32_t reserved;
 } RtShapeDescriptor;
 
+// Opaque fixed-size prefix matching the runtime's `ObjHeader` layout.
+//
+// The runtime GC header is currently two machine words:
+//   { type_desc: *const TypeDescriptor, meta: AtomicUsize }
+//
+// C codegen must treat this as opaque and must not read/write it directly; it is initialized by
+// `rt_alloc` / `rt_alloc_pinned`.
+typedef struct RtGcPrefix {
+  uintptr_t _opaque[2];
+} RtGcPrefix;
+
 typedef uint32_t InternedId;
 typedef uint64_t TaskId;
 typedef uint64_t TimerId;
@@ -86,15 +97,17 @@ typedef uint8_t** GcHandle;
 // Native async/await ABI (Promise/Coroutine)
 // -----------------------------------------------------------------------------
 // Native codegen represents `async` functions as coroutines that produce a
-// GC-allocated `Promise<T>`.
+// GC-allocated `Promise<T>` objects and coroutine frames.
 //
-// Each `Promise<T>` begins with a `PromiseHeader` prefix at offset 0. The
-// promise payload begins immediately after the header (layout chosen by the
-// compiler).
+// Promise objects and coroutine frames are normal GC objects: the pointer passed around in the ABI
+// is the **object base pointer** (start of the runtime GC header / ObjHeader).
 //
-// The `PromiseHeader` layout is defined by the Rust ABI types in
-// `runtime-native/src/async_abi.rs`; for C callers/codegen this header treats it
-// as opaque.
+// Each `Promise<T>` begins with a `PromiseHeader` prefix at offset 0 (and that prefix itself begins
+// with the GC header). The promise payload begins immediately after `PromiseHeader` (layout chosen
+// by the compiler/codegen).
+//
+// The `PromiseHeader` layout is defined by the Rust ABI types in `runtime-native/src/async_abi.rs`;
+// for C callers/codegen this header treats it as opaque.
 typedef struct PromiseHeader PromiseHeader;
 typedef PromiseHeader* PromiseRef;
 
@@ -741,6 +754,7 @@ struct CoroutineVTable {
 
 // Generated coroutine frames are structs whose prefix is `Coroutine`.
 struct Coroutine {
+  RtGcPrefix gc;
   const CoroutineVTable* vtable;
   PromiseRef promise;
   Coroutine* next_waiter;

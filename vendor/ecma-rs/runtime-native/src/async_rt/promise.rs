@@ -94,6 +94,11 @@ impl RtPromise {
   fn new_pending() -> Self {
     Self {
       header: PromiseHeader {
+        // Legacy promises are not allocated via `rt_alloc` today; keep their GC header inert.
+        obj: crate::gc::ObjHeader {
+          type_desc: core::ptr::null(),
+          meta: AtomicUsize::new(0),
+        },
         state: core::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
         waiters: core::sync::atomic::AtomicUsize::new(0),
         flags: core::sync::atomic::AtomicU8::new(0),

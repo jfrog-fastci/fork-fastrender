@@ -92,7 +92,14 @@ fn alloc_promise_for_vtable(vtable: &CoroutineVTable) -> AbiPromiseRef {
   if align < core::mem::align_of::<PromiseHeader>() || !align.is_power_of_two() {
     std::process::abort();
   }
-  let ptr = crate::alloc::alloc_bytes_zeroed(size, align, "rt_async_spawn: promise");
+  if !vtable.promise_shape_id.is_valid() {
+    std::process::abort();
+  }
+
+  // Allocate the promise as a normal GC object so it can be traced/moved in the future.
+  // The returned pointer is the GC object base (points at ObjHeader), which is also the start of
+  // `PromiseHeader` (it embeds ObjHeader at offset 0).
+  let ptr = crate::rt_alloc(size, vtable.promise_shape_id);
   let p = AbiPromiseRef(ptr.cast());
   unsafe {
     promise_init(p);

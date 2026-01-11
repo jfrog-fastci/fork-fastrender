@@ -165,6 +165,113 @@ pub(crate) fn validate_alloc_request(
   (rt_desc, type_desc)
 }
 
+// --- Shared test shape table ---------------------------------------------------------------------
+//
+// `RtShapeId` tables are process-global and single-assignment. Unit tests within this crate run in a
+// single process and can execute in parallel, so any test that needs `rt_alloc` must agree on a
+// single registered table.
+//
+// Keep this table minimal and append-only so existing shape-id assumptions remain stable.
+#[cfg(test)]
+pub(crate) const TEST_PROMISE_U64_SHAPE_ID: RtShapeId = RtShapeId(4);
+#[cfg(test)]
+pub(crate) const TEST_CORO_AWAIT_THEN_FULFILL_SHAPE_ID: RtShapeId = RtShapeId(5);
+
+#[cfg(test)]
+#[repr(C)]
+pub(crate) struct TestPromiseU64 {
+  pub header: crate::async_abi::PromiseHeader,
+  pub payload: u64,
+}
+
+#[cfg(test)]
+#[repr(C)]
+pub(crate) struct TestCoroAwaitThenFulfill {
+  pub header: crate::async_abi::Coroutine,
+  pub state: *mut core::sync::atomic::AtomicUsize,
+  pub awaited: crate::async_abi::PromiseRef,
+}
+
+#[cfg(test)]
+static TEST_LEAF_PTR_OFFSETS: [u32; 0] = [];
+#[cfg(test)]
+static TEST_SINGLE_PTR_OFFSETS: [u32; 1] = [mem::size_of::<ObjHeader>() as u32];
+#[cfg(test)]
+static TEST_WEIRD_PTR_OFFSETS: [u32; 1] =
+  [(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>()) as u32];
+
+#[cfg(test)]
+static TEST_PROMISE_U64_PTR_OFFSETS: [u32; 0] = [];
+
+#[cfg(test)]
+static TEST_CORO_AWAIT_THEN_FULFILL_PTR_OFFSETS: [u32; 3] = [
+  mem::offset_of!(crate::async_abi::Coroutine, promise) as u32,
+  mem::offset_of!(crate::async_abi::Coroutine, next_waiter) as u32,
+  mem::offset_of!(TestCoroAwaitThenFulfill, awaited) as u32,
+];
+
+#[cfg(test)]
+static TEST_SHAPE_TABLE: [RtShapeDescriptor; 5] = [
+  // Shape 1: leaf object (header only).
+  RtShapeDescriptor {
+    size: mem::size_of::<ObjHeader>() as u32,
+    align: mem::align_of::<ObjHeader>() as u16,
+    flags: 0,
+    ptr_offsets: TEST_LEAF_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: TEST_LEAF_PTR_OFFSETS.len() as u32,
+    reserved: 0,
+  },
+  // Shape 2: single pointer slot (immediately after ObjHeader).
+  RtShapeDescriptor {
+    size: (mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>()) as u32,
+    align: mem::align_of::<ObjHeader>() as u16,
+    flags: 0,
+    ptr_offsets: TEST_SINGLE_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: TEST_SINGLE_PTR_OFFSETS.len() as u32,
+    reserved: 0,
+  },
+  // Shape 3: two pointer slots, but only the *second* one is traced.
+  RtShapeDescriptor {
+    size: (mem::size_of::<ObjHeader>() + 2 * mem::size_of::<*mut u8>()) as u32,
+    align: mem::align_of::<ObjHeader>() as u16,
+    flags: 0,
+    ptr_offsets: TEST_WEIRD_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: TEST_WEIRD_PTR_OFFSETS.len() as u32,
+    reserved: 0,
+  },
+  // Shape 4: promise header + u64 payload (used by async ABI unit tests).
+  RtShapeDescriptor {
+    size: mem::size_of::<TestPromiseU64>() as u32,
+    align: mem::align_of::<TestPromiseU64>() as u16,
+    flags: 0,
+    ptr_offsets: TEST_PROMISE_U64_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: TEST_PROMISE_U64_PTR_OFFSETS.len() as u32,
+    reserved: 0,
+  },
+  // Shape 5: coroutine frame used by async ABI unit tests.
+  RtShapeDescriptor {
+    size: mem::size_of::<TestCoroAwaitThenFulfill>() as u32,
+    align: mem::align_of::<TestCoroAwaitThenFulfill>() as u16,
+    flags: 0,
+    ptr_offsets: TEST_CORO_AWAIT_THEN_FULFILL_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: TEST_CORO_AWAIT_THEN_FULFILL_PTR_OFFSETS.len() as u32,
+    reserved: 0,
+  },
+];
+
+#[cfg(test)]
+pub(crate) fn ensure_test_shape_table_registered() {
+  use std::sync::Once;
+
+  static ONCE: Once = Once::new();
+  ONCE.call_once(|| unsafe {
+    if SHAPE_TABLE.get().is_some() {
+      return;
+    }
+    register_shape_table(TEST_SHAPE_TABLE.as_ptr(), TEST_SHAPE_TABLE.len());
+  });
+}
+
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_shape_count() -> usize {
@@ -285,37 +392,6 @@ mod tests {
 
   #[test]
   fn register_table_and_trace_uses_offsets() {
-    static LEAF_PTR_OFFSETS: [u32; 0] = [];
-    static SINGLE_PTR_OFFSETS: [u32; 1] = [mem::size_of::<ObjHeader>() as u32];
-    static WEIRD_PTR_OFFSETS: [u32; 1] = [(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>()) as u32];
-
-    static TABLE: [RtShapeDescriptor; 3] = [
-      RtShapeDescriptor {
-        size: mem::size_of::<ObjHeader>() as u32,
-        align: mem::align_of::<ObjHeader>() as u16,
-        flags: 0,
-        ptr_offsets: LEAF_PTR_OFFSETS.as_ptr(),
-        ptr_offsets_len: LEAF_PTR_OFFSETS.len() as u32,
-        reserved: 0,
-      },
-      RtShapeDescriptor {
-        size: (mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>()) as u32,
-        align: mem::align_of::<ObjHeader>() as u16,
-        flags: 0,
-        ptr_offsets: SINGLE_PTR_OFFSETS.as_ptr(),
-        ptr_offsets_len: SINGLE_PTR_OFFSETS.len() as u32,
-        reserved: 0,
-      },
-      RtShapeDescriptor {
-        size: (mem::size_of::<ObjHeader>() + 2 * mem::size_of::<*mut u8>()) as u32,
-        align: mem::align_of::<ObjHeader>() as u16,
-        flags: 0,
-        ptr_offsets: WEIRD_PTR_OFFSETS.as_ptr(),
-        ptr_offsets_len: WEIRD_PTR_OFFSETS.len() as u32,
-        reserved: 0,
-      },
-    ];
-
     // Invalid registration is rejected (offset inside ObjHeader).
     static HEADER_PTR_OFFSETS: [u32; 1] = [0];
     static HEADER_TABLE: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
@@ -326,10 +402,7 @@ mod tests {
       ptr_offsets_len: HEADER_PTR_OFFSETS.len() as u32,
       reserved: 0,
     }];
-    assert!(std::panic::catch_unwind(|| unsafe {
-      register_shape_table(HEADER_TABLE.as_ptr(), HEADER_TABLE.len());
-    })
-    .is_err());
+    assert!(std::panic::catch_unwind(|| validate_shape_table(&HEADER_TABLE)).is_err());
 
     // Invalid registration is rejected (offset out of bounds).
     static INVALID_PTR_OFFSETS: [u32; 1] = [0xffff_ff00];
@@ -341,21 +414,16 @@ mod tests {
       ptr_offsets_len: INVALID_PTR_OFFSETS.len() as u32,
       reserved: 0,
     }];
-    assert!(std::panic::catch_unwind(|| unsafe {
-      register_shape_table(INVALID_TABLE.as_ptr(), INVALID_TABLE.len());
-    })
-    .is_err());
+    assert!(std::panic::catch_unwind(|| validate_shape_table(&INVALID_TABLE)).is_err());
 
-    unsafe {
-      register_shape_table(TABLE.as_ptr(), TABLE.len());
-    }
+    ensure_test_shape_table_registered();
 
     // Shape ids are 1-indexed.
     let leaf = RtShapeId(1);
     let weird = RtShapeId(3);
 
     let weird_desc = lookup_type_descriptor(weird);
-    assert_eq!(weird_desc.ptr_offsets(), WEIRD_PTR_OFFSETS);
+    assert_eq!(weird_desc.ptr_offsets(), TEST_WEIRD_PTR_OFFSETS);
 
     unsafe {
       // `rt_alloc` requires the current thread be registered so it can participate in stop-the-world

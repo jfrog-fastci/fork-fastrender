@@ -1,13 +1,33 @@
 use runtime_native::abi::Microtask;
+use runtime_native::abi::{RtShapeDescriptor, RtShapeId};
 use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef, CORO_FLAG_RUNTIME_OWNS_FRAME,
   RT_ASYNC_ABI_VERSION,
 };
+use runtime_native::shape_table;
 use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::{rt_async_cancel_all, rt_drain_microtasks, rt_queue_microtask, CoroutineId};
+use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use std::sync::Once;
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+  size: mem::size_of::<PromiseHeader>() as u32,
+  align: mem::align_of::<PromiseHeader>() as u16,
+  flags: 0,
+  ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+  ptr_offsets_len: 0,
+  reserved: 0,
+}];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
 
 #[repr(C)]
 struct DropPayload {
@@ -57,7 +77,7 @@ static AWAIT_VTABLE: CoroutineVTable = CoroutineVTable {
   destroy: heap_destroy,
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
-  promise_shape_id: runtime_native::RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(1),
   abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
@@ -97,21 +117,21 @@ fn cancel_runs_microtask_drop_hook_without_executing() {
 #[test]
 fn cancel_drops_pending_native_promise_reactions() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
   let destroyed = AtomicUsize::new(0);
 
   let awaited = Box::new(new_promise_header_pending());
   let awaited_hdr: PromiseRef = Box::into_raw(awaited);
 
-  let coro = Box::new(AwaitCoro {
-    header: Coroutine {
-      vtable: &AWAIT_VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AwaitCoro {
+    header: unsafe { core::mem::zeroed() },
     destroyed: &destroyed,
     await_promise: awaited_hdr,
   });
+  coro.header.vtable = &AWAIT_VTABLE;
+  coro.header.promise = core::ptr::null_mut();
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
   unsafe {

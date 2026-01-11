@@ -200,7 +200,8 @@ static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
   // Use conservative values: this smoke test treats PromiseHeader as opaque.
   .promise_size = 64,
   .promise_align = 16,
-  .promise_shape_id = 0,
+  // Promise allocation uses `rt_alloc` and therefore requires a valid registered shape id.
+  .promise_shape_id = 2,
   .abi_version = RT_ASYNC_ABI_VERSION,
   .reserved = {0, 0, 0, 0},
 };
@@ -218,7 +219,7 @@ static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
   .destroy = native_async_heap_destroy,
   .promise_size = 64,
   .promise_align = 16,
-  .promise_shape_id = 0,
+  .promise_shape_id = 2,
   .abi_version = RT_ASYNC_ABI_VERSION,
   .reserved = {0, 0, 0, 0},
 };
@@ -247,7 +248,10 @@ int main(void) {
   rt_global_root_register(&global_root);
   rt_global_root_unregister(&global_root);
 
-  static const RtShapeDescriptor kShapes[1] = {
+  // Shape table is 1-indexed. Provide:
+  // - shape 1: small leaf object used by the pinned-allocation smoke,
+  // - shape 2: opaque promise allocation used by the native async smoke.
+  static const RtShapeDescriptor kShapes[2] = {
     {
       .size = 16,
       .align = 16,
@@ -256,8 +260,16 @@ int main(void) {
       .ptr_offsets_len = 0,
       .reserved = 0,
     },
+    {
+      .size = 64,
+      .align = 16,
+      .flags = 0,
+      .ptr_offsets = (const uint32_t*)0,
+      .ptr_offsets_len = 0,
+      .reserved = 0,
+    },
   };
-  rt_register_shape_table(kShapes, 1);
+  rt_register_shape_table(kShapes, 2);
 
   RtShapeId shape = (RtShapeId)1;
   uint8_t* pinned = rt_alloc_pinned(16, shape);

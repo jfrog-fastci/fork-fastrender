@@ -144,6 +144,11 @@ pub struct ObjHeader {
   pub(crate) meta: AtomicUsize,
 }
 
+// SAFETY: `ObjHeader` contains only an immutable type descriptor pointer (global, read-only data)
+// plus atomic metadata. It is safe to move and share between threads.
+unsafe impl Send for ObjHeader {}
+unsafe impl Sync for ObjHeader {}
+
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
 /// Minimum alignment (in bytes) guaranteed for all GC-managed object base pointers.
 ///

@@ -140,6 +140,24 @@ fn scenario_thenable() {
 
 fn scenario_native_async() {
   use runtime_native::async_abi::{Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable};
+  use runtime_native::abi::RtShapeDescriptor;
+  use runtime_native::shape_table;
+
+  // Native async promise allocation uses `rt_alloc` and therefore requires a shape table. This
+  // subprocess is expected to abort due to the panicking resume callback; register a minimal shape
+  // table so we don't fail earlier with "shape table not registered".
+  static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+  static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+    size: core::mem::size_of::<runtime_native::async_abi::PromiseHeader>() as u32,
+    align: core::mem::align_of::<runtime_native::async_abi::PromiseHeader>() as u16,
+    flags: 0,
+    ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: 0,
+    reserved: 0,
+  }];
+  unsafe {
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  }
 
   unsafe extern "C-unwind" fn panic_resume(_coro: CoroutineRef) -> CoroutineStep {
     panic!("intentional panic from async_abi CoroutineVTable.resume");
@@ -164,12 +182,13 @@ fn scenario_native_async() {
     reserved: [0; 4],
   };
 
-  let coro = Box::new(Coroutine {
-    vtable: std::ptr::from_ref(&vtable),
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: runtime_native::async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
-  });
+  // `Coroutine` now includes an internal GC header prefix. This smoke test allocates the coroutine
+  // header directly via `Box`, so construct it via zero-init and then initialize the public fields.
+  let mut coro: Box<Coroutine> = Box::new(unsafe { core::mem::zeroed() });
+  coro.vtable = std::ptr::from_ref(&vtable);
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = runtime_native::async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME;
   let coro_ptr: CoroutineRef = Box::into_raw(coro);
 
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());

@@ -704,8 +704,15 @@ observe them as structured errors.
 
 - A **coroutine** is a native-generated state machine. The native ABI interacts with it through a
   `Coroutine` prefix placed at offset 0 of the coroutine frame.
+  - Coroutine frames are normal **GC objects**: the `CoroutineRef` passed across the ABI is the
+    object base pointer (start of the runtime GC header / `ObjHeader`).
+  - In C, the ABI exposes this as an opaque fixed-size prefix `RtGcPrefix` at the start of
+    `struct Coroutine` (see `include/runtime_native.h`).
 - A coroutine produces a **result promise** (`PromiseRef`) that is returned to the JS world. The
-  promise begins with a `PromiseHeader` at offset 0; the payload layout is owned by codegen.
+  promise begins with a `PromiseHeader` at offset 0 (and that header embeds the GC `ObjHeader` at
+  offset 0); the payload layout is owned by codegen.
+  - The promise payload begins immediately after `PromiseHeader` (at offset
+    `size_of::<PromiseHeader>()` from the object base).
 - A coroutine suspends by returning `Await(p)` from its `resume` function; the runtime registers a
   microtask reaction on `p` to resume the coroutine when it settles.
 
@@ -771,6 +778,16 @@ currently queued/owned by the runtime. It must not double-destroy frames even if
 - a coroutine is accidentally enqueued multiple times,
 - cancellation is requested after completion,
 - promise settlement schedules a stale resume.
+
+### Allocation + shape IDs
+
+- **Promises** are allocated by the runtime via `rt_alloc(size, shape)` using:
+  - `CoroutineVTable::promise_size` / `promise_align`, and
+  - `CoroutineVTable::promise_shape_id` (a runtime-local `RtShapeId` index into the registered shape
+    table).
+- **Coroutine frames** are allocated by codegen (not the runtime). Codegen should allocate coroutine
+  frames via `rt_alloc` (or `rt_alloc_pinned` when stable addresses are required) using a
+  codegen-provided `RtShapeId` for the coroutine frame shape.
 
 ### Spawning APIs
 

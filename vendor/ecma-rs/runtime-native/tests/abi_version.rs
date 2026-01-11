@@ -77,12 +77,11 @@ fn abi_version_mismatch_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -110,12 +109,11 @@ fn reserved_nonzero_child() {
     reserved: [1, 0, 0, 0],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -144,12 +142,11 @@ fn promise_align_not_power_of_two_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -177,12 +174,11 @@ fn promise_size_too_small_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -214,12 +210,11 @@ fn promise_align_too_small_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -258,12 +253,11 @@ fn resume_null_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE as *const RawCoroutineVTable as *const CoroutineVTable,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE as *const RawCoroutineVTable as *const CoroutineVTable;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);
@@ -291,12 +285,11 @@ fn destroy_null_child() {
     reserved: [0; 4],
   };
 
-  let mut coro = Coroutine {
-    vtable: &BAD_VTABLE as *const RawCoroutineVTable as *const CoroutineVTable,
-    promise: core::ptr::null_mut(),
-    next_waiter: core::ptr::null_mut(),
-    flags: 0,
-  };
+  let mut coro: Coroutine = unsafe { core::mem::zeroed() };
+  coro.vtable = &BAD_VTABLE as *const RawCoroutineVTable as *const CoroutineVTable;
+  coro.promise = core::ptr::null_mut();
+  coro.next_waiter = core::ptr::null_mut();
+  coro.flags = 0;
 
   unsafe {
     rt_async_spawn_ptr(&mut coro as *mut Coroutine);

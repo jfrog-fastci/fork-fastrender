@@ -778,7 +778,7 @@ impl GcHeap {
     }
   }
 
-  pub(super) fn reserve_card_table_objects_for_minor_gc(&mut self) {
+  pub(crate) fn reserve_card_table_objects_for_minor_gc(&mut self) {
     // Card tables can be installed during minor GC when promoting large pointer
     // arrays. Ensure the registry has enough capacity up-front so promotion
     // remains "no global allocator".

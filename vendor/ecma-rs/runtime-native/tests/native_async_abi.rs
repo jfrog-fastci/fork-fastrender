@@ -135,19 +135,25 @@ fn async_spawn_runs_sync_until_first_await() {
     runtime_native::rt_promise_init(PromiseRef(awaited_ptr.cast()));
   }
 
+  // Provide the coroutine's result promise explicitly so this test doesn't depend on GC allocation.
+  let mut coro_promise = Box::<MaybeUninit<TestPromise>>::new(MaybeUninit::uninit());
+  let coro_promise_ptr = coro_promise.as_mut_ptr().cast::<PromiseHeader>();
+  unsafe {
+    runtime_native::rt_promise_init(PromiseRef(coro_promise_ptr.cast()));
+  }
+
   let side_effect = AtomicBool::new(false);
 
-  let coro = Box::new(SpawnCoroutine {
-    header: Coroutine {
-      vtable: &SPAWN_VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(SpawnCoroutine {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     side_effect: &side_effect,
     awaited: awaited_ptr,
   });
+  coro.header.vtable = &SPAWN_VTABLE;
+  coro.header.promise = coro_promise_ptr;
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   let coro_ptr = Box::into_raw(coro).cast::<Coroutine>();
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
@@ -222,19 +228,25 @@ fn await_reaction_resumes_coroutine_and_completes_promise() {
     runtime_native::rt_promise_init(PromiseRef(awaited_ptr.cast()));
   }
 
+  // Provide the coroutine's result promise explicitly so this test doesn't depend on GC allocation.
+  let mut coro_promise = Box::<MaybeUninit<TestPromise>>::new(MaybeUninit::uninit());
+  let coro_promise_ptr = coro_promise.as_mut_ptr().cast::<PromiseHeader>();
+  unsafe {
+    runtime_native::rt_promise_init(PromiseRef(coro_promise_ptr.cast()));
+  }
+
   let completed = AtomicBool::new(false);
 
-  let coro = Box::new(AwaitCoroutine {
-    header: Coroutine {
-      vtable: &AWAIT_VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AwaitCoroutine {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     completed: &completed,
     awaited: awaited_ptr,
   });
+  coro.header.vtable = &AWAIT_VTABLE;
+  coro.header.promise = coro_promise_ptr;
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   let coro_ptr = Box::into_raw(coro);
   let coro_header = coro_ptr.cast::<Coroutine>();

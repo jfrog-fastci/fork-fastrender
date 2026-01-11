@@ -6,8 +6,27 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef as PromisePtr,
   RT_ASYNC_ABI_VERSION, CORO_FLAG_RUNTIME_OWNS_FRAME,
 };
+use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{CoroutineId, PromiseRef as PromiseHandle, RtShapeId};
+use runtime_native::{CoroutineId, PromiseRef as PromiseHandle, RtShapeDescriptor, RtShapeId};
+use std::sync::Once;
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+      size: size_of::<TestPromise>() as u32,
+      align: align_of::<TestPromise>() as u16,
+      flags: 0,
+      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+      ptr_offsets_len: 0,
+      reserved: 0,
+    }];
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
 
 #[repr(C)]
 struct TestPromise {
@@ -63,7 +82,7 @@ static VTABLE: CoroutineVTable = CoroutineVTable {
   destroy: await_then_return_destroy,
   promise_size: size_of::<TestPromise>() as u32,
   promise_align: align_of::<TestPromise>() as u32,
-  promise_shape_id: RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(1),
   abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
@@ -100,6 +119,7 @@ unsafe fn alloc_pending_test_promise() -> *mut TestPromise {
 #[test]
 fn async_spawn_then_wake_and_complete() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   let awaited = unsafe { alloc_pending_test_promise() };
   // Ensure `value` is initialized before we ever treat `awaited` as a `TestPromise`.
@@ -108,17 +128,17 @@ fn async_spawn_then_wake_and_complete() {
   }
   let awaited_ref: PromisePtr = awaited.cast::<PromiseHeader>();
 
-  let coro = Box::into_raw(Box::new(AwaitThenReturnCoro {
-    header: Coroutine {
-      vtable: &VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AwaitThenReturnCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     awaited: awaited_ref,
     return_value: 42,
-  }));
+  });
+  coro.header.vtable = &VTABLE;
+  coro.header.promise = null_mut();
+  coro.header.next_waiter = null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
+  let coro = Box::into_raw(coro);
 
   let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
   let result_promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
@@ -151,6 +171,7 @@ fn async_spawn_then_wake_and_complete() {
 #[test]
 fn multi_waiter_wakes_all() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   let awaited = unsafe { alloc_pending_test_promise() };
   unsafe {
@@ -159,17 +180,17 @@ fn multi_waiter_wakes_all() {
   let awaited_ref: PromisePtr = awaited.cast::<PromiseHeader>();
 
   let mk_coro = |return_value: u32| {
-    Box::into_raw(Box::new(AwaitThenReturnCoro {
-      header: Coroutine {
-        vtable: &VTABLE,
-        promise: null_mut(),
-        next_waiter: null_mut(),
-        flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-      },
+    let mut coro = Box::new(AwaitThenReturnCoro {
+      header: unsafe { core::mem::zeroed() },
       state: 0,
       awaited: awaited_ref,
       return_value,
-    }))
+    });
+    coro.header.vtable = &VTABLE;
+    coro.header.promise = null_mut();
+    coro.header.next_waiter = null_mut();
+    coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
+    Box::into_raw(coro)
   };
 
   let c1 = mk_coro(1);
@@ -207,6 +228,7 @@ fn multi_waiter_wakes_all() {
 #[test]
 fn fast_path_already_fulfilled_promise_completes_in_spawn() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   let awaited = unsafe { alloc_pending_test_promise() };
   unsafe {
@@ -219,17 +241,17 @@ fn fast_path_already_fulfilled_promise_completes_in_spawn() {
     runtime_native::rt_promise_fulfill(promise_handle_from_ptr(awaited_ref));
   }
 
-  let coro = Box::into_raw(Box::new(AwaitThenReturnCoro {
-    header: Coroutine {
-      vtable: &VTABLE,
-      promise: null_mut(),
-      next_waiter: null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AwaitThenReturnCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     awaited: awaited_ref,
     return_value: 7,
-  }));
+  });
+  coro.header.vtable = &VTABLE;
+  coro.header.promise = null_mut();
+  coro.header.next_waiter = null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
+  let coro = Box::into_raw(coro);
 
   let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
   let result_promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };

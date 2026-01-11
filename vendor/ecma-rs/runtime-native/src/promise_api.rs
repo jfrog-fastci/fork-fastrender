@@ -225,6 +225,13 @@ where
   pub fn new() -> (Arc<Self>, PromiseResolver<T>, PromiseRejector<T>) {
     let p = Arc::new(Self {
       header: PromiseHeader {
+        // Promise API values are allocated via `Arc`, not `rt_alloc`, so their GC header is inert.
+        // This allows the type to embed `PromiseHeader` (which starts with `ObjHeader`) without
+        // registering these promises as GC-managed objects.
+        obj: crate::gc::ObjHeader {
+          type_desc: core::ptr::null(),
+          meta: std::sync::atomic::AtomicUsize::new(0),
+        },
         state: std::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
         waiters: std::sync::atomic::AtomicUsize::new(0),
         flags: std::sync::atomic::AtomicU8::new(0),

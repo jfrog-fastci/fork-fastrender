@@ -1,7 +1,26 @@
 use runtime_native::async_abi::{Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader};
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{threading, CoroutineId, RtShapeId};
+use runtime_native::shape_table;
+use runtime_native::{threading, CoroutineId, RtShapeDescriptor, RtShapeId};
 use std::sync::mpsc;
+use std::sync::Once;
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+  size: core::mem::size_of::<PromiseHeader>() as u32,
+  align: core::mem::align_of::<PromiseHeader>() as u16,
+  flags: 0,
+  ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+  ptr_offsets_len: 0,
+  reserved: 0,
+}];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
 
 #[repr(C)]
 struct ImmediateCompleteCoro {
@@ -26,20 +45,19 @@ static VTABLE: CoroutineVTable = CoroutineVTable {
   destroy,
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
-  promise_shape_id: RtShapeId::INVALID,
+  promise_shape_id: RtShapeId(1),
   abi_version: runtime_native::async_abi::RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 
 fn spawn_and_hold(ready: mpsc::Sender<()>, exit: mpsc::Receiver<()>) {
-  let coro = Box::new(ImmediateCompleteCoro {
-    header: Coroutine {
-      vtable: &VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: runtime_native::async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(ImmediateCompleteCoro {
+    header: unsafe { core::mem::zeroed() },
   });
+  coro.header.vtable = &VTABLE;
+  coro.header.promise = core::ptr::null_mut();
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = runtime_native::async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME;
 
   let handle = runtime_native::rt_handle_alloc(Box::into_raw(coro).cast::<u8>());
   // Safety: `handle` is a valid persistent handle to a coroutine frame whose prefix matches
@@ -54,6 +72,7 @@ fn spawn_and_hold(ready: mpsc::Sender<()>, exit: mpsc::Receiver<()>) {
 #[test]
 fn rt_async_spawn_does_not_upgrade_non_event_loop_threads_to_main() {
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
   let baseline = threading::thread_counts();
 
   let (ready_a_tx, ready_a_rx) = mpsc::channel();
@@ -96,4 +115,3 @@ fn rt_async_spawn_does_not_upgrade_non_event_loop_threads_to_main() {
   thread_a.join().unwrap();
   thread_b.join().unwrap();
 }
-

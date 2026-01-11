@@ -1166,7 +1166,8 @@ pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_handle_store_h(handle: u64, slot: crate::roots::GcHandle) {
   abort_on_panic(|| unsafe {
-    let _ = crate::roots::global_persistent_handle_table().set_from_slot(HandleId::from_u64(handle), slot);
+    let _ = crate::roots::global_persistent_handle_table()
+      .set_from_slot(HandleId::from_u64(handle), slot);
   })
 }
 

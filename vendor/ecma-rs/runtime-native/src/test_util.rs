@@ -198,6 +198,13 @@ pub fn set_microtask_checkpoint_end_hook(hook: Option<Box<dyn FnMut() + Send + '
 
 pub fn new_promise_header_pending() -> PromiseHeader {
   PromiseHeader {
+    // Test helpers often allocate `PromiseHeader` values directly (e.g. `Box<PromiseHeader>`)
+    // instead of via `rt_alloc`. Those allocations are not GC-managed today, so keep the embedded
+    // `ObjHeader` inert (no type descriptor, no metadata bits).
+    obj: crate::gc::ObjHeader {
+      type_desc: core::ptr::null(),
+      meta: AtomicUsize::new(0),
+    },
     state: AtomicU8::new(PromiseHeader::PENDING),
     waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),

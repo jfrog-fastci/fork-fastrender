@@ -162,7 +162,8 @@ struct GlobalHeap {
 fn global_heap() -> &'static GlobalHeap {
   static GLOBAL: OnceLock<GlobalHeap> = OnceLock::new();
   GLOBAL.get_or_init(|| {
-    let heap = Box::new(crate::gc::GcHeap::new());
+    let mut heap = Box::new(crate::gc::GcHeap::new());
+    heap.reserve_card_table_objects_for_minor_gc();
     let heap_ptr = Box::into_raw(heap) as usize;
 
     // Initialize the write barrier's young-space range to the nursery backing this heap.

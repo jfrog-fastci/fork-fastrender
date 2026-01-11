@@ -19,14 +19,25 @@ static EMPTY_PTR_OFFSETS: [u32; 0] = [];
 
 fn ensure_shape_table() {
   SHAPE_TABLE_ONCE.call_once(|| unsafe {
-    static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
-      size: mem::size_of::<GcBox<PropagatingAwaitCoroutine>>() as u32,
-      align: 16,
-      flags: 0,
-      ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
-      ptr_offsets_len: 0,
-      reserved: 0,
-    }];
+    static SHAPES: [RtShapeDescriptor; 2] = [
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<PropagatingAwaitCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+      // Native async-ABI promise shape: header-only `PromiseHeader` allocation.
+      RtShapeDescriptor {
+        size: mem::size_of::<PromiseHeader>() as u32,
+        align: mem::align_of::<PromiseHeader>() as u16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
+    ];
     shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
   });
 }
@@ -160,20 +171,13 @@ fn native_promise_rejection_is_reported_as_unhandled() {
 #[test]
 fn native_promise_unhandled_rejection_uses_relocated_promise_ptr() {
   use runtime_native::threading;
-  use std::sync::atomic::{AtomicU8, AtomicUsize};
+  use std::sync::atomic::Ordering;
 
   let _rt = TestRuntimeGuard::new();
 
-  let mut promise1 = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
-  let mut promise2 = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::REJECTED),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let mut promise1 = Box::new(new_promise_header_pending());
+  let mut promise2 = Box::new(new_promise_header_pending());
+  promise2.state.store(PromiseHeader::REJECTED, Ordering::Relaxed);
 
   let promise1_ref = PromiseRef((&mut *promise1 as *mut PromiseHeader).cast());
   let promise2_ref = PromiseRef((&mut *promise2 as *mut PromiseHeader).cast());
@@ -310,12 +314,13 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
     destroy: await_once_destroy,
     promise_size: core::mem::size_of::<PromiseHeader>() as u32,
     promise_align: core::mem::align_of::<PromiseHeader>() as u32,
-    promise_shape_id: RtShapeId::INVALID,
+    promise_shape_id: RtShapeId(2),
     abi_version: RT_ASYNC_ABI_VERSION,
     reserved: [0; 4],
   };
 
   let _rt = TestRuntimeGuard::new();
+  ensure_shape_table();
 
   // Allocate a native PromiseHeader directly and reject it with no handlers.
   let mut p = Box::new(new_promise_header_pending());
@@ -334,16 +339,15 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
 
   // Attach an `await` handler later; this must trigger `rejectionhandled` even if the native
   // runtime takes the settled fast path (sync resumption) instead of registering a waiter.
-  let coro = Box::new(AwaitOnceCoro {
-    header: Coroutine {
-      vtable: &AWAIT_ONCE_VTABLE,
-      promise: core::ptr::null_mut(),
-      next_waiter: core::ptr::null_mut(),
-      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
-    },
+  let mut coro = Box::new(AwaitOnceCoro {
+    header: unsafe { core::mem::zeroed() },
     state: 0,
     awaited: (&mut *p as *mut PromiseHeader),
   });
+  coro.header.vtable = &AWAIT_ONCE_VTABLE;
+  coro.header.promise = core::ptr::null_mut();
+  coro.header.next_waiter = core::ptr::null_mut();
+  coro.header.flags = CORO_FLAG_RUNTIME_OWNS_FRAME;
   let coro_ref = Box::into_raw(coro) as *mut Coroutine;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   let _ = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };

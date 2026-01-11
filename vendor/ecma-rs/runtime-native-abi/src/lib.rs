@@ -87,6 +87,22 @@ pub type GcPtr = *mut u8;
 /// relocation, and runtime code can reload `*handle` after any safepoint.
 pub type GcHandle = *mut GcPtr;
 
+/// Opaque fixed-size prefix matching the runtime's `ObjHeader` layout.
+///
+/// The runtime's GC header is currently two machine words:
+/// `{ type_desc: *const TypeDescriptor, meta: AtomicUsize }`.
+///
+/// This type exists so ABI structs that are also GC objects (e.g. coroutine frames) can include the
+/// GC header prefix without exposing the header internals to generated code.
+///
+/// C codegen must treat this as opaque and must not read/write it directly; it is initialized by
+/// `rt_alloc` / `rt_alloc_pinned`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RtGcPrefix {
+  pub _opaque: [usize; 2],
+}
+
 // -----------------------------------------------------------------------------
 // Array ABI (`rt_alloc_array`)
 // -----------------------------------------------------------------------------
@@ -413,6 +429,8 @@ pub struct CoroutineVTable {
 /// Header embedded at offset 0 of every generated coroutine frame.
 #[repr(C)]
 pub struct Coroutine {
+  /// GC object header prefix (object base pointer).
+  pub gc: RtGcPrefix,
   pub vtable: *const CoroutineVTable,
   /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
   pub promise: PromiseRef,
@@ -928,12 +946,16 @@ mod tests {
     assert!(core::mem::offset_of!(CoroutineVTable, abi_version) == 28);
     assert!(core::mem::offset_of!(CoroutineVTable, reserved) == 32);
 
-    assert!(size_of::<Coroutine>() == 32);
+    assert!(size_of::<RtGcPrefix>() == 16);
+    assert!(align_of::<RtGcPrefix>() == 8);
+
+    assert!(size_of::<Coroutine>() == 48);
     assert!(align_of::<Coroutine>() == 8);
-    assert!(core::mem::offset_of!(Coroutine, vtable) == 0);
-    assert!(core::mem::offset_of!(Coroutine, promise) == 8);
-    assert!(core::mem::offset_of!(Coroutine, next_waiter) == 16);
-    assert!(core::mem::offset_of!(Coroutine, flags) == 24);
+    assert!(core::mem::offset_of!(Coroutine, gc) == 0);
+    assert!(core::mem::offset_of!(Coroutine, vtable) == 16);
+    assert!(core::mem::offset_of!(Coroutine, promise) == 24);
+    assert!(core::mem::offset_of!(Coroutine, next_waiter) == 32);
+    assert!(core::mem::offset_of!(Coroutine, flags) == 40);
 
     assert!(size_of::<RtShapeDescriptor>() == 24);
     assert!(align_of::<RtShapeDescriptor>() == 8);
