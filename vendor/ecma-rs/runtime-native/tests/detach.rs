@@ -80,3 +80,14 @@ fn resize_is_rejected_while_pinned() {
   drop(_pinned);
   assert_eq!(buf.resize(16), Err(ArrayBufferError::Unimplemented));
 }
+
+#[test]
+fn view_creation_on_detached_buffer_is_a_detached_error() {
+  let mut buf = ArrayBuffer::new_zeroed(4).expect("alloc");
+  buf.detach().expect("detach should succeed");
+
+  assert!(matches!(
+    Uint8Array::view(&buf, 0, 1),
+    Err(TypedArrayError::Buffer(ArrayBufferError::Detached))
+  ));
+}

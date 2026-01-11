@@ -31,15 +31,15 @@ impl Uint8Array {
     byte_offset: usize,
     length: usize,
   ) -> Result<Self, TypedArrayError> {
+    if buffer.is_detached() {
+      return Err(TypedArrayError::Buffer(ArrayBufferError::Detached));
+    }
     let buffer_byte_len = buffer.byte_len();
     let end = byte_offset
       .checked_add(length)
       .ok_or(TypedArrayError::Range)?;
     if end > buffer_byte_len {
       return Err(TypedArrayError::Range);
-    }
-    if buffer.is_detached() {
-      return Err(TypedArrayError::Buffer(ArrayBufferError::Detached));
     }
     Ok(Self {
       buffer: NonNull::from(buffer),
