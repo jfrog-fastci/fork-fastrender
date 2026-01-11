@@ -747,6 +747,7 @@ mod tests {
         entry: 0,
       },
       params: Vec::new(),
+      ssa_body: None,
       stats: Default::default(),
     }
   }
@@ -837,6 +838,7 @@ mod tests {
         entry: 0,
       },
       params: Vec::new(),
+      ssa_body: None,
       stats: Default::default(),
     };
 

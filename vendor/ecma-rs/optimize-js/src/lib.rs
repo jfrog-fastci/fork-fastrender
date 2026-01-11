@@ -216,6 +216,13 @@ pub struct ProgramFunction {
   pub debug: Option<OptimizerDebug>,
   pub body: Cfg,
   pub params: Vec<u32>,
+  /// SSA-form CFG annotated with escape/ownership metadata.
+  ///
+  /// This is produced after SSA construction and optimization passes converge, and
+  /// before SSA deconstruction. Native backends should prefer this over
+  /// [`ProgramFunction::body`] when consuming ownership/escape metadata.
+  #[cfg_attr(feature = "serde", serde(skip_serializing))]
+  pub ssa_body: Option<Cfg>,
   #[cfg_attr(feature = "serde", serde(skip_serializing))]
   pub stats: OptimizationStats,
 }
@@ -223,6 +230,13 @@ pub struct ProgramFunction {
 impl ProgramFunction {
   pub fn param_index_of(&self, var: u32) -> Option<usize> {
     self.params.iter().position(|&param| param == var)
+  }
+
+  /// Returns the CFG annotated with escape/ownership metadata when available.
+  ///
+  /// Native backends should prefer `analyzed_cfg()` to access ownership/escape metadata.
+  pub fn analyzed_cfg(&self) -> &Cfg {
+    self.ssa_body.as_ref().unwrap_or(&self.body)
   }
 }
 
@@ -615,6 +629,23 @@ pub(crate) fn build_program_function_with_options(
     }
   }
 
+  // Preserve an SSA-form CFG annotated with escape/ownership metadata for downstream consumers
+  // (e.g. native codegen backends). We intentionally do not propagate this metadata onto the
+  // deconstructed CFG; consumers should use `ProgramFunction::analyzed_cfg()` when they need
+  // ownership/escape results.
+  let mut ssa_cfg = cfg.clone();
+  let escapes = analysis::escape::analyze_cfg_escapes(&ssa_cfg);
+  let ownership = analysis::ownership::analyze_cfg_ownership_with_escapes(&ssa_cfg, &escapes);
+  analysis::ownership::annotate_cfg_ownership(&mut ssa_cfg, &ownership);
+  for (_label, insts) in ssa_cfg.bblocks.all_mut() {
+    for inst in insts {
+      let Some(tgt) = inst.tgts.get(0).copied() else {
+        continue;
+      };
+      inst.meta.result_escape = escapes.get(&tgt).copied();
+    }
+  }
+
   if !options.keep_ssa {
     // It's safe to calculate liveliness before removing Phi insts; after deconstructing, they
     // always lie exactly between all parent bblocks and the head of the bblock, so their
@@ -627,6 +658,7 @@ pub(crate) fn build_program_function_with_options(
     debug: dbg,
     body: cfg,
     params,
+    ssa_body: Some(ssa_cfg),
     stats,
   }
 }

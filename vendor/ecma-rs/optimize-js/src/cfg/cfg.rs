@@ -25,7 +25,7 @@ pub enum Terminator {
 
 /// Wrapper over a Graph<u32> that provides owned types and better method names,
 /// as well as domain-specific methods.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CfgGraph(Graph<u32>);
 
@@ -155,7 +155,7 @@ impl CfgGraph {
 
 /// Wrapper over a HashMap that provides owned types and better method names,
 /// as well as domain-specific methods.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CfgBBlocks(HashMap<u32, Vec<Inst>>);
 
@@ -194,7 +194,7 @@ impl CfgBBlocks {
 }
 
 /// Control flow graph. Contains the bblock graph and the bblocks themselves.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Cfg {
   // We store these as different fields because we often want to mutate one while holding a reference to the other. If we only provide &mut self methods, we'd have to borrow both mutably at the same time.

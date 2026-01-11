@@ -194,6 +194,11 @@ pub struct InstMeta {
   pub ownership: OwnershipState,
   #[cfg_attr(
     feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub result_escape: Option<crate::analysis::escape::EscapeState>,
+  #[cfg_attr(
+    feature = "serde",
     serde(default, skip_serializing_if = "crate::analysis::purity::is_default_purity")
   )]
   pub callee_purity: Purity,
@@ -221,6 +226,7 @@ impl InstMeta {
       && self.type_summary.is_none()
       && !self.excludes_nullish
       && self.ownership.is_default()
+      && self.result_escape.is_none()
       && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
   }
@@ -240,6 +246,7 @@ impl Default for InstMeta {
       type_summary: None,
       excludes_nullish: false,
       ownership: OwnershipState::default(),
+      result_escape: None,
       callee_purity: Purity::Impure,
       nullability_narrowing: None,
     }

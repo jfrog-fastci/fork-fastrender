@@ -293,6 +293,7 @@ mod tests {
       debug: None,
       body: cfg,
       params: Vec::new(),
+      ssa_body: None,
       stats: OptimizationStats::default(),
     }
   }
