@@ -118,7 +118,7 @@ pub struct StackMapFunction {
 /// Parsed StackMap section contents.
 ///
 /// Lookup is implemented as a sorted `Vec` of callsites + binary search:
-/// - + compact (one `u64` + `usize` per record)
+/// - + compact (one small `Callsite` entry per record)
 /// - + deterministic iteration order
 /// - - `O(log n)` lookup vs. `O(1)` average for a hash map
 #[derive(Debug, Clone)]
@@ -139,7 +139,8 @@ impl StackMaps {
 
         // `.llvm_stackmaps` in the final linked binary may contain one or more
         // StackMap v3 blobs concatenated by the linker (one per object file),
-        // with zero-filled padding between blobs for section alignment.
+        // with alignment padding between blobs. The padding is usually 0-filled,
+        // but some toolchains have been observed to insert a few non-zero bytes.
         //
         // See `native-js/docs/stackmaps.md` in this repository for details.
         let mut off = 0usize;
