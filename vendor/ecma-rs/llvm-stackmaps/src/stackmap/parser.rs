@@ -270,7 +270,7 @@ impl StackMaps {
                     let same_record = base_rec.id == other_rec.id
                         && base_rec.instruction_offset == other_rec.instruction_offset
                         && base_rec.callsite_pc == other_rec.callsite_pc
-                        && base_rec.locations == other_rec.locations
+                        && locations_semantically_equal(&base_rec.locations, &other_rec.locations)
                         && base_rec.live_outs == other_rec.live_outs;
                     if !same_record {
                         return Err(ParseError::new(
@@ -314,6 +314,70 @@ impl StackMaps {
     pub fn lookup_statepoint(&self, pc: u64) -> Option<StatepointRecordView<'_>> {
         let rec = self.lookup(pc)?;
         StatepointRecordView::decode(rec)
+    }
+}
+
+fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(a, b)| location_semantically_equal(a, b))
+}
+
+fn location_semantically_equal(a: &Location, b: &Location) -> bool {
+    use Location::*;
+    match (a, b) {
+        (Register { size: a_size, dwarf_reg: a_reg }, Register { size: b_size, dwarf_reg: b_reg }) => {
+            a_size == b_size && a_reg == b_reg
+        }
+        (
+            Direct {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Direct {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (
+            Indirect {
+                size: a_size,
+                dwarf_reg: a_reg,
+                offset: a_off,
+            },
+            Indirect {
+                size: b_size,
+                dwarf_reg: b_reg,
+                offset: b_off,
+            },
+        ) => a_size == b_size && a_reg == b_reg && a_off == b_off,
+        (Constant { size: a_size, value: a_val }, Constant { size: b_size, value: b_val }) => {
+            a_size == b_size && a_val == b_val
+        }
+        (
+            ConstantIndex {
+                size: a_size,
+                index: _,
+                value: a_val,
+            },
+            ConstantIndex {
+                size: b_size,
+                index: _,
+                value: b_val,
+            },
+        ) => a_size == b_size && a_val == b_val,
+        // A constant can be stored inline (`Constant`) or in the constants table (`ConstantIndex`).
+        // Treat them as equivalent if the resolved constant values match.
+        (Constant { size: a_size, .. }, ConstantIndex { size: b_size, .. })
+        | (ConstantIndex { size: a_size, .. }, Constant { size: b_size, .. }) => {
+            a_size == b_size && a.as_u64() == b.as_u64()
+        }
+        _ => false,
     }
 }
 
@@ -917,6 +981,91 @@ mod tests {
         // Both blobs still contribute records, but the callsite index is deduplicated.
         assert_eq!(maps.records.len(), 2);
         assert_eq!(maps.callsites.len(), 1);
+        assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
+    }
+
+    #[test]
+    fn deduplicates_duplicate_callsite_pcs_even_when_constindex_indices_differ() {
+        // When stackmaps are parsed from multiple concatenated blobs, `ConstantIndex` locations are
+        // rewritten to refer to the combined constants table. This naturally changes the
+        // `ConstantIndex.index` even when the record is otherwise identical.
+        //
+        // If lld's identical code folding causes callsite PCs to collide, we still want to
+        // deduplicate these records (the index is not semantically relevant once the value is
+        // resolved).
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32, constant: u64) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            // Function entry: 1 record.
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            // Constants table.
+            bytes.extend_from_slice(&(constant).to_le_bytes());
+
+            // Record header with num_locations=1.
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(1u16).to_le_bytes()); // num locations
+
+            // Location: ConstantIndex(0)
+            bytes.push(5); // kind
+            bytes.push(0); // reserved0
+            bytes.extend_from_slice(&(8u16).to_le_bytes()); // size
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // reg
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved1
+            bytes.extend_from_slice(&(0i32).to_le_bytes()); // constants[0]
+
+            // Align to 8 before live-out header: record header (16) + loc (12) = 28 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            // Live-out header: padding + num_liveouts=0.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+
+            // Align record end: 32 + 4 = 36 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob_a = build_blob(0x1000, 1, 0x10, 0x1122_3344_5566_7788);
+        let blob_b = build_blob(0x1000, 1, 0x10, 0x1122_3344_5566_7788);
+
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob_a);
+        section.extend_from_slice(&blob_b);
+
+        let maps = StackMaps::parse(&section).unwrap();
+        assert_eq!(maps.records.len(), 2);
+        assert_eq!(maps.callsites.len(), 1);
+
+        match (&maps.records[0].locations[0], &maps.records[1].locations[0]) {
+            (
+                Location::ConstantIndex {
+                    index: idx0,
+                    value: v0,
+                    ..
+                },
+                Location::ConstantIndex {
+                    index: idx1,
+                    value: v1,
+                    ..
+                },
+            ) => {
+                assert_eq!(*v0, 0x1122_3344_5566_7788);
+                assert_eq!(*v1, 0x1122_3344_5566_7788);
+                assert_ne!(idx0, idx1, "expected const indices to differ across blobs");
+            }
+            other => panic!("unexpected locations: {other:?}"),
+        }
+
         assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
     }
 
