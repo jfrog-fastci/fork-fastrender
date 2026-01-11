@@ -321,8 +321,9 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
 
     // Use the canonical LLVM patchpoint ID for statepoints.
     //
-    // `runtime-native` uses this as a convention to cheaply identify statepoint-shaped stackmap
-    // records when running in verification mode.
+    // Note: this value is a *convention* (LLVM allows overriding it per callsite via the
+    // `"statepoint-id"` attribute and does not guarantee global uniqueness). `runtime-native` should
+    // therefore identify statepoint records by their stackmap layout, not by this ID.
     let statepoint_id = LLVM_STATEPOINT_PATCHPOINT_ID;
 
     let statepoint_decl = self.get_statepoint_decl(callee.ptr.get_type());
