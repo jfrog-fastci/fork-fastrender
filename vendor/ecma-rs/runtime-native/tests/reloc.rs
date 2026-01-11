@@ -43,6 +43,27 @@ fn works_when_base_and_derived_share_a_slot() {
 }
 
 #[test]
+fn works_with_unaligned_slots() {
+  // Stackmap slot addresses are derived from register + offset arithmetic; be robust to the slot
+  // pointer not being naturally aligned for `usize`.
+  let mut buf = [0u8; 2 * core::mem::size_of::<usize>() + 1];
+  let base_slot = unsafe { buf.as_mut_ptr().add(1) as *mut usize };
+  let derived_slot = unsafe { buf.as_mut_ptr().add(1 + core::mem::size_of::<usize>()) as *mut usize };
+
+  unsafe {
+    base_slot.write_unaligned(0x1000usize);
+    derived_slot.write_unaligned(0x1008usize);
+  }
+
+  relocate_derived_pair(base_slot, derived_slot, |base| base + 0x1000);
+
+  let base = unsafe { base_slot.read_unaligned() };
+  let derived = unsafe { derived_slot.read_unaligned() };
+  assert_eq!(base, 0x2000);
+  assert_eq!(derived, 0x2008);
+}
+
+#[test]
 fn relocate_derived_pairs_handles_shared_base_slot() {
   let mut base = 0x1000usize;
   let mut derived1 = 0x1008usize;
