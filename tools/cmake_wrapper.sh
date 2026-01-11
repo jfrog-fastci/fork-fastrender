@@ -40,12 +40,21 @@ is_libaom=false
 has_target_cpu=false
 has_toolchain_file=false
 
+# Prefer using Cargo-provided metadata to detect `libaom-sys` builds. The crate commonly invokes
+# CMake with a relative `vendor` source path, so argv may not contain "libaom-sys".
+if [[ "${CARGO_PKG_NAME:-}" == "libaom-sys" ]]; then
+  is_libaom=true
+fi
+if [[ "${is_libaom}" == "false" && "${CARGO_MANIFEST_DIR:-}" == *"libaom-sys"* ]]; then
+  is_libaom=true
+fi
+
 for arg in "$@"; do
   case "${arg}" in
     --build|--install|-E|-P)
       is_configure=false
       ;;
-    -DAOM_TARGET_CPU=*)
+    -DAOM_TARGET_CPU=*|-DAOM_TARGET_CPU:*=*)
       has_target_cpu=true
       ;;
     -DCMAKE_TOOLCHAIN_FILE=*|-DCMAKE_TOOLCHAIN_FILE:*)
@@ -55,7 +64,7 @@ for arg in "$@"; do
 
   # The libaom-sys crate builds from a vendored `libaom` source directory named `vendor`.
   # Match conservatively so other CMake projects are unaffected.
-  if [[ "${arg}" == *"libaom-sys"* ]]; then
+  if [[ "${is_libaom}" == "false" && "${arg}" == *"libaom-sys"* ]]; then
     is_libaom=true
   fi
 done

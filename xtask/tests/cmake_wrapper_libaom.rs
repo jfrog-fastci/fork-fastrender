@@ -72,7 +72,7 @@ fn run_wrapper(args: &[&Path], env: &[(&str, &str)], remove_env: &[&str]) -> Vec
 #[test]
 fn libaom_configure_injects_generic_and_disables_asm() {
   let temp = TempDir::new().expect("tempdir");
-  let src = temp.path().join("libaom-sys-src");
+  let src = temp.path().join("vendor");
   let build = temp.path().join("build");
   fs::create_dir_all(&src).expect("mkdir src");
   fs::create_dir_all(&build).expect("mkdir build");
@@ -84,7 +84,11 @@ fn libaom_configure_injects_generic_and_disables_asm() {
     build.as_path(),
   ];
 
-  let cmake_args = run_wrapper(&args, &[], &["AOM_TARGET_CPU", "CMAKE_TOOLCHAIN_FILE"]);
+  let cmake_args = run_wrapper(
+    &args,
+    &[("CARGO_PKG_NAME", "libaom-sys")],
+    &["AOM_TARGET_CPU", "CMAKE_TOOLCHAIN_FILE"],
+  );
 
   assert!(
     cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
@@ -120,7 +124,7 @@ fn libaom_configure_injects_generic_and_disables_asm() {
 #[test]
 fn libaom_configure_respects_env_opt_out() {
   let temp = TempDir::new().expect("tempdir");
-  let src = temp.path().join("libaom-sys-src");
+  let src = temp.path().join("vendor");
   let build = temp.path().join("build");
   fs::create_dir_all(&src).expect("mkdir src");
   fs::create_dir_all(&build).expect("mkdir build");
@@ -134,7 +138,7 @@ fn libaom_configure_respects_env_opt_out() {
 
   let cmake_args = run_wrapper(
     &args,
-    &[("AOM_TARGET_CPU", "x86_64")],
+    &[("CARGO_PKG_NAME", "libaom-sys"), ("AOM_TARGET_CPU", "x86_64")],
     &["CMAKE_TOOLCHAIN_FILE"],
   );
 
@@ -157,7 +161,7 @@ fn libaom_configure_respects_env_opt_out() {
 #[test]
 fn libaom_configure_respects_explicit_target_cpu_arg() {
   let temp = TempDir::new().expect("tempdir");
-  let src = temp.path().join("libaom-sys-src");
+  let src = temp.path().join("vendor");
   let build = temp.path().join("build");
   fs::create_dir_all(&src).expect("mkdir src");
   fs::create_dir_all(&build).expect("mkdir build");
@@ -170,7 +174,11 @@ fn libaom_configure_respects_explicit_target_cpu_arg() {
     Path::new("-DAOM_TARGET_CPU=x86_64"),
   ];
 
-  let cmake_args = run_wrapper(&args, &[], &["AOM_TARGET_CPU", "CMAKE_TOOLCHAIN_FILE"]);
+  let cmake_args = run_wrapper(
+    &args,
+    &[("CARGO_PKG_NAME", "libaom-sys")],
+    &["AOM_TARGET_CPU", "CMAKE_TOOLCHAIN_FILE"],
+  );
 
   assert!(
     cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=x86_64"),
@@ -188,3 +196,40 @@ fn libaom_configure_respects_explicit_target_cpu_arg() {
   );
 }
 
+#[test]
+fn libaom_configure_detects_by_argv_when_cargo_metadata_is_missing() {
+  let temp = TempDir::new().expect("tempdir");
+  let src = temp.path().join("libaom-sys-vendor");
+  let build = temp.path().join("build");
+  fs::create_dir_all(&src).expect("mkdir src");
+  fs::create_dir_all(&build).expect("mkdir build");
+
+  let args = [
+    Path::new("-S"),
+    src.as_path(),
+    Path::new("-B"),
+    build.as_path(),
+  ];
+
+  let cmake_args = run_wrapper(
+    &args,
+    &[],
+    &[
+      "AOM_TARGET_CPU",
+      "CARGO_MANIFEST_DIR",
+      "CARGO_PKG_NAME",
+      "CMAKE_TOOLCHAIN_FILE",
+    ],
+  );
+
+  assert!(
+    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
+    "expected wrapper to inject -DAOM_TARGET_CPU=generic, got:\n{cmake_args:?}"
+  );
+  for flag in ["-DENABLE_ASM=0", "-DENABLE_NASM=0", "-DENABLE_YASM=0"] {
+    assert!(
+      cmake_args.iter().any(|arg| arg == flag),
+      "expected wrapper to inject {flag}, got:\n{cmake_args:?}"
+    );
+  }
+}
