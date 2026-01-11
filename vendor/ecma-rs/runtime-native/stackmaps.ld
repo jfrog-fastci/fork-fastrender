@@ -6,7 +6,12 @@
  * We:
  *  - keep `.llvm_stackmaps` even under `--gc-sections`
  *  - define start/end symbols over the *loaded* section bytes
- *  - place the section in the read-only segment by inserting after `.rodata`
+ *  - inject the section into the default linker script via `INSERT AFTER`
+ *
+ * We insert after `.text` (instead of the more intuitive `.rodata`) because
+ * lld does not create an empty `.rodata` output section, and will error if an
+ * `INSERT AFTER .rodata` fragment is used when the input objects don't
+ * contribute any `.rodata` (common in minimal binaries/tests).
  */
 
 SECTIONS
@@ -20,5 +25,4 @@ SECTIONS
   }
 }
 
-INSERT AFTER .rodata;
-
+INSERT AFTER .text;

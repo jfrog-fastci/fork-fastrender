@@ -12,6 +12,16 @@ use std::ptr;
 const FIXTURE_OBJ: &[u8] =
   include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/statepoint_fixture.o"));
 
+/// Expected SP-relative offsets for `"gc-live"` stack slots in the checked-in
+/// `statepoint_fixture.o`.
+///
+/// These offsets were inspected via:
+///   `llvm-readobj-18 --stackmap statepoint_fixture.o`
+///
+/// They are used as an independent ground truth so the test fails if the
+/// stackmap parsing / location decoding logic returns the wrong offsets.
+const EXPECTED_SP_OFFSETS: &[i32] = &[8, 16];
+
 fn fixture_stackmap_sp_offsets() -> Vec<i32> {
   let obj = object::File::parse(FIXTURE_OBJ).expect("failed to parse statepoint_fixture.o");
   let section = obj
@@ -91,14 +101,11 @@ static BLOB_DESC: TypeDescriptor = TypeDescriptor::new(mem::size_of::<Blob>(), &
 fn statepoint_fixture_stackmaps_drive_minor_gc_root_updates() {
   let _rt = TestRuntimeGuard::new();
 
-  let offsets = fixture_stackmap_sp_offsets();
-  assert!(
-    offsets.len() >= 2,
-    "fixture must contain at least 2 unique gc-live stack slots, got {offsets:?}"
-  );
-  assert!(
-    offsets.iter().any(|&o| o != 0),
-    "fixture must include a non-zero stack slot offset, got {offsets:?}"
+  let parsed_offsets = fixture_stackmap_sp_offsets();
+  assert_eq!(
+    parsed_offsets,
+    EXPECTED_SP_OFFSETS,
+    "fixture stackmap offsets changed; if the fixture was regenerated, update EXPECTED_SP_OFFSETS"
   );
 
   // Fake "stack frame" memory. Use `u64` words so pointer slots are naturally aligned.
@@ -107,33 +114,17 @@ fn statepoint_fixture_stackmaps_drive_minor_gc_root_updates() {
   let frame_end = frame_start + frame.len() * mem::size_of::<u64>();
   let sp_base = frame_start + 4096;
 
-  let slots: Vec<*mut *mut u8> = offsets
+  let slots: Vec<*mut *mut u8> = parsed_offsets
     .iter()
     .copied()
     .map(|off| slot_ptr(frame_start, frame_end, sp_base, off))
     .collect();
 
-  // Initialize all root slots to null to ensure we don't accidentally keep other objects alive.
-  unsafe {
-    for &slot in &slots {
-      slot.write(ptr::null_mut());
-    }
-  }
-
-  // Pick one non-zero offset for the moving nursery object (exercise offset arithmetic).
-  let moving_off = offsets
-    .iter()
-    .copied()
-    .find(|&o| o != 0)
-    .expect("non-empty offsets (checked above)");
-  let stable_off = offsets
-    .iter()
-    .copied()
-    .find(|&o| o != moving_off)
-    .expect("need at least two offsets (checked above)");
-
-  let moving_slot = slot_ptr(frame_start, frame_end, sp_base, moving_off);
-  let stable_slot = slot_ptr(frame_start, frame_end, sp_base, stable_off);
+  // Independently use the expected offsets as the "real" stack slots that must
+  // be updated. If parsing yields wrong offsets, the GC will enumerate the wrong
+  // slots and these will not change, failing the assertions below.
+  let moving_slot = slot_ptr(frame_start, frame_end, sp_base, EXPECTED_SP_OFFSETS[1]);
+  let stable_slot = slot_ptr(frame_start, frame_end, sp_base, EXPECTED_SP_OFFSETS[0]);
 
   let mut heap = GcHeap::new();
 
@@ -188,13 +179,10 @@ fn statepoint_fixture_stackmaps_drive_minor_gc_root_updates() {
 fn perturbed_offsets_do_not_update_the_real_root_slots() {
   let _rt = TestRuntimeGuard::new();
 
-  let offsets = fixture_stackmap_sp_offsets();
-  assert!(offsets.len() >= 2);
-
   // Choose a delta that stays aligned and doesn't collide with the real offsets.
   let delta: i32 = [8, 16, 32, 64]
     .into_iter()
-    .find(|&d| offsets.iter().all(|&off| !offsets.contains(&(off + d))))
+    .find(|&d| EXPECTED_SP_OFFSETS.iter().all(|&off| !EXPECTED_SP_OFFSETS.contains(&(off + d))))
     .expect("unable to find non-colliding delta for perturbed offsets");
 
   let mut frame = vec![0u64; 1024];
@@ -202,7 +190,7 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
   let frame_end = frame_start + frame.len() * mem::size_of::<u64>();
   let sp_base = frame_start + 4096;
 
-  let real_slots: Vec<*mut *mut u8> = offsets
+  let real_slots: Vec<*mut *mut u8> = EXPECTED_SP_OFFSETS
     .iter()
     .copied()
     .map(|off| slot_ptr(frame_start, frame_end, sp_base, off))
@@ -214,12 +202,7 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
     }
   }
 
-  let moving_off = offsets
-    .iter()
-    .copied()
-    .find(|&o| o != 0)
-    .unwrap_or(offsets[0]);
-  let moving_slot = slot_ptr(frame_start, frame_end, sp_base, moving_off);
+  let moving_slot = slot_ptr(frame_start, frame_end, sp_base, EXPECTED_SP_OFFSETS[1]);
 
   let mut heap = GcHeap::new();
   let young = heap.alloc_young(&BLOB_DESC);
@@ -230,7 +213,7 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
   }
 
   // Enumerate the wrong (perturbed) slots: GC should not see `young` as a root.
-  let wrong_slots: Vec<*mut *mut u8> = offsets
+  let wrong_slots: Vec<*mut *mut u8> = EXPECTED_SP_OFFSETS
     .iter()
     .copied()
     .map(|off| slot_ptr(frame_start, frame_end, sp_base, off + delta))
@@ -249,4 +232,3 @@ fn perturbed_offsets_do_not_update_the_real_root_slots() {
     "without being enumerated as a root, the pointer should remain a nursery address"
   );
 }
-
