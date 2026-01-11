@@ -187,27 +187,48 @@ impl ThreadState {
   }
 
   pub fn safepoint_context(&self) -> Option<SafepointContext> {
-    *self.safepoint_context.lock().unwrap()
+    *self
+      .safepoint_context
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
   }
 
   pub fn safepoint_cursor(&self) -> Option<FrameCursor> {
-    *self.safepoint_cursor.lock().unwrap()
+    *self
+      .safepoint_cursor
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
   }
 
   pub(crate) fn handle_stack_len(&self) -> usize {
-    self.handle_stack.lock().unwrap().0.len()
+    self
+      .handle_stack
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .0
+      .len()
   }
 
   pub(crate) fn handle_stack_push(&self, slot: *mut *mut u8) {
-    self.handle_stack.lock().unwrap().0.push(slot);
+    self
+      .handle_stack
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .0
+      .push(slot);
   }
 
   pub(crate) fn handle_stack_truncate(&self, len: usize) {
-    self.handle_stack.lock().unwrap().0.truncate(len);
+    self
+      .handle_stack
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .0
+      .truncate(len);
   }
 
   pub(crate) fn handle_stack_pop_debug(&self, expected: *mut *mut u8) {
-    let mut stack = self.handle_stack.lock().unwrap();
+    let mut stack = self.handle_stack.lock().unwrap_or_else(|e| e.into_inner());
     #[cfg(debug_assertions)]
     {
       let top = stack.0.last().copied();
@@ -221,7 +242,7 @@ impl ThreadState {
   }
 
   pub(crate) fn handle_stack_pop_checked(&self, expected: *mut *mut u8) {
-    let mut stack = self.handle_stack.lock().unwrap();
+    let mut stack = self.handle_stack.lock().unwrap_or_else(|e| e.into_inner());
     let top = stack.0.last().copied();
     assert_eq!(
       top,
@@ -236,7 +257,14 @@ impl ThreadState {
     // the mutex, then invoke the callback after releasing the lock.
     let mut idx = 0usize;
     loop {
-      let Some(slot) = self.handle_stack.lock().unwrap().0.get(idx).copied() else {
+      let Some(slot) = self
+        .handle_stack
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .0
+        .get(idx)
+        .copied()
+      else {
         break;
       };
       f(slot);
@@ -316,7 +344,7 @@ impl ThreadRegistry {
     });
 
     {
-      let mut threads = self.threads.lock().unwrap();
+      let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
       threads.insert(id, Arc::downgrade(&state));
     }
 
@@ -337,12 +365,12 @@ impl ThreadRegistry {
   }
 
   fn unregister_thread(&self, id: ThreadId) {
-    let mut threads = self.threads.lock().unwrap();
+    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
     threads.remove(&id);
   }
 
   fn all_threads(&self) -> Vec<Arc<ThreadState>> {
-    let mut threads = self.threads.lock().unwrap();
+    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = Vec::with_capacity(threads.len());
     threads.retain(|_, weak| {
       if let Some(state) = weak.upgrade() {
@@ -357,7 +385,7 @@ impl ThreadRegistry {
 
   fn counts(&self) -> ThreadCounts {
     let mut out = ThreadCounts::default();
-    let mut threads = self.threads.lock().unwrap();
+    let mut threads = self.threads.lock().unwrap_or_else(|e| e.into_inner());
     threads.retain(|_, weak| {
       let Some(state) = weak.upgrade() else {
         return false;
@@ -476,7 +504,10 @@ pub fn all_threads() -> Vec<Arc<ThreadState>> {
 /// The callback is invoked while holding the thread registry lock; it must not call
 /// [`register_current_thread`] / [`unregister_current_thread`].
 pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
-  let mut threads = registry().threads.lock().unwrap();
+  let mut threads = registry()
+    .threads
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
   threads.retain(|_, weak| {
     let Some(state) = weak.upgrade() else {
       return false;
@@ -488,7 +519,10 @@ pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
 
 /// Like [`for_each_thread`], but allows fallible iteration.
 pub fn try_for_each_thread<E>(mut f: impl FnMut(&Arc<ThreadState>) -> Result<(), E>) -> Result<(), E> {
-  let mut threads = registry().threads.lock().unwrap();
+  let mut threads = registry()
+    .threads
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
   let mut err: Option<E> = None;
   threads.retain(|_, weak| {
     let Some(state) = weak.upgrade() else {
@@ -543,7 +577,10 @@ pub fn set_current_thread_safepoint_context(ctx: SafepointContext) {
     return;
   };
 
-  *state.safepoint_context.lock().unwrap() = Some(ctx);
+  *state
+    .safepoint_context
+    .lock()
+    .unwrap_or_else(|e| e.into_inner()) = Some(ctx);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -552,7 +589,10 @@ pub(crate) fn set_current_thread_safepoint_cursor(cursor: FrameCursor) {
     return;
   };
 
-  *state.safepoint_cursor.lock().unwrap() = Some(cursor);
+  *state
+    .safepoint_cursor
+    .lock()
+    .unwrap_or_else(|e| e.into_inner()) = Some(cursor);
 }
 
 #[cfg(target_os = "macos")]
