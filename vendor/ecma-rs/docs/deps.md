@@ -43,6 +43,7 @@ graph TD
     vm_js["vm-js"]
     webidl["webidl"]
     webidl_vm_js["webidl-vm-js"]
+    effect_js --> diagnostics
     effect_js --> effect_model
     effect_js --> hir_js
     effect_js --> knowledge_base
