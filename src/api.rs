@@ -3057,6 +3057,8 @@ fn diagnostics_session_mutex() -> &'static Mutex<()> {
 
 thread_local! {
   static DIAGNOSTICS_SESSION_DEPTH: Cell<usize> = Cell::new(0);
+  static DIAGNOSTICS_SESSION_GUARD: RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+    RefCell::new(None);
 }
 
 thread_local! {
@@ -3105,37 +3107,47 @@ impl Drop for LayoutStackThreadGuard {
 /// clobber each other (including dropping `text_shape_cpu_ms` entirely). Serialize diagnostics sessions
 /// to keep metrics consistent for both users and tests.
 pub(crate) struct DiagnosticsSessionGuard {
-  _guard: std::sync::MutexGuard<'static, ()>,
+  _not_send_or_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl DiagnosticsSessionGuard {
   pub(crate) fn acquire() -> Self {
-    DIAGNOSTICS_SESSION_DEPTH.with(|depth| {
-      if depth.get() != 0 {
-        panic!(
-          "nested diagnostics sessions are unsupported: DiagnosticsSessionGuard::acquire() was called while a diagnostics session is already active on this thread. This would deadlock because the session lock is backed by a non-reentrant std::sync::Mutex."
-        );
-      }
-    });
+    let is_outermost = DIAGNOSTICS_SESSION_DEPTH.with(|depth| depth.get() == 0);
 
-    // The lock only guards access to process-global diagnostics collectors. The protected value is
-    // `()`, so poisoning does not indicate any state corruption we need to preserve. Treat a
-    // poisoned lock as non-fatal so a panic in one diagnostics-enabled render doesn't permanently
-    // break diagnostics for the remainder of the process (e.g. pageset runners that catch panics
-    // and continue).
-    let mutex = diagnostics_session_mutex();
-    let guard = mutex
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner());
-    DIAGNOSTICS_SESSION_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    if is_outermost {
+      // The lock only guards access to process-global diagnostics collectors. The protected value
+      // is `()`, so poisoning does not indicate any state corruption we need to preserve. Treat a
+      // poisoned lock as non-fatal so a panic in one diagnostics-enabled render doesn't permanently
+      // break diagnostics for the remainder of the process (e.g. pageset runners that catch panics
+      // and continue).
+      let mutex = diagnostics_session_mutex();
+      let guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      DIAGNOSTICS_SESSION_GUARD.with(|slot| *slot.borrow_mut() = Some(guard));
+    }
 
-    Self { _guard: guard }
+    DIAGNOSTICS_SESSION_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+
+    Self {
+      _not_send_or_sync: std::marker::PhantomData,
+    }
   }
 }
 
 impl Drop for DiagnosticsSessionGuard {
   fn drop(&mut self) {
-    DIAGNOSTICS_SESSION_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    let new_depth = DIAGNOSTICS_SESSION_DEPTH.with(|depth| {
+      let new_depth = depth.get().saturating_sub(1);
+      depth.set(new_depth);
+      new_depth
+    });
+
+    if new_depth == 0 {
+      DIAGNOSTICS_SESSION_GUARD.with(|slot| {
+        let _ = slot.borrow_mut().take();
+      });
+    }
   }
 }
 
@@ -22682,10 +22694,39 @@ mod tests {
   }
 
   #[test]
-  #[should_panic(expected = "nested diagnostics sessions are unsupported")]
   fn diagnostics_session_nested_acquire_panics_instead_of_deadlocking() {
-    let _diagnostics_session = DiagnosticsSessionGuard::acquire();
-    let _nested = DiagnosticsSessionGuard::acquire();
+    let outer = DiagnosticsSessionGuard::acquire();
+    let inner = DiagnosticsSessionGuard::acquire();
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel::<()>();
+
+    let helper = std::thread::spawn(move || {
+      ready_tx.send(()).expect("send ready");
+      let _guard = DiagnosticsSessionGuard::acquire();
+      acquired_tx.send(()).expect("send acquired");
+    });
+
+    ready_rx
+      .recv_timeout(Duration::from_secs(1))
+      .expect("expected helper thread to start");
+    assert!(
+      acquired_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+      "expected diagnostics session mutex to be held while nested guards are active"
+    );
+
+    drop(inner);
+    assert!(
+      acquired_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+      "expected diagnostics session mutex to remain held until the outermost guard is dropped"
+    );
+
+    drop(outer);
+    acquired_rx
+      .recv_timeout(Duration::from_secs(1))
+      .expect("expected helper thread to acquire after outer guard is dropped");
+
+    helper.join().expect("join helper thread");
   }
 
   #[test]
