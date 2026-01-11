@@ -181,6 +181,10 @@ warnings (GNU ld) or hard link failures (lld).
   - `docs/gc_statepoints.md` (“Linux linking policy for .llvm_stackmaps”)
   - `scripts/native_link.sh` (set `ECMA_RS_NATIVE_PIE=1`)
   - `scripts/test_stackmaps_pie_link.sh` (regression test)
+  - Note (GNU ld): if stackmaps are made writable for PIE relocation and the linker script inserts
+    them immediately after `.text`, GNU ld can produce an RWX LOAD segment. Prefer
+    `runtime-native/link/stackmaps_gnuld.ld` (or use `scripts/native_link.sh`, which selects it
+    automatically for `ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1`).
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.

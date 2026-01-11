@@ -17,8 +17,10 @@ const STACKMAP_SECTION_NAMES: [&str; 3] = [
 ///
 /// Prefer symbol-based discovery when present because section headers may be stripped.
 ///
-/// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` are stable boundary symbols used by this
-///   repo's linker scripts.
+/// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` are stable boundary symbols defined by the
+///   linker-script fragments in:
+///   - `runtime-native/link/stackmaps.ld` (lld-friendly)
+///   - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
 /// - `__stackmaps_{start,end}` is a generic alias used by `llvm-stackmaps` and other tooling.
 /// - `__fastr_stackmaps_*` / `__llvm_stackmaps_*` are legacy/project-specific aliases.
 const STACKMAP_SYMBOL_RANGES: [(&str, &str); 4] = [

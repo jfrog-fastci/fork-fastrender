@@ -81,6 +81,14 @@ because the linker needs to apply relocations to stackmap records.
 Naively linking a PIE with GNU ld can succeed but emit `DT_TEXTREL` warnings if
 `.llvm_stackmaps` is mapped read-only.
 
+Another GNU ld-specific pitfall: if stackmaps are made writable for PIE relocation and your linker
+script inserts the output section immediately after `.text` (common `INSERT AFTER .text` fragments),
+GNU ld can place that writable stackmaps section into the `.text` LOAD segment, producing an **RWX**
+segment. Prefer:
+
+- `runtime-native/link/stackmaps_gnuld.ld` for GNU ld PIE builds, or
+- `scripts/native_link.sh` (selects the GNU ld fragment automatically for `ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1`).
+
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
 relocation**.
 
