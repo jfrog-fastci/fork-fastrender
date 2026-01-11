@@ -332,16 +332,19 @@ mod gc_trace_tests {
   fn minor_gc_relocates_uint8array_buffer_pointer() {
     let mut heap = GcHeap::new();
 
-    let buffer_obj = heap.alloc_array_buffer_young(1).unwrap();
+    let mut roots = RootStack::new();
+    let mut remembered = SimpleRememberedSet::new();
+
+    let buffer_obj = heap
+      .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, 1)
+      .unwrap();
     let array_obj = heap.alloc_young(&GC_UINT8_ARRAY_DESC);
     unsafe {
       (array_obj.add(OBJ_HEADER_SIZE) as *mut Uint8Array).write(Uint8Array::view_gc(buffer_obj, 0, 1).unwrap());
     }
 
     let mut root = array_obj;
-    let mut roots = RootStack::new();
     roots.push(&mut root as *mut *mut u8);
-    let mut remembered = SimpleRememberedSet::new();
     heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
     assert!(!heap.is_in_nursery(root));
