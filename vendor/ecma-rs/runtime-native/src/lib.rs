@@ -12,6 +12,7 @@ pub mod abi;
 pub mod gc;
 
 mod alloc;
+mod async_rt;
 mod exports;
 mod interner;
 mod string;
