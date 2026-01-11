@@ -116,6 +116,13 @@ fn main() {
     .arg(project_dir.join("Cargo.toml"))
     .env("CARGO_TARGET_DIR", &target_dir)
     .env("RUSTFLAGS", rustflags)
+    // Some environments configure a global `build.rustc-wrapper` (often `sccache`).
+    // When this test spawns Cargo from a temp directory, it may not inherit this
+    // repo's `.cargo/config.toml` override that disables the wrapper, and the
+    // wrapper can flake (e.g. when the server is unavailable). Force-disable any
+    // wrapper so this integration test is deterministic.
+    .env("RUSTC_WRAPPER", "")
+    .env("RUSTC_WORKSPACE_WRAPPER", "")
     .status()
     .expect("run nested build");
   assert!(status.success(), "nested build failed");

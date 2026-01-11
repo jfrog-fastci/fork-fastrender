@@ -6,6 +6,23 @@ This document describes the **async** portion of the stable C ABI surface expose
 `include/runtime_native.h` is the authoritative ABI definition; this document exists to give
 additional context for codegen and embedding implementations.
 
+## Microtask queue semantics
+
+`runtime-native` maintains a **single FIFO microtask queue** (JS-like semantics).
+
+All microtask sources enqueue into this same queue:
+
+- Promise reaction jobs (including async/await coroutine wakeups, and `then`-style callbacks).
+- `rt_queue_microtask` callbacks (JS `queueMicrotask`).
+- Deferred coroutine scheduling via:
+  - `rt_async_spawn_deferred` (native coroutine ABI), and
+  - `rt_async_spawn_deferred_legacy` (legacy coroutine ABI).
+
+### Draining / microtask checkpoint
+
+Microtasks are drained **to exhaustion** at a microtask checkpoint. Jobs enqueued while draining are
+appended to the same FIFO queue and are executed in the **same** checkpoint.
+
 ## Microtask checkpoint helpers
 
 Two Rust entry points execute pending work without blocking:

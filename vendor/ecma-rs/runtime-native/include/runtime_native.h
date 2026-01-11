@@ -652,6 +652,9 @@ void rt_async_free_c_string(char* s);
 PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
 // or during `rt_async_poll_legacy` when the event loop is otherwise idle).
+//
+// Microtasks are executed FIFO in the same queue as promise reaction jobs (e.g. async/await
+// coroutine wakeups).
 void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
 void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 

@@ -966,6 +966,7 @@ mod tests {
       _promise_then_legacy,
       _promise_then_with_drop_legacy,
       _async_spawn_legacy,
+      _async_spawn_deferred,
       _async_poll_legacy,
       _async_sleep_legacy,
       _queue_microtask,

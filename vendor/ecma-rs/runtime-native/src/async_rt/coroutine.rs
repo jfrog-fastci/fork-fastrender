@@ -20,6 +20,10 @@ fn schedule_resume_macrotask(coro: *mut RtCoroutineHeader) {
   queue_macrotask(coro_resume_task as TaskFn, coro as *mut u8);
 }
 
+fn schedule_resume_microtask(coro: *mut RtCoroutineHeader) {
+  queue_microtask(coro_resume_task as TaskFn, coro as *mut u8);
+}
+
 #[inline]
 fn validate_coro_ptr(coro: *mut RtCoroutineHeader) -> *mut RtCoroutineHeader {
   if coro.is_null() {
@@ -136,8 +140,7 @@ pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> PromiseRef {
     }
   }
 
-  // Schedule the first resume as a microtask instead of running synchronously.
-  queue_microtask(coro_resume_task as TaskFn, coro as *mut u8);
+  schedule_resume_microtask(coro);
 
   unsafe { (*coro).promise }
 }
