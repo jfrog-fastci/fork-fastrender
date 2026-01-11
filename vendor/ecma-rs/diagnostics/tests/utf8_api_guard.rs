@@ -59,8 +59,8 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Resu
 fn public_source_apis_use_utf8() {
   // Guard against new public APIs that take raw byte slices or Vec<u8> as
   // *source text*. The check is intentionally scoped to text-facing crates to
-  // avoid flagging legitimate binary byte APIs (sockets, typed arrays, stackmap
-  // parsing, object/bitcode linking, ...).
+  // avoid flagging legitimate binary byte APIs (sockets, typed arrays,
+  // `.llvm_stackmaps` parsing, object/bitcode linking, ...).
   //
   // See `scripts/check_utf8_apis.sh` for the exact policy/pattern.
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

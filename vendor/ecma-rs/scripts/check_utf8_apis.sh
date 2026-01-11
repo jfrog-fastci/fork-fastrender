@@ -21,9 +21,9 @@ cd "$repo_root"
 
 # Only scan crates that take *source text* as an input.
 #
-# Note: `native-js` exposes some byte-oriented APIs for linking LLVM bitcode,
-# object files, and parsing stackmap sections. Those are binary inputs, not
-# source text, so we exclude those modules from this guard.
+# Note: `native-js` exposes some byte-oriented APIs for linking LLVM bitcode/object
+# files and parsing the binary `.llvm_stackmaps` section. Those are not source
+# text, so we exclude those modules from this guard.
 scoped_paths=(
   parse-js/src
   parse-js-cli/src
