@@ -45,6 +45,11 @@ trap 'rm -f "${nm_syms_file}"' EXIT
 "${nm_tool}" -g --defined-only "${staticlib}" | awk '{print $3}' | sort -u >"${nm_syms_file}"
 
 required_symbols=(
+  # Thread registration / shape table.
+  rt_thread_init
+  rt_thread_deinit
+  rt_register_shape_table
+
   rt_alloc
   rt_alloc_pinned
   rt_alloc_array
@@ -58,13 +63,25 @@ required_symbols=(
   rt_parallel_spawn
   rt_parallel_join
   rt_parallel_for
+
+  # Native async ABI (PromiseHeader-based).
+  rt_promise_init
+  rt_promise_fulfill
+  rt_promise_reject
+
   rt_async_spawn
   rt_async_poll
-  rt_promise_new
-  rt_promise_resolve
-  rt_promise_reject
-  rt_promise_then
-  rt_coro_await
+  rt_async_set_strict_await_yields
+
+  # Legacy async ABI (temporary; will be removed once codegen migrates).
+  rt_promise_new_legacy
+  rt_promise_resolve_legacy
+  rt_promise_reject_legacy
+  rt_promise_then_legacy
+  rt_coro_await_legacy
+
+  rt_async_spawn_legacy
+  rt_async_poll_legacy
 )
 
 missing=0
@@ -105,7 +122,11 @@ echo "[runtime-native] Running C smoke test..."
 # can fail even though the smoke test itself allocates very little.
 #
 # Use a small bump arena unless the caller explicitly configured one.
+# Also cap the worker pool size: on large CI hosts, spawning one worker per CPU
+# can consume a large amount of virtual address space (thread stacks), which can
+# exceed the tight `--as 1G` limit used by this smoke test.
 RUNTIME_NATIVE_BUMP_ARENA_SIZE="${RUNTIME_NATIVE_BUMP_ARENA_SIZE:-256M}" \
+ECMA_RS_RUNTIME_NATIVE_THREADS="${ECMA_RS_RUNTIME_NATIVE_THREADS:-4}" \
   bash "${SUPER_ROOT}/scripts/run_limited.sh" --as 1G --cpu 60 -- "${out_bin}"
 
 echo "[runtime-native] OK"
