@@ -60,8 +60,9 @@ collect -n --no-heading --with-filename -o '"(PS[0-9]{4})"' parse-js/src/error.r
 # emit-js defines codes in a match and threads them through a helper.
 collect -n --no-heading --with-filename -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' emit-js/src/lib.rs --replace '$1'
 
-# minify-js currently stores its TS erase code in a const.
-collect -n --no-heading --with-filename -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' minify-js/src/ts_erase.rs --replace '$1'
+# ts-erase stores its TS erase codes in consts (not directly in the diagnostic
+# constructors), so scan its sources for code-shaped string literals.
+collect -n --no-heading --with-filename -g'*.rs' -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' ts-erase/src --replace '$1'
 
 sort -u "$tmp" >"$sorted_tmp"
 
@@ -100,9 +101,9 @@ RULES = [
     Rule("TS", r"^TS\d{4,5}$", shared=True),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
-    Rule("VMJS", r"^VMJS\d{4}$", allowed_crates={"vm-js"}),
-    Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"minify-js"}),
+    Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"ts-erase"}),
     Rule("MINIFY", r"^MINIFY\d{4}$", allowed_crates={"bench/minify-js"}),
+    Rule("VMJS", r"^VMJS\d{4}$", allowed_crates={"vm-js"}),
     Rule("CONF", r"^CONF\d{4}$", allowed_crates={"parse-js"}),
     Rule("T262", r"^T262\d{4}$", allowed_crates={"test262"}),
     Rule("HOST", r"^HOST\d{4}$", shared=True),

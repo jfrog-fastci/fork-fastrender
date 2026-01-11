@@ -2077,7 +2077,7 @@ fn erases_type_annotations_and_aliases() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
   assert_eq!(parsed.stx.body.len(), 2);
   match parsed.stx.body[0].stx.as_ref() {
@@ -2116,7 +2116,7 @@ fn drops_this_parameters_from_functions() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 1);
@@ -2379,7 +2379,7 @@ fn inlines_const_enums_by_default() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 1);
@@ -2436,7 +2436,7 @@ fn exports_namespaces_merged_with_existing_classes_without_var_redecls() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 3);
@@ -2529,7 +2529,7 @@ fn rewrites_enum_member_references_in_initializers() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -2588,7 +2588,7 @@ fn rewrites_enum_member_references_in_nested_scopes() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -2689,7 +2689,7 @@ fn rewrites_enum_member_references_in_jsx_expression_containers() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -2809,7 +2809,7 @@ fn rewrites_enum_member_references_in_jsx_element_names() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -2893,7 +2893,7 @@ fn rewrites_enum_member_references_in_jsx_element_names_using_alias_when_enum_na
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -2989,7 +2989,7 @@ fn does_not_rewrite_shadowed_enum_member_references() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -3062,7 +3062,7 @@ fn rewrites_enum_member_references_using_alias_when_enum_name_shadowed() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -3168,7 +3168,7 @@ fn rewrites_enum_member_references_in_object_shorthand() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -3266,7 +3266,7 @@ fn does_not_rewrite_shadowed_enum_member_references_in_object_shorthand() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);
@@ -3344,7 +3344,7 @@ fn lowers_parameter_properties_in_constructors() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   let class_decl = match parsed.stx.body.first().map(|stmt| stmt.stx.as_ref()) {
@@ -3420,7 +3420,7 @@ fn lowers_parameter_properties_after_super_in_derived_constructors() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert!(parsed.stx.body.len() >= 2);
@@ -3506,7 +3506,7 @@ fn lowers_parameter_properties_after_var_super_in_derived_constructors() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   let derived = match parsed.stx.body.get(1).map(|stmt| stmt.stx.as_ref()) {
@@ -3573,7 +3573,7 @@ fn rewrites_return_super_before_inserting_parameter_properties() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   let derived = match parsed.stx.body.get(1).map(|stmt| stmt.stx.as_ref()) {
@@ -3650,7 +3650,7 @@ fn constructor_parameter_properties_preserve_directive_prologue() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   let class_decl = match parsed.stx.body.first().map(|stmt| stmt.stx.as_ref()) {
@@ -3814,7 +3814,7 @@ fn drops_method_signatures_in_abstract_classes() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 1);
@@ -3842,7 +3842,7 @@ fn erases_class_auto_accessors_to_parseable_js() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
   assert_eq!(parsed.stx.body.len(), 1);
 
@@ -3890,7 +3890,7 @@ fn string_enum_aliases_do_not_emit_reverse_mappings() {
     },
   )
   .expect("input should parse");
-  crate::ts_erase::erase_types(FileId(0), TopLevelMode::Module, src, &mut parsed)
+  ts_erase::erase_types(FileId(0), SourceType::Module, &mut parsed)
     .expect("type erasure should succeed");
 
   assert_eq!(parsed.stx.body.len(), 2);

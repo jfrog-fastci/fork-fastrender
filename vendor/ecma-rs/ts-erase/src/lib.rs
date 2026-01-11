@@ -1,6 +1,14 @@
-use crate::{ts_lower, Diagnostic, TopLevelMode};
+//! TypeScript → JavaScript erasure and lowering.
+//!
+//! This crate operates on a `parse-js` AST: it removes TypeScript-only syntax
+//! (types, interfaces, type-only imports/exports, etc.) and lowers runtime
+//! TypeScript constructs (enums, namespaces) into JavaScript so the resulting
+//! program is parseable as strict ECMAScript.
+
+mod ts_lower;
+
 use derive_visitor::{Drive, DriveMut, VisitorMut};
-use diagnostics::{FileId, Span};
+use diagnostics::{Diagnostic, FileId, Span};
 use parse_js::ast::class_or_object::{
   ClassMember, ClassOrObjKey, ClassOrObjMemberDirectKey, ClassOrObjVal, ObjMember, ObjMemberType,
 };
@@ -25,6 +33,7 @@ use parse_js::ast::ts_stmt::{
 use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
 use parse_js::token::{keyword_from_str, TT};
+use parse_js::SourceType;
 use std::collections::{HashMap, HashSet};
 
 const ERR_TS_UNSUPPORTED: &str = "MINIFYTS0001";
@@ -209,9 +218,49 @@ impl Default for TsEraseOptions {
   }
 }
 
+/// Controls which TypeScript constructs are lowered into JavaScript.
+///
+/// `parse-js` can parse many TypeScript constructs that are not valid JavaScript
+/// (e.g. `enum`, `namespace`). In "full" mode we lower those constructs into
+/// JavaScript so the output can be executed by a JS runtime.
+///
+/// In "strict native" mode, we only erase TypeScript-only syntax (types, etc.)
+/// and instead reject runtime-only TypeScript constructs deterministically. This
+/// is intended for oracle tooling that wants a stable TS→JS erasure path while
+/// still enforcing a strict TS subset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TsEraseMode {
+  /// Lower TypeScript runtime constructs (enums, namespaces) into JavaScript.
+  Full,
+  /// Reject TypeScript runtime constructs; only erase TS-only syntax.
+  StrictNative,
+}
+
+impl Default for TsEraseMode {
+  fn default() -> Self {
+    Self::Full
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TsEraseConfig {
+  pub mode: TsEraseMode,
+  pub options: TsEraseOptions,
+}
+
+impl Default for TsEraseConfig {
+  fn default() -> Self {
+    Self {
+      mode: TsEraseMode::default(),
+      options: TsEraseOptions::default(),
+    }
+  }
+}
+
 struct StripContext {
   file: FileId,
-  top_level_mode: TopLevelMode,
+  source_type: SourceType,
+  mode: TsEraseMode,
   value_bindings_stack: Vec<HashSet<String>>,
   top_level_module_exports: HashSet<String>,
   erased_const_enum_bindings: HashSet<String>,
@@ -321,13 +370,13 @@ fn dummy_jsx_elem() -> Node<JsxElem> {
   )
 }
 
-fn is_valid_binding_identifier(name: &str, top_level_mode: TopLevelMode) -> bool {
+fn is_valid_binding_identifier(name: &str, source_type: SourceType) -> bool {
   // `parse-js` intentionally parses some keyword-like names as identifiers in TS namespace
   // dotted paths (e.g. `namespace A.class {}`) for conformance with TypeScript.
   //
   // When lowering runtime namespaces to JS, we must avoid synthesizing binding identifiers
   // (e.g. `var class;` / `function(class){}`) that are invalid in the output mode.
-  if matches!(top_level_mode, TopLevelMode::Module)
+  if matches!(source_type, SourceType::Module)
     && matches!(name, "package" | "eval" | "arguments")
   {
     // `package`, `eval`, and `arguments` are invalid binding identifiers in strict mode but are not
@@ -352,7 +401,7 @@ fn is_valid_binding_identifier(name: &str, top_level_mode: TopLevelMode) -> bool
     | TT::KeywordUsing => true,
 
     // `await` is reserved in modules, but allowed as an identifier in scripts.
-    TT::KeywordAwait => matches!(top_level_mode, TopLevelMode::Global | TopLevelMode::Script),
+    TT::KeywordAwait => matches!(source_type, SourceType::Script),
 
     // Strict-mode reserved words (allowed in non-strict scripts).
     TT::KeywordImplements
@@ -362,7 +411,7 @@ fn is_valid_binding_identifier(name: &str, top_level_mode: TopLevelMode) -> bool
     | TT::KeywordProtected
     | TT::KeywordPublic
     | TT::KeywordStatic
-    | TT::KeywordYield => matches!(top_level_mode, TopLevelMode::Global | TopLevelMode::Script),
+    | TT::KeywordYield => matches!(source_type, SourceType::Script),
 
     // TypeScript keywords that are not reserved in JS.
     TT::KeywordAbstract
@@ -396,9 +445,9 @@ fn is_valid_binding_identifier(name: &str, top_level_mode: TopLevelMode) -> bool
   }
 }
 
-fn is_valid_identifier_reference(name: &str, top_level_mode: TopLevelMode) -> bool {
+fn is_valid_identifier_reference(name: &str, source_type: SourceType) -> bool {
   // `package` is not tokenized as a keyword but is a reserved word in strict mode.
-  if matches!(top_level_mode, TopLevelMode::Module) && name == "package" {
+  if matches!(source_type, SourceType::Module) && name == "package" {
     return false;
   }
 
@@ -419,7 +468,7 @@ fn is_valid_identifier_reference(name: &str, top_level_mode: TopLevelMode) -> bo
     | TT::KeywordUsing => true,
 
     // `await` is reserved in modules, but allowed as an identifier in scripts.
-    TT::KeywordAwait => matches!(top_level_mode, TopLevelMode::Global | TopLevelMode::Script),
+    TT::KeywordAwait => matches!(source_type, SourceType::Script),
 
     // Strict-mode reserved words (allowed in non-strict scripts).
     TT::KeywordImplements
@@ -429,7 +478,7 @@ fn is_valid_identifier_reference(name: &str, top_level_mode: TopLevelMode) -> bo
     | TT::KeywordProtected
     | TT::KeywordPublic
     | TT::KeywordStatic
-    | TT::KeywordYield => matches!(top_level_mode, TopLevelMode::Global | TopLevelMode::Script),
+    | TT::KeywordYield => matches!(source_type, SourceType::Script),
 
     // All remaining keywords are not valid identifier references.
     _ => false,
@@ -448,43 +497,68 @@ fn take_jsx_elem(elem: &mut Node<JsxElem>) -> Node<JsxElem> {
   std::mem::replace(elem, dummy_jsx_elem())
 }
 
-#[cfg(any(test, feature = "fuzzing"))]
 pub fn erase_types(
   file: FileId,
-  top_level_mode: TopLevelMode,
-  source: &str,
+  source_type: SourceType,
   top_level: &mut Node<TopLevel>,
 ) -> Result<(), Vec<Diagnostic>> {
-  erase_types_with_options(
-    file,
-    top_level_mode,
-    source,
-    top_level,
-    TsEraseOptions::default(),
-  )
+  erase_types_with_config(file, source_type, top_level, TsEraseConfig::default())
 }
 
 pub fn erase_types_with_options(
   file: FileId,
-  top_level_mode: TopLevelMode,
-  _source: &str,
+  source_type: SourceType,
   top_level: &mut Node<TopLevel>,
   ts_erase_options: TsEraseOptions,
 ) -> Result<(), Vec<Diagnostic>> {
-  let erased_const_enum_bindings = match ts_erase_options.const_enum_mode {
+  erase_types_with_config(
+    file,
+    source_type,
+    top_level,
+    TsEraseConfig {
+      mode: TsEraseMode::Full,
+      options: ts_erase_options,
+    },
+  )
+}
+
+pub fn erase_types_strict_native(
+  file: FileId,
+  source_type: SourceType,
+  top_level: &mut Node<TopLevel>,
+) -> Result<(), Vec<Diagnostic>> {
+  erase_types_with_config(
+    file,
+    source_type,
+    top_level,
+    TsEraseConfig {
+      mode: TsEraseMode::StrictNative,
+      options: TsEraseOptions::default(),
+    },
+  )
+}
+
+pub fn erase_types_with_config(
+  file: FileId,
+  source_type: SourceType,
+  top_level: &mut Node<TopLevel>,
+  config: TsEraseConfig,
+) -> Result<(), Vec<Diagnostic>> {
+  let erased_const_enum_bindings = match config.options.const_enum_mode {
     ConstEnumMode::Runtime => HashSet::new(),
     ConstEnumMode::Inline => inline_const_enums(top_level),
   };
   let all_identifier_strings = collect_all_identifier_strings(top_level);
   let top_level_value_bindings = collect_top_level_value_bindings(&top_level.stx.body);
-  let top_level_module_exports = if matches!(top_level_mode, TopLevelMode::Module) {
+  let top_level_module_exports = if matches!(source_type, SourceType::Module) {
     collect_top_level_module_exports(&top_level.stx.body, &erased_const_enum_bindings)
   } else {
     HashSet::new()
   };
   let mut ctx = StripContext {
     file,
-    top_level_mode,
+    source_type,
+    mode: config.mode,
     value_bindings_stack: vec![top_level_value_bindings],
     top_level_module_exports,
     erased_const_enum_bindings,
@@ -492,7 +566,7 @@ pub fn erase_types_with_options(
     fresh_internal_names: FreshInternalNameGenerator::new(all_identifier_strings),
     runtime_namespace_param_idents: HashMap::new(),
     runtime_enum_object_idents: HashMap::new(),
-    ts_erase_options,
+    ts_erase_options: config.options,
     diagnostics: Vec::new(),
   };
   strip_stmts(&mut ctx, &mut top_level.stx.body, true);
@@ -728,20 +802,81 @@ fn strip_stmt(ctx: &mut StripContext, stmt: Node<Stmt>, is_top_level: bool) -> V
     | Stmt::ExportTypeDecl(_)
     | Stmt::ExportAsNamespaceDecl(_)
     | Stmt::AmbientVarDecl(_)
-    | Stmt::AmbientFunctionDecl(_)
-    | Stmt::AmbientClassDecl(_)
-    | Stmt::GlobalDecl(_) => vec![],
-    Stmt::EnumDecl(decl) => strip_enum_decl(ctx, decl, loc, assoc, is_top_level, None),
-    Stmt::NamespaceDecl(decl) => strip_namespace_decl(ctx, decl, loc, assoc, is_top_level, None),
-    Stmt::ModuleDecl(decl) => strip_module_decl(ctx, decl, loc, assoc, is_top_level, None),
-    Stmt::ImportEqualsDecl(decl) => lower_import_equals_decl(ctx, decl, loc, assoc, is_top_level)
-      .into_iter()
-      .collect(),
+      | Stmt::AmbientFunctionDecl(_)
+      | Stmt::AmbientClassDecl(_)
+      | Stmt::GlobalDecl(_) => vec![],
+    Stmt::EnumDecl(decl) => {
+      if ctx.mode == TsEraseMode::StrictNative {
+        if !decl.stx.declare {
+          unsupported_ts(
+            ctx,
+            loc,
+            "enums are not supported in strict native TypeScript erasure mode",
+          );
+        }
+        vec![]
+      } else {
+        strip_enum_decl(ctx, decl, loc, assoc, is_top_level, None)
+      }
+    }
+    Stmt::NamespaceDecl(decl) => {
+      if ctx.mode == TsEraseMode::StrictNative {
+        if !decl.stx.declare {
+          unsupported_ts(
+            ctx,
+            loc,
+            "namespaces are not supported in strict native TypeScript erasure mode",
+          );
+        }
+        vec![]
+      } else {
+        strip_namespace_decl(ctx, decl, loc, assoc, is_top_level, None)
+      }
+    }
+    Stmt::ModuleDecl(decl) => {
+      if ctx.mode == TsEraseMode::StrictNative {
+        if !decl.stx.declare {
+          unsupported_ts(
+            ctx,
+            loc,
+            "`module` declarations are not supported in strict native TypeScript erasure mode",
+          );
+        }
+        vec![]
+      } else {
+        strip_module_decl(ctx, decl, loc, assoc, is_top_level, None)
+      }
+    }
+    Stmt::ImportEqualsDecl(decl) => {
+      if ctx.mode == TsEraseMode::StrictNative {
+        if !decl.stx.type_only {
+          unsupported_ts(
+            ctx,
+            loc,
+            "`import =` assignments are not supported in strict native TypeScript erasure mode",
+          );
+        }
+        vec![]
+      } else {
+        lower_import_equals_decl(ctx, decl, loc, assoc, is_top_level)
+          .into_iter()
+          .collect()
+      }
+    }
     Stmt::ExportAssignmentDecl(decl) => {
-      let expr = strip_expr(ctx, decl.stx.expression);
-      lower_export_assignment(ctx, loc, assoc, expr, is_top_level)
-        .into_iter()
-        .collect()
+      if ctx.mode == TsEraseMode::StrictNative {
+        unsupported_ts(
+          ctx,
+          loc,
+          "`export =` assignments are not supported in strict native TypeScript erasure mode",
+        );
+        vec![]
+      } else {
+        let expr = strip_expr(ctx, decl.stx.expression);
+        lower_export_assignment(ctx, loc, assoc, expr, is_top_level)
+          .into_iter()
+          .collect()
+      }
     }
   }
 }
@@ -922,9 +1057,9 @@ fn lower_import_equals_decl(
   };
   let var_decl = VarDecl {
     export: decl.stx.export,
-    mode: match ctx.top_level_mode {
-      TopLevelMode::Module => VarDeclMode::Const,
-      TopLevelMode::Global | TopLevelMode::Script => VarDeclMode::Var,
+    mode: match ctx.source_type {
+      SourceType::Module => VarDeclMode::Const,
+      SourceType::Script => VarDeclMode::Var,
     },
     declarators: vec![declarator],
   };
@@ -3289,10 +3424,10 @@ fn strip_enum_decl(
   }
 
   let enum_name = decl.stx.name.clone();
-  let name_is_binding_identifier = is_valid_binding_identifier(&enum_name, ctx.top_level_mode);
+  let name_is_binding_identifier = is_valid_binding_identifier(&enum_name, ctx.source_type);
   if parent_namespace.is_none() && !name_is_binding_identifier {
     let allow_top_level_export =
-      is_top_level && decl.stx.export && matches!(ctx.top_level_mode, TopLevelMode::Module);
+      is_top_level && decl.stx.export && matches!(ctx.source_type, SourceType::Module);
     if !allow_top_level_export {
       unsupported_ts(
         ctx,
@@ -3321,7 +3456,7 @@ fn strip_enum_decl(
     .collect();
   let should_export_binding = parent_namespace.is_none()
     && is_top_level
-    && matches!(ctx.top_level_mode, TopLevelMode::Module)
+    && matches!(ctx.source_type, SourceType::Module)
     && decl.stx.export
     && !ctx.top_level_module_exports.contains(&enum_name)
     && ctx.emitted_export_var.insert(enum_name.clone());
@@ -3373,7 +3508,7 @@ fn strip_enum_decl(
   let mut used_enum_alias = false;
   let mut body = Vec::with_capacity(decl.stx.members.len());
   let rewrite_enum_source_name_refs =
-    !is_valid_identifier_reference(&enum_name, ctx.top_level_mode);
+    !is_valid_identifier_reference(&enum_name, ctx.source_type);
   let mut next_auto: Option<f64> = Some(0.0);
   let mut last_numeric_member: Option<String> = None;
   let mut known_member_kinds: HashMap<String, EnumValueKind> = HashMap::new();
@@ -3708,10 +3843,10 @@ fn strip_namespace_decl(
   }
 
   let namespace_name = decl.stx.name.clone();
-  let name_is_binding_identifier = is_valid_binding_identifier(&namespace_name, ctx.top_level_mode);
+  let name_is_binding_identifier = is_valid_binding_identifier(&namespace_name, ctx.source_type);
   if parent_namespace.is_none() && !name_is_binding_identifier {
     let allow_top_level_export =
-      is_top_level && decl.stx.export && matches!(ctx.top_level_mode, TopLevelMode::Module);
+      is_top_level && decl.stx.export && matches!(ctx.source_type, SourceType::Module);
     if !allow_top_level_export {
       unsupported_ts(
         ctx,
@@ -3736,7 +3871,7 @@ fn strip_namespace_decl(
 
   let should_export_binding = parent_namespace.is_none()
     && is_top_level
-    && matches!(ctx.top_level_mode, TopLevelMode::Module)
+    && matches!(ctx.source_type, SourceType::Module)
     && decl.stx.export
     && !ctx.top_level_module_exports.contains(&namespace_name)
     && ctx.emitted_export_var.insert(namespace_name.clone());
@@ -3782,7 +3917,7 @@ fn strip_namespace_decl(
 
   let mut body = strip_namespace_body(ctx, decl.stx.body, &namespace_param_ident);
   if namespace_param_ident != namespace_name
-    && !is_valid_identifier_reference(&namespace_name, ctx.top_level_mode)
+    && !is_valid_identifier_reference(&namespace_name, ctx.source_type)
   {
     let mut visitor = RewriteIdExprName {
       from: &namespace_name,

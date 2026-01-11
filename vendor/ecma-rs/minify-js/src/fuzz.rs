@@ -1,8 +1,8 @@
 use diagnostics::FileId;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 
-use crate::ts_erase::erase_types;
 use crate::{minify_with_options, MinifyOptions, TopLevelMode};
+use ts_erase::erase_types;
 
 /// Fuzz entry point that parses, erases TypeScript syntax, and runs the full
 /// minifier without panicking.
@@ -21,7 +21,7 @@ pub fn fuzz_minify_pipeline(data: &[u8]) {
     };
     match parse_with_options(&source, parse_opts) {
       Ok(mut ast) => {
-        let _ = erase_types(file, TopLevelMode::Module, &source, &mut ast);
+        let _ = erase_types(file, SourceType::Module, &mut ast);
         break;
       }
       Err(err) => last_error = Some(err),

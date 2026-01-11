@@ -37,10 +37,8 @@ mod opt;
 mod rename;
 #[cfg(test)]
 mod tests;
-mod ts_erase;
 #[cfg(feature = "fuzzing")]
 pub use fuzz::fuzz_minify_pipeline;
-mod ts_lower;
 
 #[cfg(feature = "emit-minify")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,6 +196,10 @@ pub fn minify_with_options(
     Some(dialect) => vec![dialect],
     None => vec![Dialect::Ts, Dialect::Tsx],
   };
+  let source_type = match options.top_level_mode {
+    TopLevelMode::Global | TopLevelMode::Script => SourceType::Script,
+    TopLevelMode::Module => SourceType::Module,
+  };
 
   let mut last_error = None;
   let mut parsed = None;
@@ -206,10 +208,7 @@ pub fn minify_with_options(
   for dialect in parse_dialects {
     let parse_opts = ParseOptions {
       dialect,
-      source_type: match options.top_level_mode {
-        TopLevelMode::Global | TopLevelMode::Script => SourceType::Script,
-        TopLevelMode::Module => SourceType::Module,
-      },
+      source_type,
     };
     match parse_with_options(source, parse_opts) {
       Ok(ast) => {
@@ -233,8 +232,7 @@ pub fn minify_with_options(
 
   erase_types_with_options(
     file,
-    options.top_level_mode,
-    source,
+    source_type,
     &mut top_level_node,
     options.ts_erase_options,
   )?;

@@ -12,6 +12,7 @@ members = [
   "minify-js-nodejs",
   "minify-js",
   "native-oracle-harness",
+  "ts-erase",
   "optimize-js-debugger",
   "optimize-js",
   "parse-js-cli",
@@ -56,6 +57,7 @@ hir-js = { path = "hir-js", version = "0.1.0" }
 native-js = { path = "native-js", version = "0.1.0" }
 native-js-cli = { path = "native-js-cli", version = "0.1.0" }
 minify-js = { path = "minify-js", version = "0.6.0" }
+ts-erase = { path = "ts-erase", version = "0.1.0" }
 optimize-js = { path = "optimize-js", version = "0.1.0" }
 parse-js = { path = "parse-js", version = "0.24.1" }
 semantic-js = { path = "semantic-js", version = "0.1.0" }
