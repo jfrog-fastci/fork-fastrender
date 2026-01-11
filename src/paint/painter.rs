@@ -3250,6 +3250,14 @@ impl Painter {
           return Ok(());
         }
 
+        let wants_text_clip = mask.as_ref().is_some_and(|style| {
+          style
+            .mask_layers
+            .iter()
+            .any(|layer| matches!(layer.clip, MaskClip::Text))
+        });
+        let text_clip_commands = wants_text_clip.then(|| commands.clone());
+
         // When clipping transformed stacking contexts to the viewport, we must compute the layer
         // bounds in the *pre-transform* coordinate space. Otherwise, classic centering patterns
         // like `left: 50%; transform: translateX(-50%)` can have all required source pixels culled
@@ -3777,11 +3785,20 @@ impl Painter {
         }
         if let Some(ref mask_style) = mask {
           let mask_start = profile_enabled.then(Instant::now);
+          let text_clip_mask = if wants_text_clip {
+            base_painter.build_text_clip_mask_from_commands(
+              text_clip_commands.as_deref().unwrap_or(&[]),
+              (base_painter.pixmap.width(), base_painter.pixmap.height()),
+            )?
+          } else {
+            None
+          };
           if let Some(rendered) = base_painter.render_mask(
             mask_style,
             context_rect,
             bounds,
             (base_painter.pixmap.width(), base_painter.pixmap.height()),
+            text_clip_mask.as_ref(),
           )? {
             apply_mask_with_dirty_bounds_rgba(
               &mut base_painter.pixmap,
@@ -4108,12 +4125,134 @@ impl Painter {
     Ok(())
   }
 
+  fn build_text_clip_mask_from_commands(
+    &self,
+    commands: &[DisplayCommand],
+    device_size: (u32, u32),
+  ) -> RenderResult<Option<Mask>> {
+    let Some(mut pixmap) = new_pixmap(device_size.0, device_size.1) else {
+      return Ok(None);
+    };
+    pixmap.data_mut().fill(0);
+
+    let mut painter = Painter {
+      pixmap,
+      scale: self.scale,
+      origin_offset_css: self.origin_offset_css,
+      css_width: self.css_width,
+      css_height: self.css_height,
+      background: Rgba::new(0, 0, 0, 0.0),
+      shaper: ShapingPipeline::new(),
+      font_ctx: self.font_ctx.clone(),
+      image_cache: self.image_cache.clone(),
+      svg_id_defs: self.svg_id_defs.clone(),
+      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+      text_shape_cache: Arc::clone(&self.text_shape_cache),
+      trace: self.trace.clone(),
+      scroll_state: self.scroll_state.clone(),
+      max_iframe_depth: self.max_iframe_depth,
+      gradient_cache: self.gradient_cache.clone(),
+      gradient_stats: GradientStats::default(),
+      diagnostics_enabled: self.diagnostics_enabled,
+    };
+
+    fn paint_text_commands_recursive(
+      painter: &mut Painter,
+      commands: &[DisplayCommand],
+      painted_any: &mut bool,
+    ) {
+      for cmd in commands {
+        match cmd {
+          DisplayCommand::Text {
+            rect,
+            baseline_offset,
+            text,
+            runs,
+            style,
+          } => {
+            if text.is_empty() {
+              continue;
+            }
+
+            let inline_vertical = matches!(
+              style.writing_mode,
+              crate::style::types::WritingMode::VerticalRl
+                | crate::style::types::WritingMode::VerticalLr
+                | crate::style::types::WritingMode::SidewaysRl
+                | crate::style::types::WritingMode::SidewaysLr
+            );
+            let (block_baseline, inline_start) = if inline_vertical {
+              (rect.x() + baseline_offset, rect.y())
+            } else {
+              (rect.y() + baseline_offset, rect.x())
+            };
+
+            let shaped_runs: Option<Arc<Vec<ShapedRun>>> = runs.clone().or_else(|| {
+              painter
+                .shaper
+                .shape(text, style, &painter.font_ctx)
+                .ok()
+                .map(Arc::new)
+            });
+            let Some(shaped_runs) = shaped_runs else {
+              continue;
+            };
+            if shaped_runs.is_empty() {
+              continue;
+            }
+
+            *painted_any = true;
+            if inline_vertical {
+              painter.paint_shaped_runs_vertical(
+                &shaped_runs,
+                block_baseline,
+                inline_start,
+                Rgba::WHITE,
+                None,
+                None,
+              );
+            } else {
+              painter.paint_shaped_runs(
+                &shaped_runs,
+                inline_start,
+                block_baseline,
+                Rgba::WHITE,
+                None,
+                None,
+              );
+            }
+          }
+          DisplayCommand::StackingContext {
+            opacity, commands, ..
+          } => {
+            if *opacity > 0.0 {
+              paint_text_commands_recursive(painter, commands, painted_any);
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    let mut painted_any = false;
+    paint_text_commands_recursive(&mut painter, commands, &mut painted_any);
+    if !painted_any {
+      return Ok(None);
+    }
+
+    Ok(Some(Mask::from_pixmap(
+      painter.pixmap.as_ref(),
+      tiny_skia::MaskType::Alpha,
+    )))
+  }
+
   fn render_mask(
     &mut self,
     style: &ComputedStyle,
     css_bounds: Rect,
     layer_bounds: Rect,
     device_size: (u32, u32),
+    text_clip: Option<&Mask>,
   ) -> RenderResult<Option<RenderedMask>> {
     let viewport = (self.css_width, self.css_height);
     let rects = background_rects(
@@ -4433,6 +4572,7 @@ impl Painter {
       let device_clip = self.device_rect(clip_rect_css);
       let dirty = clip_mask_dirty_bounds(device_clip, device_size.0, device_size.1);
 
+      let apply_text_clip = matches!(layer.clip, MaskClip::Text);
       let layer_result = MASK_LAYER_PIXMAP_SCRATCH.with(|cell| -> RenderResult<Option<()>> {
         let mut scratch = cell.borrow_mut();
 
@@ -4471,7 +4611,7 @@ impl Painter {
         };
         clear_pixmap_rect_rgba(mask_pixmap, clear)?;
 
-        if dirty.is_some() {
+        if dirty.is_some() && !(apply_text_clip && text_clip.is_none()) {
           let mut deadline_counter = 0usize;
           for ty in positions_y.iter().copied() {
             for tx in positions_x.iter().copied() {
@@ -4488,6 +4628,12 @@ impl Painter {
                 self.scale,
               );
             }
+          }
+        }
+
+        if apply_text_clip {
+          if let (Some(text_mask), Some(dirty)) = (text_clip, dirty) {
+            apply_text_clip_mask_to_pixmap_alpha(mask_pixmap, text_mask, dirty)?;
           }
         }
 
@@ -16724,6 +16870,52 @@ fn copy_pixmap_alpha_to_mask(
   Ok(())
 }
 
+fn apply_text_clip_mask_to_pixmap_alpha(
+  pixmap: &mut Pixmap,
+  text_mask: &Mask,
+  rect: ClipMaskDirtyRect,
+) -> RenderResult<()> {
+  if rect.x0 >= rect.x1 || rect.y0 >= rect.y1 {
+    return Ok(());
+  }
+  if pixmap.width() != text_mask.width() || pixmap.height() != text_mask.height() {
+    return Ok(());
+  }
+
+  let width = pixmap.width() as usize;
+  let pixmap_stride = width * 4;
+  let text_stride = width;
+  let data = pixmap.data_mut();
+  let text_data = text_mask.data();
+
+  let x0 = rect.x0 as usize;
+  let x1 = rect.x1 as usize;
+  let row_len = x1.saturating_sub(x0);
+  if row_len == 0 {
+    return Ok(());
+  }
+
+  let mut deadline_counter = 0usize;
+  for y in rect.y0 as usize..rect.y1 as usize {
+    let mut pix_idx = y * pixmap_stride + x0 * 4 + 3;
+    let mut text_idx = y * text_stride + x0;
+    let mut x = 0usize;
+    while x < row_len {
+      check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+      let x_end = (x + CLIP_MASK_DEADLINE_STRIDE).min(row_len);
+      for _ in x..x_end {
+        let alpha = data[pix_idx] as u16;
+        let clip = text_data[text_idx] as u16;
+        data[pix_idx] = div_255(alpha * clip) as u8;
+        pix_idx += 4;
+        text_idx += 1;
+      }
+      x = x_end;
+    }
+  }
+  Ok(())
+}
+
 fn apply_mask_composite_from_pixmap_alpha(
   dest: &mut Mask,
   src: &Pixmap,
@@ -24507,7 +24699,7 @@ mod tests {
     let mut optimized_painter =
       Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let optimized = optimized_painter
-      .render_mask(&style, css_bounds, layer_bounds, device_size)
+      .render_mask(&style, css_bounds, layer_bounds, device_size, None)
       .expect("render_mask")
       .expect("mask");
 
@@ -24544,7 +24736,7 @@ mod tests {
     let mut optimized_painter =
       Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let optimized = optimized_painter
-      .render_mask(&style, css_bounds, layer_bounds, device_size)
+      .render_mask(&style, css_bounds, layer_bounds, device_size, None)
       .expect("render_mask")
       .expect("mask");
 
@@ -24597,7 +24789,7 @@ mod tests {
     let mut optimized_painter =
       Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let optimized = optimized_painter
-      .render_mask(&style, css_bounds, layer_bounds, device_size)
+      .render_mask(&style, css_bounds, layer_bounds, device_size, None)
       .expect("render_mask")
       .expect("mask");
 
@@ -24652,7 +24844,7 @@ mod tests {
     let ptr_first = {
       let mut painter = Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
       let rendered = painter
-        .render_mask(&style, css_bounds, layer_bounds, device_size)
+        .render_mask(&style, css_bounds, layer_bounds, device_size, None)
         .expect("render_mask")
         .expect("mask");
       rendered.mask().data().as_ptr()
@@ -24661,7 +24853,7 @@ mod tests {
     let ptr_second = {
       let mut painter = Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
       let rendered = painter
-        .render_mask(&style, css_bounds, layer_bounds, device_size)
+        .render_mask(&style, css_bounds, layer_bounds, device_size, None)
         .expect("render_mask")
         .expect("mask");
       rendered.mask().data().as_ptr()
@@ -24706,7 +24898,7 @@ mod tests {
     {
       let mut painter = Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
       let _mask = painter
-        .render_mask(&border_style, css_bounds, layer_bounds, device_size)
+        .render_mask(&border_style, css_bounds, layer_bounds, device_size, None)
         .expect("render_mask")
         .expect("mask");
     }
@@ -24714,7 +24906,7 @@ mod tests {
     let mut optimized_painter =
       Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let optimized = optimized_painter
-      .render_mask(&content_style, css_bounds, layer_bounds, device_size)
+      .render_mask(&content_style, css_bounds, layer_bounds, device_size, None)
       .expect("render_mask")
       .expect("mask");
 
@@ -24751,7 +24943,7 @@ mod tests {
     let mut painter = Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let recorder = NewPixmapAllocRecorder::start();
     let _mask = painter
-      .render_mask(&style, css_bounds, layer_bounds, device_size)
+      .render_mask(&style, css_bounds, layer_bounds, device_size, None)
       .expect("render_mask")
       .expect("mask");
 
@@ -24794,7 +24986,7 @@ mod tests {
 
     let mut painter = Painter::new(device_size.0, device_size.1, Rgba::WHITE).expect("painter");
     let result = with_deadline(Some(&deadline), || {
-      painter.render_mask(&style, css_bounds, layer_bounds, device_size)
+      painter.render_mask(&style, css_bounds, layer_bounds, device_size, None)
     });
 
     assert!(

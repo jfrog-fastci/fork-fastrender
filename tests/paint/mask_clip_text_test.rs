@@ -1,4 +1,6 @@
-use super::util::create_stacking_context_bounds_renderer;
+use super::util::{
+  create_stacking_context_bounds_renderer, create_stacking_context_bounds_renderer_legacy,
+};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::{
@@ -31,6 +33,16 @@ fn assert_is_red(rgba: (u8, u8, u8, u8), msg: &str) {
     r > 200 && g < 50 && b < 50 && a > 240,
     "{msg}: expected red, got rgba=({r},{g},{b},{a})"
   );
+}
+
+fn render_both(html: &str, width: u32, height: u32) -> (Pixmap, Pixmap) {
+  let mut dl = create_stacking_context_bounds_renderer();
+  let dl_pixmap = dl.render_html(html, width, height).expect("render display_list");
+
+  let mut legacy = create_stacking_context_bounds_renderer_legacy();
+  let legacy_pixmap = legacy.render_html(html, width, height).expect("render legacy");
+
+  (dl_pixmap, legacy_pixmap)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,23 +94,23 @@ fn mask_clip_text_clips_mask_to_glyph_shapes() {
     let html_text_clip = html_with_mask_clip("text", flavor);
     let html_content_clip = html_with_mask_clip("content-box", flavor);
 
-    let mut renderer = create_stacking_context_bounds_renderer();
-    let text_clip = renderer
-      .render_html(&html_text_clip, WIDTH, HEIGHT)
-      .unwrap_or_else(|_| panic!("{label}: render mask-clip:text"));
-    assert_is_white(
-      rgba_at(&text_clip, 10, 90),
-      &format!("{label}: mask-clip:text should mask out the element outside glyph shapes"),
-    );
+    let (dl, legacy) = render_both(&html_text_clip, WIDTH, HEIGHT);
+    for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+      assert_is_white(
+        rgba_at(&pixmap, 10, 90),
+        &format!("{label}/{backend}: mask-clip:text should mask out the element outside glyph shapes"),
+      );
+    }
 
-    let mut renderer = create_stacking_context_bounds_renderer();
-    let content_clip = renderer
-      .render_html(&html_content_clip, WIDTH, HEIGHT)
-      .unwrap_or_else(|_| panic!("{label}: render mask-clip:content-box"));
-    assert_is_red(
-      rgba_at(&content_clip, 10, 90),
-      &format!("{label}: mask-clip:content-box should leave the element background visible"),
-    );
+    let (dl, legacy) = render_both(&html_content_clip, WIDTH, HEIGHT);
+    for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+      assert_is_red(
+        rgba_at(&pixmap, 10, 90),
+        &format!(
+          "{label}/{backend}: mask-clip:content-box should leave the element background visible"
+        ),
+      );
+    }
   }
 }
 
