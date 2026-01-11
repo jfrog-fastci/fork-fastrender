@@ -14,16 +14,12 @@ use loom::sync::atomic;
 #[cfg(feature = "loom")]
 use loom::sync::atomic::Ordering;
 #[cfg(feature = "loom")]
-use loom::sync::Arc;
-#[cfg(feature = "loom")]
 use loom::sync::Mutex;
 
 #[cfg(not(feature = "loom"))]
 use std::sync::atomic;
 #[cfg(not(feature = "loom"))]
 use std::sync::atomic::Ordering;
-#[cfg(not(feature = "loom"))]
-use std::sync::Arc;
 #[cfg(not(feature = "loom"))]
 use std::sync::Mutex;
 
@@ -36,12 +32,12 @@ const PROMISE_SETTLED: u8 = 1;
 /// A minimal "ready queue" used by the Loom tests.
 ///
 /// In the real runtime this would enqueue coroutines/tasks onto the executor.
-pub type ReadyQueue = Arc<Mutex<Vec<usize>>>;
+pub type ReadyQueue = Mutex<Vec<usize>>;
 
 pub fn new_ready_queue() -> ReadyQueue {
   // Pre-allocate a small capacity to avoid `Vec` growth during Loom scheduling,
   // which dramatically increases the explored state space.
-  Arc::new(Mutex::new(Vec::with_capacity(8)))
+  Mutex::new(Vec::with_capacity(8))
 }
 
 pub fn ready_queue_snapshot(queue: &ReadyQueue) -> Vec<usize> {
@@ -55,7 +51,7 @@ pub fn ready_queue_snapshot(queue: &ReadyQueue) -> Vec<usize> {
 pub struct Coroutine {
   id: usize,
   next_waiter: AtomicPtr<Coroutine>,
-  ready_queue: *const Mutex<Vec<usize>>,
+  ready_queue: *const ReadyQueue,
 }
 
 impl Coroutine {
@@ -63,7 +59,7 @@ impl Coroutine {
     Self {
       id,
       next_waiter: AtomicPtr::new(core::ptr::null_mut()),
-      ready_queue: Arc::as_ptr(ready_queue),
+      ready_queue: ready_queue as *const ReadyQueue,
     }
   }
 
@@ -148,4 +144,3 @@ impl PromiseHeader {
     }
   }
 }
-

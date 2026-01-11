@@ -5,7 +5,6 @@
 
 #![cfg(feature = "loom")]
 
-use loom::sync::Arc;
 use loom::thread;
 use runtime_native::loom_promise_waiters::ready_queue_snapshot;
 use runtime_native::loom_promise_waiters::Coroutine;
@@ -23,26 +22,28 @@ fn assert_ready_exactly_once(got: Vec<usize>, expected: &[usize]) {
 #[test]
 fn loom_lost_wakeup_race() {
   loom::model::Builder::new().check(|| {
-    let ready = new_ready_queue();
-    let promise = Arc::new(PromiseHeader::new());
-    let waiter = Box::new(Coroutine::new(1, &ready));
+    let ready = Box::new(new_ready_queue());
+    let promise = Box::new(PromiseHeader::new());
+    let promise_ptr: *const PromiseHeader = &*promise;
+
+    let waiter = Box::new(Coroutine::new(1, &*ready));
     let waiter_ptr = Box::into_raw(waiter);
 
-    let p1 = promise.clone();
     let waiter_ptr_for_thread = waiter_ptr;
     let t_register = thread::spawn(move || {
-      p1.register_waiter(waiter_ptr_for_thread);
+      unsafe { (&*promise_ptr).register_waiter(waiter_ptr_for_thread) };
     });
 
-    let p2 = promise.clone();
     let t_settle = thread::spawn(move || {
-      p2.settle();
+      unsafe { (&*promise_ptr).settle() };
     });
 
-    t_register.join().unwrap();
-    t_settle.join().unwrap();
+    let res_register = t_register.join();
+    let res_settle = t_settle.join();
+    res_register.unwrap();
+    res_settle.unwrap();
 
-    assert_ready_exactly_once(ready_queue_snapshot(&ready), &[1]);
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
 
     // SAFETY: all threads have finished and the promise has been settled, so the
     // waiter is no longer reachable from the waiter stack.
@@ -55,28 +56,30 @@ fn loom_lost_wakeup_race() {
 #[test]
 fn loom_double_settle_no_double_wake() {
   loom::model::Builder::new().check(|| {
-    let ready = new_ready_queue();
-    let promise = Arc::new(PromiseHeader::new());
-    let waiter = Box::new(Coroutine::new(1, &ready));
+    let ready = Box::new(new_ready_queue());
+    let promise = Box::new(PromiseHeader::new());
+    let promise_ptr: *const PromiseHeader = &*promise;
+
+    let waiter = Box::new(Coroutine::new(1, &*ready));
     let waiter_ptr = Box::into_raw(waiter);
 
     // Ensure there is something to wake.
     promise.register_waiter(waiter_ptr);
 
-    let p1 = promise.clone();
     let t1 = thread::spawn(move || {
-      p1.settle();
+      unsafe { (&*promise_ptr).settle() };
     });
-    let p2 = promise.clone();
     let t2 = thread::spawn(move || {
-      p2.settle();
+      unsafe { (&*promise_ptr).settle() };
     });
 
-    t1.join().unwrap();
-    t2.join().unwrap();
+    let r1 = t1.join();
+    let r2 = t2.join();
+    r1.unwrap();
+    r2.unwrap();
 
     assert!(promise.is_settled());
-    assert_ready_exactly_once(ready_queue_snapshot(&ready), &[1]);
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
 
     unsafe {
       drop(Box::from_raw(waiter_ptr));
@@ -87,34 +90,35 @@ fn loom_double_settle_no_double_wake() {
 #[test]
 fn loom_two_waiters_no_loss() {
   loom::model::Builder::new().check(|| {
-    let ready = new_ready_queue();
-    let promise = Arc::new(PromiseHeader::new());
+    let ready = Box::new(new_ready_queue());
+    let promise = Box::new(PromiseHeader::new());
+    let promise_ptr: *const PromiseHeader = &*promise;
 
-    let w1 = Box::new(Coroutine::new(1, &ready));
-    let w2 = Box::new(Coroutine::new(2, &ready));
+    let w1 = Box::new(Coroutine::new(1, &*ready));
+    let w2 = Box::new(Coroutine::new(2, &*ready));
     let w1_ptr = Box::into_raw(w1);
     let w2_ptr = Box::into_raw(w2);
 
-    let p1 = promise.clone();
     let w1_ptr_for_thread = w1_ptr;
     let t1 = thread::spawn(move || {
-      p1.register_waiter(w1_ptr_for_thread);
+      unsafe { (&*promise_ptr).register_waiter(w1_ptr_for_thread) };
     });
 
-    let p2 = promise.clone();
     let w2_ptr_for_thread = w2_ptr;
     let t2 = thread::spawn(move || {
-      p2.register_waiter(w2_ptr_for_thread);
+      unsafe { (&*promise_ptr).register_waiter(w2_ptr_for_thread) };
     });
 
     // Settle on the main thread to reduce Loom state space (Arc refcounting and
     // thread scheduling adds lots of interleavings).
     promise.settle();
 
-    t1.join().unwrap();
-    t2.join().unwrap();
+    let r1 = t1.join();
+    let r2 = t2.join();
+    r1.unwrap();
+    r2.unwrap();
 
-    assert_ready_exactly_once(ready_queue_snapshot(&ready), &[1, 2]);
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1, 2]);
 
     unsafe {
       drop(Box::from_raw(w1_ptr));
