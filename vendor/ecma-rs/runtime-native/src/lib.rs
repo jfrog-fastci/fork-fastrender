@@ -803,6 +803,9 @@ mod tests {
       "bool rt_async_run_until_idle(void);",
       "void rt_async_block_on(PromiseRef p);",
       "PromiseRef rt_async_sleep(uint64_t delay_ms);",
+      "LegacyPromiseRef rt_promise_new(void);",
+      "void rt_promise_resolve(LegacyPromiseRef p, ValueRef value);",
+      "void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
@@ -829,6 +832,7 @@ mod tests {
       "void rt_io_update(IoWatcherId id, uint32_t interests);",
       "void rt_io_unregister(IoWatcherId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
+      "void rt_coro_await(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
     ];
 
     for decl in DECLS {
@@ -907,6 +911,9 @@ mod tests {
     let _async_run_until_idle: unsafe extern "C" fn() -> bool = rt_async_run_until_idle_abi;
     let _async_block_on: unsafe extern "C" fn(PromiseRef) = rt_async_block_on;
     let _async_sleep: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep;
+    let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
+    let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
+    let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
@@ -948,6 +955,7 @@ mod tests {
     let _io_update: extern "C" fn(abi::IoWatcherId, u32) = rt_io_update;
     let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
+    let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
 
     #[cfg(feature = "gc_stats")]
     let _stats_snapshot: unsafe extern "C" fn(*mut abi::RtGcStatsSnapshot) = rt_gc_stats_snapshot;

@@ -10,12 +10,12 @@ use core::arch::global_asm;
 // `rt_gc_safepoint_slow(epoch)`:
 //   Assembly shim used by the safepoint slow path to capture the caller context
 //   *before* a Rust prologue can clobber SP/FP/RA. It then calls into
-//   `rt_gc_safepoint_slow_impl(epoch, ctx_ptr)`.
+//   `runtime_native_gc_safepoint_slow_impl(epoch, ctx_ptr)`.
 global_asm!(
   r#"
   .text
-  .globl rt_capture_safepoint_context
-rt_capture_safepoint_context:
+  .globl runtime_native_capture_safepoint_context
+runtime_native_capture_safepoint_context:
   // out: rdi
   mov rax, rsp                // sp_entry
   lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
@@ -53,7 +53,7 @@ rt_gc_safepoint_slow:
   mov qword ptr [rsp + 24], rcx
 
   lea rsi, [rsp]              // arg1: &ctx (arg0 already in rdi)
-  call rt_gc_safepoint_slow_impl
+  call runtime_native_gc_safepoint_slow_impl
 
   add rsp, 40
   ret
@@ -91,7 +91,7 @@ gc.safepoint_poll:
   // corresponds to the managed poll callsite.
   mov rdi, rax
   lea rsi, [rsp]
-  call rt_gc_safepoint_slow_impl
+  call runtime_native_gc_safepoint_slow_impl
 
   add rsp, 40
 .Lgc_safepoint_poll_ret:

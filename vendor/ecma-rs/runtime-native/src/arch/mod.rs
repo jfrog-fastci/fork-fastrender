@@ -40,7 +40,7 @@ pub struct SafepointContext {
 }
 
 extern "C" {
-  fn rt_capture_safepoint_context(out: *mut SafepointContext);
+  fn runtime_native_capture_safepoint_context(out: *mut SafepointContext);
 }
 
 /// Capture a [`SafepointContext`] describing the *callsite* that entered a runtime
@@ -72,7 +72,7 @@ pub fn capture_safepoint_context() -> SafepointContext {
   // Safety: `rt_capture_safepoint_context` initializes the struct by writing
   // all fields.
   unsafe {
-    rt_capture_safepoint_context(out.as_mut_ptr());
+    runtime_native_capture_safepoint_context(out.as_mut_ptr());
     out.assume_init()
   }
 }

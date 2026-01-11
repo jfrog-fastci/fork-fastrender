@@ -705,6 +705,15 @@ void rt_async_block_on(PromiseRef p);
 // -----------------------------------------------------------------------------
 // Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 // -----------------------------------------------------------------------------
+// Compatibility aliases (older codegen used unsuffixed names).
+LegacyPromiseRef rt_promise_new(void);
+void rt_promise_resolve(LegacyPromiseRef p, ValueRef value);
+void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+
+// Forward declare legacy coroutine headers so compatibility aliases can use the type.
+typedef struct RtCoroutineHeader RtCoroutineHeader;
+void rt_coro_await(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
+
 LegacyPromiseRef rt_promise_new_legacy(void);
 void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);
 void rt_promise_resolve_into_legacy(LegacyPromiseRef p, PromiseResolveInput value);
@@ -721,7 +730,6 @@ typedef enum RtCoroStatus {
   RT_CORO_YIELD = 2,
 } RtCoroStatus;
 
-typedef struct RtCoroutineHeader RtCoroutineHeader;
 typedef RtCoroStatus (*RtCoroResumeFn)(RtCoroutineHeader*);
 
 // Legacy generated coroutine frames: prefix is RtCoroutineHeader.

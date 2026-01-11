@@ -229,7 +229,7 @@ pub fn rt_gc_poll() -> bool {
 /// prologue can mutate them.
 #[no_mangle]
 #[cold]
-extern "C" fn rt_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const SafepointContext) {
+extern "C" fn runtime_native_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const SafepointContext) {
   // Safety: the assembly wrapper passes a valid pointer to an initialized
   // `SafepointContext` on its stack.
   let mut ctx = unsafe { *ctx };

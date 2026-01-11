@@ -12,8 +12,8 @@ global_asm!(
   r#"
   .text
 
-  .globl rt_capture_safepoint_context
-rt_capture_safepoint_context:
+  .globl runtime_native_capture_safepoint_context
+runtime_native_capture_safepoint_context:
   // out: x0
   mov x1, sp          // sp_entry
   mov x2, x1          // sp (post-call; stackmap SP)
@@ -50,7 +50,7 @@ rt_gc_safepoint_slow:
   str x5, [sp, #24]
 
   mov x1, sp
-  bl rt_gc_safepoint_slow_impl
+  bl runtime_native_gc_safepoint_slow_impl
 
   // Restore the original link register so `ret` returns to the caller.
   ldr x30, [sp, #24]
@@ -84,7 +84,7 @@ gc.safepoint_poll:
   str x5, [sp, #24]
 
   mov x1, sp
-  bl rt_gc_safepoint_slow_impl
+  bl runtime_native_gc_safepoint_slow_impl
 
   // Restore the original link register so `ret` returns to the caller.
   ldr x30, [sp, #24]
@@ -99,8 +99,8 @@ global_asm!(
   r#"
   .text
 
-  .globl rt_capture_safepoint_context
-rt_capture_safepoint_context:
+  .globl runtime_native_capture_safepoint_context
+runtime_native_capture_safepoint_context:
   // out: x0
   mov x1, sp          // sp_entry
   mov x2, x1          // sp (post-call; stackmap SP)
@@ -137,7 +137,7 @@ rt_gc_safepoint_slow:
   str x5, [sp, #24]
 
   mov x1, sp
-  bl rt_gc_safepoint_slow_impl
+  bl runtime_native_gc_safepoint_slow_impl
 
   // Restore the original link register so `ret` returns to the caller.
   ldr x30, [sp, #24]
@@ -171,7 +171,7 @@ gc.safepoint_poll:
   str x5, [sp, #24]
 
   mov x1, sp
-  bl rt_gc_safepoint_slow_impl
+  bl runtime_native_gc_safepoint_slow_impl
 
   // Restore the original link register so `ret` returns to the caller.
   ldr x30, [sp, #24]
