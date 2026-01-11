@@ -123,6 +123,38 @@
     may_throw: true
   purity: Pure
 
+- name: Request.prototype.headers
+  kind: getter
+  aliases:
+    - Request.prototype.headers
+  since: "baseline"
+  effects: Pure
+  purity: ReadOnly
+
+- name: Request.prototype.url
+  kind: getter
+  aliases:
+    - Request.prototype.url
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
+- name: Request.prototype.method
+  kind: getter
+  aliases:
+    - Request.prototype.method
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
 - name: Request.prototype.text
   kind: function
   aliases:
@@ -214,6 +246,54 @@
     allocates: true
     may_throw: true
   purity: Pure
+
+- name: Response.prototype.headers
+  kind: getter
+  aliases:
+    - Response.prototype.headers
+  since: "baseline"
+  effects: Pure
+  purity: ReadOnly
+
+- name: Response.prototype.ok
+  kind: getter
+  aliases:
+    - Response.prototype.ok
+  since: "baseline"
+  effects: Pure
+  purity: ReadOnly
+
+- name: Response.prototype.status
+  kind: getter
+  aliases:
+    - Response.prototype.status
+  since: "baseline"
+  effects: Pure
+  purity: ReadOnly
+
+- name: Response.prototype.statusText
+  kind: getter
+  aliases:
+    - Response.prototype.statusText
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
+- name: Response.prototype.url
+  kind: getter
+  aliases:
+    - Response.prototype.url
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
 
 - name: Response.prototype.text
   kind: function
