@@ -5,7 +5,11 @@ use inkwell::module::Module;
 use inkwell::types::FunctionType;
 use inkwell::values::FunctionValue;
 
+use crate::llvm_gc::LLVM_GC_STRATEGY;
+
 pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {
+  func.set_gc(LLVM_GC_STRATEGY);
+
   // Required for deterministic GC stack walking:
   //
   // - `frame-pointer="all"`: force a stable frame chain we can walk.
@@ -21,6 +25,9 @@ pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'
 ///
 /// This is currently a minimal façade around `inkwell` that guarantees stack-walkability
 /// invariants needed by precise GC (see `native-js/docs/gc_stack_walking.md`).
+///
+/// It also marks all generated functions with the LLVM GC strategy used for statepoint lowering
+/// (see `native-js/docs/llvm_gc_strategy.md`).
 pub struct CodeGen<'ctx> {
   context: &'ctx Context,
   module: Module<'ctx>,
@@ -94,6 +101,7 @@ mod tests {
     let _ = cg.builder.build_return(Some(&i32_ty.const_int(0, false)));
 
     let ir = cg.module_ir();
+    assert!(ir.contains("gc \"coreclr\""), "IR:\n{ir}");
     assert!(ir.contains("\"frame-pointer\"=\"all\""), "IR:\n{ir}");
     assert!(
       ir.contains("\"disable-tail-calls\"=\"true\"") || ir.contains("disable-tail-calls"),

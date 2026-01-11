@@ -10,6 +10,11 @@ fn emitted_ir_has_stack_walking_attributes() {
   let ir = cg.module_ir();
 
   assert!(
+    ir.contains("gc \"coreclr\""),
+    "IR missing gc strategy attribute:\n{ir}"
+  );
+
+  assert!(
     ir.contains("\"frame-pointer\"=\"all\""),
     "IR missing frame-pointer attribute:\n{ir}"
   );
@@ -20,4 +25,3 @@ fn emitted_ir_has_stack_walking_attributes() {
     "IR missing disable-tail-calls attribute:\n{ir}"
   );
 }
-

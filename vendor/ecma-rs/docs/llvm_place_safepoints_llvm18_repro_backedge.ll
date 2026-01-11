@@ -12,7 +12,7 @@
 
 source_filename = "llvm_place_safepoints_llvm18_repro_backedge"
 
-define void @foo(i1 %cond) gc "statepoint-example" {
+define void @foo(i1 %cond) gc "coreclr" {
 entry:
   br label %loop
 

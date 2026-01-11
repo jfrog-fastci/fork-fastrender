@@ -10,9 +10,8 @@ source_filename = "llvm_place_safepoints_llvm18_repro_call"
 
 declare void @bar()
 
-define void @foo() gc "statepoint-example" {
+define void @foo() gc "coreclr" {
 entry:
   call void @bar()
   ret void
 }
-

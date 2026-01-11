@@ -12,7 +12,7 @@ source_filename = "llvm_place_safepoints_llvm18_manual_poll"
 
 declare void @rt_gc_safepoint()
 
-define void @foo(i1 %cond) gc "statepoint-example" {
+define void @foo(i1 %cond) gc "coreclr" {
 entry:
   br label %loop
 
@@ -32,4 +32,3 @@ poll_fast:
 exit:
   ret void
 }
-

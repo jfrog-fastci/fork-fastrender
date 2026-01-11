@@ -11,7 +11,7 @@
 
 source_filename = "llvm_place_safepoints_llvm18_repro_entry"
 
-define void @foo() gc "statepoint-example" {
+define void @foo() gc "coreclr" {
 entry:
   ret void
 }

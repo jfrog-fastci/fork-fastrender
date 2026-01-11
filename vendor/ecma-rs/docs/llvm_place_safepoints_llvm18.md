@@ -145,7 +145,7 @@ insert polling safepoints. (It only rewrites existing calls.)
 ## Recommended strategy for native-js on LLVM 18
 
 1. Mark generated functions with `gc "<strategy>"` (we currently use
-   `gc "statepoint-example"` in the repros).
+   `gc "coreclr"` in this repo).
 2. Run `rewrite-statepoints-for-gc` to convert callsites to statepoints.
 3. For loop polling, have the compiler explicitly emit an IR poll:
    - Fast path: load a global/TLS “GC requested” flag and branch.
