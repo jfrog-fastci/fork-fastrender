@@ -151,37 +151,50 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 cargo test -p native-oracle-harness
 ```
 
-> Note: if `native-oracle-harness` does not exist in your checkout yet, there are two native pipeline smoke-test CLIs today:
->
-> - `native-js-cli`: a minimal `parse-js`-driven LLVM IR emitter (no typechecking).
-> - `native-js`: a proof-of-concept typechecked AOT pipeline (`typecheck-ts` + strict validation + HIR → LLVM).
->
-> ```bash
-> # Minimal emitter (builtins smoke tests, no typechecking):
-> bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
->
-> # Typechecked AOT pipeline (expects `export function main()`):
-> cat > /tmp/aot.ts <<'TS'
-> export function main(): number { return 0; }
-> TS
-> bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run /tmp/aot.ts
-> ```
+### Recommended (agent-safe wrapper)
 
-### Recommended (LLVM-heavy wrapper)
-
-Native compilation and codegen are LLVM-heavy; use the LLVM wrapper (higher RAM limit + LLVM env auto-detect):
+This crate is not LLVM-heavy today, so use the standard agent wrapper:
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-oracle-harness
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
-Expected output is standard `cargo test` output; any mismatch between native output and the `vm-js` oracle should show up as a failing test referencing the fixture name.
+Expected output is standard `cargo test` output.
+Today the harness asserts that fixtures erase to JS and execute successfully in the oracle runtime; native-vs-oracle comparison is expected to be added later.
+
+### Related native pipeline smoke tests (LLVM)
+
+In addition to the oracle harness, there are two native bring-up CLIs:
+
+- `native-js-cli`: minimal `parse-js` → LLVM IR emitter (no typechecking)
+- `native-js`: experimental **typechecked AOT** pipeline (`typecheck-ts` + strict validation + HIR → LLVM)
+
+Both require LLVM; use the LLVM wrapper:
+
+```bash
+# Minimal emitter:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
+
+# Typechecked AOT pipeline (expects `export function main()`):
+cat > /tmp/aot.ts <<'TS'
+export function main(): number { return 0; }
+TS
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run /tmp/aot.ts
+```
+
+See [`native-js-cli/README.md`](../native-js-cli/README.md) for details and flags.
 
 ---
 
 ## 4) TS → JS → `vm-js` oracle flow (what’s happening)
 
-At a high level, each oracle test case does:
+### Target flow (from `EXEC.plan.md`)
+
+At a high level, each oracle test case should:
 
 1. **Input**: a strict-native `.ts` entry file (plus optional imported modules in the same fixture).
 2. **Typecheck**: run `typecheck-ts` in strict-native mode; rejected constructs fail the test early.
@@ -196,30 +209,42 @@ The important property is that `vm-js` is deterministic and spec-oriented, so th
 
 Note: `vm-js` executes **ECMAScript** (`Dialect::Ecma`) scripts, not TypeScript. The oracle flow therefore depends on a TS → JS “type erasure” step.
 
+### What exists today in this repo
+
+The current `native-oracle-harness` crate provides the TS → JS erasure step as a library function:
+
+- `native_oracle_harness::erase_typescript_to_js(&str) -> Result<String, TsToJsError>`
+
+It:
+
+1. Parses the input as TypeScript (`parse-js`, `Dialect::Ts`, `SourceType::Script`).
+2. Emits JavaScript using the `emit-js` “JS emitter” (`emit_js::emit_js_top_level`), which erases
+   supported TS-only syntax (e.g. `as` assertions, non-null assertions, `satisfies`, instantiation type args).
+3. Optionally falls back to `optimize-js` decompilation when built with the `optimize-js-fallback` feature.
+4. Executes the erased JS using `runtime-js` (which is built on `vm-js`).
+
+Today the harness test suite primarily asserts that fixtures:
+
+- successfully erase to JS, and
+- execute successfully in the oracle runtime.
+
+Native execution + result comparison is expected to be layered in as the native pipeline matures.
+
 ---
 
 ## 5) Fixture layout (oracle harness)
 
-Fixtures are organized as on-disk directories so they can be versioned, reviewed, and bisected easily.
-
-Expected layout:
+Fixtures live under:
 
 ```
-vendor/ecma-rs/native-oracle-harness/fixtures/
-  <case-name>/
-    main.ts
-    # optional additional modules imported by main.ts:
-    dep.ts
-    nested/other.ts
-    # optional per-case notes / configuration:
-    README.md
-    tsconfig.json
+vendor/ecma-rs/fixtures/native_oracle/*.ts
 ```
+
+Each file is a standalone **TypeScript script** (not a module) that should be erasable to JS and runnable under the oracle VM.
 
 Guidelines for fixtures:
 
 - Keep them **deterministic**: avoid real time, randomness, networking, and filesystem access unless explicitly mocked.
-- Prefer returning a value from `main()` (or exporting a value the harness reads) over relying on side effects.
-- If you need multiple files, use relative imports within the fixture directory (the harness treats it as an isolated mini-project).
+- Avoid host APIs: `runtime-js`/`vm-js` do not provide browser/Node globals like `console` by default.
 
-For the exact discovery rules and result schema, see the `native-oracle-harness` crate sources/tests once you’re modifying fixtures.
+For exact discovery/execution rules, see `native-oracle-harness/src/lib.rs` (the crate has a self-test that discovers and runs these fixtures).
