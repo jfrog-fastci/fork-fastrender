@@ -227,34 +227,50 @@ if [[ "$*" != *"--manifest-path"* ]]; then
 fi
 
 # `runtime-native` contains an FP-based stack walker / GC root enumerator and enforces
-# `-C force-frame-pointers=yes` via its build script. Keep common invocations like:
-#   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native
-# working by automatically injecting the flag when the caller targets the package directly.
+# `-C force-frame-pointers=yes` via its build script.
+#
+# `native-js` and `native-js-cli` depend on `runtime-native`, so building them also requires frame
+# pointers.
 #
 # Note: `runtime-native` also exposes an `allow_omit_frame_pointers` feature as an escape hatch for
 # experiments. Respect it: if the caller explicitly enables the feature, do not force-inject frame
 # pointers (they can still opt in by setting RUSTFLAGS themselves).
 needs_frame_pointers=0
 allow_omit_frame_pointers=0
+is_frame_pointer_pkg() {
+  case "$1" in
+    runtime-native|native-js|native-js-cli)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
-  # Stop once we reach the argument delimiter. Anything after `--` is forwarded
-  # to rustc / the test harness / the executed binary.
+  # Stop once we reach the argument delimiter. Anything after `--` is forwarded to rustc / the test
+  # harness / the executed binary, and should not be interpreted as Cargo flags.
   if [[ "${argv[$i]}" == "--" ]]; then
     break
   fi
 
   case "${argv[$i]}" in
     -p|--package)
-      if [[ "${argv[$((i + 1))]:-}" == "runtime-native" ]]; then
+      if is_frame_pointer_pkg "${argv[$((i + 1))]:-}"; then
         needs_frame_pointers=1
       fi
       ;;
-    -p=runtime-native)
-      needs_frame_pointers=1
+    -p=*)
+      if is_frame_pointer_pkg "${argv[$i]#-p=}"; then
+        needs_frame_pointers=1
+      fi
       ;;
-    --package=runtime-native)
-      needs_frame_pointers=1
+    --package=*)
+      if is_frame_pointer_pkg "${argv[$i]#--package=}"; then
+        needs_frame_pointers=1
+      fi
       ;;
     --features|-F)
       features="${argv[$((i + 1))]:-}"
@@ -279,19 +295,29 @@ for ((i = 0; i < ${#argv[@]}; i++)); do
       fi
       ;;
     --manifest-path)
-      # Allow direct invocation against the runtime-native crate manifest:
-      #   bash vendor/ecma-rs/scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/runtime-native/Cargo.toml
-      if [[ "${argv[$((i + 1))]:-}" == *"runtime-native/Cargo.toml" ]]; then
-        needs_frame_pointers=1
-      fi
+      case "${argv[$((i + 1))]:-}" in
+        *"runtime-native/Cargo.toml"|*"native-js/Cargo.toml"|*"native-js-cli/Cargo.toml")
+          needs_frame_pointers=1
+          ;;
+      esac
       ;;
     --manifest-path=*)
-      if [[ "${argv[$i]#--manifest-path=}" == *"runtime-native/Cargo.toml" ]]; then
+      case "${argv[$i]#--manifest-path=}" in
+        *"runtime-native/Cargo.toml"|*"native-js/Cargo.toml"|*"native-js-cli/Cargo.toml")
+          needs_frame_pointers=1
+          ;;
+      esac
+      ;;
+    --workspace)
+      # `vendor/ecma-rs`'s full workspace includes `runtime-native`, whose build script enforces frame
+      # pointers.
+      if [[ "${cargo_workdir}" == "${repo_root}/vendor/ecma-rs" ]]; then
         needs_frame_pointers=1
       fi
       ;;
   esac
 done
+
 if [[ "${needs_frame_pointers}" -eq 1 && "${allow_omit_frame_pointers}" -eq 0 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
   if [[ -z "${RUSTFLAGS:-}" ]]; then
     export RUSTFLAGS="-C force-frame-pointers=yes"

@@ -6,6 +6,7 @@ set -uo pipefail
 #
 # Usage:
 #   scripts/check_system.sh
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RED='\033[0;31m'
@@ -23,8 +24,9 @@ check_cmd() {
     local ver
     # Avoid `cmd --version | head -1` under `set -o pipefail`: when `head` exits early it can
     # SIGPIPE the producer (flaky across scheduling/buffering), causing the pipeline to fail and
-    # spurious "unknown" output to be appended.
-    ver="$("$cmd" --version 2>/dev/null || true)"
+    # spurious "unknown" output to be appended. Capture stderr too: some tools print version/help
+    # text there (e.g. `lld`).
+    ver="$("$cmd" --version 2>&1 || true)"
     ver="${ver%%$'\n'*}"
     if [[ -z "${ver}" ]]; then
       ver="unknown"
@@ -44,7 +46,7 @@ check_cmd_optional() {
   if command -v "$cmd" >/dev/null 2>&1; then
     local ver
     # See `check_cmd`: avoid SIGPIPE/pipefail flakiness from `head -1`.
-    ver="$("$cmd" --version 2>/dev/null || true)"
+    ver="$("$cmd" --version 2>&1 || true)"
     ver="${ver%%$'\n'*}"
     if [[ -z "${ver}" ]]; then
       ver="unknown"
