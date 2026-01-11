@@ -17,6 +17,7 @@ use crate::error::{Error, RenderError, ResourceError, Result};
 use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use http::HeaderMap;
+use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write as _};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -524,6 +525,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   let mut validators = validators;
   let mut effective_referrer_policy = referrer_policy;
   let mut redirect_referrer_policy: Option<super::ReferrerPolicy> = None;
+  let mut redirect_suppressed_headers: HashSet<String> = HashSet::new();
 
   let timeout_budget = fetcher.timeout_budget(deadline);
   let max_attempts = if deadline
@@ -598,6 +600,9 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
           headers.push(("Cookie".to_string(), value));
         }
+      }
+      if !redirect_suppressed_headers.is_empty() {
+        headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
       }
 
       let network_timer = super::start_network_fetch_diagnostics();
@@ -749,17 +754,14 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
                 next = normalized;
               }
 
-              if status_code == 303
-                && !current_method.eq_ignore_ascii_case("GET")
-                && !current_method.eq_ignore_ascii_case("HEAD")
-              {
-                current_method = "GET";
-                current_body = None;
-              } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
-              {
-                current_method = "GET";
-                current_body = None;
-              }
+              super::apply_fetch_redirect_mutations(
+                status_code,
+                &current,
+                &next,
+                &mut current_method,
+                &mut current_body,
+                &mut redirect_suppressed_headers,
+              );
 
               fetcher.policy.ensure_url_allowed(&next)?;
               current = next;

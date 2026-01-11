@@ -867,6 +867,21 @@ mod tests {
     (header_str, body)
   }
 
+  fn accept_http_stream(listener: &TcpListener, test_name: &str) -> std::net::TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+      match listener.accept() {
+        Ok((stream, _)) => return stream,
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+          thread::sleep(Duration::from_millis(5));
+        }
+        Err(err) => panic!("{test_name}: accept failed: {err}"),
+      }
+    }
+    panic!("{test_name}: timed out while waiting for incoming connection");
+  }
+
   fn test_http_fetcher() -> HttpFetcher {
     HttpFetcher::new()
       .with_timeout(Duration::from_secs(2))
@@ -2154,6 +2169,158 @@ mod tests {
     let second = captured[1].to_ascii_lowercase();
     assert!(first.starts_with("get /start"), "first request: {first}");
     assert!(second.starts_with("get /final"), "second request: {second}");
+  }
+
+  #[test]
+  fn redirect_post_to_get_strips_content_type() {
+    if skip_if_curl_backend_missing("redirect_post_to_get_strips_content_type") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("redirect_post_to_get_strips_content_type") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // First request: redirect.
+      let mut stream = accept_http_stream(&listener, "redirect_post_to_get_strips_content_type");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let response =
+        "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Second request: final response.
+      let mut stream = accept_http_stream(&listener, "redirect_post_to_get_strips_content_type");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let body = b"done";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/start");
+    let mut request = Request::new("POST", &url);
+    request
+      .headers
+      .append("Content-Type", "application/json")
+      .unwrap();
+    request.body = Some(Body::new(br#"{"hello":"world"}"#.to_vec()).unwrap());
+    let mut response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
+    assert_eq!(response.status, 200);
+    assert!(response.redirected);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"done");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "expected two requests, got {captured:?}");
+    let first_headers = captured[0].0.to_ascii_lowercase();
+    let second_headers = captured[1].0.to_ascii_lowercase();
+    assert!(first_headers.starts_with("post /start"), "first request: {first_headers}");
+    assert!(
+      first_headers.contains("content-type: application/json"),
+      "first request missing content-type, got:\n{first_headers}"
+    );
+    assert_eq!(&captured[0].1, br#"{"hello":"world"}"#);
+    assert!(second_headers.starts_with("get /final"), "second request: {second_headers}");
+    assert!(
+      !second_headers.contains("content-type:"),
+      "expected redirected GET to drop content-type, got:\n{second_headers}"
+    );
+    assert!(
+      captured[1].1.is_empty(),
+      "expected redirected GET to send no body, got {:?}",
+      captured[1].1
+    );
+  }
+
+  #[test]
+  fn redirect_cross_origin_strips_authorization() {
+    if skip_if_curl_backend_missing("redirect_cross_origin_strips_authorization") {
+      return;
+    }
+    let Some(listener1) = try_bind_localhost("redirect_cross_origin_strips_authorization") else {
+      return;
+    };
+    let Some(listener2) = try_bind_localhost("redirect_cross_origin_strips_authorization") else {
+      return;
+    };
+    let addr1 = listener1.local_addr().unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // First request: redirect to a different origin (port).
+      let mut stream = accept_http_stream(&listener1, "redirect_cross_origin_strips_authorization");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push(headers);
+      let response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://{addr2}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Second request: final response on the other listener.
+      let mut stream = accept_http_stream(&listener2, "redirect_cross_origin_strips_authorization");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push(headers);
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr1}/start");
+    let mut request = Request::new("GET", &url);
+    request
+      .headers
+      .append("Authorization", "Bearer secret")
+      .unwrap();
+    let mut response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
+    assert_eq!(response.status, 200);
+    assert!(response.redirected);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "expected two requests, got {captured:?}");
+    let first = captured[0].to_ascii_lowercase();
+    let second = captured[1].to_ascii_lowercase();
+    assert!(first.starts_with("get /start"), "first request: {first}");
+    assert!(
+      first.contains("authorization: bearer secret"),
+      "expected first request to include authorization, got:\n{first}"
+    );
+    assert!(second.starts_with("get /final"), "second request: {second}");
+    assert!(
+      !second.contains("authorization:"),
+      "expected cross-origin redirect to drop authorization, got:\n{second}"
+    );
   }
 
   #[test]

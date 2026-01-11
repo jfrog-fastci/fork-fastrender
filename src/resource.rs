@@ -4714,6 +4714,45 @@ fn build_http_header_pairs<'a>(
   headers
 }
 
+fn apply_fetch_redirect_mutations(
+  status_code: u16,
+  current_url: &str,
+  next_url: &str,
+  method: &mut &str,
+  body: &mut Option<&[u8]>,
+  suppressed_headers: &mut HashSet<String>,
+) {
+  let mut switched_to_get = false;
+  match status_code {
+    303 if !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD") => {
+      *method = "GET";
+      *body = None;
+      switched_to_get = true;
+    }
+    301 | 302 if method.eq_ignore_ascii_case("POST") => {
+      *method = "GET";
+      *body = None;
+      switched_to_get = true;
+    }
+    _ => {}
+  }
+
+  if switched_to_get {
+    suppressed_headers.insert("content-type".to_string());
+    suppressed_headers.insert("content-encoding".to_string());
+    suppressed_headers.insert("content-language".to_string());
+  }
+
+  let cross_origin = match (origin_from_url(current_url), origin_from_url(next_url)) {
+    (Some(current_origin), Some(next_origin)) => !current_origin.same_origin(&next_origin),
+    _ => true,
+  };
+  if cross_origin {
+    suppressed_headers.insert("authorization".to_string());
+    suppressed_headers.insert("proxy-authorization".to_string());
+  }
+}
+
 impl std::fmt::Debug for HttpFetcher {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("HttpFetcher")
@@ -7145,6 +7184,7 @@ impl HttpFetcher {
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
     let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
+    let mut redirect_suppressed_headers: HashSet<String> = HashSet::new();
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -7224,6 +7264,9 @@ impl HttpFetcher {
             headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
             headers.push(("Cookie".to_string(), value));
           }
+        }
+        if !redirect_suppressed_headers.is_empty() {
+          headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
         }
 
         let mut network_timer = start_network_fetch_diagnostics();
@@ -7440,21 +7483,14 @@ impl HttpFetcher {
                   next = normalized;
                 }
 
-                // Match common web redirect behavior:
-                // - 303: switch to GET for non-GET/HEAD requests
-                // - 301/302: switch POST to GET
-                if status_code == 303
-                  && !current_method.eq_ignore_ascii_case("GET")
-                  && !current_method.eq_ignore_ascii_case("HEAD")
-                {
-                  current_method = "GET";
-                  current_body = None;
-                } else if matches!(status_code, 301 | 302)
-                  && current_method.eq_ignore_ascii_case("POST")
-                {
-                  current_method = "GET";
-                  current_body = None;
-                }
+                apply_fetch_redirect_mutations(
+                  status_code,
+                  &current,
+                  &next,
+                  &mut current_method,
+                  &mut current_body,
+                  &mut redirect_suppressed_headers,
+                );
 
                 finish_network_fetch_diagnostics(network_timer.take());
                 render_control::check_active(render_stage_hint_for_context(kind, &next))
@@ -7965,6 +8001,7 @@ impl HttpFetcher {
     let timeout_budget = self.timeout_budget(deadline);
     let mut effective_referrer_policy = referrer_policy;
     let mut redirect_referrer_policy: Option<ReferrerPolicy> = None;
+    let mut redirect_suppressed_headers: HashSet<String> = HashSet::new();
     let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
       deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
     });
@@ -8029,6 +8066,9 @@ impl HttpFetcher {
             headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
             headers.push(("Cookie".to_string(), value));
           }
+        }
+        if !redirect_suppressed_headers.is_empty() {
+          headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
         }
 
         let reqwest_method =
@@ -8153,18 +8193,14 @@ impl HttpFetcher {
                   next = normalized;
                 }
 
-                if status_code == 303
-                  && !current_method.eq_ignore_ascii_case("GET")
-                  && !current_method.eq_ignore_ascii_case("HEAD")
-                {
-                  current_method = "GET";
-                  current_body = None;
-                } else if matches!(status_code, 301 | 302)
-                  && current_method.eq_ignore_ascii_case("POST")
-                {
-                  current_method = "GET";
-                  current_body = None;
-                }
+                apply_fetch_redirect_mutations(
+                  status_code,
+                  &current,
+                  &next,
+                  &mut current_method,
+                  &mut current_body,
+                  &mut redirect_suppressed_headers,
+                );
 
                 finish_network_fetch_diagnostics(network_timer.take());
                 render_control::check_active(render_stage_hint_for_context(kind, &next))

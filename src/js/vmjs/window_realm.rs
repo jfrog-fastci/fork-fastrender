@@ -10375,7 +10375,6 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
 // insertion call stack. For **external** scripts, we attempt to queue a BrowserTabHost task when
 // available; otherwise we leave the element eligible for another integration layer to discover and
 // schedule later (e.g. the JS harness scan).
-
 struct CurrentScriptOverrideGuard {
   handle: Option<CurrentScriptStateHandle>,
   previous: Option<NodeId>,
