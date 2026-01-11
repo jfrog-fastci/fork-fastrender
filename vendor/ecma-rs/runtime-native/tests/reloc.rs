@@ -45,6 +45,17 @@ fn null_derived_stays_null() {
 }
 
 #[test]
+fn derived_forced_null_if_base_relocates_to_zero() {
+  let mut base = 0x1000usize;
+  let mut derived = 0x1008usize;
+
+  relocate_derived_pair(&mut base as *mut usize, &mut derived as *mut usize, |_base| 0);
+
+  assert_eq!(base, 0);
+  assert_eq!(derived, 0);
+}
+
+#[test]
 fn works_when_base_and_derived_share_a_slot() {
   let mut slot = 0x1000usize;
 
@@ -90,6 +101,24 @@ fn relocate_derived_pairs_handles_shared_base_slot() {
   assert_eq!(base, 0x2000);
   assert_eq!(derived1, 0x2008);
   assert_eq!(derived2, 0x2010);
+}
+
+#[test]
+fn relocate_derived_pairs_force_null_if_base_relocates_to_zero() {
+  let mut base = 0x1000usize;
+  let mut derived1 = 0x1008usize;
+  let mut derived2 = 0x1010usize;
+
+  let pairs = [
+    (&mut base as *mut usize, &mut derived1 as *mut usize),
+    (&mut base as *mut usize, &mut derived2 as *mut usize),
+  ];
+
+  relocate_derived_pairs(&pairs, |_base| 0);
+
+  assert_eq!(base, 0);
+  assert_eq!(derived1, 0);
+  assert_eq!(derived2, 0);
 }
 
 #[test]
