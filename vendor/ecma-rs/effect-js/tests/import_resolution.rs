@@ -4,15 +4,14 @@ use effect_js::{resolve_call, ApiDatabase};
 use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
-use typecheck_ts::{FileKey, MemoryHost, Program};
+use typecheck_ts::{DefKind, FileKey, ImportTarget, MemoryHost, Program};
 
-fn resolve_single_call(source: &str) -> String {
+fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_ts::FileId, String) {
   let index_key = FileKey::new("index.ts");
 
-  // For `resolve_call` we want the resolved module's `FileKey` to correspond to the
-  // import specifier (`node:fs`) so we can map `ImportTarget::File` back to a
-  // knowledge-base module prefix.
-  let fs_key = FileKey::new("node:fs");
+  // Use a different `FileKey` than the import specifier to ensure `resolve_call`
+  // relies on the preserved import specifier string.
+  let fs_key = FileKey::new("node_fs.ts");
 
   let mut host = MemoryHost::new();
   host.insert(index_key.clone(), source);
@@ -24,11 +23,16 @@ fn resolve_single_call(source: &str) -> String {
       }
     "#,
   );
-  host.link(index_key.clone(), "node:fs", fs_key.clone());
+
+  if link_fs {
+    host.link(index_key.clone(), "node:fs", fs_key.clone());
+  }
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));
   let diagnostics = program.check();
-  assert!(diagnostics.is_empty(), "typecheck diagnostics: {diagnostics:#?}");
+  if link_fs {
+    assert!(diagnostics.is_empty(), "typecheck diagnostics: {diagnostics:#?}");
+  }
 
   let file = program.file_id(&index_key).expect("index.ts is loaded");
   let lowered = program.hir_lowered(file).expect("HIR lowered");
@@ -47,19 +51,43 @@ fn resolve_single_call(source: &str) -> String {
   assert!(db.get("node:fs.readFile").is_some(), "missing node:fs.readFile");
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  resolve_call(lower, root_body, body, call_expr, &db, Some(&types))
+  let api = resolve_call(lower, root_body, body, call_expr, &db, Some(&types))
     .expect("call resolves")
-    .api
+    .api;
+
+  (program, file, api)
 }
 
 #[test]
 fn resolves_named_import_call() {
-  let api = resolve_single_call(r#"import { readFile } from "node:fs"; readFile("x");"#);
+  let (_program, _file, api) =
+    resolve_single_call(r#"import { readFile } from "node:fs"; readFile("x");"#, true);
   assert_eq!(api, "node:fs.readFile");
 }
 
 #[test]
 fn resolves_namespace_import_call() {
-  let api = resolve_single_call(r#"import * as fs from "node:fs"; fs.readFile("x");"#);
+  let (_program, _file, api) =
+    resolve_single_call(r#"import * as fs from "node:fs"; fs.readFile("x");"#, true);
   assert_eq!(api, "node:fs.readFile");
+}
+
+#[test]
+fn resolves_import_call_when_module_unresolved() {
+  let (program, file, api) = resolve_single_call(
+    r#"import { readFile } from "node:fs"; (readFile as any)("x");"#,
+    false,
+  );
+  assert_eq!(api, "node:fs.readFile");
+
+  let import_def = program
+    .definitions_in_file(file)
+    .into_iter()
+    .find(|def| matches!(program.def_kind(*def), Some(DefKind::Import(_))))
+    .expect("import def");
+
+  match program.def_kind(import_def) {
+    Some(DefKind::Import(import)) => assert!(matches!(import.target, ImportTarget::Unresolved { .. })),
+    other => panic!("expected import def kind, got {other:?}"),
+  }
 }
