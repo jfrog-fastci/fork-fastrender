@@ -72,27 +72,9 @@ pub fn validate_cors_allow_origin(
   // `Access-Control-Allow-Origin` header value (after trimming HTTP OWS), rather than performing an
   // origin-equivalence check.
   let serialized_request_origin = if request_origin.is_http_like() {
-    let scheme = request_origin.scheme().to_ascii_lowercase();
-    match request_origin.host() {
-      Some(host) => {
-        let host = host.to_ascii_lowercase();
-        let host = if host.contains(':') && !host.starts_with('[') {
-          format!("[{host}]")
-        } else {
-          host
-        };
-        let port = match (scheme.as_str(), request_origin.port()) {
-          ("http", Some(80)) | ("https", Some(443)) => None,
-          (_, Some(port)) => Some(port),
-          _ => None,
-        };
-        match port {
-          Some(port) => format!("{scheme}://{host}:{port}"),
-          None => format!("{scheme}://{host}"),
-        }
-      }
-      None => "null".to_string(),
-    }
+    super::http_browser_origin_and_referer_for_origin(request_origin)
+      .map(|(origin, _)| origin)
+      .unwrap_or_else(|| "null".to_string())
   } else {
     "null".to_string()
   };
