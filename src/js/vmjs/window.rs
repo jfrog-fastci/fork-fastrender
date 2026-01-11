@@ -235,6 +235,9 @@ pub struct WindowHostState {
   /// Current document base URL used for resolving relative URLs.
   ///
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
+  ///
+  /// Prefer [`WindowHostState::set_document_base_url`] when mutating this value so the underlying
+  /// [`WindowRealm`] stays in sync (JS reads base URL state from the realm).
   pub base_url: Option<String>,
   import_map_state: ImportMapState,
   import_map_warnings: Vec<ImportMapWarning>,
@@ -450,6 +453,18 @@ impl WindowHostState {
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
     self.js_execution_options
+  }
+
+  /// Update the document base URL (`Document.baseURI`) used for resolving relative URLs.
+  ///
+  /// This updates both the host-level `base_url` field and the underlying [`WindowRealm`] base URL
+  /// state so JS-visible URL resolution (`document.baseURI`, `fetch("rel")`, module specifiers,
+  /// etc.) remains coherent.
+  pub fn set_document_base_url(&mut self, base_url: Option<String>) {
+    self.base_url = base_url;
+    // Keep the JS realm state in sync: `document.baseURI` and relative URL resolution in `fetch`
+    // read from `WindowRealmUserData.base_url`.
+    self.window.set_base_url(self.base_url.clone());
   }
 
   pub fn import_map_state(&self) -> &ImportMapState {
@@ -734,6 +749,53 @@ mod tests {
       .to_utf8_lossy()
   }
 
+  fn value_to_string_from_host_state(host: &WindowHostState, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected a string, got {value:?}");
+    };
+    host
+      .window()
+      .heap()
+      .get_string(s)
+      .expect("heap should contain string")
+      .to_utf8_lossy()
+  }
+
+  fn get_global_prop_host_state(host: &mut WindowHostState, name: &str) -> Value {
+    let window = host.window_mut();
+    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let key_s = scope.alloc_string(name).expect("alloc prop name");
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root prop name");
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)
+      .expect("get global prop")
+      .unwrap_or(Value::Undefined)
+  }
+
+  fn get_global_prop_utf8_host_state(host: &mut WindowHostState, name: &str) -> Option<String> {
+    let value = get_global_prop_host_state(host, name);
+    let window = host.window_mut();
+    match value {
+      Value::String(s) => Some(
+        window
+          .heap()
+          .get_string(s)
+          .expect("get string")
+          .to_utf8_lossy(),
+      ),
+      _ => None,
+    }
+  }
+
   #[derive(Default)]
   struct MapResourceFetcher {
     entries: Mutex<HashMap<String, FetchedResource>>,
@@ -758,6 +820,49 @@ mod tests {
         .get(url)
         .cloned()
         .ok_or_else(|| Error::Other(format!("no entry for url={url}")))
+    }
+  }
+
+  #[derive(Default)]
+  struct RecordingFetcher {
+    calls: Mutex<Vec<String>>,
+  }
+
+  impl RecordingFetcher {
+    fn calls(&self) -> Vec<String> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
+
+    fn ok_response(url: &str) -> FetchedResource {
+      let mut res = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+      res.status = Some(200);
+      res.final_url = Some(url.to_string());
+      res
+    }
+  }
+
+  impl ResourceFetcher for RecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(url.to_string());
+      Ok(Self::ok_response(url))
+    }
+
+    fn fetch_http_request(&self, req: crate::resource::HttpRequest<'_>) -> Result<FetchedResource> {
+      let url = req.fetch.url.to_string();
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(url.clone());
+      Ok(Self::ok_response(&url))
     }
   }
 
@@ -873,6 +978,64 @@ mod tests {
       .resolve_module_specifier_using_document_base("/direct.js")
       .expect("resolve url-like specifier again");
     assert_eq!(direct_again, direct);
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_state_set_document_base_url_updates_document_base_uri() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHostState::new(dom, "https://example.invalid/a/b.html")?;
+    host.set_document_base_url(Some("https://example.invalid/dir/".to_string()));
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let base_uri = host.exec_script_in_event_loop(&mut event_loop, "document.baseURI")?;
+    assert_eq!(
+      value_to_string_from_host_state(&host, base_uri),
+      "https://example.invalid/dir/"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_state_set_document_base_url_affects_fetch_relative_urls() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(RecordingFetcher::default());
+    let mut host =
+      WindowHostState::new_with_fetcher(dom, "https://example.invalid/a/b.html", fetcher.clone())?;
+    host.set_document_base_url(Some("https://example.invalid/dir/".to_string()));
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+
+    host.exec_script_in_event_loop(
+      &mut event_loop,
+      r#"
+      var g = this;
+      g.__err = "";
+      g.__text = "";
+      fetch("x")
+        .then(function (r) { return r.text(); })
+        .then(function (t) { g.__text = t; })
+        .catch(function (e) { g.__err = String(e && (e.stack || e.message) || e); });
+      "#,
+    )?;
+
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: Some(Duration::from_secs(5)),
+      },
+    )?;
+
+    assert_eq!(get_global_prop_utf8_host_state(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(
+      get_global_prop_utf8_host_state(&mut host, "__text").as_deref(),
+      Some("ok")
+    );
+    assert_eq!(
+      fetcher.calls(),
+      vec!["https://example.invalid/dir/x".to_string()]
+    );
 
     Ok(())
   }
