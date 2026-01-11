@@ -41,7 +41,6 @@ mod stmt;
 mod stmt_start;
 mod ts_stmt;
 mod ts_type;
-mod ts_erase;
 
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use parse_js::ast::node::Node;
@@ -76,7 +75,6 @@ pub use ts_type::{
   emit_interface_decl, emit_ts_type, emit_type_alias_decl, emit_type_expr, emit_type_members,
   ts_type_to_string,
 };
-pub use ts_erase::emit_ecma_from_ts_top_level;
 
 /// Emit a full top-level AST, including both JavaScript statements and
 /// TypeScript-only declarations.

@@ -1,6 +1,7 @@
 use diagnostics::FileId;
-use emit_js::{emit_ecma_from_ts_top_level, EmitOptions};
+use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use ts_erase::erase_types_strict_native;
 
 fn parse_ts(src: &str) -> parse_js::ast::node::Node<parse_js::ast::stx::TopLevel> {
   parse_with_options(
@@ -41,8 +42,10 @@ f<T>(x);
 "#;
 
   let mut parsed = parse_ts(source);
-  let out = emit_ecma_from_ts_top_level(FileId(0), &mut parsed, EmitOptions::minified())
-    .expect("emit erased JS");
+  let file = FileId(0);
+  erase_types_strict_native(file, SourceType::Module, &mut parsed).expect("erase TS types");
+  let out =
+    emit_top_level_diagnostic(file, &parsed, EmitOptions::minified()).expect("emit erased JS");
 
   // Must not contain TS-only statement keywords.
   assert!(!out.contains("interface"), "output should erase interfaces: {out}");
@@ -82,8 +85,7 @@ f<T>(x);
 fn reports_unsupported_ts_runtime_constructs() {
   let source = "enum E { A }";
   let mut parsed = parse_ts(source);
-  let err = emit_ecma_from_ts_top_level(FileId(0), &mut parsed, EmitOptions::minified())
+  let diagnostics = erase_types_strict_native(FileId(0), SourceType::Module, &mut parsed)
     .expect_err("expected enum to be rejected");
-  assert!(!err.is_empty(), "expected at least one diagnostic");
+  assert!(!diagnostics.is_empty(), "expected at least one diagnostic");
 }
-
