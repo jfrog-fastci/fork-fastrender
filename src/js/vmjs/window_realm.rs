@@ -6945,6 +6945,27 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       return Ok(());
     };
 
+    // Invoke callback, swallowing exceptions to match web platform behavior.
+    let Some(mut host_ptr) = (unsafe { *self.vm_host }) else {
+      // No host context available; treat as no-op.
+      return Ok(());
+    };
+    // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
+    // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
+    let host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
+
+    // Route Promise jobs (and other hooks) through the host event loop microtask queue.
+    //
+    // Use the borrow-split constructor so hooks can discard pending jobs safely if enqueuing fails
+    // or the realm is torn down with outstanding jobs.
+    let webidl_bindings_host: Option<&mut dyn WebIdlBindingsHost> =
+      unsafe { *self.webidl_bindings_host }.map(|mut host| unsafe { host.as_mut() });
+    let mut host_hooks = VmJsEventLoopHooks::<Host>::new_with_vm_host_and_window_realm(
+      host_ctx,
+      realm,
+      webidl_bindings_host,
+    );
+
     // Host-driven dispatch is a "new turn" of JS execution: clear any prior termination state and
     // install the latest per-run budgets from `JsExecutionOptions` so hostile listeners cannot hang
     // the host.
@@ -7013,15 +7034,6 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       None => Value::Undefined,
     };
 
-    // Invoke callback, swallowing exceptions to match web platform behavior.
-    let Some(mut host_ptr) = (unsafe { *self.vm_host }) else {
-      // No host context available; treat as no-op.
-      return Ok(());
-    };
-    // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
-    // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
-    let host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
-
     let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
     let _active_guard = push_active_event_for_host(host_ctx, event_id, event);
     let event_id_key =
@@ -7041,15 +7053,6 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       )
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
-    // Route Promise jobs (and other hooks) through the host event loop microtask queue.
-    let mut host_hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
-    if let Some(mut bindings_host_ptr) = unsafe { *self.webidl_bindings_host } {
-      // SAFETY: the embedding is responsible for keeping the WebIDL bindings host alive for the
-      // lifetime of the returned invoker.
-      unsafe {
-        host_hooks.set_webidl_bindings_host(bindings_host_ptr.as_mut());
-      }
-    }
     let call_result: Result<(), VmError> = (|| {
       let event_value = Value::Object(event_obj);
       if scope.heap().is_callable(callback)? {

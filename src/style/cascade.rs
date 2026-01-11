@@ -33635,7 +33635,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let list =
       SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForScope).expect("parse");
 
-    for selector in list.iter() {
+    for selector in list.slice().iter() {
       assert!(
         scope_selector_self_match_variant(selector).is_some(),
         "expected scope selector to produce a self-match variant"
@@ -33660,7 +33660,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     )));
     SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
 
-    for selector in list.iter() {
+    for selector in list.slice().iter() {
       assert!(
         scope_selector_self_match_variant(selector).is_some(),
         "expected scope selector to produce a self-match variant"
