@@ -6,8 +6,9 @@
 //! - Cross-thread wakeups via [`ReactorDriver::notify`].
 //!
 //! This module is **not** currently used by the runtime-native async C ABI entrypoints:
-//! - `rt_async_poll` is a non-blocking microtask drain for the native async ABI.
-//! - `rt_async_poll_legacy` / `rt_async_wait` drive the existing JS-shaped event loop (`async_rt`).
+//! - `rt_async_poll` / `rt_async_poll_legacy` / `rt_async_wait` drive the existing JS-shaped event
+//!   loop (`async_rt`).
+//! - For a non-blocking microtask-only checkpoint, use `rt_drain_microtasks`.
 //!
 //! # Executor integration contract
 //!
