@@ -94,6 +94,22 @@ mod unix {
   }
 
   #[test]
+  fn drop_releases_pins_via_msghdr() {
+    let buf = ArrayBuffer::new_zeroed(16).unwrap();
+    assert_eq!(buf.pin_count(), 0);
+
+    let ranges = vec![IoVecRange::whole_array_buffer(&buf)];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+    assert_eq!(buf.pin_count(), 1);
+
+    let hdr = PinnedMsgHdr::new(pinned);
+    assert_eq!(buf.pin_count(), 1);
+
+    drop(hdr);
+    assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
   fn sendmsg_recvmsg_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let (sock_a, sock_b) = socketpair()?;
 

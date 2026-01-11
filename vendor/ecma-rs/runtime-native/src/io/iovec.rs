@@ -175,6 +175,10 @@ impl PinnedIoVec {
     self.iovecs.as_ptr()
   }
 
+  pub fn as_iovec_mut_ptr(&mut self) -> *mut libc::iovec {
+    self.iovecs.as_mut_ptr()
+  }
+
   pub fn as_iovecs(&self) -> &[libc::iovec] {
     &self.iovecs
   }
@@ -218,7 +222,7 @@ impl PinnedMsgHdr {
     Self::new_inner(iovecs, Some(name), Some(control))
   }
 
-  fn new_inner(iovecs: PinnedIoVec, name: Option<Vec<u8>>, control: Option<Vec<u8>>) -> Self {
+  fn new_inner(mut iovecs: PinnedIoVec, name: Option<Vec<u8>>, control: Option<Vec<u8>>) -> Self {
     let (msg_name, msg_namelen) = match &name {
       None => (core::ptr::null_mut(), 0 as libc::socklen_t),
       Some(buf) => (
@@ -232,11 +236,14 @@ impl PinnedMsgHdr {
       Some(buf) => (buf.as_ptr() as *mut libc::c_void, buf.len()),
     };
 
+    let msg_iov = iovecs.as_iovec_mut_ptr();
+    let msg_iovlen = iovecs.len();
+
     let hdr = Box::new(libc::msghdr {
       msg_name,
       msg_namelen,
-      msg_iov: iovecs.as_iovec_ptr() as *mut libc::iovec,
-      msg_iovlen: iovecs.len(),
+      msg_iov,
+      msg_iovlen,
       msg_control,
       msg_controllen,
       msg_flags: 0,
@@ -260,5 +267,29 @@ impl PinnedMsgHdr {
 
   pub fn as_msghdr_mut_ptr(&mut self) -> *mut libc::msghdr {
     &mut *self.hdr as *mut libc::msghdr
+  }
+
+  pub fn msg_flags(&self) -> libc::c_int {
+    self.hdr.msg_flags
+  }
+
+  pub fn name_len(&self) -> usize {
+    self.hdr.msg_namelen as usize
+  }
+
+  pub fn name(&self) -> Option<&[u8]> {
+    let buf = self.name.as_ref()?;
+    let len = self.name_len().min(buf.len());
+    Some(&buf[..len])
+  }
+
+  pub fn control_len(&self) -> usize {
+    self.hdr.msg_controllen
+  }
+
+  pub fn control(&self) -> Option<&[u8]> {
+    let buf = self.control.as_ref()?;
+    let len = self.control_len().min(buf.len());
+    Some(&buf[..len])
   }
 }
