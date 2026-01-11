@@ -250,6 +250,7 @@ fn finalize_defers_free_until_last_unpin() {
 fn typed_array_pins_subrange() {
   let buffer = ArrayBuffer::new_zeroed(8).unwrap();
   let view = Uint8Array::view(&buffer, 2, 4).unwrap();
+  assert_eq!(buffer.pin_count(), 0);
 
   let pinned_buf = buffer.pin().unwrap();
   let ptr_buf = pinned_buf.as_ptr();
