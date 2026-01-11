@@ -80,6 +80,7 @@ bash scripts/cargo_agent.sh test -p effect-js --lib
 
 - `bash scripts/cargo_agent.sh fmt --all --check`
 - `bash scripts/check_utf8_apis.sh`
+- `bash scripts/check_no_raw_cargo.sh` (guard against raw `cargo` usage in tooling; use the wrappers)
 - `bash scripts/check_diagnostic_codes.sh`
 - `bash scripts/cargo_agent.sh clippy …` (sharded; see `clippy-*` recipes in `justfile`)
 - `bash scripts/cargo_agent.sh check …` (sharded; see `check-*` recipes in `justfile`)

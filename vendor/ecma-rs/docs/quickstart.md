@@ -9,10 +9,12 @@ If you're working on the **native compiler** track described in [`EXEC.plan.md`]
 
 ## Workspace defaults (baseline vs full workspace)
 
-This workspace uses Cargo's `default-members` so a plain `bash scripts/cargo_agent.sh test` stays lightweight:
+This workspace uses Cargo's `default-members` so a plain `bash scripts/cargo_agent.sh test` only runs the core crates.
+
+In this monorepo, prefer the sharded `just check` / `just test` recipes (or explicitly scope cargo runs with `-p <crate>`) to avoid compiling the full workspace by accident:
 
 - `bash scripts/cargo_agent.sh test` / `bash scripts/cargo_agent.sh check` runs the **default members** (core crates that do not require LLVM or external corpora).
-- `bash scripts/cargo_agent.sh test --workspace` runs **everything** in the workspace (includes optional harnesses + the LLVM-backed native compiler crates).
+- `bash scripts/cargo_agent.sh test --workspace` runs **everything** in the workspace (includes optional harnesses + the LLVM-backed native compiler crates) and can be expensive; use it only when needed.
 
 For LLVM-backed crates (e.g. `native-js`, `runtime-native`), use [`scripts/cargo_llvm.sh`](../scripts/cargo_llvm.sh) and ensure LLVM 18 is installed (`scripts/check_system.sh`).
 

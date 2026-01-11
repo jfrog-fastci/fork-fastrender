@@ -24,6 +24,7 @@ This workspace is kept warning-free and treats `Cargo.lock` as a generated artif
 
 - `bash scripts/cargo_agent.sh generate-lockfile` (untracked because `Cargo.lock` is gitignored)
 - `bash scripts/cargo_agent.sh fmt --all --check`
+- `bash scripts/check_no_raw_cargo.sh` (guard against raw `cargo` in tooling; use the wrappers)
 - `just clippy` / `just check` / `just test` (all run scoped package shards via `scripts/cargo_agent.sh`; see `justfile`)
 - `bash scripts/gen_deps_graph.sh` (or `just docs`) and ensure `git diff --exit-code docs/deps.md` is clean
 
@@ -39,5 +40,5 @@ If you have [`just`](https://github.com/casey/just) installed, the root `justfil
 - `just lockfile` generates an untracked workspace `Cargo.lock`
 - `just fmt` checks Rust formatting (CI uses the same check)
 - `just fmt-fix` applies Rust formatting (`bash scripts/cargo_agent.sh fmt --all`)
-- `just lint` runs formatting + sanity checks (`utf8-apis`, `diagnostic-codes`) + `clippy`
+- `just lint` runs formatting + sanity checks (`utf8-apis`, `cargo-hygiene`, `diagnostic-codes`) + `clippy`
 - `just ci` runs the full suite (`lint`, `check`, `test`, `docs`) and enforces `docs/deps.md` stays in sync
