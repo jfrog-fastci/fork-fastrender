@@ -129,9 +129,9 @@ structure:
 
 1. **3 constant header locations**:
    - `callconv` (call convention ID; commonly `0` for C, `8` for `fastcc`)
-   - `flags` (the `gc.statepoint` `flags` immarg; verifier accepts `0..=3`)
+   - `flags` (the `gc.statepoint` `flags` immarg; a 2-bit mask `0..=3`; `1` when a `"gc-transition"` operand bundle is present)
    - `deopt_count` (number of `"deopt"` operand locations; GC ignores these but must skip them)
-2. Then `deopt_count` deopt operand locations (not GC roots).
+2. Then `deopt_count` deopt operand locations (not GC roots; can be `Constant`, `Indirect`, etc.).
 3. Then **2 locations per `gc.relocate` call**: `(base, derived)`
 
 `runtime-native::statepoints::StatepointRecord` enforces this layout (`LLVM18_STATEPOINT_HEADER_CONSTANTS = 3`),

@@ -457,7 +457,7 @@ After `rewrite-statepoints-for-gc` (LLVM 18), each safepoint record’s `locatio
 
 1. A **prefix of 3 constant locations** (the statepoint "header"):
    - `locations[0]`: `callconv` (call convention ID; commonly `0` for C, `8` for `fastcc`)
-   - `locations[1]`: `flags` (the `gc.statepoint` `flags` immarg; a 2-bit mask `0..=3`)
+   - `locations[1]`: `flags` (the `gc.statepoint` `flags` immarg; a 2-bit mask `0..=3`; `1` when a `"gc-transition"` operand bundle is present)
    - `locations[2]`: `deopt_count` (number of `"deopt"` operand locations; GC ignores these but must skip them)
    - These header entries are stackmap constants (`Constant` or `ConstIndex`/`ConstantIndex`), so
      `llvm-readobj --stackmap` may print either form.
