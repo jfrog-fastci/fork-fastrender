@@ -317,3 +317,106 @@ llc-18 -filetype=obj < lowered.bc > out.o
 # 4) Inspect stackmaps
 llvm-readobj-18 --stackmap out.o
 ```
+
+---
+
+## Linux linking policy for `.llvm_stackmaps` (lld)
+
+### The problem
+
+LLVM `.llvm_stackmaps` records contain absolute function addresses. In `.o` files this shows up as
+`R_X86_64_64` relocations against `.text` symbols.
+
+When linking a **PIE** binary with lld, this commonly fails with:
+
+```
+ld.lld: error: relocation R_X86_64_64 cannot be used against symbol '...'; recompile with -fPIC
+```
+
+### Options (evaluated)
+
+- **Option A (simple): link non-PIE** with `-no-pie`
+  - ✅ Works without extra steps.
+  - ❌ Disables ASLR for the main executable (worse exploit mitigation).
+
+- **Option B: PIE + allow text relocs** with `-Wl,-z,notext`
+  - ✅ Keeps PIE/ASLR.
+  - ❌ Enables relocations in read-only segments (“text relocs”), which is undesirable for hardening
+    and can be rejected by some build policies.
+
+- **Option C (default): PIE without text relocs**
+  - ✅ Keeps PIE/ASLR.
+  - ✅ Avoids `-z notext` text relocations.
+  - ✅ Works with lld by making `.llvm_stackmaps` **writable in the object file**, so relocations are
+    applied to RW memory (normal dynamic relocations).
+  - ❌ Requires an extra `llvm-objcopy` step in the link driver.
+
+### Chosen default (Option C)
+
+On Linux, native-js AOT output should be linked as **PIE** and must:
+
+1. Rewrite any input object containing `.llvm_stackmaps` to make the section writable:
+
+   ```bash
+   llvm-objcopy-18 \
+     --set-section-flags .llvm_stackmaps=alloc,load,contents,data \
+     input.o
+   ```
+
+2. Link with a linker script fragment that:
+   - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can’t discard it
+   - defines `__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols
+
+   The script lives at:
+   - `vendor/ecma-rs/runtime-native/link/stackmaps.ld`
+
+3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
+
+We provide a reference link wrapper:
+
+- `vendor/ecma-rs/scripts/native_js_link_linux.sh`
+
+## Example link commands
+
+### Debug (no section GC)
+
+```bash
+# (Optional) make stackmaps writable if present:
+llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o
+
+clang-18 -fuse-ld=lld -pie \
+  -Wl,--script=vendor/ecma-rs/runtime-native/link/stackmaps.ld \
+  -o app_debug \
+  main.o codegen.o
+```
+
+### Release (`--gc-sections`)
+
+```bash
+llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o
+
+clang-18 -fuse-ld=lld -pie \
+  -Wl,--gc-sections \
+  -Wl,--script=vendor/ecma-rs/runtime-native/link/stackmaps.ld \
+  -o app_release \
+  main.o codegen.o
+```
+
+## Stack map range symbols (linker-script integration)
+
+The linker script defines the following symbols:
+
+- `__llvm_stackmaps_start`
+- `__llvm_stackmaps_end`
+
+They span the retained `.llvm_stackmaps` contents in the final binary and are intended to be the
+primary runtime discovery mechanism (instead of parsing ELF section headers at runtime).
+
+Example C usage:
+
+```c
+extern const unsigned char __llvm_stackmaps_start[];
+extern const unsigned char __llvm_stackmaps_end[];
+
+size_t size = (size_t)(__llvm_stackmaps_end - __llvm_stackmaps_start);
+```

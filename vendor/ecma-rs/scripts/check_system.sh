@@ -142,6 +142,12 @@ else
   ((warnings++))
 fi
 
+if check_cmd_optional llvm-objcopy-18 "llvm-18"; then
+  :
+elif check_cmd_optional llvm-objcopy "llvm"; then
+  :
+fi
+
 echo ""
 echo "--- Environment Variables ---"
 if [[ -n "${LLVM_SYS_180_PREFIX:-}" ]]; then
