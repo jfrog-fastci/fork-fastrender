@@ -230,6 +230,7 @@ extern "C" {
   pub fn rt_promise_reject(p: PromiseRef);
   pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_spawn_deferred(coro: *mut Coroutine) -> PromiseRef;
+  pub fn rt_async_cancel_all();
   pub fn rt_async_poll() -> bool;
 }
 
@@ -341,6 +342,7 @@ mod tests {
       "rt_promise_reject(",
       "rt_async_spawn(",
       "rt_async_spawn_deferred(",
+      "rt_async_cancel_all(",
       "rt_async_poll(",
     ] {
       assert!(
