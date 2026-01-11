@@ -132,6 +132,48 @@ fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
   );
 }
 
+#[test]
+fn simple_remembered_set_remember_is_idempotent() {
+  let mut heap = GcHeap::new();
+  let mut remembered = SimpleRememberedSet::new();
+
+  let obj = heap.alloc_old(&DESC_NO_PTR);
+
+  remembered.remember(obj);
+  remembered.remember(obj);
+
+  let mut count = 0usize;
+  remembered.for_each_remembered_obj(&mut |_| count += 1);
+  assert_eq!(count, 1);
+
+  // Clearing resets the per-object header bit so the object can be remembered again.
+  remembered.clear();
+  assert!(!unsafe { (&*(obj as *const gc::ObjHeader)).is_remembered() });
+
+  remembered.remember(obj);
+  let mut count2 = 0usize;
+  remembered.for_each_remembered_obj(&mut |_| count2 += 1);
+  assert_eq!(count2, 1);
+}
+
+#[test]
+fn set_remembered_idempotent_does_not_corrupt_forwarded_header() {
+  let mut heap = GcHeap::new();
+
+  // Mark a nursery object as forwarded, then ensure `set_remembered_idempotent` does not mutate the
+  // tagged forwarding pointer stored in `meta`.
+  let new_location = heap.alloc_old(&DESC_NO_PTR);
+  let obj = heap.alloc_young(&DESC_NO_PTR);
+
+  let header = unsafe { &mut *(obj as *mut gc::ObjHeader) };
+  header.set_forwarding_ptr(new_location);
+  assert!(header.is_forwarded());
+  let before = header.forwarding_ptr();
+
+  assert!(!header.set_remembered_idempotent());
+  assert_eq!(header.forwarding_ptr(), before);
+}
+
 #[derive(Default)]
 struct VecRootSet {
   slots: Vec<*mut *mut u8>,
