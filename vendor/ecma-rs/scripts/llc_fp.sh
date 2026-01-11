@@ -18,10 +18,12 @@ set -euo pipefail
 
 llc_bin="${LLC_BIN:-}"
 if [[ -z "${llc_bin}" ]]; then
-  if command -v llc >/dev/null 2>&1; then
-    llc_bin="llc"
-  elif command -v llc-18 >/dev/null 2>&1; then
+  # Prefer LLVM 18 explicitly when available; some hosts may have multiple LLVM
+  # versions installed and `llc` might not be 18.x.
+  if command -v llc-18 >/dev/null 2>&1; then
     llc_bin="llc-18"
+  elif command -v llc >/dev/null 2>&1; then
+    llc_bin="llc"
   else
     echo "error: llc not found (install llvm-18 and ensure llc is in PATH)" >&2
     exit 1
