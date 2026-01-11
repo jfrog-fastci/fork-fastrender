@@ -183,11 +183,9 @@ impl GcHeap {
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
-      // `BackingStore` embeds a pointer to its allocator's `external_bytes` counter inside the
-      // stable `BackingStoreCtl` (used for pinned/free-pending buffers).
-      //
-      // Keep the allocator behind a `Box` so its address remains stable even if the `GcHeap` is
-      // moved (e.g. passed between threads or stored in a `Box`/`Mutex`).
+      // `ArrayBuffer` backing stores live outside the GC heap but contribute to memory pressure.
+      // We keep a per-heap backing-store allocator so `GcHeap::external_bytes()` can include their
+      // total.
       backing_store_alloc: Box::new(GlobalBackingStoreAllocator::default()),
       external_bytes: 0,
       finalizers: Vec::new(),

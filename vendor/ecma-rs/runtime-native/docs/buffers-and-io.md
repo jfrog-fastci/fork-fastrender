@@ -45,10 +45,13 @@ fresh aligned buffer and copy.
 Backing store bytes live outside the GC heap but still contribute to process memory pressure. Each
 allocator reports the total currently-owned backing store bytes via `BackingStoreAllocator::external_bytes()`.
 
-When an `ArrayBuffer` header becomes unreachable, its backing store must be released **exactly
-once**. The current milestone runtime does not yet have a per-type finalizer mechanism wired into
-the GC, so `buffer::ArrayBuffer` exposes an explicit `finalize(_in)` API that a future GC finalizer
-should call.
+When an `ArrayBuffer` header becomes unreachable, its backing store handle must be released
+**exactly once**.
+
+`runtime-native` supports per-object finalizers via `GcHeap::register_finalizer`, and
+`GcHeap::alloc_array_buffer_young` registers a finalizer that calls `ArrayBuffer::finalize_in(..)`.
+Embeddings that allocate `ArrayBuffer` headers differently should similarly call `finalize_in(..)`
+from their GC finalizer path.
 
 If finalization runs while the backing store is pinned (in-flight I/O), freeing is **deferred**:
 the `ArrayBuffer` header drops its handle and becomes detached, but the backing store allocation
