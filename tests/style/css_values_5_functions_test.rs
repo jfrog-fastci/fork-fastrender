@@ -4,7 +4,7 @@ use fastrender::style::cascade::apply_styles_with_media_target_and_imports;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::{CalcSizeBasis, IntrinsicSizeKeyword};
+use fastrender::style::types::{BackgroundImage, CalcSizeBasis, IntrinsicSizeKeyword};
 use fastrender::style::values::Length;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -92,6 +92,30 @@ fn typed_attr_integer_and_color() {
   let t1 = find_by_id(&styled, "t1").expect("t1");
   assert_eq!(t1.styles.z_index, Some(10));
   assert_eq!(t1.styles.color, Rgba::new(1, 2, 3, 1.0));
+}
+
+#[test]
+fn typed_attr_url() {
+  let css = r#"
+    #t1 { background-image: attr(data-img url, none); }
+    #t2 { background-image: attr(data-img url, none); }
+  "#;
+  let html = r#"
+    <div id="t1" data-img="data:text/plain,foo'bar&quot;baz\qux"></div>
+    <div id="t2"></div>
+  "#;
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = styled_for(css, html, &media);
+  let t1 = find_by_id(&styled, "t1").expect("t1");
+  let t2 = find_by_id(&styled, "t2").expect("t2");
+
+  assert_eq!(
+    t1.styles.background_images.as_ref(),
+    &[Some(BackgroundImage::Url(
+      "data:text/plain,foo'bar\"baz\\qux".to_string()
+    ))],
+  );
+  assert_eq!(t2.styles.background_images.as_ref(), &[None]);
 }
 
 #[test]

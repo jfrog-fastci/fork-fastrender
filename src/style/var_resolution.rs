@@ -1428,9 +1428,37 @@ fn resolve_typed_attr_value(attr_value: &str, ty: &str) -> Option<String> {
       .ok()
       .map(|v| v.to_string()),
     "color" => Color::parse(attr_value).ok().map(|_| attr_value.to_string()),
-    // url is intentionally not implemented yet (see docs note). Treat it as unsupported so the
-    // fallback is used if present.
-    "url" => None,
+    "url" => {
+      // Typed `attr(... url)` resolves the element attribute as a `<url>` token.
+      //
+      // Treat the attribute value as the raw URL string (i.e. authors do *not* write `url(...)` in
+      // the attribute) and serialize it as a single `url(...)` token. Escape backslashes and the
+      // quote delimiter so the produced token is always valid CSS and cannot inject additional
+      // tokens into the property value stream.
+      //
+      // Note: our property-value parser unescapes CSS escapes inside `url(...)`, so the stored URL
+      // string matches the original attribute value.
+      let quote = if !attr_value.contains('\'') { '\'' } else { '"' };
+      let mut out = String::with_capacity(attr_value.len() + 6);
+      out.push_str("url(");
+      out.push(quote);
+      for ch in attr_value.chars() {
+        match ch {
+          '\\' => out.push_str("\\\\"),
+          '\n' => out.push_str("\\A "),
+          '\r' => out.push_str("\\D "),
+          '\u{000C}' => out.push_str("\\C "),
+          ch if ch == quote => {
+            out.push('\\');
+            out.push(ch);
+          }
+          other => out.push(other),
+        }
+      }
+      out.push(quote);
+      out.push(')');
+      Some(out)
+    }
     unit => {
       // Unit-form typed attr: `attr(data-w px, 10px)` (treat attribute value as a number in the
       // given unit).
