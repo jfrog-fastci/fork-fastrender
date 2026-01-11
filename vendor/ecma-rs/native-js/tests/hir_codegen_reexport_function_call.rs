@@ -86,6 +86,7 @@ export function main(): number {
 
   let exe_path = td.path().join("out");
   let status = Command::new(clang)
+    .arg("-Wno-override-module")
     .arg("-x")
     .arg("ir")
     .arg(&ll_path)
