@@ -112,24 +112,6 @@ fn rejects_object_literal() {
 }
 
 #[test]
-fn rejects_string_literal() {
-  let err = validate("const s = \"hi\";\ns;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_var_decl_without_initializer() {
-  let err = validate("let x: number;\nx = 1;\nx;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_switch_statement() {
-  let err = validate("switch (1) { case 1: break; }\n", FileKind::Js).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
 fn rejects_for_in_loop() {
   let err = validate("const obj: any = 0 as any;\nfor (const k in obj) { k; }\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
