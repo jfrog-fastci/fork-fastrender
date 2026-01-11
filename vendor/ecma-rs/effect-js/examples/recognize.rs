@@ -7,6 +7,8 @@ use effect_js::recognize_patterns_best_effort_untyped;
 
 #[cfg(feature = "typed")]
 use effect_js::{recognize_patterns_typed, typed::TypedProgram};
+#[cfg(not(feature = "typed"))]
+use effect_js::recognize_patterns_best_effort_untyped;
 #[cfg(feature = "typed")]
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
