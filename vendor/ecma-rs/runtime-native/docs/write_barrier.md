@@ -16,9 +16,10 @@ It also records proposed policy defaults for **per-object card tables** intended
 
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
-  - On an old→young store it sets the `REMEMBERED` bit in the object header and (idempotently) enqueues the base object into a process-global remembered set (used by future minor GC wiring).
-  - For objects with per-object card tables, it marks the relevant card dirty.
-  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
+  - On an old→young store it sets the `REMEMBERED` bit in the object header.
+    - The exported barrier is **`NoGC`** and must not allocate; it does **not** currently enqueue into a process-global remembered set.
+  - For objects with per-object card tables installed, it marks the relevant card dirty.
+  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
 - The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
 
@@ -203,7 +204,7 @@ In Rust, this is modeled by the [`RememberedSet`](../src/gc/roots.rs) trait; tes
 
 ### Exported barrier status (important)
 
-The exported `rt_write_barrier` sets the header bit and enqueues `obj` into a process-global remembered set. Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
+The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and, when a per-object card table is present, marks the corresponding card. It does **not** enqueue `obj` into any process-global remembered set (the barrier is `NoGC` and must not allocate). Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
 
 ### Minor GC behavior (current `GcHeap`)
 

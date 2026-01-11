@@ -75,9 +75,8 @@ fn write_barrier_range_marks_all_covered_cards_and_remembers_object() {
   assert_eq!(cards.word(0) & 0b111, 0b111);
   assert_eq!(cards.word(0) & (1u64 << 3), 0);
 
-  // Must be remembered (header flag + remembered set membership).
+  // Must be remembered (header flag).
   assert!(header.is_remembered());
-  assert!(runtime_native::remembered_set_contains(obj));
 }
 
 #[test]

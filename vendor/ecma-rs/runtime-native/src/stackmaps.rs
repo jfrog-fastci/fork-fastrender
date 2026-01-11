@@ -252,8 +252,9 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   let mut off: usize = 0;
 
   while off < bytes.len() {
-    // Linkers may insert 0-filled alignment padding between concatenated input
-    // sections. Skip that padding to find the next `version=3` blob header.
+    // Linkers may insert 0-filled padding between concatenated input sections to
+    // satisfy alignment constraints. Skip that padding to find the next
+    // `version=3` blob header.
     //
     // Note: we only skip *zero* bytes here. If the remaining tail is shorter
     // than a StackMap v3 header (16 bytes), it cannot start another blob; ignore

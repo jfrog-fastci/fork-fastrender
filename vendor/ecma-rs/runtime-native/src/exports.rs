@@ -15,8 +15,6 @@ use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
 use crate::gc::ObjHeader;
-use crate::gc::RememberedSet;
-use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
@@ -342,36 +340,25 @@ pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end:
   }
 }
 
-static REMEMBERED_SET: Lazy<Mutex<SimpleRememberedSet>> = Lazy::new(|| Mutex::new(SimpleRememberedSet::new()));
-
-/// Reset write barrier state (remembered set) for tests.
+/// Reset write barrier state for tests.
+///
+/// This intentionally resets only process-global configuration used by the
+/// exported barrier (currently: the active nursery range). Per-object metadata
+/// (e.g. the `REMEMBERED` header bit) is owned by the objects themselves.
 #[doc(hidden)]
 pub fn clear_write_barrier_state_for_tests() {
-  REMEMBERED_SET.lock().clear();
-}
-
-/// Returns true if `obj` has been added to the global remembered set.
-///
-/// Intended for tests and debugging only.
-#[doc(hidden)]
-pub fn remembered_set_contains(obj: *mut u8) -> bool {
-  REMEMBERED_SET.lock().contains(obj)
+  rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
 }
 
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());
-  // Avoid taking the mutex in the common case where the object was already
-  // recorded by a previous barrier hit.
-  // Keep the header reference's lifetime short: `remember` will create a `&mut ObjHeader` from the
-  // same raw pointer.
-  let already_remembered = (&*(obj as *const ObjHeader)).is_remembered();
-  if already_remembered {
-    return;
-  }
-  REMEMBERED_SET.lock().remember(obj);
+  // `rt_write_barrier` is classified as `NoGC` by the ABI contract, so it must
+  // not allocate. We only set the per-object header bit (idempotently); the GC
+  // can later discover remembered objects and/or consult per-object card tables.
+  let header = &*(obj as *const ObjHeader);
+  header.set_remembered_idempotent();
 }
-
 /// Write barrier for GC.
 ///
 /// Records old→young pointer stores in the remembered set.
@@ -410,7 +397,10 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
     return;
   }
 
-  // Old → young store. Record the base object so minor GC can rescan it.
+  // Old → young store. Mark the base object as remembered.
+  //
+  // Note: `rt_write_barrier` is `NoGC` (must not allocate or safepoint), so we
+  // cannot enqueue into a growable remembered set here.
   remember_old_object(obj);
 
   // If this object has a per-object card table, mark the card for the written slot.
@@ -450,8 +440,8 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
     return;
   }
 
-  // Old-object bulk write. Remember the base object (idempotently) so minor GC
-  // can consult its dirty cards and/or rescan it.
+  // Old-object bulk write. Mark the base object as remembered (idempotently) so
+  // minor GC can consult its dirty cards and/or rescan it.
   remember_old_object(obj);
 
   let header = &*(obj as *const ObjHeader);
@@ -470,7 +460,7 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
   if header.type_desc.is_null() {
     std::process::abort();
   }
-  let obj_size = (*header.type_desc).size;
+  let obj_size = crate::gc::obj_size(obj);
   if start_offset >= obj_size {
     return;
   }
@@ -488,11 +478,8 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
 #[cfg(test)]
 mod write_barrier_tests {
   use super::*;
-  use crate::gc::roots::RememberedSet;
-  use once_cell::sync::Lazy;
-  use parking_lot::Mutex;
 
-  // These tests mutate global write-barrier state (`YOUNG_SPACE` + `REMEMBERED_SET`), so they must
+  // These tests mutate global write-barrier state (`YOUNG_SPACE`), so they must
   // not run concurrently under the default parallel Rust test runner.
   static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
   fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
@@ -507,7 +494,7 @@ mod write_barrier_tests {
   }
 
   fn clear_for_test() {
-    REMEMBERED_SET.lock().clear();
+    // Clear young range so tests don't leak configuration between them.
     rt_gc_set_young_range(std::ptr::null_mut(), std::ptr::null_mut());
   }
 
@@ -537,7 +524,6 @@ mod write_barrier_tests {
       }
 
       assert!(old.header.is_remembered());
-      assert!(REMEMBERED_SET.lock().contains(obj_ptr));
 
       clear_for_test();
     });
@@ -578,7 +564,6 @@ mod write_barrier_tests {
       }
 
       assert!(old.header.is_remembered());
-      assert!(REMEMBERED_SET.lock().contains(obj_ptr));
 
       clear_for_test();
     });
