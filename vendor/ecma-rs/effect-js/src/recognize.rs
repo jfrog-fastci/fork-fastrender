@@ -708,6 +708,24 @@ pub fn recognize_patterns_best_effort_untyped(
         default: *alternate,
       });
     }
+
+    // Best-effort MapGetOrDefault: `m.get(k) ?? default` / `m.get(k) || default`.
+    if let ExprKind::Binary { op, left, right } = &expr.kind {
+      if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
+        continue;
+      }
+      let Some((map, get_prop, key)) = parse_simple_method_call_untyped(lowered, body, *left) else {
+        continue;
+      };
+      if lowered.names.resolve(get_prop) != Some("get") {
+        continue;
+      }
+      patterns.push(RecognizedPattern::MapGetOrDefault {
+        map,
+        key,
+        default: *right,
+      });
+    }
   }
 
   sort_patterns_by_span(body_ref, &mut patterns);
