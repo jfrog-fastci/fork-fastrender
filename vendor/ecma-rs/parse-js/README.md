@@ -7,7 +7,8 @@ git submodule.
 For a small, copy/paste-friendly parsing example (no filesystem I/O):
 
 ```bash
-cargo run -p parse-js --example parse_js_basic
+# From the workspace root (`vendor/ecma-rs/`):
+bash scripts/cargo_agent.sh run -p parse-js --example parse_js_basic
 ```
 
 To run the conformance suite locally you must first initialize the submodule:
@@ -20,7 +21,8 @@ The parser conformance runner lives in `parse-js` behind the
 `conformance-runner` feature:
 
 ```bash
-cargo run -p parse-js --features conformance-runner --bin conformance_runner
+# From the workspace root (`vendor/ecma-rs/`):
+bash scripts/cargo_agent.sh run -p parse-js --features conformance-runner --bin conformance_runner
 ```
 
 The runner enforces a per-test timeout (default 10 seconds) and uses cooperative

@@ -3,6 +3,11 @@
 Utilities for running the TypeScript conformance suites and differential tests
 against `tsc`.
 
+> Monorepo note: In FastRender, always run cargo via the resource-limited wrapper:
+>
+> - From `vendor/ecma-rs/`: `bash scripts/cargo_agent.sh <subcommand> …`
+> - From this directory (`typecheck-ts-harness/`): `bash ../scripts/cargo_agent.sh <subcommand> …`
+
 ## Quick start
 
 ```

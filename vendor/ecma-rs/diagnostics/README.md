@@ -71,7 +71,8 @@ with code 0.
 ## Runnable example
 
 ```bash
-cargo run -p diagnostics --example diagnostics_basic
+# From the workspace root (`vendor/ecma-rs/`):
+bash scripts/cargo_agent.sh run -p diagnostics --example diagnostics_basic
 ```
 
 This prints a rendered diagnostic using [`SimpleFiles`](./src/files.rs) as the
