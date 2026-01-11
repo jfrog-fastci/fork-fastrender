@@ -17,8 +17,8 @@
 // This must be written in assembly so we can capture the caller's FP/LR/SP
 // before a Rust prologue can clobber them.
 
-.globl rt_gc_safepoint
-rt_gc_safepoint:
+.globl runtime_native_gc_safepoint_asm
+runtime_native_gc_safepoint_asm:
   // Fast path: if (RT_GC_EPOCH & 1) == 0 return;
   // Load through the GOT so this remains PIC-friendly when runtime-native is
   // built as a `cdylib`.
@@ -95,4 +95,3 @@ rt_gc_safepoint:
 
 .Lrt_gc_safepoint_ret:
   ret
-

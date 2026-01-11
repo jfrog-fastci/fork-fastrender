@@ -1050,17 +1050,6 @@ mod tests {
       crate::shape_table::rt_register_shape_table;
     let _thread_register: extern "C" fn(abi::RtThreadKind) -> u64 = rt_thread_register;
     let _thread_unregister: extern "C" fn() = rt_thread_unregister;
-    // On AArch64, the exported `rt_gc_safepoint` symbol is implemented in assembly so it can spill
-    // registers before any Rust code runs. The Rust wrapper in `safepoint::rt_gc_safepoint` uses the
-    // Rust ABI, so declare the C ABI symbol explicitly here when checking exports.
-    #[cfg(target_arch = "aarch64")]
-    extern "C" {
-      #[link_name = "rt_gc_safepoint"]
-      fn rt_gc_safepoint_abi();
-    }
-    #[cfg(target_arch = "aarch64")]
-    let _safepoint: unsafe extern "C" fn() = rt_gc_safepoint_abi;
-    #[cfg(not(target_arch = "aarch64"))]
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
     let _keep_alive: unsafe extern "C" fn(*mut u8) = rt_keep_alive_gc_ref;

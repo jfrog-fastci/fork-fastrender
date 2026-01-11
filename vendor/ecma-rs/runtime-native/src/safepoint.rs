@@ -154,15 +154,10 @@ pub extern "C" fn rt_gc_safepoint() {
 // (`arch/aarch64/rt_gc_safepoint.S`) so we can spill the register file before
 // running any Rust code.
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[unsafe(naked)]
+#[no_mangle]
 pub extern "C" fn rt_gc_safepoint() {
-  extern "C" {
-    #[link_name = "rt_gc_safepoint"]
-    fn rt_gc_safepoint_asm();
-  }
-
-  // SAFETY: `rt_gc_safepoint_asm` is a runtime entrypoint that follows the C ABI.
-  unsafe { rt_gc_safepoint_asm() }
+  core::arch::naked_asm!("b runtime_native_gc_safepoint_asm");
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]

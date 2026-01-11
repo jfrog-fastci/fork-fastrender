@@ -331,7 +331,7 @@ pub fn rt_gc_safepoint() {
 #[inline(always)]
 pub fn rt_gc_safepoint() {
   extern "C" {
-    #[link_name = "rt_gc_safepoint"]
+    #[link_name = "runtime_native_gc_safepoint_asm"]
     fn rt_gc_safepoint_asm();
   }
 
