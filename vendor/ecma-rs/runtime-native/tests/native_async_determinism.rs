@@ -64,7 +64,7 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
   // Standalone awaited promise header (pending initially).
   let awaited = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
@@ -163,7 +163,7 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
 
   let awaited = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
@@ -212,7 +212,7 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
 
   let awaited = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
