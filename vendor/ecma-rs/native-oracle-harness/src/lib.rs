@@ -24,7 +24,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use emit_js::{EmitOptions, Emitter};
+use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{Dialect, ParseOptions, SourceType};
 use vm_js::{format_termination, Heap, HeapLimits, JsRuntime, MicrotaskQueue, PromiseState, SourceText, Value, Vm, VmError, VmOptions};
 
@@ -32,7 +32,7 @@ use vm_js::{format_termination, Heap, HeapLimits, JsRuntime, MicrotaskQueue, Pro
 pub enum TsToJsError {
   Parse(parse_js::error::SyntaxError),
   Erase(Vec<diagnostics::Diagnostic>),
-  Emit(emit_js::JsEmitError),
+  Emit(diagnostics::Diagnostic),
   #[cfg(feature = "optimize-js-fallback")]
   Optimize(Vec<optimize_js::Diagnostic>),
   #[cfg(feature = "optimize-js-fallback")]
@@ -48,7 +48,11 @@ impl std::fmt::Display for TsToJsError {
         "ts-erase TS→JS erasure failed with {} diagnostic(s)",
         diagnostics.len()
       ),
-      TsToJsError::Emit(err) => write!(f, "emit-js TS→JS erasure failed: {err:?}"),
+      TsToJsError::Emit(diag) => write!(
+        f,
+        "emit-js TS→JS emission failed ({}): {}",
+        diag.code, diag.message
+      ),
       #[cfg(feature = "optimize-js-fallback")]
       TsToJsError::Optimize(diagnostics) => write!(
         f,
@@ -75,6 +79,7 @@ impl std::error::Error for TsToJsError {}
 ///   enabled, it falls back to `optimize-js`'s decompiler, which supports a
 ///   wider range of syntax (but is significantly heavier).
 pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
+  let file = diagnostics::FileId(0);
   let mut ast = parse_js::parse_with_options(
     source,
     ParseOptions {
@@ -84,14 +89,13 @@ pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
   )
   .map_err(TsToJsError::Parse)?;
 
-  if let Err(diags) = ts_erase::erase_types_strict_native(diagnostics::FileId(0), SourceType::Script, &mut ast) {
+  if let Err(diags) = ts_erase::erase_types_strict_native(file, SourceType::Script, &mut ast) {
     return erase_with_optimize_js_fallback(source, TsToJsError::Erase(diags));
   }
 
-  let mut emitter = Emitter::new(EmitOptions::minified());
-  match emit_js::emit_js_top_level(&mut emitter, ast.stx.as_ref()) {
-    Ok(()) => Ok(String::from_utf8(emitter.into_bytes()).expect("emitted JS is UTF-8")),
-    Err(err) => erase_with_optimize_js_fallback(source, TsToJsError::Emit(err)),
+  match emit_top_level_diagnostic(file, &ast, EmitOptions::minified()) {
+    Ok(output) => Ok(output),
+    Err(diag) => erase_with_optimize_js_fallback(source, TsToJsError::Emit(diag)),
   }
 }
 
