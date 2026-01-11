@@ -5626,10 +5626,6 @@ impl DisplayListRenderer {
     //
     // Keep this conservative: it intentionally opts out when fractional positioning/transform/clip
     // would require resampling or partial coverage at the edges.
-    let visible_rect_is_pixel_aligned = (visible_rect.x() - dest_x as f32).abs() <= 1e-6
-      && (visible_rect.y() - dest_y as f32).abs() <= 1e-6
-      && (visible_rect.width() - width as f32).abs() <= 1e-6
-      && (visible_rect.height() - height as f32).abs() <= 1e-6;
     let canvas_transform = self.canvas.transform();
     let translation_only = (canvas_transform.sx - 1.0).abs() <= 1e-6
       && (canvas_transform.sy - 1.0).abs() <= 1e-6
@@ -5645,40 +5641,68 @@ impl DisplayListRenderer {
       && tx <= i32::MAX as f32
       && ty >= i32::MIN as f32
       && ty <= i32::MAX as f32;
-    let dest_x_dev = dest_x.saturating_add(tx as i32);
-    let dest_y_dev = dest_y.saturating_add(ty as i32);
-    if visible_rect_is_pixel_aligned
-      && translation_only
+    if translation_only
       && translation_integral
       && self.canvas.clip_mask().is_none()
       && self.canvas.blend_mode() == SkiaBlendMode::SourceOver
     {
-      self
-        .canvas
-        .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
-          paint_linear_gradient_src_over(
-            pixmap,
-            dest_x_dev,
-            dest_y_dev,
-            width,
-            height,
-            start,
-            end,
-            spread,
-            &stops,
-            &self.gradient_cache,
-            gradient_bucket(original_width.max(original_height)),
-            dither_phase,
-            None,
-          )
-          .map_err(Error::Render)?;
-          Ok(())
-        })?;
-      if let Some(start) = timer {
-        self.record_gradient_usage((width * height) as u64, start);
+      let x0 = (visible_rect.min_x() - 0.5).ceil();
+      let y0 = (visible_rect.min_y() - 0.5).ceil();
+      let x1 = (visible_rect.max_x() - 0.5).ceil();
+      let y1 = (visible_rect.max_y() - 0.5).ceil();
+      if x0.is_finite()
+        && y0.is_finite()
+        && x1.is_finite()
+        && y1.is_finite()
+        && x1 > x0
+        && y1 > y0
+      {
+        let x0_i64 = x0 as i64;
+        let y0_i64 = y0 as i64;
+        let x1_i64 = x1 as i64;
+        let y1_i64 = y1 as i64;
+        if let (Ok(x0_i32), Ok(y0_i32)) = (i32::try_from(x0_i64), i32::try_from(y0_i64)) {
+          let width_i64 = x1_i64 - x0_i64;
+          let height_i64 = y1_i64 - y0_i64;
+          if let (Ok(width_u32), Ok(height_u32)) = (u32::try_from(width_i64), u32::try_from(height_i64))
+          {
+            // Shift gradient geometry so fractional rect origins line up with integer pixel bounds.
+            let shift_x = visible_rect.x() - x0;
+            let shift_y = visible_rect.y() - y0;
+            let start = Point::new(start.x + shift_x, start.y + shift_y);
+            let end = Point::new(end.x + shift_x, end.y + shift_y);
+            let dest_x_dev = x0_i32.saturating_add(tx as i32);
+            let dest_y_dev = y0_i32.saturating_add(ty as i32);
+            let dither_phase = (((y0_i32 & 3) as u8) << 2) | ((x0_i32 & 3) as u8);
+            self
+              .canvas
+              .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
+                paint_linear_gradient_src_over(
+                  pixmap,
+                  dest_x_dev,
+                  dest_y_dev,
+                  width_u32,
+                  height_u32,
+                  start,
+                  end,
+                  spread,
+                  &stops,
+                  &self.gradient_cache,
+                  gradient_bucket(original_width.max(original_height)),
+                  dither_phase,
+                  None,
+                )
+                .map_err(Error::Render)?;
+                Ok(())
+              })?;
+            if let Some(start) = timer {
+              self.record_gradient_usage((width_u32 * height_u32) as u64, start);
+            }
+            self.record_background_paint(background_timer);
+            return Ok(());
+          }
+        }
       }
-      self.record_background_paint(background_timer);
-      return Ok(());
     }
     let Some(pix) = rasterize_linear_gradient_cached(
       &self.gradient_pixmap_cache,
@@ -6078,19 +6102,16 @@ impl DisplayListRenderer {
           }
         }
 
-        let paint = PixmapPaint {
-          opacity,
-          blend_mode: self.canvas.blend_mode(),
-          quality: tiny_skia::FilterQuality::Nearest,
-        };
+        let blend_mode = self.canvas.blend_mode();
+        let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.draw_pixmap(
-            x0_u32 as i32,
-            y0_u32 as i32,
-            tmp.as_ref(),
-            &paint,
-            Transform::identity(),
-            clip_mask.as_deref(),
+          composite_layer_into_pixmap(
+            pixmap,
+            &tmp,
+            opacity,
+            blend_mode,
+            (x0_u32 as i32, y0_u32 as i32),
+            clip,
           );
         });
 
@@ -6575,19 +6596,16 @@ impl DisplayListRenderer {
                   }
                 }
 
-                let paint = PixmapPaint {
-                  opacity,
-                  blend_mode: self.canvas.blend_mode(),
-                  quality: tiny_skia::FilterQuality::Nearest,
-                };
+                let blend_mode = self.canvas.blend_mode();
+                let clip = clip_mask.as_deref();
                 self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                  pixmap.draw_pixmap(
-                    x0_u32 as i32,
-                    y0_u32 as i32,
-                    tmp.as_ref(),
-                    &paint,
-                    Transform::identity(),
-                    clip_mask.as_deref(),
+                  composite_layer_into_pixmap(
+                    pixmap,
+                    &tmp,
+                    opacity,
+                    blend_mode,
+                    (x0_u32 as i32, y0_u32 as i32),
+                    clip,
                   );
                 });
 
@@ -6707,19 +6725,16 @@ impl DisplayListRenderer {
             }
           }
 
-          let paint = PixmapPaint {
-            opacity,
-            blend_mode: self.canvas.blend_mode(),
-            quality: tiny_skia::FilterQuality::Nearest,
-          };
+          let blend_mode = self.canvas.blend_mode();
+          let clip = clip_mask.as_deref();
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-            pixmap.draw_pixmap(
-              x0_u32 as i32,
-              y0_u32 as i32,
-              tmp.as_ref(),
-              &paint,
-              Transform::identity(),
-              clip_mask.as_deref(),
+            composite_layer_into_pixmap(
+              pixmap,
+              &tmp,
+              opacity,
+              blend_mode,
+              (x0_u32 as i32, y0_u32 as i32),
+              clip,
             );
           });
 
@@ -6815,19 +6830,16 @@ impl DisplayListRenderer {
           }
         }
 
-        let paint = PixmapPaint {
-          opacity,
-          blend_mode: self.canvas.blend_mode(),
-          quality: tiny_skia::FilterQuality::Nearest,
-        };
+        let blend_mode = self.canvas.blend_mode();
+        let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.draw_pixmap(
-            x0_u32 as i32,
-            y0_u32 as i32,
-            tmp.as_ref(),
-            &paint,
-            Transform::identity(),
-            clip_mask.as_deref(),
+          composite_layer_into_pixmap(
+            pixmap,
+            &tmp,
+            opacity,
+            blend_mode,
+            (x0_u32 as i32, y0_u32 as i32),
+            clip,
           );
         });
 
@@ -16959,19 +16971,16 @@ impl DisplayListRenderer {
           }
         }
 
-        let paint = PixmapPaint {
-          opacity,
-          blend_mode: self.canvas.blend_mode(),
-          quality: item.filter_quality.into(),
-        };
+        let blend_mode = self.canvas.blend_mode();
+        let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.draw_pixmap(
-            x0_u32 as i32,
-            y0_u32 as i32,
-            tmp.as_ref(),
-            &paint,
-            Transform::identity(),
-            clip_mask.as_deref(),
+          composite_layer_into_pixmap(
+            pixmap,
+            &tmp,
+            opacity,
+            blend_mode,
+            (x0_u32 as i32, y0_u32 as i32),
+            clip,
           );
         });
 
@@ -17487,6 +17496,28 @@ fn read_image_pixel_premul(
   }
 }
 
+#[inline]
+fn read_image_pixel_premul_u16(
+  src_pixels: &[u8],
+  idx: usize,
+  premultiplied: bool,
+) -> (u16, u16, u16, u16) {
+  let r = src_pixels[idx] as u16;
+  let g = src_pixels[idx + 1] as u16;
+  let b = src_pixels[idx + 2] as u16;
+  let a = src_pixels[idx + 3] as u16;
+  if premultiplied {
+    (r, g, b, a)
+  } else {
+    (
+      div_255(r * a),
+      div_255(g * a),
+      div_255(b * a),
+      a,
+    )
+  }
+}
+
 fn mipmap_lod_for_scale(scale_x: f32, scale_y: f32) -> Option<(u32, f32)> {
   let max_scale = scale_x.max(scale_y);
   if !max_scale.is_finite() || max_scale <= 1.0 {
@@ -17496,6 +17527,7 @@ fn mipmap_lod_for_scale(scale_x: f32, scale_y: f32) -> Option<(u32, f32)> {
   if !lod.is_finite() || lod < 0.0 {
     lod = 0.0;
   }
+
   let mut base = lod.floor();
   let frac = lod - base;
 
@@ -17736,7 +17768,7 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   struct AxisSample {
     i0: u32,
     i1: u32,
-    t: f32,
+    w: u16,
   }
 
   // Skia uses linear filtering with mipmaps when downscaling raster images. This behaves closer to
@@ -17794,36 +17826,40 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   };
 
   let build_axis = |out_len: u32,
-                    out_origin: f32,
-                    dest_origin: f32,
-                    dest_size: f32,
-                    src_len: u32|
+                     out_origin: f32,
+                     dest_origin: f32,
+                     dest_size: f32,
+                     src_len: u32|
    -> Option<Vec<AxisSample>> {
     if out_len == 0 || src_len == 0 || dest_size <= 0.0 || !dest_size.is_finite() {
       return None;
     }
-    let scale = src_len as f32 / dest_size;
-    if !scale.is_finite() {
+    let scale = src_len as f64 / dest_size as f64;
+    if !scale.is_finite() || !out_origin.is_finite() || !dest_origin.is_finite() {
       return None;
     }
-    let max = src_len as f32 - 1.0;
+    let max = src_len as f64 - 1.0;
     let mut samples = Vec::new();
     if samples.try_reserve_exact(out_len as usize).is_err() {
       return None;
     }
     for i in 0..out_len {
-      let device = out_origin + i as f32 + 0.5;
-      let mut s = (device - dest_origin) * scale - 0.5;
-      if !s.is_finite() {
+      let device = out_origin as f64 + i as f64 + 0.5;
+      let mut s = (device - dest_origin as f64) * scale - 0.5;
+      if !s.is_finite() || !max.is_finite() {
         return None;
       }
       s = s.clamp(0.0, max);
-      let i0 = s.floor() as u32;
+      // Use a 16.16 fixed-point coordinate (and keep the upper 8 bits of the fractional part) so
+      // the bilinear weights match Skia's truncating integer sampling.
+      let s_fixed = (s * 65536.0).floor() as u64;
+      let i0 = (s_fixed >> 16) as u32;
       let i1 = (i0 + 1).min(src_len - 1);
+      let w = ((s_fixed >> 8) & 0xFF) as u16;
       samples.push(AxisSample {
         i0,
         i1,
-        t: s - i0 as f32,
+        w,
       });
     }
     Some(samples)
@@ -17858,23 +17894,29 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
     (0, 0, &[][..], true, None, None)
   };
 
-  let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+  #[inline]
+  fn lerp_u8_trunc(a: u16, b: u16, w: u16) -> u16 {
+    // `w` is in 0..=255, representing w/256.
+    let inv = 256u32 - w as u32;
+    let out = u32::from(a) * inv + u32::from(b) * u32::from(w);
+    (out >> 8) as u16
+  }
   let w0 = 1.0 - blend_t;
   let w1 = blend_t;
 
   let mut pixel_counter = 0usize;
   for (y, ysamp_a) in ys_a.iter().enumerate() {
     let y_u = y as u32;
-    let (sy0_a, sy1_a, fy_a) = (ysamp_a.i0, ysamp_a.i1, ysamp_a.t);
+    let (sy0_a, sy1_a, wy_a) = (ysamp_a.i0, ysamp_a.i1, ysamp_a.w);
     let row0_a = sy0_a as usize * w_a as usize;
     let row1_a = sy1_a as usize * w_a as usize;
 
-    let (row0_b, row1_b, fy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref())
+    let (row0_b, row1_b, wy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref())
     {
       let ysamp_b = &ys_b[y];
       let row0_b = ysamp_b.i0 as usize * w_b as usize;
       let row1_b = ysamp_b.i1 as usize * w_b as usize;
-      (Some(row0_b), Some(row1_b), Some(ysamp_b.t))
+      (Some(row0_b), Some(row1_b), Some(ysamp_b.w))
     } else {
       (None, None, None)
     };
@@ -17885,63 +17927,68 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       }
       pixel_counter = pixel_counter.wrapping_add(1);
 
-      let (sx0_a, sx1_a, fx_a) = (xsamp_a.i0, xsamp_a.i1, xsamp_a.t);
+      let (sx0_a, sx1_a, wx_a) = (xsamp_a.i0, xsamp_a.i1, xsamp_a.w);
 
       let idx00_a = (row0_a + sx0_a as usize) * 4;
       let idx10_a = (row0_a + sx1_a as usize) * 4;
       let idx01_a = (row1_a + sx0_a as usize) * 4;
       let idx11_a = (row1_a + sx1_a as usize) * 4;
 
-      let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_a, idx00_a, premul_a);
-      let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_a, idx10_a, premul_a);
-      let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_a, idx01_a, premul_a);
-      let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_a, idx11_a, premul_a);
+      let (r00, g00, b00, a00) = read_image_pixel_premul_u16(pixels_a, idx00_a, premul_a);
+      let (r10, g10, b10, a10) = read_image_pixel_premul_u16(pixels_a, idx10_a, premul_a);
+      let (r01, g01, b01, a01) = read_image_pixel_premul_u16(pixels_a, idx01_a, premul_a);
+      let (r11, g11, b11, a11) = read_image_pixel_premul_u16(pixels_a, idx11_a, premul_a);
 
-      let top_r_a = lerp(r00, r10, fx_a);
-      let top_g_a = lerp(g00, g10, fx_a);
-      let top_b_a = lerp(b00, b10, fx_a);
-      let top_a_a = lerp(a00, a10, fx_a);
+      let top_r_a = lerp_u8_trunc(r00, r10, wx_a);
+      let top_g_a = lerp_u8_trunc(g00, g10, wx_a);
+      let top_b_a = lerp_u8_trunc(b00, b10, wx_a);
+      let top_a_a = lerp_u8_trunc(a00, a10, wx_a);
 
-      let bot_r_a = lerp(r01, r11, fx_a);
-      let bot_g_a = lerp(g01, g11, fx_a);
-      let bot_b_a = lerp(b01, b11, fx_a);
-      let bot_a_a = lerp(a01, a11, fx_a);
+      let bot_r_a = lerp_u8_trunc(r01, r11, wx_a);
+      let bot_g_a = lerp_u8_trunc(g01, g11, wx_a);
+      let bot_b_a = lerp_u8_trunc(b01, b11, wx_a);
+      let bot_a_a = lerp_u8_trunc(a01, a11, wx_a);
 
-      let mut r = lerp(top_r_a, bot_r_a, fy_a);
-      let mut g = lerp(top_g_a, bot_g_a, fy_a);
-      let mut b = lerp(top_b_a, bot_b_a, fy_a);
-      let mut a = lerp(top_a_a, bot_a_a, fy_a);
+      let r_a = lerp_u8_trunc(top_r_a, bot_r_a, wy_a);
+      let g_a = lerp_u8_trunc(top_g_a, bot_g_a, wy_a);
+      let b_a = lerp_u8_trunc(top_b_a, bot_b_a, wy_a);
+      let a_a = lerp_u8_trunc(top_a_a, bot_a_a, wy_a);
 
-      if let (Some(xs_b), Some(row0_b), Some(row1_b), Some(fy_b)) =
-        (xs_b.as_ref(), row0_b, row1_b, fy_b)
+      let mut r = r_a as f32;
+      let mut g = g_a as f32;
+      let mut b = b_a as f32;
+      let mut a = a_a as f32;
+
+      if let (Some(xs_b), Some(row0_b), Some(row1_b), Some(wy_b)) =
+        (xs_b.as_ref(), row0_b, row1_b, wy_b)
       {
         let xsamp_b = &xs_b[x];
-        let (sx0_b, sx1_b, fx_b) = (xsamp_b.i0, xsamp_b.i1, xsamp_b.t);
+        let (sx0_b, sx1_b, wx_b) = (xsamp_b.i0, xsamp_b.i1, xsamp_b.w);
 
         let idx00_b = (row0_b + sx0_b as usize) * 4;
         let idx10_b = (row0_b + sx1_b as usize) * 4;
         let idx01_b = (row1_b + sx0_b as usize) * 4;
         let idx11_b = (row1_b + sx1_b as usize) * 4;
 
-        let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_b, idx00_b, premul_b);
-        let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_b, idx10_b, premul_b);
-        let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_b, idx01_b, premul_b);
-        let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_b, idx11_b, premul_b);
+        let (r00, g00, b00, a00) = read_image_pixel_premul_u16(pixels_b, idx00_b, premul_b);
+        let (r10, g10, b10, a10) = read_image_pixel_premul_u16(pixels_b, idx10_b, premul_b);
+        let (r01, g01, b01, a01) = read_image_pixel_premul_u16(pixels_b, idx01_b, premul_b);
+        let (r11, g11, b11, a11) = read_image_pixel_premul_u16(pixels_b, idx11_b, premul_b);
 
-        let top_r_b = lerp(r00, r10, fx_b);
-        let top_g_b = lerp(g00, g10, fx_b);
-        let top_b_b = lerp(b00, b10, fx_b);
-        let top_a_b = lerp(a00, a10, fx_b);
+        let top_r_b = lerp_u8_trunc(r00, r10, wx_b);
+        let top_g_b = lerp_u8_trunc(g00, g10, wx_b);
+        let top_b_b = lerp_u8_trunc(b00, b10, wx_b);
+        let top_a_b = lerp_u8_trunc(a00, a10, wx_b);
 
-        let bot_r_b = lerp(r01, r11, fx_b);
-        let bot_g_b = lerp(g01, g11, fx_b);
-        let bot_b_b = lerp(b01, b11, fx_b);
-        let bot_a_b = lerp(a01, a11, fx_b);
+        let bot_r_b = lerp_u8_trunc(r01, r11, wx_b);
+        let bot_g_b = lerp_u8_trunc(g01, g11, wx_b);
+        let bot_b_b = lerp_u8_trunc(b01, b11, wx_b);
+        let bot_a_b = lerp_u8_trunc(a01, a11, wx_b);
 
-        let r_b = lerp(top_r_b, bot_r_b, fy_b);
-        let g_b = lerp(top_g_b, bot_g_b, fy_b);
-        let b_b = lerp(top_b_b, bot_b_b, fy_b);
-        let a_b = lerp(top_a_b, bot_a_b, fy_b);
+        let r_b = lerp_u8_trunc(top_r_b, bot_r_b, wy_b) as f32;
+        let g_b = lerp_u8_trunc(top_g_b, bot_g_b, wy_b) as f32;
+        let b_b = lerp_u8_trunc(top_b_b, bot_b_b, wy_b) as f32;
+        let a_b = lerp_u8_trunc(top_a_b, bot_a_b, wy_b) as f32;
 
         r = r * w0 + r_b * w1;
         g = g * w0 + g_b * w1;
@@ -24768,6 +24815,40 @@ mod tests {
   }
 
   #[test]
+  fn scaled_image_resampling_truncates_between_axes_like_skia() {
+    // 2x2 red channel values chosen so that:
+    // - a mathematically exact bilinear sample would land on an integer (64),
+    // - but Skia's truncating integer pipeline (truncate after X lerp before Y lerp) yields 63.
+    //
+    // Layout (red, alpha=255):
+    //   0   255
+    //   1     0
+    let pixels = vec![
+      0, 0, 0, 255, 255, 0, 0, 255, // first row
+      1, 0, 0, 255, 0, 0, 0, 255, // second row
+    ];
+    let image = ImageData::new_pixels(2, 2, pixels);
+
+    // Use a <2x downscale so mipmaps are *not* selected (otherwise we'd just sample the 1x1 mip
+    // level and never hit the bilinear path).
+    //
+    // This geometry ensures the only output pixel maps to the source center (0.5, 0.5), producing
+    // a 50/50 bilinear weight in both axes.
+    let dest = Rect::from_xywh(-0.25, -0.25, 1.5, 1.5);
+    let origin_x = (dest.x() - 0.5).ceil();
+    let origin_y = (dest.y() - 0.5).ceil();
+    let out_w = ((dest.x() + dest.width() - 0.5).ceil() - origin_x).round() as u32;
+    let out_h = ((dest.y() + dest.height() - 0.5).ceil() - origin_y).round() as u32;
+    let pixmap = super::image_data_to_scaled_pixmap_with_phase_inner(
+      &image, dest, out_w, out_h, origin_x, origin_y,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
+    assert_eq!(pixel(&pixmap, 0, 0), (63, 0, 0, 255));
+  }
+
+  #[test]
   fn scaled_image_resampling_continues_mipmap_chain_when_axis_hits_one_pixel() {
     // 2x8 image: last row is bright red, remaining rows are black. This exercises a mip chain where
     // width reaches 1px quickly but height needs additional levels.
@@ -25335,6 +25416,42 @@ mod tests {
     assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
     assert_eq!(pixel(&pixmap, 0, 1), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 0, 2), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn linear_gradient_pattern_composites_with_truncating_mul_div_255() {
+    // Regression test: the axis-aligned pattern fast-path builds a fully-rasterized pixmap and
+    // then composites it into the destination surface. Use a semi-transparent source color over a
+    // non-white background so `mul/255` rounding differences show up as ±1 channel diffs.
+    let background = Rgba::rgb(101, 102, 103);
+    let renderer = DisplayListRenderer::new(4, 2, background, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
+      tile_size: Size::new(2.0, 2.0),
+      origin: Point::new(0.0, 0.0),
+      // Degenerate gradient (start == end) produces a solid tile without ordered dithering.
+      start: Point::new(0.0, 0.0),
+      end: Point::new(0.0, 0.0),
+      stops: vec![
+        GradientStop {
+          position: 0.0,
+          color: Rgba::new(0, 0, 0, 0.4),
+        },
+        GradientStop {
+          position: 1.0,
+          color: Rgba::new(0, 0, 0, 0.4),
+        },
+      ],
+      spread: GradientSpread::Pad,
+    }));
+
+    let pixmap = renderer.render(&list).unwrap();
+    for y in 0..2 {
+      for x in 0..4 {
+        assert_eq!(pixel(&pixmap, x, y), (60, 61, 61, 255), "pixel ({x}, {y})");
+      }
+    }
   }
 
   #[test]
