@@ -1,4 +1,5 @@
 use inkwell::context::Context;
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::{codegen, strict};
 use std::collections::HashMap;
@@ -78,6 +79,40 @@ fn run_main(source: &str) -> i32 {
       "LLVM module verification failed: {err}\n\nIR:\n{}",
       module.print_to_string()
     );
+  }
+
+  // JIT compilation uses the module data layout for ABI decisions (including
+  // atomic alignment). Explicitly set it to the host target so loop-backedge GC
+  // polls (atomic `i64` loads) are well-formed under LLVM 18's JIT.
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("no target for default triple");
+  let tm = target
+    .create_target_machine(
+      &triple,
+      "generic",
+      "",
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("failed to create target machine");
+  module.set_triple(&triple);
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  // The HIR codegen inserts explicit GC polls in loop backedges. Those polls are
+  // designed to call into `runtime-native` in AOT builds, but this test runs the
+  // module via LLVM JIT. Provide in-module stubs so the JIT does not need to
+  // resolve external symbols.
+  if let Some(epoch) = module.get_global("RT_GC_EPOCH") {
+    epoch.set_initializer(&context.i64_type().const_zero());
+  }
+  if let Some(slow) = module.get_function("rt_gc_safepoint_slow") {
+    if slow.count_basic_blocks() == 0 {
+      let bb = context.append_basic_block(slow, "entry");
+      let b = context.create_builder();
+      b.position_at_end(bb);
+      b.build_return(None).expect("ret void");
+    }
   }
 
   let engine = module

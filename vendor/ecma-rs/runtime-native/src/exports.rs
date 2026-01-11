@@ -656,7 +656,6 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
     }
   }
 }
-
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());

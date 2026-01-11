@@ -26,7 +26,7 @@ use inkwell::values::AsValueRef;
 use inkwell::values::BasicValue;
 use inkwell::values::{FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use llvm_sys::core::LLVMSetOrdering;
+use llvm_sys::core::{LLVMSetAlignment, LLVMSetOrdering};
 use llvm_sys::LLVMAtomicOrdering;
 
 use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
@@ -71,6 +71,15 @@ pub fn emit_backedge_gc_poll<'ctx>(
   if let Some(load_inst) = epoch.as_instruction_value() {
     unsafe {
       LLVMSetOrdering(load_inst.as_value_ref(), LLVMAtomicOrdering::LLVMAtomicOrderingAcquire);
+      // Atomic loads must be sufficiently aligned for the target.
+      //
+      // In practice our poll global is a `u64` (`_Atomic uint64_t` in
+      // `runtime_native.h`), so it is always 8-byte aligned on supported targets.
+      //
+      // Without an explicit `target datalayout`, LLVM can conservatively print
+      // smaller alignments (e.g. `align 4`), which can lead to invalid or
+      // miscompiled atomic loads under MCJIT/ORC.
+      LLVMSetAlignment(load_inst.as_value_ref(), 8);
     }
   }
 

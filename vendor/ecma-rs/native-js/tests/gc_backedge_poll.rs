@@ -199,7 +199,7 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   let latch_ir = block_body(&ir, "loop.latch");
   assert!(latch_ir.contains("@RT_GC_EPOCH"), "IR missing epoch load:\n{ir}");
   assert!(
-    latch_ir.contains("load atomic") && latch_ir.contains("acquire"),
+    latch_ir.contains("load atomic") && latch_ir.contains("acquire") && latch_ir.contains("align 8"),
     "expected RT_GC_EPOCH to be loaded atomically with Acquire ordering:\n{latch_ir}"
   );
 

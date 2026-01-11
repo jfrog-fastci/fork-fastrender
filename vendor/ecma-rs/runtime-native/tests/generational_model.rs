@@ -396,7 +396,7 @@ impl ModelHeap {
 
     for old in &mut self.old_objects {
       let obj = old.obj_ptr();
-      if !runtime_native::remembered_set_contains(obj) {
+      if !old.header().is_remembered() {
         continue;
       }
 
@@ -474,13 +474,7 @@ impl ModelHeap {
     let tospace = self.nursery.to_range();
 
     for old in &self.old_objects {
-      let obj = old.obj_ptr();
-      let in_remset = runtime_native::remembered_set_contains(obj);
-      assert_eq!(
-        in_remset,
-        old.header().is_remembered(),
-        "remembered-set membership must match ObjHeader::REMEMBERED bit"
-      );
+      let in_remset = old.header().is_remembered();
 
       let has_young_ptr = old
         .slots()
@@ -540,8 +534,7 @@ impl ModelHeap {
 
     // After rebuild, the remset should be precise (no stale entries).
     for old in &self.old_objects {
-      let obj = old.obj_ptr();
-      if !runtime_native::remembered_set_contains(obj) {
+      if !old.header().is_remembered() {
         continue;
       }
       let has_young_ptr = old
@@ -606,8 +599,6 @@ fn remembered_set_and_card_table_survive_multiple_minors() {
   heap.minor_gc(&survivors);
   heap.assert_invariants();
 
-  assert!(!runtime_native::remembered_set_contains(heap.old_objects[plain].obj_ptr()));
-  assert!(!runtime_native::remembered_set_contains(heap.old_objects[carded].obj_ptr()));
   assert!(!heap.old_objects[plain].header().is_remembered());
   assert!(!heap.old_objects[carded].header().is_remembered());
 

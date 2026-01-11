@@ -1117,6 +1117,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   ) -> Result<bool, Vec<Diagnostic>> {
     let cond_bb = self.cg.context.append_basic_block(self.func, "while.cond");
     let body_bb = self.cg.context.append_basic_block(self.func, "while.body");
+    let latch_bb = self.cg.context.append_basic_block(self.func, "while.latch");
     let end_bb = self.cg.context.append_basic_block(self.func, "while.end");
 
     self
@@ -1135,17 +1136,24 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     self.builder.position_at_end(body_bb);
     self.loop_stack.push(LoopContext {
       break_bb: end_bb,
-      continue_bb: cond_bb,
+      continue_bb: latch_bb,
       label,
     });
     let body_fallthrough = self.codegen_stmt(body)?;
     if body_fallthrough {
       self
         .builder
-        .build_unconditional_branch(cond_bb)
+        .build_unconditional_branch(latch_bb)
         .expect("failed to build branch");
     }
     self.loop_stack.pop();
+
+    self.builder.position_at_end(latch_bb);
+    safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
+    self
+      .builder
+      .build_unconditional_branch(cond_bb)
+      .expect("failed to build while backedge branch");
 
     self.builder.position_at_end(end_bb);
     Ok(true)
@@ -1159,6 +1167,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   ) -> Result<bool, Vec<Diagnostic>> {
     let body_bb = self.cg.context.append_basic_block(self.func, "do.body");
     let cond_bb = self.cg.context.append_basic_block(self.func, "do.cond");
+    let latch_bb = self.cg.context.append_basic_block(self.func, "do.latch");
     let end_bb = self.cg.context.append_basic_block(self.func, "do.end");
 
     self
@@ -1186,10 +1195,17 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let cond_i1 = self.is_truthy_i1(cond_val);
     self
       .builder
-      .build_conditional_branch(cond_i1, body_bb, end_bb)
+      .build_conditional_branch(cond_i1, latch_bb, end_bb)
       .expect("failed to build conditional branch");
 
     self.loop_stack.pop();
+
+    self.builder.position_at_end(latch_bb);
+    safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
+    self
+      .builder
+      .build_unconditional_branch(body_bb)
+      .expect("failed to build do-while backedge branch");
 
     self.builder.position_at_end(end_bb);
     Ok(true)
@@ -1269,6 +1285,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       if let Some(update) = update {
         let _ = self.codegen_expr(update)?;
       }
+      safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
       self
         .builder
         .build_unconditional_branch(cond_bb)

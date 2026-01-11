@@ -110,6 +110,19 @@ impl ObjHeader {
     !self.is_forwarded() && (self.meta.load(Ordering::Acquire) & META_REMEMBERED) != 0
   }
 
+  /// Debug/test helper: clear the per-object `REMEMBERED` bit.
+  ///
+  /// This is intentionally not part of the stable runtime ABI; it exists so
+  /// integration tests can model remembered-set rebuild behavior without
+  /// depending on a process-global remembered set.
+  #[doc(hidden)]
+  pub fn clear_remembered_for_tests(&self) {
+    if self.is_forwarded() {
+      return;
+    }
+    self.meta.fetch_and(!META_REMEMBERED, Ordering::Release);
+  }
+
   #[inline]
   pub fn is_pinned(&self) -> bool {
     // When the header is in the "forwarded" state, `meta` is a tagged forwarding pointer, so any
