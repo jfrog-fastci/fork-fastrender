@@ -222,6 +222,48 @@ extract_nop_region_offsets_containing() {
   die "failed to find a NOP region in ${func} disassembly containing offset ${want_off}"
 }
 
+assert_nop_at_offset() {
+  local objdump_out="$1"
+  local func="$2"
+  local want_off="$3"
+
+  local fn_start_hex
+  fn_start_hex="$(
+    printf '%s\n' "${objdump_out}" |
+      awk -v f="${func}" '$0 ~ "<"f">:" {print $1; exit}'
+  )"
+  [[ -n "${fn_start_hex}" ]] || die "failed to locate function header for ${func} in objdump output"
+
+  local want_abs_hex
+  want_abs_hex="$(printf '%x' "$((0x${fn_start_hex} + want_off))")"
+
+  if printf '%s\n' "${objdump_out}" | awk -v f="${func}" -v want="${want_abs_hex}" '
+    $0 ~ "<"f">:" {in_func=1; next}
+    in_func && /^[0-9a-fA-F]+ <.*>:/ {exit}
+    in_func && $1 ~ /^[0-9a-fA-F]+:$/ {
+      addr=$1
+      sub(":", "", addr)
+      if (tolower(addr) == tolower(want)) {
+        found=1
+        inst=$2
+        if (inst ~ /^nop/) {exit 0}
+        exit 1
+      }
+    }
+    END {if (!found) exit 2}
+  '; then
+    return 0
+  else
+    local rc=$?
+    echo "=== disassembly ===" >&2
+    echo "${objdump_out}" >&2
+    if [[ "${rc}" -eq 2 ]]; then
+      die "expected to find an instruction at offset ${want_off} (abs=0x${want_abs_hex}) in ${func} disassembly"
+    fi
+    die "expected instruction at offset ${want_off} (abs=0x${want_abs_hex}) in ${func} disassembly to be a NOP"
+  fi
+}
+
 extract_instruction_offset() {
   local stackmap="$1"
   local off
@@ -482,6 +524,12 @@ if (( NOP_BYTES_BEFORE_OFF < PATCH_BYTES_B )); then
   echo "${DIS_B}" >&2
   die "fixture B: expected at least ${PATCH_BYTES_B} bytes of contiguous NOP padding immediately before stackmap instruction offset ${OFF_B}, got ${NOP_BYTES_BEFORE_OFF} (nop_start_off=${NOP_START_OFF}, nop_run_end_off=${NOP_END_OFF})"
 fi
+
+PATCH_START_OFF="$((OFF_B - PATCH_BYTES_B))"
+if (( PATCH_START_OFF < 0 )); then
+  die "fixture B: stackmap instruction offset (${OFF_B}) is smaller than patch_bytes (${PATCH_BYTES_B})"
+fi
+assert_nop_at_offset "${DIS_B}" "test" "${PATCH_START_OFF}"
 
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
 INVALID_FLAGS_IR="${tmpdir}/invalid_flags.ll"
