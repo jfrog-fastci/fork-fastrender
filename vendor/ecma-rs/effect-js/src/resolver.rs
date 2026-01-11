@@ -362,13 +362,21 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
                 path,
               },
             );
+          } else if let Some(target) = extract_alias_target(lower, body, init, &bindings, start) {
+            bindings.insert(*local, start, target);
           }
         }
         PatKind::Object(obj) => {
           if obj.rest.is_some() {
             continue;
           }
-          let Some((module, prefix_path)) = extract_require_member_path(lower, body, init) else {
+          let resolved = extract_require_member_path(lower, body, init).map(|(module, path)| {
+            BindingTarget {
+              module,
+              path,
+            }
+          }).or_else(|| extract_alias_target(lower, body, init, &bindings, start));
+          let Some(BindingTarget { module, path: prefix_path }) = resolved else {
             continue;
           };
           let mut collected = Vec::new();
@@ -402,6 +410,26 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
   }
 
   bindings
+}
+
+fn extract_alias_target(
+  lower: &LowerResult,
+  body: &Body,
+  expr: ExprId,
+  bindings: &RequireBindings,
+  use_start: u32,
+) -> Option<BindingTarget> {
+  let (base, member_path) = flatten_member_chain(lower, body, expr)?;
+  let ExprKind::Ident(name) = &body.exprs[base.0 as usize].kind else {
+    return None;
+  };
+  let target = bindings.resolve(*name, use_start)?;
+  let mut path = target.path.clone();
+  path.extend(member_path);
+  Some(BindingTarget {
+    module: target.module.clone(),
+    path,
+  })
 }
 
 fn extract_require_module(lower: &LowerResult, body: &Body, expr: ExprId) -> Option<String> {
@@ -719,6 +747,44 @@ mod tests {
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_member_alias_from_require_namespace() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs');
+        const rf = fs.readFile;
+        rf('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_destructure_from_require_namespace() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs');
+        const { readFile, writeFile: wf } = fs;
+        readFile('x', () => {});
+        wf('y', 'z', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile", "node:fs.writeFile"]);
+  }
+
+  #[test]
+  fn resolves_alias_chain_from_require_namespace() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs');
+        const promises = fs.promises;
+        const { readFile } = promises;
+        readFile('x');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.promises.readFile"]);
   }
 
   #[test]
