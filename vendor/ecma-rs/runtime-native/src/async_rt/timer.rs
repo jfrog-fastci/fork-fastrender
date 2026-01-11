@@ -81,15 +81,13 @@ impl Timers {
   pub fn drain_due(&self, now: Instant) -> Vec<Task> {
     let mut ready = Vec::new();
     let mut inner = self.inner.lock();
-    let mut fired_ids = Vec::new();
-    inner.wheel.poll_expired(now, |entry| {
-      fired_ids.push(entry.id);
+    // Split borrows so we can update the id->key map while polling the wheel.
+    let TimersInner { wheel, keys } = &mut *inner;
+    wheel.poll_expired(now, |entry| {
+      let removed = keys.remove(&entry.id);
+      debug_assert!(removed.is_some(), "timer id missing from key map");
       ready.push(entry.task);
     });
-    for id in fired_ids {
-      let removed = inner.keys.remove(&id);
-      debug_assert!(removed.is_some(), "timer id missing from key map");
-    }
     if !ready.is_empty() {
       crate::rt_trace::timer_heap_dec_by(ready.len() as u64);
     }
