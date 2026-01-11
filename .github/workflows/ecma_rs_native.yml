@@ -249,7 +249,8 @@ jobs:
             --test reactor_kqueue \
             --test kqueue_reactor \
             --test async_event_loop \
-            --test async_fd
+            --test async_fd \
+            --test async_rt_reactor_adapter
 
           # Exercise the force-pipe wake fallback path on platforms that default to kqueue/EVFILT_USER.
           cargo test -p runtime-native --locked --features force_pipe_wake \
@@ -257,4 +258,5 @@ jobs:
             --test reactor_kqueue_pipe_wake \
             --test kqueue_reactor \
             --test async_event_loop \
-            --test async_fd
+            --test async_fd \
+            --test async_rt_reactor_adapter
