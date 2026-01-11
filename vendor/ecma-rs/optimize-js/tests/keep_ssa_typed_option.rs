@@ -132,7 +132,7 @@ fn typed_keep_ssa_phi_nodes_carry_type_metadata() {
     .find(|inst| {
       inst.t == InstTyp::Phi
         && inst.meta.type_id.is_some()
-        && inst.meta.type_summary == Some(ValueTypeSummary::Number)
+        && inst.meta.type_summary == Some(ValueTypeSummary::NUMBER)
         && inst.meta.excludes_nullish
     })
     .expect("expected at least one Phi node to carry typed metadata");
