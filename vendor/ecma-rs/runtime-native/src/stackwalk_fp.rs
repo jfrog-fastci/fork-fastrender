@@ -170,6 +170,58 @@ pub unsafe fn walk_gc_roots_from_fp(
   })
 }
 
+/// Walk GC root slots for a thread parked in a stop-the-world safepoint.
+///
+/// This is the entry point used by the STW GC: after [`crate::rt_gc_wait_for_world_stopped`]
+/// returns, the GC can read each thread's published [`crate::arch::SafepointContext`] (captured
+/// when the mutator entered the safepoint slow path) and call this function to enumerate precise
+/// stack roots for that parked thread.
+///
+/// The callback is invoked with the address of each *stack slot* that contains a managed pointer.
+/// A relocating GC should treat the slot as `*mut *mut u8` and may update it in-place.
+///
+/// ## Statepoint-oriented walking
+///
+/// Unlike [`walk_gc_roots_from_fp`] (which expects to start from a runtime frame and uses the
+/// current frame's saved return address to identify the managed caller), this function starts
+/// directly from the captured call-site state:
+///
+/// - `ctx.fp` is treated as the managed caller's frame pointer (`caller_fp`).
+/// - `ctx.ip` is treated as the managed caller's return address at the safepoint call site
+///   (`caller_ra`).
+///
+/// Roots for that top managed frame are enumerated first (if a matching stackmap record exists),
+/// then older frames are walked by delegating to [`walk_gc_roots_from_fp`] starting at `ctx.fp`.
+/// This avoids double-enumerating the top frame.
+///
+/// # Safety
+///
+/// The caller must ensure the target thread is stopped and its stack is not concurrently modified
+/// while walking. The supplied `ctx` must have been captured for a frame compiled with frame
+/// pointers enabled, and `stackmaps` must correspond to the code being walked.
+pub unsafe fn walk_gc_roots_from_safepoint_context(
+  ctx: &crate::arch::SafepointContext,
+  stackmaps: &crate::StackMaps,
+  mut visit: impl FnMut(*mut u8),
+) -> Result<(), WalkError> {
+  let caller_fp = ctx.fp as u64;
+  if caller_fp == 0 {
+    return Err(WalkError::NullStartFp);
+  }
+
+  check_fp_alignment(caller_fp)?;
+
+  let caller_ra = ctx.ip as u64;
+  if let Some(callsite) = stackmaps.lookup(caller_ra) {
+    enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+  }
+
+  // Continue walking older frames. Starting from the managed frame pointer means the delegated
+  // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
+  // managed frame we just handled above.
+  walk_gc_roots_from_fp(caller_fp, stackmaps, visit)
+}
+
 fn enumerate_roots_for_frame(
   caller_fp: u64,
   caller_ra: u64,
