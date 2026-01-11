@@ -28,7 +28,6 @@ pub use timer::TimerId;
 pub use timer::Timers;
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -36,7 +35,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 /// Global serialization guard for the core poll loop.
-static POLL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static POLL_LOCK: Lazy<crate::sync::GcAwareMutex<()>> =
+  Lazy::new(|| crate::sync::GcAwareMutex::new(()));
 
 /// When enabled, `await` follows JS microtask semantics even when the awaited promise is already
 /// settled: the coroutine is resumed in a later microtask turn instead of synchronously.
