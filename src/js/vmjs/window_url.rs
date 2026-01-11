@@ -414,6 +414,101 @@ fn url_construct_native(
   })
 }
 
+fn url_parse_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let limits =
+    with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
+
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    input_value,
+    limits.max_input_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+
+  let base = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(value_to_limited_string(
+      vm,
+      scope,
+      host,
+      hooks,
+      v,
+      limits.max_input_bytes,
+      URL_BASE_TOO_LONG_ERROR,
+    )?),
+  };
+
+  let url = match Url::parse_without_diagnostics(&input, base.as_deref(), &limits) {
+    Ok(url) => url,
+    Err(UrlError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    Err(_) => return Ok(Value::Null),
+  };
+
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let obj = scope.alloc_object()?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(state.url_proto))?;
+    state.urls.insert(WeakGcObject::from(obj), url);
+    Ok(Value::Object(obj))
+  })
+}
+
+fn url_can_parse_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let limits =
+    with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
+
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let input = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    input_value,
+    limits.max_input_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+
+  let base = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(value_to_limited_string(
+      vm,
+      scope,
+      host,
+      hooks,
+      v,
+      limits.max_input_bytes,
+      URL_BASE_TOO_LONG_ERROR,
+    )?),
+  };
+
+  match Url::parse_without_diagnostics(&input, base.as_deref(), &limits) {
+    Ok(_) => Ok(Value::Bool(true)),
+    Err(UrlError::OutOfMemory) => Err(VmError::OutOfMemory),
+    Err(_) => Ok(Value::Bool(false)),
+  }
+}
+
 fn url_href_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1644,6 +1739,28 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   scope.define_property(url_ctor, proto_key, ctor_link_desc(Value::Object(url_proto)))?;
   let constructor_key = alloc_key(&mut scope, "constructor")?;
   scope.define_property(url_proto, constructor_key, ctor_link_desc(Value::Object(url_ctor)))?;
+
+  // --- URL static methods ---
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    url_ctor,
+    "canParse",
+    url_can_parse_native,
+    1,
+    realm_slot,
+  )?;
+  install_method(
+    vm,
+    &mut scope,
+    realm,
+    url_ctor,
+    "parse",
+    url_parse_native,
+    1,
+    realm_slot,
+  )?;
 
   let proto_key = alloc_key(&mut scope, "prototype")?;
   scope.define_property(sp_ctor, proto_key, ctor_link_desc(Value::Object(params_proto)))?;
