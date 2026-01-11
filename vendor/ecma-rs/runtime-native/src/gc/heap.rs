@@ -9,6 +9,8 @@ use std::ptr::NonNull;
 use super::align_up;
 use super::ObjHeader;
 use super::TypeDescriptor;
+use super::weak::WeakHandle;
+use super::weak::WeakHandles;
 use crate::nursery;
 use crate::nursery::ThreadNursery;
 
@@ -273,6 +275,7 @@ pub struct GcHeap {
   pub(crate) nursery_tlab: ThreadNursery,
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
+  weak_handles: WeakHandles,
 
   /// Current mark epoch (toggled on every major GC).
   pub(crate) mark_epoch: u8,
@@ -297,6 +300,7 @@ impl GcHeap {
       nursery_tlab: ThreadNursery::new(),
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
+      weak_handles: WeakHandles::new(),
       mark_epoch: 0,
       stats: GcStats::default(),
     }
@@ -304,6 +308,101 @@ impl GcHeap {
 
   pub fn stats(&self) -> &GcStats {
     &self.stats
+  }
+
+  pub fn weak_add(&mut self, ptr: *mut u8) -> WeakHandle {
+    self.weak_handles.weak_add(ptr)
+  }
+
+  pub fn weak_get(&self, handle: WeakHandle) -> Option<*mut u8> {
+    self.weak_handles.weak_get(handle)
+  }
+
+  pub fn weak_set(&mut self, handle: WeakHandle, ptr: *mut u8) {
+    self.weak_handles.weak_set(handle, ptr);
+  }
+
+  pub fn weak_remove(&mut self, handle: WeakHandle) {
+    self.weak_handles.weak_remove(handle);
+  }
+
+  pub(crate) fn process_weak_handles_minor(&mut self) {
+    let nursery = &self.nursery;
+
+    self.weak_handles.for_each_slot_mut(|slot| {
+      let obj = *slot;
+      if obj.is_null() {
+        return;
+      }
+
+      if nursery.contains(obj) {
+        // SAFETY: `obj` is expected to point at the start of a nursery object.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            *slot = header.forwarding_ptr();
+          } else {
+            *slot = ptr::null_mut();
+          }
+        }
+      }
+    });
+  }
+
+  pub(crate) fn process_weak_handles_major(&mut self, epoch: u8) {
+    let nursery = &self.nursery;
+    let immix = &self.immix;
+    let los = &self.los;
+
+    self.weak_handles.for_each_slot_mut(|slot| {
+      let mut obj = *slot;
+      if obj.is_null() {
+        return;
+      }
+
+      if nursery.contains(obj) {
+        // Major GC should not see nursery pointers (it runs a minor GC first),
+        // but handle them defensively.
+        // SAFETY: `obj` is expected to point at the start of a nursery object.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            *slot = ptr::null_mut();
+            return;
+          }
+        }
+      }
+
+      // If the referent isn't in this heap anymore (e.g. swept large object),
+      // clear the slot. This avoids dereferencing stale pointers.
+      if !immix.contains(obj) && !los.contains(obj) {
+        *slot = ptr::null_mut();
+        return;
+      }
+
+      // Follow forwarding pointers (used by nursery evacuation today, and by
+      // potential future major GC compaction).
+      // SAFETY: `obj` is expected to point at the start of a heap object.
+      unsafe {
+        loop {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            break;
+          }
+        }
+
+        let header = &*(obj as *const ObjHeader);
+        if header.is_marked(epoch) {
+          *slot = obj;
+        } else {
+          *slot = ptr::null_mut();
+        }
+      }
+    });
   }
 
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {

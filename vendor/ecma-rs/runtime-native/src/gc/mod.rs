@@ -4,6 +4,7 @@ use std::slice;
 mod young;
 pub mod heap;
 pub mod roots;
+pub mod weak;
 
 mod evacuate;
 mod mark;
@@ -13,6 +14,9 @@ pub use roots::RememberedSet;
 pub use roots::RootSet;
 pub use roots::RootStack;
 pub use roots::SimpleRememberedSet;
+pub use weak::register_weak_cleanup;
+pub use weak::WeakHandle;
+pub use weak::WeakHandles;
 pub use young::YoungSpace;
 
 pub(crate) use young::YOUNG_SPACE;

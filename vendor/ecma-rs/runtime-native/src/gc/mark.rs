@@ -1,5 +1,6 @@
 use super::roots::RememberedSet;
 use super::roots::RootSet;
+use super::weak::run_weak_cleanups;
 use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::GcHeap;
@@ -43,6 +44,8 @@ impl GcHeap {
       }
     }
 
+    self.process_weak_handles_major(epoch);
+    run_weak_cleanups(self);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);
   }
@@ -104,4 +107,3 @@ impl Tracer for Marker<'_> {
     self.mark_obj(obj);
   }
 }
-
