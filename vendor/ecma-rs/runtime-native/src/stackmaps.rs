@@ -643,12 +643,14 @@ impl<'a> CallSite<'a> {
   /// - `Indirect [FP + off]` becomes `fp_off = off`
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
+    // Detect statepoints by their record layout, not by patchpoint_id. Our codegen currently uses a
+    // fixed patchpoint id (see `statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID`), but callers may
+    // want to interpret externally-produced stackmaps that do not follow that convention.
     let looks_like_statepoint =
-      self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID
-        && self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
         && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+          .iter()
+          .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
 
     let sp_relative_to_fp_relative = |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
       if self.stack_size < frame_record_size {
