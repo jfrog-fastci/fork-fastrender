@@ -685,6 +685,38 @@ mod tests {
   }
 
   #[test]
+  fn style_for_styled_node_id_prefers_non_pseudo_boxes() {
+    use crate::style::display::FormattingContextType;
+    use crate::style::types::Direction;
+    use crate::tree::box_tree::GeneratedPseudoElement;
+
+    let mut pseudo_style = ComputedStyle::default();
+    pseudo_style.direction = Direction::Ltr;
+    let pseudo_style = Arc::new(pseudo_style);
+
+    let mut element_style = ComputedStyle::default();
+    element_style.direction = Direction::Rtl;
+    let element_style = Arc::new(element_style);
+
+    let mut pseudo_box = BoxNode::new_block(pseudo_style, FormattingContextType::Block, vec![]);
+    pseudo_box.styled_node_id = Some(2);
+    pseudo_box.generated_pseudo = Some(GeneratedPseudoElement::Placeholder);
+
+    let mut element_box = BoxNode::new_block(element_style, FormattingContextType::Block, vec![]);
+    element_box.styled_node_id = Some(2);
+
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![pseudo_box, element_box],
+    );
+    let tree = BoxTree::new(root);
+
+    let style = style_for_styled_node_id(&tree, 2).expect("style");
+    assert_eq!(style.direction, Direction::Rtl);
+  }
+
+  #[test]
   fn backspace_deletes_previous_character_and_updates_caret() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
