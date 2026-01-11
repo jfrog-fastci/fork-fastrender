@@ -4919,8 +4919,13 @@ impl DisplayListRenderer {
   #[inline]
   fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect, radii: Option<BorderRadii>) -> Rect {
     // tiny-skia uses floating-point transforms for `draw_pixmap` / mask rasterization. For
-    // axis-aligned integer-sized clips, snapping the origin to integer device pixels tends to
+    // axis-aligned integer-sized clips, snapping near-integer edges to device pixels tends to
     // align better with Chrome's pixel grid behavior.
+    //
+    // Be conservative: only snap when the clip rect edges are already very close to integer
+    // device pixels. Snapping a significantly fractional origin (e.g. 99.8) can shift the clip
+    // region far enough to include adjacent pixels, which then interacts badly with 1:1 image
+    // snapping and can cause clipped content to overpaint borders (e.g. the HN logo).
     let transform = self.canvas.transform();
     if transform != Transform::identity()
       && (!Self::is_translation_only_transform(transform)
@@ -4941,13 +4946,30 @@ impl DisplayListRenderer {
     {
       return rect;
     }
-    if !Self::is_near_integer(rect.width()) || !Self::is_near_integer(rect.height()) {
-      return rect;
-    }
+
+    const CLIP_SNAP_EPSILON: f32 = 1e-3;
+
     if transform == Transform::identity() {
-      Self::snap_rect_origin_to_device_pixels(rect)
+      Self::snap_rect_edges_to_near_integers(rect, CLIP_SNAP_EPSILON).unwrap_or(rect)
     } else {
-      Self::snap_rect_origin_to_device_pixels_with_translation(rect, transform)
+      // Snap in device space so tile-based translation transforms behave identically to full
+      // surface rendering.
+      let eff = Rect::from_xywh(
+        rect.x() + transform.tx,
+        rect.y() + transform.ty,
+        rect.width(),
+        rect.height(),
+      );
+      if let Some(snapped) = Self::snap_rect_edges_to_near_integers(eff, CLIP_SNAP_EPSILON) {
+        Rect::from_xywh(
+          snapped.x() - transform.tx,
+          snapped.y() - transform.ty,
+          snapped.width(),
+          snapped.height(),
+        )
+      } else {
+        rect
+      }
     }
   }
 
