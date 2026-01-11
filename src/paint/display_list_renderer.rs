@@ -5705,8 +5705,6 @@ impl DisplayListRenderer {
     // directly into the destination surface using the same pixel-center inclusion rule as
     // axis-aligned opaque rect fills.
     if translation_only && translation_integral && self.canvas.blend_mode() == SkiaBlendMode::SourceOver {
-      let tx_i32 = tx as i32;
-      let ty_i32 = ty as i32;
       let clip_mask = self.canvas.clip_mask_rc();
 
       // Pixel-center bounds in *device* space: a device pixel at coordinate `i` is covered if its
@@ -5729,10 +5727,10 @@ impl DisplayListRenderer {
         let width = (x1_i32 - x0_i32) as u32;
         let height = (y1_i32 - y0_i32) as u32;
 
-        let world_x0 = x0_i32.saturating_sub(tx_i32);
-        let world_y0 = y0_i32.saturating_sub(ty_i32);
+        let origin_x = visible_rect.min_x().floor() as i32;
+        let origin_y = visible_rect.min_y().floor() as i32;
         let dither_phase =
-          ((((world_y0.wrapping_add(1)) & 7) as u8) << 3) | ((world_x0 & 7) as u8);
+          ((((origin_y.wrapping_add(1)) & 7) as u8) << 3) | ((origin_x & 7) as u8);
 
         // Convert gradient start/end points into the local coordinate space of the painted pixel
         // rect.
