@@ -236,6 +236,11 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   check path/to/entry.ts
 ```
 
+> Note: `native-js check` currently runs the legacy `native_js::strict::validate`
+> pass, which rejects unsafe escape hatches (including TS-only wrappers like `as`
+> and `!`). `native-js build`/`run` use the backend subset validator
+> (`native_js::validate::validate_strict_subset`) instead.
+
 If you have the binary installed on your `PATH`, the equivalent invocation is:
 
 ```bash
