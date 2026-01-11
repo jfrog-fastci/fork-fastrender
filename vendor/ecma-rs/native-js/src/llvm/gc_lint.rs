@@ -1,10 +1,9 @@
 use inkwell::module::Module;
 use llvm_sys::core::{
-  LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetAllocatedType, LLVMGetCalledValue,
-  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse,
-  LLVMGetGC, LLVMGetNextBasicBlock, LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetNextUse,
-  LLVMGetNumOperands, LLVMGetOperand, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser,
-  LLVMPrintValueToString, LLVMTypeOf,
+  LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetAllocatedType, LLVMGetFirstBasicBlock,
+  LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse, LLVMGetGC, LLVMGetNextBasicBlock,
+  LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetNextUse, LLVMGetNumOperands, LLVMGetOperand,
+  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser, LLVMPrintValueToString, LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMUseRef, LLVMValueRef};
 use llvm_sys::{LLVMOpcode, LLVMTypeKind};
@@ -22,8 +21,11 @@ pub enum LintRule {
   /// Rule B1: In runtime ABI wrapper functions, `addrspacecast` from AS0->AS1 must be returned or
   /// stored into an AS1 pointer slot.
   WrapperAddrSpaceCastAs0ToAs1InvalidUse,
-  /// Rule B2/B3: In runtime ABI wrapper functions, `addrspacecast` from AS1->AS0 must be used only
-  /// as a direct call argument and must not escape.
+  /// Rule B2/B3: In runtime ABI wrapper functions, `addrspacecast` from AS1->AS0 is forbidden.
+  ///
+  /// `native-js`'s GC pointer discipline does not allow producing addrspace(0) aliases of GC
+  /// pointers, since `rewrite-statepoints-for-gc` will not relocate them. Runtime wrappers should
+  /// use indirect calls with addrspace(1) signatures instead of casting GC pointers to AS0.
   WrapperAddrSpaceCastAs1ToAs0InvalidUse,
   /// Rule B: Runtime ABI wrappers may only cast between AS0 and AS1 (not other addrspaces).
   WrapperAddrSpaceCastBetweenUnsupportedAddrSpaces,
@@ -344,53 +346,19 @@ unsafe fn lint_wrapper_as1_to_as0_cast(
   cast: LLVMValueRef,
   violations: &mut Vec<LintViolation>,
 ) {
-  // Allowed uses:
-  //   - direct call/invoke arguments (not stored, not returned, not used as callee).
-  let mut use_ref: LLVMUseRef = LLVMGetFirstUse(cast);
-  while !use_ref.is_null() {
-    let user = LLVMGetUser(use_ref);
-    if llvm_sys::core::LLVMIsAInstruction(user).is_null() {
-      violations.push(LintViolation {
-        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
-        message: format!(
-          "in `{}`: AS1->AS0 cast used by non-instruction user: {}",
-          func_name,
-          value_to_string(cast)
-        ),
-      });
-      use_ref = LLVMGetNextUse(use_ref);
-      continue;
-    }
-
-    let user_opcode = llvm_sys::core::LLVMGetInstructionOpcode(user);
-    if user_opcode != LLVMOpcode::LLVMCall && user_opcode != LLVMOpcode::LLVMInvoke {
-      violations.push(LintViolation {
-        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
-        message: format!(
-          "in `{}`: AS1->AS0 cast must only be used as a direct call argument, but used by: {}",
-          func_name,
-          value_to_string(user)
-        ),
-      });
-      use_ref = LLVMGetNextUse(use_ref);
-      continue;
-    }
-
-    // Robustly determine the call's callee operand (operand ordering differs between call-like
-    // instructions and across LLVM versions).
-    if LLVMGetCalledValue(user) == cast {
-      violations.push(LintViolation {
-        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
-        message: format!(
-          "in `{}`: AS1->AS0 cast must not be used as call callee operand: {}",
-          func_name,
-          value_to_string(user)
-        ),
-      });
-    }
-
-    use_ref = LLVMGetNextUse(use_ref);
-  }
+  // Disallowed: addrspacecast from AS1->AS0.
+  //
+  // Even in runtime wrappers this is unsound: `rewrite-statepoints-for-gc` only relocates
+  // `ptr addrspace(1)` SSA values, so creating an AS0 alias risks keeping the alias live across a
+  // safepoint while the AS1 value is dead.
+  violations.push(LintViolation {
+    rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
+    message: format!(
+      "in `{}`: disallowed `addrspacecast` from addrspace(1) to addrspace(0): {}",
+      func_name,
+      value_to_string(cast)
+    ),
+  });
 }
 
 unsafe fn lint_store(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
