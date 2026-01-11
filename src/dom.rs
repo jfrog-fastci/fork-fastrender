@@ -4233,6 +4233,16 @@ pub(crate) fn apply_dom_compatibility_mutations(
         }
       }
 
+      if tag_name.eq_ignore_ascii_case("html") {
+        let has_webflow_marker = attributes.iter().any(|(name, _)| {
+          name.eq_ignore_ascii_case("data-wf-page") || name.eq_ignore_ascii_case("data-wf-site")
+        });
+        if has_webflow_marker && !classes.iter().any(|c| c == "w-mod-js") {
+          classes.push("w-mod-js".to_string());
+          changed = true;
+        }
+      }
+
       if tag_name.eq_ignore_ascii_case("img") {
         // Some pages stash image URLs in `data-*` attributes (common for JS-driven lazy loading)
         // and rely on their bootstrap JS to populate `src`/`srcset`/`sizes`. When we don't execute
@@ -15370,6 +15380,39 @@ mod tests {
     assert!(classes.contains(&"js-enabled"));
     assert!(classes.contains(&"foo"));
     assert!(classes.contains(&"jsl10n-visible"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_injects_webflow_w_mod_js() {
+    let dom = parse_html_with_options(
+      r#"<html data-wf-page="x" data-wf-site="y"><body></body></html>"#,
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let html = dom
+      .children
+      .iter()
+      .find(|c| matches!(c.node_type, DomNodeType::Element { .. }))
+      .expect("html child");
+    assert!(
+      html.has_class("w-mod-js"),
+      "expected compat mode to inject Webflow's w-mod-js class on <html>"
+    );
+  }
+
+  #[test]
+  fn parse_html_standard_mode_does_not_inject_webflow_w_mod_js() {
+    let dom = parse_html(r#"<html data-wf-page="x" data-wf-site="y"><body></body></html>"#)
+      .expect("parse");
+    let html = dom
+      .children
+      .iter()
+      .find(|c| matches!(c.node_type, DomNodeType::Element { .. }))
+      .expect("html child");
+    assert!(
+      !html.has_class("w-mod-js"),
+      "expected standard mode to avoid injecting Webflow's w-mod-js class"
+    );
   }
 
   #[test]
