@@ -2090,6 +2090,7 @@ fn video_replaced_element_uses_poster_image_in_display_list() {
   let replaced_type = ReplacedType::Video {
     src: "unused".to_string(),
     poster: Some(poster_path.to_string_lossy().to_string()),
+    controls: false,
   };
   let style = Arc::new(ComputedStyle::default());
   let fragment = FragmentNode::new_with_style(
