@@ -183,7 +183,15 @@ fn main() {
  "##,
     )?;
 
-    let target_dir = dir.join("target");
+    let mut target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ws_root.join("target"));
+    if target_dir.is_relative() {
+        target_dir = ws_root.join(target_dir);
+    }
+    // Avoid deadlocking on Cargo's target-dir lock: use a separate target dir from the outer
+    // `cargo test` process, but keep it stable so the nested builds across tests can reuse artifacts.
+    let target_dir = target_dir.join("llvm_stackmaps_nested_cargo_test_target");
 
     // Force non-PIE output to avoid needing object section flag rewriting for `.llvm_stackmaps`.
     let rustflags = format!(
