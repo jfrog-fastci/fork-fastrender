@@ -168,12 +168,6 @@ pub struct TypeDescriptor {
   ptr_offsets_len: u32,
 }
 
-#[inline]
-pub(crate) fn align_up(value: usize, align: usize) -> usize {
-  debug_assert!(align.is_power_of_two());
-  (value + (align - 1)) & !(align - 1)
-}
-
 // `TypeDescriptor` is immutable runtime metadata. As long as the descriptor is
 // constructed from stable, read-only data (the intended use-case), it is safe
 // to share between threads.
