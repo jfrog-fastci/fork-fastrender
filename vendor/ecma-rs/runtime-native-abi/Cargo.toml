@@ -6,5 +6,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[dependencies]
-
+[build-dependencies]
+# Pinned to keep the generated header stable and deterministic across builds.
+cbindgen = "=0.26.0"

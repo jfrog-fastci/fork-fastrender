@@ -1,6 +1,14 @@
 #![no_std]
 
-/// ABI types shared between `runtime-native` and generated native code.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("runtime-native ABI is currently only supported on 64-bit targets");
+
+#[cfg(test)]
+extern crate std;
+
+use core::ffi::c_void;
+
+/// ABI types shared between `runtime-native`, generated native code, and external tooling.
 ///
 /// ## Shape IDs
 /// `types_ts_interned::ShapeId` is a **semantic** identifier (`u128`) used by analysis and codegen.
@@ -8,6 +16,25 @@
 /// runtime-local shape table and mapping semantic shape IDs to [`RtShapeId`] indices.
 ///
 /// The runtime uses [`RtShapeId`] (`u32`) to index into the registered shape-descriptor table.
+
+/// Version of the stable runtime ABI.
+///
+/// Bump this only for backwards-incompatible changes (layout/signature changes).
+pub const RT_NATIVE_ABI_VERSION: u32 = 0;
+
+// Pointer/usize assumptions (the ABI is currently 64-bit only).
+pub const RT_PTR_SIZE_BYTES: usize = 8;
+pub const RT_PTR_ALIGN_BYTES: usize = 8;
+
+/// Reserved invalid / sentinel runtime shape id value (raw).
+///
+/// Shape tables are 1-indexed: `RtShapeId(1)` refers to the first descriptor.
+pub const RT_SHAPE_ID_INVALID_RAW: u32 = 0;
+
+/// Reserved invalid / sentinel interned id value (raw).
+pub const RT_INTERNED_ID_INVALID_RAW: u32 = u32::MAX;
+
+/// Runtime-local identifier for an object shape (hidden class).
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct RtShapeId(pub u32);
@@ -16,11 +43,11 @@ impl RtShapeId {
   /// Reserved invalid / sentinel shape id.
   ///
   /// The shape table is 1-indexed: `RtShapeId(1)` refers to the first descriptor.
-  pub const INVALID: Self = Self(0);
+  pub const INVALID: Self = Self(RT_SHAPE_ID_INVALID_RAW);
 
   #[inline]
   pub const fn is_valid(self) -> bool {
-    self.0 != 0
+    self.0 != RT_SHAPE_ID_INVALID_RAW
   }
 }
 
@@ -51,3 +78,159 @@ pub struct RtShapeDescriptor {
 // the pointed-to data is immutable and lives for the duration of the process.
 unsafe impl Send for RtShapeDescriptor {}
 unsafe impl Sync for RtShapeDescriptor {}
+
+/// A stable identifier for an interned UTF-8 string.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct InternedId(pub u32);
+
+impl InternedId {
+  pub const INVALID: Self = Self(RT_INTERNED_ID_INVALID_RAW);
+}
+
+/// Identifier for a parallel task.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskId(pub u64);
+
+/// Opaque handle to a promise/coroutine managed by the runtime.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PromiseRef(pub *mut c_void);
+
+impl PromiseRef {
+  #[inline]
+  pub const fn null() -> Self {
+    Self(core::ptr::null_mut())
+  }
+
+  #[inline]
+  pub const fn is_null(self) -> bool {
+    self.0.is_null()
+  }
+}
+
+// `PromiseRef` is an opaque handle. The runtime API is responsible for ensuring thread-safety of
+// operations performed through this handle.
+unsafe impl Send for PromiseRef {}
+unsafe impl Sync for PromiseRef {}
+
+/// An FFI-friendly UTF-8 byte string reference.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StringRef {
+  pub ptr: *const u8,
+  pub len: usize,
+}
+
+impl StringRef {
+  pub const fn empty() -> Self {
+    Self {
+      ptr: b"".as_ptr(),
+      len: 0,
+    }
+  }
+}
+
+/// Opaque coroutine state allocated/owned by generated code.
+///
+/// The full coroutine frame layout is owned by the compiler; the runtime treats
+/// this as an opaque handle at the ABI boundary.
+#[repr(C)]
+pub struct Coroutine {
+  _private: [u8; 0],
+}
+
+/// Function pointer type for parallel task entrypoints.
+pub type RtTaskFn = extern "C" fn(*mut u8);
+
+extern "C" {
+  // Memory
+  pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
+  pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
+
+  // GC
+  pub fn rt_gc_safepoint();
+  pub fn rt_write_barrier(obj: *mut u8, slot: *mut u8);
+  pub fn rt_gc_collect();
+
+  // Strings
+  pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
+  pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
+
+  // Parallel
+  pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
+  pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
+
+  // Async
+  pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
+  pub fn rt_async_poll() -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use core::mem::{align_of, size_of};
+
+  // Layout invariants (compile-time).
+  const _: () = {
+    assert!(RT_PTR_SIZE_BYTES == 8);
+    assert!(RT_PTR_ALIGN_BYTES == 8);
+
+    assert!(size_of::<RtShapeId>() == 4);
+    assert!(align_of::<RtShapeId>() == 4);
+
+    assert!(size_of::<InternedId>() == 4);
+    assert!(align_of::<InternedId>() == 4);
+
+    assert!(size_of::<TaskId>() == 8);
+    assert!(align_of::<TaskId>() == 8);
+
+    assert!(size_of::<PromiseRef>() == 8);
+    assert!(align_of::<PromiseRef>() == 8);
+
+    assert!(size_of::<StringRef>() == 16);
+    assert!(align_of::<StringRef>() == 8);
+  };
+
+  #[test]
+  fn generated_header_contains_expected_decls() {
+    let header_path = std::path::Path::new(env!("OUT_DIR")).join("runtime_native_abi.h");
+    let header = std::fs::read_to_string(&header_path)
+      .unwrap_or_else(|err| panic!("failed to read {}: {err}", header_path.display()));
+
+    // Types.
+    assert!(
+      header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
+      "missing StringRef typedef"
+    );
+    for ty in ["RtShapeId", "InternedId", "TaskId", "PromiseRef"] {
+      assert!(header.contains(ty), "missing type `{ty}` in generated header");
+    }
+    assert!(
+      header.contains("typedef struct Coroutine Coroutine;") || header.contains("struct Coroutine;"),
+      "missing Coroutine forward declaration"
+    );
+
+    // Functions (key entrypoints).
+    for func in [
+      "rt_alloc(",
+      "rt_alloc_array(",
+      "rt_gc_safepoint(",
+      "rt_write_barrier(",
+      "rt_gc_collect(",
+      "rt_string_concat(",
+      "rt_string_intern(",
+      "rt_parallel_spawn(",
+      "rt_parallel_join(",
+      "rt_async_spawn(",
+      "rt_async_poll(",
+    ] {
+      assert!(
+        header.contains(func),
+        "generated header missing expected function `{func}`"
+      );
+    }
+  }
+}
+

@@ -85,6 +85,12 @@ mod rt_trace;
 mod string;
 mod trap;
 
+// Convenience re-exports of the stable runtime ABI types (single source of truth
+// lives in `runtime-native-abi`).
+pub use runtime_native_abi::{
+  Coroutine, InternedId, PromiseRef, RtShapeDescriptor, RtShapeId, RtTaskFn, StringRef, TaskId,
+};
+
 pub use exports::*;
 pub use async_abi::*;
 pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks};

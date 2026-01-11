@@ -1,14 +1,8 @@
 use core::ffi::c_void;
 
-/// A stable identifier for an interned UTF-8 string.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InternedId(pub u32);
-
-/// Identifier for a parallel task.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TaskId(pub u64);
+pub use runtime_native_abi::{
+  Coroutine, InternedId, PromiseRef, RtShapeDescriptor, RtShapeId, RtTaskFn, StringRef, TaskId,
+};
 
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
 pub type TimerId = u64;
@@ -18,45 +12,6 @@ pub type TimerId = u64;
 /// The full JS value/GC story is not implemented yet; compiled code can treat this as a pointer
 /// payload.
 pub type ValueRef = *mut c_void;
-
-/// Opaque handle to a promise/coroutine managed by the runtime.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PromiseRef(pub *mut c_void);
-
-impl PromiseRef {
-  #[inline]
-  pub const fn null() -> Self {
-    Self(core::ptr::null_mut())
-  }
-
-  #[inline]
-  pub const fn is_null(self) -> bool {
-    self.0.is_null()
-  }
-}
-
-// `PromiseRef` is an opaque handle. The runtime API is responsible for ensuring thread-safety of
-// operations performed through this handle.
-unsafe impl Send for PromiseRef {}
-unsafe impl Sync for PromiseRef {}
-
-/// An FFI-friendly UTF-8 byte string reference.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StringRef {
-  pub ptr: *const u8,
-  pub len: usize,
-}
-
-impl StringRef {
-  pub const fn empty() -> Self {
-    Self {
-      ptr: b"".as_ptr(),
-      len: 0,
-    }
-  }
-}
 
 /// Optional GC/runtime statistics snapshot exposed for debugging/benching.
 ///
@@ -77,18 +32,6 @@ pub struct RtGcStatsSnapshot {
   pub thread_init_calls: u64,
   pub thread_deinit_calls: u64,
 }
-
-/// Runtime shape identifier used by the AOT compiler to refer to statically-known object layouts.
-///
-/// This is a compact runtime-local index into the shape table registered via
-/// `rt_register_shape_table`.
-///
-/// Note: the semantic `types_ts_interned::ShapeId (u128)` is **not** passed into the runtime
-/// directly; codegen owns the mapping from semantic IDs to this compact index space.
-pub use runtime_native_abi::RtShapeId;
-
-/// FFI-safe descriptor for a runtime shape.
-pub use runtime_native_abi::RtShapeDescriptor;
 
 // -----------------------------------------------------------------------------
 // Coroutine ABI (LLVM-generated async/await state machines)

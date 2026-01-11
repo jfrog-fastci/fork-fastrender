@@ -1,0 +1,33 @@
+language = "C"
+pragma_once = true
+include_guard = "RUNTIME_NATIVE_ABI_H"
+documentation = true
+
+[export]
+# Keep the header focused: only the ABI surface (types + exported runtime entrypoints).
+include = [
+  "RtShapeId",
+  "RtShapeDescriptor",
+  "StringRef",
+  "InternedId",
+  "TaskId",
+  "PromiseRef",
+  "Coroutine",
+  "RtTaskFn",
+  "rt_alloc",
+  "rt_alloc_array",
+  "rt_gc_safepoint",
+  "rt_write_barrier",
+  "rt_gc_collect",
+  "rt_string_concat",
+  "rt_string_intern",
+  "rt_parallel_spawn",
+  "rt_parallel_join",
+  "rt_async_spawn",
+  "rt_async_poll",
+  "RT_NATIVE_ABI_VERSION",
+  "RT_PTR_SIZE_BYTES",
+  "RT_PTR_ALIGN_BYTES",
+  "RT_SHAPE_ID_INVALID_RAW",
+  "RT_INTERNED_ID_INVALID_RAW",
+]
