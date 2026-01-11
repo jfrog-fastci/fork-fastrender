@@ -4,8 +4,10 @@ This project uses **LLVM statepoints** (`rewrite-statepoints-for-gc` → `gc.sta
 
 Our initial native runtime stack-walking strategy is intentionally simple:
 
-- **Walk frames via the RBP chain** (frame pointers).
-- **Compute each frame's RSP** from the ABI + the known frame layout.
+- **Walk frames via the frame-pointer chain** (frame pointers):
+  - x86_64: `RBP`
+  - AArch64: `X29`
+- **Compute each frame's callsite stack pointer (SP)** from the ABI + the known frame layout.
 - **Do not** use `libunwind`, `ucontext`, or DWARF register reconstruction.
 
 That strategy is only correct if every GC root referenced by a stackmap is stored in a **memory location**.
@@ -41,7 +43,7 @@ Rationale:
 - Without an unwind-based register context, we cannot read or update register-held roots for non-top frames.
 - A moving/compacting GC must be able to update *all* roots, not just the topmost frame.
 
-## Required codegen options (LLVM 18, x86_64)
+## Required codegen options (LLVM 18, x86_64 + AArch64)
 
 LLVM *can* place statepoint GC roots in callee-saved registers under some settings.
 The runtime has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects such stackmaps in
