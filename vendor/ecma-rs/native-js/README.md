@@ -81,7 +81,9 @@ bash scripts/check_system.sh
 ### Wrapper scripts (recommended in agent environments)
 
 LLVM builds are memory-hungry. In this repo, prefer the wrapper which increases
-the process memory limit and auto-detects LLVM 18:
+the process memory limit and auto-detects LLVM 18. It also forces Rust frame
+pointers (`RUSTFLAGS=-C force-frame-pointers=yes`), which is required for the
+current stack-walking approach used by the native runtime.
 
 ```bash
 # From the repo root:
