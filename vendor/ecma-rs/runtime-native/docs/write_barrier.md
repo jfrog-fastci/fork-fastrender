@@ -17,7 +17,9 @@ It also records proposed policy defaults for **per-object card tables** intended
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
   - On an old→young store it sets the `REMEMBERED` bit in the object header.
-    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without allocating (overflow aborts).
+    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit
+      transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without
+      allocating (overflow aborts).
   - For objects with per-object card tables installed, it marks the relevant card dirty.
   - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).

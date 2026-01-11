@@ -675,6 +675,10 @@ pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u
   }
 
   // Old → young store. Mark the base object as remembered.
+  //
+  // Note: `rt_write_barrier` is `NoGC` (must not allocate or safepoint). The process-global
+  // remembered set is fixed-capacity; if it ever overflows we abort rather than silently drop an
+  // old->young edge (which would be unsound).
   remember_old_object(obj);
 
   // If this object has a per-object card table, mark the card for the written slot.

@@ -36,21 +36,20 @@
 //! rooting only the base pointer and re-doing the `gep` from the relocated base.
 //! Root a derived pointer only when the offset cannot be reconstructed later.
 
+use crate::llvm::gc::GC_ADDR_SPACE;
 use crate::gc::statepoint::StatepointEmitter;
 use crate::runtime_fn::GcEffect;
-use crate::llvm::gc::GC_ADDR_SPACE;
 use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
-  LLVMDisposeBuilder, LLVMGetFirstInstruction, LLVMGetPointerAddressSpace, LLVMGetReturnType,
-  LLVMGetStringAttributeAtIndex, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsAFunction,
-  LLVMSetTailCallKind, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
-  LLVMTypeOf, LLVMVoidTypeInContext,
+  LLVMDisposeBuilder, LLVMGetConstOpcode, LLVMGetFirstInstruction, LLVMGetOperand,
+  LLVMGetReturnType, LLVMGetStringAttributeAtIndex, LLVMGetTypeKind, LLVMGlobalGetValueType,
+  LLVMIsAConstantExpr, LLVMIsAFunction, LLVMSetTailCallKind, LLVMPointerType,
+  LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{
   LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef,
 };
-use llvm_sys::LLVMTailCallKind;
-use llvm_sys::LLVMTypeKind;
+use llvm_sys::{LLVMOpcode, LLVMTailCallKind, LLVMTypeKind};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -106,21 +105,46 @@ pub enum GcRoot {
 /// We mirror that convention for *manually emitted* compiled calls: if a direct
 /// callee has `"gc-leaf-function"`, we treat it as [`GcEffect::NoGc`].
 unsafe fn direct_callee_gc_effect_from_attrs(callee: LLVMValueRef) -> Option<GcEffect> {
-  // Only direct/global callees can carry attributes. If this isn't a function
-  // value, it's an indirect call and we can't infer anything.
-  if LLVMIsAFunction(callee).is_null() {
-    return None;
-  }
+  // Only direct/global callees can carry attributes. Accept both a raw `@function` value and
+  // pointer-cast wrappers like `bitcast (ptr @f to ptr)` (common in IR).
+  let callee_fn = resolve_direct_callee_function(callee)?;
 
   // Attribute keys in the C API are length-delimited, but must be NUL-terminated.
   const KEY: &[u8] = b"gc-leaf-function\0";
   let attr = LLVMGetStringAttributeAtIndex(
-    callee,
+    callee_fn,
     llvm_sys::LLVMAttributeFunctionIndex,
     KEY.as_ptr().cast(),
     (KEY.len() - 1) as u32,
   );
   (!attr.is_null()).then_some(GcEffect::NoGc)
+}
+
+/// Follow pointer-cast wrappers to recover a direct `@function` value.
+///
+/// `compiled_call` and leaf inference primarily deal with direct/global callees, but those may be
+/// wrapped in constant-expression casts. LLVM uses constant expressions for pointer casts in
+/// globals/metadata, so handle that shape here.
+unsafe fn resolve_direct_callee_function(mut callee: LLVMValueRef) -> Option<LLVMValueRef> {
+  for _ in 0..8 {
+    if !LLVMIsAFunction(callee).is_null() {
+      return Some(callee);
+    }
+
+    if !LLVMIsAConstantExpr(callee).is_null() {
+      match LLVMGetConstOpcode(callee) {
+        LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {
+          callee = LLVMGetOperand(callee, 0);
+          continue;
+        }
+        _ => {}
+      }
+    }
+
+    break;
+  }
+
+  None
 }
 
 pub struct GcFrame {
@@ -293,7 +317,7 @@ impl GcFrame {
       gc_live_slots.push(derived);
     }
 
-    let mut base_indices = Vec::with_capacity(gc_live_slots.len() + call_args.len());
+    let mut base_indices = Vec::with_capacity(gc_live_slots.len());
     for (idx, _) in base_slots.iter().enumerate() {
       base_indices.push(idx as u32);
     }
@@ -305,26 +329,10 @@ impl GcFrame {
     }
 
     let num_rooted = gc_live_slots.len();
-    let mut live_vals = Vec::with_capacity(num_rooted + call_args.len());
+    let mut live_vals = Vec::with_capacity(num_rooted);
     for (idx, slot) in gc_live_slots.iter().copied().enumerate() {
       live_vals.push(self.load(builder, slot, &format!("gc_live{idx}")));
     }
-
-    // Auto-include any `ptr addrspace(1)` call arguments in the `"gc-live"` bundle.
-    //
-    // These may be *outgoing arguments* that the callee will read, so they must be tracked and
-    // relocatable at the statepoint even if the caller doesn't use them after the call.
-    for &arg in call_args {
-      let ty = LLVMTypeOf(arg);
-      if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
-        && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
-      {
-        let derived_idx = live_vals.len() as u32;
-        live_vals.push(arg);
-        base_indices.push(derived_idx);
-      }
-    }
-
     let sp = statepoints.emit_statepoint_call_indirect(
       builder,
       callee_ptr,
@@ -334,8 +342,10 @@ impl GcFrame {
       &base_indices,
     );
 
-    // Write back relocated values for rooted slots only. Call arguments appended to `live_vals`
-    // do not have backing slots; their relocation is handled by the statepoint lowering itself.
+    // Write back relocated values for rooted slots only.
+    //
+    // The statepoint emitter may internally extend the `"gc-live"` list with GC pointer call
+    // arguments, but those do not have backing slots here.
     for (idx, slot) in gc_live_slots.into_iter().enumerate() {
       self.store(builder, slot, sp.relocated[idx]);
     }
@@ -352,7 +362,10 @@ impl GcFrame {
     callee: LLVMValueRef,
     call_args: &[LLVMValueRef],
   ) -> Option<LLVMValueRef> {
-    let callee_fn_ty = LLVMGlobalGetValueType(callee);
+    let callee_fn_ty = LLVMGlobalGetValueType(
+      resolve_direct_callee_function(callee)
+        .expect("safepoint_call requires a direct/global callee; use safepoint_call_indirect"),
+    );
     self.safepoint_call_inner(builder, statepoints, callee, callee_fn_ty, call_args)
   }
 
@@ -385,7 +398,10 @@ impl GcFrame {
     call_args: &[LLVMValueRef],
     effect: Option<GcEffect>,
   ) -> Option<LLVMValueRef> {
-    let callee_fn_ty = LLVMGlobalGetValueType(callee);
+    let callee_fn_ty = LLVMGlobalGetValueType(
+      resolve_direct_callee_function(callee)
+        .expect("compiled_call requires a direct/global callee; use compiled_call_indirect"),
+    );
     self.compiled_call_indirect(builder, statepoints, callee, callee_fn_ty, call_args, effect)
   }
 

@@ -82,9 +82,14 @@ fn statepoint_smoke() {
   assert_eq!(stackmap.version, runtime_native::stackmaps::STACKMAP_VERSION);
   assert!(
     !stackmap.records.is_empty(),
-    "expected at least one stackmap record"
+    "expected at least one stackmap record in emitted .llvm_stackmaps section"
   );
 
+  // `emit_object_with_statepoints` runs `place-safepoints` before rewriting calls
+  // into `gc.statepoint`. On some LLVM versions/configurations this inserts an
+  // entry poll, so the object may contain multiple stackmap records. We only
+  // require that the stackmap contains a record for the call to our declared
+  // `@callee`.
   let call_ret_off = call_return_offset(&file, "ts_fn").expect("locate call instruction");
   let record = stackmap
     .records
