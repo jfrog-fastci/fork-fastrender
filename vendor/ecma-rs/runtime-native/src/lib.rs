@@ -29,6 +29,7 @@ pub mod sync;
 pub mod threading;
 pub mod async_rt;
 pub mod stackmaps;
+pub mod stackmaps_loader;
 pub mod statepoints;
 pub mod stackwalk_fp;
 pub mod test_util;
@@ -51,6 +52,7 @@ pub use gc::TypeDescriptor;
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use string::*;
+pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
 
 use std::sync::OnceLock;
 
@@ -97,6 +99,20 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: std::time::Duration) -> boo
 pub fn rt_gc_resume_world() -> u64 {
   threading::safepoint::rt_gc_resume_world()
 }
+
+// Unit tests need a `.llvm_stackmaps` section to validate the linker-script
+// based loader without requiring LLVM statepoints in the Rust code.
+#[cfg(all(test, target_os = "linux"))]
+#[link_section = ".llvm_stackmaps"]
+#[no_mangle]
+pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
+  // Version (v3)
+  3, 0, 0, 0, // reserved + padding to u32 boundary
+  // NumFunctions, NumConstants, NumRecords
+  0, 0, 0, 0, //
+  0, 0, 0, 0, //
+  0, 0, 0, 0, //
+];
 
 #[cfg(test)]
 mod tests {
@@ -321,5 +337,22 @@ mod tests {
       _promise_then,
       _coro_await,
     );
+  }
+
+  #[test]
+  fn stackmaps_section_is_accessible_and_parses() {
+    let bytes = stackmaps_section();
+    #[cfg(target_os = "linux")]
+    assert!(
+      !bytes.is_empty(),
+      "expected .llvm_stackmaps to be linked in (test includes a dummy section)"
+    );
+    if bytes.is_empty() {
+      // Non-Linux builds don't have the linker-script based loader yet.
+      return;
+    }
+
+    let parsed = StackMaps::parse(bytes).expect("stack maps should parse");
+    assert_eq!(parsed.raw().version, 3);
   }
 }
