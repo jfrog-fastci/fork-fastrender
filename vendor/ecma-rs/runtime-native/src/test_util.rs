@@ -118,6 +118,15 @@ pub fn debug_hold_blocking_pool_queue_lock() -> impl Drop {
   crate::blocking_pool::debug_hold_queue_lock()
 }
 
+/// Debug/test helper: execute `f` while holding the global heap lock used by `rt_alloc`.
+///
+/// This exists to deterministically reproduce contention on the allocator's global heap lock for
+/// stop-the-world safepoint tests.
+#[doc(hidden)]
+pub fn debug_with_global_heap_lock<R>(f: impl FnOnce() -> R) -> R {
+  crate::rt_alloc::debug_with_global_heap_lock(f)
+}
+
 // --- GC testing helpers -------------------------------------------------------------------------
 
 static GC_TEST_MUTEX: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));

@@ -225,10 +225,25 @@ fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
 /// with mutator threads.
 pub(crate) fn with_heap_lock_world_stopped<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
   let global = global_heap();
-  let _guard = global.heap_lock.lock();
+  // Root enumeration/relocation runs during stop-the-world (odd epoch). `GcAwareMutex::lock()` uses
+  // a contended slow path that may temporarily enter a GC-safe region and may refuse to return while
+  // a stop-the-world request is active for non-coordinator threads. Coordinator code must use
+  // `lock_for_gc()` here so it can reliably acquire the heap lock while the world is stopped.
+  let _guard = global.heap_lock.lock_for_gc();
   // SAFETY: `_guard` serializes access to the non-thread-safe parts of `GcHeap`.
   let heap = unsafe { &mut *(global.heap as *mut crate::gc::GcHeap) };
   f(heap)
+}
+
+/// Test-only hook: execute `f` while holding the process-global heap lock.
+///
+/// This exists so integration tests can deterministically force contention on the heap lock while
+/// a thread requests stop-the-world GC. It is not considered stable API.
+#[doc(hidden)]
+pub(crate) fn debug_with_global_heap_lock<R>(f: impl FnOnce() -> R) -> R {
+  let global = global_heap();
+  let _guard = global.heap_lock.lock();
+  f()
 }
 
 unsafe fn init_object(obj: *mut u8, size: usize, desc: &'static TypeDescriptor, epoch: u8, pinned: bool) {

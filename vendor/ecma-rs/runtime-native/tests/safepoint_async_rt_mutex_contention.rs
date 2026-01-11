@@ -567,3 +567,46 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_pending_promise_reactions_
 
   threading::unregister_current_thread();
 }
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_global_heap_lock() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let handle = runtime_native::test_util::debug_with_global_heap_lock(|| {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+    let started_worker = started.clone();
+
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+
+      started_worker.wait();
+
+      // Contend on the allocator's global heap lock deterministically.
+      runtime_native::test_util::debug_with_global_heap_lock(|| {});
+
+      threading::unregister_current_thread();
+    });
+
+    let worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    // Wait until the worker is blocked in the contended path (NativeSafe).
+    wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was blocked on the global heap lock"
+    );
+
+    handle
+  });
+
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}
