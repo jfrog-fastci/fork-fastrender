@@ -84,6 +84,7 @@ graph TD
     native_js --> hir_js
     native_js --> parse_js
     native_js --> runtime_native
+    native_js --> runtime_native_abi
     native_js --> typecheck_ts
     native_js --> types_ts_interned
     native_js --> vm_js
@@ -112,6 +113,7 @@ graph TD
     runtime_js --> diagnostics
     runtime_js --> parse_js
     runtime_js --> vm_js
+    runtime_native --> runtime_io_uring
     runtime_native --> runtime_native_abi
     runtime_native --> stackmap_context
     semantic_js --> diagnostics
