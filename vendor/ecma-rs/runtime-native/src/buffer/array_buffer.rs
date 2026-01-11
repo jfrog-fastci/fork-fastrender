@@ -533,3 +533,23 @@ mod borrow_tests {
     );
   }
 }
+
+#[cfg(test)]
+mod pin_tests {
+  use super::*;
+
+  #[test]
+  fn detach_transfer_resize_fail_while_pinned() {
+    let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+    let pinned = buf.pin().unwrap();
+
+    assert_eq!(buf.detach().unwrap_err(), ArrayBufferError::Pinned);
+    assert_eq!(buf.transfer().unwrap_err(), ArrayBufferError::Pinned);
+    assert_eq!(buf.resize(8).unwrap_err(), ArrayBufferError::Pinned);
+
+    drop(pinned);
+
+    buf.detach().unwrap();
+    assert!(buf.is_detached());
+  }
+}
