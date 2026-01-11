@@ -206,6 +206,8 @@ extern "C" {
   pub fn rt_backing_store_external_bytes() -> usize;
 
   // Global roots / handles
+  pub fn rt_global_root_register(slot: *mut usize);
+  pub fn rt_global_root_unregister(slot: *mut usize);
   pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
   pub fn rt_gc_unregister_root_slot(handle: u32);
   pub fn rt_gc_pin(ptr: GcPtr) -> u32;
@@ -326,6 +328,8 @@ mod tests {
       "rt_write_barrier_range(",
       "rt_gc_collect(",
       "rt_backing_store_external_bytes(",
+      "rt_global_root_register(",
+      "rt_global_root_unregister(",
       "rt_gc_register_root_slot(",
       "rt_gc_unregister_root_slot(",
       "rt_gc_pin(",
