@@ -1,25 +1,23 @@
-schema_version: 1
-symbols:
-  - name: node:crypto.randomBytes
-    aliases:
-      - crypto.randomBytes
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:crypto.randomBytes:
+  aliases:
+    - crypto.randomBytes
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:crypto.createHash
-    aliases:
-      - crypto.createHash
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:crypto.createHash:
+  aliases:
+    - crypto.createHash
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false

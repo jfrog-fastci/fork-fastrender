@@ -1,109 +1,107 @@
-schema_version: 1
-symbols:
-  - name: node:fs.readFile
-    aliases:
-      - fs.readFile
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.readFile:
+  aliases:
+    - fs.readFile
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.readFileSync
-    aliases:
-      - fs.readFileSync
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.readFileSync:
+  aliases:
+    - fs.readFileSync
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.writeFile
-    aliases:
-      - fs.writeFile
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.writeFile:
+  aliases:
+    - fs.writeFile
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.writeFileSync
-    aliases:
-      - fs.writeFileSync
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.writeFileSync:
+  aliases:
+    - fs.writeFileSync
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.stat
-    aliases:
-      - fs.stat
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.stat:
+  aliases:
+    - fs.stat
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.statSync
-    aliases:
-      - fs.statSync
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.statSync:
+  aliases:
+    - fs.statSync
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.readdir
-    aliases:
-      - fs.readdir
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.readdir:
+  aliases:
+    - fs.readdir
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.readdirSync
-    aliases:
-      - fs.readdirSync
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: true
-      io: true
-      network: false
+node:fs.readdirSync:
+  aliases:
+    - fs.readdirSync
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: io
+    io: true
+    network: false
 
-  - name: node:fs.existsSync
-    aliases:
-      - fs.existsSync
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: io
-      may_throw: false
-      io: true
-      network: false
+node:fs.existsSync:
+  aliases:
+    - fs.existsSync
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    template: io
+    io: true
+    network: false

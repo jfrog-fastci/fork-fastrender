@@ -1,73 +1,71 @@
-schema_version: 1
-symbols:
-  - name: node:timers.setTimeout
-    aliases:
-      - timers.setTimeout
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.setTimeout:
+  aliases:
+    - timers.setTimeout
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:timers.clearTimeout
-    aliases:
-      - timers.clearTimeout
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.clearTimeout:
+  aliases:
+    - timers.clearTimeout
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:timers.setInterval
-    aliases:
-      - timers.setInterval
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.setInterval:
+  aliases:
+    - timers.setInterval
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:timers.clearInterval
-    aliases:
-      - timers.clearInterval
-    since: "v0.1.0"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.clearInterval:
+  aliases:
+    - timers.clearInterval
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:timers.setImmediate
-    aliases:
-      - timers.setImmediate
-    since: "v0.9.1"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.setImmediate:
+  aliases:
+    - timers.setImmediate
+  since: "v0.9.1"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false
 
-  - name: node:timers.clearImmediate
-    aliases:
-      - timers.clearImmediate
-    since: "v0.9.1"
-    purity:
-      template: impure
-    effects:
-      template: unknown
-      may_throw: true
-      io: false
-      network: false
+node:timers.clearImmediate:
+  aliases:
+    - timers.clearImmediate
+  since: "v0.9.1"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    io: false
+    network: false

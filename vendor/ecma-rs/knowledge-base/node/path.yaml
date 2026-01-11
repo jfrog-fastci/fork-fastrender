@@ -1,61 +1,59 @@
-schema_version: 1
-symbols:
-  - name: node:path.join
-    aliases:
-      - path.join
-    since: "v0.1.0"
-    purity:
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      io: false
-      network: false
+node:path.join:
+  aliases:
+    - path.join
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    io: false
+    network: false
 
-  - name: node:path.resolve
-    aliases:
-      - path.resolve
-    since: "v0.1.0"
-    purity:
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      io: false
-      network: false
+node:path.resolve:
+  aliases:
+    - path.resolve
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    io: false
+    network: false
 
-  - name: node:path.basename
-    aliases:
-      - path.basename
-    since: "v0.1.0"
-    purity:
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      io: false
-      network: false
+node:path.basename:
+  aliases:
+    - path.basename
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    io: false
+    network: false
 
-  - name: node:path.dirname
-    aliases:
-      - path.dirname
-    since: "v0.1.0"
-    purity:
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      io: false
-      network: false
+node:path.dirname:
+  aliases:
+    - path.dirname
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    io: false
+    network: false
 
-  - name: node:path.extname
-    aliases:
-      - path.extname
-    since: "v0.1.0"
-    purity:
-      template: pure
-    effects:
-      template: pure
-      may_throw: true
-      io: false
-      network: false
+node:path.extname:
+  aliases:
+    - path.extname
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    io: false
+    network: false
