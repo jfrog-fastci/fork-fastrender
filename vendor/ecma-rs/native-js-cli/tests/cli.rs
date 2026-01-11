@@ -1607,6 +1607,33 @@ fn cyclic_module_dependency_through_reexports_is_rejected() {
 }
 
 #[test]
+fn cyclic_module_dependency_through_export_all_is_rejected() {
+  let tmp = TempDir::new().unwrap();
+
+  let a = tmp.path().join("a.ts");
+  fs::write(
+    &a,
+    "export * from \"./b\";\nexport function main(): number { return 0; }\n",
+  )
+  .unwrap();
+
+  let b = tmp.path().join("b.ts");
+  fs::write(&b, "export * from \"./a\";\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&a)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0146"))
+    .stderr(predicates::str::contains("cyclic module dependency"));
+}
+
+#[test]
 fn locals_and_while_loop_sum_0_to_9() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
