@@ -171,6 +171,9 @@ bash scripts/cargo_agent.sh xtask refresh-progress-accuracy
 
 # Refresh only the top-N worst accuracy pages from the existing progress JSON:
 bash scripts/cargo_agent.sh xtask refresh-progress-accuracy --from-progress progress/pages --top-worst-accuracy 10
+
+# Refresh in deterministic shards so multiple workers/machines can run in parallel:
+bash scripts/cargo_agent.sh xtask refresh-progress-accuracy --from-progress progress/pages --only-failures --top-worst-accuracy 1000000 --min-diff-percent 0 --shard 0/8 --keep-going --out-dir target/refresh_progress_accuracy_0_8
 ```
 
 When driving this from pageset runs, you can select the relevant fixtures directly from the

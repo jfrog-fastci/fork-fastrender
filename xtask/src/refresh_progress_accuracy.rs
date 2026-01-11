@@ -57,6 +57,10 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, value_name = "PERCENT", requires = "top_worst_accuracy")]
   pub min_diff_percent: Option<f64>,
 
+  /// Only process a deterministic shard of the fixtures (index/total, 0-based).
+  #[arg(long, value_parser = crate::parse_shard)]
+  pub shard: Option<(usize, usize)>,
+
   /// Per-channel tolerance forwarded to `diff_renders`.
   #[arg(long, default_value_t = 0)]
   pub tolerance: u8,
@@ -179,6 +183,9 @@ fn print_plan(
   println!("  out_dir: {}", out_dir.display());
   println!("  report: {}", report_path.display());
   println!("  progress_dir: {}", progress_dir.display());
+  if let Some((index, total)) = args.shard {
+    println!("  shard: {index}/{total}");
+  }
   if let Some(fixtures) = &args.fixtures {
     println!("  fixtures: {}", fixtures.join(","));
   } else if let Some(from_progress) = &args.from_progress {
@@ -212,6 +219,16 @@ fn print_plan(
   println!();
   println!("Steps:");
   println!("  1) fixture-chrome-diff (writes {})", report_path.display());
+  if let Ok(argv) = build_fixture_chrome_diff_argv(args) {
+    // Print the exact `fixture-chrome-diff` invocation the wrapper will run (useful for debugging
+    // sharding/selection).
+    let rendered = argv
+      .iter()
+      .map(|v| v.to_string_lossy())
+      .collect::<Vec<_>>()
+      .join(" ");
+    println!("     $ {rendered}");
+  }
   println!(
     "  2) sync-progress-accuracy --report {} --progress-dir {}",
     report_path.display(),
@@ -225,7 +242,17 @@ fn print_plan(
 fn build_fixture_chrome_diff_args(
   args: &RefreshProgressAccuracyArgs,
 ) -> Result<crate::fixture_chrome_diff::FixtureChromeDiffArgs> {
-  // Build a `fixture-chrome-diff` argument struct by reusing the canonical clap definitions and
+  let argv = build_fixture_chrome_diff_argv(args)?;
+
+  let cli = crate::Cli::try_parse_from(argv).map_err(anyhow::Error::new)?;
+  match cli.command {
+    crate::Commands::FixtureChromeDiff(args) => Ok(args),
+    _ => bail!("internal error: failed to parse fixture-chrome-diff args"),
+  }
+}
+
+fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<Vec<OsString>> {
+  // Build a `fixture-chrome-diff` argument list by reusing the canonical clap definitions and
   // defaults. This avoids duplicating its (large) set of defaults and keeps the wrapper aligned
   // with future changes.
   let mut argv: Vec<OsString> = vec!["xtask".into(), "fixture-chrome-diff".into()];
@@ -258,6 +285,11 @@ fn build_fixture_chrome_diff_args(
     argv.push(min.to_string().into());
   }
 
+  if let Some((index, total)) = args.shard {
+    argv.push("--shard".into());
+    argv.push(format!("{index}/{total}").into());
+  }
+
   argv.push("--tolerance".into());
   argv.push(args.tolerance.to_string().into());
   argv.push("--max-diff-percent".into());
@@ -272,11 +304,7 @@ fn build_fixture_chrome_diff_args(
     argv.push("--ignore-alpha".into());
   }
 
-  let cli = crate::Cli::try_parse_from(argv).map_err(anyhow::Error::new)?;
-  match cli.command {
-    crate::Commands::FixtureChromeDiff(args) => Ok(args),
-    _ => bail!("internal error: failed to parse fixture-chrome-diff args"),
-  }
+  Ok(argv)
 }
 
 fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
@@ -517,6 +545,7 @@ mod tests {
       only_failures: false,
       top_worst_accuracy: None,
       min_diff_percent: None,
+      shard: None,
       tolerance: 0,
       max_diff_percent: 0.0,
       timeout: 123,

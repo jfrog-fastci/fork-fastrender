@@ -38,6 +38,8 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
   - Recommended starter set: `tests/pages/pageset_guardrails.json` (curated high-signal pages).
   - Commands:
     - `bash scripts/cargo_agent.sh xtask refresh-progress-accuracy --fixtures <stem1,stem2,...>`
+    - Sharded refresh (run shards 0..7 in parallel as needed):
+      - `bash scripts/cargo_agent.sh xtask refresh-progress-accuracy --from-progress progress/pages --only-failures --top-worst-accuracy 1000000 --min-diff-percent 0 --shard 0/8 --keep-going --out-dir target/refresh_progress_accuracy_0_8`
     - (manual) `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --fixtures <stem1,stem2,...>` (defaults: viewport `1040x1240`, `--js off`, `tolerance=0`, `max-diff-percent=0`)
     - (manual) `bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json --progress-dir progress/pages`
   - Note: baselines depend on the installed Chrome/Chromium build, so reruns can cause churn when Chrome versions differ.
