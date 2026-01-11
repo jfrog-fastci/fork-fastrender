@@ -165,9 +165,10 @@ impl Document {
 
       let shadow_template = {
         let node = self.node(id);
-        if !node_is_element_like(&node.kind) || node_is_template_element(&node.kind) {
-          None
-        } else if !node_is_valid_shadow_host(&node.kind) {
+        if !node_is_element_like(&node.kind)
+          || node_is_template_element(&node.kind)
+          || !node_is_valid_shadow_host(&node.kind)
+        {
           None
         } else if node.children.iter().any(|&child_id| {
           self.node(child_id).parent == Some(id) && node_is_shadow_root(&self.node(child_id).kind)
@@ -367,6 +368,36 @@ mod tests {
         .all(|&child| !node_is_template_element(&doc.node(child).kind)),
       "shadowroot template should be promoted to a shadow root on valid hosts"
     );
+    let roundtrip = doc.to_renderer_dom();
+    assert_eq!(
+      snapshot_dom(&expected),
+      snapshot_dom(&roundtrip),
+      "dom2 shadow attachment should match crate::dom::parse_html snapshot"
+    );
+  }
+
+  #[test]
+  fn attach_shadow_roots_ignores_invalid_shadow_hosts_and_matches_legacy_snapshot() {
+    let html = concat!(
+      "<!doctype html>",
+      "<select id=host>",
+      "<template shadowroot=open><div id=shadow></div></template>",
+      "<option id=light>Light</option>",
+      "</select>",
+    );
+ 
+    let expected = crate::dom::parse_html(html).unwrap();
+    let doc = crate::dom2::parse_html(html).unwrap();
+ 
+    let host = find_node_by_id(&doc, "host").expect("host element not found");
+    assert!(
+      doc.node(host)
+        .children
+        .iter()
+        .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+      "invalid shadow hosts must not have shadow roots attached"
+    );
+ 
     let roundtrip = doc.to_renderer_dom();
     assert_eq!(
       snapshot_dom(&expected),
