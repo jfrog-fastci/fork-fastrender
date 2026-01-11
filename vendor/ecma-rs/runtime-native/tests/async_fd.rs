@@ -222,3 +222,45 @@ fn repoll_replaces_waker() {
     "first waker was woken after being replaced"
   );
 }
+
+#[test]
+fn drop_last_waiter_deregisters_fd() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe().unwrap();
+  let afd = AsyncFd::new(rfd);
+
+  let woke = Arc::new(AtomicBool::new(false));
+  let waker = flag_waker(woke);
+  let mut cx = Context::from_waker(&waker);
+
+  let fut = Box::pin(afd.readable());
+  let mut fut = fut;
+  assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Pending));
+  drop(fut);
+
+  // The drop path schedules cleanup work (deregister + Arc release) via a microtask. Make sure the
+  // runtime becomes idle afterwards; if a stale reactor watcher remains registered, `rt_async_poll`
+  // will report pending work even after this timer fires.
+  let fired = Box::new(AtomicBool::new(false));
+  let fired_ptr: *mut AtomicBool = Box::into_raw(fired);
+  async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_millis(20),
+    async_rt::Task::new(set_timeout_flag, fired_ptr.cast::<u8>()),
+  );
+
+  // First tick flushes the microtask (and returns early because the timer is pending).
+  let _ = rt_async_poll();
+  // Second tick waits for the timer, then should observe an idle reactor.
+  let pending = rt_async_poll();
+
+  let fired = unsafe { &*fired_ptr };
+  assert!(fired.load(Ordering::SeqCst), "timer did not fire");
+  unsafe {
+    drop(Box::from_raw(fired_ptr));
+  }
+
+  assert!(
+    !pending,
+    "async runtime still had pending work after dropping last AsyncFd waiter"
+  );
+}
