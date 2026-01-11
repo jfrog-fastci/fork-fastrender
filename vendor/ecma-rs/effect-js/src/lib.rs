@@ -23,7 +23,7 @@ pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
 pub use kb::load_default_api_database;
-pub use db::{CallSiteInfo, EffectDb};
+pub use db::EffectDb;
 pub use recognize::{
   recognize_patterns_best_effort_untyped, recognize_patterns_untyped, RecognizedPattern,
 };

@@ -23,11 +23,3 @@ impl EffectDb {
     &self.kb
   }
 }
-
-/// Facts inferred about a specific callsite (e.g. callback purity).
-#[derive(Debug, Default, Clone)]
-pub struct CallSiteInfo {
-  pub callback_is_pure: Option<bool>,
-  pub callback_uses_index: Option<bool>,
-  pub callback_is_associative: Option<bool>,
-}

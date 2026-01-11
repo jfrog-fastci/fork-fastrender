@@ -1,3 +1,4 @@
+use effect_model::Purity;
 use knowledge_base::Api;
 
 use crate::CallSiteInfo;
@@ -25,11 +26,16 @@ pub fn parallelizable_at_callsite(api: &Api, callsite: &CallSiteInfo) -> bool {
 
   // Fallback heuristic for callback-driven collection APIs when the KB entry
   // doesn't specify `parallelizable` directly.
+  let Some(cb) = callsite.callback else {
+    return false;
+  };
+
+  // Allocating callbacks are still safe to run in parallel; the allocation is
+  // thread-local from the caller's perspective.
+  let callback_is_pure = matches!(cb.purity, Purity::Pure | Purity::Allocating);
+
   if api.name.ends_with(".map") || api.name.ends_with(".filter") {
-    return callsite.callback_is_pure.unwrap_or(false) && !callsite.callback_uses_index.unwrap_or(false);
-  }
-  if api.name.ends_with(".reduce") {
-    return callsite.callback_is_pure.unwrap_or(false) && callsite.callback_is_associative.unwrap_or(false);
+    return callback_is_pure && !cb.uses_index;
   }
 
   false
