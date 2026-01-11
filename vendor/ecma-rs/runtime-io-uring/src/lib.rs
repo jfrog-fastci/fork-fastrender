@@ -11,6 +11,24 @@
 //! - Explicit multi-shot ops (currently `recvmsg`) that keep kernel-referenced metadata alive until
 //!   the final CQE.
 //!
+//! ## Safety / pointer lifetime model
+//! Any user memory referenced by an SQE **must remain valid and stable** until the kernel produces
+//! the corresponding CQE, and userspace has processed it.
+//!
+//! This includes buffers, iovec metadata, path strings, `Timespec` values used by linked timeouts,
+//! and any extra keep-alive resources stored alongside ops.
+//!
+//! ## Drop / teardown semantics
+//! - Dropping an [`IoOp`] handle detaches the caller from the completion result, but does **not**
+//!   free any SQE-referenced resources early. Resources are owned by the driver and are released
+//!   exactly once by CQE processing.
+//! - Driver teardown policy (policy **B**):
+//!   - Drivers must be explicitly driven to completion (and/or canceled) before being dropped.
+//!   - In debug builds (or with `debug_stability`), dropping a driver with in-flight ops panics
+//!     (unless already panicking).
+//!   - In release builds, dropping a driver with in-flight ops leaks the ring + in-flight state to
+//!     prevent use-after-free.
+//!
 //! Optional feature flags:
 //! - `debug_stability`: records kernel pointer graphs at submission time and asserts they are
 //!   unchanged when processing CQEs. This is intended as a development-time safety net for moving

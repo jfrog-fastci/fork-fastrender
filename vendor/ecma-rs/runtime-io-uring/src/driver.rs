@@ -2012,28 +2012,32 @@ mod imp {
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak.
             let _ = self.poll_completions();
 
-            let in_flight_non_empty = self
-                .in_flight
-                .as_ref()
-                .is_some_and(|m| !m.is_empty());
-            if in_flight_non_empty {
-                // Safety: dropping an io_uring instance while the kernel still has in-flight ops
-                // can lead to use-after-free on both:
+            let in_flight_len = self.in_flight.as_ref().map_or(0, |m| m.len());
+            if in_flight_len != 0 {
+                // Safety: dropping an io_uring instance while the kernel still has in-flight ops can
+                // lead to use-after-free on both:
                 // - the ring's shared memory mappings (CQE writes), and
-                // - user-provided buffer pointers.
+                // - user-provided buffer pointers / per-op metadata.
                 //
-                // Leak the ring and the in-flight op resources to preserve memory safety. This
-                // should only happen if the driver is dropped without driving it to completion.
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "runtime-io-uring: dropping IoUringDriver with {} in-flight ops; leaking ring + buffers",
-                    self.in_flight.as_ref().map_or(0, |m| m.len())
-                );
+                // Policy B:
+                // - In debug builds, panic (unless we're already unwinding).
+                // - In release builds, leak to preserve memory safety.
                 if let Some(ring) = self.ring.take() {
                     mem::forget(ring);
                 }
                 if let Some(in_flight) = self.in_flight.take() {
                     mem::forget(in_flight);
+                }
+
+                if (cfg!(debug_assertions) || cfg!(feature = "debug_stability"))
+                    && !std::thread::panicking()
+                {
+                    // Note: we *must* leak before panicking. Panicking in `Drop` does not guarantee
+                    // fields won't be dropped during unwinding.
+                    panic!(
+                        "runtime-io-uring: dropping IoUringDriver with {in_flight_len} in-flight ops; \
+                         drive to completion (and/or cancel) before drop"
+                    );
                 }
                 return;
             }

@@ -328,7 +328,7 @@ mod linux {
             }
         }
 
-        fn record_stability_pointers(&self, rec: &mut debug_stability::Recorder) {
+        fn record_stability_pointers(&mut self, rec: &mut debug_stability::Recorder) {
             match self {
                 PreparedOp::Read { buf, .. } => {
                     rec.ptr(
@@ -1064,6 +1064,42 @@ mod linux {
                         },
                     }
                 }
+            }
+        }
+    }
+
+    impl Drop for Driver {
+        fn drop(&mut self) {
+            // Only the final `Driver` handle can tear down the ring.
+            if Arc::strong_count(&self.inner) != 1 {
+                return;
+            }
+
+            // If any ops are still in-flight, leaking the inner state is the only safe option:
+            // dropping would unmap the ring and free op-owned buffers/metadata while the kernel may
+            // still reference them.
+            let in_flight_len = {
+                let guard = match self.inner.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                guard.ops.len()
+            };
+
+            if in_flight_len == 0 {
+                return;
+            }
+
+            // Leak before panicking: panicking in `Drop` does not guarantee field drops are skipped.
+            mem::forget(self.inner.clone());
+
+            if (cfg!(debug_assertions) || cfg!(feature = "debug_stability"))
+                && !std::thread::panicking()
+            {
+                panic!(
+                    "runtime-io-uring: dropping legacy Driver with {in_flight_len} in-flight ops; \
+                     drive to completion (and/or cancel) before drop"
+                );
             }
         }
     }

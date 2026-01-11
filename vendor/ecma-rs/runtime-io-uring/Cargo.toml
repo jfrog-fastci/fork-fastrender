@@ -7,6 +7,7 @@ repository.workspace = true
 publish = false
 
 [features]
+default = []
 # Debug-only pointer-stability instrumentation intended to catch missing pinning/roots when
 # integrating with a moving GC. When disabled, all instrumentation should compile away to
 # near-zero overhead.

@@ -105,7 +105,7 @@ fn recv_with_buf_select_recycles_buffers() {
 }
 
 #[test]
-fn drop_driver_with_inflight_buf_select_does_not_cycle() {
+fn drop_driver_with_leased_buf_select_does_not_keep_driver_alive() {
     let mut driver = match Driver::new(8) {
         Ok(d) => d,
         Err(e) if is_uring_unavailable(&e) => {
@@ -127,8 +127,7 @@ fn drop_driver_with_inflight_buf_select_does_not_cycle() {
         return;
     }
 
-    // Use a single buffer so holding on to `buf1` keeps the pool "empty" and `op2` stays in the
-    // driver's `ops` map (even if it completes immediately with `-ENOBUFS`).
+    // Use a single buffer so holding on to `buf1` keeps the pool "empty".
     let pool = ProvidedBufPool::new(&driver, 1, 8, 1).unwrap();
 
     let mut fds = [0; 2];
@@ -151,17 +150,11 @@ fn drop_driver_with_inflight_buf_select_does_not_cycle() {
         other => panic!("unexpected completion: {other:?}"),
     };
 
-    // Submit a second op and intentionally never call `wait()` again.
-    tx.write_all(b"world").unwrap();
-    let _op2 = driver
-        .submit(PreparedOp::recv_with_buf_select(rx.as_raw_fd(), pool.clone()))
-        .unwrap();
-
     let weak_driver = driver.downgrade();
     drop(driver);
 
-    // Regression test: Previously the pool held a strong `Driver`, creating a reference cycle:
-    // `Driver -> ops -> PreparedOp -> ProvidedBufPool -> Driver`.
+    // Regression test: Previously the pool held a strong `Driver`, keeping the driver alive even
+    // after the last handle was dropped.
     assert!(weak_driver.upgrade().is_none());
 
     // Dropping leased buffers after the driver is already gone should not panic and should update

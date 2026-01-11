@@ -69,7 +69,18 @@ fn drop_driver_with_inflight_op_does_not_drop_keep_alive() {
     // If the legacy driver dropped its op table (and therefore op-owned buffers/metadata) while the
     // kernel still held pointers, this would be a UAF. The driver is expected to leak the ring and
     // in-flight ops instead.
-    drop(driver);
+    let dropped = std::panic::catch_unwind(|| drop(driver));
+    if cfg!(debug_assertions) || cfg!(feature = "debug_stability") {
+        assert!(
+            dropped.is_err(),
+            "dropping a legacy Driver with in-flight ops should panic in debug builds"
+        );
+    } else {
+        assert!(
+            dropped.is_ok(),
+            "dropping a legacy Driver with in-flight ops should not panic in release builds"
+        );
+    }
 
     assert_eq!(
         drops.load(Ordering::SeqCst),
@@ -77,4 +88,3 @@ fn drop_driver_with_inflight_op_does_not_drop_keep_alive() {
         "keep_alive resources were dropped while the op was still in-flight"
     );
 }
-
