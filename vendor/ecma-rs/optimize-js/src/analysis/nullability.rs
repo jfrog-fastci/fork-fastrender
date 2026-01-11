@@ -158,6 +158,32 @@ impl NullabilityResult {
   pub fn mask_of_var_at_entry(&self, label: u32, var: u32) -> NullabilityMask {
     self.entry_state(label).mask_of_var(var)
   }
+
+  /// Convenience helper for tests/clients that need instruction-level precision.
+  ///
+  /// Returns the nullability mask for `var` immediately *before* `inst_idx` in `label`.
+  pub fn mask_of_var_before_inst(
+    &self,
+    cfg: &Cfg,
+    label: u32,
+    inst_idx: usize,
+    var: u32,
+  ) -> NullabilityMask {
+    let mut state = self.entry_state(label).clone();
+    if !state.reachable {
+      return NullabilityMask::BOTTOM;
+    }
+    let mut analysis = NullabilityAnalysis {
+      var_count: state.masks.len(),
+    };
+    for (idx, inst) in cfg.bblocks.get(label).iter().enumerate().take(inst_idx) {
+      analysis.apply_to_instruction(label, idx, inst, &mut state);
+      if !state.reachable {
+        return NullabilityMask::BOTTOM;
+      }
+    }
+    state.mask_of_var(var)
+  }
 }
 
 pub fn calculate_nullability(cfg: &Cfg) -> NullabilityResult {
@@ -337,6 +363,40 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
       return next;
     };
 
+    // Truthiness-based nullability narrowing:
+    //
+    // - `if (x)` taking the true edge means `x` is truthy. `null` and `undefined`
+    //   are always falsy, so `x` cannot be nullish on that edge.
+    // - `if (!x)` lowers to `tmp = !x; if (tmp) ...`. Taking the *false* edge
+    //   means `!x` is falsy, so `x` is truthy and therefore non-nullish.
+    let non_nullish = NullabilityMask::OTHER;
+    if is_true_edge {
+      if let Some(slot) = next.masks.get_mut(*cond_var as usize) {
+        *slot &= non_nullish;
+        if slot.is_bottom() {
+          next.set_unreachable();
+          return next;
+        }
+      }
+    } else if let Some(def) = pred_block.iter().rev().nth(1) {
+      if def.t == InstTyp::Un && def.tgts.get(0).copied() == Some(*cond_var) {
+        let (_tgt, op, arg) = def.as_un();
+        if op == UnOp::Not {
+          if let Arg::Var(v) = arg {
+            if let Some(slot) = next.masks.get_mut(*v as usize) {
+              *slot &= non_nullish;
+              if slot.is_bottom() {
+                next.set_unreachable();
+                return next;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Existing narrowing based on null/undefined comparisons.
+    //
     // Find the defining instruction for the boolean condition value. We allow a
     // single `!` indirection so patterns like `if (!(x == null))` still narrow.
     let mut negate = false;
@@ -388,7 +448,6 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
     };
 
     let nullish = NullabilityMask::NULL | NullabilityMask::UNDEF;
-    let non_nullish = NullabilityMask::OTHER;
 
     let (true_refine, false_refine) = match op {
       BinOp::LooseEq => (nullish, non_nullish),
@@ -599,3 +658,4 @@ mod tests {
     assert_eq!(r1.result, r2.result);
   }
 }
+
