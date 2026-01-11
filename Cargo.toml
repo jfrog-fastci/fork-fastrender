@@ -164,6 +164,8 @@ egui-winit = { version = "0.23", default-features = false, features = ["clipboar
 criterion = "0.5"
 filetime = "0.2"
 usvg = "0.43"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full", "visit"] }
 
 [[test]]
 name = "wpt_tests"

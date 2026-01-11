@@ -22815,7 +22815,7 @@ mod tests {
   }
 
   #[test]
-  fn diagnostics_session_nested_acquire_panics_instead_of_deadlocking() {
+  fn diagnostics_session_nested_acquire_is_reentrant() {
     let outer = DiagnosticsSessionGuard::acquire();
     let inner = DiagnosticsSessionGuard::acquire();
 

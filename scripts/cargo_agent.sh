@@ -9,6 +9,20 @@ if [[ "${FASTR_CARGO_USE_SCCACHE:-0}" != "1" ]]; then
   export SCCACHE_DISABLE=1
 fi
 
+# libaom (used for AVIF decoding via `avif-decode` → `aom-decode` → `libaom-sys`) requires an
+# assembler (yasm/nasm) for optimized builds. Our agent environments may not have these tools
+# installed, so default to the portable (non-asm) build.
+#
+# Allow callers to opt back into optimized builds by exporting these variables in their shell.
+if [[ -z "${AOM_TARGET_CPU:-}" ]]; then
+  export AOM_TARGET_CPU="generic"
+fi
+if [[ -z "${CMAKE_ARGS:-}" ]]; then
+  export CMAKE_ARGS="-DAOM_TARGET_CPU=generic"
+elif [[ "${CMAKE_ARGS}" != *"AOM_TARGET_CPU"* ]]; then
+  export CMAKE_ARGS="${CMAKE_ARGS} -DAOM_TARGET_CPU=generic"
+fi
+
 # High-throughput cargo wrapper for multi-agent hosts.
 #
 # Goals:

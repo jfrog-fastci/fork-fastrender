@@ -104,6 +104,7 @@ mod meta_viewport_test;
 mod url_client_redirects;
 mod webidl_vm_js_workspace_guard;
 mod no_merge_markers;
+mod no_production_panics;
 mod offset_anchor_parsing_test;
 mod pages_multilingual_fixture_test;
 mod part_export_map_test;
