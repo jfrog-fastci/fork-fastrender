@@ -400,6 +400,7 @@ impl BackingStore {
 
 /// RAII guard representing an in-flight I/O operation that reads from the backing store.
 #[derive(Debug)]
+#[must_use = "BorrowGuardRead must be kept alive to keep the backing store borrowed"]
 pub struct BorrowGuardRead {
   store: BackingStore,
 }
@@ -425,6 +426,7 @@ impl Drop for BorrowGuardRead {
 
 /// RAII guard representing an in-flight I/O operation that writes into the backing store.
 #[derive(Debug)]
+#[must_use = "BorrowGuardWrite must be kept alive to keep the backing store borrowed"]
 pub struct BorrowGuardWrite {
   store: BackingStore,
 }

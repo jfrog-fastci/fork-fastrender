@@ -41,6 +41,7 @@ impl IoBuf {
 /// - pinned backing stores (to keep the pointers alive),
 /// - optional `iovec[]` descriptor memory for vectored syscalls/io_uring, and
 /// - an accounting permit that is released on drop (completion/cancellation).
+#[must_use = "IoOp must be kept alive to keep backing stores pinned/borrowed and to hold limiter permits"]
 #[derive(Debug)]
 pub struct IoOp {
   bufs: Vec<IoBuf>,
