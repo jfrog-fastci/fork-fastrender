@@ -12,6 +12,19 @@ without having to reverse-engineer assumptions from codegen.
 > The statepoint/stackmap strategy is LLVM-specific but architecture-agnostic
 > (AArch64 is expected to work with the same approach).
 
+## ABI header + external smoke test
+
+The stable C ABI surface is declared in:
+
+- `runtime-native/include/runtime_native.h`
+
+To sanity-check ABI stability and exercise the runtime from outside Rust:
+
+```bash
+# From the ecma-rs workspace root:
+bash scripts/check_runtime_native_abi.sh
+```
+
 ---
 
 ## 0. Glossary
@@ -659,4 +672,3 @@ Track overhead and regressions:
 - GC pause time and total time for synthetic heaps.
 - Scheduler overhead (spawn/yield/join throughput).
 - Async poll overhead in idle and under load.
-
