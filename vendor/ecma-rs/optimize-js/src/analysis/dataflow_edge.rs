@@ -28,6 +28,22 @@ pub trait ForwardEdgeDataFlowAnalysis {
 
   /// Combine states flowing into a block.
   fn meet(&mut self, inputs: &[(u32, &Self::State)]) -> Self::State;
+ 
+  /// Like [`Self::meet`], but also provides the destination label and the
+  /// previous entry state for that label.
+  ///
+  /// This is useful for analyses that need to apply widenings at loop headers.
+  /// The default implementation forwards to [`Self::meet`] and ignores the
+  /// extra context.
+  fn meet_block(
+    &mut self,
+    label: u32,
+    prev_entry: &Self::State,
+    inputs: &[(u32, &Self::State)],
+  ) -> Self::State {
+    let _ = (label, prev_entry);
+    self.meet(inputs)
+  }
 
   /// Instruction-level transfer function. Implementations should mutate
   /// `state` in-place to reflect the state that flows past `inst`.
@@ -115,7 +131,7 @@ pub fn run_forward_edge_dataflow<A: ForwardEdgeDataFlowAnalysis>(
           .iter()
           .map(|pred| (*pred, &edge_out[&(*pred, label)]))
           .collect_vec();
-        analysis.meet(&merged_inputs)
+        analysis.meet_block(label, &block_entry[&label], &merged_inputs)
       }
     };
 
@@ -226,4 +242,3 @@ mod tests {
     assert_eq!(r1, r2);
   }
 }
-
