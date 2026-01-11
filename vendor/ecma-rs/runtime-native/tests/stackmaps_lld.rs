@@ -129,6 +129,11 @@ fn main() {
     .arg("--manifest-path")
     .arg(project_dir.join("Cargo.toml"))
     .env("CARGO_TARGET_DIR", &target_dir)
+    // The parent repo force-disables `build.rustc-wrapper` in its workspace config, but this
+    // nested Cargo project lives in a tempdir and would otherwise inherit any globally configured
+    // wrapper (often `sccache`), which can be flaky/unavailable in CI.
+    .env("CARGO_BUILD_RUSTC_WRAPPER", "")
+    .env("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER", "")
     .env("RUSTFLAGS", rustflags)
     // Some environments configure a global `build.rustc-wrapper` (often `sccache`).
     // When this test spawns Cargo from a temp directory, it may not inherit this
