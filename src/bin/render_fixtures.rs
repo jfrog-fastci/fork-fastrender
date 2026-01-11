@@ -363,17 +363,33 @@ fn exit_silently_on_broken_pipe_panic() {
 }
 
 fn fixture_runtime_toggles(patch_html_for_chrome_baseline: bool) -> RuntimeToggles {
-  let mut raw = std::env::vars()
+  let raw = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
     .collect::<HashMap<_, _>>();
+  fixture_runtime_toggles_from_env_map(raw, patch_html_for_chrome_baseline)
+}
+
+fn fixture_runtime_toggles_from_env_map(
+  mut raw: HashMap<String, String>,
+  patch_html_for_chrome_baseline: bool,
+) -> RuntimeToggles {
   raw
     .entry("FASTR_DETERMINISTIC_PAINT".to_string())
     .or_insert_with(|| "1".to_string());
-  // Fixture diffs compare against a Chrome snapshot that has had time to load local web fonts.
-  // Wait briefly so `font-display: swap` faces become active deterministically for the render.
+
+  // When diffing against Chrome baselines, align with Chrome's screenshot timing for
+  // `font-display: swap` fonts.
+  //
+  // In particular, real-world pages can include many swap-mode web fonts; Chrome's headless
+  // `--screenshot` flow (even with a virtual time budget) may capture before those faces have
+  // swapped in, so waiting here can introduce large layout shifts in FastRender-only output.
+  //
+  // Set `FASTR_WEB_FONT_WAIT_MS` explicitly to opt into "post-swap" rendering for debugging.
+  let default_web_font_wait_ms = if patch_html_for_chrome_baseline { "0" } else { "500" };
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
-    .or_insert_with(|| "500".to_string());
+    .or_insert_with(|| default_web_font_wait_ms.to_string());
+
   // Prefer leaving hinting disabled in fixture-chrome mode.
   //
   // Headless Chrome's font rendering varies by platform/fontconfig, and our current hinting
@@ -2038,6 +2054,20 @@ mod tests {
   }
 
   #[test]
+  fn fixture_runtime_toggles_defaults_web_font_wait_ms_based_on_patch_mode() {
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
+    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
+
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("0"));
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_WEB_FONT_WAIT_MS".to_string(), "123".to_string());
+    let toggles = fixture_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("123"));
+  }
+
+  #[test]
   fn lock_mutex_is_poison_tolerant() {
     let mutex = Mutex::new(0u32);
     let _ = std::panic::catch_unwind(|| {
@@ -2407,6 +2437,7 @@ mod tests {
       timeout: 1,
       write_snapshot: false,
       font_dir: Vec::new(),
+      system_fonts: false,
       repeat: 2,
       shuffle: false,
       seed: 0,
@@ -2417,6 +2448,7 @@ mod tests {
       allow_animations: false,
       allow_dark_mode: false,
       force_light_mode: false,
+      keep_going: false,
     };
 
     write_nondeterminism_outputs(out_dir, stem, &mut state, &cli).expect("write variants");
