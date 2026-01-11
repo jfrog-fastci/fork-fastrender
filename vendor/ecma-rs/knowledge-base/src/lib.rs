@@ -1747,6 +1747,46 @@ purity: Impure
   }
 
   #[test]
+  fn effects_bool_fields_support_global_effects() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  reads_global: true
+  writes_global: true
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
+  }
+
+  #[test]
+  fn unknown_template_does_not_imply_global_effects() {
+    let yaml = r#"
+name: x
+effects:
+  template: unknown
+  may_throw: true
+  allocates: false
+  io: false
+  network: false
+  nondeterministic: false
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::UNKNOWN));
+    assert!(!api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(!api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
   fn load_from_sources_preserves_effect_summary_override() {
     let yaml = r#"
 schema: 1
