@@ -62,6 +62,12 @@ stable until the **notification CQE** (`IORING_CQE_F_NOTIF`) is observed.
 Even if the kernel *might* copy some metadata at submission time, we do **not**
 depend on that for correctness. We program to the conservative contract above.
 
+Implementation note (Rust drivers in this repo):
+
+- Both `runtime-io-uring::IoUringDriver` and the legacy `runtime-io-uring::Driver` implement
+  **leak-on-drop when in-flight**: if a driver is dropped while there are still pending ops, it
+  leaks the ring and in-flight op state rather than freeing kernel-referenced pointers early.
+
 ---
 
 ## Lifetime rules by op family

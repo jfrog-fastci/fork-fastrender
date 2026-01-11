@@ -1,10 +1,25 @@
+//! Legacy `io_uring` driver used by [`PreparedOp`] helpers and [`ProvidedBufPool`].
+//!
+//! # Drop safety
+//!
+//! The kernel may continue to dereference SQE user pointers (buffers, path C-strings, `msghdr`
+//! graphs, etc.) and post CQEs after a request is submitted. Dropping an `io_uring` instance or any
+//! in-flight operation state too early can therefore cause use-after-free.
+//!
+//! To make the legacy [`Driver`] memory safe by construction, it follows a *leak-on-drop* policy:
+//! when the last `Driver` is dropped, it first drains any already-ready CQEs (non-blocking). If any
+//! operations are still in-flight, it intentionally leaks the ring and the remaining in-flight op
+//! state so that any kernel-referenced pointers remain valid for the rest of the process lifetime.
+//!
+//! This matches the safety strategy used by the newer [`crate::IoUringDriver`].
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::any::Any;
     use std::collections::{HashMap, VecDeque};
     use std::ffi::CString;
     use std::io;
-    use std::mem::MaybeUninit;
+    use std::mem::{self, MaybeUninit};
     use std::net::SocketAddr;
     use std::os::unix::io::RawFd;
     use std::path::Path;
@@ -383,14 +398,142 @@ mod linux {
     }
 
     struct Inner {
-        ring: IoUring,
+        ring: Option<IoUring>,
         next_id: u64,
         ops: HashMap<OpId, OpState>,
         multishots: HashMap<OpId, MultiShotRecvMsgState>,
         ready: VecDeque<Completion>,
     }
 
+    impl Inner {
+        /// Process all currently-ready CQEs without blocking.
+        fn poll_completions(&mut self) {
+            let Some(ring) = self.ring.as_mut() else {
+                return;
+            };
+
+            let cq = ring.completion();
+            for cqe in cq {
+                let id = OpId::from_u64(cqe.user_data());
+                let res = cqe.result();
+                let flags = cqe.flags();
+
+                if self.multishots.contains_key(&id) {
+                    let event = self
+                        .multishots
+                        .get(&id)
+                        .expect("checked contains_key")
+                        .handle_cqe(res, flags);
+                    let more = event.more();
+                    self.ready.push_back(Completion::MultiShotRecvMsg {
+                        id: MultiShotId::from_op_id(id),
+                        event,
+                    });
+                    if !more {
+                        self.multishots.remove(&id);
+                    }
+                    continue;
+                }
+
+                let state = match self.ops.remove(&id) {
+                    Some(state) => state,
+                    None => continue,
+                };
+
+                match state {
+                    OpState::Target { mut op, stability } => {
+                        debug_stability::assert_stable(&stability, |rec| {
+                            op.record_stability_pointers(rec);
+                        });
+                        match &mut op {
+                            PreparedOp::RecvWithBufSelect { pool, .. }
+                            | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                                if res < 0 {
+                                    self.ready.push_back(Completion::Op { id, res, op });
+                                    continue;
+                                }
+
+                                // Best-effort: if the CQE doesn't carry a buffer id (or leasing
+                                // fails), fall back to treating this as a normal op completion so
+                                // we can still drop the op resources safely.
+                                if flags & IORING_CQE_F_BUFFER == 0 {
+                                    self.ready.push_back(Completion::Op { id, res, op });
+                                    continue;
+                                }
+
+                                let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
+                                match pool.lease(buf_id, res as usize) {
+                                    Ok(lease) => {
+                                        self.ready
+                                            .push_back(Completion::ProvidedBuf { id, buf: lease });
+                                    }
+                                    Err(_) => {
+                                        self.ready.push_back(Completion::Op { id, res, op });
+                                    }
+                                }
+                            }
+                            _ => self.ready.push_back(Completion::Op { id, res, op }),
+                        }
+                    }
+                    OpState::Timeout {
+                        target,
+                        _ts,
+                        stability,
+                    } => {
+                        debug_stability::assert_stable(&stability, |rec| {
+                            rec.ptr(
+                                debug_stability::PtrKind::Timespec,
+                                (&*_ts as *const types::Timespec) as *const u8,
+                            );
+                        });
+                        self.ready
+                            .push_back(Completion::Timeout { id, target, res });
+                    }
+                    OpState::Cancel { target } => {
+                        self.ready.push_back(Completion::Cancel { id, target, res });
+                    }
+                }
+            }
+        }
+    }
+
+    impl Drop for Inner {
+        fn drop(&mut self) {
+            // Best-effort: process any already-ready CQEs so completed ops don't force a leak.
+            self.poll_completions();
+
+            if self.ops.is_empty() && self.multishots.is_empty() {
+                return;
+            }
+
+            // Safety: dropping an io_uring instance or any in-flight op state while the kernel may
+            // still be using SQE pointers can cause use-after-free. Leak the ring and the in-flight
+            // op resources to preserve memory safety.
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "runtime-io-uring: dropping legacy Driver with {} in-flight ops ({} multishots); leaking ring + op state",
+                self.ops.len(),
+                self.multishots.len()
+            );
+
+            if let Some(ring) = self.ring.take() {
+                mem::forget(ring);
+            }
+            mem::forget(mem::take(&mut self.ops));
+            mem::forget(mem::take(&mut self.multishots));
+        }
+    }
+
     #[derive(Clone)]
+    /// Legacy `io_uring` driver.
+    ///
+    /// # Drop safety
+    /// Dropping a driver while operations are still in-flight would normally drop the owned buffers
+    /// and metadata before the kernel finishes, which is unsound. To preserve memory safety, the
+    /// legacy driver drains any already-ready CQEs and then intentionally leaks the ring and any
+    /// remaining in-flight op state when the last `Driver` handle is dropped.
+    ///
+    /// This matches the leak-on-drop strategy used by [`crate::IoUringDriver`].
     pub struct Driver {
         inner: Arc<Mutex<Inner>>,
     }
@@ -421,7 +564,7 @@ mod linux {
         pub fn new(entries: u32) -> io::Result<Self> {
             Ok(Self {
                 inner: Arc::new(Mutex::new(Inner {
-                    ring: IoUring::new(entries)?,
+                    ring: Some(IoUring::new(entries)?),
                     next_id: 1,
                     ops: HashMap::new(),
                     multishots: HashMap::new(),
@@ -472,7 +615,11 @@ mod linux {
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
             let inner = &mut *inner_guard;
             {
-                let mut sq = inner.ring.submission();
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
+                let mut sq = ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 1 {
                     return Err(Self::submission_queue_full());
@@ -483,7 +630,11 @@ mod linux {
                 }
             }
 
-            inner.ring.submit()?;
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
             Ok(())
         }
 
@@ -499,7 +650,11 @@ mod linux {
             let inner = &mut *inner_guard;
 
             {
-                let mut sq = inner.ring.submission();
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
+                let mut sq = ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 1 {
                     return Err(Self::submission_queue_full());
@@ -510,7 +665,11 @@ mod linux {
                 }
             }
 
-            inner.ring.submit()?;
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
             Ok(())
         }
 
@@ -525,7 +684,10 @@ mod linux {
             let stability = debug_stability::record(op_id, |rec| op.record_stability_pointers(rec));
             let entry = op.build_sqe().user_data(op_id.as_u64());
             {
-                let ring = &mut inner.ring;
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
                 let ops = &mut inner.ops;
 
                 let mut sq = ring.submission();
@@ -540,7 +702,11 @@ mod linux {
                     sq.push(&entry).unwrap();
                 }
             }
-            inner.ring.submit()?;
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
 
             Ok(op_id)
         }
@@ -598,7 +764,10 @@ mod linux {
                 .user_data(id.as_u64());
 
             {
-                let ring = &mut inner.ring;
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
                 let multishots = &mut inner.multishots;
 
                 let mut sq = ring.submission();
@@ -613,7 +782,12 @@ mod linux {
                 }
             }
 
-            if let Err(e) = inner.ring.submit() {
+            if let Err(e) = inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()
+            {
                 inner.multishots.remove(&id);
                 return Err(e);
             }
@@ -675,7 +849,10 @@ mod linux {
             });
 
             {
-                let ring = &mut inner.ring;
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
                 let ops = &mut inner.ops;
 
                 let mut sq = ring.submission();
@@ -705,7 +882,11 @@ mod linux {
                     sq.push(&timeout_entry).unwrap();
                 }
             }
-            inner.ring.submit()?;
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
 
             Ok(OpWithTimeout { op_id, timeout_id })
         }
@@ -730,7 +911,10 @@ mod linux {
                 .user_data(cancel_id.as_u64());
 
             {
-                let ring = &mut inner.ring;
+                let ring = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)");
                 let ops = &mut inner.ops;
 
                 let mut sq = ring.submission();
@@ -745,7 +929,11 @@ mod linux {
                     sq.push(&entry).unwrap();
                 }
             }
-            inner.ring.submit()?;
+            inner
+                .ring
+                .as_mut()
+                .expect("io_uring used after drop (ring already taken)")
+                .submit()?;
 
             Ok(cancel_id)
         }
@@ -762,9 +950,17 @@ mod linux {
                     return Ok(c);
                 }
 
-                inner.ring.submit_and_wait(1)?;
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)")
+                    .submit_and_wait(1)?;
 
-                let cq = inner.ring.completion();
+                let cq = inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)")
+                    .completion();
                 for cqe in cq {
                     let id = OpId::from_u64(cqe.user_data());
                     let res = cqe.result();
@@ -852,7 +1048,12 @@ mod linux {
             .inner
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-        inner.ring.submitter().register_probe(&mut probe)?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::LinkTimeout::CODE))
     }
 
@@ -862,7 +1063,12 @@ mod linux {
             .inner
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-        inner.ring.submitter().register_probe(&mut probe)?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::AsyncCancel::CODE))
     }
 
@@ -872,7 +1078,12 @@ mod linux {
             .inner
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-        inner.ring.submitter().register_probe(&mut probe)?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::Accept::CODE))
     }
 
@@ -882,7 +1093,12 @@ mod linux {
             .inner
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-        inner.ring.submitter().register_probe(&mut probe)?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::Connect::CODE))
     }
 
@@ -892,7 +1108,12 @@ mod linux {
             .inner
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-        inner.ring.submitter().register_probe(&mut probe)?;
+        inner
+            .ring
+            .as_ref()
+            .expect("io_uring used after drop (ring already taken)")
+            .submitter()
+            .register_probe(&mut probe)?;
         Ok(probe.is_supported(opcode::ProvideBuffers::CODE))
     }
 }
