@@ -43,9 +43,11 @@ pub(crate) fn align_up(value: usize, align: usize) -> usize {
   if align == 0 || !align.is_power_of_two() {
     trap::rt_trap_invalid_arg("align_up: align must be a non-zero power of two");
   }
+  debug_assert!(align.is_power_of_two());
+  let mask = align - 1;
   value
-    .checked_add(align - 1)
-    .map(|v| v & !(align - 1))
+    .checked_add(mask)
+    .map(|v| v & !mask)
     .unwrap_or_else(|| trap::rt_trap_invalid_arg("align_up overflow"))
 }
 

@@ -1,13 +1,12 @@
-use super::heap::GcHeap;
-use super::heap::MajorCompactionConfig;
-use super::roots::RememberedSet;
-use super::roots::RootSet;
-use super::roots::SimpleRememberedSet;
+use super::align_up;
+use super::heap::{GcHeap, MajorCompactionConfig};
+use super::roots::{RememberedSet, RootSet, SimpleRememberedSet};
 use super::ObjHeader;
 use super::TypeDescriptor;
 use super::OBJ_HEADER_SIZE;
 use crate::gc;
 use crate::gc::RootStack;
+use std::process::Command;
 
 const OBJ_SIZE: usize = 64;
 
@@ -16,10 +15,10 @@ static DESC_LINE: TypeDescriptor = TypeDescriptor::new(gc::heap::IMMIX_LINE_SIZE
 
 #[test]
 fn align_up_basic() {
-  assert_eq!(super::align_up(0, 8), 0);
-  assert_eq!(super::align_up(1, 8), 8);
-  assert_eq!(super::align_up(8, 8), 8);
-  assert_eq!(super::align_up(9, 8), 16);
+  assert_eq!(align_up(0, 8), 0);
+  assert_eq!(align_up(1, 8), 8);
+  assert_eq!(align_up(8, 8), 8);
+  assert_eq!(align_up(9, 8), 16);
 }
 
 #[test]
@@ -509,4 +508,29 @@ fn stw_relocation_updates_pointers() {
     drop(Box::from_raw(old_ptr.as_ptr()));
     drop(Box::from_raw(new_ptr.as_ptr()));
   }
+}
+
+#[test]
+fn align_up_overflow_child() {
+  if std::env::var_os("GC_ALIGN_UP_OVERFLOW_CHILD").is_none() {
+    return;
+  }
+
+  // This should overflow when rounding up to the next 8-byte boundary.
+  let _ = align_up(usize::MAX - 3, 8);
+  panic!("align_up should have trapped on overflow");
+}
+
+#[test]
+fn align_up_overflow_traps() {
+  let exe = std::env::current_exe().expect("current_exe");
+
+  let status = Command::new(exe)
+    .env("GC_ALIGN_UP_OVERFLOW_CHILD", "1")
+    .arg("--exact")
+    .arg("gc::tests::align_up_overflow_child")
+    .status()
+    .expect("spawn child");
+
+  assert!(!status.success(), "expected child to abort/panic");
 }

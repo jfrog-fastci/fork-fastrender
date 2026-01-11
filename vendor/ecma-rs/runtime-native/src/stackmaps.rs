@@ -1775,7 +1775,7 @@ mod tests {
     push_u64(&mut bytes, 16);
     push_u64(&mut bytes, 2);
 
-    // Record 0: include an even number of liveouts so the record-end padding path is exercised.
+    // Record 0: include 2 liveouts so the record-end padding path is exercised.
     push_u64(&mut bytes, 100);
     push_u32(&mut bytes, 0x10);
     push_u16(&mut bytes, 0);

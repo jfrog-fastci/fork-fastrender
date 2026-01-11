@@ -39,7 +39,10 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
 
   // Wait until the poller thread is actually blocked in epoll_wait and has
   // entered a GC-safe/parked state.
-  let deadline = Instant::now() + Duration::from_secs(2);
+  // Be generous here: on heavily-loaded CI/agent hosts, the poller thread may take a while to
+  // actually enter the blocking syscall. Using `sleep` (instead of a tight `yield_now` loop)
+  // avoids starving the poller thread and makes the test less flaky.
+  let deadline = Instant::now() + Duration::from_secs(10);
   loop {
     let quiescent = threading::all_threads()
       .into_iter()
@@ -53,7 +56,7 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
       Instant::now() < deadline,
       "poll thread did not enter a GC-safe state in time"
     );
-    std::thread::yield_now();
+    std::thread::sleep(Duration::from_millis(1));
   }
 
   runtime_native::rt_gc_request_stop_the_world();
@@ -68,10 +71,10 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
   runtime_native::async_rt::global()
     .enqueue_microtask(Task::new(set_atomic_bool, ran as *const AtomicBool as *mut u8));
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + Duration::from_secs(10);
   while !ran.load(Ordering::SeqCst) {
     assert!(Instant::now() < deadline, "microtask did not run");
-    std::thread::yield_now();
+    std::thread::sleep(Duration::from_millis(1));
   }
 
   poller.join().unwrap();
