@@ -308,6 +308,16 @@ renders source-context diagnostics (file/line caret spans) from:
   - legacy strict validator (`native_js::strict::validate`): `NJS0001..NJS0008`
 - `native-js` HIR-based code generation (when it fails)
 
+Diagnostics are rendered via `diagnostics::render` in a rustc-like format:
+
+```text
+error[NJS0009]: property access is not supported by native-js yet
+ --> entry.ts:1:43
+  |
+1 | export function main(): number { return foo.bar; }
+  |                                   ^^^^^^^ property access is not supported by native-js yet
+```
+
 ### Notes
 
 - The HIR-based backend is still extremely small (enough for early smoke tests).
