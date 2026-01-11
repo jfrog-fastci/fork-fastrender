@@ -3,6 +3,10 @@
 //! This crate provides:
 //! - A stable C ABI surface that LLVM-generated code can link against.
 //! - A precise, generational GC implementation for managed allocations.
+//!
+//! See:
+//! - `docs/write_barrier.md` for the generational GC write barrier contract.
+//! - `include/runtime_native.h` for the minimal stable C ABI surface.
 
 pub mod abi;
 pub mod gc;
@@ -55,5 +59,27 @@ mod tests {
     // Safety: `lookup` returns a valid byte slice for the returned length.
     let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
     assert_eq!(bytes, b"zap");
+  }
+
+  #[test]
+  fn c_header_matches_exported_gc_entrypoints() {
+    const HEADER: &str = include_str!("../include/runtime_native.h");
+
+    const GC_SAFEPOINT: &str = "void rt_gc_safepoint(void);";
+    const WRITE_BARRIER: &str = "void rt_write_barrier(uint8_t* obj, uint8_t* slot);";
+    const GC_COLLECT: &str = "void rt_gc_collect(void);";
+
+    for decl in [GC_SAFEPOINT, WRITE_BARRIER, GC_COLLECT] {
+      assert!(
+        HEADER.contains(decl),
+        "`runtime_native.h` is missing expected declaration: {decl}"
+      );
+    }
+
+    // Ensure the Rust exports match the declared ABI shape.
+    let _safepoint: extern "C" fn() = rt_gc_safepoint;
+    let _write_barrier: extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
+    let _collect: extern "C" fn() = rt_gc_collect;
+    let _ = (_safepoint, _write_barrier, _collect);
   }
 }
