@@ -1284,20 +1284,7 @@ impl GenericFamily {
 
   /// Returns true if resolution should try explicit fallback names before mapping to a fontdb generic.
   pub fn prefers_named_fallbacks_first(self) -> bool {
-    matches!(
-      self,
-      GenericFamily::Serif
-        | GenericFamily::SansSerif
-        | GenericFamily::Monospace
-        | GenericFamily::SystemUi
-        | GenericFamily::UiSerif
-        | GenericFamily::UiSansSerif
-        | GenericFamily::UiMonospace
-        | GenericFamily::UiRounded
-        | GenericFamily::Emoji
-        | GenericFamily::Math
-        | GenericFamily::Fangsong
-    )
+    matches!(self, GenericFamily::Emoji | GenericFamily::Math | GenericFamily::Fangsong)
   }
 
   /// Converts to fontdb Family for querying.
@@ -2914,10 +2901,21 @@ mod tests {
   }
 
   #[test]
-  fn test_generic_family_prefers_named_fallbacks_for_core_generics() {
-    assert!(GenericFamily::Serif.prefers_named_fallbacks_first());
-    assert!(GenericFamily::SansSerif.prefers_named_fallbacks_first());
-    assert!(GenericFamily::Monospace.prefers_named_fallbacks_first());
+  fn test_generic_family_prefers_named_fallbacks_only_for_non_fontdb_generics() {
+    // Core generics should resolve via `fontdb` generics first (closest match to browser defaults).
+    assert!(!GenericFamily::Serif.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::SansSerif.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::Monospace.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::SystemUi.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::UiSansSerif.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::UiSerif.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::UiMonospace.prefers_named_fallbacks_first());
+    assert!(!GenericFamily::UiRounded.prefers_named_fallbacks_first());
+
+    // Emoji/math/fangsong map to sans-serif at the `fontdb` level, so we require named fallbacks first.
+    assert!(GenericFamily::Emoji.prefers_named_fallbacks_first());
+    assert!(GenericFamily::Math.prefers_named_fallbacks_first());
+    assert!(GenericFamily::Fangsong.prefers_named_fallbacks_first());
   }
 
   #[test]
