@@ -36,4 +36,5 @@ if [[ -n "${LLVM_SYS_180_PREFIX:-}" && -d "${LLVM_SYS_180_PREFIX}/bin" ]]; then
 fi
 
 # Delegate to the standard cargo wrapper
+cd "${REPO_ROOT}"
 exec bash "${REPO_ROOT}/../../scripts/cargo_agent.sh" "$@"

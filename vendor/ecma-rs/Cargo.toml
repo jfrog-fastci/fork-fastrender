@@ -11,6 +11,7 @@ members = [
   "minify-js",
   "optimize-js-debugger",
   "optimize-js",
+  "native-js",
   "parse-js-cli",
   "parse-js",
   "emit-js",
@@ -44,6 +45,7 @@ emit-js = { path = "emit-js", version = "0.1.0" }
 hir-js = { path = "hir-js", version = "0.1.0" }
 minify-js = { path = "minify-js", version = "0.6.0" }
 optimize-js = { path = "optimize-js", version = "0.1.0" }
+native-js = { path = "native-js", version = "0.1.0" }
 parse-js = { path = "parse-js", version = "0.24.1" }
 semantic-js = { path = "semantic-js", version = "0.1.0" }
 typecheck-ts = { path = "typecheck-ts", version = "0.1.0" }
@@ -72,7 +74,9 @@ globset = { version = "0.4", default-features = false }
 # (matching dashmap/salsa) and avoid compiling multiple hashbrown versions.
 indexmap = "=2.5.0"
 itertools = "0.10.5"
+inkwell = { version = "0.5.0", default-features = false, features = ["llvm18-0"] }
 json5 = "0.4"
+llvm-sys = { version = "180", features = ["prefer-dynamic"] }
 maplit = "1"
 memchr = "2"
 neon = { version = "1", default-features = false }
@@ -94,6 +98,7 @@ serde_json = "1.0.133"
 serde_yaml = "0.9"
 similar = "2.1.0"
 smallvec = "1.15.1"
+target-lexicon = "0.13.2"
 tempfile = "3.12"
 thiserror = "1.0"
 tokio = { version = "1.42.0", default-features = false }
