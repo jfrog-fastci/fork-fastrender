@@ -7,7 +7,7 @@ This document captures the **LLVM 18.1.x verifier-accepted** IR form for
 
 The repository includes a minimal working fixture:
 
-* `tests/fixtures/llvm/statepoint_min.ll`
+* `fixtures/llvm_stackmap_abi/statepoint.ll`
 
 That fixture:
 
@@ -218,7 +218,7 @@ statepoint.
 Compile the fixture and inspect the stackmap:
 
 ```bash
-llvm-as-18 tests/fixtures/llvm/statepoint_min.ll -o /tmp/sp.bc
+llvm-as-18 fixtures/llvm_stackmap_abi/statepoint.ll -o /tmp/sp.bc
 llc-18 -filetype=obj /tmp/sp.bc -o /tmp/sp.o
 llvm-readobj-18 --stackmap /tmp/sp.o
 llvm-objdump-18 -d --no-show-raw-insn /tmp/sp.o
