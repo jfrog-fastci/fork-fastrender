@@ -52,8 +52,9 @@ fn find_cond_lt_const_10(
 fn assert_hi_leq(range: IntRange, max: i64) {
   match range {
     IntRange::Bottom => panic!("expected reachable range, got Bottom"),
-    IntRange::Range { hi, .. } => match hi {
-      Bound::Finite(v) => assert!(
+    IntRange::Unknown => panic!("expected upper bound <= {max}, got ⊤ ({range:?})"),
+    IntRange::Interval { hi, .. } => match hi {
+      Bound::I64(v) => assert!(
         v <= max,
         "expected upper bound <= {max}, got {v} ({range:?})"
       ),
@@ -66,8 +67,9 @@ fn assert_hi_leq(range: IntRange, max: i64) {
 fn assert_lo_geq(range: IntRange, min: i64) {
   match range {
     IntRange::Bottom => panic!("expected reachable range, got Bottom"),
-    IntRange::Range { lo, .. } => match lo {
-      Bound::Finite(v) => assert!(
+    IntRange::Unknown => panic!("expected lower bound >= {min}, got ⊤ ({range:?})"),
+    IntRange::Interval { lo, .. } => match lo {
+      Bound::I64(v) => assert!(
         v >= min,
         "expected lower bound >= {min}, got {v} ({range:?})"
       ),
@@ -109,4 +111,3 @@ fn range_analysis_matches_real_lowering_lt() {
   assert_hi_leq(then_range, 9);
   assert_lo_geq(else_range, 10);
 }
-
