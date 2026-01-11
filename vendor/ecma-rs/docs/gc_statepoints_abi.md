@@ -13,6 +13,11 @@ In particular, this document predates changes where:
 - `.llvm_stackmaps` discovery uses `runtime-native/link/stackmaps.ld` (or the compat alias `runtime-native/stackmaps.ld`) and stable boundary symbols:
   - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
   - `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` / `__stackmaps_{start,end}` (aliases)
+- `native-js` forces statepoint GC roots into stack slots (no stackmap `Register` roots) by setting LLVM codegen options
+  such as `--fixup-allow-gcptr-in-csr=false` / `--fixup-max-csr-statepoints=0`.
+
+Later we may relax to allow GC roots in registers for performance, but then the runtime must support register-root relocation
+for *all* scanned frames.
 
 ---
 

@@ -355,9 +355,15 @@ LLVM can legally keep some statepoint GC roots in registers and describe them as
 
 Mitigation:
 
-- Pass `llc-18 --fixup-max-csr-statepoints=0` (or the equivalent global LLVM codegen option via `LLVMParseCommandLineOptions`).
-  - `native-js` configures this globally in `native-js/src/emit/mod.rs`.
-  - See `runtime-native/tests/statepoint_register_roots_codegen.rs` for the regression matrix that locks this down.
+- Ensure LLVM codegen is configured to disallow register GC roots at statepoints:
+  - `llc-18 --fixup-allow-gcptr-in-csr=false` (preferred)
+  - `llc-18 --fixup-max-csr-statepoints=0` (fallback / defense-in-depth)
+  - When embedding LLVM, set the equivalent global options via `LLVMParseCommandLineOptions`
+    (`native-js/src/llvm/mod.rs`, `init_native_target`).
+  - When codegen happens inside `clang-18 -flto`, pass the equivalent `-mllvm` flags
+    (`native-js/src/link.rs`).
+  - See `runtime-native/tests/statepoint_register_roots_codegen.rs` (tooling matrix) and
+    `native-js/tests/stackmaps_no_register_roots.rs` (embedded LLVM) for regression coverage.
 
 ### Safepoints must not be tail calls
 

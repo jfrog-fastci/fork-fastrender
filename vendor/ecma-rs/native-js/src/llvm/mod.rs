@@ -98,13 +98,17 @@ pub fn init_native_target() -> Result<(), String> {
       // unwind-based register reconstruction, so we must force spills.
       //
       // Equivalent to:
+      //   llc-18 --fixup-allow-gcptr-in-csr=false
       //   llc-18 --fixup-max-csr-statepoints=0
       //
       // `LLVMParseCommandLineOptions` configures global codegen flags for this
       // process; do it once before any TargetMachine emits code.
       let argv = [
         CString::new("native-js").expect("argv[0]"),
-        CString::new("--fixup-max-csr-statepoints=0").expect("argv[1]"),
+        // Preferred: disallow GC pointers in callee-saved registers entirely.
+        CString::new("--fixup-allow-gcptr-in-csr=false").expect("argv[1]"),
+        // Fallback/defense-in-depth: allow at most 0 statepoints to keep GC pointers in CSRs.
+        CString::new("--fixup-max-csr-statepoints=0").expect("argv[2]"),
       ];
       let argv_ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
       unsafe {

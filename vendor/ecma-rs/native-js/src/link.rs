@@ -317,7 +317,11 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
   // `LLVMParseCommandLineOptions` configuration. Pass the equivalent backend
   // flag to ensure statepoint GC roots are spilled to stack slots (never
   // stackmap `Register` locations).
-  cmd.arg("-mllvm").arg("--fixup-max-csr-statepoints=0");
+  cmd
+    .arg("-mllvm")
+    .arg("--fixup-allow-gcptr-in-csr=false")
+    .arg("-mllvm")
+    .arg("--fixup-max-csr-statepoints=0");
 
   if opts.debug {
     cmd.arg("-g");
@@ -404,7 +408,11 @@ pub fn link_elf_executable_lto(
   cmd.arg("-flto=full");
   // See `link_bitcode_to_exe`: ensure statepoint roots are forced into stack
   // slots during link-time codegen.
-  cmd.arg("-mllvm").arg("--fixup-max-csr-statepoints=0");
+  cmd
+    .arg("-mllvm")
+    .arg("--fixup-allow-gcptr-in-csr=false")
+    .arg("-mllvm")
+    .arg("--fixup-max-csr-statepoints=0");
 
   if cfg!(target_os = "linux") {
     // We don't currently support PIE for this LTO helper (see module docs).

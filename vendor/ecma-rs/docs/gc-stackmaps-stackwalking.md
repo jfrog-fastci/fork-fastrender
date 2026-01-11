@@ -72,7 +72,7 @@ The frame record layout remains:
 - **Generated LLVM code** must be compiled with frame pointers:
   - `llc -frame-pointer=all` (or equivalent target options/attributes).
 - **Generated LLVM code** must also keep statepoint GC roots in *addressable stack slots* (not registers):
-  - `llc -fixup-max-csr-statepoints=0`
+  - `llc -fixup-allow-gcptr-in-csr=false` (preferred) and/or `llc -fixup-max-csr-statepoints=0`
   - See `docs/stackmaps.md` for the full “no Register roots” contract and regression tests.
 - **Rust runtime code** must be compiled with frame pointers:
   - `RUSTFLAGS="-C force-frame-pointers=yes"`  

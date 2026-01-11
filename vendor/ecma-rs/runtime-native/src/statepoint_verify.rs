@@ -9,7 +9,9 @@ use crate::stackmaps::{
   parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSizeRecord,
   STACKMAP_VERSION,
 };
-use crate::statepoints::{StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
+use crate::statepoints::{
+  StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP,
+};
 use std::error::Error;
 use std::fmt;
 
@@ -312,8 +314,8 @@ pub fn verify_statepoint_stackmap(
 
 #[cfg(test)]
 mod tests {
-  use super::DwarfArch;
   use super::load_stackmap;
+  use super::DwarfArch;
   use crate::stackmaps::Location;
 
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
@@ -497,13 +499,25 @@ fn verify_indirect_sp_slot(
       dwarf_reg,
       offset,
     } => (size, dwarf_reg, offset),
+    Location::Register { .. } => {
+      return Err(VerifyError::new_location(
+        callsite,
+        patchpoint_id,
+        location_index,
+        loc,
+        "GC root is held in a register, but runtime-native currently only supports stack slots; \
+ensure LLVM codegen disables register roots at statepoints (e.g. \
+`--fixup-allow-gcptr-in-csr=false` or `--fixup-max-csr-statepoints=0`)."
+          .to_string(),
+      ))
+    }
     _ => {
       return Err(VerifyError::new_location(
         callsite,
         patchpoint_id,
         location_index,
         loc,
-        "expected Indirect spill slot".to_string(),
+        "expected Indirect SP-relative spill slot for GC root".to_string(),
       ))
     }
   };

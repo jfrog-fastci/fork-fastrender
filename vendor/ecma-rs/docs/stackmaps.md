@@ -33,7 +33,8 @@ debug builds (and optionally in release builds via the `verify-statepoints` feat
 
 To force spills, ensure codegen uses:
 
-- `llc-18 --fixup-max-csr-statepoints=0`
+- `llc-18 --fixup-allow-gcptr-in-csr=false` (preferred), and/or
+- `llc-18 --fixup-max-csr-statepoints=0` (fallback / defense-in-depth)
 
 This keeps statepoint GC roots out of registers even if other GC register options are enabled.
 
@@ -42,7 +43,7 @@ This keeps statepoint GC roots out of registers even if other GC register option
 If machine code generation happens inside `clang-18` (e.g. `clang-18 -flto`), pass the equivalent
 backend flag:
 
-- `clang-18 -mllvm --fixup-max-csr-statepoints=0`
+- `clang-18 -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0`
 
 `native-js`'s LTO linking helpers do this automatically.
 
@@ -61,6 +62,7 @@ If you see a stackmap entry like:
 then one of the following is true:
 
 1. Codegen did not pass `--fixup-max-csr-statepoints=0`, or
+   (and/or did not set `--fixup-allow-gcptr-in-csr=false`), or
 2. LLVM changed behavior / we upgraded LLVM and need to re-evaluate defaults.
 
 Run the regression suite:
