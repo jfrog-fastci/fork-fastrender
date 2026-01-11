@@ -177,6 +177,7 @@ impl Uint8Array {
 }
 
 /// A pinned `Uint8Array` view.
+#[must_use = "PinnedUint8Array must be kept alive to keep the backing store pinned"]
 #[derive(Debug)]
 pub struct PinnedUint8Array {
   pinned: PinnedArrayBuffer,

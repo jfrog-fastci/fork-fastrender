@@ -56,9 +56,6 @@ fn promise_is_pending(p: PromiseRef) -> bool {
   state != PromiseHeader::FULFILLED && state != PromiseHeader::REJECTED
 }
 
-// Promise flag used by legacy promises for unhandled-rejection tracking.
-const PROMISE_FLAG_HANDLED: u8 = 1 << 0;
-
 #[repr(C)]
 struct BlockOnReaction {
   node: crate::promise_reactions::PromiseReactionNode,
@@ -153,8 +150,7 @@ fn register_block_on_waker(p: PromiseRef) {
   }
 
   // Mark "handled" to avoid reporting unhandled rejections while we are blocked waiting.
-  let prev = unsafe { &(*promise).flags }.fetch_or(PROMISE_FLAG_HANDLED, Ordering::AcqRel);
-  if (prev & PROMISE_FLAG_HANDLED) == 0 {
+  if unsafe { &*promise }.mark_handled() {
     crate::unhandled_rejection::on_handle(p);
   }
 

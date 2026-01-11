@@ -294,6 +294,7 @@ impl BackingStore {
 ///
 /// Holding this keeps the backing store alive (strong reference) and prevents detachment while the
 /// host is doing I/O/FFI using the raw pointer.
+#[must_use = "PinnedBackingStore must be kept alive to keep the backing store pinned"]
 #[derive(Debug)]
 pub struct PinnedBackingStore {
   store: BackingStore,
