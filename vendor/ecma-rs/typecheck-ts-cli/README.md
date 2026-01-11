@@ -27,7 +27,6 @@ cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts --json
 ### Options
 
 - `--json`: emit structured JSON output (see below) with deterministic ordering.
-- `--strict-native`: enable additional strict-native diagnostics (repo-specific; codes use the `TN####` prefix).
 - `--type-at <file:offset>`: inferred type at a byte offset within the file.
 - `--symbol-at <file:offset>`: resolved symbol information at an offset.
 - `--exports <file>`: export map for the file with symbol/type information.
