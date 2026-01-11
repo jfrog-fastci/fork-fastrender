@@ -6,28 +6,149 @@ Run `./scripts/gen_deps_graph.sh` (or `just docs`) to refresh.
 
 ```mermaid
 graph TD
-    fastrender["fastrender"]
-    js_dom_bindings["js-dom-bindings"]
-    js_dom_bindings_quickjs["js-dom-bindings-quickjs"]
-    js_wpt_dom_runner["js-wpt-dom-runner"]
-    taffy["taffy"]
-    webidl_ir["webidl-ir"]
-    webidl_js_runtime["webidl-js-runtime"]
+    conformance_harness["conformance-harness"]
+    diagnostics["diagnostics"]
+    effect_js["effect-js"]
+    effect_js_cli["effect-js-cli"]
+    effect_model["effect-model"]
+    emit_js["emit-js"]
+    hir_js["hir-js"]
+    knowledge_base["knowledge-base"]
+    llvm_stackmaps["llvm-stackmaps"]
+    megatest_harness["megatest-harness"]
+    minify_js["minify-js"]
+    minify_js_bench["minify-js-bench"]
+    minify_js_cli["minify-js-cli"]
+    minify_js_nodejs["minify-js-nodejs"]
+    native_js["native-js"]
+    native_js_cli["native-js-cli"]
+    native_oracle_harness["native-oracle-harness"]
+    optimize_js["optimize-js"]
+    optimize_js_debugger["optimize-js-debugger"]
+    parse_js["parse-js"]
+    parse_js_cli["parse-js-cli"]
+    runtime_io_uring["runtime-io-uring"]
+    runtime_js["runtime-js"]
+    runtime_native["runtime-native"]
+    runtime_native_abi["runtime-native-abi"]
+    semantic_js["semantic-js"]
+    stackmap["stackmap"]
+    stackmap_context["stackmap-context"]
+    test262["test262"]
+    test262_semantic["test262-semantic"]
+    ts_erase["ts-erase"]
+    typecheck_ts["typecheck-ts"]
+    typecheck_ts_bench["typecheck-ts-bench"]
+    typecheck_ts_cli["typecheck-ts-cli"]
+    typecheck_ts_harness["typecheck-ts-harness"]
+    types_ts_interned["types-ts-interned"]
+    vm_js["vm-js"]
+    webidl["webidl"]
     webidl_vm_js["webidl-vm-js"]
-    xtask["xtask"]
-    fastrender --> taffy
-    fastrender --> webidl_ir
-    fastrender --> webidl_js_runtime
-    fastrender --> webidl_vm_js
-    js_dom_bindings --> fastrender
-    js_dom_bindings_quickjs --> fastrender
-    js_wpt_dom_runner --> fastrender
-    js_wpt_dom_runner --> webidl_vm_js
-    webidl_js_runtime --> webidl_ir
-    webidl_js_runtime --> webidl_vm_js
-    xtask --> fastrender
-    xtask --> js_wpt_dom_runner
-    xtask --> webidl_ir
+    effect_js --> diagnostics
+    effect_js --> effect_model
+    effect_js --> hir_js
+    effect_js --> knowledge_base
+    effect_js --> typecheck_ts
+    effect_js --> types_ts_interned
+    effect_js_cli --> diagnostics
+    effect_js_cli --> effect_js
+    effect_js_cli --> hir_js
+    effect_js_cli --> knowledge_base
+    effect_js_cli --> parse_js
+    emit_js --> diagnostics
+    emit_js --> hir_js
+    emit_js --> parse_js
+    emit_js --> ts_erase
+    hir_js --> diagnostics
+    hir_js --> parse_js
+    knowledge_base --> effect_model
+    megatest_harness --> diagnostics
+    megatest_harness --> emit_js
+    megatest_harness --> hir_js
+    megatest_harness --> optimize_js
+    megatest_harness --> parse_js
+    minify_js --> diagnostics
+    minify_js --> emit_js
+    minify_js --> hir_js
+    minify_js --> parse_js
+    minify_js --> semantic_js
+    minify_js --> ts_erase
+    minify_js_bench --> diagnostics
+    minify_js_bench --> minify_js
+    minify_js_cli --> diagnostics
+    minify_js_cli --> minify_js
+    minify_js_nodejs --> diagnostics
+    minify_js_nodejs --> minify_js
+    native_js --> diagnostics
+    native_js --> hir_js
+    native_js --> parse_js
+    native_js --> runtime_native
+    native_js --> typecheck_ts
+    native_js --> types_ts_interned
+    native_js --> vm_js
+    native_js_cli --> diagnostics
+    native_js_cli --> native_js
+    native_js_cli --> typecheck_ts
+    native_oracle_harness --> diagnostics
+    native_oracle_harness --> emit_js
+    native_oracle_harness --> optimize_js
+    native_oracle_harness --> parse_js
+    native_oracle_harness --> ts_erase
+    native_oracle_harness --> vm_js
+    optimize_js --> diagnostics
+    optimize_js --> effect_model
+    optimize_js --> emit_js
+    optimize_js --> hir_js
+    optimize_js --> parse_js
+    optimize_js --> semantic_js
+    optimize_js --> typecheck_ts
+    optimize_js --> types_ts_interned
+    optimize_js_debugger --> diagnostics
+    optimize_js_debugger --> optimize_js
+    parse_js --> diagnostics
+    parse_js_cli --> diagnostics
+    parse_js_cli --> parse_js
+    runtime_js --> diagnostics
+    runtime_js --> parse_js
+    runtime_js --> vm_js
+    runtime_native --> runtime_native_abi
+    runtime_native --> stackmap_context
+    semantic_js --> diagnostics
+    semantic_js --> hir_js
+    semantic_js --> parse_js
+    test262 --> conformance_harness
+    test262 --> diagnostics
+    test262 --> parse_js
+    test262_semantic --> conformance_harness
+    test262_semantic --> diagnostics
+    test262_semantic --> vm_js
+    ts_erase --> diagnostics
+    ts_erase --> emit_js
+    ts_erase --> parse_js
+    typecheck_ts --> diagnostics
+    typecheck_ts --> hir_js
+    typecheck_ts --> parse_js
+    typecheck_ts --> semantic_js
+    typecheck_ts --> types_ts_interned
+    typecheck_ts_bench --> diagnostics
+    typecheck_ts_bench --> hir_js
+    typecheck_ts_bench --> parse_js
+    typecheck_ts_bench --> semantic_js
+    typecheck_ts_bench --> typecheck_ts
+    typecheck_ts_bench --> types_ts_interned
+    typecheck_ts_cli --> diagnostics
+    typecheck_ts_cli --> typecheck_ts
+    typecheck_ts_harness --> diagnostics
+    typecheck_ts_harness --> typecheck_ts
+    typecheck_ts_harness --> types_ts_interned
+    types_ts_interned --> hir_js
+    vm_js --> diagnostics
+    vm_js --> hir_js
+    vm_js --> parse_js
+    vm_js --> semantic_js
+    webidl_vm_js --> vm_js
+    webidl_vm_js --> webidl
 ```
 
 Workspace-only edges are shown; third-party dependencies are omitted.
