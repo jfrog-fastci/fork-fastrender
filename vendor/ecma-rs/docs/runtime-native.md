@@ -917,6 +917,8 @@ GC object pointer and keep it alive while queued:
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the timer fires or is cleared.
 - `rt_io_register_rooted(fd, interests, cb, data)`
+  - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
+  - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the watcher is unregistered.
 

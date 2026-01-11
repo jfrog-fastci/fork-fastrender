@@ -446,6 +446,18 @@ Contract:
 
 ### I/O readiness watchers
 
+I/O watchers register a file descriptor with the runtime's process-global reactor and deliver
+edge-triggered readiness notifications back to the async event loop thread.
+
+Contract:
+
+- `fd` must already be set to `O_NONBLOCK` before registration/update. `runtime-native` does not
+  implicitly modify caller-owned fd flags.
+- `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
+- Readiness notifications are **edge-triggered**. Consumers must drain reads/writes until the
+  operation returns `EAGAIN`/`WouldBlock`; otherwise the reactor may not deliver another edge.
+- `rt_io_register*` returns 0 on failure; errors are not returned over the stable C ABI.
+
 - `rt_io_register(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_register_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
 - `rt_io_register_rooted(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
