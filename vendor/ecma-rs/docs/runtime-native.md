@@ -628,6 +628,9 @@ SECTIONS {
 } INSERT AFTER .text;
 ```
 
+Note: GNU ld PIE/shared-library links should use `runtime-native/link/stackmaps_gnuld.ld` to avoid
+RWX LOAD segments when stackmaps must be writable for relocations.
+
 When linking from Rust/Cargo:
 
 - The `runtime-native` crate feature `llvm_stackmaps_linker` causes

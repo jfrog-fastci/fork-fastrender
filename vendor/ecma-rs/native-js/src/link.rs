@@ -96,9 +96,13 @@ impl Default for LinkOpts {
 /// Linker script fragment injected into the default linker script (via the GNU ld/LLD `INSERT`
 /// mechanism) so we don't have to replace the entire default script.
 ///
-/// The default fragment anchors at `INSERT AFTER .text;` because `.text` is guaranteed to exist in
-/// any runnable/non-empty link, while `.data`/`.rodata` may be absent in minimal executables (lld
-/// errors if an `INSERT` anchor does not exist).
+/// LLD omits empty output sections and will error if an `INSERT` anchor does not exist. We
+/// therefore anchor the default fragment after `.text` (which is always present) instead of
+/// `.rodata`/`.data`.
+///
+/// Note: GNU ld in PIE/shared-library mode can otherwise produce RWX LOAD segments. In that
+/// configuration we use `stackmaps_gnuld.ld`, anchored before `.dynamic`, to place writable
+/// stackmaps in the RELRO/data region.
 ///
 /// Keep this in sync with `runtime-native/link/stackmaps*.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
