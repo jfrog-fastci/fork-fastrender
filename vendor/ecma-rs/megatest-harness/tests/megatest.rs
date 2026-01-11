@@ -40,6 +40,24 @@ actual: {actual:#?}",
     }
 
     let (parse, hir) = parse_and_lower(&source)?;
+    // Sanity: ensure parse+lower is deterministic within a single process run. This catches
+    // accidental global-counter/non-deterministic ID allocation regressions even if the baseline
+    // happened to match one of the outputs.
+    let (parse2, hir2) = parse_and_lower(&source)?;
+    if parse != parse2 {
+      return Err(anyhow!(
+        "non-deterministic parse output for {fixture}: first {:#?}, second {:#?}",
+        parse,
+        parse2
+      ));
+    }
+    if hir != hir2 {
+      return Err(anyhow!(
+        "non-deterministic hir output for {fixture}: first {:#?}, second {:#?}",
+        hir,
+        hir2
+      ));
+    }
     if parse != expected.parse {
       return Err(anyhow!(
         "parse mismatch for {fixture}: expected {:#?}, got {:#?}",
@@ -83,6 +101,14 @@ fn megatest_optimize_match_baseline() -> Result<()> {
     }
 
     let actual = optimize(&source)?;
+    let actual2 = optimize(&source)?;
+    if actual != actual2 {
+      return Err(anyhow!(
+        "non-deterministic optimize output for {fixture}: first {:#?}, second {:#?}",
+        actual,
+        actual2
+      ));
+    }
     if actual != expected.optimize {
       return Err(anyhow!(
         "optimize mismatch for {fixture}: expected {:#?}, got {:#?}",
@@ -94,4 +120,3 @@ fn megatest_optimize_match_baseline() -> Result<()> {
 
   Ok(())
 }
-
