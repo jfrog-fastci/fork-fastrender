@@ -1,0 +1,13 @@
+schema = 1
+
+[[apis]]
+name = "Math.sqrt"
+aliases = []
+effects = "Pure"
+purity = "Pure"
+
+[[apis]]
+name = "Math.floor"
+aliases = []
+effects = "Pure"
+purity = "Pure"

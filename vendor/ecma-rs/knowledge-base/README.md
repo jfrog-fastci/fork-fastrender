@@ -2,6 +2,34 @@
 
 Semantic knowledge base for `ecma-rs` analysis passes.
 
+## Bundled file formats
+
+The default (bundled) knowledge base is built from files under:
+
+- `core/`
+- `node/`
+- `web/`
+- `ecosystem/`
+
+Supported formats:
+
+- YAML (`.yaml`, `.yml`)
+- TOML (`.toml`)
+
+The loader selects a parser based on the file extension.
+
+### TOML module example (schema v1)
+
+```toml
+schema = 1
+
+[[apis]]
+name = "Math.sqrt"
+aliases = []
+effects = "Pure"
+purity = "Pure"
+```
+
 ## String encoding properties
 
 `effect-js` uses `properties` on API entries to understand string encodings.
