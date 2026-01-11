@@ -41,21 +41,8 @@ fn stop_the_world_completes_while_thread_waits_on_global_weak_handles_lock() {
   let worker_id = rx_id.recv().unwrap();
   ready.wait();
 
-  // Hold the global weak-handle lock in a separate thread so we can force contention.
-  let hold_duration = Duration::from_secs(1);
-  let holder = std::thread::spawn(move || {
-    runtime_native::gc::weak::debug_hold_global_weak_handles_lock(hold_duration);
-  });
-
-  // Wait until the holder has acquired the lock.
-  let deadline = std::time::Instant::now() + Duration::from_secs(2);
-  while !runtime_native::gc::weak::debug_global_weak_handles_lock_is_locked() {
-    assert!(
-      std::time::Instant::now() < deadline,
-      "global weak-handle lock was not held in time"
-    );
-    std::thread::yield_now();
-  }
+  // Hold the global weak-handle lock so the worker thread blocks in the contended path.
+  let weak_lock = runtime_native::gc::weak::debug_hold_global_weak_handles_lock();
 
   // Start contended acquisition.
   start.wait();
@@ -87,6 +74,9 @@ fn stop_the_world_completes_while_thread_waits_on_global_weak_handles_lock() {
     "world did not reach safepoint in time while worker was blocked on global weak-handle lock"
   );
 
+  // Allow the worker to proceed.
+  drop(weak_lock);
+
   // Ensure the worker completes once the lock is released.
   let deadline = std::time::Instant::now() + Duration::from_secs(4);
   while !done.load(Ordering::Acquire) {
@@ -97,7 +87,6 @@ fn stop_the_world_completes_while_thread_waits_on_global_weak_handles_lock() {
     std::thread::yield_now();
   }
 
-  holder.join().unwrap();
   worker.join().unwrap();
 
   threading::unregister_current_thread();
