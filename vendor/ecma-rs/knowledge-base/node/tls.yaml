@@ -1,0 +1,44 @@
+- name: node:tls.connect
+  kind: function
+  aliases:
+    - tls.connect
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:tls.createServer
+  kind: function
+  aliases:
+    - tls.createServer
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:tls.createSecureContext
+  kind: function
+  aliases:
+    - tls.createSecureContext
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

@@ -1,0 +1,134 @@
+- name: node:dns.lookup
+  kind: function
+  aliases:
+    - dns.lookup
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns.resolve
+  kind: function
+  aliases:
+    - dns.resolve
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns.reverse
+  kind: function
+  aliases:
+    - dns.reverse
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns.promises.lookup
+  kind: function
+  aliases:
+    - dns.promises.lookup
+  since: "v10.6.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns.promises.resolve
+  kind: function
+  aliases:
+    - dns.promises.resolve
+  since: "v10.6.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns.promises.reverse
+  kind: function
+  aliases:
+    - dns.promises.reverse
+  since: "v10.6.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns/promises.lookup
+  kind: function
+  aliases:
+    - dns/promises.lookup
+  since: "v15.0.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns/promises.resolve
+  kind: function
+  aliases:
+    - dns/promises.resolve
+  since: "v15.0.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:dns/promises.reverse
+  kind: function
+  aliases:
+    - dns/promises.reverse
+  since: "v15.0.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false

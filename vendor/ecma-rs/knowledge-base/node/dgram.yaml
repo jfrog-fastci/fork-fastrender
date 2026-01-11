@@ -1,0 +1,14 @@
+- name: node:dgram.createSocket
+  kind: function
+  aliases:
+    - dgram.createSocket
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
