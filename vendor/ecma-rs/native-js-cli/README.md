@@ -245,10 +245,15 @@ Exit codes:
 
 ## `tsconfig.json` support
 
-The `native-js-cli` binary currently takes a single input file and does not load
-`tsconfig.json` or perform module resolution.
+The `native-js-cli` binary takes a single entry file and (when using the
+multi-file ES module subset) performs Node-style module resolution to discover
+reachable imports.
 
-For a typechecked pipeline with module resolution (including `baseUrl`/`paths`),
+However, it does **not** load `tsconfig.json`, so project settings like
+`baseUrl`/`paths` are not applied.
+
+For a typechecked pipeline that loads `tsconfig.json` (including
+`baseUrl`/`paths`),
 use the `native-js` binary.
 
 Example:
