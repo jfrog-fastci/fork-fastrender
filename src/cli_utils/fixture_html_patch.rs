@@ -246,6 +246,56 @@ pub fn patch_html_bytes(
     if let Some(base_url) = base_url {
       out = rewrite_gif_image_srcs_to_static_png_data_urls(&out, base_url);
     }
+
+    // When JavaScript execution is disabled, `<noscript>` fallback content should become active.
+    //
+    // Our fixture baselines disable scripts via CSP (`script-src 'none'`). Chromium still parses the
+    // document with "scripting enabled" semantics in this mode, which suppresses `<noscript>`
+    // fallback content (notably the common `head`-injected stylesheet link pattern and lazyload
+    // fallbacks). That can leave large sites effectively unstyled in both Chrome baselines and
+    // FastRender fixture renders.
+    //
+    // Promote `<noscript>` content by unwrapping the tags at the HTML byte level. This keeps the
+    // patch deterministic/offline while making JS-disabled baselines closer to what users expect
+    // when scripts do not run.
+    out = unwrap_noscript_tags(&out);
+  }
+
+  out
+}
+
+fn unwrap_noscript_tags(data: &[u8]) -> Vec<u8> {
+  let lower: Vec<u8> = data.iter().map(|b| b.to_ascii_lowercase()).collect();
+  let mut out = Vec::with_capacity(data.len());
+  let mut idx = 0usize;
+
+  fn tag_boundary_ok(after: Option<&u8>) -> bool {
+    matches!(after, Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/'))
+  }
+
+  while idx < data.len() {
+    // Strip `<noscript ...>` open tags.
+    if idx + 9 <= lower.len() && lower[idx..].starts_with(b"<noscript") {
+      if tag_boundary_ok(lower.get(idx + 9)) {
+        if let Some(end_rel) = lower[idx..].iter().position(|&b| b == b'>') {
+          idx += end_rel + 1;
+          continue;
+        }
+      }
+    }
+
+    // Strip `</noscript>` close tags.
+    if idx + 10 <= lower.len() && lower[idx..].starts_with(b"</noscript") {
+      if tag_boundary_ok(lower.get(idx + 10)) {
+        if let Some(end_rel) = lower[idx..].iter().position(|&b| b == b'>') {
+          idx += end_rel + 1;
+          continue;
+        }
+      }
+    }
+
+    out.push(data[idx]);
+    idx += 1;
   }
 
   out
@@ -891,6 +941,37 @@ mod tests {
     assert!(
       output_str.contains("2x"),
       "expected srcset descriptors to be preserved; got: {output_str}"
+    );
+  }
+
+  #[test]
+  fn patch_html_unwraps_noscript_when_js_disabled() {
+    let input = b"<!doctype html><html><head><noscript><link rel=\"stylesheet\" href=\"a.css\"></noscript></head><body><noscript><div id=\"fallback\">ok</div></noscript></body></html>";
+    let output = patch_html_bytes(input, None, true, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      !output_str.to_ascii_lowercase().contains("<noscript"),
+      "expected <noscript> wrappers to be removed when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("href=\"a.css\""),
+      "expected noscript contents to be preserved; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("id=\"fallback\""),
+      "expected body noscript contents to be preserved; got: {output_str}"
+    );
+  }
+
+  #[test]
+  fn patch_html_preserves_noscript_when_js_enabled() {
+    let input =
+      b"<!doctype html><html><head><noscript><div id=\"x\">ok</div></noscript></head><body></body></html>";
+    let output = patch_html_bytes(input, None, false, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      output_str.to_ascii_lowercase().contains("<noscript"),
+      "expected <noscript> to remain when JS is enabled; got: {output_str}"
     );
   }
 }
