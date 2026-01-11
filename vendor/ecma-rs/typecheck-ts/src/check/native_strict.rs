@@ -147,6 +147,34 @@ pub fn validate_native_strict_body(
         || object_key_is_literal_string(body, &mem.property, member_str))
   }
 
+  fn expr_is_function_prototype_member(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    global_this_name: hir_js::NameId,
+    function_name: hir_js::NameId,
+    prototype_name: hir_js::NameId,
+    member_name: hir_js::NameId,
+    member_str: &str,
+  ) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    let ExprKind::Member(mem) = &expr.kind else {
+      return false;
+    };
+    expr_is_builtin_member(
+      body,
+      mem.object,
+      global_this_name,
+      function_name,
+      "Function",
+      prototype_name,
+      "prototype",
+    ) && (object_key_is_ident(&mem.property, member_name)
+      || object_key_is_string(&mem.property, member_str)
+      || object_key_is_literal_string(body, &mem.property, member_str))
+  }
+
   fn expr_is_global_this(
     body: &Body,
     expr_id: hir_js::ExprId,
@@ -451,6 +479,7 @@ pub fn validate_native_strict_body(
                   || object_key_is_string(&member.property, "bind")
                   || object_key_is_literal_string(body, &member.property, "bind");
               let is_call_like = prop_is_call || prop_is_apply || prop_is_bind;
+              let is_call_or_apply = prop_is_call || prop_is_apply;
               if is_call_like
                 && expr_is_ident_or_global_this_member(
                   body,
@@ -520,6 +549,266 @@ pub fn validate_native_strict_body(
                   "prototype mutation is forbidden when `native_strict` is enabled",
                   Span::new(file, span),
                 ));
+              }
+
+              // `Function.prototype.call.call(...)` and friends are a common way to indirectly
+              // invoke a function (bypassing direct `eval.call(...)` checks etc).
+              if is_call_or_apply {
+                let obj_is_function_prototype_call = expr_is_function_prototype_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  prototype_name,
+                  call_name,
+                  "call",
+                );
+                let obj_is_function_prototype_apply = expr_is_function_prototype_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  prototype_name,
+                  apply_name,
+                  "apply",
+                );
+                if obj_is_function_prototype_call || obj_is_function_prototype_apply {
+                  if let Some(target_arg) =
+                    call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    let target_span = result
+                      .expr_spans
+                      .get(target_arg.0 as usize)
+                      .copied()
+                      .or_else(|| body.exprs.get(target_arg.0 as usize).map(|expr| expr.span))
+                      .unwrap_or(callee_span);
+
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      eval_name,
+                      "eval",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                        "`eval` is forbidden when `native_strict` is enabled",
+                        Span::new(file, target_span),
+                      ));
+                    }
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      function_name,
+                      "Function",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                        "`Function` constructor is forbidden when `native_strict` is enabled",
+                        Span::new(file, target_span),
+                      ));
+                    }
+                    if expr_is_ident_or_global_this_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                    ) || expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      proxy_name,
+                      "Proxy",
+                      revocable_name,
+                      "revocable",
+                    ) {
+                      diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                        "`Proxy` is forbidden when `native_strict` is enabled",
+                        Span::new(file, target_span),
+                      ));
+                    }
+
+                    if expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      object_name,
+                      "Object",
+                      set_prototype_of_name,
+                      "setPrototypeOf",
+                    ) || expr_is_builtin_member(
+                      body,
+                      target_arg,
+                      global_this_name,
+                      reflect_name,
+                      "Reflect",
+                      set_prototype_of_name,
+                      "setPrototypeOf",
+                    ) {
+                      let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                      diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                        "prototype mutation is forbidden when `native_strict` is enabled",
+                        Span::new(file, span),
+                      ));
+                    }
+
+                    // For prototype mutation helpers where the ban depends on arguments, attempt to
+                    // extract the argument list when it's statically knowable.
+                    let mut args_for_target: Option<Vec<hir_js::ExprId>> = None;
+                    if obj_is_function_prototype_call {
+                      if prop_is_call {
+                        // `Function.prototype.call.call(target, thisArg, ...args)`
+                        let mut out = Vec::new();
+                        for arg in call.args.iter().skip(2) {
+                          if arg.spread {
+                            out.clear();
+                            break;
+                          }
+                          out.push(arg.expr);
+                        }
+                        if !out.is_empty() || call.args.len() == 2 {
+                          args_for_target = Some(out);
+                        }
+                      } else if prop_is_apply {
+                        // `Function.prototype.call.apply(target, [thisArg, ...args])`
+                        if let Some(args_array) =
+                          call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                        {
+                          if let Some(mut out) = array_literal_exprs(body, args_array) {
+                            if !out.is_empty() {
+                              out.remove(0);
+                            }
+                            args_for_target = Some(out);
+                          }
+                        }
+                      }
+                    } else if obj_is_function_prototype_apply {
+                      if prop_is_call {
+                        // `Function.prototype.apply.call(target, thisArg, argsArray)`
+                        if let Some(args_array) =
+                          call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                        {
+                          if let Some(out) = array_literal_exprs(body, args_array) {
+                            args_for_target = Some(out);
+                          }
+                        }
+                      }
+                    }
+
+                    if let Some(args_for_target) = args_for_target {
+                      let target_is_object_define_property = expr_is_builtin_member(
+                        body,
+                        target_arg,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let target_is_reflect_define_property = expr_is_builtin_member(
+                        body,
+                        target_arg,
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let target_is_object_define_properties = expr_is_builtin_member(
+                        body,
+                        target_arg,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_properties_name,
+                        "defineProperties",
+                      );
+                      let target_is_object_assign = expr_is_builtin_member(
+                        body,
+                        target_arg,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        assign_name,
+                        "assign",
+                      );
+
+                      let mut is_proto_mutation = false;
+                      if target_is_object_define_property || target_is_reflect_define_property {
+                        if let Some(target_obj) = args_for_target.first().copied() {
+                          is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          );
+                          if !is_proto_mutation {
+                            if let Some(key_arg) = args_for_target.get(1).copied() {
+                              if expr_is_const_string(body, key_arg, "prototype")
+                                || expr_is_const_string(body, key_arg, "__proto__")
+                              {
+                                is_proto_mutation = true;
+                              }
+                            }
+                          }
+                        }
+                      }
+                      if !is_proto_mutation && target_is_object_define_properties {
+                        if let (Some(target_obj), Some(props_arg)) =
+                          (args_for_target.first().copied(), args_for_target.get(1).copied())
+                        {
+                          is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          ) || expr_is_object_literal_with_proto_key(
+                            body,
+                            props_arg,
+                            prototype_name,
+                            proto_name,
+                          );
+                        }
+                      }
+                      if !is_proto_mutation && target_is_object_assign {
+                        if let Some(target_obj) = args_for_target.first().copied() {
+                          is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          );
+                          if !is_proto_mutation {
+                            for source_arg in args_for_target.iter().skip(1).copied() {
+                              if expr_is_object_literal_with_proto_key(
+                                body,
+                                source_arg,
+                                prototype_name,
+                                proto_name,
+                              ) {
+                                is_proto_mutation = true;
+                                break;
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      if is_proto_mutation
+                        && (target_is_object_define_property
+                          || target_is_reflect_define_property
+                          || target_is_object_define_properties
+                          || target_is_object_assign)
+                      {
+                        let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                        diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                          "prototype mutation is forbidden when `native_strict` is enabled",
+                          Span::new(file, span),
+                        ));
+                      }
+                    }
+                  }
+                }
               }
 
               if is_call_like {
