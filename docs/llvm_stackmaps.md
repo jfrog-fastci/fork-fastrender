@@ -81,7 +81,7 @@ struct StkMapRecord {
   Location Locations[NumLocations];
 
   // Then padding to an 8-byte boundary, then:
-  uint16_t Reserved2;           // = 0
+  uint16_t Reserved2;           // padding / reserved (ignore; may be non-zero)
   uint16_t NumLiveOuts;
   LiveOut LiveOuts[NumLiveOuts];
 
@@ -109,7 +109,7 @@ Live-outs are primarily used by patchpoints. Each entry is:
 ```c
 struct LiveOut {
   uint16_t DwarfRegNum;
-  uint8_t  Reserved;   // = 0
+  uint8_t  Reserved;   // reserved (ignore)
   uint8_t  Size;       // bytes
 };
 ```
@@ -433,6 +433,6 @@ Bytes (tail of record showing live-outs):
 ```text
 ... 01 00 08 00  05 00 00 00  00 00 00 00   ; Location #1 (Register rdi)
 00 00 00 00                                   ; padding to 8-byte boundary
-00 00 02 00                                   ; Reserved2=0, NumLiveOuts=2
+00 00 02 00                                   ; Reserved2/padding=0, NumLiveOuts=2
 00 00 00 08  07 00 00 08                      ; LiveOut[0]=rax, LiveOut[1]=rsp
 ```
