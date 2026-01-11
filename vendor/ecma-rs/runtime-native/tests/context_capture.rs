@@ -20,7 +20,9 @@ fn enter_safepoint_slow(epoch: u64) {
 
 #[inline(never)]
 fn enter_safepoint_poll() {
-  // Safety: `gc.safepoint_poll` is a runtime-native entrypoint that follows the C ABI.
+  // Safety: `gc.safepoint_poll` is implemented by runtime-native (arch-specific assembly). When a
+  // stop-the-world epoch is requested, it captures the caller's context at the poll callsite and
+  // enters the safepoint slow path.
   unsafe {
     gc_safepoint_poll();
   }
@@ -79,6 +81,26 @@ fn captures_mutator_ip_and_stack_pointer() {
     0,
     "sp is not word-aligned"
   );
+  assert_eq!(
+    ctx.sp_entry % runtime_native::arch::WORD_SIZE,
+    0,
+    "sp_entry is not word-aligned"
+  );
+  assert_eq!(
+    ctx.fp % runtime_native::arch::WORD_SIZE,
+    0,
+    "fp is not word-aligned"
+  );
+  assert_eq!(
+    ctx.sp_entry % runtime_native::arch::WORD_SIZE,
+    0,
+    "sp_entry is not word-aligned"
+  );
+  assert_eq!(
+    ctx.fp % runtime_native::arch::WORD_SIZE,
+    0,
+    "fp is not word-aligned"
+  );
 
   // Sanity check the arch-specific SP semantics we depend on for stackmap walking.
   #[cfg(target_arch = "x86_64")]
@@ -100,6 +122,34 @@ fn captures_mutator_ip_and_stack_pointer() {
     ctx.sp >= bounds.lo && ctx.sp < bounds.hi,
     "sp {:#x} is outside stack bounds [{:#x}, {:#x})",
     ctx.sp,
+    bounds.lo,
+    bounds.hi
+  );
+  assert!(
+    ctx.sp_entry >= bounds.lo && ctx.sp_entry < bounds.hi,
+    "sp_entry {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.sp_entry,
+    bounds.lo,
+    bounds.hi
+  );
+  assert!(
+    ctx.fp >= bounds.lo && ctx.fp < bounds.hi,
+    "fp {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.fp,
+    bounds.lo,
+    bounds.hi
+  );
+  assert!(
+    ctx.sp_entry >= bounds.lo && ctx.sp_entry < bounds.hi,
+    "sp_entry {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.sp_entry,
+    bounds.lo,
+    bounds.hi
+  );
+  assert!(
+    ctx.fp >= bounds.lo && ctx.fp < bounds.hi,
+    "fp {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.fp,
     bounds.lo,
     bounds.hi
   );
@@ -155,6 +205,7 @@ fn captures_mutator_ip_and_stack_pointer_via_gc_safepoint_poll() {
 
   let worker_id = rx_id.recv().unwrap();
 
+  // Trigger stop-the-world so the poll takes the slow path.
   let _stop_epoch = runtime_native::rt_gc_request_stop_the_world();
   tx_go.send(()).unwrap();
 
@@ -203,7 +254,7 @@ fn captures_mutator_ip_and_stack_pointer_via_gc_safepoint_poll() {
     bounds.hi
   );
 
-  // The poll stub must capture the *managed caller* return address (into the caller of
+  // The poll stub must capture the *caller* return address (into the frame that invoked
   // `gc.safepoint_poll`), not an internal runtime callsite. For this test we call it directly from
   // `enter_safepoint_poll`, so the recorded ip should resolve there.
   //
