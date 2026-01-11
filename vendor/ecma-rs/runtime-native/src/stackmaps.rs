@@ -903,7 +903,7 @@ mod tests {
     push_u64(&mut bytes, 16);
     push_u64(&mut bytes, 2);
 
-    // Record 0: include 1 liveout so record size is not 8-aligned (forces padding).
+    // Record 0: include liveouts so the record requires trailing padding (exercise padding skip).
     push_u64(&mut bytes, 100);
     push_u32(&mut bytes, 0x10);
     push_u16(&mut bytes, 0);
@@ -923,7 +923,7 @@ mod tests {
 
     // Live-out header: u16 Padding; u16 NumLiveOuts.
     // Keep the padding field non-zero to validate the parser ignores its content.
-    push_u16(&mut bytes, 0xABAB);
+    push_u16(&mut bytes, 0xABAB); // padding
     // Include an even number of liveouts so the record-end padding path is exercised.
     push_u16(&mut bytes, 2); // num_liveouts
 
