@@ -9145,6 +9145,9 @@ impl ResourceFetcher for HttpFetcher {
 
 fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   let mut policy = HttpCachePolicy::default();
+  // RFC 9111 says recipients MUST ignore `Pragma` when a `Cache-Control` header field is present.
+  // `header_values_joined` filters out empty/invalid values, so track header presence separately.
+  let cache_control_present = headers.get_all("cache-control").iter().next().is_some();
   if let Some(value) = header_values_joined(headers, "cache-control") {
     for directive in value.split(',') {
       let directive = trim_http_whitespace(directive);
@@ -9194,7 +9197,7 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
         _ => {}
       }
     }
-  } else {
+  } else if !cache_control_present {
     // Legacy fallback for HTTP/1.0 caches. RFC 9111 says recipients MUST ignore `Pragma` when
     // `Cache-Control` is present, so we only honor this when no Cache-Control header is present.
     for value in headers
@@ -22887,6 +22890,15 @@ mod tests {
     let policy = parse_http_cache_policy(&headers).expect("expected cache policy");
     assert_eq!(policy.max_age, Some(60));
     assert!(!policy.no_cache);
+
+    // Even an empty `Cache-Control` header field should suppress the legacy `Pragma` fallback.
+    let mut headers = HeaderMap::new();
+    headers.append("cache-control", http::HeaderValue::from_static(""));
+    headers.append("pragma", http::HeaderValue::from_static("no-cache"));
+    assert!(
+      parse_http_cache_policy(&headers).is_none(),
+      "Pragma fallback must not apply when Cache-Control is present"
+    );
   }
 
   #[test]
