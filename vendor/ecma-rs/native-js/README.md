@@ -472,15 +472,21 @@ The strict subset validator currently rejects (non-exhaustive, but directly
 matching the validator’s checks):
 
 - Unsupported syntax (`NJS0009`), including:
+  - numeric literals that are not 32-bit signed integers (floats/`1e3` literals are rejected)
+  - string literals, `null`, and `undefined` (the current checked backend is still i32-only)
+  - `this`
   - classes / class expressions
   - `async` / generator functions, `await`, `yield`
   - object literals, array literals, and destructuring patterns
   - property access (`obj.prop`, `obj["prop"]`)
+  - `switch`, `for..in`, and `for..of`
+  - variable declarations without an initializer
   - calls:
     - optional calls (`foo?.()`)
     - spread call arguments (`foo(...args)`)
     - `new` expressions (`new Foo()`)
     - only direct identifier calls are supported (no member calls like `obj.foo()`)
+    - `print(...)` is only supported as a standalone statement
   - template literals / tagged templates
   - `import()` expressions, `import.meta`
   - `super`, `new.target`
