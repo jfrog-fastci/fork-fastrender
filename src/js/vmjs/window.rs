@@ -16,7 +16,7 @@ use crate::js::{
 };
 use crate::js::{Clock, RealClock};
 use crate::js::vm_error_format;
-use crate::resource::{HttpFetcher, ResourceFetcher};
+use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -335,11 +335,8 @@ impl WindowHostState {
     };
     window.set_cookie_fetcher(fetcher.clone());
     if js_execution_options.supports_module_scripts {
-      let document_origin = crate::resource::origin_from_url(&document_url);
-      if let Err(err) = window.enable_module_loader(
-        fetcher.clone(),
-        document_origin,
-      ) {
+      let document_origin = origin_from_url(&document_url);
+      if let Err(err) = window.enable_module_loader(fetcher.clone(), document_origin) {
         unregister_dom_source(dom_source_id);
         return Err(Error::Other(err.to_string()));
       }
@@ -456,6 +453,8 @@ impl WindowHostState {
   }
 
   pub fn import_map_state_mut(&mut self) -> &mut ImportMapState {
+    // Keep import maps in the realm's module loader state when module scripts are enabled so
+    // dynamic `import()` uses the same map as host APIs like `register_import_map_*`.
     if let Some(data) = self.window.vm_mut().user_data_mut::<WindowRealmUserData>() {
       if let Some(loader) = data.module_loader.as_mut() {
         return &mut loader.import_map_state;
@@ -513,12 +512,9 @@ impl WindowHostState {
     let mut result = crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
     self.import_map_warnings.append(&mut result.warnings);
 
-    let register_result = crate::js::import_maps::register_import_map_with_limits(
-      self.import_map_state_mut(),
-      result,
-      &limits,
-    );
-    if let Err(err) = register_result {
+    if let Err(err) =
+      crate::js::import_maps::register_import_map_with_limits(self.import_map_state_mut(), result, &limits)
+    {
       // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
       // import map errors (console, `window.onerror`, etc.).
       self.import_map_errors.push(err);

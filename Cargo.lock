@@ -2355,6 +2355,7 @@ dependencies = [
  "url",
  "vm-js",
  "walkdir",
+ "webidl-vm-js",
 ]
 
 [[package]]

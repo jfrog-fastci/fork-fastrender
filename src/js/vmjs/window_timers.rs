@@ -401,6 +401,10 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     if let Some(bindings_host) = host.webidl_bindings_host() {
       hooks.set_webidl_bindings_host(bindings_host);
     }
+    // Expose the full host environment via `VmHostHooks::as_any_mut` so native hooks can recover
+    // embedder state even when `vm-js` only threads a narrower `VmHost` context (e.g. a document
+    // wrapper). This is primarily used for deterministic test shims (offline WPT runner).
+    hooks.any.set_embedder_state(host);
     hooks
   }
 

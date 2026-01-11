@@ -32,8 +32,11 @@ use crate::svg::{
   SvgPreserveAspectRatio, SvgViewBox,
 };
 use crate::tree::box_tree::CrossOriginAttribute;
+#[cfg(feature = "avif")]
 use avif_decode::Decoder as AvifDecoder;
+#[cfg(feature = "avif")]
 use avif_decode::Image as AvifImage;
+#[cfg(feature = "avif")]
 use avif_parse::AvifData;
 use exif;
 use flate2::read::{GzDecoder, ZlibDecoder};
@@ -1273,17 +1276,20 @@ fn extract_jpeg_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
   Some(out)
 }
 
+#[cfg(feature = "avif")]
 enum AvifDecodeError {
   Timeout(RenderError),
   Image(image::ImageError),
 }
 
+#[cfg(feature = "avif")]
 impl From<RenderError> for AvifDecodeError {
   fn from(err: RenderError) -> Self {
     Self::Timeout(err)
   }
 }
 
+#[cfg(feature = "avif")]
 impl From<image::ImageError> for AvifDecodeError {
   fn from(err: image::ImageError) -> Self {
     Self::Image(err)
@@ -6955,17 +6961,20 @@ impl ImageCache {
     }
     let mut last_error: Option<Error> = None;
 
-    if matches!(format_from_content_type, Some(ImageFormat::Avif))
-      || matches!(sniffed_format, Some(ImageFormat::Avif))
+    #[cfg(feature = "avif")]
     {
-      match Self::decode_avif(bytes) {
-        Ok(img) => {
-          let has_alpha = img.color().has_alpha();
-          let img = self.finish_bitmap_decode(img, url)?;
-          return Ok((img, has_alpha));
+      if matches!(format_from_content_type, Some(ImageFormat::Avif))
+        || matches!(sniffed_format, Some(ImageFormat::Avif))
+      {
+        match Self::decode_avif(bytes) {
+          Ok(img) => {
+            let has_alpha = img.color().has_alpha();
+            let img = self.finish_bitmap_decode(img, url)?;
+            return Ok((img, has_alpha));
+          }
+          Err(AvifDecodeError::Timeout(err)) => return Err(Error::Render(err)),
+          Err(AvifDecodeError::Image(err)) => last_error = Some(self.decode_error(url, err)),
         }
-        Err(AvifDecodeError::Timeout(err)) => return Err(Error::Render(err)),
-        Err(AvifDecodeError::Image(err)) => last_error = Some(self.decode_error(url, err)),
       }
     }
 
@@ -8270,6 +8279,7 @@ impl ImageCache {
     (None, panic_reason)
   }
 
+  #[cfg(feature = "avif")]
   /// Returns a prefix of `bytes` that excludes any trailing data that does not form a valid top
   /// level ISO-BMFF box.
   ///
@@ -8366,6 +8376,7 @@ impl ImageCache {
       ImageFormat::WebP => image::codecs::webp::WebPDecoder::new(Cursor::new(bytes))
         .ok()
         .map(|d| d.dimensions()),
+      #[cfg(feature = "avif")]
       ImageFormat::Avif => {
         // `avif_parse` includes debug assertions that can panic when the payload includes trailing
         // bytes (which is tolerated by other decoders and observed on pageset content). Trim and
@@ -8376,6 +8387,8 @@ impl ImageCache {
         let meta = data.primary_item_metadata().ok()?;
         Some((meta.max_frame_width.get(), meta.max_frame_height.get()))
       }
+      #[cfg(not(feature = "avif"))]
+      ImageFormat::Avif => None,
       _ => None,
     })) {
       Ok(dims) => (dims, None),
@@ -8440,6 +8453,7 @@ impl ImageCache {
     Ok(())
   }
 
+  #[cfg(feature = "avif")]
   fn decode_avif(bytes: &[u8]) -> std::result::Result<DynamicImage, AvifDecodeError> {
     let decode_inner = |payload: &[u8]| -> std::result::Result<DynamicImage, AvifDecodeError> {
       check_root(RenderStage::Paint).map_err(AvifDecodeError::from)?;
@@ -8489,6 +8503,7 @@ impl ImageCache {
     }
   }
 
+  #[cfg(feature = "avif")]
   fn reserve_for_bytes(bytes: u64, context: &str) -> std::result::Result<usize, image::ImageError> {
     if bytes > MAX_PIXMAP_BYTES {
       return Err(image::ImageError::IoError(io::Error::new(
@@ -8504,6 +8519,7 @@ impl ImageCache {
     })
   }
 
+  #[cfg(feature = "avif")]
   fn reserve_image_buffer(
     bytes: u64,
     context: &str,
@@ -8519,6 +8535,7 @@ impl ImageCache {
     Ok(buf)
   }
 
+  #[cfg(feature = "avif")]
   fn reserve_image_buffer_u16(
     bytes: u64,
     context: &str,
@@ -8540,6 +8557,7 @@ impl ImageCache {
     Ok(buf)
   }
 
+  #[cfg(feature = "avif")]
   fn avif_image_to_dynamic(
     image: AvifImage,
     deadline_counter: &mut usize,
@@ -14042,11 +14060,13 @@ impl Clone for ImageCache {
     }
   }
 
+  #[cfg(feature = "avif")]
   fn avif_fixture_bytes() -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/avif/solid.avif");
     std::fs::read(&path).expect("read avif fixture")
   }
 
+  #[cfg(feature = "avif")]
   fn assert_green_pixel(pixel: [u8; 4]) {
     assert!(pixel[1] >= 180, "expected green channel, got {pixel:?}");
     assert!(
@@ -14055,6 +14075,7 @@ impl Clone for ImageCache {
     );
   }
 
+  #[cfg(feature = "avif")]
   #[test]
   fn decodes_avif_with_declared_content_type() {
     let bytes = avif_fixture_bytes();
@@ -14072,6 +14093,7 @@ impl Clone for ImageCache {
     assert_green_pixel(pixel);
   }
 
+  #[cfg(feature = "avif")]
   #[test]
   fn decodes_avif_when_content_type_is_incorrect() {
     let bytes = avif_fixture_bytes();

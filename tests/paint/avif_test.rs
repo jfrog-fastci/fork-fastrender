@@ -1,3 +1,5 @@
+#![cfg(feature = "avif")]
+
 use fastrender::FastRender;
 use std::path::PathBuf;
 use tiny_skia::Pixmap;

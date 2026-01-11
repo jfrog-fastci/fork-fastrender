@@ -9,7 +9,10 @@ use fastrender::js::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use vm_js::{PropertyKey, Value, VmError};
+use vm_js::{
+  GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+};
+use webidl_vm_js::VmJsHostHooksPayload;
 
 pub(crate) fn is_available() -> bool {
   true
@@ -136,6 +139,9 @@ impl Backend for VmJsBackend {
     // timeouts. Keep this budget conservative so `while(true){}` tests terminate quickly even in
     // debug builds.
     options.max_instruction_count = Some(50_000);
+    // Enable module scripts and dynamic `import()` for curated module tests. This is still guarded by
+    // the host's module loader support inside FastRender's `WindowHostState`.
+    options.supports_module_scripts = true;
 
     // Keep event-loop queue limits consistent with the VM configuration.
     event_loop.set_queue_limits(options.event_loop_queue_limits);
@@ -148,6 +154,8 @@ impl Backend for VmJsBackend {
       options,
     )
     .map_err(|e| RunError::Js(e.to_string()))?;
+
+    install_import_map_register_hook(&mut host).map_err(|e| RunError::Js(e.to_string()))?;
 
     // Install runner-specific globals:
     // - `__fastrender_wpt_report(payload)` stores the first payload for `take_report`.
@@ -186,6 +194,21 @@ impl Backend for VmJsBackend {
           return (new URL(input, base)).href;
         };
         try { g.__fastrender_resolve_url = __fastrender_resolve_url; } catch (_e5) {}
+
+        // Test-only helper for registering import maps from within curated WPT tests.
+        //
+        // This delegates to a native function installed by the runner so tests can deterministically
+        // set up import maps before evaluating `import()` expressions.
+        var __fastrender_register_import_map = function (json) {
+          if (json === null) {
+            throw new TypeError("import map JSON must not be null");
+          }
+          if (typeof json !== "string") {
+            json = JSON.stringify(json);
+          }
+          return g.__fastrender_register_import_map_native(json);
+        };
+        try { g.__fastrender_register_import_map = __fastrender_register_import_map; } catch (_e6) {}
       })();
     "#;
 
@@ -380,6 +403,89 @@ fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> Result<PropertyKey, Vm
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
+}
+
+fn install_import_map_register_hook(host: &mut WindowHostState) -> Result<(), VmError> {
+  let window = host.window_mut();
+  let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let call_id = vm.register_native_call(register_import_map_native)?;
+  let name_s = scope.alloc_string("__fastrender_register_import_map_native")?;
+  scope.push_root(Value::String(name_s))?;
+  let func = scope.alloc_native_function(call_id, None, name_s, 1)?;
+  scope.push_root(Value::Object(func))?;
+
+  let key_s = scope.alloc_string("__fastrender_register_import_map_native")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.define_property(
+    global,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(func),
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
+}
+
+fn register_import_map_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let json_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::String(json_s) = json_value else {
+    return Err(VmError::TypeError(
+      "__fastrender_register_import_map expected a JSON string argument",
+    ));
+  };
+  scope.push_root(Value::String(json_s))?;
+  let json = scope.heap().get_string(json_s)?.to_utf8_lossy();
+
+  let Some(any) = hooks.as_any_mut() else {
+    return Err(VmError::Unimplemented(
+      "__fastrender_register_import_map requires VmHostHooks::as_any_mut",
+    ));
+  };
+  let Some(payload) = any.downcast_mut::<VmJsHostHooksPayload>() else {
+    return Err(VmError::Unimplemented(
+      "__fastrender_register_import_map expected VmJsHostHooksPayload",
+    ));
+  };
+  let Some(host) = payload.embedder_state_mut::<WindowHostState>() else {
+    return Err(VmError::Unimplemented(
+      "__fastrender_register_import_map requires embedder state (WindowHostState)",
+    ));
+  };
+
+  host
+    .register_import_map_using_document_base(&json)
+    .map_err(|err| {
+      let message = err.to_string();
+      let Some(intr) = vm.intrinsics() else {
+        return VmError::Unimplemented(
+          "__fastrender_register_import_map requires VM intrinsics (Realm must be initialized)",
+        );
+      };
+      match vm_js::new_type_error_object(scope, &intr, &message) {
+        Ok(value) => VmError::Throw(value),
+        Err(err) => err,
+      }
+    })?;
+
+  Ok(Value::Undefined)
 }
 
 fn string_from_value(heap: &vm_js::Heap, value: Value) -> Option<String> {

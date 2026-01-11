@@ -1,3 +1,5 @@
+#![cfg(feature = "avif")]
+
 use fastrender::image_loader::ImageCache;
 use fastrender::resource::{FetchedResource, ResourceFetcher};
 use std::path::PathBuf;

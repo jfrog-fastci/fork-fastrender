@@ -8,7 +8,7 @@ publish = false
 default = ["vmjs"]
 
 # `ecma-rs/vm-js` backend (default).
-vmjs = ["dep:vm-js"]
+vmjs = ["dep:vm-js", "dep:webidl-vm-js"]
 
 # QuickJS (`rquickjs`) backend (optional). Useful for comparison/debugging, but it is not
 # deterministic (timers are wall-clock based) and provides only minimal DOM shims.
@@ -33,3 +33,4 @@ markup5ever = { version = "0.35", optional = true }
 markup5ever_rcdom = "0.35"
 rquickjs = { version = "0.9", optional = true }
 vm-js = { path = "../../vendor/ecma-rs/vm-js", optional = true }
+webidl-vm-js = { path = "../webidl-vm-js", optional = true }

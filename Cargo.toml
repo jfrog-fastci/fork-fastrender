@@ -35,6 +35,7 @@ resolver = "2"
 
 [features]
 default = ["preserve3d_warp"]
+avif = ["dep:avif-decode", "dep:avif-parse"]
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
@@ -63,8 +64,8 @@ browser_ui_wayland = [
 
 [dependencies]
 base64 = "0.22"
-avif-decode = { version = "1.0", default-features = false }
-avif-parse = "1.4"
+avif-decode = { version = "1.0", default-features = false, optional = true }
+avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }
 brotli = "6"
 clap = { version = "4", features = ["derive", "env"] }

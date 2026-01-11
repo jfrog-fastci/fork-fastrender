@@ -10,6 +10,7 @@
 //! normal workspace member (and carry embedder-specific adjustments) without depending on the
 //! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
+use std::any::Any;
 use std::ptr::NonNull;
 use vm_js::{
   ExecutionContext, GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
@@ -179,6 +180,18 @@ pub struct VmJsHostHooksPayload {
   // duration of a single JS execution boundary.
   vm_host: Option<NonNull<dyn VmHost + 'static>>,
   webidl_bindings_host: WebIdlBindingsHostSlot,
+  /// Optional pointer to the embedder's "host environment" state.
+  ///
+  /// This is distinct from [`VmJsHostHooksPayload::vm_host`]:
+  /// - `vm_host` is the `vm-js` native-call context, typically a narrow per-document object
+  ///   (e.g. FastRender's `HostDocumentState`).
+  /// - `embedder_state` is the broader host environment object driving execution (e.g.
+  ///   FastRender's `WindowHostState`), which can own configuration (import maps, fetcher settings,
+  ///   etc.) that isn't stored on the `VmHost` itself.
+  ///
+  /// Storing this pointer enables small, test-only native hooks (like the offline WPT runner's
+  /// import map registration shim) to reach host state without relying on global variables.
+  embedder_state: Option<NonNull<dyn Any + 'static>>,
 }
 
 impl VmJsHostHooksPayload {
@@ -193,6 +206,18 @@ impl VmJsHostHooksPayload {
     self.vm_host = Some(ptr);
   }
 
+  /// Stores an embedder-defined host environment object.
+  ///
+  /// This is intended for embeddings that need native calls to recover access to a broader host
+  /// state than what is threaded through `vm-js` as the [`VmHost`] parameter.
+  #[inline]
+  pub fn set_embedder_state<T: Any>(&mut self, state: &mut T) {
+    let ptr: NonNull<dyn Any + '_> = NonNull::from(state as &mut dyn Any);
+    // SAFETY: `Any` implies `'static`, so widening the trait object lifetime is sound.
+    let ptr: NonNull<dyn Any + 'static> = unsafe { std::mem::transmute(ptr) };
+    self.embedder_state = Some(ptr);
+  }
+
   /// Returns the active `VmHost` context, if one was installed.
   #[inline]
   pub fn vm_host_mut(&mut self) -> Option<&mut dyn VmHost> {
@@ -200,6 +225,23 @@ impl VmJsHostHooksPayload {
     // SAFETY: The embedding is responsible for ensuring the stored pointer is valid for the
     // duration of any native calls that may access it via this payload.
     Some(unsafe { ptr.as_mut() })
+  }
+
+  /// Returns the embedder host environment value as a `dyn Any`.
+  #[inline]
+  pub fn embedder_state_any_mut(&mut self) -> Option<&mut dyn Any> {
+    let mut ptr = self.embedder_state?;
+    // SAFETY: The embedding is responsible for ensuring the stored pointer is valid for the
+    // duration of any native calls that may access it via this payload.
+    Some(unsafe { ptr.as_mut() })
+  }
+
+  /// Downcasts the embedder host environment value to a concrete type.
+  #[inline]
+  pub fn embedder_state_mut<T: Any>(&mut self) -> Option<&mut T> {
+    self
+      .embedder_state_any_mut()
+      .and_then(|any| any.downcast_mut::<T>())
   }
 
   /// Returns the [`WebIdlBindingsHostSlot`] used by [`host_from_hooks`].
