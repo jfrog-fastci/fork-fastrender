@@ -15,7 +15,6 @@ optimize-js-fallback = ["dep:optimize-js"]
 diagnostics = { workspace = true }
 emit-js = { workspace = true }
 parse-js = { workspace = true }
-runtime-js = { workspace = true }
 ts-erase = { workspace = true }
 vm-js = { workspace = true }
 

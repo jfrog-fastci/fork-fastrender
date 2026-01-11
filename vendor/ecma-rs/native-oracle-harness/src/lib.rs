@@ -132,12 +132,14 @@ mod tests {
       let js = erase_typescript_to_js(&source)
         .unwrap_or_else(|err| panic!("failed to erase fixture {fixture:?}: {err}"));
 
-      runtime_js::execute_script(
-        &js,
-        vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
-        vm_js::Budget::unlimited(1000),
-      )
-      .unwrap_or_else(|err| panic!("oracle execution failed for {fixture:?}: {err:?}\nJS:\n{js}"));
+      let vm = vm_js::Vm::new(vm_js::VmOptions::default());
+      let heap = vm_js::Heap::new(vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap)
+        .unwrap_or_else(|err| panic!("failed to create oracle runtime for {fixture:?}: {err:?}"));
+      runtime.vm.set_budget(vm_js::Budget::unlimited(1000));
+      runtime
+        .exec_script(&js)
+        .unwrap_or_else(|err| panic!("oracle execution failed for {fixture:?}: {err:?}\nJS:\n{js}"));
     }
   }
 }

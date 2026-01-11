@@ -176,7 +176,7 @@ impl<'a> JsExprEmitter<'a> {
     if member.stx.optional_chaining {
       self.emit_expr_with_min_prec(&member.stx.left, call_member_precedence())?;
       self.out.write_punct("?.");
-    } else if let Expr::LitNum(num) = member.stx.left.stx.as_ref() {
+    } else if let Expr::LitNum(num) = strip_ts_erased_wrappers(&member.stx.left).stx.as_ref() {
       let rendered = render_number(num);
       self.out.write_number(&rendered);
       if requires_trailing_dot(&rendered) {
@@ -236,7 +236,7 @@ impl<'a> JsExprEmitter<'a> {
     let op_prec = operator_precedence(unary.stx.operator)?;
     emit_unary_operator(self.out, unary.stx.operator)?;
     if matches!(
-      unary.stx.argument.stx.as_ref(),
+      strip_ts_erased_wrappers(&unary.stx.argument).stx.as_ref(),
       Expr::Binary(inner) if inner.stx.operator == OperatorName::Exponentiation
     ) {
       self.out.write_punct("(");
@@ -342,8 +342,23 @@ fn expr_precedence(expr: &Node<Expr>) -> Result<u8, JsEmitError> {
   }
 }
 
+fn strip_ts_erased_wrappers<'a>(mut expr: &'a Node<Expr>) -> &'a Node<Expr> {
+  loop {
+    match expr.stx.as_ref() {
+      Expr::Instantiation(instantiation) => expr = instantiation.stx.expression.as_ref(),
+      Expr::TypeAssertion(assertion) => expr = assertion.stx.expression.as_ref(),
+      Expr::NonNullAssertion(non_null) => expr = non_null.stx.expression.as_ref(),
+      Expr::SatisfiesExpr(satisfies) => expr = satisfies.stx.expression.as_ref(),
+      _ => return expr,
+    }
+  }
+}
+
 fn needs_parens_for_exponentiation_base(expr: &Node<Expr>) -> bool {
-  matches!(expr.stx.as_ref(), Expr::Unary(_) | Expr::UnaryPostfix(_))
+  matches!(
+    strip_ts_erased_wrappers(expr).stx.as_ref(),
+    Expr::Unary(_) | Expr::UnaryPostfix(_)
+  )
 }
 
 enum OperatorToken {
