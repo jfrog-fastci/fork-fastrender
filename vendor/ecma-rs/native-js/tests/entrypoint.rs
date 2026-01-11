@@ -13,20 +13,22 @@ fn clang_available() -> bool {
   false
 }
 
-#[test]
-fn entrypoint_number_returns_exit_code() {
+fn require_executable_emission_or_skip() -> bool {
   if !cfg!(target_os = "linux") {
     eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
-    return;
+    return false;
   }
   if !clang_available() {
     eprintln!("skipping native-js entrypoint test: clang not found");
-    return;
+    return false;
   }
+  true
+}
 
+fn compile_and_run(ts_src: &str) -> std::process::Output {
   let mut host = MemoryHost::new();
   let file = FileKey::new("main.ts");
-  host.insert(file.clone(), "export function main(): number { return 42; }");
+  host.insert(file.clone(), ts_src);
 
   let program = Program::new(host, vec![file.clone()]);
   let diags = program.check();
@@ -42,75 +44,38 @@ fn entrypoint_number_returns_exit_code() {
   assert_eq!(artifact.kind, EmitKind::Executable);
   assert_eq!(artifact.path, exe);
 
-  let out = Command::new(&artifact.path).output().unwrap();
+  Command::new(&artifact.path).output().unwrap()
+}
+
+#[test]
+fn entrypoint_number_returns_exit_code() {
+  if !require_executable_emission_or_skip() {
+    return;
+  }
+
+  let out = compile_and_run("export function main(): number { return 42; }");
   assert_eq!(out.status.code(), Some(42));
   assert!(out.stdout.is_empty());
 }
 
 #[test]
 fn entrypoint_boolean_returns_exit_code() {
-  if !cfg!(target_os = "linux") {
-    eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
-    return;
-  }
-  if !clang_available() {
-    eprintln!("skipping native-js entrypoint test: clang not found");
+  if !require_executable_emission_or_skip() {
     return;
   }
 
-  let mut host = MemoryHost::new();
-  let file = FileKey::new("main.ts");
-  host.insert(file.clone(), "export function main(): boolean { return true; }");
-
-  let program = Program::new(host, vec![file.clone()]);
-  let diags = program.check();
-  assert!(diags.is_empty(), "unexpected type errors: {diags:#?}");
-
-  let file_id = program.file_id(&file).unwrap();
-  let dir = tempdir().unwrap();
-  let exe = dir.path().join("out");
-  let mut opts = CompilerOptions::default();
-  opts.emit = EmitKind::Executable;
-  opts.output = Some(exe.clone());
-  let artifact = compile_program(&program, file_id, &opts).unwrap();
-  assert_eq!(artifact.kind, EmitKind::Executable);
-  assert_eq!(artifact.path, exe);
-
-  let out = Command::new(&artifact.path).output().unwrap();
+  let out = compile_and_run("export function main(): boolean { return true; }");
   assert_eq!(out.status.code(), Some(1));
   assert!(out.stdout.is_empty());
 }
 
 #[test]
 fn entrypoint_void_returns_exit_code() {
-  if !cfg!(target_os = "linux") {
-    eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
-    return;
-  }
-  if !clang_available() {
-    eprintln!("skipping native-js entrypoint test: clang not found");
+  if !require_executable_emission_or_skip() {
     return;
   }
 
-  let mut host = MemoryHost::new();
-  let file = FileKey::new("main.ts");
-  host.insert(file.clone(), "export function main(): void {}");
-
-  let program = Program::new(host, vec![file.clone()]);
-  let diags = program.check();
-  assert!(diags.is_empty(), "unexpected type errors: {diags:#?}");
-
-  let file_id = program.file_id(&file).unwrap();
-  let dir = tempdir().unwrap();
-  let exe = dir.path().join("out");
-  let mut opts = CompilerOptions::default();
-  opts.emit = EmitKind::Executable;
-  opts.output = Some(exe.clone());
-  let artifact = compile_program(&program, file_id, &opts).unwrap();
-  assert_eq!(artifact.kind, EmitKind::Executable);
-  assert_eq!(artifact.path, exe);
-
-  let out = Command::new(&artifact.path).output().unwrap();
+  let out = compile_and_run("export function main(): void {}");
   assert_eq!(out.status.code(), Some(0));
   assert!(out.stdout.is_empty());
 }
