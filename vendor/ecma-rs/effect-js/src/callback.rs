@@ -1065,6 +1065,9 @@ impl CallbackAnalyzer<'_> {
                   Some("1") => self.uses_index = true,
                   Some("2") => self.uses_array = true,
                   Some("length") => {}
+                  // Array callbacks pass exactly 3 arguments (value, index, array),
+                  // so any other constant slot does not depend on index/array.
+                  Some(other) if other.as_bytes().iter().all(|b| b.is_ascii_digit()) => {}
                   _ => {
                     // Unknown index; conservatively assume it may access either.
                     self.uses_index = true;
@@ -1636,6 +1639,36 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(function (x) { return arguments[\"length\"]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_other_slot_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[3]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_other_slot_computed_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[\"3\"]; });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
