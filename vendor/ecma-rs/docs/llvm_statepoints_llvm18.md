@@ -153,7 +153,9 @@ Notes:
   values in the range **0..3** (bits 0 and 1). This project currently uses
   `flags = 0`.
   In emitted stackmaps on x86_64, this value appears as the second constant
-  location in each record (location `#2` in `llvm-readobj --stackmap` output).
+  header location in each record (location `#2` in `llvm-readobj --stackmap`
+  output). LLVM may encode it as either a `Constant` or `ConstantIndex` location,
+  but the value must match the IR `flags` immarg either way.
 * `<num_patch_bytes>` (2nd argument) controls whether LLVM emits a real call or a
   patchable region at the statepoint site:
   * `patch_bytes = 0`: emits a normal `call` instruction.

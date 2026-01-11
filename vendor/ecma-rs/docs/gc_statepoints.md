@@ -450,6 +450,8 @@ After `rewrite-statepoints-for-gc` (LLVM 18), each safepoint record’s `locatio
    - `locations[0]`: `callconv` (expected `0` in this project)
    - `locations[1]`: `flags` (the `gc.statepoint` `flags` immarg; expected `0` in this project)
    - `locations[2]`: `deopt_count` (number of `"deopt"` operand locations; expected `0` — deopt operands are not supported)
+   - These header entries are stackmap constants (`Constant` or `ConstIndex`/`ConstantIndex`), so
+     `llvm-readobj --stackmap` may print either form.
 2. Then `deopt_count` deopt operand locations (not GC roots). (`deopt_count` is always `0` today.)
 3. Then, for each `gc.relocate` call associated with that statepoint:
    - 2 locations: `(base, derived)` in that order
@@ -465,6 +467,7 @@ locations =
   Constant(callconv=0)
   Constant(flags)
   Constant(deopt_count)
+  deopt_0, deopt_1, ... (deopt_count entries)
   base_0, derived_0
   base_1, derived_1
   ...

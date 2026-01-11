@@ -126,9 +126,14 @@ For stackmaps created from `gc.statepoint` (including `rewrite-statepoints-for-g
 | next `n` | The deopt operands themselves (`"deopt"(... )`) | one `Location` per operand |
 | remaining | GC roots (`"gc-live"`) | encoded as base/derived pairs |
 
-Meta location `#2` is usually `0`, but can be non-zero. For example, adding a
-`"gc-transition"` bundle sets it to `1` in LLVM 18:
-`investigation/llvm_stackmaps/statepoint_gc_transition_flags.ll`.
+Notes:
+
+- Meta location `#2` is usually `0`, but can be non-zero. For example, adding a
+  `"gc-transition"` bundle sets it to `1` in LLVM 18:
+  `investigation/llvm_stackmaps/statepoint_gc_transition_flags.ll`.
+- The 3 meta entries are *constant* locations; in our examples `llvm-readobj` prints them as `Constant`.
+  They may also be encoded as `ConstantIndex` (via the constant pool), in which case `llvm-readobj`
+  prints `ConstantIndex ... (<value>)`.
 
 ### Parsing GC roots from the record
 
