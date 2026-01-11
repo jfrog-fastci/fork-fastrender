@@ -65,9 +65,9 @@ pub struct WindowRealmConfig {
   pub media: MediaContext,
   /// Optional ID of a host-owned `dom2::Document` to expose to minimal DOM shims on `window.document`.
   ///
-  /// The ID refers to an entry in a thread-local registry managed by this module. This indirection
-  /// keeps `vm-js` native call signatures simple: they cannot borrow the Rust host state directly,
-  /// so the JS objects store an integer handle instead.
+  /// The ID refers to an entry in a thread-local registry managed by this module. The DOM shim
+  /// native handlers use it to locate the backing `dom2::Document` without assuming anything about
+  /// the embedder's `VmHost` type (useful for unit tests and non-document embeddings).
   pub dom_source_id: Option<u64>,
   pub console_sink: Option<ConsoleSink>,
   /// Memory limits for the embedded `vm-js` heap.

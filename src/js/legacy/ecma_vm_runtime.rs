@@ -649,9 +649,9 @@ impl Drop for ExecCtxGuard {
 /// A lightweight `VmHost` context for this legacy runtime.
 ///
 /// Host-aware `vm-js` entrypoints accept an explicit `&mut dyn VmHost` so native calls/constructs
-/// can downcast to embedder state. The canonical WindowRealm pipeline passes
-/// [`crate::js::VmJsHostContext`]; this legacy runtime passes a small wrapper around a raw pointer
-/// to its `state` field.
+/// can downcast to embedder state. The canonical `WindowHost` pipeline passes the real embedder
+/// host (e.g. `DocumentHostState`); this legacy runtime passes a small wrapper around a raw
+/// pointer to its `state` field.
 struct EcmaVmHostContext<State: WebIdlBindingsHost + 'static> {
   state: *mut State,
 }
