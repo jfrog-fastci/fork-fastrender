@@ -95,7 +95,7 @@ RUSTFLAGS="\
   -C linker=clang-18 \
   -C link-arg=-fuse-ld=lld \
   -C link-arg=-Wl,-T,$PWD/runtime-native/stackmaps.ld" \
-  cargo build
+  bash scripts/cargo_agent.sh build
 ```
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
