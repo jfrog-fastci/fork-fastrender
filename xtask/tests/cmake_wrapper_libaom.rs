@@ -233,3 +233,54 @@ fn libaom_configure_detects_by_argv_when_cargo_metadata_is_missing() {
     );
   }
 }
+
+#[test]
+fn libaom_configure_preserves_existing_toolchain_file() {
+  let temp = TempDir::new().expect("tempdir");
+  let src = temp.path().join("vendor");
+  let build = temp.path().join("build");
+  fs::create_dir_all(&src).expect("mkdir src");
+  fs::create_dir_all(&build).expect("mkdir build");
+
+  // `scripts/cargo_agent.sh` typically supplies a toolchain file via the `CMAKE_TOOLCHAIN_FILE`
+  // environment variable, so ensure the wrapper still injects the portable/no-asm flags without
+  // overriding the caller's toolchain selection.
+  let toolchain = repo_root().join(".cargo/aom_generic_toolchain.cmake");
+  assert!(toolchain.is_file(), "missing toolchain file at {}", toolchain.display());
+  let toolchain_arg = format!("-DCMAKE_TOOLCHAIN_FILE={}", toolchain.display());
+
+  let args = [
+    Path::new("-S"),
+    src.as_path(),
+    Path::new("-B"),
+    build.as_path(),
+    Path::new(&toolchain_arg),
+  ];
+
+  let cmake_args = run_wrapper(
+    &args,
+    &[("CARGO_PKG_NAME", "libaom-sys")],
+    &["AOM_TARGET_CPU", "CMAKE_TOOLCHAIN_FILE"],
+  );
+
+  assert!(
+    cmake_args.iter().any(|arg| arg == "-DAOM_TARGET_CPU=generic"),
+    "expected wrapper to inject -DAOM_TARGET_CPU=generic, got:\n{cmake_args:?}"
+  );
+  for flag in ["-DENABLE_ASM=0", "-DENABLE_NASM=0", "-DENABLE_YASM=0"] {
+    assert!(
+      cmake_args.iter().any(|arg| arg == flag),
+      "expected wrapper to inject {flag}, got:\n{cmake_args:?}"
+    );
+  }
+
+  let toolchain_args: Vec<&str> = cmake_args
+    .iter()
+    .filter_map(|arg| arg.strip_prefix("-DCMAKE_TOOLCHAIN_FILE="))
+    .collect();
+  assert_eq!(
+    toolchain_args,
+    vec![toolchain.to_str().expect("toolchain path should be valid UTF-8")],
+    "expected wrapper to preserve existing toolchain file argument without adding another; got:\n{cmake_args:?}"
+  );
+}
