@@ -5071,6 +5071,13 @@ impl<'a> Checker<'a> {
           self.build_call_method_type(sigs)
         }
       }
+      // Callables have `Function.prototype` members (e.g. `apply`/`bind`) even if
+      // we don't fully model `CallableFunction` / `NewableFunction` yet. Keep
+      // the checker closer to `tsc` by allowing these members on callable types.
+      //
+      // We currently treat them as `any` until the full lib surface is plumbed
+      // through in a principled way.
+      TypeKind::Callable { .. } if matches!(prop, "apply" | "bind") => prim.any,
       TypeKind::Object(obj_id) => {
         let shape = self.store.shape(self.store.object(obj_id).shape);
         for candidate in shape.properties.iter() {
@@ -5090,6 +5097,9 @@ impl<'a> Checker<'a> {
         }
         if prop == "call" && !shape.call_signatures.is_empty() {
           return self.build_call_method_type(shape.call_signatures.clone());
+        }
+        if matches!(prop, "apply" | "bind") && !shape.call_signatures.is_empty() {
+          return prim.any;
         }
         let key = if let Some(idx) = parse_canonical_index_str(prop) {
           PropKey::Number(idx)
@@ -5167,6 +5177,9 @@ impl<'a> Checker<'a> {
           if !shape.indexers.is_empty() {
             return true;
           }
+          if matches!(prop, "call" | "apply" | "bind") && !shape.call_signatures.is_empty() {
+            return true;
+          }
           for candidate in shape.properties.iter() {
             match candidate.key {
               PropKey::String(name_id) => {
@@ -5188,6 +5201,7 @@ impl<'a> Checker<'a> {
           .iter()
           .copied()
           .any(|member| inner(checker, member, prop, seen)),
+        TypeKind::Callable { .. } => matches!(prop, "call" | "apply" | "bind"),
         TypeKind::Ref { .. } => false,
         TypeKind::Mapped(_) => true,
         _ => false,
@@ -11544,6 +11558,9 @@ impl<'a> FlowBodyChecker<'a> {
         if key == "call" && !shape.call_signatures.is_empty() {
           return Some(self.build_call_method_type(shape.call_signatures.clone()));
         }
+        if matches!(key, "apply" | "bind") && !shape.call_signatures.is_empty() {
+          return Some(prim.any);
+        }
         let key_prop = if let Some(idx) = parse_canonical_index_str(key) {
           PropKey::Number(idx)
         } else {
@@ -11572,14 +11589,19 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn callable_prop_type(&self, obj: TypeId, key: &str) -> Option<TypeId> {
-    if key != "call" {
-      return None;
+    let prim = self.store.primitive_ids();
+    match key {
+      "call" => {
+        let sigs = callable_signatures(&self.store, obj);
+        if sigs.is_empty() {
+          None
+        } else {
+          Some(self.build_call_method_type(sigs))
+        }
+      }
+      "apply" | "bind" => Some(prim.any),
+      _ => None,
     }
-    let sigs = callable_signatures(&self.store, obj);
-    if sigs.is_empty() {
-      return None;
-    }
-    Some(self.build_call_method_type(sigs))
   }
 
   fn build_call_method_type(&self, sigs: Vec<SignatureId>) -> TypeId {

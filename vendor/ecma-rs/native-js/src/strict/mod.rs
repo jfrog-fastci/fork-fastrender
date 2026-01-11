@@ -445,9 +445,19 @@ fn call_targets_name(
   };
   match kind {
     ExprKind::Member(member) => {
-      let is_call_or_apply = member_property_matches_name(body, lowered, &member.property, "call")
-        || member_property_matches_name(body, lowered, &member.property, "apply");
-      is_call_or_apply && callee_matches_name(body, lowered, member.object, target)
+      // Catch indirect uses like:
+      // - `eval.call(...)`, `eval.apply(...)`
+      // - `eval.bind(...)` (bind still produces an eval-capable callable)
+      // - `obj.eval.call(...)`, `obj["eval"].apply(...)`, etc.
+      //
+      // This is intentionally conservative: we do not attempt to track aliasing
+      // (e.g. `const e = eval; e("code")`), but we *do* want to reject the common
+      // `.call`/`.apply`/`.bind` escape hatches.
+      let is_call_apply_or_bind =
+        member_property_matches_name(body, lowered, &member.property, "call")
+          || member_property_matches_name(body, lowered, &member.property, "apply")
+          || member_property_matches_name(body, lowered, &member.property, "bind");
+      is_call_apply_or_bind && callee_matches_name(body, lowered, member.object, target)
     }
     ExprKind::Binary {
       op: BinaryOp::Comma,

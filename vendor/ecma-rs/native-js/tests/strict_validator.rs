@@ -197,6 +197,28 @@ fn rejects_eval_call() {
 }
 
 #[test]
+fn rejects_eval_apply() {
+  let diags = validate(
+    r#"
+      eval.apply(null, ["1 + 1"]);
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0004");
+}
+
+#[test]
+fn rejects_eval_bind() {
+  let diags = validate(
+    r#"
+      eval.bind(null, "1 + 1");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0004");
+}
+
+#[test]
 fn rejects_indirect_eval() {
   let diags = validate(
     r#"
@@ -248,6 +270,28 @@ fn rejects_function_call() {
   let diags = validate(
     r#"
       Function.call(null, "return 1;");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0005");
+}
+
+#[test]
+fn rejects_function_apply() {
+  let diags = validate(
+    r#"
+      Function.apply(null, ["return 1;"]);
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0005");
+}
+
+#[test]
+fn rejects_function_bind() {
+  let diags = validate(
+    r#"
+      Function.bind(null, "return 1;");
     "#,
     FileKind::Ts,
   );
