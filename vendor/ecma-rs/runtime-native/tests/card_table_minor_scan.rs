@@ -94,7 +94,9 @@ fn minor_gc_scans_only_dirty_cards_for_pointer_arrays_and_clears_bits() {
   let mut root_arr = arr_young;
   let mut roots = RootStack::new();
   roots.push(&mut root_arr as *mut *mut u8);
-  heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
+  heap
+    .collect_minor(&mut roots, &mut NullRememberedSet::default())
+    .expect("minor GC");
 
   let arr_old = root_arr;
   assert!(!heap.is_in_nursery(arr_old));
@@ -136,7 +138,9 @@ fn minor_gc_scans_only_dirty_cards_for_pointer_arrays_and_clears_bits() {
   // Run a minor GC that scans the array via the remembered set.
   let mut remembered = SimpleRememberedSet::new();
   remembered.remember(arr_old);
-  heap.collect_minor(&mut RootStack::new(), &mut remembered);
+  heap
+    .collect_minor(&mut RootStack::new(), &mut remembered)
+    .expect("minor GC");
 
   // Slots in marked cards should be updated out of the nursery.
   let updated_10 = unsafe {
