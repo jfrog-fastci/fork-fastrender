@@ -4908,13 +4908,16 @@ impl HttpFetcher {
           started,
         ),
         HttpBackendMode::Ureq => {
-          // `ureq` only supports GET/HEAD/POST. For other methods (e.g. PUT/PATCH/DELETE) fall back
-          // to the reqwest backend so Fetch API requests can still use custom methods even when the
-          // process is configured to prefer ureq.
-          if method.eq_ignore_ascii_case("GET")
+          // `ureq` currently rejects extension methods (e.g. WebDAV's PROPFIND) over HTTP/1.1, so
+          // keep a conservative allowlist and fall back to reqwest when the method isn't supported.
+          let method_supported_by_ureq = method.eq_ignore_ascii_case("GET")
             || method.eq_ignore_ascii_case("HEAD")
             || method.eq_ignore_ascii_case("POST")
-          {
+            || method.eq_ignore_ascii_case("PUT")
+            || method.eq_ignore_ascii_case("DELETE")
+            || method.eq_ignore_ascii_case("PATCH")
+            || method.eq_ignore_ascii_case("OPTIONS");
+          if method_supported_by_ureq {
             self.fetch_http_with_accept_inner_ureq(
               kind,
               destination,
@@ -4984,6 +4987,7 @@ impl HttpFetcher {
           } else {
             curl_backend::curl_available()
           };
+          // `ureq` rejects extension methods over HTTP/1.1; route those to reqwest.
           let method_supported_by_ureq = method.eq_ignore_ascii_case("GET")
             || method.eq_ignore_ascii_case("HEAD")
             || method.eq_ignore_ascii_case("POST")
@@ -6904,109 +6908,79 @@ impl HttpFetcher {
           current_body = None;
         }
 
-        let response_result = match method_upper.as_str() {
-          "GET" => {
-            let mut request = agent.get(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            request.call()
+        let method_to_send = match method_upper.as_str() {
+          // Preserve the previous ureq backend behaviour: standard methods are always sent with
+          // their canonical uppercase spelling, even if the caller provided a different case.
+          "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" => method_upper.as_str(),
+          _ => current_method,
+        };
+
+        fn build_ureq_request<B>(
+          requested_url: &str,
+          current_url: &str,
+          method: &str,
+          headers: &[(String, String)],
+          body: B,
+          network_timer: &mut Option<Instant>,
+        ) -> Result<http::Request<B>> {
+          let mut request = http::Request::builder().method(method).uri(current_url);
+          for (name, value) in headers {
+            request = request.header(name, value);
           }
-          "HEAD" => {
-            let mut request = agent.head(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            request.call()
-          }
-          "POST" => {
-            let mut request = agent.post(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            let body = current_body.unwrap_or(&[]);
-            request.send(body)
-          }
-          "PUT" => {
-            let mut request = agent.put(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            let body = current_body.unwrap_or(&[]);
-            request.send(body)
-          }
-          "DELETE" => {
-            let mut request = agent.delete(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            // ureq's `DELETE` builder does not support a body; ignore `current_body` for now.
-            request.call()
-          }
-          "PATCH" => {
-            let mut request = agent.patch(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            let body = current_body.unwrap_or(&[]);
-            request.send(body)
-          }
-          "OPTIONS" => {
-            let mut request = agent.options(&current);
-            for (name, value) in &headers {
-              request = request.header(name, value);
-            }
-            if !effective_timeout.is_zero() {
-              request = request
-                .config()
-                .timeout_global(Some(effective_timeout))
-                .build();
-            }
-            request.call()
-          }
-          other => {
+          request.body(body).map_err(|err| {
             finish_network_fetch_diagnostics(network_timer.take());
-            return Err(Error::Resource(
-              ResourceError::new(current.clone(), format!("unsupported HTTP method: {other}"))
-                .with_final_url(current.clone()),
-            ));
-          }
+            Error::Resource(
+              ResourceError::new(
+                requested_url.to_string(),
+                format!("failed to build HTTP request: {err}"),
+              )
+              .with_final_url(current_url.to_string())
+              .with_source(err),
+            )
+          })
+        }
+
+        let send_body_required = matches!(method_upper.as_str(), "POST" | "PUT" | "PATCH");
+        let should_send_body = !matches!(method_upper.as_str(), "GET" | "HEAD")
+          && (send_body_required || current_body.is_some());
+
+        let response_result = if should_send_body {
+          let body = current_body.unwrap_or(&[]);
+          let request = build_ureq_request(
+            &requested_url,
+            &current,
+            method_to_send,
+            &headers,
+            body,
+            &mut network_timer,
+          )?;
+          let request = if !effective_timeout.is_zero() {
+            agent
+              .configure_request(request)
+              .timeout_global(Some(effective_timeout))
+              .build()
+          } else {
+            request
+          };
+          agent.run(request)
+        } else {
+          let request = build_ureq_request(
+            &requested_url,
+            &current,
+            method_to_send,
+            &headers,
+            (),
+            &mut network_timer,
+          )?;
+          let request = if !effective_timeout.is_zero() {
+            agent
+              .configure_request(request)
+              .timeout_global(Some(effective_timeout))
+              .build()
+          } else {
+            request
+          };
+          agent.run(request)
         };
 
         let mut response = match response_result {
