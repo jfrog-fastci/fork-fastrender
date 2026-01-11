@@ -3,6 +3,11 @@ use predicates::prelude::*;
 use std::time::Duration;
 use tempfile::tempdir;
 
+// These tests spawn `native-js-cli`, which performs LLVM object emission and system linking.
+// Under heavy CI/agent contention this can take tens of seconds per invocation, so keep the
+// timeout generous to avoid flaky `<interrupted>` failures.
+const CLI_TIMEOUT: Duration = Duration::from_secs(180);
+
 fn native_js_cli() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
 }
@@ -14,7 +19,7 @@ fn console_log_prints_number_expression() {
   std::fs::write(&path, "console.log(1 + 2);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -29,7 +34,7 @@ fn const_binding_can_be_printed() {
   std::fs::write(&path, "const x = 1 + 2;\nconsole.log(x);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -44,7 +49,7 @@ fn let_binding_without_initializer_defaults_to_undefined() {
   std::fs::write(&path, "let x;\nconsole.log(x);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -59,7 +64,7 @@ fn assignment_updates_variable_value() {
   std::fs::write(&path, "let x = 1;\nx = 2;\nconsole.log(x);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -74,7 +79,7 @@ fn assignment_addition_updates_number_variable() {
   std::fs::write(&path, "let x = 1;\nx += 2;\nconsole.log(x);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -89,7 +94,7 @@ fn console_log_supports_multiple_args() {
   std::fs::write(&path, "console.log(1, true, \"x\");\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -104,7 +109,7 @@ fn console_log_prints_null_undefined_nan_and_infinity() {
   std::fs::write(&path, "console.log(null, undefined, NaN, Infinity);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -119,7 +124,7 @@ fn console_log_supports_negative_numbers_and_negative_infinity() {
   std::fs::write(&path, "console.log(-1, -Infinity);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -134,7 +139,7 @@ fn assert_supports_logical_not() {
   std::fs::write(&path, "assert(!false);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -166,7 +171,7 @@ fn print_alias_prints_booleans() {
   std::fs::write(&path, "print(true);\nprint(false);\n").unwrap();
 
   let assert = native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success();
@@ -181,7 +186,7 @@ fn assert_passes() {
   std::fs::write(&path, "assert(1 + 1 === 2);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -195,7 +200,7 @@ fn assert_accepts_truthy_numbers_and_strings() {
   std::fs::write(&path, "assert(1);\nassert(\"x\");\nconsole.log(\"ok\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -209,7 +214,7 @@ fn assert_rejects_falsy_numbers_and_strings() {
   std::fs::write(&path, "assert(0, \"zero\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -223,7 +228,7 @@ fn assert_supports_numeric_comparisons_and_logical_ops() {
   std::fs::write(&path, "assert(1 < 2 && 2 > 1 && 2 >= 2 && 1 <= 1);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -273,7 +278,7 @@ fn logical_and_short_circuits_rhs() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -291,7 +296,7 @@ fn logical_or_short_circuits_rhs() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -305,7 +310,7 @@ fn assert_supports_strict_inequality_and_string_equality() {
   std::fs::write(&path, "assert(NaN !== NaN);\nassert(\"a\" === \"a\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -319,7 +324,7 @@ fn strict_inequality_between_null_and_undefined_is_true() {
   std::fs::write(&path, "assert(null !== undefined);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -333,7 +338,7 @@ fn strict_equality_between_null_and_undefined_is_false() {
   std::fs::write(&path, "assert(null === undefined, \"nope\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -347,7 +352,7 @@ fn assert_failure_prints_message_and_exits_non_zero() {
   std::fs::write(&path, "assert(false, \"fail\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -361,7 +366,7 @@ fn assert_failure_without_message_prints_default_message() {
   std::fs::write(&path, "assert(false);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -382,7 +387,7 @@ fn numeric_literal_precision_is_preserved_for_strict_equality() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -396,7 +401,7 @@ fn panic_builtin_exits_non_zero() {
   std::fs::write(&path, "panic(\"boom\");\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure()
@@ -410,7 +415,7 @@ fn trap_builtin_exits_non_zero() {
   std::fs::write(&path, "trap();\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .failure();
@@ -423,7 +428,7 @@ fn no_builtins_flag_disables_builtin_recognition() {
   std::fs::write(&path, "console.log(1);\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg("--no-builtins")
     .arg(&path)
     .assert()

@@ -7,6 +7,11 @@ use std::time::Duration;
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
+// These tests spawn `native-js` / `native-js-cli` binaries which perform LLVM codegen and system
+// linking. Under heavy CI/agent contention this can take tens of seconds, so keep the timeout
+// generous to avoid flaky `<interrupted>` failures.
+const CLI_TIMEOUT: Duration = Duration::from_secs(180);
+
 fn native_js() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js")
 }
@@ -36,7 +41,7 @@ fn check_succeeds_on_simple_program() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("check")
     .arg(&entry)
     .assert()
@@ -54,7 +59,7 @@ fn check_fails_on_any() {
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("check")
     .arg(&entry)
     .assert()
@@ -70,7 +75,7 @@ fn json_check_success_contains_schema_version_and_diagnostics_array() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   let assert = native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--json")
     .arg("check")
     .arg(&entry)
@@ -101,7 +106,7 @@ fn json_check_error_contains_diagnostics_array() {
   .unwrap();
 
   let assert = native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--json")
     .arg("check")
     .arg(&entry)
@@ -135,7 +140,7 @@ fn json_check_missing_entry_emits_host_error_diagnostic() {
   let missing = tmp.path().join("missing.ts");
 
   let assert = native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--json")
     .arg("check")
     .arg(&missing)
@@ -168,7 +173,7 @@ fn run_rejects_json_flag() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--json")
     .arg("run")
     .arg(&entry)
@@ -186,7 +191,7 @@ fn build_and_run_returns_exit_code() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -207,7 +212,7 @@ fn build_with_emit_ir_writes_executable_and_ir_file() {
   let out = tmp.path().join("out-bin");
   let ll = tmp.path().join("out.ll");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -246,7 +251,7 @@ fn emit_llvm_ir_contains_symbols() {
 
   let ll = tmp.path().join("out.ll");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("emit-ir")
     .arg(&entry)
     .arg("-o")
@@ -276,7 +281,7 @@ fn run_exits_with_program_exit_code() {
   fs::write(&entry, "export function main(): number { return 42; }\n").unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("run")
     .arg(&entry)
     .arg("--")
@@ -302,7 +307,7 @@ fn relative_imports_are_resolved() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -348,7 +353,7 @@ fn tsconfig_paths_are_resolved() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--project")
     .arg(&tsconfig)
     .arg("build")
@@ -373,7 +378,7 @@ fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("check")
     .arg(&entry)
     .assert()
@@ -381,7 +386,7 @@ fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -404,7 +409,7 @@ fn check_and_build_reject_eval() {
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("check")
     .arg(&entry)
     .assert()
@@ -414,7 +419,7 @@ fn check_and_build_reject_eval() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -460,7 +465,7 @@ fn tsconfig_types_are_loaded_from_type_roots() {
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--project")
     .arg(&tsconfig)
     .arg("build")
@@ -485,7 +490,7 @@ fn print_builtin_writes_stdout() {
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("run")
     .arg(&entry)
     .assert()
@@ -504,7 +509,7 @@ fn checked_pipeline_run_prints_stdout() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("run")
@@ -521,7 +526,7 @@ fn checked_pipeline_check_succeeds_on_simple_program() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("check")
@@ -541,7 +546,7 @@ fn checked_pipeline_check_fails_on_type_error() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("check")
@@ -563,7 +568,7 @@ fn checked_pipeline_run_exits_with_program_exit_code() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("run")
@@ -582,7 +587,7 @@ fn checked_pipeline_emit_ir_contains_symbols() {
 
   let ll = tmp.path().join("out.ll");
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("emit-ir")
