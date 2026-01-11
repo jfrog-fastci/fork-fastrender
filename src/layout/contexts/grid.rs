@@ -8740,6 +8740,37 @@ impl GridFormattingContext {
       known_dimensions.height,
       available_space.height,
     );
+    // Taffy expresses intrinsic height probes (min-/max-content contributions) by setting
+    // `available_space.height` to `MinContent`/`MaxContent`.
+    //
+    // When the grid area width is already definite, browsers compute the item's contribution by
+    // laying it out at that width with an effectively indefinite height. Doing that here avoids
+    // extreme overestimation from formatting-context intrinsic block sizes (which are defined in
+    // terms of the box's own intrinsic inline sizes).
+    //
+    // Treat these probes as having an effectively indefinite available height so the measured
+    // result can be reused for subsequent definite-height calls when heights are otherwise ignored
+    // (see `drop_definite_available_height_for_measure`).
+    let drop_intrinsic_height_probe = known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
+      )
+      && (known_dimensions.width.is_some()
+        || matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+        ))
+      && matches!(
+        fc_type,
+        FormattingContextType::Block
+          | FormattingContextType::Inline
+          | FormattingContextType::Table
+          | FormattingContextType::Flex
+      )
+      && physical_height_is_auto(style)
+      && !node_or_in_flow_children_depend_on_available_height(box_node);
+    let drop_available_height = drop_available_height || drop_intrinsic_height_probe;
     let (key, known_dimensions, available_space) = MeasureKey::new_with_snapped_sizes(
       box_node,
       known_dimensions,
@@ -16470,6 +16501,103 @@ mod tests {
           "{label} height probe should measure by laying out the item with the known inline size ({known_label})"
         );
       }
+    }
+  }
+
+  #[test]
+  fn measure_grid_item_height_probes_respect_definite_available_inline_size() {
+    use taffy::style::AvailableSpace;
+
+    let gc = GridFormattingContext::new();
+    let factory =
+      crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+        gc.font_context.clone(),
+        gc.viewport_size,
+        gc.nearest_positioned_cb,
+      );
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    for (probe_height, label) in [
+      (AvailableSpace::MinContent, "min-content"),
+      (AvailableSpace::MaxContent, "max-content"),
+    ] {
+      let mut style = ComputedStyle::default();
+      style.font_size = 16.0;
+      style.word_break = WordBreak::BreakAll;
+      let style = Arc::new(style);
+      let text_child = BoxNode::new_text(style.clone(), "a".repeat(64));
+      let mut node = BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child]);
+      node.id = 2;
+      let node_ptr = &node as *const _;
+      let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+      let wide_width = 200.0;
+      reset_grid_measure_layout_calls();
+      let wide = gc.measure_grid_item(
+        node_ptr,
+        TaffyNodeId::from(2u64),
+        taffy::geometry::Size {
+          width: None,
+          height: None,
+        },
+        taffy::geometry::Size {
+          width: AvailableSpace::Definite(wide_width),
+          height: probe_height,
+        },
+        Some(wide_width),
+        false,
+        &taffy_style,
+        &FxHashSet::default(),
+        &factory,
+        &mut measure_cache,
+        &mut measured_fragments,
+        &mut measured_node_keys,
+      );
+      assert!(
+        wide.size.height > 0.0,
+        "{label} height probe should return a non-zero intrinsic height"
+      );
+      assert_eq!(
+        grid_measure_layout_calls(),
+        1,
+        "{label} height probe should measure by laying out the item with the available inline size"
+      );
+
+      let narrow_width = 50.0;
+      reset_grid_measure_layout_calls();
+      let narrow = gc.measure_grid_item(
+        node_ptr,
+        TaffyNodeId::from(2u64),
+        taffy::geometry::Size {
+          width: None,
+          height: None,
+        },
+        taffy::geometry::Size {
+          width: AvailableSpace::Definite(narrow_width),
+          height: probe_height,
+        },
+        Some(narrow_width),
+        false,
+        &taffy_style,
+        &FxHashSet::default(),
+        &factory,
+        &mut measure_cache,
+        &mut measured_fragments,
+        &mut measured_node_keys,
+      );
+      assert!(
+        narrow.size.height > wide.size.height,
+        "{label} height probe should respect the available inline size (narrow={:.2}, wide={:.2})",
+        narrow.size.height,
+        wide.size.height
+      );
+      assert_eq!(
+        grid_measure_layout_calls(),
+        1,
+        "{label} height probe should measure by laying out the item with the available inline size"
+      );
     }
   }
 

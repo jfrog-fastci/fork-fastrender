@@ -11,6 +11,7 @@ const DEFAULT_OUT_BASE: &str = "target/page_loop";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_DEBUG_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_JOBS: usize = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -103,8 +104,10 @@ pub struct PageLoopArgs {
   pub jobs: usize,
 
   /// Per-fixture hard timeout in seconds (forwarded to both FastRender and Chrome steps).
-  #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
-  pub timeout: u64,
+  ///
+  /// Defaults to 120s in release mode and 180s when `--debug` is set.
+  #[arg(long, value_name = "SECS")]
+  pub timeout: Option<u64>,
 
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaMode::Screen)]
@@ -174,6 +177,16 @@ pub struct PageLoopArgs {
   /// runtime and less representative performance numbers.
   #[arg(long)]
   pub debug: bool,
+}
+
+impl PageLoopArgs {
+  fn effective_timeout_secs(&self) -> u64 {
+    self.timeout.unwrap_or(if self.debug {
+      DEFAULT_DEBUG_TIMEOUT_SECS
+    } else {
+      DEFAULT_TIMEOUT_SECS
+    })
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +262,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   validate_args(&args, &fixture_stem)?;
   let out_root = resolve_out_root(&repo_root, &args, &fixture_stem)?;
   let layout = Layout::new(&repo_root, &fixture_stem, &out_root);
+  let timeout = args.effective_timeout_secs();
 
   if !layout.fixture_html.is_file() {
     bail!(
@@ -281,7 +295,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     args.viewport,
     args.dpr,
     args.media.as_cli_value(),
-    args.timeout,
+    timeout,
     run_chrome,
     args.write_snapshot,
   );
@@ -303,7 +317,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
         viewport: args.viewport,
         dpr: args.dpr,
         media: args.media.as_cli_value().to_string(),
-        timeout: args.timeout,
+        timeout,
       },
     ))
   } else {
@@ -330,7 +344,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     println!("  fastrender_png: {}", layout.fastrender_png.display());
     println!("  fastrender_metadata: {}", layout.fastrender_metadata.display());
     println!("  jobs: {}", args.jobs);
-    println!("  timeout: {}s", args.timeout);
+    println!("  timeout: {}s", timeout);
     if args.write_snapshot {
       println!("  fastrender_snapshot: {}", layout.fastrender_snapshot.display());
     }
@@ -427,7 +441,7 @@ fn validate_args(args: &PageLoopArgs, fixture_stem: &str) -> Result<()> {
   if args.jobs == 0 {
     bail!("--jobs must be > 0");
   }
-  if args.timeout == 0 {
+  if args.effective_timeout_secs() == 0 {
     bail!("--timeout must be > 0");
   }
   if (args.inspect_filter_selector.is_some() || args.inspect_filter_id.is_some())
@@ -745,7 +759,7 @@ fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageL
     .arg("--dpr")
     .arg(args.dpr.to_string())
     .arg("--timeout")
-    .arg(args.timeout.to_string())
+    .arg(args.effective_timeout_secs().to_string())
     .arg("--media")
     .arg(args.media.as_cli_value());
   cmd.current_dir(repo_root);
