@@ -137,6 +137,24 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
   use std::path::PathBuf;
   use std::process::Command;
 
+  fn cmd_exists(cmd: &str) -> bool {
+    Command::new(cmd)
+      .arg("--version")
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .status()
+      .is_ok_and(|s| s.success())
+  }
+
+  fn find_on_path(candidates: &[&'static str]) -> Option<&'static str> {
+    for &cand in candidates {
+      if cmd_exists(cand) {
+        return Some(cand);
+      }
+    }
+    None
+  }
+
   let tempdir = tempfile::tempdir().expect("tempdir");
   let shim_rs = tempdir.path().join("safepoint_shim.rs");
   let obj_path = tempdir.path().join("safepoint_shim.o");
@@ -153,11 +171,12 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
     &shim_rs,
     format!(
       r#"
+      #![allow(dead_code)]
       // Minimal stubs for `runtime-native/src/safepoint.rs`.
        pub mod arch {{
-         pub const WORD_SIZE: usize = 8;
-         #[derive(Clone, Copy, Debug, Default)]
-         #[repr(C)]
+          pub const WORD_SIZE: usize = 8;
+          #[derive(Clone, Copy, Debug, Default)]
+          #[repr(C)]
          pub struct SafepointContext {{
            pub sp_entry: usize,
            pub sp: usize,
@@ -310,13 +329,13 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
       }}
 
       #[path = "{safepoint_rs}"]
-      pub mod safepoint;
-      "#
+       pub mod safepoint;
+       "#
     ),
   )
   .expect("write shim");
 
-  let status = Command::new("rustc")
+  let rustc_out = Command::new("rustc")
     .arg("--crate-name=runtime_native_safepoint_shim")
     .arg("--crate-type=lib")
     .arg("--edition=2021")
@@ -326,19 +345,39 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
     .arg("-o")
     .arg(&obj_path)
     .arg(&shim_rs)
-    .status()
+    .output()
     .expect("run rustc");
-  assert!(status.success(), "rustc failed for aarch64");
+  if !rustc_out.status.success() {
+    let stderr = String::from_utf8_lossy(&rustc_out.stderr);
+    // Toolchain setup varies: allow this test to be skipped when the AArch64
+    // standard library isn't installed (common on x86_64 hosts without the
+    // cross target added via rustup).
+    if stderr.contains("target may not be installed") || stderr.contains("can't find crate for `std`") {
+      eprintln!("skipping: rustc could not build for aarch64-unknown-linux-gnu (missing target std?):\n{stderr}");
+      return;
+    }
+    panic!(
+      "rustc failed for aarch64 (status={})\nstdout:\n{}\nstderr:\n{}",
+      rustc_out.status,
+      String::from_utf8_lossy(&rustc_out.stdout),
+      stderr
+    );
+  }
 
-  let output = Command::new("llvm-objdump")
+  let Some(objdump) = find_on_path(&["llvm-objdump-18", "llvm-objdump"]) else {
+    eprintln!("skipping: llvm-objdump not found in PATH (need llvm-objdump-18/llvm-objdump)");
+    return;
+  };
+
+  let output = Command::new(objdump)
     .arg("-d")
     .arg("--disassemble-symbols=rt_gc_safepoint")
     .arg(&obj_path)
     .output()
-    .expect("run llvm-objdump");
+    .unwrap_or_else(|e| panic!("failed to run {objdump}: {e}"));
   assert!(
     output.status.success(),
-    "llvm-objdump failed: {}",
+    "{objdump} failed: {}",
     String::from_utf8_lossy(&output.stderr)
   );
 
