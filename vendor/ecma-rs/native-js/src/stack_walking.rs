@@ -5,10 +5,10 @@ use inkwell::module::Module;
 use inkwell::types::FunctionType;
 use inkwell::values::FunctionValue;
 
-use crate::llvm_gc::LLVM_GC_STRATEGY;
+use crate::llvm::gc::GC_STRATEGY;
 
 pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {
-  func.set_gc(LLVM_GC_STRATEGY);
+  func.set_gc(GC_STRATEGY);
 
   // Required for deterministic GC stack walking:
   //

@@ -5,10 +5,7 @@ use inkwell::types::{FunctionType, PointerType};
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
-/// Address space used for GC-managed pointers when using LLVM's `statepoint-example` strategy.
-///
-/// LLVM models GC references as `ptr addrspace(1)` (not `ptr`/addrspace(0)).
-pub const GC_ADDRSPACE: u16 = 1;
+use crate::llvm::gc;
 
 /// `native-js` ↔ `runtime-native` ABI boundary helpers.
 ///
@@ -58,7 +55,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   }
 
   fn ptr_gc(&self) -> PointerType<'ctx> {
-    self.context.ptr_type(AddressSpace::from(GC_ADDRSPACE))
+    self.context.ptr_type(gc::gc_address_space())
   }
 
   fn get_or_declare(&self, name: &str, ty: FunctionType<'ctx>) -> FunctionValue<'ctx> {

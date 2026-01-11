@@ -148,7 +148,7 @@ fn gc_result_for_scalar_return() {
   let before = r#"
 declare i64 @bar()
 
-define i64 @test() gc "statepoint-example" {
+define i64 @test() gc "coreclr" {
 entry:
   %x = call i64 @bar()
   ret i64 %x
@@ -190,7 +190,7 @@ fn gc_result_for_gc_pointer_return() {
   let before = r#"
 declare ptr addrspace(1) @alloc()
 
-define ptr addrspace(1) @test() gc "statepoint-example" {
+define ptr addrspace(1) @test() gc "coreclr" {
 entry:
   %p = call ptr addrspace(1) @alloc()
   ret ptr addrspace(1) %p
@@ -232,7 +232,7 @@ fn derived_pointer_relocation_has_distinct_base_and_derived_indices() {
   let before = r#"
 declare void @bar()
 
-define void @test(ptr addrspace(1) %base, i1 %cond) gc "statepoint-example" {
+define void @test(ptr addrspace(1) %base, i1 %cond) gc "coreclr" {
 entry:
   br i1 %cond, label %t, label %f
 
@@ -296,7 +296,7 @@ fn gc_leaf_function_call_is_not_wrapped_in_statepoint_but_uses_relocated_value()
 declare void @bar()
 declare void @leaf(ptr addrspace(1)) "gc-leaf-function"
 
-define void @test(ptr addrspace(1) %obj) gc "statepoint-example" {
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   call void @bar()
   call void @leaf(ptr addrspace(1) %obj)
@@ -340,7 +340,7 @@ fn object_emits_llvm_stackmaps_section() {
   let before = r#"
 declare void @bar()
 
-define void @test(ptr addrspace(1) %base) gc "statepoint-example" {
+define void @test(ptr addrspace(1) %base) gc "coreclr" {
 entry:
   %derived = getelementptr i8, ptr addrspace(1) %base, i64 8
   call void @bar()

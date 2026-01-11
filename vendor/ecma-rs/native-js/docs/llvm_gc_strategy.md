@@ -53,11 +53,10 @@ change incompatibly or be removed. `statepoint-example` is explicitly a demonstr
 
 The strategy name is centralized in:
 
-- `native-js/src/llvm_gc.rs` (`LLVM_GC_STRATEGY`)
+- `native-js/src/llvm/gc.rs` (`GC_STRATEGY`)
 
 To change it:
 
-1. Update `LLVM_GC_STRATEGY`.
+1. Update `GC_STRATEGY`.
 2. Update the regression tests that assert `gc "coreclr"` appears in emitted IR.
 3. Update any documentation/fixtures that embed the old strategy string.
-

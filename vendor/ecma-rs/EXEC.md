@@ -969,7 +969,7 @@ inline transition args are deprecated).
 ```llvm
 declare ptr addrspace(1) @allocate(i64)
 
-define ptr addrspace(1) @make_pair(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "statepoint-example" {
+define ptr addrspace(1) @make_pair(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
 entry:
     ; About to call allocate(), which might trigger GC.
     ; Tell LLVM %a and %b are live GC references at this safepoint.

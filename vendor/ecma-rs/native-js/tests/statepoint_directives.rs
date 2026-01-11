@@ -44,7 +44,7 @@ fn rewrite_statepoints_honors_callsite_directives() {
 
   let foo_ty = void_ty.fn_type(&[], false);
   let foo = module.add_function("foo", foo_ty, None);
-  gc::set_statepoint_example_gc(&foo).expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&foo).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);

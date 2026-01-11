@@ -24,11 +24,11 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
   let callee_ty = void_ty.fn_type(&[i64_ty.into()], false);
   let callee = module.add_function("callee", callee_ty, None);
 
-  // define void @test(ptr addrspace(1) %obj) gc "statepoint-example"
+  // define void @test(ptr addrspace(1) %obj) gc "coreclr"
   let gc_ptr = gc::gc_ptr_type(&context);
   let test_ty = void_ty.fn_type(&[gc_ptr.into()], false);
   let test_fn = module.add_function("test", test_ty, None);
-  gc::set_statepoint_example_gc(&test_fn).expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);

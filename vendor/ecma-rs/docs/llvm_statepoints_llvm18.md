@@ -23,7 +23,7 @@ That fixture:
 Any function containing a statepoint must have a GC strategy name:
 
 ```llvm
-define void @f(...) gc "statepoint-example" { ... }
+define void @f(...) gc "coreclr" { ... }
 ```
 
 If you omit `gc "..."`, LLVM 18 will abort during module verification with an
@@ -33,13 +33,14 @@ error like:
 LLVM ERROR: unsupported GC:
 ```
 
-For our purposes, `"statepoint-example"` is sufficient (it enables the statepoint
-lowering + stackmap emission pipeline).
+For our purposes, any statepoint-capable built-in strategy works. This repo
+standardizes on `"coreclr"` (production-used); `"statepoint-example"` also works
+but is a demo/reference strategy.
 
 ### 2) GC pointers must be in a GC address space (addrspace(1))
 
-Under `"statepoint-example"`, LLVM treats **`addrspace(1)` pointers** as GC
-pointers. This affects:
+Under LLVM 18's statepoint-based strategies (including `"coreclr"`), LLVM treats
+**`addrspace(1)` pointers** as GC pointers. This affects:
 
 * the types in the `"gc-live"` bundle
 * `gc.relocate` return type
@@ -101,7 +102,7 @@ The exact overload suffixes matter:
 
 * `gc.statepoint.p0` — `p0` is the callee pointer address space (almost always 0)
 * `gc.result.pN` / `gc.relocate.pN` — `pN` is the **GC pointer address space**
-  (`N = 1` for `"statepoint-example"`)
+  (`N = 1` for `addrspace(1)`)
 
 Canonical declarations (matching the fixture):
 
@@ -207,4 +208,3 @@ Frame-pointer note:
   a frame pointer (`-fno-omit-frame-pointer` / `frame-pointer="all"`). Stackmaps
   remain valid either way; the runtime just needs to interpret the register
   numbers in the record.
-

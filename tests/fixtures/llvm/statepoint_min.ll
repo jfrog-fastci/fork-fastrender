@@ -21,10 +21,10 @@ declare ptr addrspace(1) @llvm.experimental.gc.result.p1(token)
 declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32 immarg, i32 immarg)
 
 ; IMPORTANT:
-; - Function must be a GC function (`gc "statepoint-example"`), otherwise LLVM 18
+; - Function must be a GC function (`gc "coreclr"`), otherwise LLVM 18
 ;   will abort during verification ("unsupported GC").
 ; - GC pointers for this strategy live in addrspace(1).
-define ptr addrspace(1) @test(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   ; A derived ("interior") pointer to demonstrate base+derived relocation.
   %derived = getelementptr i8, ptr addrspace(1) %obj, i64 8
@@ -54,4 +54,3 @@ entry:
 
   ret ptr addrspace(1) %call_res
 }
-
