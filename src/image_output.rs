@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::error::RenderError;
+use crate::error::RenderStage;
 use crate::error::Result;
 use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::image_compare::{self, CompareConfig};
@@ -73,6 +74,9 @@ impl Default for OutputFormat {
 fn unpremultiply_rgb(r: u8, g: u8, b: u8, a: u8) -> (u8, u8, u8) {
   if a == 0 {
     return (0, 0, 0);
+  }
+  if a == 255 {
+    return (r, g, b);
   }
 
   // Match the legacy unpremultiplication semantics exactly:
@@ -213,6 +217,9 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
         let mut encoder = png::Encoder::new(&mut buffer, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
+        // `encode_image` is often called by CLI tooling (fixture/page renders) where throughput
+        // matters more than smallest file size. Use a low CPU-cost configuration.
+        encoder.set_compression(png::Compression::Fast);
 
         let mut writer = encoder.write_header().map_err(|e| {
           Error::Render(RenderError::EncodeFailed {
@@ -236,6 +243,10 @@ pub fn encode_image(pixmap: &Pixmap, format: OutputFormat) -> Result<Vec<u8>> {
           .map_err(Error::Render)?;
         row_buf.resize(row_len, 0);
         for row in pixels.chunks_exact(row_len) {
+          // PNG encoding can dominate wall time for large renders (and is outside the renderer's
+          // core layout/paint loops). Honor any active root render deadline so CLI tools can
+          // cooperatively time out instead of hanging until an external hard kill.
+          crate::render_control::check_root(RenderStage::Paint).map_err(Error::Render)?;
           unpremultiply_rgba_row(row, &mut row_buf);
           stream.write_all(&row_buf).map_err(|e| {
             Error::Render(RenderError::EncodeFailed {
@@ -657,6 +668,8 @@ pub fn diff_png_with_alpha(
 mod tests {
   use super::*;
   use image::{Rgba, RgbaImage};
+  use std::time::Duration;
+  use tiny_skia::Pixmap;
 
   #[test]
   fn pixmap_to_rgba8_converts_premultiplied_and_straight() {
@@ -751,6 +764,23 @@ mod tests {
       "expected diff_percent {:.4}, got {:.4}",
       expected_diff_percent,
       metrics.diff_percentage
+    );
+  }
+
+  #[test]
+  fn encode_image_respects_root_deadline() {
+    let pixmap = Pixmap::new(16, 16).expect("pixmap");
+
+    let deadline = crate::render_control::RenderDeadline::new(Some(Duration::ZERO), None);
+
+    let err = crate::render_control::with_deadline(Some(&deadline), || {
+      encode_image(&pixmap, OutputFormat::Png)
+    })
+      .expect_err("expected encode_image to time out under expired deadline");
+
+    assert!(
+      matches!(err, Error::Render(RenderError::Timeout { .. })),
+      "expected RenderError::Timeout, got {err:?}"
     );
   }
 }

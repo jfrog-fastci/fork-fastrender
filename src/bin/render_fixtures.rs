@@ -18,7 +18,7 @@ use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactReques
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
-use fastrender::render_control::{push_stage_listener, StageHeartbeat};
+use fastrender::render_control::{push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat};
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
 use image::ImageFormat;
@@ -1664,15 +1664,18 @@ fn render_fixture(
   let determinism = opts.determinism.clone();
   let stem_for_determinism = stem.clone();
   let out_dir_for_determinism = shared.out_dir.clone();
-  let last_stage: Arc<Mutex<Option<StageHeartbeat>>> = Arc::new(Mutex::new(None));
+  let last_stage: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
   let last_stage_for_listener = Arc::clone(&last_stage);
+  let last_stage_for_encode = Arc::clone(&last_stage);
+  let hard_timeout = shared.hard_timeout;
 
   let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
+    let overall_start = Instant::now();
     let stage_listener: Arc<dyn Fn(StageHeartbeat) + Send + Sync> = Arc::new(move |stage| {
       let mut guard = last_stage_for_listener
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-      *guard = Some(stage);
+      *guard = Some(stage.as_str().to_string());
     });
     let _stage_guard = push_stage_listener(Some(stage_listener));
 
@@ -1723,7 +1726,23 @@ fn render_fixture(
     }
 
     let png = if encode_png {
-      Some(encode_image(&report.pixmap, OutputFormat::Png)?)
+      {
+        let mut guard = last_stage_for_encode
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some("encode_png".to_string());
+      }
+
+      let elapsed = overall_start.elapsed();
+      let remaining = hard_timeout
+        .checked_sub(elapsed)
+        .unwrap_or(Duration::ZERO);
+      // Leave a small margin so the parent `recv_timeout` is unlikely to fire before we send a
+      // cooperative timeout error.
+      let remaining = remaining.saturating_sub(Duration::from_millis(100));
+      let deadline = RenderDeadline::new(Some(remaining), None);
+
+      Some(with_deadline(Some(&deadline), || encode_image(&report.pixmap, OutputFormat::Png))?)
     } else {
       None
     };
@@ -1760,7 +1779,7 @@ fn render_fixture(
         let last_stage = last_stage
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
-          .map(|stage| stage.as_str().to_string());
+          .clone();
         Err(Status::Timeout(format!(
           "render timed out after {:.2}s{}",
           shared.hard_timeout.as_secs_f64(),
