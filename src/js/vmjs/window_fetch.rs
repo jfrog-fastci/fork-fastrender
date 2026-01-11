@@ -1520,6 +1520,25 @@ fn push_bytes_limited(out: &mut Vec<u8>, bytes: &[u8], max_len: usize) -> Result
   Ok(())
 }
 
+fn normalize_content_type_for_blob(header_value: &str) -> String {
+  // Extract the MIME type "essence" (before `;`) and clamp to Blob's `type` semantics:
+  // - ASCII lowercased
+  // - empty string if it contains non-ASCII-printable characters
+  let essence = header_value.split(';').next().unwrap_or("").trim();
+  if essence.is_empty() {
+    return String::new();
+  }
+  if !essence
+    .as_bytes()
+    .iter()
+    .copied()
+    .all(|b| (0x20..=0x7E).contains(&b))
+  {
+    return String::new();
+  }
+  essence.bytes().map(|b| (b as char).to_ascii_lowercase()).collect()
+}
+
 fn encode_form_data_as_multipart(
   entries: &[window_form_data::FormDataEntry],
   boundary: &str,
@@ -2186,6 +2205,97 @@ fn request_array_buffer_native(
   Ok(cap.promise)
 }
 
+fn request_blob_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  let (bytes_result, content_type_result): (
+    std::result::Result<Vec<u8>, WebFetchError>,
+    std::result::Result<Option<String>, WebFetchError>,
+  ) = with_env_state_mut(env_id, |state| {
+    let req = state
+      .requests
+      .get_mut(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    let bytes_result = match req.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    let content_type_result = req.headers.get("Content-Type");
+    Ok((bytes_result, content_type_result))
+  })?;
+
+  match (bytes_result, content_type_result) {
+    (Ok(bytes), Ok(content_type)) => {
+      let blob_type = content_type
+        .as_deref()
+        .map(normalize_content_type_for_blob)
+        .unwrap_or_default();
+
+      let blob_result = (|| -> Result<GcObject, VmError> {
+        let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
+          "Request.blob requires an active realm",
+        ))?;
+        let proto = window_blob::blob_prototype_for_realm(realm_id)
+          .ok_or(VmError::Unimplemented("Request.blob requires Blob to be installed"))?;
+        window_blob::create_blob_with_proto(
+          vm,
+          scope,
+          callee,
+          proto,
+          window_blob::BlobData { bytes, r#type: blob_type },
+        )
+      })();
+
+      match blob_result {
+        Ok(blob_obj) => {
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.resolve,
+            Value::Undefined,
+            &[Value::Object(blob_obj)],
+          )?;
+        }
+        Err(err) => {
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+        }
+      }
+    }
+    (Err(err), _) | (_, Err(err)) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
 fn request_json_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2648,6 +2758,97 @@ fn response_array_buffer_native(
       )?;
     }
     Err(err) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
+fn response_blob_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  let (bytes_result, content_type_result): (
+    std::result::Result<Vec<u8>, WebFetchError>,
+    std::result::Result<Option<String>, WebFetchError>,
+  ) = with_env_state_mut(env_id, |state| {
+    let res = state
+      .responses
+      .get_mut(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    let bytes_result = match res.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    let content_type_result = res.headers.get("Content-Type");
+    Ok((bytes_result, content_type_result))
+  })?;
+
+  match (bytes_result, content_type_result) {
+    (Ok(bytes), Ok(content_type)) => {
+      let blob_type = content_type
+        .as_deref()
+        .map(normalize_content_type_for_blob)
+        .unwrap_or_default();
+
+      let blob_result = (|| -> Result<GcObject, VmError> {
+        let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
+          "Response.blob requires an active realm",
+        ))?;
+        let proto = window_blob::blob_prototype_for_realm(realm_id)
+          .ok_or(VmError::Unimplemented("Response.blob requires Blob to be installed"))?;
+        window_blob::create_blob_with_proto(
+          vm,
+          scope,
+          callee,
+          proto,
+          window_blob::BlobData { bytes, r#type: blob_type },
+        )
+      })();
+
+      match blob_result {
+        Ok(blob_obj) => {
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.resolve,
+            Value::Undefined,
+            &[Value::Object(blob_obj)],
+          )?;
+        }
+        Err(err) => {
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+        }
+      }
+    }
+    (Err(err), _) | (_, Err(err)) => {
       let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
       vm.call_with_host_and_hooks(
         &mut *host,
@@ -3922,6 +4123,13 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       true,
     )?;
 
+    let blob_id = vm.register_native_call(request_blob_native)?;
+    let blob_name = scope.alloc_string("blob")?;
+    scope.push_root(Value::String(blob_name))?;
+    let blob_fn = scope.alloc_native_function(blob_id, None, blob_name, 0)?;
+    scope.heap_mut().object_set_prototype(blob_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "blob", Value::Object(blob_fn), true)?;
+
     // bodyUsed accessor (getter only).
     let body_used_get_id = vm.register_native_call(request_body_used_get_native)?;
     let body_used_get_name = scope.alloc_string("get bodyUsed")?;
@@ -3998,6 +4206,13 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       Value::Object(array_buffer_fn),
       true,
     )?;
+
+    let blob_id = vm.register_native_call(response_blob_native)?;
+    let blob_name = scope.alloc_string("blob")?;
+    scope.push_root(Value::String(blob_name))?;
+    let blob_fn = scope.alloc_native_function(blob_id, None, blob_name, 0)?;
+    scope.heap_mut().object_set_prototype(blob_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "blob", Value::Object(blob_fn), true)?;
 
     let clone_id = vm.register_native_call(response_clone_native)?;
     let clone_name = scope.alloc_string("clone")?;
@@ -6549,6 +6764,106 @@ mod tests {
     drop(scope);
     drop(bindings);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_blob_resolves_to_blob_and_uses_content_type_essence() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "new Response('hi', { headers: { 'Content-Type': 'Text/Plain; charset=utf-8' } }).blob()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Response.blob must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.blob promise missing result",
+      ));
+    };
+    let Value::Object(blob_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.blob must resolve to a Blob object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(blob_obj))?;
+
+    let size_key = alloc_key(&mut scope, "size")?;
+    assert_eq!(vm.get(&mut scope, blob_obj, size_key)?, Value::Number(2.0));
+
+    let type_key = alloc_key(&mut scope, "type")?;
+    let Value::String(type_s) = vm.get(&mut scope, blob_obj, type_key)? else {
+      return Err(VmError::InvariantViolation("Blob.type missing"));
+    };
+    assert_eq!(scope.heap().get_string(type_s)?.to_utf8_lossy(), "text/plain");
+
+    Ok(())
+  }
+
+  #[test]
+  fn request_blob_resolves_to_blob_and_uses_content_type_essence() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "new Request('https://example.invalid/', { method: 'POST', body: 'hi', headers: { 'Content-Type': 'Text/Plain; charset=utf-8' } }).blob()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Request.blob must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Request.blob promise missing result",
+      ));
+    };
+    let Value::Object(blob_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Request.blob must resolve to a Blob object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(blob_obj))?;
+
+    let size_key = alloc_key(&mut scope, "size")?;
+    assert_eq!(vm.get(&mut scope, blob_obj, size_key)?, Value::Number(2.0));
+
+    let type_key = alloc_key(&mut scope, "type")?;
+    let Value::String(type_s) = vm.get(&mut scope, blob_obj, type_key)? else {
+      return Err(VmError::InvariantViolation("Blob.type missing"));
+    };
+    assert_eq!(scope.heap().get_string(type_s)?.to_utf8_lossy(), "text/plain");
+
     Ok(())
   }
 
