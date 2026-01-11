@@ -1543,15 +1543,14 @@ impl BrowserTabHost {
 
             if tag_name.eq_ignore_ascii_case("script")
               && is_html_namespace(namespace)
+              // Only schedule scripts that were dynamically inserted (e.g. via DOM APIs).
+              //
+              // Parser-inserted scripts are discovered explicitly by the streaming parser (or via
+              // `discover_scripts_best_effort`). Executing them mutates script internal slots which
+              // bumps the document mutation generation; if we treated that change as a signal to
+              // rediscover *all* scripts, we'd double-schedule remaining parser-inserted scripts.
               && !node.script_parser_document
               && !node.script_already_started
-              // Only schedule scripts that were *not* inserted by the HTML parser.
-              //
-              // Parser-inserted scripts are surfaced to the host explicitly (via streaming parse
-              // callbacks or best-effort scans). If we also pick them up here, script execution can
-              // accidentally schedule the remainder of a fully-parsed document as "dynamic" scripts
-              // (leading to duplicate fetches/execution).
-              && !node.script_parser_document
               && !self.scheduled_script_nodes.contains(&id)
             {
               let mut spec =

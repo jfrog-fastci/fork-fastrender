@@ -44,6 +44,7 @@ use crate::layout::inline::float_integration::LineSpaceOptions;
 use crate::render_control::check_active_periodic;
 use crate::style::display::Display;
 use crate::style::types::Direction;
+use crate::style::types::LineBreak;
 use crate::style::types::ListStylePosition;
 use crate::style::types::OverflowWrap;
 use crate::style::types::TextWrap;
@@ -525,6 +526,21 @@ fn item_allows_soft_wrap(item: &InlineItem) -> bool {
   }
 }
 
+fn soft_wrap_style_for_item(item: &InlineItem) -> Option<&ComputedStyle> {
+  match item {
+    InlineItem::Text(text) => Some(text.style.as_ref()),
+    InlineItem::InlineBox(inline_box) => Some(inline_box.style.as_ref()),
+    InlineItem::InlineBlock(inline_block) => inline_block.fragment.style.as_deref(),
+    InlineItem::Ruby(ruby) => Some(ruby.style.as_ref()),
+    InlineItem::Replaced(replaced) => Some(replaced.style.as_ref()),
+    InlineItem::Tab(tab) => Some(tab.style.as_ref()),
+    InlineItem::SoftBreak
+    | InlineItem::HardBreak(_)
+    | InlineItem::Floating(_)
+    | InlineItem::StaticPositionAnchor(_) => None,
+  }
+}
+
 fn is_no_break_after_character(ch: char) -> bool {
   // Unicode line-breaking treats NO-BREAK SPACE and related "glue" characters as forbidding
   // a soft wrap opportunity after them (UAX#14 "GL"/"WJ" classes).
@@ -604,6 +620,35 @@ fn soft_wrap_opportunity_between_chars(prev: char, next: char) -> bool {
   crate::text::line_break::find_break_opportunities(&text)
     .iter()
     .any(|brk| brk.byte_offset == boundary)
+}
+
+fn style_allows_non_uax_boundary_break(style: &ComputedStyle) -> bool {
+  matches!(style.line_break, LineBreak::Anywhere)
+    || matches!(
+      style.word_break,
+      WordBreak::BreakAll | WordBreak::BreakWord | WordBreak::Anywhere
+    )
+    || matches!(
+      style.overflow_wrap,
+      OverflowWrap::BreakWord | OverflowWrap::Anywhere
+    )
+}
+
+fn soft_wrap_opportunity_between_chars_with_styles(
+  prev: char,
+  next: char,
+  prev_style: Option<&ComputedStyle>,
+  next_style: Option<&ComputedStyle>,
+) -> bool {
+  if soft_wrap_opportunity_between_chars(prev, next) {
+    return true;
+  }
+  // `word-break` / `overflow-wrap` should not override explicit no-break glue characters like NBSP.
+  if is_no_break_after_character(prev) {
+    return false;
+  }
+  prev_style.is_some_and(style_allows_non_uax_boundary_break)
+    || next_style.is_some_and(style_allows_non_uax_boundary_break)
 }
 
 pub(crate) fn log_line_width_enabled() -> bool {
@@ -2154,28 +2199,38 @@ impl TextItem {
     let mut aligned: Vec<BreakOpportunity> = Vec::new();
     for brk in breaks {
       let clamped_offset = brk.byte_offset.min(text_len);
-      let aligned_offset = Self::cluster_offset_at_or_before(clamped_offset, clusters);
-      if let Some(offset) = aligned_offset {
-        if let Some(last) = aligned.last_mut() {
-          if last.byte_offset == offset {
-            if brk.break_type == BreakType::Mandatory || last.break_type == BreakType::Mandatory {
-              last.break_type = BreakType::Mandatory;
-              last.kind = crate::text::line_break::BreakOpportunityKind::Normal;
-            } else if brk.kind == crate::text::line_break::BreakOpportunityKind::Normal {
-              last.kind = crate::text::line_break::BreakOpportunityKind::Normal;
-            }
-            last.adds_hyphen |= brk.adds_hyphen;
-            continue;
-          }
-        }
+      // Break opportunities are tracked in *byte offsets* (as produced by UAX#14). We try to align
+      // them to cluster boundaries so `advance_at_offset` can use shaped advances without falling
+      // back to linear approximations.
+      //
+      // However, mandatory breaks (e.g. preserved newlines under `white-space: pre-wrap`) must
+      // never be shifted: they intentionally split shaping/kerning and are reshaped independently
+      // when `split_at` is invoked.
+      let offset = if matches!(brk.break_type, BreakType::Mandatory) {
+        clamped_offset
+      } else {
+        Self::cluster_offset_at_or_before(clamped_offset, clusters).unwrap_or(clamped_offset)
+      };
 
-        aligned.push(BreakOpportunity::with_hyphen_and_kind(
-          offset,
-          brk.break_type,
-          brk.adds_hyphen,
-          brk.kind,
-        ));
+      if let Some(last) = aligned.last_mut() {
+        if last.byte_offset == offset {
+          if brk.break_type == BreakType::Mandatory || last.break_type == BreakType::Mandatory {
+            last.break_type = BreakType::Mandatory;
+            last.kind = crate::text::line_break::BreakOpportunityKind::Normal;
+          } else if brk.kind == crate::text::line_break::BreakOpportunityKind::Normal {
+            last.kind = crate::text::line_break::BreakOpportunityKind::Normal;
+          }
+          last.adds_hyphen |= brk.adds_hyphen;
+          continue;
+        }
       }
+
+      aligned.push(BreakOpportunity::with_hyphen_and_kind(
+        offset,
+        brk.break_type,
+        brk.adds_hyphen,
+        brk.kind,
+      ));
     }
 
     aligned
@@ -4741,7 +4796,13 @@ impl<'a> LineBuilder<'a> {
       return true;
     };
 
-    item_allows_soft_wrap(prev) && soft_wrap_opportunity_between_chars(prev_last, next_first)
+    item_allows_soft_wrap(prev)
+      && soft_wrap_opportunity_between_chars_with_styles(
+        prev_last,
+        next_first,
+        soft_wrap_style_for_item(prev),
+        Some(inline_box.style.as_ref()),
+      )
   }
 
   fn split_inline_box_at_last_break_opportunity(
@@ -4920,7 +4981,12 @@ impl<'a> LineBuilder<'a> {
       if !item_allows_soft_wrap(prev) || !item_allows_soft_wrap(next) {
         continue;
       }
-      if !soft_wrap_opportunity_between_chars(prev_last, next_first) {
+      if !soft_wrap_opportunity_between_chars_with_styles(
+        prev_last,
+        next_first,
+        soft_wrap_style_for_item(prev),
+        soft_wrap_style_for_item(next),
+      ) {
         continue;
       }
 
@@ -5041,7 +5107,12 @@ impl<'a> LineBuilder<'a> {
       };
 
       if item_allows_soft_wrap(&prev_item)
-        && soft_wrap_opportunity_between_chars(prev_last, group_first_char)
+        && soft_wrap_opportunity_between_chars_with_styles(
+          prev_last,
+          group_first_char,
+          soft_wrap_style_for_item(&prev_item),
+          Some(inline_box.style.as_ref()),
+        )
       {
         found_break = !moved_rev.is_empty();
         break;

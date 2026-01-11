@@ -3510,7 +3510,7 @@ impl InlineFormattingContext {
       // layout stable, but intrinsic sizing keywords like `max-content` must be treated as truly
       // specified values (they may overflow the containing line).
       let used = crate::layout::utils::clamp_with_order(specified, min_inline, max_inline);
-      if !specified_inline_is_keyword && available_for_fit.is_finite() {
+      if !specified_inline_is_keyword && available_for_fit.is_finite() && available_for_fit > 0.0 {
         used.min(available_for_fit.max(preferred_min))
       } else {
         used
@@ -7373,8 +7373,16 @@ impl InlineFormattingContext {
         let paint_origin_block = block_pos + half_leading - box_item.content_offset_y;
 
         for (idx, child) in box_item.children.iter().enumerate() {
-          let child_block = line_box_origin_block + baseline + child_offsets[idx]
+          let mut child_block = line_box_origin_block + baseline + child_offsets[idx]
             - child.baseline_metrics().baseline_offset;
+          if let InlineItem::StaticPositionAnchor(anchor) = child {
+            if anchor.running.is_none() && anchor.footnote.is_none() {
+              // Static position anchors represent where an out-of-flow element would have appeared
+              // in the normal flow. For inline layout, that is the *top* of the line box (baseline
+              // minus strut baseline), not the baseline itself.
+              child_block = line_box_origin_block + baseline - box_item.strut_metrics.baseline_offset;
+            }
+          }
           let fragment = self.create_item_fragment_oriented(
             child,
             child_block,
@@ -8227,7 +8235,7 @@ impl InlineFormattingContext {
 
   fn min_content_width(&self, items: &[InlineItem], allow_soft_wrap: bool) -> f32 {
     let mut tracker = SegmentTracker::new();
-    self.accumulate_min_segments(items, allow_soft_wrap, &mut tracker);
+    self.accumulate_min_segments(items, allow_soft_wrap, &mut tracker, None);
     tracker.finish()
   }
 
@@ -8382,12 +8390,18 @@ impl InlineFormattingContext {
     items: &[InlineItem],
     allow_soft_wrap: bool,
     tracker: &mut dyn SegmentConsumer,
+    next_char_after_items: Option<char>,
   ) {
+    const OBJECT_REPLACEMENT: char = '\u{FFFC}';
     for (idx, item) in items.iter().enumerate() {
       let next_item = items.get(idx + 1);
+      let next_char = if let Some(next_item) = next_item {
+        first_char_of_item(next_item)
+      } else {
+        next_char_after_items
+      };
       match item {
         InlineItem::Text(text) => {
-          let next_char = next_item.and_then(first_char_of_item);
           self.measure_text_min_content(text, tracker, next_char);
         }
         InlineItem::SoftBreak => {
@@ -8414,37 +8428,33 @@ impl InlineFormattingContext {
             inline_box.margin_right,
           );
           let child_allow_soft_wrap = allow_soft_wrap_for_style(inline_box.style.as_ref());
-          self.accumulate_min_segments(&inline_box.children, child_allow_soft_wrap, &mut boxed);
+          self.accumulate_min_segments(
+            &inline_box.children,
+            child_allow_soft_wrap,
+            &mut boxed,
+            next_char,
+          );
           boxed.finish();
         }
         InlineItem::InlineBlock(block) => {
-          if allow_soft_wrap {
+          tracker.add_width(block.intrinsic_min_total_width());
+          if allow_soft_wrap && allows_boundary_break(Some(OBJECT_REPLACEMENT), next_char) {
             tracker.break_segment();
-            tracker.add_width(block.intrinsic_min_total_width());
-            tracker.break_segment();
-          } else {
-            tracker.add_width(block.intrinsic_min_total_width());
           }
         }
         InlineItem::Ruby(ruby) => {
-          if allow_soft_wrap {
+          tracker.add_width(ruby.width());
+          if allow_soft_wrap && allows_boundary_break(Some(OBJECT_REPLACEMENT), next_char) {
             tracker.break_segment();
-            tracker.add_width(ruby.width());
-            tracker.break_segment();
-          } else {
-            tracker.add_width(ruby.width());
           }
         }
         InlineItem::Replaced(replaced) => {
           let replaced_width = self
             .min_content_width_for_replaced(replaced)
             .unwrap_or_else(|| replaced.total_width());
-          if allow_soft_wrap {
+          tracker.add_width(replaced_width);
+          if allow_soft_wrap && allows_boundary_break(Some(OBJECT_REPLACEMENT), next_char) {
             tracker.break_segment();
-            tracker.add_width(replaced_width);
-            tracker.break_segment();
-          } else {
-            tracker.add_width(replaced_width);
           }
         }
         InlineItem::Floating(_) => {
@@ -14321,16 +14331,23 @@ fn allows_boundary_break(prev: Option<char>, next: Option<char>) -> bool {
   let (Some(a), Some(b)) = (prev, next) else {
     return true;
   };
+  if matches!(a, '\u{00A0}' | '\u{202F}' | '\u{2060}' | '\u{FEFF}') {
+    // Unicode line-breaking treats NO-BREAK SPACE and related "glue" characters as forbidding a
+    // soft wrap opportunity after them (UAX#14 "GL"/"WJ" classes). Preserve that behavior even
+    // when adjacent inline items are represented as U+FFFC object replacement characters.
+    return false;
+  }
   let mut probe = String::new();
   probe.push(a);
   probe.push(b);
   find_break_opportunities(&probe)
-        .iter()
-        .any(|b| {
-            b.byte_offset == a.len_utf8() && matches!(b.break_type, BreakType::Allowed | BreakType::Mandatory)
-        })
-        // Treat object replacement as breakable to avoid fusing text across replaced items.
-        || matches!(a, OBJECT_REPLACEMENT) || matches!(b, OBJECT_REPLACEMENT)
+    .iter()
+    .any(|b| {
+      b.byte_offset == a.len_utf8() && matches!(b.break_type, BreakType::Allowed | BreakType::Mandatory)
+    })
+    // Treat object replacement as breakable to avoid fusing text across replaced items.
+    || matches!(a, OBJECT_REPLACEMENT)
+    || matches!(b, OBJECT_REPLACEMENT)
 }
 
 #[inline]
@@ -14444,7 +14461,11 @@ fn first_char_of_item(item: &InlineItem) -> Option<char> {
     InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
     InlineItem::HardBreak(_) => Some('\n'),
-    InlineItem::InlineBox(b) => b.children.iter().find_map(first_char_of_item),
+    InlineItem::InlineBox(b) => b
+      .children
+      .iter()
+      .find_map(first_char_of_item)
+      .or(Some(OBJECT_REPLACEMENT)),
     InlineItem::Ruby(r) => r
       .segments
       .iter()
@@ -14464,7 +14485,12 @@ fn last_char_of_item(item: &InlineItem) -> Option<char> {
     InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
     InlineItem::HardBreak(_) => Some('\n'),
-    InlineItem::InlineBox(b) => b.children.iter().rev().find_map(last_char_of_item),
+    InlineItem::InlineBox(b) => b
+      .children
+      .iter()
+      .rev()
+      .find_map(last_char_of_item)
+      .or(Some(OBJECT_REPLACEMENT)),
     InlineItem::Ruby(r) => r
       .segments
       .iter()
@@ -16134,6 +16160,38 @@ mod tests {
       text_max,
       inline_block_max,
       combined_max
+    );
+  }
+
+  #[test]
+  fn intrinsic_min_content_does_not_break_after_nbsp_before_inline_block() {
+    // Regression test: trailing NBSP should glue the following inline-block to the preceding text,
+    // so intrinsic min-content sizing includes both segments (min-content ~= max-content).
+    let ifc = InlineFormattingContext::new();
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Block;
+    container_style.font_size = 16.0;
+    let container_style = Arc::new(container_style);
+
+    let text = BoxNode::new_text(default_style(), "Community\u{00A0}".to_string());
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.width = Some(Length::px(20.0));
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let children = [&text, &inline_block];
+    let (min_content, max_content) = ifc
+      .intrinsic_widths_for_children(&container_style, &children)
+      .expect("intrinsic widths");
+
+    assert!(
+      (min_content - max_content).abs() <= 0.5,
+      "NBSP should prevent breaking between text and the following inline-block; expected min-content ({min_content:.2}) ~= max-content ({max_content:.2})"
     );
   }
 

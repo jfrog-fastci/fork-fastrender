@@ -179,7 +179,7 @@ fn text_combine_upright_counts_as_a_single_unit_for_line_breaking() {
   let html = r#"
     <html>
       <body style="margin:0">
-        <div style="writing-mode: vertical-rl; font-family: 'DejaVu Sans', sans-serif; font-size: 20px; line-height: 2; width: 200px; height: 40px">
+        <div style="writing-mode: vertical-rl; font-family: 'DejaVu Sans', sans-serif; font-size: 20px; line-height: 2; width: 200px; height: 40px; word-break: break-all">
           A<span style="text-combine-upright: digits 2">12</span>B
         </div>
       </body>

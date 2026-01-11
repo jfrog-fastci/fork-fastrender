@@ -7357,6 +7357,7 @@ impl FormattingContext for TableFormattingContext {
       &self.cell_bfc
     };
     let mut fragments = Vec::new();
+    let mut row_markers: Vec<FragmentNode> = Vec::new();
 
     struct LaidOutCell {
       cell: CellInfo,
@@ -8365,6 +8366,10 @@ impl FormattingContext for TableFormattingContext {
     }
 
     // Add explicit row boundary markers to make fragmentation row-aware.
+    //
+    // The rest of the table fragments are emitted in paint order (columns/row groups before rows,
+    // etc). Forced breaks use the fragment tree sibling order for break propagation, so ensure the
+    // row markers are the first children of the table fragment regardless of paint ordering.
     for (idx, offset) in row_offsets.iter().enumerate() {
       let height = row_metrics.get(idx).map(|r| r.height).unwrap_or(0.0);
       let mut marker_style = crate::style::ComputedStyle::default();
@@ -8389,7 +8394,7 @@ impl FormattingContext for TableFormattingContext {
       marker_style.border_left_style = BorderStyle::None;
       marker_style.box_shadow.clear();
       let rect = Rect::from_xywh(content_origin_x, *offset, content_width, height);
-      fragments.push(FragmentNode::new_with_style(
+      row_markers.push(FragmentNode::new_with_style(
         rect,
         FragmentContent::Block { box_id: None },
         Vec::new(),
@@ -8573,6 +8578,12 @@ impl FormattingContext for TableFormattingContext {
         fragment.baseline = Some(baseline);
       }
       fragments.push(fragment);
+    }
+
+    if !row_markers.is_empty() {
+      let mut reordered = row_markers;
+      reordered.append(&mut fragments);
+      fragments = reordered;
     }
 
     let mut total_width = if structure.border_collapse == BorderCollapse::Collapse {

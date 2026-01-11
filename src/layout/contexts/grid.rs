@@ -9442,6 +9442,102 @@ impl GridFormattingContext {
       )
     };
 
+    // CSS Grid 1 §11.5 (Grid Item Sizing): when a grid item's preferred size is `auto` and
+    // `justify-self` is not `stretch`, the item is sized as `fit-content` in that axis.
+    //
+    // Our block formatting context follows CSS 2.1 and treats `width:auto` as "fill available
+    // inline size", which is correct for normal-flow blocks but wrong for non-stretch grid items.
+    // Precompute the fit-content border-box width and pass it down as a definite used size so the
+    // item's formatting context (including nested grid/flex containers) lays out at the correct
+    // shrink-to-fit size.
+    if physical_width_is_auto(style)
+      && taffy_style.justify_self != Some(taffy::style::AlignItems::Stretch)
+    {
+      if let taffy::style::AvailableSpace::Definite(avail_content) = available_space.width {
+        if avail_content.is_finite() && avail_content > 1.0 {
+          let percentage_base = avail_content.max(0.0);
+          let (
+            padding_left,
+            padding_right,
+            _padding_top,
+            _padding_bottom,
+            border_left,
+            border_right,
+            _border_top,
+            _border_bottom,
+          ) = self.resolved_padding_border_for_measure(style, percentage_base);
+          let axis_inset = (padding_left + padding_right + border_left + border_right).max(0.0);
+          let available_border_box = (percentage_base + axis_inset).max(0.0);
+
+          let (min_intrinsic, max_intrinsic) = match crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+            fc.as_ref(),
+            box_node,
+            PhysicalAxis::X,
+          ) {
+            Ok(values) => values,
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => (0.0, 0.0),
+          };
+          let min_intrinsic = min_intrinsic.max(0.0);
+          let max_intrinsic = max_intrinsic.max(0.0);
+
+          let mut border_box = crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+            Some(available_border_box),
+            None,
+            min_intrinsic,
+            max_intrinsic,
+          )
+          .max(0.0);
+
+          // Clamp the fit-content result by authored min/max constraints (including intrinsic
+          // keyword constraints) so nested layout receives the same used size that Taffy expects.
+          let keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Option<f32> {
+            match kw {
+              IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
+              IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+              IntrinsicSizeKeyword::FillAvailable => None,
+              IntrinsicSizeKeyword::FitContent { .. } => None,
+              IntrinsicSizeKeyword::CalcSize(_) => None,
+            }
+          };
+          let resolve_length_px = |len: Length| -> Option<f32> {
+            if len.has_percentage() && !percentage_base.is_finite() {
+              return None;
+            }
+            Some(self.resolve_length_for_width(len, percentage_base, style).max(0.0))
+          };
+          let to_border_box = |value: f32| -> f32 {
+            if style.box_sizing == BoxSizing::ContentBox {
+              (value + axis_inset).max(0.0)
+            } else {
+              value.max(0.0)
+            }
+          };
+
+          let author_min = style
+            .min_width_keyword
+            .and_then(keyword_to_bound)
+            .or_else(|| style.min_width.and_then(resolve_length_px).map(to_border_box));
+          let author_max = style
+            .max_width_keyword
+            .and_then(keyword_to_bound)
+            .or_else(|| style.max_width.and_then(resolve_length_px).map(to_border_box));
+          if author_min.is_some() || author_max.is_some() {
+            let min_bound = author_min.unwrap_or(0.0);
+            let mut max_bound = author_max.unwrap_or(f32::INFINITY);
+            if max_bound < min_bound {
+              max_bound = min_bound;
+            }
+            border_box = crate::layout::utils::clamp_with_order(border_box, min_bound, max_bound);
+          }
+
+          if border_box.is_finite() {
+            constraints.used_border_box_width = Some(border_box);
+          }
+        }
+      }
+    }
+
     // Fit-content depends on the available space passed by Taffy. Resolve it here (per measure call)
     // instead of during style conversion so cached templates remain valid.
     let fit_width_limit = match (known_dimensions.width, style.width_keyword) {

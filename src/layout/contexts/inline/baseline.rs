@@ -765,11 +765,11 @@ mod tests {
     let mut acc = LineBaselineAccumulator::new(&parent);
     let shift = acc.add_baseline_relative(&replaced, VerticalAlign::Middle, Some(&parent));
 
-    // shift = baseline_offset - height/2 + x-height/2 = 30 - 15 + 3 = 18
-    assert!((shift - 18.0).abs() < 1e-3);
+    // shift = baseline_offset - height/2 - x-height/2 = 30 - 15 - 3 = 12
+    assert!((shift - 12.0).abs() < 1e-3);
 
     // With the above shift, the replaced element's top aligns with the top of the line box.
-    assert!((acc.baseline_position() - 12.0).abs() < 1e-3);
+    assert!((acc.baseline_position() - 18.0).abs() < 1e-3);
     assert!((acc.line_height() - 30.0).abs() < 1e-3);
     let top = acc.baseline_position() + shift - replaced.baseline_offset;
     assert!(top.abs() < 1e-3, "expected item top to be 0, got {top}");
