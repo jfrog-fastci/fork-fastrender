@@ -863,16 +863,17 @@ impl StackMaps {
     &self.raws
   }
 
-  /// Parse the in-memory `.llvm_stackmaps` section using linker-defined
-  /// boundary symbols.
+  /// Parse the in-memory stackmaps section using linker-defined boundary symbols.
   ///
-  /// This requires the final linked binary to contain a `.llvm_stackmaps`
-  /// section and define:
-  /// - `__start_llvm_stackmaps`
-  /// - `__stop_llvm_stackmaps`
+  /// This requires the final linked binary to contain a stackmaps section
+  /// (`.llvm_stackmaps` or `.data.rel.ro.llvm_stackmaps`) and define:
   ///
-  /// These symbols are provided by `runtime-native/link/stackmaps.ld` (and
-  /// `KEEP`ed so `--gc-sections` does not discard them).
+  /// - `__fastr_stackmaps_start`
+  /// - `__fastr_stackmaps_end`
+  ///
+  /// These symbols are provided by `runtime-native/stackmaps.ld` (or by the
+  /// `native-js` link pipeline) and the section is `KEEP`ed so `--gc-sections`
+  /// does not discard it.
   ///
   /// For a higher-level API that falls back to ELF parsing when the linker
   /// symbols are not available, see [`crate::stackmaps_loader::stackmaps_section`].
@@ -882,7 +883,7 @@ impl StackMaps {
     Self::parse(bytes)
   }
 
-  /// Load the `.llvm_stackmaps` section for the current process (Linux x86_64).
+  /// Load the stackmaps section for the current process (Linux x86_64).
   ///
   /// This is PIE/ASLR-safe because it reads from *mapped memory* (relocations already applied)
   /// rather than from the on-disk bytes.
