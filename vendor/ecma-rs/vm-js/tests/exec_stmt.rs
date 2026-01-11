@@ -95,6 +95,15 @@ fn with_statement_respects_symbol_unscopables() {
 }
 
 #[test]
+fn with_statement_unscopables_blocks_identifier_for_typeof() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var o = { x: 1 }; o[Symbol.unscopables] = { x: true }; with (o) { typeof x }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "undefined");
+}
+
+#[test]
 fn delete_identifier_deletes_with_object_property() {
   let mut rt = new_runtime();
   let value = rt

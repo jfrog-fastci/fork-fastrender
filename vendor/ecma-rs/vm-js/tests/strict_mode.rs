@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, RootId, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, RootId, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -148,4 +148,11 @@ fn non_strict_assignment_to_primitive_property_is_silent() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"("a").x = 1; ("a").x === undefined"#).unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn strict_mode_rejects_with_statement() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; with ({}) {}"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
