@@ -19,12 +19,12 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 218871,
-    "diff_percent": 22.7991,
-    "perceptual": 0.3398,
+    "diff_pixels": 246237,
+    "diff_percent": 25.6497,
+    "perceptual": 0.3673,
     "first_mismatch": {
-      "x": 66,
-      "y": 8,
+      "x": 31,
+      "y": 0,
       "baseline_rgba": [
         34,
         34,
@@ -32,15 +32,15 @@
         255
       ],
       "rendered_rgba": [
-        37,
-        37,
-        37,
+        200,
+        200,
+        200,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211c725fcbf65f0ae464def35397655ed95adc34"
+    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
   },
   "hotspot": "cascade",
   "failure_stage": null,
