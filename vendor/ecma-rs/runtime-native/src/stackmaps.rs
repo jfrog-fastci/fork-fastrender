@@ -29,6 +29,10 @@ pub const STACKMAP_VERSION: u8 = 3;
 pub const X86_64_DWARF_REG_RBP: u16 = 6;
 /// x86_64 SysV DWARF register number for RSP.
 pub const X86_64_DWARF_REG_RSP: u16 = 7;
+/// AArch64 DWARF register number for the frame pointer (X29).
+pub const AARCH64_DWARF_REG_FP: u16 = 29;
+/// AArch64 DWARF register number for the stack pointer (SP).
+pub const AARCH64_DWARF_REG_SP: u16 = 31;
 
 #[derive(Debug, Error)]
 pub enum StackMapError {
@@ -67,13 +71,25 @@ pub enum StackMapError {
   #[error("duplicate stackmap record for callsite pc=0x{pc:x}")]
   DuplicateCallSite { pc: u64 },
 
-  #[error("gc root base register dwarf_reg={dwarf_reg} is unsupported (expected RSP or RBP)")]
+  #[error(
+    "gc root base register dwarf_reg={dwarf_reg} is unsupported (expected SP or FP: x86_64 RSP/RBP, aarch64 SP/X29)"
+  )]
   UnsupportedGcBaseRegister { dwarf_reg: u16 },
 
   #[error("unsupported GC root location {loc:?}")]
   UnsupportedGcLocation { loc: Location },
 
-  #[error("stack slot offset overflow computing rbp offset for stack_size={stack_size} off={off}")]
+  #[error(
+    "stackmap stack_size {stack_size} is smaller than the arch frame record size {frame_record_size}"
+  )]
+  StackSizeTooSmall {
+    stack_size: u64,
+    frame_record_size: u64,
+  },
+
+  #[error(
+    "stack slot offset overflow computing FP-relative offset for stack_size={stack_size} off={off}"
+  )]
   StackSlotOffsetOverflow { stack_size: u64, off: i32 },
 
   #[error("derived pointers are not supported (base={base:?}, derived={derived:?})")]
@@ -577,7 +593,7 @@ impl<'a> CallSite<'a> {
     }
   }
 
-  /// Return a deduplicated list of GC root stack slots as offsets from RBP.
+  /// Return a deduplicated list of GC root stack slots as offsets from the frame pointer (RBP/x29).
   ///
   /// This is a statepoint-oriented helper: it decodes the LLVM `gc.statepoint`
   /// record layout and enumerates only the `(base, derived)` GC root pairs (the
@@ -587,15 +603,44 @@ impl<'a> CallSite<'a> {
   /// falls back to scanning all locations and treating `Indirect` stack slots as
   /// GC roots.
   ///
-  /// Normalization (assumes x86_64 frame pointers are enabled):
-  /// - `Indirect [RSP + off]` becomes `rbp_off = 8 - stack_size + off`
-  /// - `Indirect [RBP + off]` becomes `rbp_off = off`
+  /// Normalization (requires frame pointers):
+  /// - `Indirect [SP + off]` becomes `fp_off = frame_record_size - stack_size + off`
+  ///   - x86_64: `frame_record_size = 8` (saved RBP; return address is outside `stack_size`)
+  ///   - aarch64: `frame_record_size = 16` (saved X29 + X30)
+  /// - `Indirect [FP + off]` becomes `fp_off = off`
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
     let looks_like_statepoint = self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
         .iter()
         .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+
+    let sp_relative_to_fp_relative = |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
+      if self.stack_size < frame_record_size {
+        return Err(StackMapError::StackSizeTooSmall {
+          stack_size: self.stack_size,
+          frame_record_size,
+        });
+      }
+
+      let fp_off = (frame_record_size as i128) - (self.stack_size as i128) + (offset as i128);
+      if !(i32::MIN as i128..=i32::MAX as i128).contains(&fp_off) {
+        return Err(StackMapError::StackSlotOffsetOverflow {
+          stack_size: self.stack_size,
+          off: offset,
+        });
+      }
+      Ok(fp_off as i32)
+    };
+
+    let location_fp_offset = |dwarf_reg: u16, offset: i32| -> Result<i32, StackMapError> {
+      match dwarf_reg {
+        X86_64_DWARF_REG_RBP | AARCH64_DWARF_REG_FP => Ok(offset),
+        X86_64_DWARF_REG_RSP => sp_relative_to_fp_relative(8, offset),
+        AARCH64_DWARF_REG_SP => sp_relative_to_fp_relative(16, offset),
+        other => Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
+      }
+    };
 
     if looks_like_statepoint {
       let statepoint = crate::statepoints::StatepointRecord::new(self.record)?;
@@ -610,20 +655,7 @@ impl<'a> CallSite<'a> {
         let rbp_off = match *base {
           Location::Indirect {
             dwarf_reg, offset, ..
-          } => match dwarf_reg {
-            X86_64_DWARF_REG_RBP => offset,
-            X86_64_DWARF_REG_RSP => {
-              let rbp_off = 8i128 - (self.stack_size as i128) + (offset as i128);
-              if !(i32::MIN as i128..=i32::MAX as i128).contains(&rbp_off) {
-                return Err(StackMapError::StackSlotOffsetOverflow {
-                  stack_size: self.stack_size,
-                  off: offset,
-                });
-              }
-              rbp_off as i32
-            }
-            other => return Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
-          },
+          } => location_fp_offset(dwarf_reg, offset)?,
 
           // Strict mode: reject roots in registers / direct expressions / constants.
           _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
@@ -637,22 +669,7 @@ impl<'a> CallSite<'a> {
           Location::Indirect {
             dwarf_reg, offset, ..
           } => {
-            let rbp_off = match dwarf_reg {
-              X86_64_DWARF_REG_RBP => offset,
-              X86_64_DWARF_REG_RSP => {
-                let rbp_off = 8i128 - (self.stack_size as i128) + (offset as i128);
-                if !(i32::MIN as i128..=i32::MAX as i128).contains(&rbp_off) {
-                  return Err(StackMapError::StackSlotOffsetOverflow {
-                    stack_size: self.stack_size,
-                    off: offset,
-                  });
-                }
-                rbp_off as i32
-              }
-              other => return Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
-            };
-
-            out.push(rbp_off);
+            out.push(location_fp_offset(dwarf_reg, offset)?);
           }
 
           // Ignore constants (used by statepoint headers and patchpoints).
