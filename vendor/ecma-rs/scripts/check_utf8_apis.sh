@@ -23,10 +23,14 @@ pattern_vec='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)
 # for *source text*, which must be validated UTF-8 (`&str` / `Arc<str>`).
 RG_GLOBS=(
   --glob '*.rs'
-  --glob '!native-js/**'
   --glob '!runtime-native/**'
-  --glob '!vm-js/**'
   --glob '!third_party/**'
+  # `native-js` and `vm-js` contain byte-oriented APIs for object code / typed
+  # arrays, which are not "source text". Keep scanning these crates for
+  # accidental byte-oriented *source* entrypoints, but exclude the known
+  # non-source byte APIs.
+  --glob '!native-js/src/link.rs'
+  --glob '!vm-js/src/heap.rs'
 )
 
 if rg --pcre2 --multiline -n "$pattern_bytes" "${RG_GLOBS[@]}" "$repo_root"; then
