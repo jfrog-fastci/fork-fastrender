@@ -62,6 +62,14 @@ class Derived extends Base {
     super();
   }
 }
+
+// TS class field modifiers/annotations must be erased into valid JS class fields.
+class Fields {
+  public a: number;
+  readonly b!: string;
+  c?: boolean;
+  declare d: number;
+}
 "#;
 
   let mut parsed = parse_ts(source);
@@ -111,6 +119,14 @@ class Derived extends Base {
   assert!(
     out.contains("super();this[\"x\"]=x") || out.contains("super();this.x=x"),
     "output should insert derived ctor parameter property assignments after super(): {out}"
+  );
+  assert!(
+    !out.contains("readonly") && !out.contains("declare") && !out.contains("?:") && !out.contains("!:"),
+    "output should erase TS-only class field modifiers/annotations: {out}"
+  );
+  assert!(
+    !out.contains("Fields{a;b;c;d"),
+    "output should drop `declare` class fields entirely (no runtime field): {out}"
   );
 
   // Must erase TS-only expression wrappers.

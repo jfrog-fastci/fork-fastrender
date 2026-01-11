@@ -4627,6 +4627,7 @@ fn strip_class_members(
           },
         )),
         static_: false,
+        declare: false,
         abstract_: false,
         readonly: false,
         accessor: false,
@@ -4693,6 +4694,9 @@ fn strip_class_member(
   }
 
   let mut member = member;
+  if member.stx.declare {
+    return None;
+  }
   let is_constructor = !member.stx.static_
     && matches!(
       &member.stx.key,
@@ -4763,6 +4767,7 @@ fn strip_class_member(
   member.stx.type_annotation = None;
   member.stx.optional = false;
   member.stx.definite_assignment = false;
+  member.stx.declare = false;
   member.stx.abstract_ = false;
   member.stx.readonly = false;
   member.stx.accessor = false;

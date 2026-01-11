@@ -58,6 +58,7 @@ impl<'a> Parser<'a> {
         | TT::ParenthesisOpen
         | TT::PrivateMember
         | TT::KeywordConstructor
+        | TT::KeywordDeclare
         | TT::KeywordGet
         | TT::KeywordSet
         | TT::KeywordAsync
@@ -188,7 +189,7 @@ impl<'a> Parser<'a> {
         };
 
         // Parse TypeScript modifiers in order:
-        // [accessibility] [abstract] [override] [static] [readonly]
+        // [accessibility] [abstract] [override] [declare] [static] [readonly]
 
         // TypeScript: accessibility modifiers (public, private, protected)
         // Error recovery: allow duplicate modifiers
@@ -218,6 +219,31 @@ impl<'a> Parser<'a> {
         let mut override_ = false;
         while p.consume_if(TT::KeywordOverride).is_match() {
           override_ = true;
+        }
+
+        // TypeScript: declare modifier (ambient class member).
+        //
+        // `declare` is contextual and can still be used as a member name (e.g. `declare() {}`),
+        // so only treat it as a modifier when it cannot continue a class element after a key.
+        let mut declare = false;
+        while p.peek().typ == TT::KeywordDeclare {
+          let [_, next] = p.peek_n::<2>();
+          let can_be_key = matches!(
+            next.typ,
+            TT::Exclamation
+              | TT::Question
+              | TT::Colon
+              | TT::Equals
+              | TT::ChevronLeft
+              | TT::ParenthesisOpen
+              | TT::Semicolon
+              | TT::BraceClose
+          );
+          if can_be_key {
+            break;
+          }
+          p.consume();
+          declare = true;
         }
 
         // `static` must always come after other modifiers
@@ -258,6 +284,7 @@ impl<'a> Parser<'a> {
               decorators,
               key: dummy_key,
               static_: true,
+              declare: false,
               abstract_: false,
               readonly: false,
               accessor: false,
@@ -453,6 +480,7 @@ impl<'a> Parser<'a> {
           decorators,
           key,
           static_,
+          declare,
           abstract_,
           readonly,
           accessor,

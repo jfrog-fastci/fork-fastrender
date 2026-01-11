@@ -102,6 +102,13 @@ pub struct ClassMember {
   pub key: ClassOrObjKey,
   #[drive(skip)]
   pub static_: bool,
+  /// TypeScript: `declare` modifier on class members (e.g. `declare foo: string;`).
+  ///
+  /// This indicates an ambient member declaration that should not emit runtime
+  /// JavaScript output.
+  #[drive(skip)]
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "std::ops::Not::not"))]
+  pub declare: bool,
   #[drive(skip)]
   pub abstract_: bool,
   #[drive(skip)]
