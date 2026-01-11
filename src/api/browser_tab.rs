@@ -5993,26 +5993,33 @@ mod tests {
     }
 
     let executed = Rc::new(Cell::new(false));
-    let mut tab = BrowserTab::from_html(
-      "",
-      RenderOptions::default(),
-      AssertNotYetParsedExecutor {
-        executed: Rc::clone(&executed),
-      },
-    )?;
-    // Reset scripting state so parsing new HTML will schedule/execute scripts.
-    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    // Use a fetcher-backed script source instead of `register_script_source` so this regression test
+    // proves async scripts can interleave with parsing via event-loop tasks (rather than relying on
+    // the "spin for fast async sources" heuristic).
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SingleResourceFetcher {
+      url: "https://example.com/a.js".to_string(),
+      bytes: Arc::new(b"A".to_vec()),
+    });
+
     // Force parsing to yield across multiple DOMManipulation tasks so async script tasks can
     // interleave mid-parse.
-    tab.host.js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
-
-    tab.register_script_source("https://example.com/a.js", "A");
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(1);
 
     let filler = "x".repeat(10_000);
     let html = format!(
       "<!doctype html><html><body><script async src=\"https://example.com/a.js\"></script><!--{filler}--><div id=late></div></body></html>"
     );
-    let _ = tab.parse_html_streaming_and_schedule_scripts(&html, None, &RenderOptions::default())?;
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+      &html,
+      "https://example.com/",
+      RenderOptions::default(),
+      AssertNotYetParsedExecutor {
+        executed: Rc::clone(&executed),
+      },
+      fetcher,
+      js_execution_options,
+    )?;
 
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
