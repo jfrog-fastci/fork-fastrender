@@ -5311,14 +5311,43 @@ impl<'a> LineBuilder<'a> {
         .add_line_relative(&metrics, vertical_align);
       0.0 // Will be adjusted in finalization
     } else {
-      // Baseline-relative alignments (e.g., middle/sub/super/text-top) depend on the
-      // parent's font metrics. The strut represents the parent inline box, so thread it
-      // through to compute x-height/ascent-based offsets correctly.
-      // `LineBaselineAccumulator` returns a baseline shift in the same coordinate system used for
-      // fragment placement (positive y = down), so store it directly.
-      self
-        .baseline_acc
-        .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+      match &item {
+        InlineItem::InlineBox(inline_box) => {
+          // CSS 2.1 §10.8.1 defines baseline-relative `vertical-align` values for inline
+          // non-replaced elements ("inline boxes") in terms of the element's own line-height box.
+          // In particular, `vertical-align: middle` aligns the midpoint of the *line-height box*
+          // with the parent's baseline plus half the parent's x-height.
+          //
+          // Our `InlineItem::line_metrics()` for inline boxes reflects the bounds of the aligned
+          // subtree (so the line box height accounts for descendants like larger-font text and
+          // inline replaced elements). Those subtree bounds can extend above/below the inline
+          // element's own line-height box, but they must not affect how the element's baseline
+          // shift is computed.
+          //
+          // Compute the baseline shift from the inline box's strut (its line-height box), then
+          // apply that shift to the aligned subtree bounds when updating the line box height.
+          let shift = self.baseline_acc.compute_baseline_shift(
+            vertical_align,
+            &inline_box.strut_metrics,
+            Some(&self.strut_metrics),
+          );
+          let item_ascent = metrics.baseline_offset - shift;
+          let item_descent = (metrics.height - metrics.baseline_offset) + shift;
+          self.baseline_acc.max_ascent = self.baseline_acc.max_ascent.max(item_ascent);
+          self.baseline_acc.max_descent = self.baseline_acc.max_descent.max(item_descent);
+          shift
+        }
+        _ => {
+          // Baseline-relative alignments (e.g., middle/sub/super/text-top) depend on the parent's
+          // font metrics. The strut represents the parent inline box, so thread it through to
+          // compute x-height/ascent-based offsets correctly.
+          // `LineBaselineAccumulator` returns a baseline shift in the same coordinate system used
+          // for fragment placement (positive y = down), so store it directly.
+          self
+            .baseline_acc
+            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+        }
+      }
     };
 
     let positioned = PositionedItem {
@@ -5424,9 +5453,23 @@ impl<'a> LineBuilder<'a> {
           .add_line_relative(&metrics, vertical_align);
         0.0
       } else {
-        self
-          .baseline_acc
-          .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+        match &positioned.item {
+          InlineItem::InlineBox(inline_box) => {
+            let shift = self.baseline_acc.compute_baseline_shift(
+              vertical_align,
+              &inline_box.strut_metrics,
+              Some(&self.strut_metrics),
+            );
+            let item_ascent = metrics.baseline_offset - shift;
+            let item_descent = (metrics.height - metrics.baseline_offset) + shift;
+            self.baseline_acc.max_ascent = self.baseline_acc.max_ascent.max(item_ascent);
+            self.baseline_acc.max_descent = self.baseline_acc.max_descent.max(item_descent);
+            shift
+          }
+          _ => self
+            .baseline_acc
+            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics)),
+        }
       };
     }
   }

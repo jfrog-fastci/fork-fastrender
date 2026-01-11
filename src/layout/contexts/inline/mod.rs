@@ -9094,7 +9094,21 @@ fn compute_inline_items_single_line_layout(
       acc.add_line_relative(&metrics, vertical_align);
       0.0
     } else {
-      acc.add_baseline_relative(&metrics, vertical_align, Some(&strut_metrics))
+      match child {
+        InlineItem::InlineBox(inline_box) => {
+          let shift = acc.compute_baseline_shift(
+            vertical_align,
+            &inline_box.strut_metrics,
+            Some(&strut_metrics),
+          );
+          let item_ascent = metrics.baseline_offset - shift;
+          let item_descent = (metrics.height - metrics.baseline_offset) + shift;
+          acc.max_ascent = acc.max_ascent.max(item_ascent);
+          acc.max_descent = acc.max_descent.max(item_descent);
+          shift
+        }
+        _ => acc.add_baseline_relative(&metrics, vertical_align, Some(&strut_metrics)),
+      }
     };
 
     offsets.push(offset);
@@ -9175,7 +9189,18 @@ fn compute_inline_box_line_metrics(
     if vertical_align.is_line_relative() {
       acc.add_line_relative(&metrics, vertical_align);
     } else {
-      acc.add_baseline_relative(&metrics, vertical_align, Some(&fallback));
+      match child {
+        InlineItem::InlineBox(inline_box) => {
+          let shift = acc.compute_baseline_shift(vertical_align, &inline_box.strut_metrics, Some(&fallback));
+          let item_ascent = metrics.baseline_offset - shift;
+          let item_descent = (metrics.height - metrics.baseline_offset) + shift;
+          acc.max_ascent = acc.max_ascent.max(item_ascent);
+          acc.max_descent = acc.max_descent.max(item_descent);
+        }
+        _ => {
+          acc.add_baseline_relative(&metrics, vertical_align, Some(&fallback));
+        }
+      }
     }
   }
 

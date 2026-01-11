@@ -312,8 +312,15 @@ impl LineBaselineAccumulator {
     }
   }
 
-  /// Computes the baseline shift for an alignment mode
-  fn compute_baseline_shift(
+  /// Computes the baseline shift for an alignment mode.
+  ///
+  /// The returned shift is a Y offset from the line baseline where positive values move the item
+  /// *down* (CSS coordinate system).
+  ///
+  /// This is exposed to sibling modules (e.g. the line builder) so they can apply spec-accurate
+  /// baseline shifts while still accounting for inline subtree bounds when computing the line box
+  /// height (CSS 2.1 §10.8.1 / "Leading and half-leading").
+  pub(crate) fn compute_baseline_shift(
     &self,
     alignment: VerticalAlign,
     metrics: &BaselineMetrics,
@@ -329,7 +336,11 @@ impl LineBaselineAccumulator {
         // The x-height is measured *above* the baseline, so the target point is
         // `-x_height/2` in the line's coordinate system.
         let x_height_half = parent_metrics
-          .and_then(|m| m.x_height.map(|xh| xh * 0.5))
+          // Blink/FreeType effectively snaps the x-height metric to whole CSS pixels at common
+          // sizes due to font hinting. Using the raw float-scaled metric can accumulate into
+          // noticeable vertical drift on text-heavy pages that rely on `vertical-align: middle`
+          // (e.g. lobste.rs bylines with avatar images).
+          .and_then(|m| m.x_height.map(|xh| xh.round() * 0.5))
           .or_else(|| parent_metrics.map(|m| m.ascent * 0.5))
           .unwrap_or(0.0);
         metrics.baseline_offset - (metrics.height * 0.5) - x_height_half
@@ -723,6 +734,27 @@ mod tests {
       shift_with_x > shift_without_x,
       "x-height should require less upward adjustment than the half-ascent fallback"
     );
+  }
+
+  #[test]
+  fn middle_alignment_rounds_parent_x_height_to_whole_css_pixels() {
+    // Blink's hinting tends to snap font metrics to whole pixels. Ensure we mirror that behavior
+    // for baseline-relative middle alignment so small subpixel errors don't accumulate into visible
+    // vertical drift on text-heavy pages (e.g. lobste.rs bylines).
+    let parent = BaselineMetrics {
+      baseline_offset: 10.0,
+      height: 14.0,
+      ascent: 10.0,
+      descent: 4.0,
+      line_gap: 0.0,
+      line_height: 14.0,
+      x_height: Some(7.6),
+    };
+    let replaced = BaselineMetrics::for_replaced(16.0);
+    let acc = LineBaselineAccumulator::new(&parent);
+    let shift = acc.compute_baseline_shift(VerticalAlign::Middle, &replaced, Some(&parent));
+    // shift = 16 - 8 - round(7.6)/2 = 8 - 4 = 4
+    assert!((shift - 4.0).abs() < 1e-3, "unexpected shift: {shift}");
   }
 
   #[test]
