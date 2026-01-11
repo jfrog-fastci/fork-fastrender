@@ -7993,6 +7993,8 @@ fn apply_worker_env_overrides(cmd: &mut Command) {
 }
 
 const WORKER_RAYON_THREADS_ENV: &str = "RAYON_NUM_THREADS";
+const WORKER_WEB_FONT_WAIT_ENV: &str = "FASTR_WEB_FONT_WAIT_MS";
+const DEFAULT_WORKER_WEB_FONT_WAIT_MS: &str = "500";
 
 fn env_var_is_nonempty(key: &str) -> bool {
   std::env::var_os(key).is_some_and(|value| !value.is_empty())
@@ -8009,6 +8011,16 @@ fn maybe_set_worker_rayon_threads(cmd: &mut Command, threads: usize) {
     return;
   }
   cmd.env(WORKER_RAYON_THREADS_ENV, threads.to_string());
+}
+
+fn maybe_set_worker_web_font_wait(cmd: &mut Command, enabled: bool) {
+  if !enabled {
+    return;
+  }
+  if env_var_is_nonempty(WORKER_WEB_FONT_WAIT_ENV) {
+    return;
+  }
+  cmd.env(WORKER_WEB_FONT_WAIT_ENV, DEFAULT_WORKER_WEB_FONT_WAIT_MS);
 }
 
 fn push_disk_cache_args(cmd: &mut Command, args: &DiskCacheArgs) {
@@ -8219,6 +8231,7 @@ fn spawn_worker(
     dump,
   );
   maybe_set_worker_rayon_threads(&mut cmd, rayon_threads_per_worker);
+  maybe_set_worker_web_font_wait(&mut cmd, args.accuracy);
 
   if cascade_profile {
     cmd.env("FASTR_CASCADE_PROFILE", "1");
@@ -9750,6 +9763,69 @@ mod tests {
     match prev {
       Some(value) => std::env::set_var(WORKER_RAYON_THREADS_ENV, value),
       None => std::env::remove_var(WORKER_RAYON_THREADS_ENV),
+    }
+  }
+
+  #[test]
+  fn maybe_set_worker_web_font_wait_sets_default_for_accuracy_runs() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(WORKER_WEB_FONT_WAIT_ENV);
+    std::env::remove_var(WORKER_WEB_FONT_WAIT_ENV);
+
+    let mut cmd = Command::new("pageset_progress");
+    maybe_set_worker_web_font_wait(&mut cmd, true);
+    let value = cmd
+      .get_envs()
+      .find(|(key, _)| *key == OsStr::new(WORKER_WEB_FONT_WAIT_ENV))
+      .and_then(|(_, value)| value)
+      .map(|value| value.to_string_lossy().into_owned());
+    assert_eq!(value.as_deref(), Some(DEFAULT_WORKER_WEB_FONT_WAIT_MS));
+
+    match prev {
+      Some(value) => std::env::set_var(WORKER_WEB_FONT_WAIT_ENV, value),
+      None => std::env::remove_var(WORKER_WEB_FONT_WAIT_ENV),
+    }
+  }
+
+  #[test]
+  fn maybe_set_worker_web_font_wait_respects_parent_env_override() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(WORKER_WEB_FONT_WAIT_ENV);
+    std::env::set_var(WORKER_WEB_FONT_WAIT_ENV, "123");
+
+    let mut cmd = Command::new("pageset_progress");
+    maybe_set_worker_web_font_wait(&mut cmd, true);
+
+    let has_override = cmd
+      .get_envs()
+      .any(|(key, _)| key == OsStr::new(WORKER_WEB_FONT_WAIT_ENV));
+    assert!(
+      !has_override,
+      "should not override explicit FASTR_WEB_FONT_WAIT_MS"
+    );
+
+    match prev {
+      Some(value) => std::env::set_var(WORKER_WEB_FONT_WAIT_ENV, value),
+      None => std::env::remove_var(WORKER_WEB_FONT_WAIT_ENV),
+    }
+  }
+
+  #[test]
+  fn maybe_set_worker_web_font_wait_is_noop_when_accuracy_disabled() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(WORKER_WEB_FONT_WAIT_ENV);
+    std::env::remove_var(WORKER_WEB_FONT_WAIT_ENV);
+
+    let mut cmd = Command::new("pageset_progress");
+    maybe_set_worker_web_font_wait(&mut cmd, false);
+    let has_override = cmd
+      .get_envs()
+      .any(|(key, _)| key == OsStr::new(WORKER_WEB_FONT_WAIT_ENV));
+    assert!(!has_override);
+
+    match prev {
+      Some(value) => std::env::set_var(WORKER_WEB_FONT_WAIT_ENV, value),
+      None => std::env::remove_var(WORKER_WEB_FONT_WAIT_ENV),
     }
   }
 
