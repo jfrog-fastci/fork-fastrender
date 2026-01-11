@@ -711,7 +711,7 @@ extern "C" {
   ) -> TimerId;
   pub fn rt_clear_timer(id: TimerId);
 
-  // I/O watchers (epoll-backed readiness notifications).
+  // I/O watchers (reactor-backed readiness notifications).
   pub fn rt_io_register(
     fd: RtFd,
     interests: u32,

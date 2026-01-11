@@ -339,9 +339,9 @@ Other threads are allowed to interact with the async runtime via **multi-produce
 
 - resolving/rejecting promises
 - registering continuations
-- enqueueing microtasks (`rt_queue_microtask`)
-- scheduling timers (`rt_set_timeout` / `rt_set_interval` / `rt_clear_timer`)
-- I/O watcher registration/update/unregistration (`rt_io_register` / `rt_io_update` / `rt_io_unregister`)
+- enqueueing microtasks (`rt_queue_microtask*`)
+- scheduling timers (`rt_set_timeout*` / `rt_set_interval*` / `rt_clear_timer`)
+- I/O watcher registration/update/unregistration (`rt_io_register*` / `rt_io_update` / `rt_io_unregister`)
 
 These operations are thread-safe and will wake a driver blocked inside `rt_async_poll` (via the
 reactor wake mechanism).
@@ -445,6 +445,24 @@ Ownership contract:
   discarded via `rt_async_cancel_all`).
 - For the `_with_drop` variant, `drop_data` is invoked exactly once when the microtask is torn down,
   and runs before the runtime frees the handle.
+- If `data` is stale (freed), the callback is treated as a no-op.
+
+### Persistent-handle timer payloads (`rt_set_timeout_handle` / `rt_set_interval_handle`)
+
+The timer APIs have equivalent handle-based variants for persistent-handle userdata:
+
+- `rt_set_timeout_handle(cb: extern "C" fn(*mut u8), data: u64, delay_ms: u64) -> TimerId`
+- `rt_set_timeout_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
+- `rt_set_interval_handle(cb: extern "C" fn(*mut u8), data: u64, interval_ms: u64) -> TimerId`
+- `rt_set_interval_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
+
+Ownership contract:
+
+- The runtime consumes `data` and treats it as a strong GC root while the timer is active.
+  - For timeouts: until the timeout fires or is cleared.
+  - For intervals: until the interval is cleared.
+- For the `_with_drop` variants, `drop_data` is invoked exactly once when the timer is torn down
+  (including via `rt_async_cancel_all`), and runs before the runtime frees the handle.
 - If `data` is stale (freed), the callback is treated as a no-op.
 
 ## Exported symbols (async)
