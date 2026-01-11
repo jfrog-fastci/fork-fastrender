@@ -282,27 +282,42 @@ impl<T> HandleTable<T> {
   /// This method takes an exclusive lock and exposes mutable access to all live slot pointers
   /// through the provided guard.
   ///
-  /// # Important: caller must already be in STW
+  /// # Contract
   ///
-  /// This API **does not** itself park/stop other mutator threads. The caller must ensure that:
-  /// - no other thread will call [`HandleTable::get`] / [`HandleTable::alloc`] / [`HandleTable::free`]
-  ///   while the closure runs, and
-  /// - no thread is currently blocked holding a read lock when entering STW (otherwise this can
-  ///   deadlock waiting for the write lock).
+  /// This API is intended to be called by the GC **while the world is stopped**. It does **not**
+  /// initiate stop-the-world itself; callers must already hold a stop-the-world pause (and ensure no
+  /// mutator thread will access the handle table while the closure runs).
+  ///
+  /// ## Why this can't deadlock under STW
+  ///
+  /// `HandleTable` uses a GC-aware lock internally. Threads that block on
+  /// [`HandleTable::get`]/[`HandleTable::alloc`]/[`HandleTable::free`]/[`HandleTable::set`] enter a
+  /// GC-safe ("NativeSafe") region while waiting, so stop-the-world coordination does not wait for
+  /// them to hit a cooperative safepoint poll.
+  ///
+  /// When a stop-the-world pause is active, [`HandleTable::with_stw_update`] intentionally avoids
+  /// the GC-aware lock's contended acquisition path (which waits for the world to resume) and
+  /// instead spins on `try_write()` until it can acquire the exclusive lock. Under a correct STW
+  /// pause there should be no running mutator that can hold the lock indefinitely.
   pub fn with_stw_update<R>(&self, f: impl FnOnce(&mut HandleTableStwGuard<'_, T>) -> R) -> R {
-    // NOTE: We intentionally avoid `GcAwareRwLock::write()` here:
+    // IMPORTANT: When stop-the-world is active, do *not* call `GcAwareRwLock::write()` because its
+    // contended slow path intentionally waits for the world to be resumed before returning a guard.
+    // Root enumeration/relocation runs *during* STW, so waiting for resume would deadlock.
     //
-    // The GC-aware wrappers treat contended lock acquisition as a blocking operation and enter a
-    // GC-safe ("native") region while waiting. They also refuse to return a lock guard while a
-    // stop-the-world epoch is active (to avoid resuming mutator execution while stopped).
+    // Instead, spin on `try_write()` until we acquire the exclusive lock. Under a correct STW pause
+    // there should be no running mutator that can hold the lock indefinitely.
     //
-    // During STW relocation, however, the coordinator *must* be able to acquire the lock. We
-    // therefore spin on `try_write()` until the write lock is available.
-    let guard = loop {
-      if let Some(g) = self.inner.try_write() {
-        break g;
+    // Outside STW (e.g. unit tests), fall back to the GC-aware `write()` path so contended
+    // acquisition enters a GC-safe ("NativeSafe") region while blocked.
+    let guard = if crate::threading::safepoint::current_epoch() & 1 == 1 {
+      loop {
+        if let Some(g) = self.inner.try_write() {
+          break g;
+        }
+        std::thread::yield_now();
       }
-      std::thread::yield_now();
+    } else {
+      self.inner.write()
     };
     let mut guard = HandleTableStwGuard { guard };
     f(&mut guard)
