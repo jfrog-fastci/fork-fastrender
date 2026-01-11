@@ -2494,6 +2494,47 @@ properties:
       kb.api_for_target("structuredClone", &node_16).is_none(),
       "structuredClone should not resolve for Node < 17"
     );
+
+    let abort = kb
+      .api_for_target("AbortController", &node_20)
+      .expect("AbortController should resolve for modern Node targets");
+    assert_eq!(abort.name, "AbortController");
+    assert_eq!(
+      kb.source_for_target("AbortController", &node_20),
+      Some("node/web_abort.yaml")
+    );
+
+    let blob = kb
+      .api_for_target("Blob", &node_20)
+      .expect("Blob should resolve for Node targets with fetch globals");
+    assert_eq!(blob.name, "Blob");
+    assert_eq!(kb.source_for_target("Blob", &node_20), Some("node/web_blob.yaml"));
+
+    let form = kb
+      .api_for_target("FormData", &node_20)
+      .expect("FormData should resolve for Node targets with fetch globals");
+    assert_eq!(form.name, "FormData");
+    assert_eq!(
+      kb.source_for_target("FormData", &node_20),
+      Some("node/web_form_data.yaml")
+    );
+
+    let random = kb
+      .api_for_target("crypto.getRandomValues", &node_20)
+      .expect("crypto.getRandomValues should resolve for Node 19+");
+    assert_eq!(random.name, "crypto.getRandomValues");
+    assert_eq!(
+      kb.source_for_target("crypto.getRandomValues", &node_20),
+      Some("node/web_crypto.yaml")
+    );
+
+    let node_18 = TargetEnv::Node {
+      version: Version::parse("18.0.0").unwrap(),
+    };
+    assert!(
+      kb.api_for_target("crypto.getRandomValues", &node_18).is_none(),
+      "crypto.getRandomValues should not resolve for Node < 19"
+    );
   }
 
   #[test]

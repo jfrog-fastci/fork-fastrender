@@ -1,0 +1,54 @@
+# Web-standard AbortController / AbortSignal APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/events.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching browser-only event APIs.
+
+- name: AbortController
+  kind: constructor
+  since: "v15.0.0"
+  effects:
+    template: pure
+    may_throw: false
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: AbortController.prototype.abort
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: AbortController.prototype.signal
+  kind: getter
+  since: "v15.0.0"
+  effects: Pure
+  purity: Pure
+
+- name: AbortSignal.prototype.aborted
+  kind: getter
+  since: "v15.0.0"
+  effects: Pure
+  purity: ReadOnly
+
+- name: AbortSignal.prototype.throwIfAborted
+  kind: function
+  since: "v15.0.0"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: ReadOnly

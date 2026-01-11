@@ -1,0 +1,95 @@
+# Web-standard FormData APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/form_data.yaml` so that `TargetEnv::Node` lookups can
+# resolve them without matching browser-only APIs.
+#
+# Node notes:
+# - FormData is shipped as part of Node's `fetch`/undici integration. We conservatively gate it to
+#   Node 18+ (same as global `fetch`).
+
+- name: FormData
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: FormData.prototype.append
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: FormData.prototype.set
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: FormData.prototype.delete
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: false
+    may_throw: false
+  purity: Impure
+
+- name: FormData.prototype.get
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.getAll
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.has
+  kind: function
+  since: "v18.0.0"
+  effects: Pure
+  purity: Pure
+
+- name: FormData.prototype.entries
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.keys
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.values
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.forEach
+  kind: function
+  since: "v18.0.0"
+  effects:
+    depends_on_args:
+      base: MAY_THROW
+      args: [0]
+  purity: Impure

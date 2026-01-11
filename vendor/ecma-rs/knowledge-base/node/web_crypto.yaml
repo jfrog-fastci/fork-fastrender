@@ -1,0 +1,23 @@
+# Web Crypto APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/crypto.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching browser-only APIs.
+#
+# Node notes:
+# - Node exposes WebCrypto as `globalThis.crypto` in modern releases; we conservatively gate
+#   `crypto.getRandomValues` to Node 19+.
+
+- name: crypto.getRandomValues
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: false
+    nondeterministic: true
+    may_throw: true
+    io: false
+    network: false
+  purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false

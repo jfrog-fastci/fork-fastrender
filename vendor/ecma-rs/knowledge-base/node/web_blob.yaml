@@ -1,0 +1,86 @@
+# Web-standard Blob/File APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/blob.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching browser-only APIs.
+#
+# Node notes:
+# - Blob/File are shipped as part of Node's `fetch`/undici integration. We conservatively gate them
+#   to Node 18+ (same as global `fetch`).
+
+- name: Blob
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Blob.prototype.arrayBuffer
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: Blob.prototype.text
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: Blob.prototype.slice
+  kind: function
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: Blob.prototype.size
+  kind: getter
+  since: "v18.0.0"
+  effects: Pure
+  purity: Pure
+
+- name: Blob.prototype.type
+  kind: getter
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: File
+  kind: constructor
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: File.prototype.name
+  kind: getter
+  since: "v18.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: File.prototype.lastModified
+  kind: getter
+  since: "v18.0.0"
+  effects: Pure
+  purity: Pure
