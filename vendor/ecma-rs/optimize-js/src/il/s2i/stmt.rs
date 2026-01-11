@@ -1,5 +1,5 @@
 use super::{HirSourceToInst, LabeledTarget, VarType, DUMMY_LABEL};
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp};
+use crate::il::inst::{Arg, BinOp, Const, Inst};
 use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax_range;
 use crate::util::counter::Counter;
@@ -962,12 +962,10 @@ pub fn translate_body(
     compiler.compile_stmt(stmt)?;
   }
 
-  if compiler.body.kind == BodyKind::Function
-    && !compiler
-      .out
-      .last()
-      .is_some_and(|inst| matches!(inst.t, InstTyp::Return | InstTyp::Throw))
-  {
+  if compiler.body.kind == BodyKind::Function {
+    // Reaching the end of a function body in JS implicitly returns `undefined`.
+    // We append this unconditionally; if the function already returns/throws on
+    // all paths, CFG pruning will drop the unreachable trailing block.
     compiler.out.push(Inst::ret(Arg::Const(Const::Undefined)));
   }
   Ok((compiler.out, compiler.c_label, compiler.c_temp, params))
