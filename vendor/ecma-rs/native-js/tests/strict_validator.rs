@@ -71,10 +71,35 @@ fn assert_has_code(diags: &[Diagnostic], code: &str) {
 fn rejects_any_in_expression_types() {
   let diags = validate(
     r#"
+      JSON.parse("1");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0001");
+}
+
+#[test]
+fn rejects_any_in_type_alias() {
+  let diags = validate(
+    r#"
+      type T = any;
+      export const x = 1;
+      void x;
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0001");
+}
+
+#[test]
+fn rejects_any_in_unused_return_annotation() {
+  let diags = validate(
+    r#"
       function f(): any {
         return 1;
       }
-      f();
+      export const x = 1;
+      void x;
     "#,
     FileKind::Ts,
   );

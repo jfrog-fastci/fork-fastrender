@@ -7,7 +7,7 @@
 //! constructs.
 
 use diagnostics::{Diagnostic, Span, TextRange};
-use hir_js::{ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind};
+use hir_js::{ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind};
 use typecheck_ts::{BodyId, DefId, FileId, Program, TypeKindSummary};
 
 const CODE_ANY: &str = "NJS0001";
@@ -32,6 +32,8 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
       continue;
     };
 
+    check_any_in_type_exprs(file, &lowered, &mut diagnostics);
+
     // `Program::bodies_in_file` is deterministic and includes nested bodies.
     for body in program.bodies_in_file(file) {
       check_any_in_body(program, file, body, &lowered, &mut diagnostics);
@@ -42,6 +44,20 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
   }
 
   diagnostics
+}
+
+fn check_any_in_type_exprs(file: FileId, lowered: &hir_js::LowerResult, out: &mut Vec<Diagnostic>) {
+  for arenas in lowered.types.values() {
+    for ty_expr in arenas.type_exprs.iter() {
+      if !matches!(ty_expr.kind, TypeExprKind::Any) {
+        continue;
+      }
+      out.push(
+        Diagnostic::error(CODE_ANY, "`any` is not allowed in native-js strict mode", Span::new(file, ty_expr.span))
+          .with_note("add a precise type annotation or refactor to avoid `any`"),
+      );
+    }
+  }
 }
 
 fn check_any_in_body(
