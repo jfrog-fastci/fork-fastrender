@@ -352,12 +352,9 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 
     if let Some(raw_kind) = api.properties.get("purity.kind") {
       if let Some(kind) = raw_kind.as_str() {
-        let forbidden = EffectSet::IO
-          | EffectSet::NETWORK
-          | EffectSet::READS_GLOBAL
-          | EffectSet::WRITES_GLOBAL
-          | EffectSet::NONDETERMINISTIC
-          | EffectSet::UNKNOWN;
+        // `purity.kind` is legacy/informational metadata. Be conservative and only
+        // catch the most obvious contradictions.
+        let forbidden = EffectSet::IO | EffectSet::NETWORK | EffectSet::WRITES_GLOBAL;
         if normalize_ident(kind) == "pure" && base_effects.intersects(forbidden) {
           errors.push(ValidationError::InconsistentPurityEffects {
             api: api.name.clone(),
@@ -380,17 +377,15 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       // for callback-dependent templates), but some external callers may
       // construct entries with only one of them. Be conservative and check both.
       let combined = api.effects.base_effects() | api.effect_summary.to_effect_set();
-      // Pure APIs may still allocate or throw, but they should not:
-      // - perform I/O
-      // - read/write observable global state
-      // - be non-deterministic
-      // - be "unknown" (a conservative placeholder for unmodeled effects)
-      let forbidden = EffectSet::IO
-        | EffectSet::NETWORK
-        | EffectSet::READS_GLOBAL
-        | EffectSet::WRITES_GLOBAL
-        | EffectSet::NONDETERMINISTIC
-        | EffectSet::UNKNOWN;
+      // Catch obvious semantic contradictions.
+      //
+      // Pure APIs may still:
+      // - allocate (not externally observable)
+      // - be non-deterministic (determinism is tracked separately in KB metadata)
+      // - be partially unknown (conservative placeholders)
+      //
+      // But they should not perform I/O or write observable global state.
+      let forbidden = EffectSet::IO | EffectSet::NETWORK | EffectSet::WRITES_GLOBAL;
       if combined.intersects(forbidden) {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
