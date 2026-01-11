@@ -116,8 +116,6 @@ pub struct StatepointIntrinsics<'ctx> {
   gc_relocate_intrinsic_id: u32,
   elementtype_attr_kind: u32,
 
-  next_statepoint_id: u64,
-
   // Cache declarations by overloaded type key.
   statepoint_decls: HashMap<usize, LLVMValueRef>,
   gc_result_decls: HashMap<usize, LLVMValueRef>,
@@ -161,7 +159,6 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
         gc_result_intrinsic_id,
         gc_relocate_intrinsic_id,
         elementtype_attr_kind,
-        next_statepoint_id: 0xabcdef00,
         statepoint_decls: HashMap::new(),
         gc_result_decls: HashMap::new(),
         gc_relocate_decls: HashMap::new(),
@@ -249,9 +246,11 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     let i64_ty = unsafe { LLVMInt64TypeInContext(self.context) };
     let i32_ty = unsafe { LLVMInt32TypeInContext(self.context) };
 
-    // Build a stable, unique-ish statepoint ID per module.
-    let statepoint_id = self.next_statepoint_id;
-    self.next_statepoint_id = self.next_statepoint_id.wrapping_add(1);
+    // Use the canonical LLVM patchpoint ID for statepoints.
+    //
+    // `runtime-native` uses this as a convention to cheaply identify statepoint-shaped stackmap
+    // records when running in verification mode.
+    let statepoint_id = 0xabcdef00;
 
     let statepoint_decl = self.get_statepoint_decl(callee.ptr.get_type());
     let statepoint_fn_ty = unsafe { LLVMGlobalGetValueType(statepoint_decl) };
