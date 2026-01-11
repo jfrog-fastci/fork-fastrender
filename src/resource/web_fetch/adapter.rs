@@ -2718,6 +2718,135 @@ mod tests {
   }
 
   #[test]
+  fn cors_redirect_suppresses_authorization_and_skips_preflight() {
+    if skip_if_curl_backend_missing("cors_redirect_suppresses_authorization_and_skips_preflight") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_redirect_suppresses_authorization_and_skips_preflight")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      for idx in 0..3 {
+        let mut stream =
+          accept_http_stream(&listener, "cors_redirect_suppresses_authorization_and_skips_preflight");
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        captured_req.lock().unwrap().push(headers.clone());
+        let req_lower = headers.to_ascii_lowercase();
+        match idx {
+          0 => {
+            assert!(
+              req_lower.starts_with("options /start"),
+              "expected OPTIONS /start request, got:\n{headers}"
+            );
+            assert!(
+              req_lower.contains("access-control-request-headers: authorization"),
+              "expected Authorization to be requested in preflight, got:\n{headers}"
+            );
+            let response = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: http://client.example\r\n",
+              "Access-Control-Allow-Methods: PUT\r\n",
+              "Access-Control-Allow-Headers: authorization\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+          }
+          1 => {
+            assert!(
+              req_lower.starts_with("put /start"),
+              "expected PUT /start request, got:\n{headers}"
+            );
+            assert!(
+              req_lower.contains("authorization: bearer test"),
+              "expected Authorization header on initial request, got:\n{headers}"
+            );
+            let location = format!("http://localhost:{}/final", addr.port());
+            let response = format!(
+              "HTTP/1.1 303 See Other\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+          }
+          2 => {
+            assert!(
+              req_lower.starts_with("get /final"),
+              "expected GET /final request, got:\n{headers}"
+            );
+            assert!(
+              !req_lower.contains("authorization:"),
+              "expected Authorization to be suppressed on redirect, got:\n{headers}"
+            );
+            let body = b"ok";
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+          }
+          _ => unreachable!(),
+        }
+      }
+
+      // Ensure no extra preflight is attempted on the follow-up request after Authorization is
+      // suppressed due to a cross-origin redirect.
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected extra request (expected redirect follow-up to be simple)"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after requests: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/start");
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut request = Request::new("PUT", &url);
+    request
+      .headers
+      .append("Authorization", "Bearer test")
+      .unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+      captured.len(),
+      3,
+      "expected OPTIONS /start + PUT /start + GET /final, got:\n{captured:#?}"
+    );
+    let lines: Vec<String> = captured
+      .iter()
+      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
+      .collect();
+    assert!(lines[0].starts_with("options /start"), "request[0]: {}", lines[0]);
+    assert!(lines[1].starts_with("put /start"), "request[1]: {}", lines[1]);
+    assert!(lines[2].starts_with("get /final"), "request[2]: {}", lines[2]);
+  }
+
+  #[test]
   fn cors_preflight_cache_skips_second_options() {
     if skip_if_curl_backend_missing("cors_preflight_cache_skips_second_options") {
       return;
