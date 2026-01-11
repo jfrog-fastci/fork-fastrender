@@ -450,7 +450,7 @@ dependency module.
 Module initializers run in dependency order (matching source request order for
 sibling imports/re-exports) before calling the entry file’s exported `main()`.
 Cyclic runtime module dependencies are not supported (they are rejected with
-`NJS0125`).
+`NJS0146`).
 
 - The entry file must export `main()`:
   - defined in the entry file (re-exported `main` is not supported)
