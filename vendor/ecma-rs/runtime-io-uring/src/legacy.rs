@@ -1250,33 +1250,29 @@ mod linux {
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak/panic.
             //
             // Note: dropping internal keepalive pools can submit additional ops (e.g.
-            // `IORING_OP_REMOVE_BUFFERS`). Run a second best-effort poll after dropping those pools
-            // so our in-flight counts reflect any newly-submitted requests.
-            let keepalive_to_drop = {
-                let mut guard = match self.inner.lock() {
-                    Ok(g) => g,
-                    Err(e) => e.into_inner(),
+            // `IORING_OP_REMOVE_BUFFERS`). Keep polling until no pools are ready to drop, so the
+            // in-flight counts below reflect any newly-submitted requests.
+            loop {
+                let keepalive_to_drop = {
+                    let mut guard = match self.inner.lock() {
+                        Ok(g) => g,
+                        Err(e) => e.into_inner(),
+                    };
+                    guard.poll_completions()
                 };
-                guard.poll_completions()
-            };
-            drop(keepalive_to_drop);
+                if keepalive_to_drop.is_empty() {
+                    break;
+                }
+                drop(keepalive_to_drop);
+            }
 
-            // Second pass: dropping keepalive pools may have submitted new ops and/or produced
-            // immediately-available CQEs.
-            let (ops_len, multishots_len, internal_in_flight, keepalive_to_drop) = {
-                let mut guard = match self.inner.lock() {
+            let (ops_len, multishots_len, internal_in_flight) = {
+                let guard = match self.inner.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
-                let keepalive_to_drop = guard.poll_completions();
-                (
-                    guard.ops.len(),
-                    guard.multishots.len(),
-                    guard.internal_in_flight,
-                    keepalive_to_drop,
-                )
+                (guard.ops.len(), guard.multishots.len(), guard.internal_in_flight)
             };
-            drop(keepalive_to_drop);
 
             if ops_len == 0 && multishots_len == 0 && internal_in_flight == 0 {
                 return;
