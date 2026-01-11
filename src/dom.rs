@@ -423,33 +423,6 @@ fn is_reserved_custom_element_name(name: &str) -> bool {
   )
 }
 
-#[inline]
-fn is_potential_custom_element_name_char(ch: char) -> bool {
-  // HTML's `PCENChar` production:
-  // https://html.spec.whatwg.org/multipage/custom-elements.html#prod-pcenchar
-  matches!(
-    ch,
-    '-'
-      | '.'
-      | '0'..='9'
-      | '_'
-      | 'a'..='z'
-      | '\u{00B7}'
-      | '\u{00C0}'..='\u{00D6}'
-      | '\u{00D8}'..='\u{00F6}'
-      | '\u{00F8}'..='\u{037D}'
-      | '\u{037F}'..='\u{1FFF}'
-      | '\u{200C}'..='\u{200D}'
-      | '\u{203F}'..='\u{2040}'
-      | '\u{2070}'..='\u{218F}'
-      | '\u{2C00}'..='\u{2FEF}'
-      | '\u{3001}'..='\u{D7FF}'
-      | '\u{F900}'..='\u{FDCF}'
-      | '\u{FDF0}'..='\u{FFFD}'
-      | '\u{10000}'..='\u{EFFFF}'
-  )
-}
-
 /// Returns true if `name` is a [valid custom element name] per HTML.
 ///
 /// This helper is shared by spec-correct `:defined` matching and (future) declarative shadow DOM
@@ -461,20 +434,27 @@ pub(crate) fn is_valid_custom_element_name(name: &str) -> bool {
     return false;
   }
 
-  let mut chars = name.chars();
-  let Some(first) = chars.next() else {
+  let Some(bytes) = name.as_bytes().split_first() else {
     return false;
-  };
-  if !matches!(first, 'a'..='z') {
+  }
+  let (&first, bytes) = bytes;
+  if !first.is_ascii_lowercase() {
     return false;
   }
 
   let mut has_hyphen = false;
-  for ch in chars {
-    if ch == '-' {
-      has_hyphen = true;
+  // Since the name's 0th code point is ASCII lowercase, the "valid element local name" check
+  // reduces to ensuring it does not contain ASCII whitespace, U+0000 NULL, U+002F (/), or U+003E
+  // (>). (DOM, "valid element local name")
+  for &byte in std::iter::once(&first).chain(bytes) {
+    if byte.is_ascii_uppercase() {
+      return false;
     }
-    if !is_potential_custom_element_name_char(ch) {
+    has_hyphen |= byte == b'-';
+    if matches!(
+      byte,
+      b'\0' | b'/' | b'>' | b'\t' | b'\n' | 0x0C | b'\r' | b' '
+    ) {
       return false;
     }
   }
