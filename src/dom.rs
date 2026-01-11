@@ -6016,10 +6016,7 @@ impl<'a> ElementRef<'a> {
     if tag.eq_ignore_ascii_case("option") || tag.eq_ignore_ascii_case("optgroup") {
       for ancestor in self.all_ancestors.iter().rev() {
         if let Some(a_tag) = ancestor.tag_name() {
-          if a_tag.eq_ignore_ascii_case("select")
-            || a_tag.eq_ignore_ascii_case("optgroup")
-            || a_tag.eq_ignore_ascii_case("fieldset")
-          {
+          if a_tag.eq_ignore_ascii_case("select") || a_tag.eq_ignore_ascii_case("optgroup") {
             if ancestor.get_attribute_ref("disabled").is_some() {
               return true;
             }
@@ -15010,6 +15007,51 @@ mod tests {
       &anc_legend,
       &PseudoClass::Enabled
     ));
+
+    // Fieldset legend exception applies to selects and their option/optgroup descendants.
+    let fieldset_with_select = element_with_attrs(
+      "fieldset",
+      vec![("disabled", "true")],
+      vec![element(
+        "legend",
+        vec![element(
+          "select",
+          vec![element("optgroup", vec![element("option", vec![])])],
+        )],
+      )],
+    );
+    let legend_ref = &fieldset_with_select.children[0];
+    let select_ref = &legend_ref.children[0];
+    let optgroup_ref = &select_ref.children[0];
+    let option_ref = &optgroup_ref.children[0];
+
+    let select_ancestors: Vec<&DomNode> = vec![&fieldset_with_select, legend_ref];
+    assert!(
+      matches(select_ref, &select_ancestors, &PseudoClass::Enabled),
+      "select inside the first legend of a disabled fieldset should not be disabled"
+    );
+    assert!(!matches(select_ref, &select_ancestors, &PseudoClass::Disabled));
+
+    let optgroup_ancestors: Vec<&DomNode> = vec![&fieldset_with_select, legend_ref, select_ref];
+    assert!(matches(
+      optgroup_ref,
+      &optgroup_ancestors,
+      &PseudoClass::Enabled
+    ));
+    assert!(!matches(
+      optgroup_ref,
+      &optgroup_ancestors,
+      &PseudoClass::Disabled
+    ));
+
+    let option_ancestors: Vec<&DomNode> = vec![
+      &fieldset_with_select,
+      legend_ref,
+      select_ref,
+      optgroup_ref,
+    ];
+    assert!(matches(option_ref, &option_ancestors, &PseudoClass::Enabled));
+    assert!(!matches(option_ref, &option_ancestors, &PseudoClass::Disabled));
   }
 
   #[test]
