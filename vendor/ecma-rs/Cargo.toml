@@ -27,7 +27,6 @@ members = [
   "runtime-native",
   "runtime-io-uring",
   "vm-js",
-  "runtime-io-uring",
   "runtime-js",
   "stackmap-context",
   "runtime-native-abi",
