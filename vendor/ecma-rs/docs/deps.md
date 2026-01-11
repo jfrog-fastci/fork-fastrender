@@ -82,6 +82,7 @@ graph TD
     minify_js_nodejs --> minify_js
     native_js --> diagnostics
     native_js --> hir_js
+    native_js --> llvm_stackmaps
     native_js --> parse_js
     native_js --> runtime_native
     native_js --> runtime_native_abi
