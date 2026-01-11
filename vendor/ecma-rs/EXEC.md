@@ -1016,12 +1016,12 @@ LLVM generates native code + stack maps (metadata describing where GC refs are a
 LLVM StackMaps *can* legally encode `gc-live` values in registers (`Register`) or as computed
 expressions (`Direct`). Our first runtime milestone uses **frame-pointer-only stack walking** and
 does not reconstruct a full register context for every frame, so we require statepoint roots be
-addressable stack slots (`Indirect [SP + off]`).
+addressable spill slots (`Indirect [SP + off]` and/or `Indirect [FP + off]`).
 
 In practice, with our configured LLVM 18 codegen (notably `--fixup-allow-gcptr-in-csr=false` and/or
 `--fixup-max-csr-statepoints=0`), we observe that on both **x86_64 SysV** and **aarch64 SysV**,
 across `-O0/-O2` and with/without `-frame-pointer=all`, statepoint `gc-live` roots are emitted as
-`Indirect [SP + off]` spill slots.
+`Indirect` spill slots (typically `Indirect [SP + off]`).
 
 This is good news: a moving GC can update the spill slot in memory, and the code after the
 statepoint reloads relocated values from those slots.
