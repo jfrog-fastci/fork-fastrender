@@ -84,7 +84,8 @@ fn parse_int_digits_to_bigint(digits: &str, radix: u32) -> Option<BigInt> {
 pub fn parse_bigint(raw: &str) -> Option<BigInt> {
   let trimmed = trim_js_whitespace(raw);
   if trimmed.is_empty() {
-    return None;
+    // `BigInt("")` and `BigInt("   ")` evaluate to `0n`.
+    return Some(BigInt::from(0));
   }
   let mut sign = 1;
   let mut had_sign = false;
