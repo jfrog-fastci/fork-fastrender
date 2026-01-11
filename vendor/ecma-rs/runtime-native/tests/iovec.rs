@@ -210,4 +210,110 @@ mod unix {
 
     Ok(())
   }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn uring_writev_readv_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    use io_uring::{opcode, types, IoUring};
+    use std::os::fd::AsRawFd;
+
+    let ring = IoUring::new(8);
+    let mut ring = match ring {
+      Ok(r) => r,
+      Err(err) => {
+        eprintln!("skipping: failed to create io_uring instance: {err}");
+        return Ok(());
+      }
+    };
+
+    let file = tempfile::tempfile()?;
+    let fd = file.as_raw_fd();
+
+    let a = ArrayBuffer::from_bytes(b"hello ".to_vec()).unwrap();
+    let b = ArrayBuffer::from_bytes(b"world".to_vec()).unwrap();
+    let total_len = a.byte_len() + b.byte_len();
+
+    let write_ranges = vec![
+      IoVecRange::whole_array_buffer(&a),
+      IoVecRange::whole_array_buffer(&b),
+    ];
+    let write_iov = PinnedIoVec::try_from_ranges(&write_ranges).unwrap();
+    let write_iovcnt: u32 = write_iov.len().try_into().unwrap();
+
+    let sqe = opcode::Writev::new(types::Fd(fd), write_iov.as_iovec_ptr(), write_iovcnt)
+      .offset(0)
+      .build()
+      .user_data(1);
+    unsafe {
+      ring
+        .submission()
+        .push(&sqe)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full"))?;
+    }
+    ring.submit_and_wait(1)?;
+
+    let mut wrote = None;
+    for cqe in ring.completion() {
+      if cqe.user_data() == 1 {
+        wrote = Some(cqe.result());
+      }
+    }
+    let wrote = wrote.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing writev cqe"))?;
+    if wrote < 0 {
+      // Some kernels/filesystems may not support all io_uring ops. Match runtime-io-uring's
+      // behavior and treat EINVAL/EOPNOTSUPP as a skip.
+      if wrote == -libc::EINVAL || wrote == -libc::EOPNOTSUPP {
+        eprintln!("skipping: IORING_OP_WRITEV not supported by kernel/filesystem");
+        return Ok(());
+      }
+      return Err(io::Error::from_raw_os_error(-wrote).into());
+    }
+    assert_eq!(wrote as usize, total_len);
+
+    let out_a = ArrayBuffer::new_zeroed(a.byte_len()).unwrap();
+    let out_b = ArrayBuffer::new_zeroed(b.byte_len()).unwrap();
+    let read_ranges = vec![
+      IoVecRange::whole_array_buffer(&out_a),
+      IoVecRange::whole_array_buffer(&out_b),
+    ];
+    let read_iov = PinnedIoVec::try_from_ranges(&read_ranges).unwrap();
+    let read_iovcnt: u32 = read_iov.len().try_into().unwrap();
+
+    let sqe = opcode::Readv::new(types::Fd(fd), read_iov.as_iovec_ptr(), read_iovcnt)
+      .offset(0)
+      .build()
+      .user_data(2);
+    unsafe {
+      ring
+        .submission()
+        .push(&sqe)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full"))?;
+    }
+    ring.submit_and_wait(1)?;
+
+    let mut read = None;
+    for cqe in ring.completion() {
+      if cqe.user_data() == 2 {
+        read = Some(cqe.result());
+      }
+    }
+    let read = read.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing readv cqe"))?;
+    if read < 0 {
+      if read == -libc::EINVAL || read == -libc::EOPNOTSUPP {
+        eprintln!("skipping: IORING_OP_READV not supported by kernel/filesystem");
+        return Ok(());
+      }
+      return Err(io::Error::from_raw_os_error(-read).into());
+    }
+    assert_eq!(read as usize, total_len);
+
+    let out_a_bytes = unsafe { out_a.pin().unwrap().as_slice().to_vec() };
+    let out_b_bytes = unsafe { out_b.pin().unwrap().as_slice().to_vec() };
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&out_a_bytes);
+    out.extend_from_slice(&out_b_bytes);
+    assert_eq!(&out, b"hello world");
+
+    Ok(())
+  }
 }
