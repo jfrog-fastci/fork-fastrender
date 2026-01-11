@@ -14,7 +14,7 @@ entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 0, i32 16,
     ptr elementtype(void ()) @callee,
-    i32 0, i32 2,
+    i32 0, i32 3,
     i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
   ret void
 }

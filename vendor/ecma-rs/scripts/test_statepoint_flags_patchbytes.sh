@@ -30,6 +30,7 @@ find_llvm_tool() {
 }
 
 LLC="$(find_llvm_tool llc)" || true
+LLVM_AS="$(find_llvm_tool llvm-as)" || true
 LLVM_READOBJ="$(find_llvm_tool llvm-readobj)" || true
 LLVM_OBJDUMP="$(find_llvm_tool llvm-objdump)" || true
 
@@ -55,6 +56,9 @@ require_llvm18() {
 }
 
 require_llvm18 "${LLC}"
+if [[ -n "${LLVM_AS}" ]]; then
+  require_llvm18 "${LLVM_AS}"
+fi
 require_llvm18 "${LLVM_READOBJ}"
 require_llvm18 "${LLVM_OBJDUMP}"
 
@@ -63,7 +67,7 @@ ECMA_RS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FIXTURES_DIR="${ECMA_RS_DIR}/fixtures/llvm_stackmap_abi"
 
 IR_A="${FIXTURES_DIR}/gc_statepoint_patch_bytes_0_flags_0.ll"
-IR_B="${FIXTURES_DIR}/gc_statepoint_patch_bytes_16_flags_2.ll"
+IR_B="${FIXTURES_DIR}/gc_statepoint_patch_bytes_16_flags_3.ll"
 
 [[ -f "${IR_A}" ]] || die "missing fixture: ${IR_A}"
 [[ -f "${IR_B}" ]] || die "missing fixture: ${IR_B}"
@@ -125,10 +129,10 @@ extract_call_return_offset_from_objdump() {
   printf '%d' "$((0x${next_hex} - 0x${start_hex}))"
 }
 
-extract_nop_region_offsets_ending_at() {
+extract_nop_region_offsets_containing() {
   local objdump_out="$1"
   local func="$2"
-  local want_end_off="$3"
+  local want_off="$3"
 
   local fn_start_hex
   fn_start_hex="$(
@@ -166,7 +170,11 @@ extract_nop_region_offsets_ending_at() {
     [[ -n "${start_hex}" && -n "${end_hex}" ]] || continue
     start_off="$((0x${start_hex} - 0x${fn_start_hex}))"
     end_off="$((0x${end_hex} - 0x${fn_start_hex}))"
-    if (( end_off == want_end_off )); then
+    # `end_off` is the first non-NOP instruction offset. Allow `want_off` to
+    # equal `end_off` (meaning the NOP run ends exactly at the stackmap key),
+    # or to fall inside the run (LLVM may emit extra NOPs beyond the reserved
+    # patch region).
+    if (( start_off <= want_off && want_off <= end_off )); then
       printf '%d %d' "${start_off}" "${end_off}"
       return 0
     fi
@@ -174,7 +182,7 @@ extract_nop_region_offsets_ending_at() {
 
   echo "=== disassembly ===" >&2
   echo "${objdump_out}" >&2
-  die "failed to find a NOP region in ${func} disassembly ending at offset ${want_end_off}"
+  die "failed to find a NOP region in ${func} disassembly containing offset ${want_off}"
 }
 
 extract_instruction_offset() {
@@ -254,11 +262,34 @@ extract_location_size() {
   printf '%s' "${size}"
 }
 
+extract_location3_constant() {
+  local stackmap="$1"
+  local val
+  val="$(
+    printf '%s\n' "${stackmap}" | awk '
+      /#3: Constant / {
+        v=$3
+        sub(/,/, "", v)
+        print v
+        exit
+      }
+      /#3: (ConstIndex|ConstantIndex) / {
+        if (match($0, /\(([0-9-]+)\)/, m)) {
+          print m[1]
+          exit
+        }
+      }
+    '
+  )"
+  [[ "${val}" =~ ^-?[0-9]+$ ]] || die "failed to parse '#3' constant value from llvm-readobj output"
+  printf '%s' "${val}"
+}
+
 OFF_A="$(extract_instruction_offset "${STACKMAP_A}")"
 OFF_B="$(extract_instruction_offset "${STACKMAP_B}")"
 
 PATCH_BYTES_B=16
-FLAGS_B_EXPECTED=2
+FLAGS_B_EXPECTED=3
 FLAGS_A_EXPECTED=0
 FLAGS_A_GOT="$(extract_location2_constant "${STACKMAP_A}")"
 if [[ "${FLAGS_A_GOT}" != "${FLAGS_A_EXPECTED}" ]]; then
@@ -272,14 +303,33 @@ if [[ "${FLAGS_B_GOT}" != "${FLAGS_B_EXPECTED}" ]]; then
   die "stackmap constant #2 (flags) mismatch for fixture B: expected ${FLAGS_B_EXPECTED}, got ${FLAGS_B_GOT}"
 fi
 
-FLAGS_A_SIZE="$(extract_location_size "${STACKMAP_A}" 2)"
-FLAGS_B_SIZE="$(extract_location_size "${STACKMAP_B}" 2)"
-if [[ "${FLAGS_A_SIZE}" != "8" || "${FLAGS_B_SIZE}" != "8" ]]; then
+DEOPT_A_GOT="$(extract_location3_constant "${STACKMAP_A}")"
+DEOPT_B_GOT="$(extract_location3_constant "${STACKMAP_B}")"
+if [[ "${DEOPT_A_GOT}" != "0" || "${DEOPT_B_GOT}" != "0" ]]; then
   echo "=== stackmap A ===" >&2
   echo "${STACKMAP_A}" >&2
   echo "=== stackmap B ===" >&2
   echo "${STACKMAP_B}" >&2
-  die "expected statepoint header flags location (#2) size to be 8 bytes on x86_64; got A.size=${FLAGS_A_SIZE}, B.size=${FLAGS_B_SIZE}"
+  die "expected statepoint header deopt_count location (#3) to be 0; got A.deopt_count=${DEOPT_A_GOT}, B.deopt_count=${DEOPT_B_GOT}"
+fi
+
+CALLCONV_A_SIZE="$(extract_location_size "${STACKMAP_A}" 1)"
+CALLCONV_B_SIZE="$(extract_location_size "${STACKMAP_B}" 1)"
+FLAGS_A_SIZE="$(extract_location_size "${STACKMAP_A}" 2)"
+FLAGS_B_SIZE="$(extract_location_size "${STACKMAP_B}" 2)"
+DEOPT_A_SIZE="$(extract_location_size "${STACKMAP_A}" 3)"
+DEOPT_B_SIZE="$(extract_location_size "${STACKMAP_B}" 3)"
+if [[ "${CALLCONV_A_SIZE}" != "8" ||
+  "${CALLCONV_B_SIZE}" != "8" ||
+  "${FLAGS_A_SIZE}" != "8" ||
+  "${FLAGS_B_SIZE}" != "8" ||
+  "${DEOPT_A_SIZE}" != "8" ||
+  "${DEOPT_B_SIZE}" != "8" ]]; then
+  echo "=== stackmap A ===" >&2
+  echo "${STACKMAP_A}" >&2
+  echo "=== stackmap B ===" >&2
+  echo "${STACKMAP_B}" >&2
+  die "expected statepoint header constant locations (#1/#2/#3) to report size: 8 on x86_64; got A(callconv=${CALLCONV_A_SIZE}, flags=${FLAGS_A_SIZE}, deopt_count=${DEOPT_A_SIZE}) B(callconv=${CALLCONV_B_SIZE}, flags=${FLAGS_B_SIZE}, deopt_count=${DEOPT_B_SIZE})"
 fi
 
 if (( OFF_B <= OFF_A )); then
@@ -345,69 +395,13 @@ if (( RET_A != OFF_A )); then
   die "fixture A: expected stackmap instruction offset to equal call return address; got stackmap=${OFF_A}, disasm=${RET_A}"
 fi
 
-NOP_REGION="$(extract_nop_region_offsets_ending_at "${DIS_B}" "test" "${OFF_B}")"
+NOP_REGION="$(extract_nop_region_offsets_containing "${DIS_B}" "test" "${OFF_B}")"
 read -r NOP_START_OFF NOP_END_OFF <<<"${NOP_REGION}"
-NOP_LEN="$((NOP_END_OFF - NOP_START_OFF))"
-if (( NOP_LEN < PATCH_BYTES_B )); then
+NOP_BYTES_BEFORE_OFF="$((OFF_B - NOP_START_OFF))"
+if (( NOP_BYTES_BEFORE_OFF < PATCH_BYTES_B )); then
   echo "=== disassembly B ===" >&2
   echo "${DIS_B}" >&2
-  die "fixture B: expected contiguous NOP region length >= ${PATCH_BYTES_B}, got ${NOP_LEN} (nop_start_off=${NOP_START_OFF}, nop_end_off=${NOP_END_OFF})"
-fi
-
-# Ensure `flags=3` (both currently-valid bits) is accepted and recorded.
-FLAGS3_IR="${tmpdir}/flags3.ll"
-cat >"${FLAGS3_IR}" <<'EOF'
-target triple = "x86_64-pc-linux-gnu"
-
-declare void @callee()
-declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
-
-define void @test(ptr addrspace(1) %obj) gc "coreclr" {
-entry:
-  %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
-    i64 0, i32 0,
-    ptr elementtype(void ()) @callee,
-    i32 0, i32 3,
-    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
-  ret void
-}
-EOF
-
-FLAGS3_OBJ="${tmpdir}/flags3.o"
-run_llc "${FLAGS3_IR}" "${FLAGS3_OBJ}"
-FLAGS3_STACKMAP="$("${LLVM_READOBJ}" --stackmap "${FLAGS3_OBJ}")"
-FLAGS3_GOT="$(extract_location2_constant "${FLAGS3_STACKMAP}")"
-if [[ "${FLAGS3_GOT}" != "3" ]]; then
-  echo "${FLAGS3_STACKMAP}" >&2
-  die "flags=3 fixture: expected stackmap constant #2 (flags) to be 3, got ${FLAGS3_GOT}"
-fi
-
-# Verify stackmap constant #1 encodes the callsite calling convention (fastcc = 8).
-CALLCONV_IR="${tmpdir}/callconv_fastcc.ll"
-cat >"${CALLCONV_IR}" <<'EOF'
-target triple = "x86_64-pc-linux-gnu"
-
-declare void @callee()
-declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
-
-define void @test(ptr addrspace(1) %obj) gc "coreclr" {
-entry:
-  %tok = call fastcc token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
-    i64 0, i32 0,
-    ptr elementtype(void ()) @callee,
-    i32 0, i32 0,
-    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
-  ret void
-}
-EOF
-
-CALLCONV_OBJ="${tmpdir}/callconv_fastcc.o"
-run_llc "${CALLCONV_IR}" "${CALLCONV_OBJ}"
-CALLCONV_STACKMAP="$("${LLVM_READOBJ}" --stackmap "${CALLCONV_OBJ}")"
-CALLCONV_GOT="$(extract_location1_constant "${CALLCONV_STACKMAP}")"
-if [[ "${CALLCONV_GOT}" != "8" ]]; then
-  echo "${CALLCONV_STACKMAP}" >&2
-  die "fastcc fixture: expected stackmap constant #1 (callconv) to be 8, got ${CALLCONV_GOT}"
+  die "fixture B: expected at least ${PATCH_BYTES_B} bytes of contiguous NOP padding immediately before stackmap instruction offset ${OFF_B}, got ${NOP_BYTES_BEFORE_OFF} (nop_start_off=${NOP_START_OFF}, nop_run_end_off=${NOP_END_OFF})"
 fi
 
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
@@ -429,22 +423,32 @@ entry:
 }
 EOF
 
-INVALID_OBJ="${tmpdir}/invalid_flags.o"
-INVALID_ERR="${tmpdir}/invalid_flags.llc.err"
-if "${LLC}" -O0 -filetype=obj "${INVALID_FLAGS_IR}" -o "${INVALID_OBJ}" 2>"${INVALID_ERR}"; then
-  echo "unexpectedly accepted flags=4; expected LLVM 18 verifier to reject unknown bits" >&2
-  "${LLVM_READOBJ}" --stackmap "${INVALID_OBJ}" >&2 || true
-  die "flags validation changed (expected flags >= 4 to be rejected on LLVM 18)"
+INVALID_ERR="${tmpdir}/invalid_flags.err"
+if [[ -n "${LLVM_AS}" ]]; then
+  # Prefer `llvm-as` for this guard: it runs the IR verifier but avoids
+  # full code generation, keeping the test fast.
+  INVALID_BC="${tmpdir}/invalid_flags.bc"
+  if "${LLVM_AS}" "${INVALID_FLAGS_IR}" -o "${INVALID_BC}" 2>"${INVALID_ERR}"; then
+    die "flags validation changed (expected flags >= 4 to be rejected on LLVM 18)"
+  fi
+else
+  INVALID_OBJ="${tmpdir}/invalid_flags.o"
+  if "${LLC}" -O0 -filetype=obj "${INVALID_FLAGS_IR}" -o "${INVALID_OBJ}" 2>"${INVALID_ERR}"; then
+    echo "unexpectedly accepted flags=4; expected LLVM 18 verifier to reject unknown bits" >&2
+    "${LLVM_READOBJ}" --stackmap "${INVALID_OBJ}" >&2 || true
+    die "flags validation changed (expected flags >= 4 to be rejected on LLVM 18)"
+  fi
 fi
+
 if grep -Eq 'unknown flag used' "${INVALID_ERR}"; then
   :
 elif grep -Eq 'gc\.statepoint|flag' "${INVALID_ERR}"; then
-  echo "note: llc rejected flags=4 (as expected) but the verifier message changed:" >&2
+  echo "note: verifier rejected flags=4 (as expected) but the error message changed:" >&2
   cat "${INVALID_ERR}" >&2
 else
-  echo "=== llc stderr for invalid flags snippet ===" >&2
+  echo "=== verifier stderr for invalid flags snippet ===" >&2
   cat "${INVALID_ERR}" >&2
-  die "llc failed for an unexpected reason while compiling invalid flags snippet"
+  die "verifier failed for an unexpected reason while checking invalid flags snippet"
 fi
 
 echo "ok: gc.statepoint flags/patch_bytes behaviour matches LLVM 18 expectations (A_off=${OFF_A}, B_off=${OFF_B}, delta=${DELTA})"

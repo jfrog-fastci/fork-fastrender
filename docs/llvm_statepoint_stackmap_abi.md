@@ -9,7 +9,7 @@ The automated check is:
 - `vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh`
 - Fixture IR:
   - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_0_flags_0.ll`
-  - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_16_flags_2.ll`
+  - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_16_flags_3.ll`
 
 See also:
 
@@ -96,8 +96,10 @@ usually `0` for `ccc`).
 Depending on whether LLVM chooses to use the stackmap constant pool, `#2` may be
 printed as either `Constant <flags>` or `ConstIndex`/`ConstantIndex ... (<flags>)`;
 the value must match the IR `flags` immarg either way.
-On 64-bit targets, LLVM prints these header constants with `size: 8` even though
-the IR `flags` operand is an `i32`.
+
+On 64-bit targets, LLVM prints the statepoint header constants (`#1` callconv,
+`#2` flags, `#3` deopt_count) with `size: 8` even though `flags`/`deopt_count` are
+`i32` operands in IR.
 
 ## `gc.statepoint`: `patch_bytes > 0` reserves a patchable region (x86_64)
 
