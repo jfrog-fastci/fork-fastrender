@@ -79,8 +79,10 @@ pub(crate) fn eval_call_expr(
     arg_purity.push(Purity::Impure);
   }
 
+  // `effect_summary` allows KB authors to attach base flags even when `effects`
+  // uses a runtime-dependent template (e.g. callback-dependent APIs).
   let mut effects = match api {
-    Some(api) => api.effects_for_call(&arg_effects),
+    Some(api) => api.effects_for_call(&arg_effects) | api.effect_summary,
     None => unknown_effects(),
   };
   if call.is_new {
@@ -130,10 +132,24 @@ fn resolve_api_semantics<'a>(
   // user actually shadowed the name with something pure, this is conservative.
   // Resolving the other way (assuming a pure built-in when the user shadowed it
   // with something impure) would be unsound.
-  let effects = api.effects_for_call(&[]);
-  let purity = api.purity_for_call(&[]);
-  if Purity::join(purity, effects.inferred_purity()) == Purity::Pure {
-    return None;
+  let is_arg_dependent = matches!(api.effects, EffectTemplate::DependsOnArgs { .. })
+    || matches!(api.purity, PurityTemplate::DependsOnArgs { .. });
+  if !is_arg_dependent {
+    // Only treat *definitely pure* APIs as unsafe to resolve by name. For
+    // arg-dependent templates, we conservatively assume the call may depend on
+    // runtime argument behavior.
+    let effects = api.effect_summary;
+    let purity = match &api.purity {
+      PurityTemplate::Pure => Purity::Pure,
+      PurityTemplate::ReadOnly => Purity::ReadOnly,
+      PurityTemplate::Allocating => Purity::Allocating,
+      PurityTemplate::Impure => Purity::Impure,
+      PurityTemplate::DependsOnArgs { base, .. } => *base,
+      PurityTemplate::Unknown => Purity::Impure,
+    };
+    if Purity::join(purity, effects.inferred_purity()) == Purity::Pure {
+      return None;
+    }
   }
 
   Some(api)

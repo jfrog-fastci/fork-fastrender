@@ -239,7 +239,7 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 }
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
   use effect_model::{EffectSet, Purity};
   use knowledge_base::ApiKind;

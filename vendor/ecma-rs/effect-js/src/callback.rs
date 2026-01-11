@@ -686,4 +686,56 @@ mod tests {
     assert!(cb.effects.contains(EffectSet::UNKNOWN));
     assert_eq!(cb.purity, Purity::Impure);
   }
+
+  #[test]
+  fn depends_on_args_respects_api_effect_summary_base_flags() {
+    use effect_model::{EffectTemplate, PurityTemplate};
+    use knowledge_base::{ApiDatabase, ApiId, ApiKind, ApiSemantics};
+    use std::collections::BTreeMap;
+
+    let kb = ApiDatabase::from_entries([ApiSemantics {
+      id: ApiId::from_name("cbApi"),
+      name: "cbApi".to_string(),
+      aliases: Vec::new(),
+      effects: EffectTemplate::DependsOnArgs {
+        base: EffectSet::empty(),
+        args: vec![0],
+      },
+      effect_summary: EffectSet::NONDETERMINISTIC,
+      purity: PurityTemplate::DependsOnArgs {
+        base: Purity::Pure,
+        args: vec![0],
+      },
+      async_: None,
+      idempotent: None,
+      deterministic: None,
+      parallelizable: None,
+      semantics: None,
+      signature: None,
+      since: None,
+      until: None,
+      kind: ApiKind::Function,
+      properties: BTreeMap::new(),
+    }]);
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(() => cbApi(() => 1));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(cb.effects.contains(EffectSet::NONDETERMINISTIC));
+  }
 }
