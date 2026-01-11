@@ -240,6 +240,14 @@ pub struct StatepointRootPair {
 /// to the base pointer:
 ///
 /// `derived_new = relocated_base + (derived_old - base_old)`
+///
+/// ## Warning
+/// LLVM stackmaps may reuse the same `base_slot` across multiple pairs in a single frame when
+/// multiple derived pointers share a base. Relocating pairs one-by-one can therefore be incorrect:
+/// once `*base_slot` is overwritten, subsequent pairs will compute the delta against the relocated
+/// base rather than the original base.
+///
+/// Prefer [`crate::relocate_derived_pairs`] on a per-frame batch of pairs.
 pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce(usize) -> usize) {
   // Read the old values first (before we overwrite either slot).
   let base_old = std::ptr::read_unaligned(pair.base_slot);
@@ -520,7 +528,7 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
   start_fp: u64,
   bounds: Option<StackBounds>,
   stackmaps: &StackMaps,
-  mut visit: impl FnMut(StatepointRootPair),
+  mut visit_frame_reloc_pairs: impl FnMut(u64, &[(*mut usize, *mut usize)]),
 ) -> Result<(), WalkError> {
   if start_fp == 0 {
     return Err(WalkError::NullStartFp);
@@ -565,14 +573,11 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
 
     if let Some(callsite) = stackmaps.lookup(caller_ra) {
       let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
-      enumerate_root_pairs_for_frame_with_caller_sp(
-        caller_fp,
-        caller_sp,
-        caller_ra,
-        callsite,
-        bounds,
-        &mut visit,
-      )?;
+      let pairs =
+        enumerate_root_pairs_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds)?;
+      if !pairs.is_empty() {
+        visit_frame_reloc_pairs(caller_ra, &pairs);
+      }
     }
 
     cur_fp = caller_fp;
@@ -594,7 +599,7 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
   ctx: &crate::arch::SafepointContext,
   bounds: Option<StackBounds>,
   stackmaps: &crate::StackMaps,
-  mut visit: impl FnMut(StatepointRootPair),
+  mut visit_frame_reloc_pairs: impl FnMut(u64, &[(*mut usize, *mut usize)]),
 ) -> Result<(), WalkError> {
   let caller_fp = ctx.fp as u64;
   if caller_fp == 0 {
@@ -632,18 +637,15 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
       } else {
         caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
       };
-      enumerate_root_pairs_for_frame_with_caller_sp(
-        caller_fp,
-        caller_sp,
-        caller_ra,
-        callsite,
-        bounds,
-        &mut visit,
-      )?;
+      let pairs =
+        enumerate_root_pairs_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds)?;
+      if !pairs.is_empty() {
+        visit_frame_reloc_pairs(caller_ra, &pairs);
+      }
     }
   }
 
-  walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit)
+  walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit_frame_reloc_pairs)
 }
 
 #[inline]
@@ -885,15 +887,14 @@ fn enumerate_root_pairs_for_frame_with_caller_sp(
   caller_ra: u64,
   callsite: CallSite<'_>,
   bounds: Option<StackBounds>,
-  visit: &mut impl FnMut(StatepointRootPair),
-) -> Result<(), WalkError> {
+) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
   let looks_like_statepoint =
     callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
         .iter()
         .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
   if !looks_like_statepoint {
-    return Ok(());
+    return Ok(Vec::new());
   }
 
   if let Some(bounds) = bounds {
@@ -924,14 +925,12 @@ fn enumerate_root_pairs_for_frame_with_caller_sp(
   pairs.sort_unstable();
   pairs.dedup();
 
-  for (base_slot, derived_slot) in pairs {
-    visit(StatepointRootPair {
-      base_slot: base_slot as *mut usize,
-      derived_slot: derived_slot as *mut usize,
-    });
-  }
-
-  Ok(())
+  Ok(
+    pairs
+      .into_iter()
+      .map(|(base_slot, derived_slot)| (base_slot as *mut usize, derived_slot as *mut usize))
+      .collect(),
+  )
 }
 
 fn eval_root_location(

@@ -113,6 +113,14 @@ base_new    = relocate(base_old)
 derived_new = base_new + (derived_old - base_old)
 ```
 
+Important: LLVM can reuse the *same base spill slot* across multiple pairs when multiple derived
+pointers share a base (and the base itself may also appear as `base == derived`). Derived relocation
+must therefore be performed **in a batch** (per frame): snapshot old base/derived values first, then
+write relocated bases, then write relocated derived values using the snapshotted deltas.
+
+Use `runtime_native::relocate_derived_pairs` to relocate a per-frame batch of `(base_slot, derived_slot)` pairs
+safely even when base slots repeat.
+
 Null convention:
 
 - If `base_old == 0` or `derived_old == 0`, the derived value stays null (`derived_new = 0`).
@@ -137,4 +145,6 @@ structure:
 3. Then **2 locations per `gc.relocate` call**: `(base, derived)`
 
 `runtime-native::statepoints::StatepointRecord` enforces this layout (`LLVM18_STATEPOINT_HEADER_CONSTANTS = 3`),
-and provides `gc_pairs() -> &[GcLocationPair]` for iterating the base/derived relocation pairs.
+provides `gc_pairs() -> &[GcLocationPair]` for iterating the base/derived relocation pairs, and
+`runtime-native::stackwalk_fp::walk_gc_root_pairs_from_fp` can translate those locations into
+`(base_slot, derived_slot)` spill-slot pairs for each frame.

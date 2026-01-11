@@ -89,15 +89,17 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
   let mut seen: Vec<(usize, usize, usize, usize)> = Vec::new();
-  scan_reloc_pairs(&ctx, &stackmaps, |base_slot, derived_slot| unsafe {
-    seen.push((
-      base_slot as usize,
-      derived_slot as usize,
-      base_slot.read_unaligned(),
-      derived_slot.read_unaligned(),
-    ));
-  })
-  .expect("scan");
+  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  for (base_slot, derived_slot) in pairs {
+    unsafe {
+      seen.push((
+        base_slot as usize,
+        derived_slot as usize,
+        base_slot.read_unaligned(),
+        derived_slot.read_unaligned(),
+      ));
+    }
+  }
 
   assert_eq!(seen.len(), 2, "expected two relocation pairs from scan");
 
@@ -147,14 +149,12 @@ fn scan_reloc_pairs_skips_deopt_operands() {
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
-  let mut seen: Vec<(usize, usize)> = Vec::new();
-  scan_reloc_pairs(&ctx, &stackmaps, |base_slot, derived_slot| {
-    seen.push((base_slot as usize, derived_slot as usize));
-  })
-  .expect("scan");
+  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
 
-  assert_eq!(seen.len(), sp.gc_pair_count());
-  for (base_addr, derived_addr) in seen {
+  assert_eq!(pairs.len(), sp.gc_pair_count());
+  for (base_slot, derived_slot) in pairs {
+    let base_addr = base_slot as usize;
+    let derived_addr = derived_slot as usize;
     assert_ne!(
       base_addr, deopt0_addr,
       "deopt operand spill slot must not be reported as a relocation pair slot"

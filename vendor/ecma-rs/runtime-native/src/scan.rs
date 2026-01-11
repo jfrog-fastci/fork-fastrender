@@ -48,7 +48,7 @@ pub enum ScanError {
 /// - `thread_ctx` provides the stopped thread's DWARF register values.
 /// - `stackmaps` is the parsed `.llvm_stackmaps` index for the current process/module.
 ///
-/// The callback receives the address of each *pointer-sized spill slot*.
+/// Returns the address of each *pointer-sized spill slot* as a `(base_slot, derived_slot)` tuple.
 ///
 /// Notes:
 /// - For now, this helper only supports `Indirect` locations, which is the common LLVM 18 output
@@ -57,8 +57,7 @@ pub enum ScanError {
 pub fn scan_reloc_pairs(
   thread_ctx: &ThreadContext,
   stackmaps: &StackMaps,
-  mut visit: impl FnMut(*mut usize, *mut usize),
-) -> Result<(), ScanError> {
+) -> Result<Vec<(*mut usize, *mut usize)>, ScanError> {
   let ip = thread_ctx
     .get_dwarf_reg_u64(DWARF_REG_IP)
     .ok_or(ScanError::MissingInstructionPointer {
@@ -67,13 +66,13 @@ pub fn scan_reloc_pairs(
 
   let Some(callsite) = stackmaps.lookup(ip) else {
     // No stackmap record for this PC.
-    return Ok(());
+    return Ok(Vec::new());
   };
 
   // Only `gc.statepoint` records describe GC relocation pairs. Other stackmap records (patchpoints)
   // should be ignored by the GC.
   if callsite.record.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
-    return Ok(());
+    return Ok(Vec::new());
   }
 
   let statepoint = StatepointRecord::new(callsite.record).map_err(|source| ScanError::InvalidStatepoint {
@@ -82,13 +81,14 @@ pub fn scan_reloc_pairs(
     source,
   })?;
 
+  let mut pairs: Vec<(*mut usize, *mut usize)> = Vec::with_capacity(statepoint.gc_pair_count());
   for pair in statepoint.gc_pairs() {
     let base_slot = slot_addr(thread_ctx, &pair.base)?;
     let derived_slot = slot_addr(thread_ctx, &pair.derived)?;
-    visit(base_slot, derived_slot);
+    pairs.push((base_slot, derived_slot));
   }
 
-  Ok(())
+  Ok(pairs)
 }
 
 fn slot_addr(ctx: &ThreadContext, loc: &Location) -> Result<*mut usize, ScanError> {

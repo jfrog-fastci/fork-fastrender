@@ -150,7 +150,7 @@ pub use async_rt::set_strict_await_yields;
 pub use thread_registry::{
   rt_register_current_thread, rt_register_thread, rt_unregister_current_thread, rt_unregister_thread,
 };
-pub use gc_roots::{RelocPair, StackRootEnumerator};
+pub use gc_roots::{relocate_derived_pairs, RelocPair, StackRootEnumerator};
 pub use stackmaps::StackMaps;
 pub use stackmaps_validate::{validate_stackmaps, ValidationError};
 pub use stackwalk_fp::{
