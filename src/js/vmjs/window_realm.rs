@@ -1211,6 +1211,7 @@ const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
+const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
 const EVENT_TARGET_ADD_EVENT_LISTENER_KEY: &str = "__fastrender_event_target_add_event_listener";
 const EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY: &str =
@@ -5250,12 +5251,16 @@ fn event_prototype_stop_immediate_propagation_native(
     {
       let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
       scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+      let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+      scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(true)))?;
       return Ok(Value::Undefined);
     }
   }
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(true)))?;
   Ok(Value::Undefined)
 }
 
@@ -6629,8 +6634,56 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       data_desc(Value::Bool(event.propagation_stopped)),
     )?;
 
+    let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+    scope.define_property(
+      event_obj,
+      immediate_key,
+      data_desc(Value::Bool(event.immediate_propagation_stopped)),
+    )?;
+
     Ok(())
   }
+}
+
+fn sync_rust_event_from_js_event_object(
+  scope: &mut Scope<'_>,
+  event_obj: GcObject,
+  event: &mut web_events::Event,
+) -> Result<(), VmError> {
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  let cancel_bubble = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &cancel_bubble_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  if cancel_bubble {
+    event.stop_propagation();
+  }
+
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  let immediate = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &immediate_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  if immediate {
+    event.stop_immediate_propagation();
+  }
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  let default_prevented = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &default_prevented_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  if default_prevented {
+    event.default_prevented = true;
+  }
+
+  Ok(())
 }
 
 impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker<Host> {
@@ -6788,6 +6841,13 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       }
     })();
 
+    // If the JS `Event.prototype` methods were invoked with a host context that does not support
+    // `ActiveEventStack`, they still update the JS-visible flags (`cancelBubble`, `defaultPrevented`,
+    // etc). Mirror those back onto the shared Rust `Event` so the DOM dispatch algorithm can observe
+    // propagation control and cancellation.
+    sync_rust_event_from_js_event_object(&mut scope, event_obj, event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
     if let Some(err) = host_hooks.finish(scope.heap_mut()) {
       return Err(web_events::DomError::new(err.to_string()));
     }
@@ -6914,6 +6974,13 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
       self.event_obj,
       cancel_bubble_key,
       data_desc(Value::Bool(event.propagation_stopped)),
+    )?;
+
+    let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+    scope.define_property(
+      self.event_obj,
+      immediate_key,
+      data_desc(Value::Bool(event.immediate_propagation_stopped)),
     )?;
 
     if let Some(detail) = event.detail {
@@ -7086,6 +7153,12 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
       // Per web platform behavior, exceptions from event listeners should not abort `dispatchEvent`.
       self.report_listener_exception(err);
     }
+
+    // Ensure cancellation/propagation flags set via the JS `Event` instance are reflected onto the
+    // shared Rust `Event` so the dispatcher can observe them even when no host-side
+    // `ActiveEventStack` is installed.
+    sync_rust_event_from_js_event_object(scope, self.event_obj, event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     // `dispatch_event` can remove listeners during dispatch (`{ once: true }`). Drop the callback
     // root if the listener ID is no longer referenced.
@@ -7599,6 +7672,8 @@ fn event_target_dispatch_event_native(
   // Reset per-dispatch propagation flags on the JS-visible object.
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_stop_key = alloc_key(scope, EVENT_IMMEDIATE_STOP_KEY)?;
+  scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
 
   let document_roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
   let mut invoker = VmJsDomEventInvoker {
