@@ -497,8 +497,11 @@ impl VmJsRuntime {
   }
 
   fn alloc_string_object_from_handle(&mut self, string_data: GcString) -> Result<Value, VmError> {
-    let sym = self.string_data_symbol()?;
+    // Root `string_data` before allocating the hidden-slot symbol. Under extreme GC pressure (e.g.
+    // `HeapLimits::gc_threshold = 0`), any heap allocation can trigger collection, and the input
+    // `GcString` handle is otherwise invisible to the GC.
     self.with_stack_roots([Value::String(string_data)], |rt| {
+      let sym = rt.string_data_symbol()?;
       let obj = {
         let mut scope = rt.heap.scope();
         scope.alloc_object()?
@@ -539,8 +542,9 @@ impl VmJsRuntime {
   }
 
   fn alloc_symbol_object_value(&mut self, symbol_data: GcSymbol) -> Result<Value, VmError> {
-    let sym = self.symbol_data_symbol()?;
+    // Root `symbol_data` before allocating the hidden-slot symbol (see `alloc_string_object_from_handle`).
     self.with_stack_roots([Value::Symbol(symbol_data)], |rt| {
+      let sym = rt.symbol_data_symbol()?;
       let obj = {
         let mut scope = rt.heap.scope();
         scope.alloc_object()?
@@ -1864,6 +1868,32 @@ mod tests {
     assert!(rt.is_object(obj));
     let s = rt.to_string(obj).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "7");
+  }
+
+  #[test]
+  fn to_object_string_is_gc_safe_under_extreme_gc_pressure() {
+    // Force a GC before every heap allocation. Without careful rooting, intermediate `GcString`
+    // handles (e.g. the string being wrapped) can be collected before they are stored in the
+    // wrapper object.
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+    let s = rt.alloc_string_value("456").unwrap();
+    let obj = rt.to_object(s).unwrap();
+    assert!(matches!(obj, Value::Object(_)));
+    assert!(rt.is_string_object(obj));
+  }
+
+  #[test]
+  fn to_object_symbol_is_gc_safe_under_extreme_gc_pressure() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+    let sym = {
+      let mut scope = rt.heap.scope();
+      scope.alloc_symbol(Some("desc")).unwrap()
+    };
+    let obj = rt.to_object(Value::Symbol(sym)).unwrap();
+    let Value::Object(obj_handle) = obj else {
+      panic!("expected Symbol wrapper object");
+    };
+    assert_eq!(rt.symbol_object_data(obj_handle).unwrap(), Some(sym));
   }
 
   #[test]
