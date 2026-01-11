@@ -46,6 +46,7 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
     check_any_in_exported_defs(program, file, &lowered, &mut any_checker, &mut diagnostics);
   }
 
+  diagnostics::sort_diagnostics(&mut diagnostics);
   diagnostics
 }
 
