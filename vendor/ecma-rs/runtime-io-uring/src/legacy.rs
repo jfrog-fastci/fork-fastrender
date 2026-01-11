@@ -754,11 +754,12 @@ mod linux {
                 }
             }
 
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
             Ok(())
         }
 
@@ -1468,6 +1469,10 @@ mod non_linux {
     }
 
     pub fn is_provide_buffers_supported(_driver: &Driver) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn is_remove_buffers_supported(_driver: &Driver) -> io::Result<bool> {
         Ok(false)
     }
 }
