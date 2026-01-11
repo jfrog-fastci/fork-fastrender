@@ -23,6 +23,16 @@ fn promise_all_preserves_input_order() {
 }
 
 #[test]
+fn promise_all_preserves_input_order_out_of_order_resolution() {
+  let out = run_fixture_with_options(
+    fixture_path("promise_all_out_of_order.js"),
+    &OracleHarnessOptions::default(),
+  )
+  .expect("fixture should run");
+  assert_eq!(out, "ab");
+}
+
+#[test]
 fn promise_rejection_is_reported() {
   let err = run_fixture_with_options(fixture_path("promise_reject.js"), &OracleHarnessOptions::default())
     .expect_err("fixture should fail");
