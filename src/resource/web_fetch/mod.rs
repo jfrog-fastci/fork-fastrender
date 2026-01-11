@@ -115,7 +115,15 @@ mod tests {
   fn headers_guard_request_ignores_forbidden_headers() {
     let mut headers = Headers::new_with_guard(HeadersGuard::Request);
     headers.set("cookie", "a=b").unwrap();
+    headers.set("Access-Control-Request-Method", "PUT").unwrap();
+    headers.set("Access-Control-Request-Headers", "x-test").unwrap();
+    headers
+      .set("Access-Control-Request-Private-Network", "true")
+      .unwrap();
     assert!(!headers.has("cookie").unwrap());
+    assert!(!headers.has("access-control-request-method").unwrap());
+    assert!(!headers.has("access-control-request-headers").unwrap());
+    assert!(!headers.has("access-control-request-private-network").unwrap());
   }
 
   #[test]

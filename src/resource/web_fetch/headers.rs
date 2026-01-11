@@ -639,6 +639,7 @@ fn is_forbidden_request_header(name: &HeaderName, value: &str) -> bool {
     | "accept-encoding"
     | "access-control-request-headers"
     | "access-control-request-method"
+    | "access-control-request-private-network"
     | "connection"
     | "content-length"
     | "cookie"

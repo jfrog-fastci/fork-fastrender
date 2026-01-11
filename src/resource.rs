@@ -1447,6 +1447,9 @@ fn fetch_http_request_header_forbidden(method: &str, name: &str, value: &str) ->
   match name.as_str() {
     "accept-charset"
     | "accept-encoding"
+    | "access-control-request-headers"
+    | "access-control-request-method"
+    | "access-control-request-private-network"
     | "connection"
     | "content-length"
     | "cookie"
