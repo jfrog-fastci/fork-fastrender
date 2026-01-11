@@ -1,9 +1,11 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use parking_lot::{RwLock, RwLockWriteGuard};
+use parking_lot::RwLockWriteGuard;
 use std::rc::Rc;
 use std::sync::Arc;
+
+use crate::sync::GcAwareRwLock;
 
 /// A stable identifier for an entry in a [`HandleTable`].
 ///
@@ -133,7 +135,7 @@ impl<T> StoredPtr<T> {
 /// Moving collectors must update handle table pointers only when all mutator threads are parked.
 /// Use [`HandleTable::with_stw_update`]; this API does **not** stop threads itself.
 pub struct HandleTable<T> {
-  inner: RwLock<HandleTableInner<T>>,
+  inner: GcAwareRwLock<HandleTableInner<T>>,
 }
 
 impl<T> Default for HandleTable<T> {
@@ -157,7 +159,7 @@ impl<T> HandleTable<T> {
   #[inline]
   pub fn new() -> Self {
     Self {
-      inner: RwLock::new(HandleTableInner {
+      inner: GcAwareRwLock::new(HandleTableInner {
         slots: Vec::new(),
         free_head: None,
       }),
@@ -288,7 +290,20 @@ impl<T> HandleTable<T> {
   /// - no thread is currently blocked holding a read lock when entering STW (otherwise this can
   ///   deadlock waiting for the write lock).
   pub fn with_stw_update<R>(&self, f: impl FnOnce(&mut HandleTableStwGuard<'_, T>) -> R) -> R {
-    let guard = self.inner.write();
+    // NOTE: We intentionally avoid `GcAwareRwLock::write()` here:
+    //
+    // The GC-aware wrappers treat contended lock acquisition as a blocking operation and enter a
+    // GC-safe ("native") region while waiting. They also refuse to return a lock guard while a
+    // stop-the-world epoch is active (to avoid resuming mutator execution while stopped).
+    //
+    // During STW relocation, however, the coordinator *must* be able to acquire the lock. We
+    // therefore spin on `try_write()` until the write lock is available.
+    let guard = loop {
+      if let Some(g) = self.inner.try_write() {
+        break g;
+      }
+      std::thread::yield_now();
+    };
     let mut guard = HandleTableStwGuard { guard };
     f(&mut guard)
   }

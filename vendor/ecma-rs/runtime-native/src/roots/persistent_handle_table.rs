@@ -3,7 +3,6 @@ use core::ptr::NonNull;
 use once_cell::sync::Lazy;
 
 use crate::gc::{HandleId, HandleTable};
-use crate::sync::GcAwareRwLock;
 
 /// Process-global persistent handle table for GC-managed object pointers.
 ///
@@ -16,13 +15,13 @@ use crate::sync::GcAwareRwLock;
 ///   relocation/compaction under a stop-the-world (STW) pause.
 #[derive(Debug, Default)]
 pub struct PersistentHandleTable {
-  inner: GcAwareRwLock<HandleTable<u8>>,
+  inner: HandleTable<u8>,
 }
 
 impl PersistentHandleTable {
   pub fn new() -> Self {
     Self {
-      inner: GcAwareRwLock::new(HandleTable::new()),
+      inner: HandleTable::new(),
     }
   }
 
@@ -31,17 +30,17 @@ impl PersistentHandleTable {
   /// The returned handle remains a GC root until freed via [`Self::free`].
   pub fn alloc(&self, ptr: *mut u8) -> HandleId {
     let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
-    self.inner.write().alloc(ptr)
+    self.inner.alloc(ptr)
   }
 
   /// Resolves `id` to the current object pointer, or `None` if the handle is stale/freed.
   pub fn get(&self, id: HandleId) -> Option<*mut u8> {
-    self.inner.read().get(id).map(|p| p.as_ptr())
+    self.inner.get(id).map(|p| p.as_ptr())
   }
 
   /// Frees `id`, removing it from the persistent root set and allowing slot reuse.
   pub fn free(&self, id: HandleId) -> bool {
-    self.inner.write().free(id).is_some()
+    self.inner.free(id).is_some()
   }
 
   /// Update the pointer stored for `id`.
@@ -49,7 +48,7 @@ impl PersistentHandleTable {
   /// Returns `true` if the handle was live and successfully updated.
   pub fn set(&self, id: HandleId, ptr: *mut u8) -> bool {
     let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
-    self.inner.write().set(id, ptr)
+    self.inner.set(id, ptr)
   }
 
   /// Enumerate all live pointer slots.
@@ -57,18 +56,7 @@ impl PersistentHandleTable {
   /// This is intended to be used by the GC while the world is stopped, so it can trace/update
   /// persistent-handle roots in bulk.
   pub(crate) fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
-    // This is only called while stop-the-world is active. Avoid `GcAwareRwLock::write()`'s contended
-    // path here because it intentionally waits for the world to resume before returning a guard.
-    //
-    // Instead, spin on `try_write()` until we acquire the guard. Under STW there should be no active
-    // mutator that can hold the lock indefinitely.
-    let table = loop {
-      if let Some(g) = self.inner.try_write() {
-        break g;
-      }
-      std::thread::yield_now();
-    };
-    table.with_stw_update(|guard| {
+    self.inner.with_stw_update(|guard| {
       for slot in guard.iter_live_slots_mut() {
         f(slot as *mut *mut u8);
       }
@@ -76,7 +64,7 @@ impl PersistentHandleTable {
   }
 
   pub(crate) fn clear_for_tests(&self) {
-    self.inner.write().clear_for_tests();
+    self.inner.clear_for_tests();
   }
 }
 
@@ -116,10 +104,10 @@ mod tests {
       scope.spawn(move || {
         threading::register_current_thread(ThreadKind::Worker);
         let table = global_persistent_handle_table();
-        let guard = table.inner.write();
-        a_locked_tx.send(()).unwrap();
-        a_release_rx.recv().unwrap();
-        drop(guard);
+        table.inner.with_stw_update(|_| {
+          a_locked_tx.send(()).unwrap();
+          a_release_rx.recv().unwrap();
+        });
 
         // Cooperatively stop at the safepoint request.
         crate::rt_gc_safepoint();
