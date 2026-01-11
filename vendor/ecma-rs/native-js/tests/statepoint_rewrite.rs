@@ -497,6 +497,53 @@ fn gc_pointer_call_argument_is_in_gc_live_even_if_dead_after_call() {
 }
 
 #[test]
+fn gc_pointer_select_is_relocated_across_safepoint() {
+  // JS runtimes frequently have control-flow-dependent pointer selection (e.g.
+  // polymorphic inline caches). Ensure a `select`-produced GC pointer is tracked
+  // and rewritten across a safepoint.
+  let before = r#"
+  declare void @bar()
+
+  define ptr addrspace(1) @test(i1 %cond, ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
+  entry:
+    %p = select i1 %cond, ptr addrspace(1) %a, ptr addrspace(1) %b
+    call void @bar()
+    ret ptr addrspace(1) %p
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let gc_live = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live,
+    vec!["%p".to_string()],
+    "expected statepoint gc-live to contain only %p, got {gc_live:?}\n\n{func}"
+  );
+
+  let reloc_line = expect_relocate_line(&func, "%p", "%p");
+  let relocated_p =
+    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %p relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("ret ptr addrspace(1) {relocated_p}")),
+    "expected function to return relocated %p value {relocated_p}:\n{func}"
+  );
+}
+
+#[test]
 fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
   // Important real-world pattern: allocate an object (pointer result from a
   // statepoint) and then keep it live across a later safepoint call.
