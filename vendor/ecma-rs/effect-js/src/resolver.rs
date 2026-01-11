@@ -5,6 +5,20 @@ use hir_js::{
 };
 use std::collections::BTreeMap;
 
+fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingTarget {
   pub module: String,
@@ -47,6 +61,16 @@ fn collect_import_bindings(lower: &LowerResult) -> RequireBindings {
     match &import.kind {
       ImportKind::Es(es) => {
         let module = es.specifier.value.clone();
+        if let Some(default) = &es.default {
+          bindings.insert(
+            default.local,
+            0,
+            BindingTarget {
+              module: module.clone(),
+              path: Vec::new(),
+            },
+          );
+        }
         if let Some(ns) = &es.namespace {
           bindings.insert(
             ns.local,
@@ -166,6 +190,7 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
 }
 
 fn extract_require_module(lower: &LowerResult, body: &Body, expr: ExprId) -> Option<String> {
+  let expr = strip_transparent_wrappers(body, expr);
   let ExprKind::Call(call) = &body.exprs[expr.0 as usize].kind else {
     return None;
   };
@@ -202,6 +227,7 @@ fn extract_require_member_path(
   body: &Body,
   expr: ExprId,
 ) -> Option<(String, Vec<String>)> {
+  let expr = strip_transparent_wrappers(body, expr);
   if let Some(module) = extract_require_module(lower, body, expr) {
     return Some((module, Vec::new()));
   }
@@ -223,10 +249,11 @@ fn flatten_member_chain(
   body: &Body,
   expr: ExprId,
 ) -> Option<(ExprId, Vec<String>)> {
-  let mut base = expr;
+  let mut base = strip_transparent_wrappers(body, expr);
   let mut path = Vec::new();
 
   loop {
+    base = strip_transparent_wrappers(body, base);
     let ExprKind::Member(mem) = &body.exprs[base.0 as usize].kind else {
       break;
     };
@@ -239,7 +266,7 @@ fn flatten_member_chain(
   }
 
   path.reverse();
-  Some((base, path))
+  Some((strip_transparent_wrappers(body, base), path))
 }
 
 fn join_api(module: &str, path: &[String]) -> String {
@@ -309,7 +336,7 @@ mod tests {
   use hir_js::{lower_from_source_with_kind, ExprId, ExprKind, FileKind};
 
   fn resolved_calls(source: &str) -> Vec<String> {
-    let lowered = lower_from_source_with_kind(FileKind::Js, source).unwrap();
+    let lowered = lower_from_source_with_kind(FileKind::Ts, source).unwrap();
     let db = crate::load_default_api_database();
     let body_id = lowered.hir.root_body;
     let body = lowered.body(body_id).unwrap();
@@ -381,6 +408,17 @@ mod tests {
         readFile('x', () => {});
         const { readFile } = require('node:fs');
         readFile('y', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_through_type_assertions_and_non_null() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('node:fs') as any;
+        fs!.readFile('x', () => {});
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);
