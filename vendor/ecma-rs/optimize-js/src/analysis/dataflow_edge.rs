@@ -212,7 +212,14 @@ pub fn run_edge_dataflow<A: ForwardEdgeDataFlowAnalysis>(
       }
     };
 
-    let block = cfg.bblocks.get(label);
+    // Allow graph nodes without an associated basic-block payload (treated as
+    // empty blocks) so analyses can run over CFGs augmented with synthetic exit
+    // nodes in tests/debug helpers.
+    let block: &[Inst] = cfg
+      .bblocks
+      .maybe_get(label)
+      .map(|bb| bb.as_slice())
+      .unwrap_or(&[]);
     let exit = analysis.apply_to_block(label, block, &incoming);
 
     for succ in cfg.graph.children_sorted(label) {
@@ -524,5 +531,14 @@ mod tests {
     let result = run_edge_dataflow(&mut LocalFactOnly::default(), &cfg, 0);
     let expected: BTreeSet<u32> = [1].into_iter().collect();
     assert_eq!(result.block_exit(1), Some(&expected));
+  }
+
+  #[test]
+  fn graph_nodes_without_bblocks_are_treated_as_empty_blocks() {
+    // The CFG graph contains a synthetic exit label but there is no corresponding basic block.
+    // Edge dataflow should treat the node as an empty block instead of panicking.
+    let cfg = cfg(&[0], &[(0, u32::MAX)], |_| Vec::new());
+    let result = run_edge_dataflow(&mut OrderSensitiveMeet::default(), &cfg, 0);
+    assert_eq!(result.block_exit(u32::MAX), Some(&vec![0, u32::MAX]));
   }
 }

@@ -238,7 +238,15 @@ impl<'cfg> FlowGraph<'cfg> {
     if Some(label) == self.virtual_exit_label() {
       &[]
     } else {
-      self.cfg.bblocks.get(label)
+      // Some helper/test CFGs add synthetic nodes to the graph without an
+      // associated basic block payload (e.g. an explicit exit label). Treat such
+      // nodes as empty blocks so dataflow over the graph remains well-defined.
+      self
+        .cfg
+        .bblocks
+        .maybe_get(label)
+        .map(|bb| bb.as_slice())
+        .unwrap_or(&[])
     }
   }
 

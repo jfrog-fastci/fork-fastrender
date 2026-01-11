@@ -346,6 +346,17 @@ fn unreachable_blocks_start_at_bottom() {
 }
 
 #[test]
+fn dataflow_treats_graph_nodes_without_bblocks_as_empty_blocks() {
+  // Some CFGs add synthetic nodes to the graph (e.g. an explicit exit label)
+  // without an associated basic-block payload. Dataflow should treat those as
+  // empty blocks instead of panicking.
+  let cfg = cfg(&[0], &[(0, u32::MAX)]);
+  let forward_result = forward(&cfg, AnalysisBoundary::Entry(0));
+  assert_exit(&forward_result.blocks, 0, &[0]);
+  assert_exit(&forward_result.blocks, u32::MAX, &[0, u32::MAX]);
+}
+
+#[test]
 fn deterministic_across_edge_ordering() {
   let cfg1 = cfg(&[0, 1, 2, 3], &[(0, 1), (1, 2), (1, 3), (0, 2)]);
   let cfg2 = cfg(&[0, 1, 2, 3], &[(1, 3), (0, 2), (1, 2), (0, 1)]);
