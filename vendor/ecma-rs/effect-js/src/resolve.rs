@@ -24,11 +24,16 @@ pub fn resolve_api_call_untyped(
 
   let fetch = ApiId::from_name("fetch");
   let promise_all = ApiId::from_name("Promise.all");
+  let promise_race = ApiId::from_name("Promise.race");
   let json_parse = ApiId::from_name("JSON.parse");
 
   #[cfg(feature = "hir-semantic-ops")]
   if matches!(&call.kind, ExprKind::PromiseAll { .. }) {
     return Some(promise_all);
+  }
+  #[cfg(feature = "hir-semantic-ops")]
+  if matches!(&call.kind, ExprKind::PromiseRace { .. }) {
+    return Some(promise_race);
   }
 
   let ExprKind::Call(call) = &call.kind else {
@@ -65,13 +70,18 @@ pub fn resolve_api_call_untyped(
         }
       }
 
-      // Promise.all(...)
-      if prop == "all" {
+      // Promise.{all,race}(...)
+      if prop == "all" || prop == "race" {
+        let promise_ctor = if prop == "all" {
+          promise_all
+        } else {
+          promise_race
+        };
         let obj = expr(lowered, body, member.object)?;
         match &obj.kind {
           ExprKind::Ident(obj_name) => {
             if ident_name(lowered, *obj_name) == Some("Promise") {
-              return Some(promise_all);
+              return Some(promise_ctor);
             }
           }
           ExprKind::Member(inner) => {
@@ -88,7 +98,7 @@ pub fn resolve_api_call_untyped(
                 ident_name(lowered, *base_name),
                 Some("globalThis" | "window" | "self" | "global")
               ) {
-                return Some(promise_all);
+                return Some(promise_ctor);
               }
             }
           }
@@ -1110,6 +1120,29 @@ mod tests {
     assert_eq!(
       resolve_api_call_untyped(&lowered, body_id, call_expr),
       Some(ApiId::from_name("Promise.all"))
+    );
+  }
+
+  #[test]
+  fn resolves_global_this_promise_race_call_untyped() {
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"globalThis.Promise.race([]);"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&lowered, body_id, call_expr),
+      Some(ApiId::from_name("Promise.race"))
+    );
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  #[test]
+  fn resolves_semantic_promise_race_call_untyped() {
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, r#"Promise.race([]);"#).unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    assert_eq!(
+      resolve_api_call_untyped(&lowered, body_id, call_expr),
+      Some(ApiId::from_name("Promise.race"))
     );
   }
 
