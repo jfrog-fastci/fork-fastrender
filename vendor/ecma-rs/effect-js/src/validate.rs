@@ -267,14 +267,7 @@ mod tests {
   }
 
   fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
-    match template {
-      EffectTemplate::Pure => EffectSummary::PURE,
-      EffectTemplate::Io => effect_set_to_summary(EffectSet::IO | EffectSet::MAY_THROW),
-      EffectTemplate::Custom(base) => effect_set_to_summary(*base),
-      EffectTemplate::DependsOnArgs { base, .. } => effect_set_to_summary(*base),
-      // Unknown means "unknown effects"; treat it as potentially-throwing for validation.
-      EffectTemplate::Unknown => effect_set_to_summary(EffectSet::UNKNOWN | EffectSet::MAY_THROW),
-    }
+    effect_set_to_summary(template.base_effects())
   }
 
   fn api(

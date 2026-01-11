@@ -46,7 +46,7 @@ fn callback_effects_from_purity(purity: Purity) -> EffectSet {
     Purity::Pure => EffectSet::empty(),
     Purity::ReadOnly => EffectSet::READS_GLOBAL,
     Purity::Allocating => EffectSet::ALLOCATES,
-    Purity::Impure => unknown_effects(),
+    Purity::Impure => EffectSet::UNKNOWN_CALL,
   }
 }
 
@@ -67,7 +67,7 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
     return (Vec::new(), Vec::new());
   }
 
-  let mut arg_effects = vec![unknown_effects(); len];
+  let mut arg_effects = vec![EffectSet::UNKNOWN_CALL; len];
   let mut arg_purity = vec![Purity::Impure; len];
 
   // We only model argument 0 (the callback) via `CallSiteInfo`. All other args are
@@ -75,7 +75,7 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
   let cb_effects = site
     .callback_effects
     .or_else(|| site.callback_purity.map(callback_effects_from_purity))
-    .unwrap_or_else(unknown_effects);
+    .unwrap_or(EffectSet::UNKNOWN_CALL);
   let cb_purity = match (site.callback_purity, site.callback_effects) {
     (Some(p), Some(e)) => Purity::join(p, e.inferred_purity()),
     (Some(p), None) => p,
@@ -89,10 +89,6 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
   (arg_effects, arg_purity)
 }
 
-fn unknown_effects() -> EffectSet {
-  EffectSet::UNKNOWN | EffectSet::MAY_THROW
-}
-
 fn effect_summary_as_set(summary: effect_model::EffectSummary) -> EffectSet {
   let mut out = summary.flags;
   if !matches!(summary.throws, ThrowBehavior::Never) {
@@ -100,7 +96,6 @@ fn effect_summary_as_set(summary: effect_model::EffectSummary) -> EffectSet {
   }
   out
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;

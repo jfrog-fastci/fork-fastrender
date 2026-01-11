@@ -89,6 +89,18 @@ bitflags! {
 pub type EffectFlags = EffectSet;
 
 impl EffectSet {
+  /// Conservative approximation for "unknown effects".
+  ///
+  /// This is commonly used for:
+  /// - unresolved calls
+  /// - spread arguments
+  /// - any construct we don't currently model precisely
+  ///
+  /// We set [`EffectSet::UNKNOWN`] to indicate "could do anything" and
+  /// [`EffectSet::MAY_THROW`] because unknown operations may raise exceptions.
+  pub const UNKNOWN_CALL: Self =
+    Self::from_bits_truncate(Self::UNKNOWN.bits() | Self::MAY_THROW.bits());
+
   /// Infer a coarse purity classification from effect flags.
   ///
   /// This is intentionally conservative and ignores `MAY_THROW`, which is
@@ -337,6 +349,20 @@ impl Default for EffectTemplate {
 }
 
 impl EffectTemplate {
+  /// Base effects for this template, ignoring any callback/argument-dependent behavior.
+  ///
+  /// This is mainly used when building/validating API databases, where we need a
+  /// conservative non-template summary (e.g. to sanity-check purity metadata).
+  pub fn base_effects(&self) -> EffectSet {
+    match self {
+      Self::Pure => EffectSet::empty(),
+      Self::Io => EffectSet::IO | EffectSet::MAY_THROW,
+      Self::Custom(base) => *base,
+      Self::DependsOnArgs { base, .. } => *base,
+      Self::Unknown => EffectSet::UNKNOWN_CALL,
+    }
+  }
+
   pub fn apply(&self, arg_effects: &[EffectSet]) -> EffectSet {
     match self {
       Self::Pure => EffectSet::empty(),
@@ -358,7 +384,7 @@ impl EffectTemplate {
         }
         effects
       }
-      Self::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+      Self::Unknown => EffectSet::UNKNOWN_CALL,
     }
   }
 }
@@ -390,6 +416,18 @@ impl Default for PurityTemplate {
 }
 
 impl PurityTemplate {
+  /// Base purity for this template, ignoring any callback/argument-dependent behavior.
+  pub fn base_purity(&self) -> Purity {
+    match self {
+      Self::Pure => Purity::Pure,
+      Self::ReadOnly => Purity::ReadOnly,
+      Self::Allocating => Purity::Allocating,
+      Self::Impure => Purity::Impure,
+      Self::DependsOnArgs { base, .. } => *base,
+      Self::Unknown => Purity::Impure,
+    }
+  }
+
   pub fn apply(&self, arg_purity: &[Purity]) -> Purity {
     match self {
       Self::Pure => Purity::Pure,
@@ -478,5 +516,27 @@ mod tests {
     let effects = EffectTemplate::Unknown.apply(&[]);
     assert!(effects.contains(EffectSet::UNKNOWN));
     assert!(effects.contains(EffectSet::MAY_THROW));
+  }
+
+  #[test]
+  fn base_methods_ignore_arg_deps() {
+    let effects = EffectTemplate::DependsOnArgs {
+      base: EffectSet::ALLOCATES,
+      args: vec![0],
+    };
+    // `apply(&[])` would mark this as unknown due to out-of-range args, but
+    // `base_effects()` should not.
+    assert_eq!(effects.base_effects(), EffectSet::ALLOCATES);
+
+    let purity = PurityTemplate::DependsOnArgs {
+      base: Purity::ReadOnly,
+      args: vec![0],
+    };
+    assert_eq!(purity.base_purity(), Purity::ReadOnly);
+
+    assert_eq!(
+      EffectSet::UNKNOWN_CALL,
+      EffectSet::UNKNOWN | EffectSet::MAY_THROW
+    );
   }
 }

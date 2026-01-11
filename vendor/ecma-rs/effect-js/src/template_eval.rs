@@ -19,13 +19,13 @@ pub(crate) fn eval_call_expr(
 ) -> CallEval {
   let Some(body_ref) = lowered.body(body) else {
     return CallEval {
-      effects: unknown_effects(),
+      effects: EffectSet::UNKNOWN_CALL,
       purity: Purity::Impure,
     };
   };
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
     return CallEval {
-      effects: unknown_effects(),
+      effects: EffectSet::UNKNOWN_CALL,
       purity: Purity::Impure,
     };
   };
@@ -38,7 +38,7 @@ pub(crate) fn eval_call_expr(
 
   if call.optional {
     return CallEval {
-      effects: unknown_effects(),
+      effects: EffectSet::UNKNOWN_CALL,
       purity: Purity::Impure,
     };
   }
@@ -60,7 +60,7 @@ pub(crate) fn eval_call_expr(
     }
   });
 
-  let mut effects = sem.map(|s| s.effects).unwrap_or_else(unknown_effects);
+  let mut effects = sem.map(|s| s.effects).unwrap_or(EffectSet::UNKNOWN_CALL);
   if call.is_new {
     effects |= EffectSet::ALLOCATES;
   }
@@ -76,10 +76,6 @@ pub(crate) fn eval_call_expr(
   purity = Purity::join(purity, effects.inferred_purity());
 
   CallEval { effects, purity }
-}
-
-fn unknown_effects() -> EffectSet {
-  EffectSet::UNKNOWN | EffectSet::MAY_THROW
 }
 
 fn build_arg_models(
@@ -107,7 +103,7 @@ fn build_arg_models(
     return (Vec::new(), Vec::new());
   }
 
-  let mut arg_effects = vec![unknown_effects(); len];
+  let mut arg_effects = vec![EffectSet::UNKNOWN_CALL; len];
   let mut arg_purity = vec![Purity::Impure; len];
 
   for &idx in &referenced {
@@ -133,7 +129,6 @@ fn effect_summary_as_set(summary: effect_model::EffectSummary) -> EffectSet {
   }
   out
 }
-
 fn resolve_api_semantics<'a>(
   kb: &'a KnowledgeBase,
   lowered: &LowerResult,

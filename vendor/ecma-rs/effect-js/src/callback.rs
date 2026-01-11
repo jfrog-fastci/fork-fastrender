@@ -319,7 +319,7 @@ impl CallbackAnalyzer<'_> {
   }
 
   fn mark_unknown(&mut self) {
-    self.merge_effects(unknown_effects());
+    self.merge_effects(EffectSet::UNKNOWN_CALL);
     self.merge_purity(Purity::Impure);
   }
 
@@ -873,10 +873,6 @@ impl CallbackAnalyzer<'_> {
       self.uses_array = true;
     }
   }
-}
-
-fn unknown_effects() -> EffectSet {
-  EffectSet::UNKNOWN | EffectSet::MAY_THROW
 }
 
 #[cfg(test)]

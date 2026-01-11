@@ -189,13 +189,7 @@ impl<'de> Deserialize<'de> for ApiSemantics {
 }
 
 fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
-  match template {
-    EffectTemplate::Pure => EffectSummary::PURE,
-    EffectTemplate::Io => effect_set_to_summary(EffectSet::IO | EffectSet::MAY_THROW),
-    EffectTemplate::Custom(base) => effect_set_to_summary(*base),
-    EffectTemplate::DependsOnArgs { base, .. } => effect_set_to_summary(*base),
-    EffectTemplate::Unknown => effect_set_to_summary(EffectSet::UNKNOWN | EffectSet::MAY_THROW),
-  }
+  effect_set_to_summary(template.base_effects())
 }
 
 fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
@@ -1159,7 +1153,7 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
         EffectTemplate::Pure
       } else if base == (EffectSet::IO | EffectSet::MAY_THROW) {
         EffectTemplate::Io
-      } else if base == (EffectSet::UNKNOWN | EffectSet::MAY_THROW) {
+      } else if base == EffectSet::UNKNOWN_CALL {
         EffectTemplate::Unknown
       } else {
         EffectTemplate::Custom(base)
