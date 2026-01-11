@@ -47,6 +47,25 @@ fn main() {
     modified = true;
   }
 
+  // Convenience macros for array allocation callers (mirrors `runtime_native.h`).
+  if !header.contains("RT_ARRAY_ENCODE_PTR_ELEM_SIZE") {
+    if let Some(pos) = header.find("#define RT_ARRAY_DATA_OFFSET") {
+      if let Some(line_end) = header[pos..].find('\n') {
+        let insert_at = pos + line_end + 1;
+        header.insert_str(
+          insert_at,
+          concat!(
+            "\n// Encode an `elem_size` value that requests a pointer-element array.\n",
+            "#define RT_ARRAY_ENCODE_PTR_ELEM_SIZE() (sizeof(void*) | RT_ARRAY_ELEM_PTR_FLAG)\n",
+            "\n// Compute the pointer to the element payload for an array base pointer.\n",
+            "#define RT_ARRAY_DATA_PTR(base) ((uint8_t*)(base) + RT_ARRAY_DATA_OFFSET)\n",
+          ),
+        );
+        modified = true;
+      }
+    }
+  }
+
   // Make the header usable from C++ callers too (C linkage).
   if !header.contains("extern \"C\"") {
     if let Some(insert_at) = header.find("/**") {
