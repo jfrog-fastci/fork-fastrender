@@ -157,7 +157,7 @@ fn logical_not_uses_truthiness_for_supported_primitives() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -242,7 +242,7 @@ fn if_statement_uses_truthiness() {
   std::fs::write(&path, "if (0) { console.log(\"a\"); } else { console.log(\"b\"); }\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()
@@ -260,7 +260,7 @@ fn while_statement_uses_truthiness() {
   .unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(30))
+    .timeout(CLI_TIMEOUT)
     .arg(&path)
     .assert()
     .success()

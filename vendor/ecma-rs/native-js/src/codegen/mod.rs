@@ -31,6 +31,7 @@
 //! - `NJS0122`: `continue` is only supported inside loops (also used for unsupported binding patterns)
 //! - `NJS0123`: failed to resolve call signature for exported `main`
 //! - `NJS0124`: labels are only supported on loops in native-js codegen
+//! - `NJS0125`: cyclic module dependency
 //! - `NJS0130`: failed to resolve identifier/callee during codegen
 //! - `NJS0132`: unsupported assignment target
 //! - `NJS0134`: unsupported assignment operator
@@ -266,7 +267,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     let files = self.runtime_files(entry_file);
     self.collect_exported_defs(&files);
-    let init_order = self.init_order(entry_file, &files);
+    let init_order = self.init_order(entry_file, &files)?;
 
     for file in &files {
       self.ensure_file_init(*file);
@@ -367,7 +368,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
   }
 
-  fn init_order(&self, entry_file: FileId, files: &[FileId]) -> Vec<FileId> {
+  fn init_order(&self, entry_file: FileId, files: &[FileId]) -> Result<Vec<FileId>, Vec<Diagnostic>> {
     let file_set: HashSet<FileId> = files.iter().copied().collect();
     let mut deps: HashMap<FileId, Vec<FileId>> = HashMap::new();
     for file in files {
@@ -383,9 +384,19 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     let mut visited = HashSet::<FileId>::new();
     let mut visiting = HashSet::<FileId>::new();
+    let mut stack = Vec::new();
     let mut order = Vec::new();
-    topo_visit(entry_file, &deps, &mut visited, &mut visiting, &mut order);
-    order
+    topo_visit(
+      self.program,
+      entry_file,
+      entry_file,
+      &deps,
+      &mut visited,
+      &mut visiting,
+      &mut stack,
+      &mut order,
+    )?;
+    Ok(order)
   }
 
   fn ensure_file_init(&mut self, file: FileId) {
@@ -600,7 +611,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         crate::stack_walking::mark_call_notail(call);
       }
     }
-
     let call = builder
       .build_call(ts_main, &[], "ret")
       .expect("failed to build call");
@@ -1059,62 +1069,18 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     self.env.resolve(ident).is_none()
   }
 
-  fn ensure_print_i32_helper(&self) -> FunctionValue<'ctx> {
-    // `rewrite-statepoints-for-gc` does not rewrite vararg callsites (e.g. `printf`) into statepoints.
-    // However, for stackmap-based GC we need *all* TS-generated callsites to become statepoints so
-    // every frame has a stackmap record for its return address.
-    //
-    // Emit `print(<i32>)` by calling a tiny non-GC helper, then let the statepoint rewrite turn the
-    // TS-side call into a statepoint. The helper can call `printf` without participating in the
-    // statepoint scheme because it does not hold GC pointers.
-    const NAME: &str = "__nativejs_print_i32";
-    if let Some(existing) = self.cg.module.get_function(NAME) {
-      return existing;
-    }
-
-    let fn_ty = self
-      .cg
-      .context
-      .void_type()
-      .fn_type(&[self.cg.i32_ty.into()], false);
-    let func = self
-      .cg
-      .module
-      .add_function(NAME, fn_ty, Some(Linkage::Internal));
-
-    // We still need stable stack frames so the runtime can walk through the helper when scanning.
-    crate::stack_walking::apply_stack_walking_frame_attrs(self.cg.context, func);
-
-    let entry = self.cg.context.append_basic_block(func, "entry");
-    let builder = self.cg.context.create_builder();
-    builder.position_at_end(entry);
-
-    let printf = declare_printf(self.cg.context, &self.cg.module);
-    let fmt = builder
-      .build_global_string_ptr("%d\n", "native_js_print_fmt")
-      .expect("failed to create printf format string");
-    let arg0 = func
-      .get_first_param()
-      .expect("print helper missing param")
-      .into_int_value();
-    let call = builder
-      .build_call(
-        printf,
-        &[fmt.as_pointer_value().into(), arg0.into()],
-        "native_js_print",
-      )
-      .expect("failed to build printf call");
-    crate::stack_walking::mark_call_notail(call);
-    builder.build_return(None).expect("failed to build return");
-
-    func
-  }
-
   fn emit_print_i32(&self, value: IntValue<'ctx>) {
-    let print = self.ensure_print_i32_helper();
+    // NOTE: Do not call `printf` directly from TS-generated functions.
+    //
+    // The native pipeline runs LLVM's `rewrite-statepoints-for-gc` pass and enforces that
+    // TS-generated functions (`__nativejs_def_*` / `__nativejs_file_init_*`) contain **no**
+    // non-intrinsic calls after rewrite (see `llvm::passes::verify_no_stray_calls_in_ts_generated_functions`).
+    // LLVM does not rewrite varargs calls like `printf` into statepoints reliably, so we route the
+    // intrinsic through a small non-TS wrapper.
+    let rt_print = declare_rt_print_i32(self.cg.context, &self.cg.module);
     let call = self
       .builder
-      .build_call(print, &[value.into()], "native_js_print")
+      .build_call(rt_print, &[value.into()], "native_js_print_i32")
       .expect("failed to build print call");
     crate::stack_walking::mark_call_notail(call);
   }
@@ -1948,7 +1914,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           self.cg.functions.entry(def).or_insert(target);
         }
 
-        let mut args = Vec::with_capacity(call.args.len());
         for arg in &call.args {
           if arg.spread {
             return Err(vec![Diagnostic::error(
@@ -1957,6 +1922,21 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
               span,
             )]);
           }
+        }
+        let expected = target.count_params() as usize;
+        if call.args.len() != expected {
+          return Err(vec![Diagnostic::error(
+            "NJS0144",
+            format!(
+              "wrong number of arguments (expected {expected}, got {})",
+              call.args.len()
+            ),
+            span,
+          )]);
+        }
+
+        let mut args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
           let value = self.codegen_expr(arg.expr)?;
           args.push(value.into());
         }
@@ -2041,6 +2021,20 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   }
 }
 
+fn is_runtime_import(es: &hir_js::ImportEs) -> bool {
+  if es.is_type_only {
+    return false;
+  }
+  if es.default.is_some() || es.namespace.is_some() {
+    return true;
+  }
+  if es.named.iter().any(|spec| !spec.is_type_only) {
+    return true;
+  }
+  // `import "foo";` or `import {} from "foo";`
+  es.named.is_empty()
+}
+
 fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
   // Keep module dependencies in the same order as the source-level module
   // requests (`import ...` and `export ... from ...` statements). This matches JS
@@ -2058,7 +2052,7 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     let ImportKind::Es(es) = &import.kind else {
       continue;
     };
-    if es.is_type_only {
+    if !is_runtime_import(es) {
       continue;
     }
     // `import { type Foo } from "./dep"` is erased from JS output and therefore
@@ -2121,6 +2115,12 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     let Some(dep) = program.resolve_module(from, req.specifier) else {
       continue;
     };
+    if program
+      .hir_lowered(dep)
+      .is_some_and(|lowered| matches!(lowered.hir.file_kind, FileKind::Dts))
+    {
+      continue;
+    }
     if seen.insert(dep) {
       deps.push(dep);
     }
@@ -2129,28 +2129,53 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
   deps
 }
 
+fn file_label(program: &Program, file: FileId) -> String {
+  program
+    .file_key(file)
+    .map(|k| k.to_string())
+    .unwrap_or_else(|| format!("file{}", file.0))
+}
+
 fn topo_visit(
+  program: &Program,
+  entry_file: FileId,
   file: FileId,
   deps: &HashMap<FileId, Vec<FileId>>,
   visited: &mut HashSet<FileId>,
   visiting: &mut HashSet<FileId>,
+  stack: &mut Vec<FileId>,
   out: &mut Vec<FileId>,
-) {
+) -> Result<(), Vec<Diagnostic>> {
   if visited.contains(&file) {
-    return;
+    return Ok(());
   }
   if !visiting.insert(file) {
-    // Cycle: best-effort, keep deterministic order.
-    return;
+    let idx = stack.iter().position(|f| *f == file).unwrap_or(0);
+    let mut cycle = stack[idx..].to_vec();
+    cycle.push(file);
+    let formatted: Vec<String> = cycle.iter().map(|f| file_label(program, *f)).collect();
+    let path = if formatted.is_empty() {
+      "<unknown cycle>".to_string()
+    } else {
+      formatted.join(" -> ")
+    };
+    return Err(vec![Diagnostic::error(
+      "NJS0125",
+      format!("cyclic module dependency: {path}"),
+      Span::new(entry_file, TextRange::new(0, 0)),
+    )]);
   }
+  stack.push(file);
   if let Some(children) = deps.get(&file) {
     for dep in children {
-      topo_visit(*dep, deps, visited, visiting, out);
+      topo_visit(program, entry_file, *dep, deps, visited, visiting, stack, out)?;
     }
   }
+  stack.pop();
   visiting.remove(&file);
   visited.insert(file);
   out.push(file);
+  Ok(())
 }
 
 fn is_toplevel_def(program: &Program, def: DefId) -> bool {
@@ -2179,6 +2204,47 @@ fn is_toplevel_def(program: &Program, def: DefId) -> bool {
     cur = parent;
   }
   true
+}
+
+fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("rt_print_i32") {
+    return existing;
+  }
+
+  let void_ty = context.void_type();
+  let i32_ty = context.i32_type();
+  let func = module.add_function(
+    "rt_print_i32",
+    void_ty.fn_type(&[i32_ty.into()], false),
+    Some(Linkage::Internal),
+  );
+  // Keep frame pointers / disable tail calls for stack walking, but do not mark
+  // this helper as GC-managed. It must not contain statepoints/stackmaps.
+  crate::stack_walking::apply_stack_walking_frame_attrs(context, func);
+
+  let builder = context.create_builder();
+  let bb = context.append_basic_block(func, "entry");
+  builder.position_at_end(bb);
+
+  let printf = declare_printf(context, module);
+  let fmt = builder
+    .build_global_string_ptr("%d\n", "native_js_print_fmt")
+    .expect("failed to create printf format string");
+  let value = func
+    .get_nth_param(0)
+    .expect("missing print arg")
+    .into_int_value();
+  let call = builder
+    .build_call(
+      printf,
+      &[fmt.as_pointer_value().into(), value.into()],
+      "native_js_print",
+    )
+    .expect("failed to build printf call");
+  crate::stack_walking::mark_call_notail(call);
+  builder.build_return(None).expect("failed to build return");
+
+  func
 }
 
 fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {

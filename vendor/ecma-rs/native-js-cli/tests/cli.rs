@@ -78,7 +78,7 @@ fn native_js_cli() -> PermitCommand {
 }
 
 fn run_with_timeout(cmd: &mut StdCommand, timeout: Duration) -> std::io::Result<ExitStatus> {
-  let mut child = cmd.spawn()?;
+  let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
   match child.wait_timeout(timeout)? {
     Some(status) => Ok(status),
     None => {
