@@ -219,8 +219,8 @@ Stack bounds capture is supported on:
 
 Some embeddings require stable object addresses (FFI / host references). The runtime exposes
 `rt_alloc_pinned`, which is intended to allocate objects whose address is stable across GC cycles.
-Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
-wired up.
+Pinned objects are allocated in the GC heap's non-moving large-object space (LOS): they are still
+traced and reclaimed when unreachable, but are never relocated.
 
 ## Legacy async runtime GC roots
 

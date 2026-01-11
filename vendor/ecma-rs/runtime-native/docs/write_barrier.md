@@ -6,24 +6,24 @@ This document specifies the **compiler/runtime ABI contract** for the generation
 - For the authoritative stable C ABI declarations, see `include/runtime_native.h`.
 - This document is the source of truth for the *write barrier itself* (arguments, required ordering, young-range mechanism).
 
-It also specifies the semantics and policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation). The exported barriers mark cards when a per-object card table pointer is installed on an object. The GC prototype installs card tables for large old pointer arrays and can scan/clear dirty cards, but the exported runtime ABI is not yet fully GC-integrated (e.g. `rt_gc_collect` does not yet run a full GC algorithm).
+It also specifies the semantics and policy defaults for **per-object card tables** used for large pointer arrays (card size + representation). The exported barriers mark cards when a per-object card table is installed on an object, and the GC uses dirty-card scanning to avoid rescanning large old pointer arrays on every minor collection.
 
 ---
 
 ## Implementation status (runtime-native today)
 
-`runtime-native` contains a prototype generational GC under `src/gc/*` (exercised by Rust tests), and the exported barrier is implemented.
+`runtime-native` contains a stop-the-world generational GC under `src/gc/*` (exercised by Rust tests), and the exported runtime entrypoints are wired to it.
 
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
   - On an old→young store it sets the `REMEMBERED` bit in the object header.
-    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without allocating (overflow aborts).
+    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit
+      transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without
+      allocating (overflow aborts).
   - For objects with per-object card tables installed (`ObjHeader::card_table_ptr()` is non-null), it marks the relevant card dirty.
-  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards.
- - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
- - The exported symbol **`rt_gc_collect`** performs a stop-the-world handshake and can enumerate roots (via stackmaps), but does **not** yet run a full GC algorithm (mark/copy/etc).
-   - `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator.
-   - `rt_alloc_array` is GC-backed.
+  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
+- The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
+- `rt_gc_collect` triggers a stop-the-world collection and may relocate nursery objects.
 
 ---
 
@@ -213,17 +213,21 @@ barrier remains `NoGC`). When a per-object card table is present, it marks the c
 Because the remembered set stores raw object pointers, tests that manually allocate/free mock
 objects must clear it via `clear_write_barrier_state_for_tests` to avoid dangling pointers.
 
-Full GC wiring for the exported runtime (`rt_gc_collect` and integration with the GC prototype) is still TODO.
+### Minor GC behavior (`GcHeap::collect_minor`)
 
-### Minor GC behavior (current `GcHeap`)
+`GcHeap::collect_minor` evacuates the entire nursery into old-gen and then resets the nursery.
 
-`GcHeap::collect_minor` evacuates the entire nursery into old-gen and then resets the nursery. After a minor GC there are no remaining young objects, so the remembered set can be cleared (and `REMEMBERED` bits cleared) without scanning for “still-young” edges.
+Because the nursery is empty after the collection, the collector clears the remembered set at the end
+of the cycle (`RememberedSet::clear`), which also clears each object's `REMEMBERED` bit. This is
+correct because no old object can still contain pointers into the (now empty) nursery.
 
 ---
 
 ## Per-object card table semantics (pointer arrays)
 
-Per-object card tables are intended for large objects with contiguous pointer storage (arrays, backing stores, etc.) to avoid rescanning the entire buffer on every minor GC. The exported barriers can mark cards when a per-object card table is installed, and the GC prototype can use dirty cards to scan only the relevant pointer-array regions. This section records the intended design and benchmark-driven defaults.
+Per-object card tables are intended for large objects with contiguous pointer storage (arrays, backing stores, etc.) to avoid rescanning the entire buffer on every minor GC.
+
+`runtime-native` installs per-object card tables for sufficiently large pointer-element arrays once they reside in old-gen (allocated directly into old-gen or promoted from the nursery; see `CARD_TABLE_MIN_BYTES`). The exported write barriers mark cards when a card table is present, and minor GC scans only dirty cards and clears marks as it goes.
 
 ### Implementation status
 
@@ -232,21 +236,24 @@ Card marking in the exported barrier is implemented today:
 - `rt_write_barrier` marks the single card that contains `slot` when `ObjHeader::card_table_ptr()` is non-null.
 - `rt_write_barrier_range` conservatively marks **all cards covering** the written byte range (clamped to the object bounds) when a card table pointer is present. It does not inspect the values written and may over-mark.
 
-The GC prototype auto-installs card tables for large old-generation pointer arrays (see `CARD_TABLE_MIN_BYTES`) and the minor collector can consult and clear dirty cards when scanning remembered objects. Card tables are not yet installed for all object kinds, and the exported runtime (`rt_gc_collect`) is still missing end-to-end GC integration.
-
 ### Semantics
 
 Per-object card marking uses the following semantics:
 
-- The object’s pointer storage is subdivided into fixed-size **cards**.
+- The array’s element storage is subdivided into fixed-size **cards** (implementation-defined).
 - A marked card means: **this card may currently contain one or more young pointers**.
   - It does **not** mean “this card has been written since the last GC”.
 
-Intended minor GC behavior is to treat card marks as a “may contain young” summary:
+Barrier behavior:
 
-- marked cards are scanned
-- the runtime recomputes which cards still contain young pointers
-- cards with no remaining young pointers are cleared
+* On an old→young store into a pointer array, the barrier marks the corresponding card.
+
+Minor GC behavior:
+
+* Card marks are **rebuilt at each minor GC**:
+   * marked cards are scanned
+   * the runtime recomputes which cards still contain young pointers
+   * cards with no remaining young pointers are cleared
 
 This keeps scanning proportional to the number of old-array regions that actually reference the nursery.
 

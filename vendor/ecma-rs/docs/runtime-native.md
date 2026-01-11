@@ -66,8 +66,8 @@ bash scripts/check_runtime_native_abi.sh
 `runtime-native` is the native runtime for AOT-compiled code emitted by
 `native-js`. The runtime is responsible for:
 
-- **GC-managed heap allocation** and collection (initially stop-the-world,
-  later incremental/generational as needed).
+- **GC-managed heap allocation** and collection (stop-the-world generational:
+  moving nursery + Immix old-gen + large-object space).
 - **Precise root enumeration** using LLVM **statepoints** + **stackmaps**.
 - **Object metadata** (headers + shapes) required to trace object graphs.
 - A **parallel work-stealing scheduler** for CPU parallelism.
@@ -320,14 +320,13 @@ Parallel runtime configuration:
 
 #### 3.1.3 GC classification for codegen (Milestone 1)
 
-Even if the Milestone 1 runtime stubs GC, `native-js` codegen must classify
-calls up-front so we can later swap in a moving collector without changing IR
-generation strategy.
+`native-js` codegen must classify runtime calls up-front so it can emit correct LLVM statepoints
+around `MayGC` calls (the runtime may safepoint/collect and relocate nursery objects).
 
 | Symbol | GC class | Notes |
 |---|---|---|
-| `rt_alloc` | MayGC | Allocation slow-path may safepoint/collect in later milestones. |
-| `rt_alloc_array` | MayGC | Ditto. |
+| `rt_alloc` | MayGC | Allocates in the GC heap; may trigger GC and relocate nursery objects. |
+| `rt_alloc_array` | MayGC | Allocates in the GC heap; may trigger GC and relocate nursery objects. |
 | `rt_gc_poll` | NoGC | Cheap leaf poll used by backedge safepoints (codegen may also inline `RT_GC_EPOCH`). |
 | `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
 | `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint (prefer inline poll in codegen so context capture matches the managed callsite). |
@@ -455,6 +454,25 @@ LLVM loads/stores can use correct `align` metadata.
   `gc.relocate`).
 - Non-GC allocations (stack/arena) are allowed only when proven safe by
   compiler analysis; they are outside this ABI.
+
+#### 4.3.1 GC heap generations (allocation policy)
+
+At a high level, the runtime uses a generational heap with three spaces:
+
+- **Nursery (young generation):** moving; collected with a copying minor GC.
+- **Old generation:** Immix; collected by major GC (with optional compaction).
+- **LOS (large object space):** for large allocations; also used for **pinned** objects.
+
+Pinned allocations (`rt_alloc_pinned`) are placed in the LOS and are never relocated by the GC.
+
+#### 4.3.2 `rt_gc_collect` (relocation)
+
+`rt_gc_collect` triggers a stop-the-world collection and may relocate nursery objects. Callers must
+therefore treat GC pointers as relocatable across any `MayGC` runtime call:
+
+- compiled code relies on LLVM statepoints (`gc.relocate`), and
+- runtime/FFI code must root through the handle stack (`rt_root_push` / `rt_root_pop`) or store a
+  stable handle id (`HandleId`) across `MayGC` calls.
 
 ### 4.4 Array objects (`rt_alloc_array`)
 `rt_alloc_array(len, elem_size)` allocates a GC-managed array object whose base

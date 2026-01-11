@@ -220,11 +220,19 @@ void rt_thread_detach(Thread* thread);
 // runtime GC header / ObjHeader). `size` is the total allocation size in bytes
 // including the header and payload.
 //
+// Allocation policy (high level):
+// - Small objects are allocated into the moving nursery (young generation).
+// - Objects promoted out of the nursery reside in the old generation (Immix).
+// - Large objects are allocated in the large-object space (LOS).
+//
 // Alignment: the returned pointer is aligned to at least the registered shape
 // descriptor's `align` value (`RtShapeDescriptor.align`).
 GcPtr rt_alloc(size_t size, RtShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.
+//
+// Pinned objects are allocated in the LOS and are never moved by the GC. They are still traced and
+// reclaimed when unreachable.
 GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);
 
 // -----------------------------------------------------------------------------
@@ -238,6 +246,8 @@ GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);
 //   consistent with `rt_alloc`.
 // - The payload starts at `RT_ARRAY_DATA_OFFSET` bytes after the returned base
 //   pointer. Use `RT_ARRAY_DATA_PTR(base)` to compute it.
+// - Arrays follow the same allocation policy as `rt_alloc`: they may be allocated in the moving
+//   nursery and therefore must be treated as relocatable across `MayGC` calls.
 //
 // Pointer element arrays:
 // - By default, the runtime treats the payload as raw bytes (no interior GC
@@ -306,7 +316,7 @@ uint8_t* rt_array_data(uint8_t* obj);
 void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 
 // -----------------------------------------------------------------------------
-// GC entrypoints (milestone runtime: mostly no-ops)
+// GC entrypoints (stop-the-world)
 // -----------------------------------------------------------------------------
 
 // Global GC/safepoint epoch (monotonically increasing).
@@ -358,6 +368,13 @@ void rt_write_barrier(GcPtr obj, uint8_t* slot);
 //
 // This barrier is conservative and may over-mark cards (it does not inspect the written values).
 void rt_write_barrier_range(GcPtr obj, uint8_t* start_slot, size_t len);
+// Trigger a stop-the-world GC cycle.
+//
+// This may relocate nursery (young generation) objects. Callers must treat GC pointers as
+// relocatable across this call:
+// - compiled code relies on LLVM statepoints (`gc.relocate`), and
+// - runtime/FFI code must root pointers via the handle stack (`rt_root_push` / `rt_root_pop`) or a
+//   stable handle (`HandleId`).
 void rt_gc_collect(void);
 // Bytes currently owned by non-moving `ArrayBuffer`/`TypedArray` backing stores (allocated outside
 // the GC heap).
