@@ -106,10 +106,15 @@ impl<'ctx> CodeGen<'ctx> {
   fn enforce_stack_walking_invariants(&self) {
     let mut func = self.module.get_first_function();
     while let Some(f) = func {
-      if is_runtime_abi_wrapper(f) {
-        apply_stack_walking_frame_attrs(self.context, f);
-      } else {
-        apply_stack_walking_attrs(self.context, f);
+      // Only apply these attributes to functions with bodies. External declarations (including
+      // runtime ABI entrypoints like `rt_alloc` and LLVM intrinsics) should not be tagged as
+      // GC-managed codegen functions.
+      if f.get_first_basic_block().is_some() {
+        if is_runtime_abi_wrapper(f) {
+          apply_stack_walking_frame_attrs(self.context, f);
+        } else {
+          apply_stack_walking_attrs(self.context, f);
+        }
       }
       func = f.get_next_function();
     }
