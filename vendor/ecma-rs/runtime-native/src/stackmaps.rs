@@ -8,6 +8,11 @@
 //! - [`StackMaps`]: a runtime-friendly view indexed by absolute callsite return
 //!   address (PC).
 //!
+//! Note: for LLVM `gc.statepoint`, the record key is the *return address* of the
+//! statepoint callsite. When `patch_bytes > 0`, LLVM 18 reserves a patchable
+//! region (x86_64: a NOP sled) and the recorded return address points to the end
+//! of that reserved region, not to the byte after a literal `call` instruction.
+//!
 //! Format reference: LLVM `StackMaps` / `StackMaps.cpp` (version 3).
 
 use thiserror::Error;

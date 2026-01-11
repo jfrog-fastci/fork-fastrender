@@ -9,6 +9,13 @@ Even with LLVM stack maps, the runtime still needs a way to:
 2. Recover each frame's **return address / instruction pointer**.
 3. Use that return address to locate the matching stack map record and enumerate GC roots.
 
+Note: LLVM 18 `gc.statepoint` supports reserving a patchable callsite region via
+the `patch_bytes` argument. When `patch_bytes > 0` on x86_64, LLVM emits a NOP
+sled and the stackmap record key (`instruction offset`) points to the *end* of
+that reserved region. Any runtime patcher must ensure the call return address
+matches that end-of-region address, otherwise stackmap lookup by return PC will
+fail.
+
 ## Current strategy: frame-pointer chain (Linux x86_64 + AArch64)
 
 While bringing up statepoints and precise GC, we take the simplest and most deterministic approach:

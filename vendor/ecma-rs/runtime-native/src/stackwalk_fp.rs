@@ -121,6 +121,11 @@ const MAX_FRAMES: usize = 100_000;
 /// frame identifies the *caller's* safepoint callsite. Therefore we use
 /// `(caller_fp, caller_ra)` extracted from the current frame, and enumerate
 /// roots in the *caller* frame.
+///
+/// For patchable statepoints (`gc.statepoint` with `patch_bytes > 0`), LLVM 18
+/// records the return address as the byte *after the reserved patchable region*.
+/// Any runtime patcher must ensure the actual call return address matches that
+/// end-of-region address (so the stackmap lookup key matches).
 pub unsafe fn walk_gc_roots_from_fp(
   start_fp: u64,
   stackmaps: &StackMaps,
