@@ -8,6 +8,7 @@ Today the repo contains:
 - **HIR**: `hir-js` (lowered representation with stable-ish IDs for defs/bodies/exprs)
 - **Semantics**: `semantic-js` (scopes/symbols/exports; JS mode used by minifier/optimizer)
 - **TypeScript checker**: `typecheck-ts` (binder + checker + public `Program` API)
+- **Native codegen (in progress)**: `native-js` (strict TS subset → LLVM IR/object code)
 - **Emitter/printer**: `emit-js` (AST → text, deterministic formatting)
 - **Minifier**: `minify-js` (+ `minify-js-cli`, + `minify-js-nodejs` package)
 - **Optimizer**: `optimize-js` (SSA-based optimizer and decompiler)
@@ -18,6 +19,7 @@ Today the repo contains:
 - **Current crate boundaries**: [`docs/architecture.md`](./docs/architecture.md) — what exists today and how the crates connect.
 - **Local setup for conformance + difftsc**: [`docs/quickstart.md`](./docs/quickstart.md) (also links into [`typecheck-ts-harness/README.md`](./typecheck-ts-harness/README.md)).
 - **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `cargo run` examples for the core crate APIs.
+- **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (intended CLI surface).
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
 
