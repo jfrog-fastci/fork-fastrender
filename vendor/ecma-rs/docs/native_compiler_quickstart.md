@@ -165,6 +165,10 @@ bash scripts/cargo_agent.sh test -p native-oracle-harness
 Expected output is standard `cargo test` output.
 Today the harness asserts that fixtures erase to JS and execute successfully in the oracle runtime; native-vs-oracle comparison is expected to be added later.
 
+> Note: the oracle fixture corpus intentionally includes some **TypeScript-only expression wrappers**
+> (e.g. `as`, `!`, `satisfies`, instantiation/type arguments). These are useful for hardening the
+> TS→JS erasure pipeline even though the strict-native validator may reject them for native AOT.
+
 #### Optional: enable the `optimize-js` TS→JS fallback
 
 If a fixture uses TS syntax that the lightweight TS→JS erasure path (`ts-erase` + `emit-js`) cannot handle yet, you can enable the heavier fallback:
