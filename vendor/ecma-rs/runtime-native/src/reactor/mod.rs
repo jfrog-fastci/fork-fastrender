@@ -239,7 +239,7 @@ impl Reactor {
     self.waker.clone()
   }
 
-  pub fn register(&mut self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()> {
+  pub fn register(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()> {
     if token == Token::WAKE {
       return Err(io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -256,12 +256,7 @@ impl Reactor {
     self.sys.register(fd.as_raw_fd(), token, interest)
   }
 
-  pub fn reregister(
-    &mut self,
-    fd: BorrowedFd<'_>,
-    token: Token,
-    interest: Interest,
-  ) -> io::Result<()> {
+  pub fn reregister(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()> {
     if token == Token::WAKE {
       return Err(io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -278,14 +273,14 @@ impl Reactor {
     self.sys.reregister(fd.as_raw_fd(), token, interest)
   }
 
-  pub fn deregister(&mut self, fd: BorrowedFd<'_>) -> io::Result<()> {
+  pub fn deregister(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
     self.sys.deregister(fd.as_raw_fd())
   }
 
   /// Polls for events and appends them to `events` (clearing it first).
   ///
   /// Returns the number of events written to `events`.
-  pub fn poll(&mut self, events: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<usize> {
+  pub fn poll(&self, events: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<usize> {
     events.clear();
 
     let mut scratch = self.sys.poll_raw(timeout)?;
@@ -366,10 +361,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       }
       let eventfd = unsafe { OwnedFd::from_raw_fd(eventfd_fd) };
 
-      let mut sys = ReactorSys {
-        epoll,
-        eventfd,
-      };
+      let sys = ReactorSys { epoll, eventfd };
 
       // Register the eventfd for wakeups.
       sys.register_raw(sys.eventfd.as_raw_fd(), Token::WAKE, Interest::READABLE)?;
@@ -383,20 +375,15 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       Ok((sys, waker))
     }
 
-    pub(super) fn register(&mut self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
+    pub(super) fn register(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
       self.ctl(libc::EPOLL_CTL_ADD, fd, token, interest)
     }
 
-    pub(super) fn reregister(
-      &mut self,
-      fd: RawFd,
-      token: Token,
-      interest: Interest,
-    ) -> io::Result<()> {
+    pub(super) fn reregister(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
       self.ctl(libc::EPOLL_CTL_MOD, fd, token, interest)
     }
 
-    pub(super) fn deregister(&mut self, fd: RawFd) -> io::Result<()> {
+    pub(super) fn deregister(&self, fd: RawFd) -> io::Result<()> {
       let rc = unsafe { libc::epoll_ctl(self.epoll.as_raw_fd(), libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
       if rc == -1 {
         return Err(io::Error::last_os_error());
@@ -404,12 +391,12 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       Ok(())
     }
 
-    fn register_raw(&mut self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
+    fn register_raw(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
       // Used for internal fds; doesn't enforce nonblocking at this layer.
       self.ctl(libc::EPOLL_CTL_ADD, fd, token, interest)
     }
 
-    fn ctl(&mut self, op: i32, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
+    fn ctl(&self, op: i32, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
       let mut ev = libc::epoll_event {
         events: interest_to_epoll(interest),
         u64: token.0 as u64,
@@ -421,7 +408,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       Ok(())
     }
 
-    pub(super) fn poll_raw(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       let mut out = Vec::with_capacity(64);
       let mut buf = [libc::epoll_event { events: 0, u64: 0 }; 64];
 
@@ -479,7 +466,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       }
     }
 
-    pub(super) fn drain_waker(&mut self) -> io::Result<()> {
+    pub(super) fn drain_waker(&self) -> io::Result<()> {
       let mut buf: u64 = 0;
       loop {
         let rc = unsafe {
@@ -541,12 +528,13 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   use std::io;
   use std::mem::MaybeUninit;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+  use std::sync::Mutex;
   use std::time::{Duration, Instant};
 
   pub(super) struct ReactorSys {
     kqueue: OwnedFd,
     wake_read: Option<OwnedFd>,
-    registrations: HashMap<RawFd, Registration>,
+    registrations: Mutex<HashMap<RawFd, Registration>>,
   }
 
   #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -613,7 +601,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       let sys = ReactorSys {
         kqueue,
         wake_read,
-        registrations: HashMap::new(),
+        registrations: Mutex::new(HashMap::new()),
       };
 
       let waker = super::Waker {
@@ -623,8 +611,9 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       Ok((sys, waker))
     }
 
-    pub(super) fn register(&mut self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
-      if self.registration_if_fresh(fd)?.is_some() {
+    pub(super) fn register(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
+      let mut regs = self.registrations.lock().unwrap();
+      if self.registration_if_fresh_locked(&mut regs, fd)?.is_some() {
         return Err(io::Error::from_raw_os_error(libc::EEXIST));
       }
 
@@ -632,67 +621,74 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       let changes = changes_for_register(fd, token, interest);
       apply_changes(self.kqueue.as_raw_fd(), &changes)?;
 
-      self.registrations.insert(fd, Registration {
-        token,
-        interest,
-        identity,
-      });
+      regs.insert(
+        fd,
+        Registration {
+          token,
+          interest,
+          identity,
+        },
+      );
       Ok(())
     }
 
-    pub(super) fn reregister(
-      &mut self,
-      fd: RawFd,
-      token: Token,
-      interest: Interest,
-    ) -> io::Result<()> {
-      let Some(old) = self.registration_if_fresh(fd)? else {
+    pub(super) fn reregister(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
+      let mut regs = self.registrations.lock().unwrap();
+      let Some(old) = self.registration_if_fresh_locked(&mut regs, fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
 
       let changes = changes_for_reregister(fd, old, token, interest);
       apply_changes(self.kqueue.as_raw_fd(), &changes)?;
 
-      self.registrations.insert(fd, Registration {
-        token,
-        interest,
-        identity: old.identity,
-      });
+      regs.insert(
+        fd,
+        Registration {
+          token,
+          interest,
+          identity: old.identity,
+        },
+      );
       Ok(())
     }
 
-    pub(super) fn deregister(&mut self, fd: RawFd) -> io::Result<()> {
-      let Some(old) = self.registration_if_fresh(fd)? else {
+    pub(super) fn deregister(&self, fd: RawFd) -> io::Result<()> {
+      let mut regs = self.registrations.lock().unwrap();
+      let Some(old) = self.registration_if_fresh_locked(&mut regs, fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
 
       let changes = changes_for_deregister(fd, old);
       apply_changes(self.kqueue.as_raw_fd(), &changes)?;
 
-      self.registrations.remove(&fd);
+      regs.remove(&fd);
       Ok(())
     }
 
-    fn registration_if_fresh(&mut self, fd: RawFd) -> io::Result<Option<Registration>> {
-      let Some(reg) = self.registrations.get(&fd).copied() else {
+    fn registration_if_fresh_locked(
+      &self,
+      regs: &mut HashMap<RawFd, Registration>,
+      fd: RawFd,
+    ) -> io::Result<Option<Registration>> {
+      let Some(reg) = regs.get(&fd).copied() else {
         return Ok(None);
       };
 
       match fd_identity(fd) {
         Ok(current) if current == reg.identity => Ok(Some(reg)),
         Ok(_) => {
-          self.registrations.remove(&fd);
+          regs.remove(&fd);
           Ok(None)
         }
         Err(err) if err.raw_os_error() == Some(libc::EBADF) => {
-          self.registrations.remove(&fd);
+          regs.remove(&fd);
           Ok(None)
         }
         Err(err) => Err(err),
       }
     }
 
-    pub(super) fn poll_raw(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       let mut out = Vec::with_capacity(64);
       let mut buf = [libc::kevent {
         ident: 0,
@@ -773,7 +769,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       }
     }
 
-    pub(super) fn drain_waker(&mut self) -> io::Result<()> {
+    pub(super) fn drain_waker(&self) -> io::Result<()> {
       if let Some(read) = &self.wake_read {
         let mut buf = [0u8; 256];
         loop {
@@ -1162,23 +1158,23 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       ))
     }
 
-    pub(super) fn register(&mut self, _fd: RawFd, _token: Token, _interest: Interest) -> io::Result<()> {
+    pub(super) fn register(&self, _fd: RawFd, _token: Token, _interest: Interest) -> io::Result<()> {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 
-    pub(super) fn reregister(&mut self, _fd: RawFd, _token: Token, _interest: Interest) -> io::Result<()> {
+    pub(super) fn reregister(&self, _fd: RawFd, _token: Token, _interest: Interest) -> io::Result<()> {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 
-    pub(super) fn deregister(&mut self, _fd: RawFd) -> io::Result<()> {
+    pub(super) fn deregister(&self, _fd: RawFd) -> io::Result<()> {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 
-    pub(super) fn poll_raw(&mut self, _timeout: Option<Duration>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&self, _timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 
-    pub(super) fn drain_waker(&mut self) -> io::Result<()> {
+    pub(super) fn drain_waker(&self) -> io::Result<()> {
       Ok(())
     }
   }
