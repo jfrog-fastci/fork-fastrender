@@ -61,6 +61,11 @@ pub use escape::emit_template_raw_segment;
 pub use expr::{emit_expr, emit_expr_with_options, ExprEmitter};
 pub use expr_js::{emit_expr as emit_expr_js, ExprCtx};
 pub use hir::{emit_hir_body, emit_hir_file, emit_hir_file_diagnostic, emit_hir_file_to_string};
+#[cfg(feature = "api-database")]
+pub use hir::{
+  emit_hir_body_with_api_database, emit_hir_file_diagnostic_with_api_database,
+  emit_hir_file_to_string_with_api_database, emit_hir_file_with_api_database,
+};
 pub use js_expr::{emit_js_expr, JsEmitError, JsEmitResult};
 pub use js_pat::{emit_js_param_decl, emit_js_pat, emit_js_pat_decl};
 pub use js_stmt::{emit_js_stmt, emit_js_stmt_list, emit_js_top_level};

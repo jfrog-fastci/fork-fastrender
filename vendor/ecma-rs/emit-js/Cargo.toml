@@ -10,6 +10,7 @@ repository.workspace = true
 diagnostics = { workspace = true }
 hir-js = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics"] }
+knowledge-base = { workspace = true, optional = true }
 ts-erase = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -23,3 +24,6 @@ default = ["ts_erase"]
 ts_erase = ["dep:ts-erase"]
 # Enable emission support for `hir-js` semantic operation nodes (Array.map/filter/reduce, Promise.all, etc).
 semantic-ops = ["hir-js/semantic-ops"]
+# Enable emission support for `hir-js::ExprKind::KnownApiCall` by providing a knowledge base
+# database for `ApiId -> canonical name` mapping.
+api-database = ["dep:knowledge-base"]

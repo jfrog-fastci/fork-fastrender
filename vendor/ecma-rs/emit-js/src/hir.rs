@@ -20,8 +20,16 @@ use hir_js::{
 };
 #[cfg(feature = "semantic-ops")]
 use hir_js::ArrayChainOp;
+#[cfg(feature = "api-database")]
+use knowledge_base::ApiDatabase;
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+use parse_js::lex::{lex_next, LexMode, Lexer};
 use parse_js::loc::Loc;
 use parse_js::operator::{OperatorName, OPERATORS};
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+use parse_js::token::TT;
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+use parse_js::{Dialect, SourceType};
 use std::fmt::Write;
 
 /// Emit a lowered HIR file to a string using the provided options.
@@ -31,6 +39,18 @@ pub fn emit_hir_file_to_string(
 ) -> Result<String, EmitError> {
   let mut emitter = Emitter::new(options);
   emit_hir_file(&mut emitter, lowered)?;
+  Ok(String::from_utf8(emitter.into_bytes()).expect("emitted JavaScript is UTF-8"))
+}
+
+/// Emit a lowered HIR file to a string, using `db` to resolve `KnownApiCall` nodes.
+#[cfg(feature = "api-database")]
+pub fn emit_hir_file_to_string_with_api_database(
+  lowered: &LowerResult,
+  options: EmitOptions,
+  db: &ApiDatabase,
+) -> Result<String, EmitError> {
+  let mut emitter = Emitter::new(options);
+  emit_hir_file_with_api_database(&mut emitter, lowered, db)?;
   Ok(String::from_utf8(emitter.into_bytes()).expect("emitted JavaScript is UTF-8"))
 }
 
@@ -44,12 +64,40 @@ pub fn emit_hir_file_diagnostic(
     .map_err(|err| crate::diagnostic_from_emit_error(lowered.hir.file, err))
 }
 
+/// Emit a lowered HIR file, returning a diagnostic on failure with a best-effort span, using `db`
+/// to resolve `KnownApiCall` nodes.
+#[cfg(feature = "api-database")]
+pub fn emit_hir_file_diagnostic_with_api_database(
+  lowered: &LowerResult,
+  options: EmitOptions,
+  db: &ApiDatabase,
+) -> Result<String, Diagnostic> {
+  emit_hir_file_to_string_with_api_database(lowered, options, db)
+    .map_err(|err| crate::diagnostic_from_emit_error(lowered.hir.file, err))
+}
+
 /// Emit a lowered HIR file (imports/exports plus the root body statements).
 ///
 /// This is intended to reproduce full file output. Unsupported constructs are
 /// reported as errors so callers can fall back to alternative emitters.
 pub fn emit_hir_file(em: &mut Emitter, lowered: &LowerResult) -> EmitResult {
   let ctx = HirContext::new(lowered);
+  emit_hir_file_with_ctx(em, &ctx)
+}
+
+/// Emit a lowered HIR file (imports/exports plus the root body statements), using `db` to resolve
+/// `KnownApiCall` nodes.
+#[cfg(feature = "api-database")]
+pub fn emit_hir_file_with_api_database(
+  em: &mut Emitter,
+  lowered: &LowerResult,
+  db: &ApiDatabase,
+) -> EmitResult {
+  let ctx = HirContext::new_with_api_database(lowered, db);
+  emit_hir_file_with_ctx(em, &ctx)
+}
+
+fn emit_hir_file_with_ctx(em: &mut Emitter, ctx: &HirContext<'_>) -> EmitResult {
   let root_body = ctx
     .body(ctx.lowered.root_body())
     .ok_or_else(|| EmitError::unsupported("missing root body for emission"))?;
@@ -128,9 +176,9 @@ pub fn emit_hir_file(em: &mut Emitter, lowered: &LowerResult) -> EmitResult {
       em.write_newline();
     }
     match item.item {
-      ModuleItem::Import(import) => emit_import(em, &ctx, import)?,
-      ModuleItem::Export(export) => emit_export(em, &ctx, export)?,
-      ModuleItem::Stmt(stmt_id) => emit_stmt(em, &ctx, root_body, stmt_id)?,
+      ModuleItem::Import(import) => emit_import(em, ctx, import)?,
+      ModuleItem::Export(export) => emit_export(em, ctx, export)?,
+      ModuleItem::Stmt(stmt_id) => emit_stmt(em, ctx, root_body, stmt_id)?,
     }
     first = false;
   }
@@ -140,19 +188,49 @@ pub fn emit_hir_file(em: &mut Emitter, lowered: &LowerResult) -> EmitResult {
 /// Emit the root statements of a specific body.
 pub fn emit_hir_body(em: &mut Emitter, lowered: &LowerResult, body_id: BodyId) -> EmitResult {
   let ctx = HirContext::new(lowered);
+  emit_hir_body_with_ctx(em, &ctx, body_id)
+}
+
+/// Emit the root statements of a specific body, using `db` to resolve `KnownApiCall` nodes.
+#[cfg(feature = "api-database")]
+pub fn emit_hir_body_with_api_database(
+  em: &mut Emitter,
+  lowered: &LowerResult,
+  body_id: BodyId,
+  db: &ApiDatabase,
+) -> EmitResult {
+  let ctx = HirContext::new_with_api_database(lowered, db);
+  emit_hir_body_with_ctx(em, &ctx, body_id)
+}
+
+fn emit_hir_body_with_ctx(em: &mut Emitter, ctx: &HirContext<'_>, body_id: BodyId) -> EmitResult {
   let body = ctx
     .body(body_id)
     .ok_or_else(|| EmitError::unsupported("missing body for emission"))?;
-  emit_root_stmts(em, &ctx, body)
+  emit_root_stmts(em, ctx, body)
 }
 
 struct HirContext<'a> {
   lowered: &'a LowerResult,
+  #[cfg(feature = "api-database")]
+  api_db: Option<&'a ApiDatabase>,
 }
 
 impl<'a> HirContext<'a> {
   fn new(lowered: &'a LowerResult) -> Self {
-    Self { lowered }
+    Self {
+      lowered,
+      #[cfg(feature = "api-database")]
+      api_db: None,
+    }
+  }
+
+  #[cfg(feature = "api-database")]
+  fn new_with_api_database(lowered: &'a LowerResult, api_db: &'a ApiDatabase) -> Self {
+    Self {
+      lowered,
+      api_db: Some(api_db),
+    }
   }
 
   fn def(&self, id: DefId) -> Option<&'a DefData> {
@@ -1735,7 +1813,11 @@ fn emit_expr_no_parens(
       em.write_punct("]");
       em.write_punct(")");
     }
-    #[cfg(feature = "semantic-ops")]
+    #[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+    ExprKind::KnownApiCall { api, args } => {
+      emit_known_api_call(em, ctx, body, *api, args)?;
+    }
+    #[cfg(all(feature = "semantic-ops", not(feature = "api-database")))]
     ExprKind::KnownApiCall { .. } => {
       return Err(EmitError::unsupported(
         "KnownApiCall emission requires an API database",
@@ -2096,6 +2178,92 @@ fn emit_template_literal(
   }
   em.write_punct("`");
   Ok(())
+}
+
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+fn emit_known_api_call(
+  em: &mut Emitter,
+  ctx: &HirContext<'_>,
+  body: &Body,
+  api: hir_js::ApiId,
+  args: &[ExprId],
+) -> EmitResult {
+  let Some(db) = ctx.api_db else {
+    return Err(EmitError::unsupported(
+      "KnownApiCall emission requires an API database",
+    ));
+  };
+
+  let kb_id = knowledge_base::ApiId::from_raw(api.raw());
+  let name = db
+    .get_by_id(kb_id)
+    .map(|sem| sem.name.as_str())
+    .ok_or_else(|| EmitError::unsupported("KnownApiCall refers to an unknown ApiId"))?;
+
+  emit_known_api_callee(em, name)?;
+  em.write_punct("(");
+  for (idx, arg) in args.iter().enumerate() {
+    if idx > 0 {
+      em.write_punct(",");
+    }
+    emit_expr_with_min_prec(em, ctx, body, *arg, Prec::LOWEST)?;
+  }
+  em.write_punct(")");
+  Ok(())
+}
+
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+fn emit_known_api_callee(em: &mut Emitter, name: &str) -> EmitResult {
+  let mut parts = name.split('.');
+  let Some(first) = parts.next() else {
+    return Err(EmitError::unsupported("KnownApiCall missing API name"));
+  };
+
+  // Most canonical names are simple identifier/member paths (e.g. `JSON.parse`). Some entries use
+  // non-identifier segments (e.g. `node:fs.readFile`); in those cases we lower to a deterministic
+  // `globalThis["node:fs"].readFile` style expression for debug printing.
+  if let Some(root_token) = lex_single_token(first) {
+    match root_token {
+      TT::Identifier => em.write_identifier(first),
+      TT::LiteralTrue | TT::LiteralFalse | TT::LiteralNull | TT::KeywordThis | TT::KeywordSuper => {
+        em.write_keyword(first)
+      }
+      _ => emit_global_this_access(em, first),
+    }
+  } else {
+    emit_global_this_access(em, first);
+  }
+
+  for part in parts {
+    if crate::module_names::is_identifier_name_token(part) {
+      em.write_punct(".");
+      em.write_identifier(part);
+    } else {
+      em.write_punct("[");
+      em.write_string_literal(part);
+      em.write_punct("]");
+    }
+  }
+
+  Ok(())
+}
+
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+fn emit_global_this_access(em: &mut Emitter, key: &str) {
+  em.write_identifier("globalThis");
+  em.write_punct("[");
+  em.write_string_literal(key);
+  em.write_punct("]");
+}
+
+#[cfg(all(feature = "semantic-ops", feature = "api-database"))]
+fn lex_single_token(text: &str) -> Option<TT> {
+  let mut lexer = Lexer::new(text);
+  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Script);
+  if token.loc.0 != 0 || token.loc.1 != text.len() {
+    return None;
+  }
+  Some(token.typ)
 }
 
 fn emit_literal(em: &mut Emitter, lit: &Literal) -> EmitResult {
