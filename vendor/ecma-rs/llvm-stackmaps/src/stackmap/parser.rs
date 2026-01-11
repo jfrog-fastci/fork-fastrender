@@ -3,6 +3,9 @@ use std::fmt;
 use super::format::{Callsite, LiveOut, Location, StackMapRecord};
 use super::statepoint::StatepointRecordView;
 
+const STACKMAP_VERSION: u8 = 3;
+const STACKMAP_V3_HEADER_SIZE: usize = 16;
+
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub offset: usize,
@@ -149,6 +152,38 @@ impl StackMaps {
             if off >= bytes.len() {
                 break;
             }
+            if bytes.len() - off < STACKMAP_V3_HEADER_SIZE {
+                // Too small to contain a full v3 header. Some toolchains can leave short, non-zero
+                // alignment noise at the end of the section; ignore it.
+                break;
+            }
+
+            if bytes[off] != STACKMAP_VERSION {
+                // Some toolchains have been observed to insert a few non-zero padding bytes between
+                // concatenated v3 blobs. Try to recover by scanning forward for the next plausible
+                // header (version=3, reserved bytes = 0).
+                //
+                // Limit the scan so we don't accidentally resync into the middle of a valid blob
+                // if our offset accounting is wrong.
+                const MAX_PADDING_SCAN: usize = 256;
+                let scan_end = (off + MAX_PADDING_SCAN)
+                    .min(bytes.len().saturating_sub(STACKMAP_V3_HEADER_SIZE));
+                let mut found: Option<usize> = None;
+                for i in off + 1..=scan_end {
+                    if bytes[i] == STACKMAP_VERSION
+                        && bytes[i + 1] == 0
+                        && bytes[i + 2] == 0
+                        && bytes[i + 3] == 0
+                    {
+                        found = Some(i);
+                        break;
+                    }
+                }
+                if let Some(i) = found {
+                    off = i;
+                    continue;
+                }
+            }
 
             let const_base = u32::try_from(constants.len())
                 .map_err(|_| ParseError::new(off, "constants table too large"))?;
@@ -257,10 +292,10 @@ fn parse_blob(
     let mut c = Cursor::new(bytes);
 
     let version = c.read_u8()?;
-    if version != 3 {
+    if version != STACKMAP_VERSION {
         return Err(ParseError::new(
             0,
-            format!("unsupported stackmap version {version} (expected 3)"),
+            format!("unsupported stackmap version {version} (expected {STACKMAP_VERSION})"),
         ));
     }
     let _reserved0 = c.read_u8()?;
@@ -795,4 +830,83 @@ mod tests {
         assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
         assert_eq!(maps.lookup(0x2020).unwrap().id, 2);
     }
-}
+
+    #[test]
+    fn ignores_short_trailing_non_zero_bytes() {
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+            // Live-out header (already aligned): padding + num_liveouts.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            // Align record end: 16 + 4 = 20 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob = build_blob(0x1000, 1, 0x10);
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob);
+        section.extend_from_slice(&[0xAA; 8]); // short tail (<16B header)
+
+        let maps = StackMaps::parse(&section).unwrap();
+        assert_eq!(maps.records.len(), 1);
+        assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
+    }
+
+    #[test]
+    fn skips_short_non_zero_padding_between_blobs() {
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+            // Live-out header (already aligned): padding + num_liveouts.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            // Align record end: 16 + 4 = 20 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob_a = build_blob(0x1000, 1, 0x10);
+        let blob_b = build_blob(0x2000, 2, 0x20);
+
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob_a);
+        section.extend_from_slice(&[0xAA; 8]); // non-zero padding between blobs
+        section.extend_from_slice(&blob_b);
+
+        let maps = StackMaps::parse(&section).unwrap();
+        assert_eq!(maps.records.len(), 2);
+        assert_eq!(maps.callsites.len(), 2);
+        assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
+        assert_eq!(maps.lookup(0x2020).unwrap().id, 2);
+    }
+} 
