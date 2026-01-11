@@ -69,6 +69,7 @@ mod fragmented_root_paint;
 mod individual_transform_properties_test;
 mod iframe_background_compositing;
 mod image_set_type_and_dpr_selection;
+mod image_src_rect_clips_to_dest_rect;
 mod image_upscale_sampling;
 mod intrinsic_srcset;
 mod lazy_image_loading;

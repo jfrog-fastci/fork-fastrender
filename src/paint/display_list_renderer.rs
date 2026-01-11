@@ -15707,7 +15707,7 @@ impl DisplayListRenderer {
                 blend_mode: self.canvas.blend_mode(),
                 quality: FilterQuality::Nearest,
               };
-              let clip_mask = self.canvas.clip_mask().cloned();
+              let clip_mask = self.canvas.clip_mask_rc();
               let local_x = origin_x - canvas_transform.tx;
               let local_y = origin_y - canvas_transform.ty;
               let transform =
@@ -15720,7 +15720,7 @@ impl DisplayListRenderer {
                   pixmap_ref.as_ref(),
                   &paint,
                   transform,
-                  clip_mask.as_ref(),
+                  clip_mask.as_deref(),
                 );
               });
               return Ok(());
@@ -15799,8 +15799,23 @@ impl DisplayListRenderer {
     let tx = dest_rect.x() - src_rect.x() * scale_x;
     let ty = dest_rect.y() - src_rect.y() * scale_y;
 
-    let transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty).post_concat(self.canvas.transform());
-    let clip_mask = self.canvas.clip_mask().cloned();
+    let transform =
+      Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty).post_concat(self.canvas.transform());
+    let needs_dest_clip = item.src_rect.is_some()
+      && ((src_rect.x().abs() > 1e-6)
+        || (src_rect.y().abs() > 1e-6)
+        || ((src_rect.width() - full_src_rect.width()).abs() > 1e-6)
+        || ((src_rect.height() - full_src_rect.height()).abs() > 1e-6));
+
+    if needs_dest_clip {
+      self.canvas.save();
+      if let Err(err) = self.canvas.set_clip(dest_rect) {
+        self.canvas.restore();
+        return Err(err);
+      }
+    }
+
+    let clip_mask = self.canvas.clip_mask_rc();
     let pixmap_ref = pixmap.as_ref();
     self.canvas.with_mirrored_pixmap_mut(|dest| {
       dest.draw_pixmap(
@@ -15809,9 +15824,12 @@ impl DisplayListRenderer {
         pixmap_ref.as_ref(),
         &paint,
         transform,
-        clip_mask.as_ref(),
+        clip_mask.as_deref(),
       );
     });
+    if needs_dest_clip {
+      self.canvas.restore();
+    }
 
     self.record_background_paint(background_timer);
     Ok(())
