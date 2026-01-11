@@ -6,12 +6,12 @@ mod x86_64 {
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::StackMaps;
- 
+  
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
     let stackmaps =
       StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin")).expect("parse stackmaps");
- 
+
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
@@ -97,12 +97,12 @@ mod aarch64 {
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::StackMaps;
- 
+  
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
     let stackmaps =
       StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin")).expect("parse stackmaps");
- 
+
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");

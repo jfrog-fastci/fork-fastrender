@@ -485,7 +485,94 @@ pub struct CallSite<'a> {
   pub record: &'a StackMapRecord,
 }
 
+/// A `(base, derived)` relocation pair as emitted by LLVM for `gc.relocate` uses.
+///
+/// - When `base == derived`, LLVM still emits two locations (often identical).
+/// - When `base != derived`, `derived` is a derived/interior pointer that must be
+///   relocated relative to `base`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelocPair {
+  pub base: Location,
+  pub derived: Location,
+}
+
 impl<'a> CallSite<'a> {
+  /// Iterate over `(base, derived)` pairs used for GC relocation at this callsite.
+  ///
+  /// Derivation rule (initial / LLVM 18 observed):
+  /// - Filter `record.locations` down to pointer-bearing entries:
+  ///   - [`Location::Indirect`], [`Location::Register`], [`Location::Direct`]
+  /// - Exclude constants (`Constant`/`ConstIndex`), which are used for statepoint
+  ///   headers and patchpoint metadata.
+  /// - Assert the remaining count is even and chunk into `(base, derived)` pairs,
+  ///   preserving the original order.
+  pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
+    #[derive(Clone)]
+    struct Iter<'a> {
+      locs: &'a [Location],
+      i: usize,
+    }
+
+    impl<'a> Iter<'a> {
+      fn next_ptr_loc(&mut self) -> Option<&'a Location> {
+        while let Some(loc) = self.locs.get(self.i) {
+          self.i += 1;
+          match loc {
+            Location::Indirect { .. } | Location::Register { .. } | Location::Direct { .. } => {
+              return Some(loc)
+            }
+            Location::Constant { .. } | Location::ConstIndex { .. } => {}
+          }
+        }
+        None
+      }
+    }
+
+    impl<'a> Iterator for Iter<'a> {
+      type Item = RelocPair;
+
+      fn next(&mut self) -> Option<Self::Item> {
+        let base = self.next_ptr_loc()?;
+        let derived = self.next_ptr_loc();
+        debug_assert!(
+          derived.is_some(),
+          "stackmap record has odd number of pointer-bearing locations (record={:?})",
+          self.locs
+        );
+        let derived = derived?;
+        Some(RelocPair {
+          base: base.clone(),
+          derived: derived.clone(),
+        })
+      }
+    }
+
+    #[cfg(debug_assertions)]
+    {
+      let ptr_count = self
+        .record
+        .locations
+        .iter()
+        .filter(|loc| {
+          matches!(
+            loc,
+            Location::Indirect { .. } | Location::Register { .. } | Location::Direct { .. }
+          )
+        })
+        .count();
+      debug_assert!(
+        ptr_count % 2 == 0,
+        "stackmap record has odd number of pointer-bearing locations (ptr_count={ptr_count}, record={:?})",
+        self.record
+      );
+    }
+
+    Iter {
+      locs: &self.record.locations,
+      i: 0,
+    }
+  }
+
   /// Return a deduplicated list of GC root stack slots as offsets from RBP.
   ///
   /// This is a statepoint-oriented helper: it decodes the LLVM `gc.statepoint`

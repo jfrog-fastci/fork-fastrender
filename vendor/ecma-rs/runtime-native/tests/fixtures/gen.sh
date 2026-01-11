@@ -82,4 +82,21 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_aarch64.bin" \
   "${TMP}/statepoint_aarch64.o"
 
+# statepoint_base_derived (explicit gc.statepoint + gc.relocate)
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/statepoint_gcroot_base_derived.ll" \
+  -o "${TMP}/statepoint_base_derived_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_base_derived_x86_64.bin" \
+  "${TMP}/statepoint_base_derived_x86_64.o"
+
+llc-18 -O0 -filetype=obj \
+  -mtriple=aarch64-unknown-linux-gnu -mcpu=generic \
+  "${IR_DIR}/statepoint_gcroot_base_derived.ll" \
+  -o "${TMP}/statepoint_base_derived_aarch64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_base_derived_aarch64.bin" \
+  "${TMP}/statepoint_base_derived_aarch64.o"
+
 echo "ok: regenerated stackmap fixtures into ${BIN_DIR}"

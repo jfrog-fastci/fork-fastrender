@@ -1,0 +1,105 @@
+//! StackMap-driven root scanning helpers.
+//!
+//! This module provides a small, architecture-independent helper that:
+//! - looks up the [`crate::stackmaps::CallSite`] for a stopped thread's current PC, and
+//! - enumerates the `(base, derived)` relocation pairs corresponding to LLVM `gc.relocate` uses.
+//!
+//! The key observation (LLVM 18, empirically) is that GC pointers are typically described as
+//! `Indirect [DWARF_REG + offset]` locations, where the base DWARF register is the caller-frame SP
+//! at the statepoint return address. This means the address of the spill slot is simply
+//! `reg_value + offset`.
+
+use crate::stackmaps::{Location, RelocPair, StackMaps};
+use stackmap_context::{ThreadContext, DWARF_REG_IP};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+  #[error("missing instruction pointer (DWARF reg {dwarf_reg}) in ThreadContext")]
+  MissingInstructionPointer { dwarf_reg: u16 },
+
+  #[error("missing DWARF register {dwarf_reg} while evaluating location {loc:?}")]
+  MissingRegister { dwarf_reg: u16, loc: Location },
+
+  #[error("address overflow while computing {kind} location address: base=0x{base:x} offset={offset}")]
+  AddressOverflow {
+    kind: &'static str,
+    base: u64,
+    offset: i32,
+  },
+
+  #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
+  UnsupportedLocation { loc: Location },
+}
+
+/// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.
+///
+/// - `thread_ctx` provides the stopped thread's DWARF register values.
+/// - `stackmaps` is the parsed `.llvm_stackmaps` index for the current process/module.
+///
+/// The callback receives the address of each *pointer-sized spill slot*.
+///
+/// Notes:
+/// - For now, this helper only supports `Indirect` locations, which is the common LLVM 18 output
+///   for statepoint roots after `rewrite-statepoints-for-gc`.
+/// - `Register` and `Direct` locations are treated as unsupported and return an error.
+pub fn scan_reloc_pairs(
+  thread_ctx: &ThreadContext,
+  stackmaps: &StackMaps,
+  mut visit: impl FnMut(*mut usize, *mut usize),
+) -> Result<(), ScanError> {
+  let ip = thread_ctx
+    .get_dwarf_reg_u64(DWARF_REG_IP)
+    .ok_or(ScanError::MissingInstructionPointer {
+      dwarf_reg: DWARF_REG_IP,
+    })?;
+
+  let Some(callsite) = stackmaps.lookup(ip) else {
+    // No stackmap record for this PC.
+    return Ok(());
+  };
+
+  for RelocPair { base, derived } in callsite.reloc_pairs() {
+    let base_slot = slot_addr(thread_ctx, &base)?;
+    let derived_slot = slot_addr(thread_ctx, &derived)?;
+    visit(base_slot, derived_slot);
+  }
+
+  Ok(())
+}
+
+fn slot_addr(ctx: &ThreadContext, loc: &Location) -> Result<*mut usize, ScanError> {
+  match *loc {
+    Location::Indirect {
+      dwarf_reg, offset, ..
+    } => {
+      let base = ctx.get_dwarf_reg_u64(dwarf_reg).ok_or(ScanError::MissingRegister {
+        dwarf_reg,
+        loc: loc.clone(),
+      })?;
+      let addr = add_i32(base, offset).ok_or(ScanError::AddressOverflow {
+        kind: "Indirect",
+        base,
+        offset,
+      })?;
+      Ok(addr as usize as *mut usize)
+    }
+
+    // `Direct` locations in LLVM stackmaps mean "value is (reg + offset)" (no memory indirection).
+    //
+    // `scan_reloc_pairs` currently only supports addressable stack slots (i.e. `Indirect` spill
+    // slots). If we ever need to support `Direct` and `Register` roots, this API likely needs to
+    // return a richer "root slot" abstraction (stack slot vs register) instead of raw pointers.
+    Location::Direct { .. } | Location::Register { .. } | Location::Constant { .. } | Location::ConstIndex { .. } => {
+      Err(ScanError::UnsupportedLocation { loc: loc.clone() })
+    }
+  }
+}
+
+fn add_i32(base: u64, offset: i32) -> Option<u64> {
+  if offset >= 0 {
+    base.checked_add(offset as u64)
+  } else {
+    base.checked_sub((-offset) as u64)
+  }
+}
+

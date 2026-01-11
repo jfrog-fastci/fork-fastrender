@@ -84,6 +84,7 @@ pub mod stackmaps;
 pub mod stackmaps_loader;
 pub mod stackmap_loader;
 pub mod statepoints;
+pub mod scan;
 pub mod stack_walk;
 pub mod stackwalk;
 pub mod stackwalk_fp;
