@@ -2,6 +2,7 @@
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
+  use runtime_native::stackwalk_fp::ensure_stackwalk_scratch_capacity;
   use runtime_native::statepoints::{RootSlot, StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -14,10 +15,11 @@ mod x86_64 {
 
     threading::register_current_thread(threading::ThreadKind::Main);
 
-    threading::safepoint::with_world_stopped(|stop_epoch| {
-      let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_base_derived_x86_64.bin"))
-        .expect("parse stackmaps");
+    let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_base_derived_x86_64.bin"))
+      .expect("parse stackmaps");
+    ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
 
+    threading::safepoint::with_world_stopped(|stop_epoch| {
       // Pick the first callsite record (BTreeMap iteration is sorted).
       let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
       let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
@@ -136,6 +138,7 @@ mod aarch64 {
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
   use runtime_native::threading::registry;
+  use runtime_native::stackwalk_fp::ensure_stackwalk_scratch_capacity;
   use runtime_native::StackMaps;
 
   #[test]
@@ -144,10 +147,11 @@ mod aarch64 {
 
     threading::register_current_thread(threading::ThreadKind::Main);
 
-    threading::safepoint::with_world_stopped(|stop_epoch| {
-      let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_base_derived_aarch64.bin"))
-        .expect("parse stackmaps");
+    let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_base_derived_aarch64.bin"))
+      .expect("parse stackmaps");
+    ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
 
+    threading::safepoint::with_world_stopped(|stop_epoch| {
       let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
       let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
 

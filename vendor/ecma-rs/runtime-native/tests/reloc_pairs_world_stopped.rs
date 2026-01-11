@@ -1,6 +1,7 @@
 use runtime_native::gc_roots::relocate_reloc_pairs_in_place;
 use runtime_native::stackmaps::Location;
 use runtime_native::stackmaps::StackMaps;
+use runtime_native::stackwalk_fp::ensure_stackwalk_scratch_capacity;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
@@ -249,6 +250,7 @@ fn reloc_pairs_world_stopped_includes_stackmap_derived_pairs() {
     ready.wait();
 
     let stackmaps = StackMaps::parse(statepoint_base_derived_fixture()).expect("parse stackmaps");
+    ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
 
     threading::safepoint::with_world_stopped(|epoch| {
       // Ensure the worker thread had a chance to run the safepoint hook and overwrite its published

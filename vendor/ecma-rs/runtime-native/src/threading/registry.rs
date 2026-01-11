@@ -524,7 +524,10 @@ pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
   // Eagerly parse and index stackmaps the first time any thread registers. This prevents
   // stop-the-world GC/root enumeration from doing the lazy `StackMaps::parse` allocation work
   // while the world is stopped.
-  let _ = crate::stackmap::try_stackmaps();
+  let stackmaps = crate::stackmap::try_stackmaps();
+  if let Some(stackmaps) = stackmaps {
+    crate::stackwalk_fp::ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
+  }
   registry().register_current_thread(kind).id
 }
 

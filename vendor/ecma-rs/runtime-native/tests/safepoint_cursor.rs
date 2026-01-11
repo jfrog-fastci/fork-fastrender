@@ -165,8 +165,8 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
     .join("rt_gc_safepoint.S");
   let safepoint_asm = safepoint_asm.to_string_lossy();
 
-  // Compile the real AArch64 safepoint assembly stub in isolation. This is a
-  // cheap disassembly sanity check (it does not link the full runtime).
+  // Compile the real AArch64 safepoint assembly stub in isolation. This is a cheap disassembly
+  // sanity check (it does not link the full runtime).
   std::fs::write(
     &shim_rs,
     format!("use core::arch::global_asm;\n\nglobal_asm!(include_str!({safepoint_asm:?}));\n"),

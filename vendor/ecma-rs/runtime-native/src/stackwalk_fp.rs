@@ -3,6 +3,8 @@ use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::StackBounds;
 use crate::statepoints::RootSlot;
 
+use std::cell::{Cell, UnsafeCell};
+
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use crate::roots::{conservative_scan_words, HeapRange};
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -142,12 +144,12 @@ pub enum WalkError {
   MissingStackMap { return_addr: u64 },
 
   #[error(
-    "statepoint record at return address {return_addr:#x} has gc_pair_count={gc_pair_count}, exceeding max={max}"
+    "statepoint record at return address {return_addr:#x} has gc_pair_count={gc_pair_count}, exceeding preallocated scratch capacity={scratch_capacity}"
   )]
-  GcPairCountOverflow {
+  GcPairScratchCapacityExceeded {
     return_addr: u64,
     gc_pair_count: usize,
-    max: usize,
+    scratch_capacity: usize,
   },
 }
 
@@ -168,15 +170,6 @@ fn max_frames_for_bounds(bounds: StackBounds) -> usize {
   by_stack.clamp(1, MAX_FRAMES_CAP)
 }
 
-/// Upper bound on the number of GC `(base, derived)` pointer pairs we will process for a single
-/// statepoint record/frame while the world is stopped.
-///
-/// Stackmap-driven root enumeration must not allocate via the Rust global allocator. We therefore
-/// use fixed-capacity stack storage for per-frame scratch.
-///
-/// If a frame exceeds this limit, root enumeration returns [`WalkError::GcPairCountOverflow`].
-const MAX_GC_PAIRS_PER_FRAME: usize = 1024;
-
 #[derive(Clone, Copy, Debug)]
 struct GcPairScratchEntry {
   base_slot: u64,
@@ -189,28 +182,70 @@ struct GcPairScratchEntry {
 }
 
 #[derive(Debug)]
-struct RootPairsScratch {
-  pairs: [(*mut usize, *mut usize); MAX_GC_PAIRS_PER_FRAME],
-  len: usize,
+struct StackwalkScratch {
+  entries: Vec<GcPairScratchEntry>,
+  root_pairs: Vec<(*mut usize, *mut usize)>,
 }
 
-impl RootPairsScratch {
+impl StackwalkScratch {
   fn new() -> Self {
     Self {
-      pairs: [(core::ptr::null_mut(), core::ptr::null_mut()); MAX_GC_PAIRS_PER_FRAME],
-      len: 0,
+      entries: Vec::new(),
+      root_pairs: Vec::new(),
     }
   }
 
   #[inline]
-  fn clear(&mut self) {
-    self.len = 0;
+  fn ensure_capacity(&mut self, max_gc_pairs_per_frame: usize) {
+    if self.entries.capacity() < max_gc_pairs_per_frame {
+      self
+        .entries
+        .reserve_exact(max_gc_pairs_per_frame.saturating_sub(self.entries.len()));
+    }
+    if self.root_pairs.capacity() < max_gc_pairs_per_frame {
+      self
+        .root_pairs
+        .reserve_exact(max_gc_pairs_per_frame.saturating_sub(self.root_pairs.len()));
+    }
   }
+}
 
-  #[inline]
-  fn as_slice(&self) -> &[(*mut usize, *mut usize)] {
-    &self.pairs[..self.len]
-  }
+thread_local! {
+  static TLS_STACKWALK_SCRATCH: UnsafeCell<StackwalkScratch> = UnsafeCell::new(StackwalkScratch::new());
+  static TLS_STACKWALK_SCRATCH_IN_USE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn with_stackwalk_scratch<R>(f: impl FnOnce(&mut StackwalkScratch) -> R) -> R {
+  TLS_STACKWALK_SCRATCH_IN_USE.with(|in_use| {
+    let already = in_use.replace(true);
+    assert!(
+      !already,
+      "stackwalk scratch buffer is already borrowed (reentrant stack walking on the same thread)"
+    );
+    struct Reset<'a>(&'a Cell<bool>);
+    impl Drop for Reset<'_> {
+      fn drop(&mut self) {
+        self.0.set(false);
+      }
+    }
+    let _reset = Reset(in_use);
+
+    TLS_STACKWALK_SCRATCH.with(|scratch| {
+      // SAFETY: thread-local + `TLS_STACKWALK_SCRATCH_IN_USE` ensures exclusive access.
+      let scratch = unsafe { &mut *scratch.get() };
+      f(scratch)
+    })
+  })
+}
+
+/// Ensure the current thread's stack-walker scratch buffers can hold at least `max_gc_pairs_per_frame` entries.
+///
+/// This may allocate and should therefore be called outside stop-the-world GC. The runtime calls
+/// this during thread registration so stack root scanning does not allocate while the world is
+/// stopped.
+#[doc(hidden)]
+pub fn ensure_stackwalk_scratch_capacity(max_gc_pairs_per_frame: usize) {
+  with_stackwalk_scratch(|scratch| scratch.ensure_capacity(max_gc_pairs_per_frame));
 }
 
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -415,6 +450,22 @@ unsafe fn walk_gc_roots_from_fp_with_reg_context(
     return Err(WalkError::NullStartFp);
   }
   let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
+  with_stackwalk_scratch(|scratch| {
+    walk_gc_roots_from_fp_inner(start_fp, bounds, stackmaps, reg_ctx, &mut scratch.entries, &mut visit)
+  })
+}
+
+unsafe fn walk_gc_roots_from_fp_inner(
+  start_fp: u64,
+  bounds: StackBounds,
+  stackmaps: &StackMaps,
+  reg_ctx: *mut crate::arch::RegContext,
+  scratch_entries: &mut Vec<GcPairScratchEntry>,
+  visit: &mut impl FnMut(*mut u8),
+) -> Result<(), WalkError> {
+  if start_fp == 0 {
+    return Err(WalkError::NullStartFp);
+  }
 
   let mut cur_fp = start_fp;
   let max_frames = max_frames_for_bounds(bounds);
@@ -460,13 +511,14 @@ unsafe fn walk_gc_roots_from_fp_with_reg_context(
           bounds,
           Some(caller_sp),
           reg_ctx,
-          &mut visit,
+          scratch_entries,
+          visit,
         )?;
       }
       None => {
         #[cfg(any(debug_assertions, feature = "conservative_roots"))]
         {
-          conservative_scan_frame_words(caller_sp, caller_fp, bounds, &mut visit);
+          conservative_scan_frame_words(caller_sp, caller_fp, bounds, visit);
         }
         // No stackmap record for the caller's return address. In a fully-instrumented managed
         // stack this indicates we've crossed into unmanaged/runtime frames (which are not scanned
@@ -546,44 +598,47 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
       return_addr: caller_ra,
     });
   }
-  match stackmaps.lookup(caller_ra) {
-    Some(callsite) => {
-      // Prefer the captured stackmap-semantics SP for the top managed frame.
-      //
-      // If `ctx.sp` is missing, we can still derive the stackmap base from `ctx.sp_entry`:
-      // - x86_64: `sp = sp_entry + 8` (return address pushed by `call`)
-      // - aarch64: `sp = sp_entry` (`bl` does not push a return address)
-      let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
-      enumerate_roots_for_frame(
-        caller_fp,
-        caller_ra,
-        callsite,
-        bounds,
-        caller_sp,
-        ctx.regs,
-        &mut visit,
-      )?;
-    }
-    None => {
-      #[cfg(any(debug_assertions, feature = "conservative_roots"))]
-      {
-        let scan_start = if ctx.sp != 0 {
-          ctx.sp as u64
-        } else {
-          ctx.sp_entry as u64
-        };
-        if scan_start != 0 {
-          let scan_end = bounds.hi;
-          conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
+  with_stackwalk_scratch(|scratch| {
+    match stackmaps.lookup(caller_ra) {
+      Some(callsite) => {
+        // Prefer the captured stackmap-semantics SP for the top managed frame.
+        //
+        // If `ctx.sp` is missing, we can still derive the stackmap base from `ctx.sp_entry`:
+        // - x86_64: `sp = sp_entry + 8` (return address pushed by `call`)
+        // - aarch64: `sp = sp_entry` (`bl` does not push a return address)
+        let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
+        enumerate_roots_for_frame(
+          caller_fp,
+          caller_ra,
+          callsite,
+          bounds,
+          caller_sp,
+          ctx.regs,
+          &mut scratch.entries,
+          &mut visit,
+        )?;
+      }
+      None => {
+        #[cfg(any(debug_assertions, feature = "conservative_roots"))]
+        {
+          let scan_start = if ctx.sp != 0 {
+            ctx.sp as u64
+          } else {
+            ctx.sp_entry as u64
+          };
+          if scan_start != 0 {
+            let scan_end = bounds.hi;
+            conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
+          }
         }
       }
     }
-  }
 
-  // Continue walking older frames. Starting from the managed frame pointer means the delegated
-  // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
-  // managed frame we just handled above.
-  walk_gc_roots_from_fp_with_reg_context(caller_fp, Some(bounds), stackmaps, ctx.regs, visit)
+    // Continue walking older frames. Starting from the managed frame pointer means the delegated
+    // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
+    // managed frame we just handled above.
+    walk_gc_roots_from_fp_inner(caller_fp, bounds, stackmaps, ctx.regs, &mut scratch.entries, &mut visit)
+  })
 }
 
 /// Walk the frame-pointer chain and enumerate GC relocation pairs (`(base, derived)` slots).
@@ -643,10 +698,32 @@ unsafe fn walk_gc_root_pairs_from_fp_with_reg_context(
   if start_fp == 0 {
     return Err(WalkError::NullStartFp);
   }
-
   let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
+  with_stackwalk_scratch(|scratch| {
+    walk_gc_root_pairs_from_fp_inner(
+      start_fp,
+      bounds,
+      stackmaps,
+      reg_ctx,
+      &mut scratch.root_pairs,
+      &mut visit_frame_reloc_pairs,
+    )
+  })
+}
+
+unsafe fn walk_gc_root_pairs_from_fp_inner(
+  start_fp: u64,
+  bounds: StackBounds,
+  stackmaps: &StackMaps,
+  reg_ctx: *mut crate::arch::RegContext,
+  scratch_pairs: &mut Vec<(*mut usize, *mut usize)>,
+  visit_frame_reloc_pairs: &mut impl FnMut(u64, &[(*mut usize, *mut usize)]),
+) -> Result<(), WalkError> {
+  if start_fp == 0 {
+    return Err(WalkError::NullStartFp);
+  }
+
   let mut cur_fp = start_fp;
-  let mut pairs_scratch = RootPairsScratch::new();
   let max_frames = max_frames_for_bounds(bounds);
   for depth in 0..max_frames {
     check_fp_alignment(cur_fp)?;
@@ -695,7 +772,7 @@ unsafe fn walk_gc_root_pairs_from_fp_with_reg_context(
       bounds,
       Some(caller_sp),
       reg_ctx,
-      &mut pairs_scratch,
+      scratch_pairs,
     )?;
     if !pairs.is_empty() {
       visit_frame_reloc_pairs(caller_ra, pairs);
@@ -741,26 +818,34 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
       return_addr: caller_ra,
     });
   }
-  if let Some(callsite) = stackmaps.lookup(caller_ra) {
-    let mut pairs_scratch = RootPairsScratch::new();
-    // Prefer the captured stackmap-semantics SP for the top managed frame (see the note in
-    // `walk_gc_roots_from_safepoint_context`).
-    let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
-    let pairs = enumerate_root_pairs_for_frame(
-      caller_fp,
-      caller_ra,
-      callsite,
-      bounds,
-      caller_sp,
-      ctx.regs,
-      &mut pairs_scratch,
-    )?;
-    if !pairs.is_empty() {
-      visit_frame_reloc_pairs(caller_ra, pairs);
+  with_stackwalk_scratch(|scratch| {
+    if let Some(callsite) = stackmaps.lookup(caller_ra) {
+      // Prefer the captured stackmap-semantics SP for the top managed frame (see the note in
+      // `walk_gc_roots_from_safepoint_context`).
+      let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
+      let pairs = enumerate_root_pairs_for_frame(
+        caller_fp,
+        caller_ra,
+        callsite,
+        bounds,
+        caller_sp,
+        ctx.regs,
+        &mut scratch.root_pairs,
+      )?;
+      if !pairs.is_empty() {
+        visit_frame_reloc_pairs(caller_ra, pairs);
+      }
     }
-  }
 
-  walk_gc_root_pairs_from_fp_with_reg_context(caller_fp, Some(bounds), stackmaps, ctx.regs, visit_frame_reloc_pairs)
+    walk_gc_root_pairs_from_fp_inner(
+      caller_fp,
+      bounds,
+      stackmaps,
+      ctx.regs,
+      &mut scratch.root_pairs,
+      &mut visit_frame_reloc_pairs,
+    )
+  })
 }
 
 /// Walk GC relocation pairs for a thread parked in a stop-the-world safepoint.
@@ -859,6 +944,30 @@ fn caller_sp_override_from_safepoint_ctx(ctx: &crate::arch::SafepointContext) ->
   }
 }
 
+fn ensure_scratch_capacity<T>(
+  scratch: &mut Vec<T>,
+  needed: usize,
+  return_addr: u64,
+) -> Result<(), WalkError> {
+  if scratch.capacity() >= needed {
+    return Ok(());
+  }
+
+  // Root enumeration must not allocate while a stop-the-world epoch is active. The global epoch is
+  // a conservative signal: odd values mean a stop-the-world request is in progress (and may already
+  // have stopped the world).
+  if crate::threading::safepoint::current_epoch() & 1 == 1 {
+    return Err(WalkError::GcPairScratchCapacityExceeded {
+      return_addr,
+      gc_pair_count: needed,
+      scratch_capacity: scratch.capacity(),
+    });
+  }
+
+  scratch.reserve_exact(needed.saturating_sub(scratch.len()));
+  Ok(())
+}
+
 fn enumerate_roots_for_frame(
   caller_fp: u64,
   caller_ra: u64,
@@ -866,6 +975,7 @@ fn enumerate_roots_for_frame(
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
   reg_ctx: *mut crate::arch::RegContext,
+  scratch_entries: &mut Vec<GcPairScratchEntry>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
   // `.llvm_stackmaps` may contain records other than GC statepoints (e.g. from
@@ -899,13 +1009,8 @@ fn enumerate_roots_for_frame(
   }
 
   let gc_pair_count = statepoint.gc_pair_count();
-  if gc_pair_count > MAX_GC_PAIRS_PER_FRAME {
-    return Err(WalkError::GcPairCountOverflow {
-      return_addr: caller_ra,
-      gc_pair_count,
-      max: MAX_GC_PAIRS_PER_FRAME,
-    });
-  }
+  scratch_entries.clear();
+  ensure_scratch_capacity(scratch_entries, gc_pair_count, caller_ra)?;
 
   // Collect + dedup within this frame to avoid double-visiting the same slot (LLVM can emit
   // duplicated locations for relocated values).
@@ -916,14 +1021,6 @@ fn enumerate_roots_for_frame(
   //
   // Derived-pointer deltas are computed from the *pre-relocation* pointer values and stored in this
   // scratch array.
-  let mut entries = [GcPairScratchEntry {
-    base_slot: 0,
-    derived_slot: 0,
-    delta: 0,
-    force_null: false,
-  }; MAX_GC_PAIRS_PER_FRAME];
-  let mut entry_len = 0usize;
-
   for pair in statepoint.gc_pairs() {
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.base)?;
     let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.derived)?;
@@ -948,31 +1045,17 @@ fn enumerate_roots_for_frame(
       (0, false)
     };
 
-    entries[entry_len] = GcPairScratchEntry {
+    scratch_entries.push(GcPairScratchEntry {
       base_slot,
       derived_slot,
       delta,
       force_null,
-    };
-    entry_len += 1;
+    });
   }
 
-  let entries = &mut entries[..entry_len];
-  entries.sort_unstable_by_key(|e| (e.base_slot, e.derived_slot));
-
-  // Dedup pairs by (base_slot, derived_slot). This also implies base-slot dedup, since we only
-  // visit a base slot when it differs from the previous entry's base.
-  let mut dedup_len = 0usize;
-  for i in 0..entries.len() {
-    if dedup_len == 0
-      || entries[i].base_slot != entries[dedup_len - 1].base_slot
-      || entries[i].derived_slot != entries[dedup_len - 1].derived_slot
-    {
-      entries[dedup_len] = entries[i];
-      dedup_len += 1;
-    }
-  }
-  let entries = &entries[..dedup_len];
+  scratch_entries.sort_unstable_by_key(|e| (e.base_slot, e.derived_slot));
+  scratch_entries.dedup_by(|a, b| a.base_slot == b.base_slot && a.derived_slot == b.derived_slot);
+  let entries = scratch_entries.as_slice();
 
   let mut cur_base: Option<u64> = None;
   let mut relocated_base_val: u64 = 0;
@@ -1017,13 +1100,13 @@ fn enumerate_root_pairs_for_frame<'a>(
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
   reg_ctx: *mut crate::arch::RegContext,
-  scratch: &'a mut RootPairsScratch,
+  scratch_pairs: &'a mut Vec<(*mut usize, *mut usize)>,
 ) -> Result<&'a [(*mut usize, *mut usize)], WalkError> {
-  scratch.clear();
+  scratch_pairs.clear();
   // Only statepoint callsites contribute GC root relocation pairs.
   let statepoint = match crate::statepoints::StatepointRecord::new(callsite.record) {
     Ok(sp) => sp,
-    Err(_) => return Ok(scratch.as_slice()),
+    Err(_) => return Ok(scratch_pairs.as_slice()),
   };
 
   let needs_sp = statepoint
@@ -1047,13 +1130,7 @@ fn enumerate_root_pairs_for_frame<'a>(
   }
 
   let gc_pair_count = statepoint.gc_pair_count();
-  if gc_pair_count > MAX_GC_PAIRS_PER_FRAME {
-    return Err(WalkError::GcPairCountOverflow {
-      return_addr: caller_ra,
-      gc_pair_count,
-      max: MAX_GC_PAIRS_PER_FRAME,
-    });
-  }
+  ensure_scratch_capacity(scratch_pairs, gc_pair_count, caller_ra)?;
 
   for pair in statepoint.gc_pairs() {
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.base)?;
@@ -1061,27 +1138,17 @@ fn enumerate_root_pairs_for_frame<'a>(
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
 
-    scratch.pairs[scratch.len] = (
+    scratch_pairs.push((
       base_slot as usize as *mut usize,
       derived_slot as usize as *mut usize,
-    );
-    scratch.len += 1;
+    ));
   }
 
   // Deterministic ordering and dedup.
-  let pairs = &mut scratch.pairs[..scratch.len];
-  pairs.sort_unstable_by_key(|&(base, derived)| (base as usize, derived as usize));
+  scratch_pairs.sort_unstable_by_key(|&(base, derived)| (base as usize, derived as usize));
+  scratch_pairs.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
-  let mut dedup_len = 0usize;
-  for i in 0..pairs.len() {
-    if dedup_len == 0 || pairs[i].0 != pairs[dedup_len - 1].0 || pairs[i].1 != pairs[dedup_len - 1].1 {
-      pairs[dedup_len] = pairs[i];
-      dedup_len += 1;
-    }
-  }
-  scratch.len = dedup_len;
-
-  Ok(scratch.as_slice())
+  Ok(scratch_pairs.as_slice())
 }
 
 fn eval_root_location(
@@ -1264,9 +1331,19 @@ mod tests {
 
     let bounds = StackBounds { lo: 0, hi: 0x10_000 };
     let mut visited = false;
-    enumerate_roots_for_frame(0x1000, 0x2000, callsite, bounds, None, core::ptr::null_mut(), &mut |_| {
+    let mut scratch_entries: Vec<GcPairScratchEntry> = Vec::new();
+    enumerate_roots_for_frame(
+      0x1000,
+      0x2000,
+      callsite,
+      bounds,
+      None,
+      core::ptr::null_mut(),
+      &mut scratch_entries,
+      &mut |_| {
       visited = true;
-    })
+      },
+    )
     .unwrap();
     assert!(!visited, "non-statepoint records must not contribute GC roots");
   }

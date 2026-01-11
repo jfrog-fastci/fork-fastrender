@@ -666,6 +666,7 @@ impl<'a> Cursor<'a> {
 pub struct StackMaps {
   raws: Vec<StackMap>,
   callsites: Vec<CallsiteEntry>,
+  max_gc_pairs_per_frame: usize,
 }
 
 /// Entry in the callsite index, keyed by `pc` (absolute return address).
@@ -905,6 +906,7 @@ impl StackMaps {
     }
 
     let mut callsites: Vec<CallsiteEntry> = Vec::new();
+    let mut max_gc_pairs_per_frame: usize = 0;
 
     for (stackmap_index, raw) in raws.iter().enumerate() {
       let mut expected: u64 = 0;
@@ -932,6 +934,11 @@ impl StackMaps {
 
         for _ in 0..record_count {
           let record = &raw.records[record_index];
+          if crate::statepoints::looks_like_statepoint_record(record) {
+            if let Ok(statepoint) = crate::statepoints::StatepointRecord::new(record) {
+              max_gc_pairs_per_frame = max_gc_pairs_per_frame.max(statepoint.gc_pair_count());
+            }
+          }
           let pc = f
             .address
             .checked_add(record.instruction_offset as u64)
@@ -1013,7 +1020,11 @@ impl StackMaps {
       callsites = out;
     }
 
-    Ok(Self { raws, callsites })
+    Ok(Self {
+      raws,
+      callsites,
+      max_gc_pairs_per_frame,
+    })
   }
 
   fn locations_semantically_equal(a: &[Location], b: &[Location]) -> bool {
@@ -1120,6 +1131,11 @@ impl StackMaps {
 
   pub fn callsites(&self) -> &[CallsiteEntry] {
     &self.callsites
+  }
+
+  #[inline]
+  pub fn max_gc_pairs_per_frame(&self) -> usize {
+    self.max_gc_pairs_per_frame
   }
 
   pub fn iter(&self) -> impl Iterator<Item = (u64, CallSite<'_>)> + '_ {

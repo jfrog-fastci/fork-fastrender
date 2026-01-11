@@ -8,6 +8,7 @@ mod x86_64 {
   use super::*;
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
+  use runtime_native::stackwalk_fp::ensure_stackwalk_scratch_capacity;
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::StackMaps;
  
@@ -120,7 +121,8 @@ mod x86_64 {
     let (stack_lo, stack_hi, expected_slots) = rx_ready.recv().expect("recv ready");
     let stackmaps =
       StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin")).expect("parse stackmaps");
- 
+    ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
+
     threading::safepoint::with_world_stopped(|stop_epoch| {
       let mut visited: Vec<usize> = Vec::new();
       threading::safepoint::for_each_root_slot_world_stopped_with_stackmaps(
@@ -168,6 +170,7 @@ mod aarch64 {
   use super::*;
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
+  use runtime_native::stackwalk_fp::ensure_stackwalk_scratch_capacity;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::StackMaps;
  
@@ -279,7 +282,8 @@ mod aarch64 {
     let (stack_lo, stack_hi, expected_slots) = rx_ready.recv().expect("recv ready");
     let stackmaps =
       StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin")).expect("parse stackmaps");
- 
+    ensure_stackwalk_scratch_capacity(stackmaps.max_gc_pairs_per_frame());
+
     threading::safepoint::with_world_stopped(|stop_epoch| {
       let mut visited: Vec<usize> = Vec::new();
       threading::safepoint::for_each_root_slot_world_stopped_with_stackmaps(

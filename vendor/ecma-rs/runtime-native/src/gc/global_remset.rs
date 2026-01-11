@@ -294,6 +294,19 @@ pub(crate) struct WorldStoppedRememberedSet;
 impl WorldStoppedRememberedSet {
   #[inline]
   pub(crate) fn new() -> Self {
+    // The write barrier records remembered objects into per-thread buffers to avoid a contended
+    // process-global atomic on every old→young store. The stop-the-world GC, however, needs a single
+    // consolidated view. Drain all thread buffers into the global buffer up-front so:
+    // - `for_each_remembered_obj` can enumerate all old objects that may still contain nursery
+    //   pointers, and
+    // - `clear` can clear the per-object `REMEMBERED` bits for all of them after a successful minor
+    //   collection.
+    //
+    // This must only run while the world is stopped; otherwise mutators could concurrently append to
+    // the per-thread buffers.
+    registry::for_each_thread(|thread| {
+      thread.remset_drain_raw(|obj| remembered_set().insert(obj));
+    });
     Self
   }
 }
