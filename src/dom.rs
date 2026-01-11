@@ -12057,6 +12057,20 @@ mod tests {
       "valid custom element names should be treated as undefined when the custom element registry is not run"
     );
 
+    let emoji = element("emotion-😍", vec![]);
+    let emoji_ref = ElementRef::with_ancestors(&emoji, &[]);
+    assert!(
+      !selector_matches_with_custom_elements_defined(&emoji_ref, &selector, false),
+      "valid custom element names may include non-ASCII characters"
+    );
+
+    let unicode = element("math-α", vec![]);
+    let unicode_ref = ElementRef::with_ancestors(&unicode, &[]);
+    assert!(
+      !selector_matches_with_custom_elements_defined(&unicode_ref, &selector, false),
+      "valid custom element names may include non-ASCII characters"
+    );
+
     let reserved = element("annotation-xml", vec![]);
     let reserved_ref = ElementRef::with_ancestors(&reserved, &[]);
     assert!(
@@ -12075,14 +12089,14 @@ mod tests {
     let uppercase_ref = ElementRef::with_ancestors(&uppercase, &[]);
     assert!(
       selector_matches_with_custom_elements_defined(&uppercase_ref, &selector, false),
-      "names containing ASCII uppercase are not valid custom element names"
+      "names containing ASCII uppercase letters are not valid custom element names"
     );
 
-    let unicode_custom_element_name = element("math-α", vec![]);
-    let unicode_custom_element_name_ref = ElementRef::with_ancestors(&unicode_custom_element_name, &[]);
+    let no_hyphen = element("xfoo", vec![]);
+    let no_hyphen_ref = ElementRef::with_ancestors(&no_hyphen, &[]);
     assert!(
-      !selector_matches_with_custom_elements_defined(&unicode_custom_element_name_ref, &selector, false),
-      "valid custom element names may contain non-ASCII code points (HTML LS)"
+      selector_matches_with_custom_elements_defined(&no_hyphen_ref, &selector, false),
+      "names without hyphens are not valid custom element names"
     );
 
     let svg_custom_element_name = svg_element("x-foo");
