@@ -11,6 +11,7 @@ use super::ObjHeader;
 use super::TypeDescriptor;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
+use crate::los::LargeObjectSpace;
 use crate::nursery;
 use crate::nursery::ThreadNursery;
 
@@ -230,43 +231,6 @@ impl ImmixSpace {
 
   fn free_bytes(&self) -> usize {
     self.blocks.iter().map(|b| b.free_bytes()).sum()
-  }
-}
-
-struct LargeObject {
-  mem: RawMemory,
-}
-
-pub(crate) struct LargeObjectSpace {
-  objects: Vec<LargeObject>,
-}
-
-impl LargeObjectSpace {
-  fn new() -> Self {
-    Self { objects: Vec::new() }
-  }
-
-  fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
-    let mem = RawMemory::new_zeroed(size, align);
-    let ptr = mem.as_ptr();
-    self.objects.push(LargeObject { mem });
-    ptr
-  }
-
-  fn contains(&self, ptr: *mut u8) -> bool {
-    self.objects.iter().any(|o| o.mem.as_ptr() == ptr)
-  }
-
-  pub(crate) fn sweep(&mut self, current_epoch: u8) {
-    self.objects.retain(|obj| {
-      // SAFETY: The object is a valid allocation and always begins with ObjHeader.
-      let header = unsafe { &*(obj.mem.as_ptr() as *const ObjHeader) };
-      header.is_marked(current_epoch)
-    });
-  }
-
-  fn object_count(&self) -> usize {
-    self.objects.len()
   }
 }
 

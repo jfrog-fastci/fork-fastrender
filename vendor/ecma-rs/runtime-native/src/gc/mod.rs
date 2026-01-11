@@ -80,11 +80,31 @@ impl ObjHeader {
   }
 
   #[inline]
+  pub fn is_pinned(&self) -> bool {
+    // When the header is in the "forwarded" state, `meta` is a tagged forwarding pointer, so any
+    // other bit tests are meaningless.
+    !self.is_forwarded() && (self.meta & META_PINNED) != 0
+  }
+
+  #[inline]
   pub(crate) fn set_remembered(&mut self, remembered: bool) {
     if remembered {
       self.meta |= META_REMEMBERED;
     } else {
       self.meta &= !META_REMEMBERED;
+    }
+  }
+
+  #[inline]
+  pub(crate) fn set_pinned(&mut self, pinned: bool) {
+    debug_assert!(
+      !self.is_forwarded(),
+      "pinned objects must not be forwarded"
+    );
+    if pinned {
+      self.meta |= META_PINNED;
+    } else {
+      self.meta &= !META_PINNED;
     }
   }
 
@@ -108,29 +128,6 @@ impl ObjHeader {
       return;
     }
     self.meta = (self.meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
-  }
-
-  #[inline]
-  pub(crate) fn is_pinned(&self) -> bool {
-    // Forwarded objects encode a forwarding pointer in `meta`, so the pinned bit
-    // would be meaningless. Pinned objects are never expected in the nursery.
-    if self.is_forwarded() {
-      return false;
-    }
-    (self.meta & META_PINNED) != 0
-  }
-
-  #[inline]
-  pub(crate) fn set_pinned(&mut self, pinned: bool) {
-    debug_assert!(
-      !self.is_forwarded(),
-      "pinned objects must not be forwarded"
-    );
-    if pinned {
-      self.meta |= META_PINNED;
-    } else {
-      self.meta &= !META_PINNED;
-    }
   }
 }
 

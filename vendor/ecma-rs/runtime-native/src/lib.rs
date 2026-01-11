@@ -20,6 +20,7 @@ pub mod abi;
 pub mod arch;
 pub mod gc;
 pub mod immix;
+pub mod los;
 pub mod nursery;
 pub mod stackmap;
 pub mod parallel;
