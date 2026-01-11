@@ -265,6 +265,17 @@ where
     if !should_run && !spec.src_attr_present {
       return Ok(());
     }
+
+    // This orchestrator models only classic script execution. Import maps are not JavaScript and
+    // require a dedicated host hook (they register module specifier mappings for later module
+    // resolution).
+    //
+    // Still allow `type="importmap" src=...` to flow through the scheduler so it can queue the
+    // required `error` event task for invalid `src` usage, but ignore inline import maps so we don't
+    // execute their JSON source as a classic script.
+    if spec.script_type == ScriptType::ImportMap && !spec.src_attr_present {
+      return Ok(());
+    }
     let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
     let is_deferred = spec.script_type == ScriptType::Classic
       && spec.src.is_some()
@@ -554,6 +565,34 @@ mod tests {
         "script:b".to_string(),
         "microtask:b".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn inline_importmap_is_ignored_and_does_not_execute_as_classic_script() -> Result<()> {
+    let html =
+      "<!doctype html><script type=\"importmap\">{\"imports\":{}}</script><script>a</script>".to_string();
+    let mut host = TestHost::new(
+      html,
+      None,
+      8,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+ 
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+ 
+    assert_eq!(
+      host.executor.log,
+      vec!["script:a".to_string(), "microtask:a".to_string()],
+      "import maps are not JavaScript and must not execute through the classic-script executor"
+    );
+    assert!(
+      host.script_events.is_empty(),
+      "inline import maps should not queue script load/error event tasks in this harness"
     );
     Ok(())
   }
