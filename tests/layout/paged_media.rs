@@ -3192,17 +3192,17 @@ fn multicol_break_before_right_inserts_blank_page() {
   let page2 = page_roots[1];
   let page3 = page_roots[2];
 
-  assert!(find_text(page1, "A").is_some());
-  assert!(find_text(page1, "B").is_none());
+  assert!(find_text_eq(page1, "A").is_some());
+  assert!(find_text_eq(page1, "B").is_none());
 
   assert!(
     margin_boxes_contain_text(page2, "Blank"),
     "blank page should use the :blank page rule"
   );
-  assert!(find_text(page2, "A").is_none());
-  assert!(find_text(page2, "B").is_none());
+  assert!(find_text_eq(page2, "A").is_none());
+  assert!(find_text_eq(page2, "B").is_none());
 
-  assert!(find_text(page3, "B").is_some());
+  assert!(find_text_eq(page3, "B").is_some());
   let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B position");
   assert!(
     pos_b.1 <= page_content_start_y(page3) + 1.0,
@@ -3375,17 +3375,17 @@ fn multicol_break_after_recto_uses_root_page_progression() {
   let page2 = page_roots[1];
   let page3 = page_roots[2];
 
-  assert!(find_text(page1, "A").is_some());
-  assert!(find_text(page1, "B").is_none());
+  assert!(find_text_eq(page1, "A").is_some());
+  assert!(find_text_eq(page1, "B").is_none());
 
   assert!(
     margin_boxes_contain_text(page2, "Blank"),
     "blank page should use the :blank page rule"
   );
-  assert!(find_text(page2, "A").is_none());
-  assert!(find_text(page2, "B").is_none());
+  assert!(find_text_eq(page2, "A").is_none());
+  assert!(find_text_eq(page2, "B").is_none());
 
-  assert!(find_text(page3, "B").is_some());
+  assert!(find_text_eq(page3, "B").is_some());
   let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B position");
   assert!(
     pos_b.1 <= page_content_start_y(page3) + 1.0,

@@ -3932,6 +3932,7 @@ pub(crate) fn collect_forced_boundaries_for_pagination_with_axes(
     axes,
     true,
     axes.page_progression_is_ltr(),
+    true,
   )
 }
 
@@ -3941,7 +3942,30 @@ pub(crate) fn collect_forced_boundaries_for_pagination_with_axes_and_page_progre
   axes: FragmentAxes,
   page_progression_is_ltr: bool,
 ) -> Vec<ForcedBoundary> {
-  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, true, page_progression_is_ltr)
+  collect_forced_boundaries_with_axes_internal(
+    node,
+    abs_start,
+    axes,
+    true,
+    page_progression_is_ltr,
+    true,
+  )
+}
+
+pub(crate) fn collect_forced_boundaries_for_pagination_with_axes_and_page_progression_excluding_always(
+  node: &FragmentNode,
+  abs_start: f32,
+  axes: FragmentAxes,
+  page_progression_is_ltr: bool,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_with_axes_internal(
+    node,
+    abs_start,
+    axes,
+    true,
+    page_progression_is_ltr,
+    false,
+  )
 }
 
 pub(crate) fn collect_forced_boundaries_with_axes(
@@ -3955,6 +3979,7 @@ pub(crate) fn collect_forced_boundaries_with_axes(
     axes,
     false,
     axes.page_progression_is_ltr(),
+    true,
   )
 }
 
@@ -3964,20 +3989,21 @@ fn collect_forced_boundaries_with_axes_internal(
   axes: FragmentAxes,
   suppress_parallel_flow_descendants: bool,
   page_progression_is_ltr: bool,
+  include_always: bool,
 ) -> Vec<ForcedBoundary> {
-  fn is_forced_page_break(between: BreakBetween) -> bool {
-    // Note: `BreakBetween::Always` is intentionally excluded here. `always` represents a forced
-    // break in the *immediately containing* fragmentation context and should not be promoted to a
-    // page/side boundary in nested contexts like paged multicol (where it corresponds to a column
-    // break).
-    matches!(
-      between,
+  fn is_forced_page_break(between: BreakBetween, include_always: bool) -> bool {
+    match between {
+      // `always` is a forced break in the current fragmentation context. Nested callers (paged
+      // multicol promotion) can set `include_always=false` so it is not treated as a pagination
+      // boundary.
+      BreakBetween::Always => include_always,
       BreakBetween::Page
-        | BreakBetween::Left
-        | BreakBetween::Right
-        | BreakBetween::Recto
-        | BreakBetween::Verso
-    )
+      | BreakBetween::Left
+      | BreakBetween::Right
+      | BreakBetween::Recto
+      | BreakBetween::Verso => true,
+      _ => false,
+    }
   }
 
   fn break_side_hint(between: BreakBetween, page_progression_is_ltr: bool) -> Option<PageSide> {
@@ -4027,6 +4053,7 @@ fn collect_forced_boundaries_with_axes_internal(
     parent_block_size: f32,
     suppress_parallel_flow_descendants: bool,
     page_progression_is_ltr: bool,
+    include_always: bool,
   ) {
     let node_style = node
       .style
@@ -4067,7 +4094,7 @@ fn collect_forced_boundaries_with_axes_internal(
             let placement = &grid_items.items[idx];
             let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-            if is_forced_page_break(child_style.break_before) {
+            if is_forced_page_break(child_style.break_before, include_always) {
               let boundary_idx = start_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
                 record_boundary(
@@ -4077,7 +4104,7 @@ fn collect_forced_boundaries_with_axes_internal(
               }
             }
 
-            if is_forced_page_break(child_style.break_after) {
+            if is_forced_page_break(child_style.break_after, include_always) {
               let boundary_idx = end_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
                 record_boundary(
@@ -4168,7 +4195,7 @@ fn collect_forced_boundaries_with_axes_internal(
             .map(|s| s.as_ref())
             .unwrap_or(default_style);
 
-          if is_forced_page_break(child_style.break_before) {
+          if is_forced_page_break(child_style.break_before, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx) {
               record_boundary(
                 req,
@@ -4177,7 +4204,7 @@ fn collect_forced_boundaries_with_axes_internal(
             }
           }
 
-          if is_forced_page_break(child_style.break_after) {
+          if is_forced_page_break(child_style.break_after, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx + 1) {
               record_boundary(
                 req,
@@ -4241,7 +4268,7 @@ fn collect_forced_boundaries_with_axes_internal(
         .map(|s| s.as_ref())
         .unwrap_or(default_style);
 
-      if idx == 0 && is_forced_page_break(child_style.break_before) {
+      if idx == 0 && is_forced_page_break(child_style.break_before, include_always) {
         let break_from_flex = flex_line_map
           .as_ref()
           .and_then(|map| map.get(idx))
@@ -4259,8 +4286,8 @@ fn collect_forced_boundaries_with_axes_internal(
         }
       }
 
-      let break_after = is_forced_page_break(child_style.break_after);
-      let break_before = is_forced_page_break(next_style.break_before);
+      let break_after = is_forced_page_break(child_style.break_after, include_always);
+      let break_before = is_forced_page_break(next_style.break_before, include_always);
       if break_after || break_before {
         let break_from_grid =
           (break_after && idx < grid_item_count) || (break_before && idx + 1 < grid_item_count);
@@ -4305,6 +4332,7 @@ fn collect_forced_boundaries_with_axes_internal(
           child_block_size,
           suppress_parallel_flow_descendants,
           page_progression_is_ltr,
+          include_always,
         );
       }
     }
@@ -4322,6 +4350,7 @@ fn collect_forced_boundaries_with_axes_internal(
     axis.block_size(&node.bounds),
     suppress_parallel_flow_descendants,
     page_progression_is_ltr,
+    include_always,
   );
   boundaries
 }
