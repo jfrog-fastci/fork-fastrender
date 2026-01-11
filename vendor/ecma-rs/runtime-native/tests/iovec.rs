@@ -1,6 +1,6 @@
 #[cfg(unix)]
 mod unix {
-  use runtime_native::buffer::ArrayBuffer;
+  use runtime_native::buffer::{ArrayBuffer, Uint8Array};
   use runtime_native::io::{IoVecRange, PinnedIoVec, PinnedMsgHdr};
   use std::os::unix::io::RawFd;
   use std::io;
@@ -60,6 +60,62 @@ mod unix {
     let read_ranges = vec![
       IoVecRange::whole_array_buffer(&out_a),
       IoVecRange::whole_array_buffer(&out_b),
+    ];
+    let read_iov = PinnedIoVec::try_from_ranges(&read_ranges).unwrap();
+    let read_iovcnt: libc::c_int = read_iov.len().try_into().unwrap();
+
+    let nr = unsafe { libc::readv(read_fd.0, read_iov.as_iovec_ptr(), read_iovcnt) };
+    if nr < 0 {
+      return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(nr as usize, total_len);
+
+    let out_a_bytes = unsafe { out_a.pin().unwrap().as_slice().to_vec() };
+    let out_b_bytes = unsafe { out_b.pin().unwrap().as_slice().to_vec() };
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&out_a_bytes);
+    out.extend_from_slice(&out_b_bytes);
+    assert_eq!(&out, b"hello world");
+
+    Ok(())
+  }
+
+  #[test]
+  fn writev_readv_uint8array_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    let (read_fd, write_fd) = pipe()?;
+
+    // Test both:
+    // - a non-zero view byteOffset (via `Uint8Array::view`), and
+    // - a non-zero range offset (via `IoVecRange::uint8_array_range`).
+    let buf_a = ArrayBuffer::from_bytes(b"_hello ".to_vec()).unwrap();
+    let view_a = Uint8Array::view(&buf_a, 1, 6).unwrap(); // "hello "
+
+    let buf_b = ArrayBuffer::from_bytes(b"world_".to_vec()).unwrap();
+    let view_b = Uint8Array::view(&buf_b, 0, 6).unwrap(); // "world_"
+
+    let total_len = 6 + 5;
+
+    let write_ranges = vec![
+      IoVecRange::uint8_array(&view_a),
+      IoVecRange::uint8_array_range(&view_b, 0, 5).unwrap(), // "world"
+    ];
+    let write_iov = PinnedIoVec::try_from_ranges(&write_ranges).unwrap();
+    let write_iovcnt: libc::c_int = write_iov.len().try_into().unwrap();
+
+    let nw = unsafe { libc::writev(write_fd.0, write_iov.as_iovec_ptr(), write_iovcnt) };
+    if nw < 0 {
+      return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(nw as usize, total_len);
+
+    let out_a = ArrayBuffer::new_zeroed(6).unwrap();
+    let out_view_a = Uint8Array::view(&out_a, 0, 6).unwrap();
+    let out_b = ArrayBuffer::new_zeroed(5).unwrap();
+    let out_view_b = Uint8Array::view(&out_b, 0, 5).unwrap();
+
+    let read_ranges = vec![
+      IoVecRange::uint8_array(&out_view_a),
+      IoVecRange::uint8_array(&out_view_b),
     ];
     let read_iov = PinnedIoVec::try_from_ranges(&read_ranges).unwrap();
     let read_iovcnt: libc::c_int = read_iov.len().try_into().unwrap();
