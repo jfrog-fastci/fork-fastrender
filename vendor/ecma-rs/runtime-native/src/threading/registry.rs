@@ -1,4 +1,5 @@
 use crate::arch::SafepointContext;
+use crate::safepoint::FrameCursor;
 use crate::threading::safepoint;
 use std::collections::HashMap;
 use std::cell::RefCell;
@@ -95,6 +96,9 @@ pub struct ThreadState {
   /// after observing the epoch barrier.
   safepoint_context: Mutex<Option<SafepointContext>>,
 
+  /// Captured `(fp, pc)` cursor for stack walking the mutator at a safepoint callsite.
+  safepoint_cursor: Mutex<Option<FrameCursor>>,
+
   stack_bounds: Mutex<Option<StackBounds>>,
 
   /// Per-thread handle stack for temporary roots created by runtime-native Rust
@@ -140,6 +144,10 @@ impl ThreadState {
 
   pub fn safepoint_context(&self) -> Option<SafepointContext> {
     *self.safepoint_context.lock().unwrap()
+  }
+
+  pub fn safepoint_cursor(&self) -> Option<FrameCursor> {
+    *self.safepoint_cursor.lock().unwrap()
   }
 
   pub(crate) fn handle_stack_len(&self) -> usize {
@@ -248,6 +256,7 @@ impl ThreadRegistry {
       detached: AtomicBool::new(false),
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
       safepoint_context: Mutex::new(None),
+      safepoint_cursor: Mutex::new(None),
       stack_bounds: Mutex::new(current_stack_bounds()),
       handle_stack: Mutex::new(HandleStack::default()),
     });
@@ -454,6 +463,14 @@ pub(crate) fn set_current_thread_safepoint_context(ctx: SafepointContext) {
   };
 
   *state.safepoint_context.lock().unwrap() = Some(ctx);
+}
+
+pub(crate) fn set_current_thread_safepoint_cursor(cursor: FrameCursor) {
+  let Some(state) = current_thread_state() else {
+    return;
+  };
+
+  *state.safepoint_cursor.lock().unwrap() = Some(cursor);
 }
 
 /// Best-effort OS thread id for debugging.

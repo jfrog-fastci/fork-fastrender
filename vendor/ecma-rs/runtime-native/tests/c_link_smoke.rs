@@ -248,6 +248,10 @@ int main(void) {
   );
 
   let run = Command::new(&bin_path)
+    // Make the smoke binary deterministic and avoid flakiness from spawning a
+    // large number of worker threads on first use (`rt_ensure_init`).
+    .env("ECMA_RS_RUNTIME_NATIVE_THREADS", "1")
+    .env("ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS", "1")
     .status()
     .expect("run linked C binary");
 

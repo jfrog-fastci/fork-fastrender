@@ -1,8 +1,177 @@
 use crate::arch;
+use crate::arch::SafepointContext;
 use crate::stackwalk::StackBounds;
 use crate::threading;
 use crate::WalkError;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+/// A starting point for stack walking.
+///
+/// # Codegen contract
+///
+/// The native code generator must keep **frame pointers enabled** (e.g.
+/// `-C force-frame-pointers=yes`) so that `fp` forms a valid linked list of
+/// frames.
+///
+/// At a GC safepoint, we must begin stack walking from the **mutator caller**
+/// of `rt_gc_safepoint`, not the runtime's own frame (which has no stackmap
+/// record).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FrameCursor {
+  pub fp: usize,
+  pub pc: usize,
+}
+
+pub type RtGcSafepointHook = extern "C" fn(FrameCursor);
+
+static RT_GC_SAFEPOINT_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Install a process-wide diagnostic hook invoked from `rt_gc_safepoint`'s slow
+/// path.
+///
+/// This is intended for tests and internal debugging. It runs on the mutator
+/// thread while parked in the runtime.
+pub fn set_rt_gc_safepoint_hook(hook: Option<RtGcSafepointHook>) {
+  let ptr = hook.map_or(0, |f| f as usize);
+  RT_GC_SAFEPOINT_HOOK.store(ptr, Ordering::Release);
+}
+
+fn maybe_call_safepoint_hook(cursor: FrameCursor) {
+  let ptr = RT_GC_SAFEPOINT_HOOK.load(Ordering::Acquire);
+  if ptr == 0 {
+    return;
+  }
+  // SAFETY: `set_rt_gc_safepoint_hook` only stores valid function pointers.
+  let hook: RtGcSafepointHook = unsafe { std::mem::transmute(ptr) };
+  hook(cursor);
+}
+
+pub fn current_thread_safepoint_cursor() -> FrameCursor {
+  let Some(state) = crate::threading::registry::current_thread_state() else {
+    return FrameCursor::default();
+  };
+  state.safepoint_cursor().unwrap_or_default()
+}
+
+#[cold]
+extern "C" fn rt_gc_safepoint_slow_impl(caller_fp: usize, caller_pc: usize, sp_entry: usize) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_safepoint();
+
+  // `rt_gc_safepoint` is only meaningful for threads that have been registered
+  // with `rt_thread_init` / `rt_thread_register`. For non-attached threads this
+  // is a no-op: they do not participate in stop-the-world coordination.
+  if crate::threading::registry::current_thread_id().is_none() {
+    return;
+  }
+
+  let cursor = FrameCursor {
+    fp: caller_fp,
+    pc: caller_pc,
+  };
+
+  // Also publish a `SafepointContext` so stop-the-world root enumeration can use
+  // `stackwalk_fp::walk_gc_roots_from_safepoint_context`.
+  // `sp` must match LLVM stackmap semantics: the caller's stack pointer value at
+  // the safepoint return address.
+  #[cfg(target_arch = "x86_64")]
+  let sp = sp_entry.wrapping_add(arch::WORD_SIZE);
+  #[cfg(target_arch = "aarch64")]
+  let sp = sp_entry;
+  let ctx = SafepointContext {
+    sp_entry,
+    sp,
+    fp: caller_fp,
+    ip: caller_pc,
+  };
+  let mut published_ctx = false;
+
+  // Park until the coordinator resumes the world. In rare cases a thread can
+  // miss a resume wakeup (the epoch can flip even->odd before this thread wakes
+  // up and re-checks it). Therefore we must be prepared to observe multiple
+  // stop-the-world epochs while still blocked in the runtime: publish the
+  // currently requested epoch as "observed" and then wait until the epoch
+  // changes, repeating until it becomes even.
+  loop {
+    let requested_epoch = crate::threading::safepoint::current_epoch();
+    if requested_epoch & 1 == 0 {
+      // Post-resume barrier: publish that we've observed the resumed epoch before
+      // returning to mutator execution. Without this, the GC coordinator may
+      // start a new stop-the-world cycle before this thread has returned from
+      // the previous safepoint, causing it to miss the brief even epoch and
+      // remain blocked across requests.
+      if published_ctx {
+        crate::threading::registry::set_current_thread_safepoint_epoch_observed(requested_epoch);
+        crate::threading::safepoint::notify_state_change();
+      }
+      return;
+    }
+
+    if !published_ctx {
+      crate::threading::registry::set_current_thread_safepoint_cursor(cursor);
+      crate::threading::registry::set_current_thread_safepoint_context(ctx);
+      published_ctx = true;
+    }
+
+    // Publish that we've observed the stop-the-world request.
+    crate::threading::registry::set_current_thread_safepoint_epoch_observed(requested_epoch);
+    crate::threading::safepoint::notify_state_change();
+
+    // Test-only hook (may resume the world).
+    maybe_call_safepoint_hook(cursor);
+
+    crate::threading::safepoint::wait_while_epoch_is(requested_epoch);
+  }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+#[no_mangle]
+pub extern "C" fn rt_gc_safepoint() {
+  core::arch::naked_asm!(
+    // Capture the mutator caller cursor before any compiler-generated prologue
+    // touches the stack/frame pointer:
+    //   - `rbp` is the caller FP (with frame pointers enabled)
+    //   - `rsp` points at the return address into the caller
+    "mov rdi, rbp",
+    "mov rsi, [rsp]",
+    "mov rdx, rsp",
+    "jmp {impl_fn}",
+    impl_fn = sym rt_gc_safepoint_slow_impl,
+  );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+#[no_mangle]
+pub extern "C" fn rt_gc_safepoint() {
+  core::arch::naked_asm!(
+    // Capture the mutator caller cursor before any compiler-generated prologue
+    // touches the stack/frame pointer:
+    //   - `x29` is the caller FP (with frame pointers enabled)
+    //   - `x30` is the return address into the caller
+    //   - `sp` is the callee-entry stack pointer
+    "mov x0, x29",
+    "mov x1, x30",
+    "mov x2, sp",
+    "b {impl_fn}",
+    impl_fn = sym rt_gc_safepoint_slow_impl,
+  );
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[no_mangle]
+pub extern "C" fn rt_gc_safepoint() {
+  extern "C" {
+    fn rt_gc_safepoint_unsupported_arch() -> !;
+  }
+  // SAFETY: this function never returns; it exists solely to produce a clear
+  // link-time error on unsupported architectures.
+  unsafe { rt_gc_safepoint_unsupported_arch() }
+}
 
 /// Visit `(slot, value)` relocation pairs for GC roots reachable from a safepoint.
 ///

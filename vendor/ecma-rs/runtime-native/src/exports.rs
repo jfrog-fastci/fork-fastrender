@@ -398,29 +398,6 @@ pub extern "C" fn rt_thread_set_parked(parked: bool) {
   threading::set_parked(parked);
 }
 
-/// GC safepoint.
-#[no_mangle]
-#[inline(never)]
-pub extern "C" fn rt_gc_safepoint() {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_safepoint();
-
-  // Fast path: if no stop-the-world is requested, `rt_gc_safepoint` is a cheap
-  // no-op even for threads that are not registered with the runtime.
-  if !crate::threading::safepoint::rt_gc_poll() {
-    return;
-  }
-
-  // `rt_gc_safepoint` is only meaningful for threads that have been registered
-  // with `rt_thread_init`. For non-attached threads this is a no-op: they do not
-  // participate in stop-the-world coordination.
-  if registry::current_thread_id().is_none() {
-    return;
-  }
-
-  crate::threading::safepoint::rt_gc_safepoint();
-}
-
 /// Enter a GC safepoint and return the (possibly relocated) pointer stored in `slot`.
 ///
 /// This is a `may_gc` helper intended for ABI design/testing. Any runtime function that may trigger
@@ -437,7 +414,7 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
   if slot.is_null() {
     crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
   }
-  rt_gc_safepoint();
+  crate::safepoint::rt_gc_safepoint();
   crate::roots::load_handle(slot)
 }
 
@@ -456,7 +433,6 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
 pub extern "C" fn rt_gc_poll() -> bool {
   (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0
 }
-
 // LLVM `place-safepoints` poll function.
 //
 // LLVM's `place-safepoints` pass inserts calls to a symbol named

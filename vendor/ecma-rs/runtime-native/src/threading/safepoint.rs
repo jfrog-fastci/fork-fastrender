@@ -150,6 +150,18 @@ pub(crate) fn gc_world_lock() -> std::sync::MutexGuard<'static, ()> {
     .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Block the current thread while the global safepoint epoch remains equal to `expected_epoch`.
+///
+/// This is the primitive used by the safepoint slow path to park a thread until
+/// the coordinator resumes the world.
+pub(crate) fn wait_while_epoch_is(expected_epoch: u64) {
+  let coord = coordinator();
+  let mut guard = coord.cv_mutex.lock().unwrap();
+  while RT_GC_EPOCH.load(Ordering::Acquire) == expected_epoch {
+    guard = coord.cv.wait(guard).unwrap();
+  }
+}
+
 /// Try to request a global stop-the-world safepoint.
 ///
 /// Returns `Some(requested_epoch)` (odd) if this call successfully initiated the

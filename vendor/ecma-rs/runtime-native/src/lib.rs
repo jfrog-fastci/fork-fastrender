@@ -50,6 +50,7 @@
 pub mod abi;
 pub mod array;
 pub mod arch;
+pub mod safepoint;
 pub mod gc_safe;
 pub mod async_abi;
 pub mod async_rt;
@@ -69,7 +70,6 @@ pub mod nursery;
 pub mod roots;
 pub mod stackmap;
 pub mod parallel;
-pub mod safepoint;
 pub mod sync;
 pub mod threading;
 pub mod runtime;
@@ -148,6 +148,7 @@ pub use buffer::{
   BorrowGuardWrite, GlobalBackingStoreAllocator, PinnedArrayBuffer, PinnedBackingStore, PinnedUint8Array,
   TypedArrayError, Uint8Array, BACKING_STORE_MIN_ALIGN,
 };
+pub use safepoint::{current_thread_safepoint_cursor, rt_gc_safepoint, set_rt_gc_safepoint_hook, FrameCursor};
 pub use gc::GcHeap;
 pub use gc::{HandleId, HandleTable, OwnedGcHandle, PersistentHandle};
 pub use gc::RememberedSet;
