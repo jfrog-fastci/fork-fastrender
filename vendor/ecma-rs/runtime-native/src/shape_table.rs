@@ -184,6 +184,7 @@ fn validate_descriptor(index: usize, desc: &RtShapeDescriptor) {
 
   let ptr_align = mem::align_of::<*mut u8>();
   let ptr_size = mem::size_of::<*mut u8>();
+  let header_size = mem::size_of::<ObjHeader>();
 
   let offsets = if desc.ptr_offsets_len == 0 {
     &[][..]
@@ -198,6 +199,12 @@ fn validate_descriptor(index: usize, desc: &RtShapeDescriptor) {
   let mut last: Option<u32> = None;
   for &off_u32 in offsets {
     let off = off_u32 as usize;
+    if off < header_size {
+      panic!(
+        "shape[{index}]: ptr offset {} is inside ObjHeader ({} bytes); offsets must be from object base and point into the payload",
+        off, header_size
+      );
+    }
     if off.checked_add(ptr_size).map_or(true, |end| end > size) {
       panic!("shape[{index}]: ptr offset {} out of bounds for size {}", off, size);
     }
@@ -255,6 +262,21 @@ mod tests {
         reserved: 0,
       },
     ];
+
+    // Invalid registration is rejected (offset inside ObjHeader).
+    static HEADER_PTR_OFFSETS: [u32; 1] = [0];
+    static HEADER_TABLE: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
+      size: mem::size_of::<ObjHeader>() as u32,
+      align: mem::align_of::<ObjHeader>() as u16,
+      flags: 0,
+      ptr_offsets: HEADER_PTR_OFFSETS.as_ptr(),
+      ptr_offsets_len: HEADER_PTR_OFFSETS.len() as u32,
+      reserved: 0,
+    }];
+    assert!(std::panic::catch_unwind(|| unsafe {
+      register_shape_table(HEADER_TABLE.as_ptr(), HEADER_TABLE.len());
+    })
+    .is_err());
 
     // Invalid registration is rejected (offset out of bounds).
     static INVALID_PTR_OFFSETS: [u32; 1] = [0xffff_ff00];
