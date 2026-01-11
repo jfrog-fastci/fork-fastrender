@@ -609,9 +609,11 @@ When producing a PIE, native-js AOT output must:
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
-We provide a reference PIE link wrapper:
+We provide reference link wrappers:
 
-- `scripts/native_js_link_linux.sh`
+- `scripts/native_link.sh` — general-purpose linker wrapper (defaults to `-no-pie`; set
+  `ECMA_RS_NATIVE_PIE=1` for PIE mode)
+- `scripts/native_js_link_linux.sh` — native-js-specific PIE wrapper (always `-pie`)
 
 ### GNU ld (system linker) behavior in PIE mode
 
