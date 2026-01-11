@@ -346,8 +346,8 @@ For exact execution rules, see `native-oracle-harness/src/lib.rs` (TS→JS erasu
 
 Strict-native checks can come from multiple layers:
 
-- `TC40xx` codes: emitted by `typecheck-ts` when strict-native is enabled (`--native-strict` / `--strict-native`).
-  - Today this is `TC4000`–`TC4009` and is expected to grow.
+- `TC40xx` / `TN####` codes: emitted by `typecheck-ts` when strict-native is enabled (`--native-strict` / `--strict-native`).
+  - Today this is `TC4000`–`TC4009` plus `TN0001`–`TN0003`, and is expected to grow.
 - `NJS####` codes: emitted by `native-js` strict subset validation.
   - `native_js::validate::validate_strict_subset` is used by the typechecked `native-js` AOT CLI.
   - `native_js::strict::validate` is a legacy validator that still emits `NJS####` codes for tests/tooling.

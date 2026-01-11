@@ -45,6 +45,7 @@ prefixes for planned crates) and where they come from.
 | `LOWER####` | `hir-js` | AST→HIR lowering warnings. |
 | `VMJS####` | `vm-js` | VM/runtime diagnostics. |
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (includes strict-native `TC40xx`; see `typecheck-ts/src/codes.rs`). |
+| `TN####` | `typecheck-ts` | Strict-native type checker diagnostics (legacy prefix; see `typecheck-ts/src/codes.rs`). |
 | `EFF####` | `effect-js` | Effect inference diagnostics. |
 | `NJS####` | `native-js` | Native compilation / codegen pipeline diagnostics (including strict-subset validation; see `native-js/src/codes.rs`). |
 | `RTN####` | `runtime-native` | Native runtime (GC, scheduler, stdlib) diagnostics. |

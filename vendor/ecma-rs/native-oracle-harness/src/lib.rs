@@ -434,7 +434,7 @@ fn empty_span() -> Span {
 }
 
 fn harness_error(message: impl Into<String>) -> Diagnostic {
-  Diagnostic::error("TEST0001", message, empty_span())
+  Diagnostic::error("ORACLE0001", message, empty_span())
 }
 
 fn diagnostics_to_one(mut diags: Vec<Diagnostic>) -> Diagnostic {
