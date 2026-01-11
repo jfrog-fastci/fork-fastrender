@@ -97,6 +97,12 @@ fn exported_stackmap_symbols_match_section_bounds() {
   let (end, end_scope) =
     find_symbol(&file, FASTR_STACKMAPS_END_SYM).expect("missing __fastr_stackmaps_end symbol");
 
+  // Generic aliases used by tooling that doesn't want project-specific symbol names.
+  let (alias_start, alias_start_scope) =
+    find_symbol(&file, "__stackmaps_start").expect("missing __stackmaps_start symbol");
+  let (alias_end, alias_end_scope) =
+    find_symbol(&file, "__stackmaps_end").expect("missing __stackmaps_end symbol");
+
   assert_ne!(
     start_scope,
     SymbolScope::Compilation,
@@ -106,6 +112,16 @@ fn exported_stackmap_symbols_match_section_bounds() {
     end_scope,
     SymbolScope::Compilation,
     "{FASTR_STACKMAPS_END_SYM} must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    alias_start_scope,
+    SymbolScope::Compilation,
+    "__stackmaps_start must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    alias_end_scope,
+    SymbolScope::Compilation,
+    "__stackmaps_end must be globally linkable (not a local symbol)"
   );
 
   assert_eq!(
@@ -117,6 +133,8 @@ fn exported_stackmap_symbols_match_section_bounds() {
     section_size,
     "end-start must equal the .llvm_stackmaps section size"
   );
+  assert_eq!(alias_start, start, "__stackmaps_start must match __fastr_stackmaps_start");
+  assert_eq!(alias_end, end, "__stackmaps_end must match __fastr_stackmaps_end");
 
   // Optional: ensure the section is backed by a readable load segment so the runtime can read the
   // bytes directly from memory (via the start/end symbol pointers).

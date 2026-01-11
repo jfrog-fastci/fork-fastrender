@@ -97,9 +97,11 @@ const LLVM_STACKMAPS_LD_FRAGMENT: &str = r#"
 SECTIONS {
   .llvm_stackmaps : {
     __fastr_stackmaps_start = .;
+    __stackmaps_start = .;
     __llvm_stackmaps_start = .;
     KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
     __fastr_stackmaps_end = .;
+    __stackmaps_end = .;
     __llvm_stackmaps_end = .;
   }
 } INSERT AFTER .text;
