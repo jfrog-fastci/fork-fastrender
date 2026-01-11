@@ -133,16 +133,15 @@ fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
 
   let (program, host, entry_file) = load_program(cli, entry)?;
 
-  let mut diagnostics = program.check();
+  let diagnostics = program.check();
   if diagnostics.iter().any(|d| d.severity == Severity::Error) {
     render_and_print(&program, &host, &diagnostics);
     return Err("TypeScript type checking failed".into());
   }
 
-  diagnostics = native_js::strict::validate(&program, &program.reachable_files());
-  if !diagnostics.is_empty() {
-    render_and_print(&program, &host, &diagnostics);
-    return Err("native-js strict validation failed".into());
+  if let Err(diags) = native_js::validate::validate_strict_subset(&program) {
+    render_and_print(&program, &host, &diags);
+    return Err("native-js strict subset validation failed".into());
   }
 
   let entrypoint = native_js::strict::entrypoint(&program, entry_file).map_err(|diags| {
