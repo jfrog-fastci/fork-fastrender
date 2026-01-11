@@ -206,6 +206,7 @@ mod grid_fragmentation;
 mod grid_fragmentation_writing_mode;
 mod grid_column_numeric;
 mod grid_intrinsic_definite_height;
+mod grid_intrinsic_block_size_definite_inline;
 mod grid_intrinsic_sizing_keywords;
 mod grid_intrinsic_keywords_vertical_writing_mode;
 mod grid_item_auto_width_stretch_respects_max_width;
