@@ -50,7 +50,6 @@ prefixes for planned crates) and where they come from.
 | `NJS####` | `native-js` | Native compilation / codegen pipeline diagnostics (including strict-subset validation; see `native-js/src/codes.rs`). |
 | `RTN####` | `runtime-native` | Native runtime (GC, scheduler, stdlib) diagnostics. |
 | `KB####` | `knowledge-base` | Knowledge base schema/consistency validation diagnostics. |
-| `ORACLE####` | `native-oracle-harness` | Native oracle harness diagnostics (internal test runner / fallback pipeline). |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
