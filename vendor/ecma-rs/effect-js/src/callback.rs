@@ -236,7 +236,6 @@ pub fn analyze_inline_callback(
   let ExprKind::FunctionExpr {
     body: cb_body,
     is_arrow,
-    name: fn_name,
     ..
   } = &cb_expr.kind
   else {
@@ -257,7 +256,6 @@ pub fn analyze_inline_callback(
   });
 
   let arguments_object_available = !*is_arrow
-    && !fn_name.is_some_and(|name| lowered.names.resolve(name) == Some("arguments"))
     && !func
       .params
       .iter()
@@ -2037,7 +2035,7 @@ mod tests {
   }
 
   #[test]
-  fn callback_named_arguments_function_does_not_count_as_index_or_array_usage() {
+  fn callback_named_arguments_function_counts_as_index_usage() {
     let kb = crate::load_default_api_database();
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
@@ -2047,7 +2045,7 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_index, Some(true));
     assert_eq!(info.callback_uses_array, Some(false));
   }
 
