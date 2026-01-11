@@ -2666,41 +2666,6 @@ fn coerce_unitless_zero_number(
   }
 }
 
-fn style_range_value_is_line_height(value: &StyleRangeValue) -> bool {
-  match value {
-    StyleRangeValue::Property(name) => name.eq_ignore_ascii_case("line-height"),
-    _ => false,
-  }
-}
-
-fn line_height_font_size(container: &ContainerQueryInfo) -> f32 {
-  container
-    .styles
-    .font_size
-    .is_finite()
-    .then_some(container.styles.font_size)
-    .filter(|v| *v >= 0.0)
-    .unwrap_or(16.0)
-}
-
-fn coerce_line_height_percentage_to_length(
-  value: NumericValue,
-  font_size: f32,
-) -> Option<NumericValue> {
-  if value.ty != NumericType::Percentage {
-    return Some(value);
-  }
-  let px = font_size * (value.value / 100.0);
-  if px.is_finite() && px >= 0.0 {
-    Some(NumericValue {
-      ty: NumericType::LengthPx,
-      value: px,
-    })
-  } else {
-    None
-  }
-}
-
 fn compare_numeric(op: StyleRangeOp, left: f32, right: f32) -> bool {
   match op {
     StyleRangeOp::Lt => left < right,
@@ -2716,27 +2681,69 @@ fn eval_style_range(
   container: &ContainerQueryInfo,
   ctx: &ContainerQueryContext,
 ) -> QueryResult {
+  let range_involves_line_height = |value: &StyleRangeValue| match value {
+    StyleRangeValue::Property(name) => name.eq_ignore_ascii_case("line-height"),
+    _ => false,
+  };
+  let coerce_line_height_percentage = |value: NumericValue,
+                                       operand: &StyleRangeValue,
+                                       font_size: f32|
+   -> NumericValue {
+    if value.ty != NumericType::Percentage {
+      return value;
+    }
+    match operand {
+      StyleRangeValue::Property(name) if name.eq_ignore_ascii_case("line-height") => {
+        let px = font_size * (value.value / 100.0);
+        if px.is_finite() && px >= 0.0 {
+          NumericValue {
+            ty: NumericType::LengthPx,
+            value: px,
+          }
+        } else {
+          value
+        }
+      }
+      StyleRangeValue::Value(_) | StyleRangeValue::CustomProperty(_) => {
+        let px = font_size * (value.value / 100.0);
+        if px.is_finite() && px >= 0.0 {
+          NumericValue {
+            ty: NumericType::LengthPx,
+            value: px,
+          }
+        } else {
+          value
+        }
+      }
+      _ => value,
+    }
+  };
+
   match range {
     StyleRange::Single { left, op, right } => {
+      let line_height_range = range_involves_line_height(left) || range_involves_line_height(right);
       let Some(lhs) = eval_style_range_value(left, container, ctx) else {
         return QueryResult::Unknown;
       };
       let Some(rhs) = eval_style_range_value(right, container, ctx) else {
         return QueryResult::Unknown;
       };
-      let (mut lhs, mut rhs) = coerce_unitless_zero_number(lhs, rhs);
-      if lhs.ty != rhs.ty && (style_range_value_is_line_height(left) || style_range_value_is_line_height(right))
-      {
-        let font_size = line_height_font_size(container);
-        lhs = match coerce_line_height_percentage_to_length(lhs, font_size) {
-          Some(value) => value,
-          None => return QueryResult::Unknown,
-        };
-        rhs = match coerce_line_height_percentage_to_length(rhs, font_size) {
-          Some(value) => value,
-          None => return QueryResult::Unknown,
-        };
-      }
+      let (lhs, rhs) = if line_height_range {
+        let font_size = container
+          .styles
+          .font_size
+          .is_finite()
+          .then_some(container.styles.font_size)
+          .filter(|v| *v >= 0.0)
+          .unwrap_or(16.0);
+        (
+          coerce_line_height_percentage(lhs, left, font_size),
+          coerce_line_height_percentage(rhs, right, font_size),
+        )
+      } else {
+        (lhs, rhs)
+      };
+      let (lhs, rhs) = coerce_unitless_zero_number(lhs, rhs);
       if lhs.ty != rhs.ty {
         return QueryResult::False;
       }
@@ -2748,6 +2755,9 @@ fn eval_style_range(
       middle,
       right,
     } => {
+      let line_height_range = range_involves_line_height(left)
+        || range_involves_line_height(middle)
+        || range_involves_line_height(right);
       let Some(a) = eval_style_range_value(left, container, ctx) else {
         return QueryResult::Unknown;
       };
@@ -2758,28 +2768,24 @@ fn eval_style_range(
         return QueryResult::Unknown;
       };
 
-      let (mut a, mut b) = coerce_unitless_zero_number(a, b);
-      let (b2, mut c) = coerce_unitless_zero_number(b, c);
-      b = b2;
-      if (a.ty != b.ty || b.ty != c.ty)
-        && (style_range_value_is_line_height(left)
-          || style_range_value_is_line_height(middle)
-          || style_range_value_is_line_height(right))
-      {
-        let font_size = line_height_font_size(container);
-        a = match coerce_line_height_percentage_to_length(a, font_size) {
-          Some(value) => value,
-          None => return QueryResult::Unknown,
-        };
-        b = match coerce_line_height_percentage_to_length(b, font_size) {
-          Some(value) => value,
-          None => return QueryResult::Unknown,
-        };
-        c = match coerce_line_height_percentage_to_length(c, font_size) {
-          Some(value) => value,
-          None => return QueryResult::Unknown,
-        };
-      }
+      let (a, b, c) = if line_height_range {
+        let font_size = container
+          .styles
+          .font_size
+          .is_finite()
+          .then_some(container.styles.font_size)
+          .filter(|v| *v >= 0.0)
+          .unwrap_or(16.0);
+        (
+          coerce_line_height_percentage(a, left, font_size),
+          coerce_line_height_percentage(b, middle, font_size),
+          coerce_line_height_percentage(c, right, font_size),
+        )
+      } else {
+        (a, b, c)
+      };
+      let (a, b) = coerce_unitless_zero_number(a, b);
+      let (b, c) = coerce_unitless_zero_number(b, c);
       if a.ty != b.ty || b.ty != c.ty {
         return QueryResult::False;
       }

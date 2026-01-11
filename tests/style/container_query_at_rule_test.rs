@@ -264,7 +264,7 @@ fn not_container_query_parses_and_evaluates() {
 fn container_query_or_allows_known_clause_when_other_clause_is_unknown() {
   let css = r#"
     .target { display: block; }
-    @container (min-width: 400px) or scroll-state(snapped: top) {
+    @container (min-width: 400px) or foo(bar) {
       .target { display: inline; }
     }
   "#;
@@ -284,7 +284,7 @@ fn container_query_or_allows_known_clause_when_other_clause_is_unknown() {
 fn not_unknown_container_query_does_not_match() {
   let css = r#"
     .target { display: block; }
-    @container not scroll-state(snapped: top) {
+    @container not foo(bar) {
       .target { display: inline; }
     }
   "#;

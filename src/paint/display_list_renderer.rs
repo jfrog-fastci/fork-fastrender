@@ -2077,7 +2077,7 @@ where
   // `bounds_in_src` can extend outside the available backdrop image (e.g. due to blur outsets or
   // off-canvas stacking-context bounds). Clamp the write region to the filtered pixmap extents so
   // mask/data indexing stays in-bounds. Pixels outside the backdrop are treated as fully clipped.
-  if src_start_x as usize >= filtered_width || src_start_y as usize >= filtered_height as usize {
+  if src_start_x as usize >= filtered_width || src_start_y >= filtered_height_u32 {
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
       scratch.radii_mask = Some(mask);
@@ -2091,7 +2091,7 @@ where
     return Ok(());
   }
   let max_write_w = filtered_width.saturating_sub(src_start_x as usize) as u32;
-  let max_write_h = filtered_height.saturating_sub(src_start_y);
+  let max_write_h = filtered_height_u32.saturating_sub(src_start_y);
   write_w = write_w.min(max_write_w);
   write_h = write_h.min(max_write_h);
   if write_w == 0 || write_h == 0 {

@@ -43,6 +43,23 @@ fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
   None
 }
 
+fn styled_node_id_by_class(styled: &StyledNode, class_name: &str) -> Option<usize> {
+  if let Some(class) = styled.node.get_attribute("class") {
+    if class
+      .split_whitespace()
+      .any(|name| name.eq_ignore_ascii_case(class_name))
+    {
+      return Some(styled.node_id);
+    }
+  }
+  for child in &styled.children {
+    if let Some(id) = styled_node_id_by_class(child, class_name) {
+      return Some(id);
+    }
+  }
+  None
+}
+
 fn box_id_for_styled(box_node: &BoxNode, styled_id: usize) -> Option<usize> {
   if box_node.styled_node_id == Some(styled_id) {
     return Some(box_node.id);
@@ -70,6 +87,32 @@ fn find_fragment<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a Fr
   } = fragment
   {
     return find_fragment(snapshot, box_id);
+  }
+  None
+}
+
+fn find_fragment_absolute<'a>(
+  fragment: &'a FragmentNode,
+  box_id: usize,
+  offset_x: f32,
+  offset_y: f32,
+) -> Option<(&'a FragmentNode, f32, f32)> {
+  let offset_x = offset_x + fragment.bounds.x();
+  let offset_y = offset_y + fragment.bounds.y();
+  if fragment.box_id() == Some(box_id) {
+    return Some((fragment, offset_x, offset_y));
+  }
+  for child in fragment.children.iter() {
+    if let Some(found) = find_fragment_absolute(child, box_id, offset_x, offset_y) {
+      return Some(found);
+    }
+  }
+  if let FragmentNode {
+    content: fastrender::tree::fragment_tree::FragmentContent::RunningAnchor { snapshot, .. },
+    ..
+  } = fragment
+  {
+    return find_fragment_absolute(snapshot, box_id, offset_x, offset_y);
   }
   None
 }
@@ -1998,5 +2041,36 @@ fn visual_fixture_matches_goldens() {
     let golden = fs::read(&golden_path).expect("golden png");
     let diff_dir = root.join("target/transition_starting_style_diffs");
     compare_pngs(name, &png, &golden, &compare_config, &diff_dir).expect("compare");
+  }
+}
+
+#[test]
+fn transition_starting_style_fixture_box_layout_is_untransformed() {
+  std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let html = fs::read_to_string(root.join("tests/fixtures/html/transition_starting_style.html"))
+    .expect("fixture html");
+  let (box_tree, fragment_tree, styled_tree) = prepare(&html, 260, 180);
+  let node_id = styled_node_id_by_class(&styled_tree, "box").expect("styled .box");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 400.0, viewport);
+
+  let (frag, abs_x, abs_y) =
+    find_fragment_absolute(&mid.root, box_id, 0.0, 0.0).expect("fragment");
+  let style = frag.style.as_ref().expect("style");
+
+  // The fragment bounds represent layout (untransformed) geometry; `transform` should not affect it.
+  assert!((abs_x - 40.0).abs() < 1e-3, "abs_x={abs_x}");
+  assert!((abs_y - 32.0).abs() < 1e-3, "abs_y={abs_y}");
+  match style.transform.as_slice() {
+    [fastrender::css::types::Transform::TranslateX(len)] => {
+      // 800ms ease @ 400ms should be ~80px translateX (box starts at x=40, painted at x≈120).
+      let tx = len.to_px();
+      assert!((tx - 80.0).abs() < 1.0, "translateX={tx}");
+    }
+    other => panic!("expected translateX transform, got {other:?}"),
   }
 }

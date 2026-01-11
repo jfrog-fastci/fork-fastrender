@@ -3357,6 +3357,23 @@ impl BlockFormattingContext {
           }
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
+        // Child fragments are translated from the block's content coordinate space into the
+        // fragment-local (border-box) coordinate space via `content_origin` above.
+        //
+        // Keep out-of-flow positioned descendants consistent. When the positioned containing block
+        // is *not* this element's own padding box (i.e. it's inherited from an ancestor), the
+        // computed fragment position is still expressed in the content coordinate space and must
+        // be translated alongside in-flow fragments.
+        //
+        // Viewport-fixed fragments are stored in absolute viewport coordinates, and positioned
+        // elements whose containing block is this element's padding box are already computed in the
+        // border-box coordinate space, so neither should be translated here.
+        if cb != viewport_cb
+          && cb != parent_padding_cb
+          && (content_origin.x != 0.0 || content_origin.y != 0.0)
+        {
+          child_fragment.translate_root_in_place(content_origin);
+        }
         child_fragment.style = Some(original_style);
         if trace_positioned.contains(&pos_child.id) {
           let (text_count, total) = count_text_fragments(&child_fragment);
@@ -11217,14 +11234,24 @@ impl FormattingContext for BlockFormattingContext {
           }
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
+        // Match `layout_block_child`: translate positioned fragments that are still expressed in
+        // the content coordinate space alongside in-flow fragments. See the comment at the
+        // equivalent site above for the reasoning behind excluding viewport-fixed fragments and
+        // elements positioned against this element's own padding box.
+        if cb != viewport_cb
+          && cb != parent_padding_cb
+          && (content_origin.x != 0.0 || content_origin.y != 0.0)
+        {
+          child_fragment.translate_root_in_place(content_origin);
+        }
         child_fragment.style = Some(original_style);
         if trace_positioned.contains(&child.id) {
           let (text_count, total) = count_text_fragments(&child_fragment);
           eprintln!(
                         "[block-positioned-placed] child_id={} pos=({:.1},{:.1}) size=({:.1},{:.1}) texts={}/{}",
                         child.id,
-                        border_origin.x,
-                        border_origin.y,
+                        child_fragment.bounds.x(),
+                        child_fragment.bounds.y(),
                         border_size.width,
                         border_size.height,
                         text_count,

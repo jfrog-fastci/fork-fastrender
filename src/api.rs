@@ -19784,7 +19784,8 @@ fn build_container_query_context(
       percentage_base
     };
 
-    let is_scroll_state_container = include_scroll_state && style.container_type.supports_scroll_state();
+    let is_scroll_state_container =
+      include_scroll_state && style.container_type.supports_scroll_state();
     let is_size_container = style.container_type.supports_size_queries();
 
     // Only scroll-state containers receive scroll/stuck metadata.
