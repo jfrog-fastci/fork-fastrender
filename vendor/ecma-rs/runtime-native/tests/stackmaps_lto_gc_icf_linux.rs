@@ -144,7 +144,8 @@ fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
   // linker fragment, lld can error with:
   //   "section: .dynamic is not contiguous with other relro sections"
   //
-  // Patch the input section flags so lld treats stackmaps/faultmaps as data.
+  // Patch both legacy `.llvm_*` section names and the hardened `.data.rel.ro.llvm_*`
+  // variants so lld treats stackmaps/faultmaps as data.
   for sec in [
     ".llvm_stackmaps",
     ".llvm_faultmaps",
@@ -617,10 +618,10 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
 
   // lld+LTO: materialize ELF objects so we can patch stackmap section flags.
   //
-  // Without this, the `-flto` inputs are raw LLVM bitcode. lld generates the
-  // `.llvm_stackmaps` section during codegen, but it is emitted read-only. When
-  // we force it into RELRO via `stackmaps.ld`, lld rejects the link unless the
-  // section is writable.
+  // Without this, the `-flto` inputs are raw LLVM bitcode (not ELF), so `objcopy`
+  // cannot patch them. Stackmaps/faultmaps sections are generated during LTO
+  // codegen at link time, so first run a "materialization" link with
+  // `--save-temps` so lld writes the generated ELF objects to disk.
   let thin_materialized = if let Some(lld_flag) = lld_flag {
     Some(materialize_lto_objects(
       clang,
@@ -646,7 +647,7 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
 
   // This test links non-PIE executables (`-no-pie`). Mirror production by using
   // the dedicated non-PIE linker-script fragment, which keeps `.llvm_stackmaps`
-  // directly (no section renaming required).
+  // (and `.data.rel.ro.llvm_stackmaps`) directly.
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps_nopie.ld");
@@ -703,14 +704,19 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
       }
     };
 
-    // If we injected the stackmaps linker fragment, rename `.llvm_stackmaps` to
-    // `.data.rel.ro.llvm_stackmaps` so the fragment's `KEEP()` patterns match.
+    // If we injected the stackmaps linker fragment, normalize stackmap section
+    // names so the fragment's `KEEP()` patterns match (`native-js` uses the
+    // hardened `.data.rel.ro.llvm_*` section names).
     //
     // Additionally, when using lld, patch the section flags so stackmaps behave
     // like normal writable data during relocation.
     if cfg.keep_stackmaps {
       let Some(objcopy) = objcopy else {
-        eprintln!("skipping {}: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy for lld+stackmaps.ld)", cfg.name);
+        eprintln!(
+          "skipping {}: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy when using {})",
+          cfg.name,
+          script.display()
+        );
         continue;
       };
       let using_lld = cmd
@@ -724,7 +730,7 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
         fs::copy(src, &dst).expect("copy input object for patching");
         rename_stackmap_sections_to_data_rel_ro(objcopy, &dst, cfg.name);
         if using_lld {
-        patch_stackmap_section_flags(objcopy, &dst, cfg.name);
+          patch_stackmap_section_flags(objcopy, &dst, cfg.name);
         }
         patched.push(dst);
       }
