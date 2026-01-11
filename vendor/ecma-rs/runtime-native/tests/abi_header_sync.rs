@@ -151,6 +151,19 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
       );
     }
   }
+
+  assert!(
+    HEADER.contains("#ifdef RUNTIME_NATIVE_GC_DEBUG"),
+    "`runtime_native.h` is missing the RUNTIME_NATIVE_GC_DEBUG feature guard"
+  );
+  if cfg!(feature = "gc_debug") {
+    for sym in ["rt_debug_shape_count(", "rt_debug_shape_descriptor(", "rt_debug_validate_heap("] {
+      assert!(
+        HEADER.contains(sym),
+        "`runtime_native.h` is missing expected GC debug ABI symbol: {sym}"
+      );
+    }
+  }
 }
 
 #[test]
@@ -306,6 +319,24 @@ fn runtime_native_exports_match_expected_abi_signatures() {
       runtime_native::rt_gc_stats_snapshot;
     let _stats_reset: extern "C" fn() = runtime_native::rt_gc_stats_reset;
     let _ = (_stats_snapshot, _stats_reset);
+  }
+
+  #[cfg(feature = "gc_debug")]
+  {
+    extern "C" {
+      fn rt_debug_shape_count() -> usize;
+      fn rt_debug_shape_descriptor(
+        id: runtime_native::abi::RtShapeId,
+      ) -> *const runtime_native::abi::RtShapeDescriptor;
+      fn rt_debug_validate_heap();
+    }
+
+    let _debug_shape_count: unsafe extern "C" fn() -> usize = rt_debug_shape_count;
+    let _debug_shape_descriptor: unsafe extern "C" fn(
+      runtime_native::abi::RtShapeId,
+    ) -> *const runtime_native::abi::RtShapeDescriptor = rt_debug_shape_descriptor;
+    let _debug_validate_heap: unsafe extern "C" fn() = rt_debug_validate_heap;
+    let _ = (_debug_shape_count, _debug_shape_descriptor, _debug_validate_heap);
   }
 
   let _ = (
