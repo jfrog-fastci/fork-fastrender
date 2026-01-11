@@ -747,9 +747,9 @@ impl<'a> CallSite<'a> {
   /// derived-pointer relocation must use the statepoint relocation-pair APIs (e.g.
   /// [`CallSite::reloc_pairs`], or higher-level stack walking helpers that apply relocation).
   ///
-  /// For non-statepoint records (those without the 3-constant prefix), this
-  /// falls back to scanning all locations and treating `Indirect` stack slots as
-  /// GC roots.
+  /// For non-statepoint records (those that do not match the LLVM 18 statepoint
+  /// location layout), this falls back to scanning all locations and treating
+  /// `Indirect` stack slots as GC roots.
   ///
   /// Normalization (requires frame pointers):
   /// - `Indirect [SP + off]` becomes `fp_off = frame_record_size - stack_size + off`

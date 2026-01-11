@@ -241,6 +241,58 @@ fn verifier_does_not_depend_on_patchpoint_id_constant() {
 }
 
 #[test]
+fn statepoints_only_mode_uses_layout_detection_not_patchpoint_id() {
+  let stackmap = StackMap {
+    version: 3,
+    functions: vec![StackSizeRecord {
+      address: 0x1000,
+      stack_size: 32,
+      record_count: 1,
+    }],
+    constants: vec![],
+    records: vec![StackMapRecord {
+      // Arbitrary user-assigned IDs are valid for LLVM statepoints (via the
+      // `"statepoint-id"="…"` callsite attribute). This record is statepoint-shaped but uses a
+      // non-canonical ID to ensure `VerifyMode::StatepointsOnly` does not skip it.
+      patchpoint_id: 123,
+      instruction_offset: 0x10,
+      locations: vec![
+        Location::Constant { size: 8, value: 0 }, // callconv
+        Location::Constant { size: 8, value: 0 }, // flags
+        Location::Constant { size: 8, value: 0 }, // deopt_count
+        // One GC pair with an intentional violation: Register root (verifier expects Indirect).
+        Location::Register {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 0,
+        },
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+      ],
+      live_outs: vec![],
+    }],
+  };
+
+  let err = verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap_err();
+
+  assert_eq!(err.patchpoint_id, 123);
+  assert_eq!(err.callsite_address, 0x1010);
+  assert_eq!(err.location_index, Some(3));
+  assert!(err.to_string().contains("return address 0x1010"));
+  assert!(err.to_string().contains("patchpoint_id=0x7b"));
+}
+
+#[test]
 fn stackmaps_parse_runs_statepoint_verifier() {
   let mut bytes = if cfg!(target_arch = "x86_64") {
     STATEPOINT_X86_64.to_vec()

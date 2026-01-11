@@ -4,6 +4,12 @@
 //! into addressable stack slots (SP-relative `Indirect` locations). LLVM *can*
 //! legally encode roots in registers, so we keep a runtime verifier to fail fast
 //! if codegen or LLVM changes break that assumption.
+//!
+//! Note: `patchpoint_id` is **not** a reliable discriminator for identifying statepoint
+//! stackmap records. LLVM 18+ allows arbitrary/user-assigned IDs via the callsite
+//! attribute `"statepoint-id"="…"`, and IDs are not guaranteed unique. We therefore
+//! use a layout-based heuristic (see [`looks_like_statepoint_record`]) when running
+//! the verifier in [`VerifyMode::StatepointsOnly`].
 
 use crate::stackmaps::{
   parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSize, StackSizeRecord,
@@ -27,7 +33,7 @@ use std::fmt;
 /// identifying statepoints.
 ///
 /// The runtime verifier identifies statepoints by attempting to decode the
-/// record layout as a `gc.statepoint` (see
+/// record layout as a `gc.statepoint` (see [`looks_like_statepoint_record`] /
 /// [`crate::statepoints::StatepointRecord`]).
 pub const LLVM_STATEPOINT_PATCHPOINT_ID: u64 = 0xABCDEF00;
 
@@ -320,7 +326,11 @@ pub fn verify_statepoint_stackmap(
       })?;
       record_index += 1;
 
-      if opts.mode == VerifyMode::StatepointsOnly && StatepointRecord::new(rec).is_err() {
+      let should_verify = match opts.mode {
+        VerifyMode::AllRecords => true,
+        VerifyMode::StatepointsOnly => looks_like_statepoint_record(rec),
+      };
+      if !should_verify {
         // In "statepoints only" mode, ignore any record that doesn't match the
         // statepoint layout. This includes patchpoints and any other stackmap
         // users.
@@ -332,6 +342,16 @@ pub fn verify_statepoint_stackmap(
   }
 
   Ok(())
+}
+
+/// Heuristic for detecting LLVM `gc.statepoint` stackmap records.
+///
+/// The StackMap format does not explicitly tag records as statepoints, and
+/// `patchpoint_id` is not a reliable discriminator (it can be overridden via the
+/// `"statepoint-id"` callsite directive). We therefore treat any record that can
+/// be decoded as an LLVM 18 `gc.statepoint` layout as a statepoint.
+fn looks_like_statepoint_record(rec: &StackMapRecord) -> bool {
+  StatepointRecord::new(rec).is_ok()
 }
 
 #[cfg(test)]
