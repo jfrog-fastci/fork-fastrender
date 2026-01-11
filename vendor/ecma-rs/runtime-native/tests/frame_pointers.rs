@@ -202,6 +202,11 @@ runtime-native = {{ path = "{}", features = ["fp_regression"] }}
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn llc_generated_object_has_frame_pointers() {
+  if find_on_path(&["llc-18", "llc"]).is_none() {
+    eprintln!("skipping: llc not found in PATH");
+    return;
+  }
+
   let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
     .expect("runtime-native should live under the vendor/ecma-rs workspace");
