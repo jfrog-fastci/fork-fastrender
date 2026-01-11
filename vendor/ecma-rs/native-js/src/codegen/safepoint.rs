@@ -26,8 +26,10 @@ use inkwell::values::AsValueRef;
 use inkwell::values::BasicValue;
 use inkwell::values::{FunctionValue, IntValue};
 use inkwell::IntPredicate;
-use llvm_sys::core::{LLVMSetAlignment, LLVMSetOrdering};
-use llvm_sys::LLVMAtomicOrdering;
+use llvm_sys::core::{
+  LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMSetAlignment, LLVMSetOrdering,
+};
+use llvm_sys::{LLVMAtomicOrdering, LLVMTypeKind};
 
 use crate::runtime_abi::{RuntimeAbi, RuntimeFn};
 
@@ -36,6 +38,12 @@ fn get_or_declare_rt_gc_epoch<'ctx>(
   module: &Module<'ctx>,
 ) -> inkwell::values::GlobalValue<'ctx> {
   if let Some(existing) = module.get_global("RT_GC_EPOCH") {
+    unsafe {
+      let ty = LLVMGlobalGetValueType(existing.as_value_ref());
+      if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
+        panic!("RT_GC_EPOCH must have type i64");
+      }
+    }
     return existing;
   }
   // Declared in `runtime-native/include/runtime_native.h`.

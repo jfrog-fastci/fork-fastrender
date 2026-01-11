@@ -68,6 +68,26 @@ fn extract_ret_ssa(func_ir: &str) -> String {
 }
 
 #[test]
+#[should_panic(expected = "RT_GC_EPOCH must have type i64")]
+fn backedge_poll_panics_on_incompatible_rt_gc_epoch_type() {
+  let context = Context::create();
+  let module = context.create_module("gc_backedge_poll_bad_epoch");
+  let builder = context.create_builder();
+
+  // Mismatched type: the poll helper assumes `RT_GC_EPOCH` is a `u64`.
+  let epoch = module.add_global(context.i32_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i32_type().const_zero());
+
+  let void_ty = context.void_type();
+  let fn_ty = void_ty.fn_type(&[], false);
+  let func = module.add_function("test", fn_ty, None);
+  let entry = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry);
+
+  safepoint::emit_backedge_gc_poll(&context, &module, &builder, func);
+}
+
+#[test]
 fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   native_js::llvm::init_native_target().expect("failed to init native target");
 
