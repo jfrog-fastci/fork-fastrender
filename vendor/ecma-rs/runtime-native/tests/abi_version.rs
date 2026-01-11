@@ -63,3 +63,100 @@ fn abi_version_mismatch_child() {
     let _ = runtime_native::rt_async_spawn(&mut coro as *mut Coroutine);
   }
 }
+
+#[test]
+fn reserved_nonzero_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+  let status = Command::new(exe)
+    .arg("--exact")
+    .arg("reserved_nonzero_child")
+    .arg("--nocapture")
+    .env("RT_ASYNC_ABI_RESERVED_CHILD", "1")
+    .status()
+    .expect("spawn child test process");
+
+  assert!(!status.success(), "expected child to abort");
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+  }
+}
+
+#[test]
+fn reserved_nonzero_child() {
+  if std::env::var_os("RT_ASYNC_ABI_RESERVED_CHILD").is_none() {
+    return;
+  }
+
+  static BAD_VTABLE: CoroutineVTable = CoroutineVTable {
+    resume: dummy_resume,
+    destroy: dummy_destroy,
+    promise_size: core::mem::size_of::<PromiseHeader>() as u32,
+    promise_align: core::mem::align_of::<PromiseHeader>() as u32,
+    promise_shape_id: RtShapeId::INVALID,
+    abi_version: RT_ASYNC_ABI_VERSION,
+    reserved: [1, 0, 0, 0],
+  };
+
+  let mut coro = Coroutine {
+    vtable: &BAD_VTABLE,
+    promise: core::ptr::null_mut(),
+    next_waiter: core::ptr::null_mut(),
+    flags: 0,
+  };
+
+  unsafe {
+    let _ = runtime_native::rt_async_spawn(&mut coro as *mut Coroutine);
+  }
+}
+
+#[test]
+fn promise_align_not_power_of_two_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+  let status = Command::new(exe)
+    .arg("--exact")
+    .arg("promise_align_not_power_of_two_child")
+    .arg("--nocapture")
+    .env("RT_ASYNC_ABI_ALIGN_CHILD", "1")
+    .status()
+    .expect("spawn child test process");
+
+  assert!(!status.success(), "expected child to abort");
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+  }
+}
+
+#[test]
+fn promise_align_not_power_of_two_child() {
+  if std::env::var_os("RT_ASYNC_ABI_ALIGN_CHILD").is_none() {
+    return;
+  }
+
+  // 24 is >= PromiseHeader alignment (8) but not a power of two.
+  static BAD_VTABLE: CoroutineVTable = CoroutineVTable {
+    resume: dummy_resume,
+    destroy: dummy_destroy,
+    promise_size: core::mem::size_of::<PromiseHeader>() as u32,
+    promise_align: 24,
+    promise_shape_id: RtShapeId::INVALID,
+    abi_version: RT_ASYNC_ABI_VERSION,
+    reserved: [0; 4],
+  };
+
+  let mut coro = Coroutine {
+    vtable: &BAD_VTABLE,
+    promise: core::ptr::null_mut(),
+    next_waiter: core::ptr::null_mut(),
+    flags: 0,
+  };
+
+  unsafe {
+    let _ = runtime_native::rt_async_spawn(&mut coro as *mut Coroutine);
+  }
+}
