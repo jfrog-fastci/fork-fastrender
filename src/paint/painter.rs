@@ -786,6 +786,15 @@ enum DisplayCommand {
     /// force stacking-context allocation to keep backdrop-root semantics consistent.
     has_clip_path: bool,
     clip_path: Option<StackingClipPath>,
+    /// Style for the stacking-context root fragment, used to disambiguate which background/border
+    /// commands belong to the root when applying overflow clipping.
+    ///
+    /// Overflow clips apply to descendants, not the root element's own background/borders. The
+    /// legacy painter renders overflow-clipped descendants into a secondary layer and composites it
+    /// above the root decorations. Without this hint we'd have to guess which background commands
+    /// belong to the root, and descendants that happen to cover the full rect (common) could be
+    /// misclassified as root decorations and incorrectly moved behind clipped content.
+    root_style: Option<Arc<ComputedStyle>>,
     commands: Vec<DisplayCommand>,
   },
 }
@@ -2196,6 +2205,12 @@ impl Painter {
     // Collect commands for this subtree locally so we can wrap the context (opacity, etc.)
     let mut local_commands = Vec::new();
 
+    // CSS2.1 Appendix E requires "tree order" (DOM/box-tree order), not fragment emission order.
+    // Layout can emit out-of-flow positioned fragments (e.g. `position: absolute`) after in-flow
+    // content, reordering siblings in the fragment tree. Prefer the originating `box_id` when
+    // available so layer-6 merging (positioned auto/0 + z-index:0 stacking contexts) is correct.
+    let tree_order = |child: &FragmentNode, fallback: usize| child.box_id().unwrap_or(fallback);
+
     if !establishes_context {
       self.enqueue_background_and_borders(
         fragment,
@@ -2205,20 +2220,21 @@ impl Painter {
       );
       self.enqueue_content(fragment, abs_bounds, &mut local_commands);
 
-      let mut negative_contexts = Vec::new();
-      let mut zero_contexts = Vec::new();
-      let mut positive_contexts = Vec::new();
+      let mut negative_contexts: Vec<(i32, usize, usize)> = Vec::new(); // (z, order, idx)
+      let mut zero_contexts: Vec<(usize, usize)> = Vec::new(); // (order, idx)
+      let mut positive_contexts: Vec<(i32, usize, usize)> = Vec::new(); // (z, order, idx)
       let mut blocks = Vec::new();
       let mut floats = Vec::new();
       let mut inlines = Vec::new();
-      let mut positioned_auto = Vec::new();
+      let mut positioned_auto: Vec<(usize, usize)> = Vec::new(); // (order, idx)
 
       for (idx, child) in fragment.children.iter().enumerate() {
+        let order = tree_order(child, idx);
         if let Some(z) = child.stacking_context.forced_z_index() {
           match z.cmp(&0) {
-            std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
-            std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
-            std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+            std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
+            std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
+            std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
           }
           continue;
         }
@@ -2227,14 +2243,14 @@ impl Painter {
           if creates_stacking_context(style, style_ref, false) {
             let z = style.z_index.unwrap_or(0);
             match z.cmp(&0) {
-              std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
-              std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
-              std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+              std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
+              std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
+              std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
             }
             continue;
           }
           if is_positioned(style) {
-            positioned_auto.push(idx);
+            positioned_auto.push((order, idx));
           } else if style.float.is_floating() {
             floats.push(idx);
           } else if is_inline_level(style, child) {
@@ -2256,8 +2272,10 @@ impl Painter {
         }
       }
 
-      negative_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-      for (_, idx) in negative_contexts {
+      negative_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
+        z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
+      });
+      for (_, _, idx) in negative_contexts {
         self.collect_stacking_context(
           &fragment.children[idx],
           child_offset,
@@ -2315,7 +2333,23 @@ impl Painter {
           svg_filters,
         )?;
       }
-      for idx in positioned_auto {
+
+      // CSS2.1 Appendix E layer 6 requires positioned `z-index:auto/0` descendants and `z-index:0`
+      // child stacking contexts to be painted *together* in tree order.
+      let mut layer6: Vec<(usize, u8, usize)> =
+        Vec::with_capacity(positioned_auto.len() + zero_contexts.len());
+      for (order, idx) in positioned_auto {
+        layer6.push((order, 0, idx));
+      }
+      for (order, idx) in &zero_contexts {
+        layer6.push((*order, 1, *idx));
+      }
+      layer6.sort_by(|(o1, k1, i1), (o2, k2, i2)| {
+        o1.cmp(o2)
+          .then_with(|| k1.cmp(k2))
+          .then_with(|| i1.cmp(i2))
+      });
+      for (_, _, idx) in layer6 {
         self.collect_stacking_context(
           &fragment.children[idx],
           child_offset,
@@ -2330,8 +2364,10 @@ impl Painter {
         )?;
       }
 
-      zero_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-      for (_, idx) in zero_contexts {
+      positive_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
+        z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
+      });
+      for (_, _, idx) in positive_contexts {
         self.collect_stacking_context(
           &fragment.children[idx],
           child_offset,
@@ -2345,23 +2381,6 @@ impl Painter {
           svg_filters,
         )?;
       }
-
-      positive_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-      for (_, idx) in positive_contexts {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
-      }
-
       let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
       if clip.is_some() {
         items.push(DisplayCommand::StackingContext {
@@ -2381,6 +2400,11 @@ impl Painter {
           clip,
           has_clip_path: false,
           clip_path: None,
+          root_style: if root_background.is_some() {
+            Self::root_background_style(fragment)
+          } else {
+            fragment.style.clone()
+          },
           commands: local_commands,
         });
       } else {
@@ -2403,14 +2427,15 @@ impl Painter {
     // Paint in-flow inline-level content after blocks/floats (CSS2 stacking level 5)
     let mut inlines = Vec::new();
     // Positioned elements with auto/0 z-index but not establishing a stacking context (CSS2 level 6)
-    let mut positioned_auto = Vec::new();
+    let mut positioned_auto: Vec<(usize, usize)> = Vec::new(); // (order, idx)
 
     for (idx, child) in fragment.children.iter().enumerate() {
+      let order = tree_order(child, idx);
       if let Some(z) = child.stacking_context.forced_z_index() {
         match z.cmp(&0) {
-          std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
-          std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
-          std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+          std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
+          std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
+          std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
         }
         continue;
       }
@@ -2419,14 +2444,14 @@ impl Painter {
         if creates_stacking_context(style, style_ref, false) {
           let z = style.z_index.unwrap_or(0);
           match z.cmp(&0) {
-            std::cmp::Ordering::Less => negative_contexts.push((z, idx)),
-            std::cmp::Ordering::Equal => zero_contexts.push((z, idx)),
-            std::cmp::Ordering::Greater => positive_contexts.push((z, idx)),
+            std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
+            std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
+            std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
           }
           continue;
         }
         if is_positioned(style) {
-          positioned_auto.push(idx);
+          positioned_auto.push((order, idx));
         } else if style.float.is_floating() {
           floats.push(idx);
         } else if is_inline_level(style, child) {
@@ -2446,8 +2471,10 @@ impl Painter {
       }
     }
 
-    negative_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-    for (_, idx) in negative_contexts {
+    negative_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
+      z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
+    });
+    for (_, _, idx) in negative_contexts {
       self.collect_stacking_context(
         &fragment.children[idx],
         child_offset,
@@ -2506,7 +2533,23 @@ impl Painter {
         svg_filters,
       )?;
     }
-    for idx in positioned_auto {
+
+    // Merge positioned auto/0 descendants and z-index:0 stacking contexts in tree order (CSS2.1
+    // Appendix E layer 6).
+    let mut layer6: Vec<(usize, u8, usize)> =
+      Vec::with_capacity(positioned_auto.len() + zero_contexts.len());
+    for (order, idx) in positioned_auto {
+      layer6.push((order, 0, idx));
+    }
+    for (order, idx) in &zero_contexts {
+      layer6.push((*order, 1, *idx));
+    }
+    layer6.sort_by(|(o1, k1, i1), (o2, k2, i2)| {
+      o1.cmp(o2)
+        .then_with(|| k1.cmp(k2))
+        .then_with(|| i1.cmp(i2))
+    });
+    for (_, _, idx) in layer6 {
       self.collect_stacking_context(
         &fragment.children[idx],
         child_offset,
@@ -2521,24 +2564,10 @@ impl Painter {
       )?;
     }
 
-    zero_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-    for (_, idx) in zero_contexts {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-
-    positive_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
-    for (_, idx) in positive_contexts {
+    positive_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
+      z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
+    });
+    for (_, _, idx) in positive_contexts {
       self.collect_stacking_context(
         &fragment.children[idx],
         child_offset,
@@ -2670,6 +2699,11 @@ impl Painter {
         clip,
         has_clip_path: style_has_clip_path,
         clip_path,
+        root_style: if root_background.is_some() {
+          Self::root_background_style(fragment)
+        } else {
+          fragment.style.clone()
+        },
         commands: local_commands,
       });
     } else {
@@ -3264,6 +3298,7 @@ impl Painter {
         clip,
         has_clip_path,
         clip_path,
+        root_style,
         commands,
       } => {
         let profile_threshold_ms = stack_profile_threshold_ms();
@@ -3471,23 +3506,45 @@ impl Painter {
         };
         let has_clip = clip.is_some();
         let clip_root = clip.map(|clip| clip.clip_root).unwrap_or(false);
+        let root_style_ptr =
+          root_style.as_ref().map(|style| Arc::as_ptr(style) as *const () as usize);
         let mut outline_commands = Vec::new();
         let mut unclipped = Vec::new();
         let mut clipped = Vec::new();
         if has_clip {
           for cmd in commands {
-            match cmd {
-              DisplayCommand::Outline { .. } => outline_commands.push(cmd),
-              DisplayCommand::Background { rect, .. } | DisplayCommand::Border { rect, .. }
-                if !clip_root
-                  && (rect.x() - root_rect.x()).abs() < f32::EPSILON
-                  && (rect.y() - root_rect.y()).abs() < f32::EPSILON
-                  && (rect.width() - root_rect.width()).abs() < f32::EPSILON
-                  && (rect.height() - root_rect.height()).abs() < f32::EPSILON =>
-              {
-                unclipped.push(cmd);
+            if matches!(cmd, DisplayCommand::Outline { .. }) {
+              outline_commands.push(cmd);
+              continue;
+            }
+
+            let treat_as_root_decoration = if clip_root {
+              false
+            } else if let Some(ptr) = root_style_ptr {
+              match &cmd {
+                DisplayCommand::Background { style, .. } | DisplayCommand::Border { style, .. } => {
+                  Arc::as_ptr(style) as *const () as usize == ptr
+                }
+                _ => false,
               }
-              _ => clipped.push(cmd),
+            } else {
+              // Fallback for synthetic/test command lists without a root style pointer: preserve the
+              // prior rect-based heuristic.
+              match &cmd {
+                DisplayCommand::Background { rect, .. } | DisplayCommand::Border { rect, .. } => {
+                  (rect.x() - root_rect.x()).abs() < f32::EPSILON
+                    && (rect.y() - root_rect.y()).abs() < f32::EPSILON
+                    && (rect.width() - root_rect.width()).abs() < f32::EPSILON
+                    && (rect.height() - root_rect.height()).abs() < f32::EPSILON
+                }
+                _ => false,
+              }
+            };
+
+            if treat_as_root_decoration {
+              unclipped.push(cmd);
+            } else {
+              clipped.push(cmd);
             }
           }
         } else {
@@ -23684,6 +23741,7 @@ mod tests {
       clip: None,
       has_clip_path: false,
       clip_path: None,
+      root_style: None,
       commands: vec![DisplayCommand::Background {
         rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
         style,
@@ -23723,6 +23781,7 @@ mod tests {
       clip: None,
       has_clip_path: false,
       clip_path: None,
+      root_style: None,
       commands: Vec::new(),
     };
 
