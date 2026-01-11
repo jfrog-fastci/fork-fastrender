@@ -279,10 +279,10 @@ fn match_media_native(
 }
 
 fn navigator_send_beacon_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -292,12 +292,16 @@ fn navigator_send_beacon_native(
     None => return Ok(Value::Bool(false)),
   };
 
-  let url_s = match url_value {
-    Value::String(s) => s,
-    other => match scope.heap_mut().to_string(other) {
-      Ok(s) => s,
-      Err(_) => return Ok(Value::Bool(false)),
-    },
+  // `sendBeacon` should accept any URL-ish value by running `ToString`. In `vm-js`, object
+  // coercions require the host-aware conversion (`Scope::to_string`) so we can invoke
+  // `ToPrimitive`/`toString` when needed.
+  //
+  // Keep this shim deterministic + non-throwing: swallow normal conversion errors and return
+  // `false`, but still propagate VM termination (budget exhaustion, interrupts, etc).
+  let url_s = match scope.to_string(vm, host, hooks, url_value) {
+    Ok(s) => s,
+    Err(e @ VmError::Termination(_)) => return Err(e),
+    Err(_) => return Ok(Value::Bool(false)),
   };
 
   let url_len = match scope.heap().get_string(url_s) {
@@ -652,5 +656,11 @@ mod tests {
       .exec_script(r#"navigator.sendBeacon("https://example.invalid/beacon")"#)
       .unwrap();
     assert_eq!(without_payload, Value::Bool(true));
+
+    // Common real-world pattern: pass a URL object (stringifies via `URL.prototype.toString()`).
+    let with_url_object = host
+      .exec_script(r#"navigator.sendBeacon(new URL("https://example.invalid/beacon"), '{"a":1}')"#)
+      .unwrap();
+    assert_eq!(with_url_object, Value::Bool(true));
   }
 }
