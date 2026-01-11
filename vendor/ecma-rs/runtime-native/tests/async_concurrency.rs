@@ -63,8 +63,9 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
 
   runtime_native::rt_async_wait();
 
-  resolver.join().unwrap();
   while runtime_native::rt_async_poll_legacy() {}
+
+  resolver.join().unwrap();
   assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
