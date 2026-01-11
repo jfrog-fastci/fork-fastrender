@@ -18,6 +18,27 @@ in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/stack
 The native runtime (`runtime-native`) reads that byte range to locate safepoints and enumerate GC
 roots.
 
+## `--gc-sections` and linker quirks (Linux)
+
+LLVM stackmap sections are typically **unreferenced** by code/data relocations. When the final link
+uses section GC (`-Wl,--gc-sections`), linkers will drop `.llvm_stackmaps` unless it is explicitly
+retained.
+
+`native-js` solves this by always injecting a linker script fragment that:
+
+* uses `KEEP(*(.llvm_stackmaps* .data.rel.ro.llvm_stackmaps*))` so stackmaps survive
+  `--gc-sections`, and
+* defines stable boundary symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps` and aliases).
+
+Notes:
+
+* The repo defaults to `-fuse-ld=mold` for fast Rust links, but mold does **not** support GNU ld
+  linker scripts (`SECTIONS`/`KEEP`/`INSERT`). When injecting the fragment, use lld (`-fuse-ld=lld`)
+  or GNU ld.
+* GNU ld PIE/DSO builds should use `runtime-native/link/stackmaps_gnuld.ld` (instead of inserting
+  stackmaps “after .text”) to avoid producing an RWX LOAD segment. `native_js::link` and
+  `scripts/native_link.sh` handle this automatically.
+
 ## Why compiled→compiled calls must be statepointed
 
 LLVM stackmap records produced by statepoints are looked up by **return address**.
