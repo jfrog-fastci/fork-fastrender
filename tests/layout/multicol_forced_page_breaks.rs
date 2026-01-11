@@ -715,3 +715,114 @@ fn multicol_break_after_always_does_not_force_page_break() {
     "expected B to appear in the second column (A={a_pos:?}, B={b_pos:?})",
   );
 }
+#[test]
+fn multicol_break_after_page_before_spanner_does_not_create_extra_column_set() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 140px; margin: 20px; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { margin: 0; }
+          #a { height: 60px; }
+          #b { height: 20px; break-after: page; }
+          .spanner { column-span: all; height: 10px; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="multi"><div class="blk" id="a">A</div><div class="blk" id="b">B</div><div class="spanner">S</div></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "break-after: page before a spanner should not introduce an extra empty column set"
+  );
+
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+  let page1_content = page_content(page1);
+  let page2_content = page_content(page2);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_some());
+  assert!(find_text_eq(page1_content, "S").is_none());
+  assert!(find_text_eq(page2_content, "S").is_some());
+
+  let pos_s = find_text_position(page2, "S", (0.0, 0.0)).expect("S on page 2");
+  assert!(
+    pos_s.1 <= page_content_start_y(page2) + 1.0,
+    "expected spanner to start at the top of the second page; pos={pos_s:?} content_start_y={}",
+    page_content_start_y(page2)
+  );
+}
+
+#[test]
+fn multicol_break_after_right_before_spanner_inserts_single_blank_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 140px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { margin: 0; }
+          #a { height: 60px; }
+          #b { height: 20px; break-after: right; }
+          .spanner { column-span: all; height: 10px; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="multi"><div class="blk" id="a">A</div><div class="blk" id="b">B</div><div class="spanner">S</div></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    3,
+    "break-after: right before a spanner should insert exactly one blank page"
+  );
+
+  let page1 = page_roots[0];
+  let blank_page = page_roots[1];
+  let page3 = page_roots[2];
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_some());
+  assert!(find_text_eq(page1_content, "S").is_none());
+
+  assert!(find_text(blank_page, "Blank").is_some());
+  assert!(find_text_eq(blank_page, "A").is_none());
+  assert!(find_text_eq(blank_page, "B").is_none());
+  assert!(find_text_eq(blank_page, "S").is_none());
+
+  let page3_content = page_content(page3);
+  assert!(find_text_eq(page3_content, "S").is_some());
+  let pos_s = find_text_position(page3, "S", (0.0, 0.0)).expect("S on page 3");
+  assert!(
+    pos_s.1 <= page_content_start_y(page3) + 1.0,
+    "expected spanner to start at the top of the third page; pos={pos_s:?} content_start_y={}",
+    page_content_start_y(page3)
+  );
+}

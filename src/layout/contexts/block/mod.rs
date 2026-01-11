@@ -7514,9 +7514,12 @@ impl BlockFormattingContext {
       }
     }
 
-    // Promote any forced pagination break positions to column-set boundaries by padding the column
-    // boundary list with zero-length fragments (empty columns) until the next real fragment starts
-    // at the first column of a new set.
+    // Promote any forced pagination break positions to column-set boundaries. When the break occurs
+    // mid column-set and there is still in-segment content after it, we pad the boundary list with
+    // zero-length fragments (empty columns) so the remaining content starts at the first column of a
+    // new set. If the forced break is at the end of this segment's content (e.g. immediately before a
+    // `column-span: all` spanner), we skip padding so we don't create an extra empty set; instead we
+    // still record a promoted boundary so side constraints are communicated to the outer paginator.
     let mut promoted_set_start_slices: Vec<(usize, Option<PageSide>)> = Vec::new();
     if fragmented_context && !forced_pagination_boundaries.is_empty() && column_count > 0 {
       const EPSILON: f32 = 0.01;
@@ -7529,17 +7532,26 @@ impl BlockFormattingContext {
           continue;
         };
 
-        // Pad after the boundary so the slice index containing content after `p` becomes a multiple
-        // of `column_count` (start of the next column set).
+        // The next slice index in the current boundary list that would start a new set.
         let pad = (column_count - (boundary_index % column_count)) % column_count;
-        for _ in 0..pad {
-          boundaries.insert(boundary_index + 1, p);
+        let start_slice = boundary_index + pad;
+        if start_slice % column_count != 0 {
+          continue;
         }
 
-        let start_slice = boundary_index + pad;
-        if start_slice < boundaries.len().saturating_sub(1) && start_slice % column_count == 0 {
-          promoted_set_start_slices.push((start_slice, forced.page_side));
+        let has_segment_content_after = p + EPSILON < flow_extent;
+        if has_segment_content_after {
+          // Pad after the forced break so the slice index containing content after `p` becomes a
+          // multiple of `column_count` (start of the next column set).
+          for _ in 0..pad {
+            boundaries.insert(boundary_index + 1, p);
+          }
         }
+
+        // Always record the promoted boundary so side constraints (left/right/recto/verso) are
+        // applied at the set boundary even when the break is at the end of the segment and the next
+        // content is outside the segment (e.g. a spanner).
+        promoted_set_start_slices.push((start_slice, forced.page_side));
       }
 
       promoted_set_start_slices.sort_by_key(|(idx, _)| *idx);
@@ -7791,6 +7803,21 @@ impl BlockFormattingContext {
     }
 
     let mut promoted_break_iter = promoted_set_start_slices.iter().peekable();
+    let push_promoted_marker = |fragments: &mut Vec<FragmentNode>, slice_idx: usize, side: Option<PageSide>| {
+      let set_index = slice_idx / column_count;
+      let offset = axes.block_offset(set_offset(set_index));
+      let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
+      let mut marker_style = ComputedStyle::default();
+      marker_style.display = Display::Block;
+      marker_style.writing_mode = writing_mode;
+      marker_style.direction = direction;
+      marker_style.break_after = match side {
+        Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
+        Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
+        None => crate::style::types::BreakBetween::Page,
+      };
+      fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), Arc::new(marker_style)));
+    };
     for (index, window) in boundaries.windows(2).enumerate() {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
@@ -7808,21 +7835,8 @@ impl BlockFormattingContext {
           .peek()
           .is_some_and(|&&(slice_idx, _)| slice_idx == index)
         {
-          let (_, side) = promoted_break_iter.next().copied().expect("peeked break");
-          let set_index = index / column_count;
-          let offset = axes.block_offset(set_offset(set_index));
-          let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
-          let mut marker_style = ComputedStyle::default();
-          marker_style.display = Display::Block;
-          marker_style.writing_mode = writing_mode;
-          marker_style.direction = direction;
-          marker_style.break_after = match side {
-            Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
-            Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
-            None => crate::style::types::BreakBetween::Page,
-          };
-          let marker_style = Arc::new(marker_style);
-          fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), marker_style));
+          let (slice_idx, side) = promoted_break_iter.next().copied().expect("peeked break");
+          push_promoted_marker(&mut fragments, slice_idx, side);
         }
       }
       let fragmentainer_size = fragmentainer_size_for_column(index);
@@ -7870,6 +7884,11 @@ impl BlockFormattingContext {
           child.translate_root_in_place(offset);
         }
         fragments.extend(children);
+      }
+    }
+    if fragmented_context {
+      while let Some((slice_idx, side)) = promoted_break_iter.next().copied() {
+        push_promoted_marker(&mut fragments, slice_idx, side);
       }
     }
 
