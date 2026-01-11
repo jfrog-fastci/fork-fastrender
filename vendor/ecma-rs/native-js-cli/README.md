@@ -440,8 +440,8 @@ smoke-test subset intended for early end-to-end testing. It is currently an
 
 It emits a single LLVM module for the entry file and all transitively imported
 **runtime** ES modules (type-only imports are ignored). In addition to `import`
-statements, **runtime** re-exports (e.g. `export { x } from "./dep"`, `export *
-from "./dep"`) are treated as module dependencies:
+statements, **runtime** re-exports (e.g. `export { x } from "./dep"`, `export * from "./dep"`) are
+treated as module dependencies:
 re-export-only modules participate in module initialization ordering, and
 imports can resolve through them.
 
