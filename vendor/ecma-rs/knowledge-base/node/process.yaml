@@ -72,3 +72,42 @@
   parallelizable: true
   idempotent: false
   deterministic: false
+
+- name: node:process.hrtime
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:process.hrtime.bigint
+  kind: function
+  since: "v10.7.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:process.memoryUsage
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
