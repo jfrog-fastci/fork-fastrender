@@ -913,9 +913,9 @@ fn expr_stmt(expr: FlatExpr) -> Node<Stmt> {
   })))
 }
 
-fn return_stmt(expr: FlatExpr) -> Node<Stmt> {
+fn return_stmt(expr: Option<FlatExpr>) -> Node<Stmt> {
   node(Stmt::Return(node(ReturnStmt {
-    value: Some(to_ast_expr(&expr)),
+    value: expr.as_ref().map(to_ast_expr),
   })))
 }
 
@@ -1130,10 +1130,29 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
           ));
         }
         InstTyp::Return => {
-          stmts.push(return_stmt(expr_from_arg(inst.as_return(), &env)));
+          let value = match inst.args.as_slice() {
+            [] => None,
+            [arg] => Some(expr_from_arg(arg, &env)),
+            _ => {
+              return Err(DecompileError::Unsupported(
+                "return with multiple args not supported".to_string(),
+              ));
+            }
+          };
+          stmts.push(return_stmt(value));
+          return Ok(stmts);
         }
         InstTyp::Throw => {
-          stmts.push(throw_stmt(expr_from_arg(inst.as_throw(), &env)));
+          let value = match inst.args.as_slice() {
+            [arg] => arg,
+            _ => {
+              return Err(DecompileError::Unsupported(
+                "throw without value not supported".to_string(),
+              ));
+            }
+          };
+          stmts.push(throw_stmt(expr_from_arg(value, &env)));
+          return Ok(stmts);
         }
         InstTyp::_Dummy => {}
         InstTyp::CondGoto | InstTyp::Phi | InstTyp::_Goto | InstTyp::_Label => {
