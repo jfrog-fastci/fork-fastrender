@@ -2,6 +2,13 @@ use knowledge_base::Api;
 
 use crate::db::CallSiteInfo;
 
+fn has_semantics(api: &Api, expected: &str) -> bool {
+  api
+    .semantics
+    .as_deref()
+    .is_some_and(|s| s.eq_ignore_ascii_case(expected))
+}
+
 pub fn is_async(api: &Api) -> bool {
   api.async_.unwrap_or(false)
 }
@@ -25,11 +32,15 @@ pub fn parallelizable_at_callsite(api: &Api, callsite: &CallSiteInfo) -> bool {
 
   // Fallback heuristic for callback-driven collection APIs when the KB entry
   // doesn't specify `parallelizable` directly.
-  if api.name.ends_with(".map") || api.name.ends_with(".filter") {
+  if has_semantics(api, "Map")
+    || has_semantics(api, "Filter")
+    || api.name.ends_with(".map")
+    || api.name.ends_with(".filter")
+  {
     return callsite.callback_is_pure.unwrap_or(false)
       && !callsite.callback_uses_index.unwrap_or(false);
   }
-  if api.name.ends_with(".reduce") {
+  if has_semantics(api, "Reduce") || api.name.ends_with(".reduce") {
     return callsite.callback_is_pure.unwrap_or(false)
       && callsite.callback_is_associative.unwrap_or(false);
   }

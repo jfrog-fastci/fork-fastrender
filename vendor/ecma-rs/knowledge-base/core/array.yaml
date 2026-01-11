@@ -1,26 +1,33 @@
 - name: Array.prototype.map
+  semantics: Map
   effects: DependsOnCallback
   purity: DependsOnCallback
 
 - name: Array.prototype.filter
+  semantics: Filter
   effects: DependsOnCallback
   purity: DependsOnCallback
 
 - name: Array.prototype.reduce
+  semantics: Reduce
   effects: DependsOnCallback
   purity: DependsOnCallback
 - name: Array.prototype.forEach
+  semantics: ForEach
   effects: DependsOnCallback
   purity: DependsOnCallback
 
 - name: Array.prototype.every
+  semantics: Every
   effects: DependsOnCallback
   purity: DependsOnCallback
 
 - name: Array.prototype.some
+  semantics: Some
   effects: DependsOnCallback
   purity: DependsOnCallback
 
 - name: Array.prototype.find
+  semantics: Find
   effects: DependsOnCallback
   purity: DependsOnCallback

@@ -18,7 +18,6 @@ pub struct CallSiteInfo {
   pub callback_uses_array: Option<bool>,
   pub callback_is_associative: Option<bool>,
 }
-
 impl EffectDb {
   pub fn load_default() -> Result<Self> {
     // `knowledge-base` errors are not `Send + Sync` (they may wrap dyn errors),
