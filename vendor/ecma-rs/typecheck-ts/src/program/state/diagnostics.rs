@@ -78,8 +78,28 @@ impl ProgramState {
     }
     let seed_cache_stats = seed_db.into_cache_stats();
     let seed_results = Arc::new(seed_results);
-    use rayon::prelude::*;
-    let (cache_stats, mut results): (CheckerCacheStats, Vec<(BodyId, Arc<BodyCheckResult>)>) =
+    // `program_diagnostics` is used heavily in fuzz/proptests where the program often contains
+    // only a handful of bodies. Spawning parallel body-check workers in those scenarios can be
+    // slower than checking sequentially because each worker needs its own `BodyCheckDb` (and thus
+    // its own per-thread memoization tables).
+    //
+    // Prefer a fast sequential path when the workload is small; keep the parallel path for larger
+    // programs where the extra setup amortizes.
+    const PARALLEL_BODY_CHECK_THRESHOLD: usize = 64;
+    let (cache_stats, mut results): (CheckerCacheStats, Vec<(BodyId, Arc<BodyCheckResult>)>) = if
+      remaining.len() <= PARALLEL_BODY_CHECK_THRESHOLD
+    {
+      let db = BodyCheckDb::from_shared_context_with_seed_results(
+        Arc::clone(&shared_context),
+        seed_results.as_slice(),
+      );
+      let mut results = Vec::with_capacity(remaining.len());
+      for body in remaining.iter().copied() {
+        results.push((body, db::queries::body_check::check_body(&db, body)));
+      }
+      (db.into_cache_stats(), results)
+    } else {
+      use rayon::prelude::*;
       remaining
         .par_iter()
         .fold(
@@ -105,7 +125,8 @@ impl ProgramState {
             merged.extend(results);
             (stats, merged)
           },
-        );
+        )
+    };
     results.extend(seed_results.iter().map(|(id, res)| (*id, Arc::clone(res))));
     let mut cache_stats = cache_stats;
     cache_stats.merge(&seed_cache_stats);

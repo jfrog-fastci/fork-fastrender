@@ -9,6 +9,29 @@ use typecheck_ts::{
   TypeKindSummary,
 };
 
+#[cfg(unix)]
+fn process_cpu_time() -> Option<Duration> {
+  use libc::{clock_gettime, timespec, CLOCK_PROCESS_CPUTIME_ID};
+
+  // Safety: `clock_gettime` is thread-safe and `timespec` is an output-only POD.
+  let mut ts = timespec {
+    tv_sec: 0,
+    tv_nsec: 0,
+  };
+  let rc = unsafe { clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+  if rc != 0 {
+    return None;
+  }
+  let secs: u64 = ts.tv_sec.try_into().ok()?;
+  let nanos: u32 = ts.tv_nsec.try_into().ok()?;
+  Some(Duration::new(secs, nanos))
+}
+
+#[cfg(not(unix))]
+fn process_cpu_time() -> Option<Duration> {
+  None
+}
+
 #[derive(Clone, Debug)]
 struct Project {
   roots: Vec<FileKey>,
@@ -223,7 +246,12 @@ fn project_debug_source(project: &Project) -> String {
   out
 }
 
-fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeSnapshot {
+fn run_with_timeout(
+  case: usize,
+  project: &Project,
+  cpu_timeout: Duration,
+  wall_timeout: Duration,
+) -> SmokeSnapshot {
   let options = CompilerOptions {
     no_default_lib: true,
     ..CompilerOptions::default()
@@ -236,9 +264,11 @@ fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeS
     host.link(from.clone(), specifier, to.clone());
   }
 
+  #[cfg(feature = "serde")]
   let restore_host = host.clone();
   let program = Arc::new(Program::new(host, project.roots.clone()));
   let runner = Arc::clone(&program);
+  let cpu_started_at = process_cpu_time();
   let handle = thread::spawn(move || {
     fn collect(program: &Program) -> SmokeSnapshot {
       let mut diagnostics = program.check();
@@ -373,7 +403,7 @@ fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeS
   });
 
   let started_at = Instant::now();
-  let deadline = started_at + timeout;
+  let deadline = started_at + wall_timeout;
   while Instant::now() < deadline {
     if handle.is_finished() {
       break;
@@ -383,7 +413,7 @@ fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeS
 
   if !handle.is_finished() {
     program.cancel();
-    let cancel_timeout = Duration::from_millis(500);
+    let cancel_timeout = Duration::from_secs(5);
     let cancel_deadline = Instant::now() + cancel_timeout;
     while Instant::now() < cancel_deadline {
       if handle.is_finished() {
@@ -403,26 +433,46 @@ fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeS
       .expect("checker thread panicked after cancellation");
     panic!(
       "case {case}: Program::check did not finish within {:?}",
-      timeout
+      wall_timeout
     );
   }
 
-  handle.join().expect("checker thread panicked")
+  let snapshot = handle.join().expect("checker thread panicked");
+  if let Some(start) = cpu_started_at {
+    if let Some(end) = process_cpu_time() {
+      let elapsed = end.saturating_sub(start);
+      assert!(
+        elapsed <= cpu_timeout,
+        "case {case}: checker consumed {:?} CPU time (wall {:?}), expected <= {:?}",
+        elapsed,
+        started_at.elapsed(),
+        cpu_timeout
+      );
+    }
+  }
+  snapshot
 }
 
 #[test]
 fn fuzz_smoke_program_check_is_total_and_fast() {
   const CASES: usize = 32;
   const SEED: u64 = 0x9d3d_6f5c_2b4a_1c87;
-  const TIMEOUT: Duration = Duration::from_millis(1000);
+  const CPU_TIMEOUT: Duration = Duration::from_millis(1000);
+  // The wall-clock timeout is intentionally much higher than the CPU budget.
+  //
+  // This test is executed in heavily parallel CI/agent environments where a
+  // single checker thread can be descheduled for long periods. We want to catch
+  // true CPU-bound non-termination/regressions while avoiding flakes due to
+  // scheduler jitter.
+  const WALL_TIMEOUT: Duration = Duration::from_secs(20);
 
   let mut rng = Rng::new(SEED);
   for case in 0..CASES {
     let project = generate_project(&mut rng, case);
     let src = project_debug_source(&project);
-    let first = run_with_timeout(case, &project, TIMEOUT);
+    let first = run_with_timeout(case, &project, CPU_TIMEOUT, WALL_TIMEOUT);
 
-    let second = run_with_timeout(case, &project, TIMEOUT);
+    let second = run_with_timeout(case, &project, CPU_TIMEOUT, WALL_TIMEOUT);
 
     assert!(
       first
