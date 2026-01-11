@@ -35,12 +35,16 @@ force_pipe_wake = []
 [dependencies]
 ahash = { workspace = true }
 arc-swap = { workspace = true }
+anyhow = { workspace = true }
 bitflags = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 crossbeam-deque = { workspace = true }
 crossbeam-utils = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 stackmap-context = { path = "../stackmap-context" }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
@@ -49,12 +53,18 @@ runtime-native-abi = { workspace = true }
 object = { workspace = true }
 
 [dev-dependencies]
+assert_cmd = { workspace = true }
+serde_json = { workspace = true }
 criterion = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 backtrace = "0.3"
 object = { workspace = true }
+
+[[bin]]
+name = "stackmap-dump"
+path = "src/bin/stackmap_dump.rs"
 
 [[bench]]
 name = "card_table"
