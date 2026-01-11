@@ -240,6 +240,7 @@ fn build_c_main<'ctx>(
   let call = builder
     .build_call(ts_main, &[], "ret")
     .expect("failed to build call");
+  crate::stack_walking::mark_call_notail(call);
   let ret_val = call
     .try_as_basic_value()
     .left()

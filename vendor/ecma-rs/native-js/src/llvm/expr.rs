@@ -720,6 +720,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
       .builder
       .build_call(symbol.function, &args, "calltmp")
       .ok()?;
+    crate::stack_walking::mark_call_notail(callsite);
     callsite.try_as_basic_value().left()
   }
 }

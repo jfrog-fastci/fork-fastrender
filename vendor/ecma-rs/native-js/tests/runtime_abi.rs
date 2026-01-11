@@ -49,8 +49,8 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "expected rt_alloc_gc to indirect-call @rt_alloc:\n{alloc}"
   );
   assert!(
-    alloc.contains("call ptr addrspace(1) %"),
-    "expected rt_alloc_gc to call a ptr addrspace(1) function pointer:\n{alloc}"
+    alloc.contains("notail call ptr addrspace(1) %"),
+    "expected rt_alloc_gc to emit a notail indirect call (prevent TCO):\n{alloc}"
   );
   assert!(
     !alloc.contains("addrspacecast"),
@@ -67,8 +67,8 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "expected rt_alloc_pinned_gc to indirect-call @rt_alloc_pinned:\n{alloc_pinned}"
   );
   assert!(
-    alloc_pinned.contains("call ptr addrspace(1) %"),
-    "expected rt_alloc_pinned_gc to call a ptr addrspace(1) function pointer:\n{alloc_pinned}"
+    alloc_pinned.contains("notail call ptr addrspace(1) %"),
+    "expected rt_alloc_pinned_gc to emit a notail indirect call (prevent TCO):\n{alloc_pinned}"
   );
   assert!(
     !alloc_pinned.contains("addrspacecast"),
@@ -93,8 +93,8 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "expected rt_write_barrier_gc to indirect-call @rt_write_barrier:\n{wb}"
   );
   assert!(
-    wb.contains("call void %") && wb.contains("ptr addrspace(1)"),
-    "expected rt_write_barrier_gc to call via function pointer with GC pointer args:\n{wb}"
+    wb.contains("notail call void %") && wb.contains("ptr addrspace(1)"),
+    "expected rt_write_barrier_gc to emit a notail indirect call (prevent TCO):\n{wb}"
   );
   assert!(
     !wb.contains("addrspacecast"),

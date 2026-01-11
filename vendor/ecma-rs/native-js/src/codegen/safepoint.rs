@@ -100,9 +100,10 @@ pub fn emit_backedge_gc_poll<'ctx>(
     .expect("build poll branch");
 
   builder.position_at_end(slow_block);
-  let _ = builder
+  let call = builder
     .build_call(rt_gc_safepoint_slow, &[epoch.into()], "gc.safepoint")
     .expect("build rt_gc_safepoint_slow call");
+  crate::stack_walking::mark_call_notail(call);
   builder
     .build_unconditional_branch(cont_block)
     .expect("branch to poll continuation");

@@ -61,6 +61,9 @@ pub mod runtime_fn;
 pub mod stackmaps;
 pub mod strict;
 pub mod validate;
+pub mod toolchain;
+pub mod ts_ir;
+pub mod tail_calls;
 
 mod error;
 mod stack_walking;

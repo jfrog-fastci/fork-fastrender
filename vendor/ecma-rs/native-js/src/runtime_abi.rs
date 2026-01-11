@@ -220,10 +220,12 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .expect("load rt_alloc fp")
         .into_pointer_value();
 
-      let gc_ptr = self
+      let call = self
         .builder
         .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
-        .expect("call rt_alloc via indirect call")
+        .expect("call rt_alloc via indirect call");
+      crate::stack_walking::mark_call_notail(call);
+      let gc_ptr = call
         .try_as_basic_value()
         .left()
         .expect("rt_alloc returns ptr")
@@ -266,10 +268,12 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .expect("load rt_alloc_pinned fp")
         .into_pointer_value();
 
-      let gc_ptr = self
+      let call = self
         .builder
         .build_indirect_call(fn_ty, fp, &[size.into(), shape.into()], "gc_ptr")
-        .expect("call rt_alloc_pinned via indirect call")
+        .expect("call rt_alloc_pinned via indirect call");
+      crate::stack_walking::mark_call_notail(call);
+      let gc_ptr = call
         .try_as_basic_value()
         .left()
         .expect("rt_alloc_pinned returns ptr")
@@ -289,10 +293,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let raw = self.rt_gc_safepoint_raw();
       let entry = self.context.append_basic_block(func, "entry");
       self.builder.position_at_end(entry);
-      let _ = self
-        .builder
-        .build_call(raw, &[], "")
-        .expect("call rt_gc_safepoint");
+      let call = self.builder.build_call(raw, &[], "").expect("call rt_gc_safepoint");
+      crate::stack_walking::mark_call_notail(call);
       self.builder.build_return(None).expect("return void");
     })
   }
@@ -343,10 +345,11 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .expect("load rt_write_barrier fp")
         .into_pointer_value();
 
-      let _ = self
+      let call = self
         .builder
         .build_indirect_call(fn_ty, fp, &[obj_gc.into(), field_gc.into()], "")
         .expect("call rt_write_barrier via indirect call");
+      crate::stack_walking::mark_call_notail(call);
 
       self.builder.build_return(None).expect("return void");
     })

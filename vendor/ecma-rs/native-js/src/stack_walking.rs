@@ -3,6 +3,8 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::FunctionType;
+use inkwell::values::AsValueRef;
+use inkwell::values::CallSiteValue;
 use inkwell::values::FunctionValue;
 
 use crate::llvm::gc::GC_STRATEGY;
@@ -22,6 +24,25 @@ pub(crate) fn apply_stack_walking_frame_attrs(context: &Context, func: FunctionV
 
   func.add_attribute(AttributeLoc::Function, frame_pointer);
   func.add_attribute(AttributeLoc::Function, disable_tail_calls);
+}
+
+/// Mark a call instruction as `notail`.
+///
+/// Even with the function attribute `"disable-tail-calls"="true"`, LLVM may still
+/// consider calls eligible for tail-call formation in some pipelines.
+/// Explicitly marking calls `notail` makes the intent unambiguous and provides an
+/// extra layer of defense for stackmap-based stack walking.
+pub(crate) fn mark_call_notail(call: CallSiteValue<'_>) {
+  unsafe {
+    // LLVM IR keyword: `notail call ...`
+    //
+    // Using the C API here because inkwell's high-level wrapper doesn't expose
+    // the full tail-call-kind enum (`tail`/`musttail`/`notail`).
+    llvm_sys::core::LLVMSetTailCallKind(
+      call.as_value_ref(),
+      llvm_sys::LLVMTailCallKind::LLVMTailCallKindNoTail,
+    );
+  }
 }
 
 pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {

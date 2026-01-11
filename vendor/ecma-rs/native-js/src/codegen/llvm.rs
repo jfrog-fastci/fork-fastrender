@@ -230,7 +230,7 @@ impl Codegen {
       Ty::Number => {
         self.emit_print_number_inline(&value.ir)?;
         let empty = self.emit_string_ptr(b"");
-        self.emit(format!("  call i32 @puts(ptr {empty})"));
+        self.emit(format!("  notail call i32 @puts(ptr {empty})"));
         Ok(())
       }
       Ty::Bool => {
@@ -241,21 +241,21 @@ impl Codegen {
           "  {sel} = select i1 {}, ptr {true_ptr}, ptr {false_ptr}",
           value.ir
         ));
-        self.emit(format!("  call i32 @puts(ptr {sel})"));
+        self.emit(format!("  notail call i32 @puts(ptr {sel})"));
         Ok(())
       }
       Ty::String => {
-        self.emit(format!("  call i32 @puts(ptr {})", value.ir));
+        self.emit(format!("  notail call i32 @puts(ptr {})", value.ir));
         Ok(())
       }
       Ty::Null => {
         let null_ptr = self.emit_string_ptr(b"null");
-        self.emit(format!("  call i32 @puts(ptr {null_ptr})"));
+        self.emit(format!("  notail call i32 @puts(ptr {null_ptr})"));
         Ok(())
       }
       Ty::Undefined => {
         let undef_ptr = self.emit_string_ptr(b"undefined");
-        self.emit(format!("  call i32 @puts(ptr {undef_ptr})"));
+        self.emit(format!("  notail call i32 @puts(ptr {undef_ptr})"));
         Ok(())
       }
       Ty::Void => Err(CodegenError::TypeError(
@@ -277,14 +277,14 @@ impl Codegen {
         ));
         let fmt = self.emit_string_ptr(b"%s");
         self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {sel})"
+          "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {sel})"
         ));
         Ok(())
       }
       Ty::String => {
         let fmt = self.emit_string_ptr(b"%s");
         self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})",
+          "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})",
           value.ir
         ));
         Ok(())
@@ -293,7 +293,7 @@ impl Codegen {
         let fmt = self.emit_string_ptr(b"%s");
         let null_ptr = self.emit_string_ptr(b"null");
         self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {null_ptr})"
+          "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {null_ptr})"
         ));
         Ok(())
       }
@@ -301,7 +301,7 @@ impl Codegen {
         let fmt = self.emit_string_ptr(b"%s");
         let undef_ptr = self.emit_string_ptr(b"undefined");
         self.emit(format!(
-          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {undef_ptr})"
+          "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {undef_ptr})"
         ));
         Ok(())
       }
@@ -328,7 +328,7 @@ impl Codegen {
       let fmt = self.emit_string_ptr(b"%s");
       let nan_ptr = self.emit_string_ptr(b"NaN");
       self.emit(format!(
-        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {nan_ptr})"
+        "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {nan_ptr})"
       ));
       self.emit(format!("  br label %{cont}"));
     }
@@ -351,7 +351,7 @@ impl Codegen {
       let fmt = self.emit_string_ptr(b"%s");
       let inf_ptr = self.emit_string_ptr(b"Infinity");
       self.emit(format!(
-        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
+        "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
       ));
       self.emit(format!("  br label %{cont}"));
     }
@@ -374,7 +374,7 @@ impl Codegen {
       let fmt = self.emit_string_ptr(b"%s");
       let inf_ptr = self.emit_string_ptr(b"-Infinity");
       self.emit(format!(
-        "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
+        "  notail call i32 (ptr, ...) @printf(ptr {fmt}, ptr {inf_ptr})"
       ));
       self.emit(format!("  br label %{cont}"));
     }
@@ -386,7 +386,7 @@ impl Codegen {
       // readable.
       let fmt = self.emit_string_ptr(b"%.15g");
       self.emit(format!(
-        "  call i32 (ptr, ...) @printf(ptr {fmt}, double {value_ir})"
+        "  notail call i32 (ptr, ...) @printf(ptr {fmt}, double {value_ir})"
       ));
       self.emit(format!("  br label %{cont}"));
     }
@@ -398,7 +398,7 @@ impl Codegen {
   fn emit_strcmp_eq(&mut self, left: &str, right: &str) -> Result<String, CodegenError> {
     let cmp = self.tmp();
     self.emit(format!(
-      "  {cmp} = call i32 @strcmp(ptr {left}, ptr {right})"
+      "  {cmp} = notail call i32 @strcmp(ptr {left}, ptr {right})"
     ));
     let out = self.tmp();
     self.emit(format!("  {out} = icmp eq i32 {cmp}, 0"));
@@ -408,7 +408,7 @@ impl Codegen {
   fn emit_print_log_call(&mut self, args: &[Node<CallArg>]) -> Result<(), CodegenError> {
     if args.is_empty() {
       let empty = self.emit_string_ptr(b"");
-      self.emit(format!("  call i32 @puts(ptr {empty})"));
+      self.emit(format!("  notail call i32 @puts(ptr {empty})"));
       return Ok(());
     }
 
@@ -420,12 +420,12 @@ impl Codegen {
       self.emit_print_value_inline(v)?;
       if idx + 1 != args.len() {
         let space = self.emit_string_ptr(b" ");
-        self.emit(format!("  call i32 (ptr, ...) @printf(ptr {space})"));
+        self.emit(format!("  notail call i32 (ptr, ...) @printf(ptr {space})"));
       }
     }
 
     let empty = self.emit_string_ptr(b"");
-    self.emit(format!("  call i32 @puts(ptr {empty})"));
+    self.emit(format!("  notail call i32 @puts(ptr {empty})"));
     Ok(())
   }
 
@@ -1043,7 +1043,7 @@ impl Codegen {
             BuiltinCall::Print { args } => {
               self.emit_print_log_call(args)?;
               // Make stdout useful for debugging even when the program later traps (e.g. SIGSEGV).
-              self.emit("  call i32 @fflush(ptr null)".to_string());
+              self.emit("  notail call i32 @fflush(ptr null)".to_string());
               Ok(Value::void())
             }
             BuiltinCall::Assert { cond, msg } => {
@@ -1064,10 +1064,10 @@ impl Codegen {
                 self.emit_print_value(msg_v)?;
               } else {
                 let default_msg = self.emit_string_ptr(b"assertion failed");
-                self.emit(format!("  call i32 @puts(ptr {default_msg})"));
+                self.emit(format!("  notail call i32 @puts(ptr {default_msg})"));
               }
-              self.emit("  call i32 @fflush(ptr null)".to_string());
-              self.emit("  call void @abort()".to_string());
+              self.emit("  notail call i32 @fflush(ptr null)".to_string());
+              self.emit("  notail call void @abort()".to_string());
               self.emit("  unreachable".to_string());
 
               self.emit(format!("{ok}:"));
@@ -1078,8 +1078,8 @@ impl Codegen {
                 let msg_v = self.compile_expr(msg)?;
                 self.emit_print_value(msg_v)?;
               }
-              self.emit("  call i32 @fflush(ptr null)".to_string());
-              self.emit("  call void @abort()".to_string());
+              self.emit("  notail call i32 @fflush(ptr null)".to_string());
+              self.emit("  notail call void @abort()".to_string());
               self.emit("  unreachable".to_string());
 
               // Keep the IR structurally valid by starting a fresh (unreachable) block for any
@@ -1089,8 +1089,8 @@ impl Codegen {
               Ok(Value::void())
             }
             BuiltinCall::Trap => {
-              self.emit("  call i32 @fflush(ptr null)".to_string());
-              self.emit("  call void @llvm.trap()".to_string());
+              self.emit("  notail call i32 @fflush(ptr null)".to_string());
+              self.emit("  notail call void @llvm.trap()".to_string());
               self.emit("  unreachable".to_string());
 
               let cont = self.fresh_block("trap.after");
@@ -1149,13 +1149,16 @@ impl Codegen {
 
           let ret_ty = sig.ret;
           if ret_ty == Ty::Void {
-            self.emit(format!("  call void {llvm_name}({})", arg_irs.join(", ")));
+            self.emit(format!(
+              "  notail call void {llvm_name}({})",
+              arg_irs.join(", ")
+            ));
             Ok(Value::void())
           } else {
             let out = self.tmp();
             let llvm_ret = Self::llvm_type_of(ret_ty);
             self.emit(format!(
-              "  {out} = call {llvm_ret} {llvm_name}({})",
+              "  {out} = notail call {llvm_ret} {llvm_name}({})",
               arg_irs.join(", ")
             ));
             Ok(Value {
