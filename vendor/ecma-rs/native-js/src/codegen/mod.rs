@@ -1080,8 +1080,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     // NOTE: Do not call `printf` directly from TS-generated functions.
     //
     // The native pipeline runs LLVM's `rewrite-statepoints-for-gc` pass and enforces that
-    // TS-generated functions (`__nativejs_def_*` / `__nativejs_file_init_*`) contain **no**
-    // non-intrinsic calls after rewrite (see `llvm::passes::verify_no_stray_calls_in_ts_generated_functions`).
+    // TS-generated functions (`__nativejs_def_*` / `__nativejs_file_init_*`) contain no stray
+    // non-intrinsic calls after rewrite (except calls to direct `"gc-leaf-function"` callees).
+    // See `llvm::passes::verify_no_stray_calls_in_ts_generated_functions`.
     // LLVM does not rewrite varargs calls like `printf` into statepoints reliably, so we route the
     // intrinsic through a small non-TS wrapper.
     let rt_print = declare_rt_print_i32(self.cg.context, &self.cg.module);
