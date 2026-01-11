@@ -156,7 +156,12 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 The API is intentionally small and currently consists of:
 
 - `builtins::native_js_builtins_lib()`: host-provided `.d.ts` lib that declares
-  the typechecked pipeline intrinsics (stable file key: `native-js:builtins.d.ts`).
+  the typechecked pipeline intrinsics.
+  - Stable file key: `native-js:builtins.checked.d.ts` (see `builtins::CHECKED_BUILTINS_FILE_KEY`).
+  - `builtins::checked_builtins_lib()` is the explicit checked-pipeline constructor; `native_js_builtins_lib()` is a
+    convenience alias for it.
+- `builtins::project_builtins_lib()`: host-provided `.d.ts` lib for the legacy `parse-js`-driven project pipeline.
+  - Stable file key: `native-js:builtins.project.d.ts` (see `builtins::PROJECT_BUILTINS_FILE_KEY`).
 - `CodeGen`: a minimal façade around `inkwell` that enforces the stack-walking
   invariant (`frame-pointer="all"`, `disable-tail-calls="true"`) and marks
   generated functions with the default GC strategy (`gc "coreclr"`).
