@@ -1021,7 +1021,8 @@ mod tests {
 
   #[test]
   fn getprop_loaded_param_object_propagates_arg_escape() {
-    // %99 has no definition, so the analysis treats it as a parameter/input.
+    // %99 has no definition, so the analysis treats it as a parameter/input. Since it's the only
+    // input, it is assigned parameter index 0.
     let cfg = cfg_with_blocks(
       &[(
         0,
@@ -1062,7 +1063,7 @@ mod tests {
     );
 
     let escape = analyze_cfg_escapes(&cfg);
-    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(99));
+    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(0));
   }
 
   #[test]

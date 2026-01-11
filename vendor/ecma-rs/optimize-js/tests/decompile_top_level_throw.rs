@@ -18,6 +18,7 @@ fn program_throw_one() -> Program {
       debug: None,
       body: cfg,
       params: Vec::new(),
+      ssa_body: None,
       stats: Default::default(),
     },
     top_level_mode: TopLevelMode::Module,

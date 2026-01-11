@@ -61,6 +61,7 @@ fn manual_function_with_unreachable_block(inst: Inst) -> ProgramFunction {
       entry: 0,
     },
     params: Vec::new(),
+    ssa_body: None,
     stats: OptimizationStats::default(),
   }
 }
@@ -86,4 +87,3 @@ fn decompile_stops_after_throw() {
     "expected a Throw statement, got: {stmts:?}"
   );
 }
-

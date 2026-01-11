@@ -19,6 +19,7 @@ fn decompile_flat_il_supports_nonzero_entry_label() {
       entry: 1,
     },
     params: Vec::new(),
+    ssa_body: None,
     stats: Default::default(),
   };
 
