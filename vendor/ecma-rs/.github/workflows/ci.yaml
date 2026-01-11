@@ -61,9 +61,14 @@ jobs:
       - name: Check diagnostic codes
         run: ./scripts/check_diagnostic_codes.sh
 
+      # native-js / native-js-cli depend on LLVM via llvm-sys/inkwell.
+      # Keep the base workspace CI job LLVM-free and lint/test them in a
+      # dedicated job that installs LLVM 18.
       - name: cargo clippy (workspace)
         run: >
-          cargo clippy --workspace --all-targets --all-features --locked --
+          cargo clippy --workspace --all-targets --all-features
+          --exclude native-js --exclude native-js-cli
+          --locked --
           -A clippy::style
           -A clippy::complexity
           -A clippy::perf
@@ -73,10 +78,16 @@ jobs:
           -D clippy::suspicious
 
       - name: cargo check (workspace)
-        run: cargo check --workspace --all-targets --locked
+        run: >
+          cargo check --workspace --all-targets
+          --exclude native-js --exclude native-js-cli
+          --locked
 
       - name: cargo test (workspace)
-        run: cargo test --workspace --locked
+        run: >
+          cargo test --workspace
+          --exclude native-js --exclude native-js-cli
+          --locked
 
       - name: Smoke fuzz (bounded)
         run: |
@@ -89,6 +100,52 @@ jobs:
 
       - name: Ensure docs/deps.md is up to date
         run: git diff --exit-code docs/deps.md
+
+  native-js:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: clippy
+
+      - name: Install LLVM 18 toolchain (apt.llvm.org)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18
+          sudo apt-get install -y llvm-18 llvm-18-dev clang-18 lld-18
+
+      # Cargo.lock is intentionally untracked for this library workspace.
+      # Generate it on the fly so we can use --locked for reproducible
+      # dependency resolution in CI.
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: cargo clippy (native-js)
+        run: >
+          cargo clippy -p native-js --all-targets --all-features --locked --
+          -A clippy::style
+          -A clippy::complexity
+          -A clippy::perf
+          -A clippy::nursery
+          -A clippy::pedantic
+          -D clippy::correctness
+          -D clippy::suspicious
+
+      - name: cargo test (native-js)
+        run: cargo test -p native-js --locked
+
+      - name: cargo test (native-js-cli)
+        run: cargo test -p native-js-cli --locked
 
   typecheck-ts-harness:
     runs-on: ubuntu-24.04
