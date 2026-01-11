@@ -1,3 +1,4 @@
+// @lib: es2015
 const globalThis = {
   eval: (_src: string) => 0,
 };

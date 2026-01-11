@@ -1,3 +1,4 @@
+// @lib: es2015
 declare const arguments: { length: number };
 
 function f() {

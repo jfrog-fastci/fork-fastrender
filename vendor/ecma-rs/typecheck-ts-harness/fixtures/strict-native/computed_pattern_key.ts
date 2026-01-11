@@ -1,3 +1,4 @@
+// @lib: es2015
 const key = "x";
 const obj = { x: 1 };
 
