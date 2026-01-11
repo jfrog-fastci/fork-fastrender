@@ -1775,7 +1775,32 @@ impl BlockFormattingContext {
     let child_height_space = specified_height_base
       .map(AvailableSpace::Definite)
       .unwrap_or(AvailableSpace::Indefinite);
-    let block_percentage_base = child_block_size_base;
+    let mut block_percentage_base = child_block_size_base;
+    if block_percentage_base.is_none()
+      && parent.id == 1
+      && child.generated_pseudo.is_none()
+      && self.factory.quirks_mode() == QuirksMode::Quirks
+    {
+      // In quirks mode, browsers treat the `<body>` element as having a definite height for the
+      // purpose of percentage resolution, even when its own `height` is `auto`. This allows common
+      // legacy patterns like `.container { height: 100% }` (without `html, body { height: 100% }`)
+      // to size to the viewport and enable `justify-content: center` vertical centering.
+      //
+      // The root element always receives a definite block percentage base from the initial
+      // containing block; propagate that base to the principal root child so descendants can
+      // resolve percentages against the viewport.
+      let viewport_block_size = if inline_is_horizontal {
+        self.viewport_size.height
+      } else {
+        self.viewport_size.width
+      };
+      // Treat the root child as if it fills the viewport *content* box (excluding its own block
+      // margins) so `height: 100%` descendants match browser quirks behavior without forcing the
+      // document to overflow by the UA default body margins.
+      let viewport_block_size = viewport_block_size - margin_top - margin_bottom;
+      block_percentage_base =
+        viewport_block_size.is_finite().then_some(viewport_block_size.max(0.0));
+    }
 
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
