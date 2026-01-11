@@ -296,7 +296,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 mod tests {
   use super::*;
   use crate::compile_source;
-  use crate::il::inst::InstTyp;
+  use crate::il::inst::{Arg, InstTyp, OwnershipState};
   use crate::TopLevelMode;
 
   fn any_inst(program: &Program, pred: impl Fn(&Inst) -> bool) -> bool {
@@ -327,7 +327,7 @@ mod tests {
     "#;
 
     let mut program = compile_source(source, TopLevelMode::Module, false).expect("compile");
-    let _analyses = annotate_program(&mut program);
+    let analyses = annotate_program(&mut program);
 
     assert!(
       any_inst(&program, |inst| !inst.meta.effects.is_default()),
@@ -340,8 +340,28 @@ mod tests {
     );
 
     assert!(
+      any_inst(&program, |inst| inst.t == InstTyp::Call
+        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name.starts_with("__optimize_js_"))
+        && inst.meta.ownership != OwnershipState::Unknown),
+      "expected at least one allocation call to have non-Unknown InstMeta.ownership"
+    );
+
+    assert!(
       any_inst(&program, |inst| inst.t == InstTyp::CondGoto && inst.meta.nullability_narrowing.is_some()),
       "expected at least one CondGoto to record nullability narrowing"
+    );
+
+    let top_cfg = &program.top_level.body;
+    assert!(
+      analyses.range.get(&FunctionKey::TopLevel).is_some_and(|r| r.entry(top_cfg.entry).is_some()),
+      "expected range analysis results for top-level entry block"
+    );
+    assert!(
+      analyses
+        .nullability
+        .get(&FunctionKey::TopLevel)
+        .is_some_and(|r| r.entry_state(top_cfg.entry).is_reachable()),
+      "expected nullability analysis results for top-level entry block"
     );
   }
 }
