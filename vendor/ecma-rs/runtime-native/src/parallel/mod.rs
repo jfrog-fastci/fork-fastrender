@@ -15,12 +15,14 @@ mod parallel_for;
 /// generated/native code through the exported `rt_parallel_*` entrypoints.
 pub(crate) struct ParallelRuntime {
   scheduler: Scheduler,
+  live_task_ids: Mutex<HashSet<u64>>,
 }
 
 impl ParallelRuntime {
   pub(crate) fn new() -> Self {
     Self {
       scheduler: Scheduler::new(),
+      live_task_ids: Mutex::new(HashSet::new()),
     }
   }
 
@@ -30,7 +32,15 @@ impl ParallelRuntime {
 
     let task_state = Arc::new(TaskState::new(task, data));
     self.scheduler.enqueue(task_state.clone());
-    TaskId(Arc::into_raw(task_state) as u64)
+    let id = Arc::into_raw(task_state) as u64;
+    {
+      let mut live = self
+        .live_task_ids
+        .lock()
+        .unwrap_or_else(|_| std::process::abort());
+      live.insert(id);
+    }
+    TaskId(id)
   }
 
   pub(crate) fn join(&self, tasks: *const TaskId, count: usize) {
@@ -46,12 +56,17 @@ impl ParallelRuntime {
     let ids = unsafe { std::slice::from_raw_parts(tasks, count) };
     let mut seen: HashSet<u64> = HashSet::with_capacity(ids.len());
     let mut tasks: Vec<Arc<TaskState>> = Vec::with_capacity(ids.len());
+    let mut live = self
+      .live_task_ids
+      .lock()
+      .unwrap_or_else(|_| std::process::abort());
     for &TaskId(id) in ids {
       // `TaskId` is an opaque handle and must be unique within a join call.
       // Duplicates would cause UB (double `Arc::from_raw`), so fail loudly.
       if id == 0
         || (id as usize) % std::mem::align_of::<TaskState>() != 0
         || !seen.insert(id)
+        || !live.remove(&id)
       {
         std::process::abort();
       }
@@ -59,6 +74,7 @@ impl ParallelRuntime {
       let ptr = id as usize as *const TaskState;
       tasks.push(unsafe { Arc::from_raw(ptr) });
     }
+    drop(live);
 
     for task in &tasks {
       while !task.done.load(Ordering::Acquire) {

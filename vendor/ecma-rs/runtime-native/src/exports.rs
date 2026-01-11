@@ -113,6 +113,15 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
     return;
   }
 
+  // Avoid UB on misaligned pointers: the barrier is specified to read a pointer-sized value from
+  // `slot` and to treat `obj` as an `ObjHeader` base pointer.
+  if (slot as usize) % std::mem::align_of::<*mut u8>() != 0 {
+    std::process::abort();
+  }
+  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    std::process::abort();
+  }
+
   // SAFETY: The write barrier contract requires `slot` be aligned and contain a
   // valid GC pointer or null.
   let value = (slot as *const *mut u8).read();
