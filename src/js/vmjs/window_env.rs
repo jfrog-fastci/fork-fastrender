@@ -23,6 +23,7 @@ pub const FASTRENDER_USER_AGENT: &str = crate::resource::DEFAULT_USER_AGENT;
 /// Queries longer than this are treated as invalid (`matches == false`) and the returned
 /// `MediaQueryList.media` string is truncated to this length.
 const MAX_MATCH_MEDIA_QUERY_CODE_UNITS: usize = 4096;
+const MAX_SEND_BEACON_URL_CODE_UNITS: usize = 8192;
 
 const MATCH_MEDIA_SLOT_ENV_ID: usize = 0;
 const MATCH_MEDIA_SLOT_NOOP_LISTENER: usize = 1;
@@ -277,6 +278,40 @@ fn match_media_native(
   Ok(Value::Object(mql))
 }
 
+fn navigator_send_beacon_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let url_value = match args.get(0).copied() {
+    Some(v) => v,
+    None => return Ok(Value::Bool(false)),
+  };
+
+  let url_s = match url_value {
+    Value::String(s) => s,
+    other => match scope.heap_mut().to_string(other) {
+      Ok(s) => s,
+      Err(_) => return Ok(Value::Bool(false)),
+    },
+  };
+
+  let url_len = match scope.heap().get_string(url_s) {
+    Ok(s) => s.as_code_units().len(),
+    Err(_) => return Ok(Value::Bool(false)),
+  };
+
+  if url_len > MAX_SEND_BEACON_URL_CODE_UNITS {
+    return Ok(Value::Bool(false));
+  }
+
+  Ok(Value::Bool(true))
+}
+
 /// Installs basic browser-environment shims onto a `vm-js` Window realm global object.
 ///
 /// Returns a host-side environment ID that must be unregistered with
@@ -331,6 +366,17 @@ pub(crate) fn install_window_shims_vm_js(
   }
   define_read_only_vm_js(scope, languages, "length", Value::Number(env.languages.len() as f64))?;
   define_read_only_vm_js(scope, navigator, "languages", Value::Object(languages))?;
+
+  let send_beacon_call_id = vm.register_native_call(navigator_send_beacon_native)?;
+  let send_beacon_name = scope.alloc_string("sendBeacon")?;
+  scope.push_root(Value::String(send_beacon_name))?;
+  let send_beacon_func = scope.alloc_native_function(send_beacon_call_id, None, send_beacon_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(send_beacon_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(send_beacon_func))?;
+  define_read_only_vm_js(scope, navigator, "sendBeacon", Value::Object(send_beacon_func))?;
+
   define_read_only_vm_js(scope, window, "navigator", Value::Object(navigator))?;
 
   let noop_call_id = vm.register_native_call(noop_listener_native)?;
@@ -404,6 +450,34 @@ pub fn install_window_shims(
   define_read_only_string(rt, navigator, "userAgent", env.user_agent)?;
   define_read_only_string(rt, navigator, "platform", env.platform)?;
   define_read_only_string(rt, navigator, "language", env.language)?;
+
+  let send_beacon = rt.alloc_function_value(|rt, _this, args| {
+    let url_value = match args.get(0).copied() {
+      Some(v) => v,
+      None => return Ok(Value::Bool(false)),
+    };
+
+    let s_value = match rt.to_string(url_value) {
+      Ok(v) => v,
+      Err(_) => return Ok(Value::Bool(false)),
+    };
+    let Value::String(handle) = s_value else {
+      return Ok(Value::Bool(false));
+    };
+
+    let url_len = match rt.heap().get_string(handle) {
+      Ok(s) => s.as_code_units().len(),
+      Err(_) => return Ok(Value::Bool(false)),
+    };
+
+    if url_len > MAX_SEND_BEACON_URL_CODE_UNITS {
+      return Ok(Value::Bool(false));
+    }
+
+    Ok(Value::Bool(true))
+  })?;
+  let send_beacon_key = prop_key(rt, "sendBeacon")?;
+  rt.define_data_property(navigator, send_beacon_key, send_beacon, false)?;
 
   // `navigator.languages` is an array in browsers; represent it as a tiny array-like object.
   let languages = rt.alloc_object_value()?;
@@ -481,7 +555,10 @@ pub fn install_window_shims(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::dom2;
+  use crate::js::WindowHost;
   use crate::style::media::MediaContext;
+  use selectors::context::QuirksMode;
 
   fn get_prop(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Value {
     let key = prop_key(rt, name).unwrap();
@@ -554,5 +631,26 @@ mod tests {
       .unwrap();
     let matches = get_prop(&mut rt, mql, "matches");
     assert!(matches == Value::Bool(false));
+  }
+
+  #[test]
+  fn navigator_send_beacon_exists_and_is_non_throwing() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    let is_function = host
+      .exec_script("typeof navigator.sendBeacon === 'function'")
+      .unwrap();
+    assert_eq!(is_function, Value::Bool(true));
+
+    let with_payload = host
+      .exec_script(r#"navigator.sendBeacon("https://example.invalid/beacon", '{"a":1}')"#)
+      .unwrap();
+    assert_eq!(with_payload, Value::Bool(true));
+
+    let without_payload = host
+      .exec_script(r#"navigator.sendBeacon("https://example.invalid/beacon")"#)
+      .unwrap();
+    assert_eq!(without_payload, Value::Bool(true));
   }
 }
