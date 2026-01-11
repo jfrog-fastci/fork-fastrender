@@ -1407,6 +1407,10 @@ fn run(args: Args) -> Result<(), DynError> {
         .allow_http(false)
         .allow_https(false),
     );
+    // When treating the document as offline (fixtures), match the fixture renderer: scripts are not
+    // executed, so parse with scripting-disabled semantics so `<noscript>` fallback markup is
+    // available for layout/paint.
+    builder = builder.render_parse_scripting_enabled(false);
   }
 
   let mut renderer = builder.build()?;

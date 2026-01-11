@@ -464,6 +464,10 @@ fn build_fixture_render_config(
   fastrender::api::FastRenderConfig::new()
     .with_default_viewport(viewport.0, viewport.1)
     .with_device_pixel_ratio(dpr)
+    // Fixtures are rendered with scripts disabled and no JS execution. Use scripting-disabled HTML
+    // parsing semantics so `<noscript>` fallback content is visible (e.g. sites that render a
+    // no-JS message or lazy-load fallbacks).
+    .with_render_parse_scripting_enabled(false)
     // Headless Chrome (used by `xtask chrome-baseline-fixtures`) does not honor `<meta name="viewport">`
     // directives on desktop. Rendering fixtures with meta viewport enabled can therefore change the
     // effective zoom/DPR and even the output image dimensions, making Chrome-vs-FastRender diffs
@@ -2100,6 +2104,25 @@ mod tests {
       fastrender::dom::DomCompatibilityMode::Standard,
     );
     assert!(!config.apply_meta_viewport);
+  }
+
+  #[test]
+  fn build_fixture_render_config_parses_noscript_fallbacks() {
+    let font_config = FontConfig::new()
+      .with_system_fonts(true)
+      .with_bundled_fonts(true);
+    let config = build_fixture_render_config(
+      (1040, 1240),
+      1.0,
+      font_config,
+      false,
+      fastrender::CompatProfile::Standards,
+      fastrender::dom::DomCompatibilityMode::Standard,
+    );
+    assert!(
+      !config.render_parse_scripting_enabled,
+      "fixture renders should use scripting-disabled parsing semantics so <noscript> fallback content is visible"
+    );
   }
 
   #[test]

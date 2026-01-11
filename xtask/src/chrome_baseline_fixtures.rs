@@ -142,6 +142,32 @@ const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 87;
 /// without requiring JS.
 const DEFAULT_HEADLESS_SCREENSHOT_VIRTUAL_TIME_BUDGET_MS: u64 = 5_000;
 
+fn write_js_disabled_chrome_preferences(profile_dir: &Path) -> Result<()> {
+  // `--disable-javascript` is not a stable/portable Chrome CLI flag, but Chrome does honor profile
+  // content settings stored in the user-data-dir.
+  //
+  // We want `--js off` to behave like a user disabling JavaScript in browser settings so that:
+  // - scripts don't execute, and
+  // - `<noscript>` fallback markup is parsed/rendered (instead of being treated as raw text).
+  //
+  // This makes fixtures like pinterest.com (which gate their UI behind `<noscript>`) render
+  // meaningful content in the baseline instead of a blank page.
+  let default_dir = profile_dir.join("Default");
+  fs::create_dir_all(&default_dir)
+    .with_context(|| format!("create chrome profile Default dir {}", default_dir.display()))?;
+  let preferences_path = default_dir.join("Preferences");
+  let prefs = serde_json::json!({
+    "profile": {
+      // Cover both managed + default settings; Chrome prefers managed settings when present.
+      "managed_default_content_settings": { "javascript": 2 },
+      "default_content_setting_values": { "javascript": 2 },
+    }
+  });
+  fs::write(&preferences_path, serde_json::to_vec(&prefs).expect("serialize chrome prefs"))
+    .with_context(|| format!("write chrome preferences {}", preferences_path.display()))?;
+  Ok(())
+}
+
 fn headless_window_viewport_height_pad_px() -> Result<u32> {
   match std::env::var("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX") {
     Ok(raw) => {
@@ -428,6 +454,9 @@ fn render_fixture(
   let profile_dir = temp_root.join("profile").join(&fixture.stem);
   fs::create_dir_all(&profile_dir)
     .with_context(|| format!("create chrome profile dir {}", profile_dir.display()))?;
+  if matches!(args.js, JsMode::Off) {
+    write_js_disabled_chrome_preferences(&profile_dir)?;
+  }
 
   let base_url = Url::from_directory_path(&fixture.dir)
     .map(|u| u.to_string())
@@ -1538,6 +1567,7 @@ mod tests {
     build_fixture_metadata, chrome_log_indicates_transient_gpu_failure, is_snap_chromium,
     ChromeBaselineFixturesArgs,
   };
+  use serde_json::Value;
   use sha2::{Digest, Sha256};
   use std::fs;
   use std::path::{Path, PathBuf};
@@ -1562,6 +1592,20 @@ mod tests {
     let script = temp.path().join("chromium-browser");
     fs::write(&script, "#!/bin/sh\nexec snap run chromium \"$@\"\n").expect("write wrapper");
     assert!(is_snap_chromium(&script));
+  }
+
+  #[test]
+  fn js_off_profile_preferences_disable_javascript_content_settings() {
+    let temp = tempdir().expect("tempdir");
+    super::write_js_disabled_chrome_preferences(temp.path()).expect("write chrome prefs");
+    let prefs_path = temp.path().join("Default/Preferences");
+    let raw = fs::read_to_string(&prefs_path).expect("read chrome prefs");
+    let json: Value = serde_json::from_str(&raw).expect("parse chrome prefs json");
+    assert_eq!(
+      json["profile"]["managed_default_content_settings"]["javascript"],
+      2
+    );
+    assert_eq!(json["profile"]["default_content_setting_values"]["javascript"], 2);
   }
 
   #[test]
