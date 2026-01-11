@@ -227,8 +227,8 @@ It expects the entry file to export a `main()` function.
 
 ### Usage
 
-Validate the entry file (typecheck + strict subset validation + codegen), without producing an
-executable:
+Preflight-check the entry file (typecheck + legacy strict validation + codegen), without producing
+an executable:
 
 ```bash
 # From the repo root:
@@ -295,7 +295,9 @@ Unlike the minimal `native-js-cli` binary, the typechecked `native-js` pipeline
 renders source-context diagnostics (file/line caret spans) from:
 
 - `typecheck-ts` (TypeScript type errors)
-- `native-js` strict validation (`NJS####` codes)
+- `native-js` validators (`NJS####` codes):
+  - strict subset (`native_js::validate::validate_strict_subset`): `NJS0009` / `NJS0010`
+  - legacy strict validator (`native_js::strict::validate`): `NJS0001..NJS0008`
 - `native-js` HIR-based code generation (when it fails)
 
 ### Notes
