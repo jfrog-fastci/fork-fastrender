@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 #[test]
 fn image_linear_upscale_matches_chrome_sampling_grid() {
-  // Chrome/Skia samples scaled images on a pixel-center aligned grid and rounds channel values
-  // down when converting back to 8-bit. This regression ensures we take the same path for large
-  // upscales (where tiny-skia's built-in sampling can drift noticeably).
+  // Chrome/Skia samples scaled images on a pixel-center aligned grid using fixed-point bilinear
+  // weights, then rounds channel values down when converting back to 8-bit. This regression
+  // ensures we take the same path for large upscales (where tiny-skia's built-in sampling can
+  // drift noticeably).
   //
-  // 2px wide gradient -> 9px wide output should yield the following (floored) samples:
-  // [0, 0, 14, 70, 127, 184, 240, 255, 255]
+  // 2px wide gradient -> 9px wide output should yield the following samples:
+  // [0, 0, 13, 70, 127, 183, 240, 255, 255]
   let pixels = vec![
     // left pixel: black
     0, 0, 0, 255, //
@@ -34,7 +35,7 @@ fn image_linear_upscale_matches_chrome_sampling_grid() {
     .render(&list)
     .unwrap();
 
-  let expected = [0u8, 0, 14, 70, 127, 184, 240, 255, 255];
+  let expected = [0u8, 0, 13, 70, 127, 183, 240, 255, 255];
   for (x, expected) in expected.iter().enumerate() {
     let px = pixmap.pixel(x as u32, 0).expect("pixel inside viewport");
     assert_eq!(

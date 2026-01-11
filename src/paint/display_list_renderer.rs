@@ -17362,7 +17362,18 @@ impl DisplayListRenderer {
     // Avoid generating nearly-identical copies for tiny downscales (which can explode cache
     // memory). The threshold here is intentionally conservative: a <= 10% reduction in pixel area
     // is treated as a "slight" downscale.
-    target_pixels.saturating_mul(10) <= src_pixels.saturating_mul(9)
+    if target_pixels.saturating_mul(10) <= src_pixels.saturating_mul(9) {
+      return true;
+    }
+
+    // For large upscales, tiny-skia's built-in bilinear filtering rounds to the nearest 8-bit
+    // channel value while Skia/Chrome round down. Pre-rasterize relatively small upscales so we
+    // can use our Skia-aligned sampler (see `image_data_to_scaled_pixmap_inner`) without exploding
+    // cache memory for large images.
+    const UPSCALE_MIN_AREA_RATIO: u64 = 4;
+    const UPSCALE_MAX_TARGET_PIXELS: u64 = 512 * 512;
+    target_pixels <= UPSCALE_MAX_TARGET_PIXELS
+      && target_pixels >= src_pixels.saturating_mul(UPSCALE_MIN_AREA_RATIO)
   }
 
   fn image_data_to_pixmap_at_size(
