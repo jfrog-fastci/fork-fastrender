@@ -512,9 +512,17 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
     };
 
     let (var, is_null) = match (left, right) {
-      (Arg::Var(v), Arg::Const(Const::Null)) | (Arg::Const(Const::Null), Arg::Var(v)) => (*v, true),
-      (Arg::Var(v), Arg::Const(Const::Undefined))
-      | (Arg::Const(Const::Undefined), Arg::Var(v)) => (*v, false),
+      (Arg::Var(v), other) | (other, Arg::Var(v)) => {
+        if matches!(other, Arg::Const(Const::Null)) {
+          (*v, true)
+        } else if matches!(other, Arg::Const(Const::Undefined))
+          || matches!(other, Arg::Builtin(name) if name == "undefined")
+        {
+          (*v, false)
+        } else {
+          return next;
+        }
+      }
       _ => return next,
     };
 
