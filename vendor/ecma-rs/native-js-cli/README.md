@@ -206,6 +206,9 @@ can test the non-builtin path.
 - numbers are formatted similar to `printf("%.15g")`, but special-cased for
   `NaN` / `Infinity` / `-Infinity`
 
+Note: today this flag only affects the legacy `--pipeline project` emitter. The
+typechecked `--pipeline checked` backend currently always lowers these intrinsics.
+
 ## Supported language subset (`--pipeline project`, current)
 
 This CLI exercises the **minimal** IR emitter in `native-js` (it is not the

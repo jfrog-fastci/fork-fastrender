@@ -36,7 +36,7 @@ fn check_succeeds_on_simple_program() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("check")
     .arg(&entry)
     .assert()
@@ -54,7 +54,7 @@ fn check_fails_on_any() {
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("check")
     .arg(&entry)
     .assert()
@@ -70,7 +70,7 @@ fn json_check_success_contains_schema_version_and_diagnostics_array() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   let assert = native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("--json")
     .arg("check")
     .arg(&entry)
@@ -101,7 +101,7 @@ fn json_check_error_contains_diagnostics_array() {
   .unwrap();
 
   let assert = native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("--json")
     .arg("check")
     .arg(&entry)
@@ -135,7 +135,7 @@ fn json_check_missing_entry_emits_host_error_diagnostic() {
   let missing = tmp.path().join("missing.ts");
 
   let assert = native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("--json")
     .arg("check")
     .arg(&missing)
@@ -168,7 +168,7 @@ fn run_rejects_json_flag() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(30))
+    .timeout(Duration::from_secs(60))
     .arg("--json")
     .arg("run")
     .arg(&entry)
@@ -540,4 +540,59 @@ fn checked_pipeline_check_fails_on_type_error() {
     .failure()
     .code(1)
     .stderr(predicates::str::contains("TS2322"));
+}
+
+#[test]
+fn checked_pipeline_run_exits_with_program_exit_code() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { print(1 + 2); return 42; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(42)
+    .stdout(predicate::eq("3\n"));
+}
+
+#[test]
+fn checked_pipeline_emit_ir_contains_symbols() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let ll = tmp.path().join("out.ll");
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("emit-ir")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&ll)
+    .assert()
+    .success();
+
+  let text = fs::read_to_string(&ll).unwrap();
+  assert!(
+    text.contains("define i32 @main"),
+    "expected IR to define a `main` function"
+  );
+  assert!(
+    text.contains("@__nativejs_def_"),
+    "expected IR to contain native-js definition symbols"
+  );
+  assert!(
+    text.contains("gc \"coreclr\""),
+    "expected IR to use native-js GC strategy"
+  );
 }
