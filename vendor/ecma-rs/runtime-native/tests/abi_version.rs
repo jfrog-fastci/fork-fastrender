@@ -11,6 +11,11 @@ unsafe extern "C" fn dummy_resume(_coro: *mut Coroutine) -> CoroutineStep {
 
 unsafe extern "C" fn dummy_destroy(_coro: *mut Coroutine) {}
 
+unsafe fn rt_async_spawn_ptr(coro: *mut Coroutine) {
+  let coro_id = runtime_native::CoroutineId(runtime_native::rt_handle_alloc(coro.cast()));
+  let _ = runtime_native::rt_async_spawn(coro_id);
+}
+
 fn run_abort_child(test_name: &str, env_key: &str) {
   let exe = std::env::current_exe().expect("current_exe");
   let output = Command::new(exe)
@@ -79,9 +84,7 @@ fn abi_version_mismatch_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -114,9 +117,7 @@ fn reserved_nonzero_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -150,9 +151,7 @@ fn promise_align_not_power_of_two_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -185,9 +184,7 @@ fn promise_size_too_small_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -224,9 +221,7 @@ fn promise_align_too_small_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -270,9 +265,7 @@ fn resume_null_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }
 
@@ -305,8 +298,6 @@ fn destroy_null_child() {
   };
 
   unsafe {
-    let coro_ptr = &mut coro as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _ = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
+    rt_async_spawn_ptr(&mut coro as *mut Coroutine);
   }
 }

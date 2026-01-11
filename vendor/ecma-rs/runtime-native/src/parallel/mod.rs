@@ -509,7 +509,12 @@ fn worker_loop(
         task.run();
         continue;
       }
-      Steal::Retry => continue,
+      Steal::Retry => {
+        // `Steal::Retry` indicates transient contention on the injector. Ensure we still cooperate
+        // with stop-the-world requests while spinning in this retry loop.
+        threading::safepoint_poll();
+        continue;
+      }
       Steal::Empty => {}
     }
 
@@ -526,11 +531,20 @@ fn worker_loop(
             task.run();
             continue 'work;
           }
-          Steal::Retry => continue 'work,
+          Steal::Retry => {
+            // Like the injector path above, a retry indicates contention. Poll the safepoint so a
+            // stop-the-world request doesn't time out waiting for an idle worker spinning here.
+            threading::safepoint_poll();
+            continue 'work;
+          }
           Steal::Empty => {}
         }
       }
     }
+
+    // No work available. Poll the safepoint barrier before entering the short spin/park loop so
+    // stop-the-world GC can reliably stop even a large pool of idle workers.
+    threading::safepoint_poll();
 
     if spins < 10 {
       spins += 1;
