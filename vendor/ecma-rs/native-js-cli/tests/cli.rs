@@ -279,6 +279,31 @@ fn build_and_run_returns_exit_code() {
 }
 
 #[test]
+fn build_and_run_returns_boolean_exit_code() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): boolean { return true; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let output = StdCommand::new(&out).output().unwrap();
+  assert_eq!(output.status.code(), Some(1), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
+}
+
+#[test]
 fn build_with_emit_ir_writes_executable_and_ir_file() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
