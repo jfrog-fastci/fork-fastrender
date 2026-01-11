@@ -504,6 +504,26 @@ pub fn validate_native_strict_body(
           ));
         }
       }
+      ExprKind::Update { expr: target_expr, .. } => {
+        if expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name) {
+          let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+          diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+            "prototype mutation is forbidden when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
+        }
+      }
+      ExprKind::Unary { op, expr: target_expr } => {
+        if *op == hir_js::UnaryOp::Delete
+          && expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name)
+        {
+          let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+          diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+            "prototype mutation is forbidden when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
+        }
+      }
       ExprKind::Object(obj) => {
         for prop in &obj.properties {
           let key = match prop {
