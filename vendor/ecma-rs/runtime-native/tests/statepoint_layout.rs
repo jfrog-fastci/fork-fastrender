@@ -93,7 +93,7 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
 #[test]
 fn statepoint_x86_64_layout() {
   assert_statepoint_fixture(
-    include_bytes!("fixtures/statepoint_x86_64.bin"),
+    include_bytes!("fixtures/bin/statepoint_x86_64.bin"),
     X86_64_DWARF_REG_SP,
   );
 }
@@ -101,7 +101,7 @@ fn statepoint_x86_64_layout() {
 #[test]
 fn statepoint_aarch64_layout() {
   assert_statepoint_fixture(
-    include_bytes!("fixtures/statepoint_aarch64.bin"),
+    include_bytes!("fixtures/bin/statepoint_aarch64.bin"),
     AARCH64_DWARF_REG_SP,
   );
 }
@@ -155,6 +155,7 @@ fn statepoint_record_rejects_nonconstant_header() {
       Location::Register {
         size: 8,
         dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
       },
       Location::Constant { size: 8, value: 0 },
       Location::Constant { size: 8, value: 0 },

@@ -103,7 +103,6 @@ int main(void) {
   .expect("write smoke.c");
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-  let stackmaps_ld = Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld");
 
   // On Linux, `runtime-native` uses a linker-script based mechanism to expose the
   // in-memory `.llvm_stackmaps` section via `__llvm_stackmaps_start/end` symbols.
@@ -115,22 +114,19 @@ int main(void) {
     None
   };
 
-  let compile = Command::new(cc)
+  let mut compile = Command::new(cc);
+  compile
     .arg("-std=c99")
     .arg("-I")
     .arg(&include_dir)
-    // `runtime-native` relies on linker-defined symbols to locate the
-    // `.llvm_stackmaps` section when stack walking. When linking outside Cargo
-    // (as this test does), we need to explicitly include the linker script
-    // fragment that defines `__llvm_stackmaps_start/end`.
-    .arg(format!("-Wl,-T,{}", stackmaps_ld.display()))
     .arg(&c_path)
-    .arg(&staticlib)
-    .args(
-      stackmaps_ld
-        .as_ref()
-        .map(|p| format!("-Wl,-T,{}", p.display())),
-    )
+    .arg(&staticlib);
+
+  if let Some(stackmaps_ld) = &stackmaps_ld {
+    compile.arg(format!("-Wl,-T,{}", stackmaps_ld.display()));
+  }
+
+  let compile = compile
     .arg("-o")
     .arg(&bin_path)
     .status()

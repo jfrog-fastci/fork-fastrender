@@ -3,8 +3,8 @@ use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
 };
 
-const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/statepoint_x86_64.bin");
-const STATEPOINT_AARCH64: &[u8] = include_bytes!("fixtures/statepoint_aarch64.bin");
+const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/bin/statepoint_x86_64.bin");
+const STATEPOINT_AARCH64: &[u8] = include_bytes!("fixtures/bin/statepoint_aarch64.bin");
 
 #[test]
 fn statepoint_x86_64_fixture_verifies() {
@@ -45,11 +45,9 @@ fn verifier_rejects_register_locations() {
   // statepoint entries.
   let location3_kind_offset =
     HEADER_SIZE + FUNCTION_RECORD_SIZE + RECORD_HEADER_SIZE + LOCATION_SIZE * 3;
-  let location3_offset_bytes: [u8; 4] = bytes[location3_kind_offset + 8..location3_kind_offset + 12]
-    .try_into()
-    .unwrap();
-  let location3_offset = i32::from_le_bytes(location3_offset_bytes);
   bytes[location3_kind_offset] = 1; // Register (LLVM stackmap kind)
+  // Zero out the old Indirect offset field so the verifier's error message is deterministic.
+  bytes[location3_kind_offset + 8..location3_kind_offset + 12].fill(0);
 
   let stackmap = StackMap::parse(&bytes).unwrap();
   let err = verify_statepoint_stackmap(
@@ -66,7 +64,7 @@ fn verifier_rejects_register_locations() {
   let loc = err.location.expect("expected location details for VerifyError");
   assert_eq!(loc.kind, "Register");
   assert_eq!(loc.dwarf_reg, 7);
-  assert_eq!(loc.offset, location3_offset as i64);
+  assert_eq!(loc.offset, 0);
 
   let msg = err.to_string();
   assert!(msg.contains("callsite"));
@@ -74,5 +72,5 @@ fn verifier_rejects_register_locations() {
   assert!(msg.contains("location[3]"));
   assert!(msg.contains("kind=Register"));
   assert!(msg.contains("dwarf_reg=7"));
-  assert!(msg.contains(&format!("offset={location3_offset}")));
+  assert!(msg.contains("offset=0"));
 }

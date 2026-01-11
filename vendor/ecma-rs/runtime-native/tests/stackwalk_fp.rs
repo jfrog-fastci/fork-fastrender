@@ -11,8 +11,8 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   use runtime_native::statepoints::StatepointRecord;
   use std::collections::BTreeMap;
 
-  let stackmaps =
-    StackMaps::parse(include_bytes!("fixtures/statepoint_x86_64.bin")).expect("parse stackmaps");
+  let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin"))
+    .expect("parse stackmaps");
 
   // Pick two callsite records so we can build a multi-frame managed call chain.
   let callsites: Vec<(u64, runtime_native::stackmaps::CallSite<'_>)> =
@@ -230,8 +230,8 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   use runtime_native::statepoints::StatepointRecord;
   use std::collections::BTreeMap;
 
-  let stackmaps =
-    StackMaps::parse(include_bytes!("fixtures/statepoint_aarch64.bin")).expect("parse stackmaps");
+  let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin"))
+    .expect("parse stackmaps");
 
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
   let stack_size = callsite.stack_size;
