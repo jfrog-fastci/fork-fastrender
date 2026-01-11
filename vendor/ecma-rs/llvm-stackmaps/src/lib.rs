@@ -76,6 +76,17 @@ pub fn lookup(pc: u64) -> Option<&'static StackMapRecord> {
     stackmaps().lookup(pc)
 }
 
+/// Look up a callsite index entry by return address (absolute PC).
+///
+/// This includes the record index plus per-function metadata like `stack_size`.
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
+pub fn lookup_callsite(pc: u64) -> Option<&'static Callsite> {
+    stackmaps().lookup_callsite(pc)
+}
+
 /// Look up and decode a `gc.statepoint` record by callsite return address.
 ///
 /// Returns `None` when:
