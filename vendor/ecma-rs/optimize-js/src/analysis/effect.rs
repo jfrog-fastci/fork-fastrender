@@ -130,6 +130,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
       }
     }
     InstTyp::CondGoto
+    | InstTyp::Return
     | InstTyp::Un
     | InstTyp::VarAssign
     | InstTyp::Phi
@@ -301,6 +302,13 @@ mod tests {
   fn var_assign_is_pure() {
     let inst = Inst::var_assign(0, Arg::Var(1));
     let eff = inst_local_effect(&inst);
+    assert!(eff.is_pure());
+  }
+
+  #[test]
+  fn return_is_pure() {
+    let cfg = cfg_single_block(vec![Inst::ret(Arg::Const(Const::Undefined))]);
+    let eff = cfg_local_effects(&cfg);
     assert!(eff.is_pure());
   }
 
