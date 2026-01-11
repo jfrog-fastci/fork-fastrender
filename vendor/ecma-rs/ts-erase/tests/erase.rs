@@ -138,3 +138,25 @@ fn strict_native_mode_erases_ambient_decls_and_this_params() {
   let output = strict_erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
   assert_eq!(output, "function f(x){return x;}export const y=1;");
 }
+
+#[test]
+fn full_mode_lowers_runtime_ts_constructs() {
+  let src = r#"
+    export enum E { A, B = 5 }
+    export namespace N { export const x = E.A; }
+    export const y = N.x;
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+
+  // Lowered runtime enums include a reverse mapping, which contains member names
+  // as string literals. (The source only contains identifier names `A`/`B`.)
+  assert!(
+    output.contains("\"A\"") || output.contains("'A'"),
+    "expected lowered enum to include string literal \"A\", got: {output}"
+  );
+  assert!(
+    output.contains("\"B\"") || output.contains("'B'"),
+    "expected lowered enum to include string literal \"B\", got: {output}"
+  );
+}
