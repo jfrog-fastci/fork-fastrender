@@ -188,10 +188,11 @@ fn native_strict_bans_non_null_assertions_on_maybe_nullish_values() {
 #[test]
 fn native_strict_bans_non_constant_computed_member_keys() {
   let source = r#"
- const obj: { [key: string]: number } = { a: 1 };
- const k = 'a';
- obj[k];
- obj["a"];
+  const obj: { [key: string]: number } = { a: 1 };
+  const k = 'a';
+  obj[k];
+  obj[`a`];
+  obj["a"];
 "#;
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("obj[k]").expect("obj[k]") as u32 + 4;
@@ -276,10 +277,44 @@ fn native_strict_bans_global_eval_computed_property() {
 }
 
 #[test]
+fn native_strict_bans_global_eval_template_literal_computed_property() {
+  let source = "globalThis[`eval`](\"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis[`eval`]";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_proxy_revocable_computed_property() {
   let source = "Proxy[\"revocable\"]({}, {});";
   let (diagnostics, file_id) = check(source, true);
   let needle = "Proxy[\"revocable\"]";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_proxy_revocable_template_literal_computed_property() {
+  let source = "Proxy[`revocable`]({}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Proxy[`revocable`]";
   let start = source.find(needle).expect("callee") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
@@ -310,10 +345,44 @@ fn native_strict_bans_set_prototype_of_computed_property() {
 }
 
 #[test]
+fn native_strict_bans_set_prototype_of_template_literal_computed_property() {
+  let source = "const value: object = {};\nObject[`setPrototypeOf`](value, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object[`setPrototypeOf`](value, {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_define_property_on_template_literal_prototype() {
+  let source = "declare const Foo: { prototype: object };\nObject.defineProperty(Foo[`prototype`], \"x\", {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.defineProperty(Foo[`prototype`], \"x\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_is_opt_in() {
   let source = r#"
- const obj: { [key: string]: number } = { a: 1 };
- const k = 'a';
+  const obj: { [key: string]: number } = { a: 1 };
+  const k = 'a';
 obj[k];
 
 function f() { return arguments; }

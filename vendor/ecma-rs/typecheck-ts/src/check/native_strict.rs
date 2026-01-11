@@ -45,7 +45,13 @@ pub fn validate_native_strict_body(
         let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
           return false;
         };
-        matches!(&expr.kind, ExprKind::Literal(Literal::String(s)) if s.lossy == value)
+        match &expr.kind {
+          ExprKind::Literal(Literal::String(s)) => s.lossy == value,
+          // `${...}` template literals are non-constant; only allow the fully
+          // literal `\`foo\`` form.
+          ExprKind::Template(tpl) => tpl.spans.is_empty() && tpl.head == value,
+          _ => false,
+        }
       }
       _ => false,
     }
@@ -346,11 +352,11 @@ pub fn validate_native_strict_body(
             continue;
           };
 
-          let key_is_literal = matches!(
+          let key_is_const = matches!(
             &key.kind,
             ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
-          );
-          if key_is_literal {
+          ) || matches!(&key.kind, ExprKind::Template(tpl) if tpl.spans.is_empty());
+          if key_is_const {
             continue;
           }
 
@@ -415,11 +421,11 @@ pub fn validate_native_strict_body(
           let Some(key) = body.exprs.get(key_expr.0 as usize) else {
             continue;
           };
-          let key_is_literal = matches!(
+          let key_is_const = matches!(
             &key.kind,
             ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
-          );
-          if !key_is_literal {
+          ) || matches!(&key.kind, ExprKind::Template(tpl) if tpl.spans.is_empty());
+          if !key_is_const {
             let span = result
               .expr_spans
               .get(key_expr.0 as usize)
@@ -467,11 +473,11 @@ pub fn validate_native_strict_body(
           let Some(key) = body.exprs.get(key_expr.0 as usize) else {
             continue;
           };
-          let key_is_literal = matches!(
+          let key_is_const = matches!(
             &key.kind,
             ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
-          );
-          if key_is_literal {
+          ) || matches!(&key.kind, ExprKind::Template(tpl) if tpl.spans.is_empty());
+          if key_is_const {
             continue;
           }
           let span = result
