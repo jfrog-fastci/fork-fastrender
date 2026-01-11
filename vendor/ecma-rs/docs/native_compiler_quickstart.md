@@ -61,7 +61,7 @@ Strict-native rejects (hard error, not warning):
 - Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
 - `Proxy` (disallowed or extremely restricted)
 
-**Enforced today** by `typecheck-ts` when you pass `--native-strict` (or legacy `--strict-native`):
+**Enforced today** by `typecheck-ts` when strict-native is enabled (`--native-strict` or `--strict-native`):
 
 - `TC4000`: `any` (explicit or inferred)
 - `TC4001`: `eval(...)` (incl `globalThis.eval(...)`)
@@ -131,6 +131,20 @@ Expected behavior:
 - On failure: diagnostics are printed and the process exits non-zero.
 
 Tip: add `--json` to emit structured diagnostics/output for tooling.
+
+### Enable strict-native via `tsconfig.json` (project mode)
+
+If you’re using `--project` to load a `tsconfig.json`, you can also enable strict-native in the config:
+
+```jsonc
+{
+  "compilerOptions": {
+    "nativeStrict": true
+  }
+}
+```
+
+`compilerOptions.strictNative` is also accepted as a legacy key.
 
 ### Native strict-subset validator tests (`native-js`)
 
@@ -331,7 +345,7 @@ For exact execution rules, see `native-oracle-harness/src/lib.rs` (TS→JS erasu
 
 Strict-native checks can come from multiple layers:
 
-- `TC40xx` codes: emitted by `typecheck-ts` when `--native-strict` (or legacy `--strict-native`) is enabled.
+- `TC40xx` codes: emitted by `typecheck-ts` when strict-native is enabled (`--native-strict` / `--strict-native`).
   - Today this is `TC4000`–`TC4009` and is expected to grow.
 - `NJS####` codes: emitted by `native-js` strict subset validation.
   - `native_js::validate::validate_strict_subset` is used by the typechecked `native-js` AOT CLI.
