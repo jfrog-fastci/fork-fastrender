@@ -72,7 +72,7 @@ Strict-native rejects (hard error, not warning):
 - `TC4006`: non-null assertions on maybe-nullish values
 - `TC4007`: computed property access / computed property names with non-constant keys
 - `TC4008`: `Proxy` (incl `Proxy.revocable(...)`)
-- `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, etc.)
+- `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, `Object.defineProperty` on `.prototype`, etc.)
 
 > Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
 > proceeds.

@@ -22,6 +22,10 @@ declare const globalThis: { eval: (x: string) => unknown };
 interface Function {}
 declare const Function: { new (...args: string[]): Function };
 
+declare const Object: {
+  defineProperty: (o: object, key: string, desc: object) => void;
+};
+
 declare const Proxy: { new <T extends object>(target: T, handler: object): T };
 "#;
 
@@ -232,9 +236,26 @@ fn native_strict_bans_new_proxy() {
 }
 
 #[test]
+fn native_strict_bans_define_property_on_prototype() {
+  let source = "declare const Foo: { prototype: object };\nObject.defineProperty(Foo.prototype, \"x\", {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.defineProperty(Foo.prototype, \"x\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_is_opt_in() {
   let source = r#"
-const obj: { [key: string]: number } = { a: 1 };
+ const obj: { [key: string]: number } = { a: 1 };
 const k = 'a';
 obj[k];
 

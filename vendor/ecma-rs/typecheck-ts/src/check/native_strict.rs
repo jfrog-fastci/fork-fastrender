@@ -25,6 +25,9 @@ pub fn validate_native_strict_body(
   let revocable_name = name_interner.intern("revocable");
   let arguments_name = name_interner.intern("arguments");
   let set_prototype_of_name = name_interner.intern("setPrototypeOf");
+  let define_property_name = name_interner.intern("defineProperty");
+  let define_properties_name = name_interner.intern("defineProperties");
+  let assign_name = name_interner.intern("assign");
   let prototype_name = name_interner.intern("prototype");
   let proto_name = name_interner.intern("__proto__");
 
@@ -278,6 +281,28 @@ pub fn validate_native_strict_body(
                 "prototype mutation is forbidden when `native_strict` is enabled",
                 Span::new(file, span),
               ));
+            }
+
+            if let Some(first_arg) = call.args.first().map(|arg| arg.expr) {
+              let is_object_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name)
+                && (object_key_is_ident(&member.property, define_property_name)
+                  || object_key_is_string(&member.property, "defineProperty")
+                  || object_key_is_ident(&member.property, define_properties_name)
+                  || object_key_is_string(&member.property, "defineProperties")
+                  || object_key_is_ident(&member.property, assign_name)
+                  || object_key_is_string(&member.property, "assign"));
+              let is_reflect_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == reflect_name)
+                && (object_key_is_ident(&member.property, define_property_name)
+                  || object_key_is_string(&member.property, "defineProperty"));
+              if (is_object_define || is_reflect_define)
+                && expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name)
+              {
+                let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                  "prototype mutation is forbidden when `native_strict` is enabled",
+                  Span::new(file, span),
+                ));
+              }
             }
           }
         }
