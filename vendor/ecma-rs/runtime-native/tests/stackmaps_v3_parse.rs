@@ -4,10 +4,7 @@ use runtime_native::stackmaps::{Location, StackMap, StackMaps};
 
 #[test]
 fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
-  let bytes = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/stackmaps_v3.bin"
-  ));
+  let bytes = include_bytes!("fixtures/stackmaps_v3.bin");
 
   let stackmap = StackMap::parse(bytes).expect("fixture stackmap should parse");
   assert_eq!(stackmap.version, 3);
@@ -88,10 +85,7 @@ fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
 fn parses_patchpoint_live_outs() {
   // A minimal LLVM 18 patchpoint stackmap extracted from an object file. This exercises the
   // live-out header + entry parsing, which differs subtly from the location array.
-  let bytes = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/patchpoint_liveouts.bin"
-  ));
+  let bytes = include_bytes!("fixtures/patchpoint_liveouts.bin");
 
   let stackmap = StackMap::parse(bytes).expect("patchpoint stackmap should parse");
   assert_eq!(stackmap.records.len(), 1);
@@ -104,4 +98,3 @@ fn parses_patchpoint_live_outs() {
   let index = StackMaps::parse(bytes).expect("patchpoint stackmaps should parse + index");
   assert_eq!(index.lookup(4).unwrap().record.patchpoint_id, 1);
 }
-
