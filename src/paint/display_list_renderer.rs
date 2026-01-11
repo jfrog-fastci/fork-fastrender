@@ -15680,78 +15680,74 @@ impl DisplayListRenderer {
     let clip = self.canvas.clip_mask_rc();
     let transform = self.canvas.transform();
     let blend_mode = self.canvas.blend_mode();
+    let axis_aligned_transform = Self::is_translation_only_transform(transform);
 
     let draw_solid_line = |pixmap: &mut Pixmap,
                            paint: &tiny_skia::Paint,
                            start: f32,
-                           len: f32,
-                           center: f32,
-                           thickness: f32| {
+                            len: f32,
+                            center: f32,
+                            thickness: f32| {
       if thickness <= 0.0 || len <= 0.0 {
         return;
       }
       const NEAR_INTEGER_EPSILON_PX: f32 = 1e-3;
 
-      // Snap solid decoration strokes to integer device pixels when possible so 1px underlines
-      // don't get anti-aliased across two device rows/columns (noticeable on pages like si.edu).
+      // Match Chrome's device-pixel snapping for solid text decoration strokes.
       //
-      // Only do this for axis-aligned items (no rotation/shear/scale) and integer stroke
-      // thicknesses.
-      let cross_start = center - thickness * 0.5;
-      let snapped_cross_start = if thickness.is_finite()
-        && Self::is_near_integer(thickness)
-        && cross_start.is_finite()
-        && transform.sx.is_finite()
-        && transform.sy.is_finite()
-        && transform.kx.is_finite()
-        && transform.ky.is_finite()
-        && transform.tx.is_finite()
-        && transform.ty.is_finite()
-        && (transform.sx - 1.0).abs() < 1e-6
-        && (transform.sy - 1.0).abs() < 1e-6
-        && transform.kx.abs() < 1e-6
-        && transform.ky.abs() < 1e-6
-      {
-        let cross_translation = if inline_vertical {
-          transform.tx
+      // In practice Chrome snaps the decoration thickness to whole device pixels and aligns the
+      // decoration's *outer edge* (top edge for horizontal underlines) to the device pixel grid.
+      // Without snapping, a nominally-1px underline can be anti-aliased across two device rows when
+      // font metrics land on fractional coordinates (e.g. rust-lang.org, si.edu).
+      //
+      // Restrict snapping to axis-aligned transforms (identity / translation-only) so we don't
+      // distort decorations under rotation/skew/scale transforms.
+      let (center, thickness) =
+        if axis_aligned_transform && center.is_finite() && thickness.is_finite() {
+          let snapped_thickness = thickness.floor().max(1.0);
+          // Use the *pre-snap* thickness to compute the decoration's outer edge; this matches
+          // Chrome and avoids snapping one device pixel too far "inside" the text when the authored
+          // thickness is fractional (e.g. 1.8px).
+          let raw_edge = center - thickness * 0.5;
+          if raw_edge.is_finite() {
+            let cross_translation = if inline_vertical {
+              transform.tx
+            } else {
+              transform.ty
+            };
+            let snapped_edge = (raw_edge + cross_translation).floor() - cross_translation;
+            (snapped_edge + snapped_thickness * 0.5, snapped_thickness)
+          } else {
+            (center, thickness)
+          }
         } else {
-          transform.ty
+          (center, thickness)
         };
-        // Snap in device space to handle pure translation transforms (e.g. layer origins).
-        let device_cross_start = cross_start + cross_translation;
-        (device_cross_start.round()) - cross_translation
-      } else {
-        cross_start
-      };
+
       let rect = if inline_vertical {
-        tiny_skia::Rect::from_xywh(snapped_cross_start, start, thickness, len)
+        tiny_skia::Rect::from_xywh(center - thickness * 0.5, start, thickness, len)
       } else {
-        tiny_skia::Rect::from_xywh(start, snapped_cross_start, len, thickness)
+        tiny_skia::Rect::from_xywh(start, center - thickness * 0.5, len, thickness)
       };
       if let Some(rect) = rect {
-        let translation_only = (transform.sx - 1.0).abs() <= 1e-6
-          && (transform.sy - 1.0).abs() <= 1e-6
-          && transform.kx.abs() <= 1e-6
-          && transform.ky.abs() <= 1e-6;
-        if translation_only {
+        if axis_aligned_transform {
           let tx_round = transform.tx.round();
           let ty_round = transform.ty.round();
           if (transform.tx - tx_round).abs() <= NEAR_INTEGER_EPSILON_PX
             && (transform.ty - ty_round).abs() <= NEAR_INTEGER_EPSILON_PX
           {
-            // Match Chrome's behavior by snapping the *origin* and *size* independently.
-            //
-            // Rounding both edges independently can accidentally inflate a ~1.3px underline to 2
-            // device pixels when the underline top has a non-trivial fractional component.
-            let x0 = rect.x() + tx_round;
-            let y0 = rect.y() + ty_round;
-            let snapped_x = x0.round();
-            let snapped_y = y0.round();
-            let snapped_w = rect.width().round().max(1.0);
-            let snapped_h = rect.height().round().max(1.0);
-            if let Some(snapped) = tiny_skia::Rect::from_xywh(snapped_x, snapped_y, snapped_w, snapped_h)
-            {
-              let path = PathBuilder::from_rect(snapped);
+            // When tiny-skia applies a floating-point translation, axis-aligned rectangles can end
+            // up slightly off the device grid due to float noise (visible as blurry 1px lines).
+            // If the current transform is a near-integer translation, apply that translation to
+            // the rect and draw with an identity transform so the rasterizer sees device-space
+            // coordinates directly.
+            if let Some(device_rect) = tiny_skia::Rect::from_xywh(
+              rect.x() + tx_round,
+              rect.y() + ty_round,
+              rect.width(),
+              rect.height(),
+            ) {
+              let path = PathBuilder::from_rect(device_rect);
               pixmap.fill_path(
                 &path,
                 paint,
@@ -26027,6 +26023,56 @@ mod tests {
       assert_eq!(pixel(&pixmap, x, 0), (255, 0, 0, 255));
       assert_eq!(pixel(&pixmap, x, 1), (255, 255, 255, 255));
     }
+  }
+
+  #[test]
+  fn text_decoration_solid_snaps_fractional_thickness_to_device_pixels() {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::TextDecoration(TextDecorationItem {
+      bounds: Rect::from_xywh(0.0, 0.0, 20.0, 15.0),
+      line_start: 0.0,
+      line_width: 20.0,
+      inline_vertical: false,
+      decorations: vec![
+        DecorationPaint {
+          style: TextDecorationStyle::Solid,
+          color: Rgba::from_rgba8(0, 0, 255, 255),
+          underline: Some(DecorationStroke {
+            // pre-snap edge = 6.8 - 0.9 = 5.9, so snap edge to 5 and thickness to 1.
+            center: 6.8,
+            thickness: 1.8,
+            segments: None,
+          }),
+          overline: None,
+          line_through: None,
+        },
+        DecorationPaint {
+          style: TextDecorationStyle::Solid,
+          color: Rgba::from_rgba8(255, 0, 0, 255),
+          underline: Some(DecorationStroke {
+            // pre-snap edge = 10.8 - 1.35 = 9.45, so snap edge to 9 and thickness to 2.
+            center: 10.8,
+            thickness: 2.7,
+            segments: None,
+          }),
+          overline: None,
+          line_through: None,
+        },
+      ],
+    }));
+
+    let pixmap = DisplayListRenderer::new(20, 15, Rgba::WHITE, FontContext::new())
+      .expect("renderer")
+      .render(&list)
+      .expect("rendered");
+
+    // 1.8px thickness should snap down to a crisp 1px line at y=5.
+    assert_eq!(pixel(&pixmap, 10, 5), (0, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 10, 6), (255, 255, 255, 255));
+    // 2.7px thickness should snap down to a crisp 2px line at y=9..10.
+    assert_eq!(pixel(&pixmap, 10, 9), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 10, 11), (255, 255, 255, 255));
   }
 
   #[test]
