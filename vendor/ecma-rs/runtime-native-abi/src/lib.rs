@@ -491,6 +491,13 @@ extern "C" {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> IoWatcherId;
+  pub fn rt_io_register_with_drop(
+    fd: i32,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    drop_data: extern "C" fn(*mut u8),
+  ) -> IoWatcherId;
   pub fn rt_io_update(id: IoWatcherId, interests: u32);
   pub fn rt_io_unregister(id: IoWatcherId);
 
@@ -773,6 +780,7 @@ mod tests {
       "rt_set_interval_with_drop(",
       "rt_clear_timer(",
       "rt_io_register(",
+      "rt_io_register_with_drop(",
       "rt_io_update(",
       "rt_io_unregister(",
       "rt_async_set_limits(",
