@@ -19707,87 +19707,15 @@ fn property_value_to_string(value: &PropertyValue) -> Option<String> {
   }
 }
 
-fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
-  if text.eq_ignore_ascii_case("normal") {
-    Some(ContainerType::Normal)
-  } else if text.eq_ignore_ascii_case("size") {
-    Some(ContainerType::Size)
-  } else if text.eq_ignore_ascii_case("inline-size") {
-    Some(ContainerType::InlineSize)
-  } else {
-    None
-  }
-}
-
 fn parse_container_type_from_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<ContainerType> {
-  let mut size_type: Option<ContainerType> = None;
-  let mut saw_scroll_state = false;
-  let mut saw_normal = false;
-
-  while let Ok(token) = parser.next_including_whitespace_and_comments() {
-    match token {
-      Token::WhiteSpace(_) | Token::Comment(_) => continue,
-      Token::Ident(ident) => {
-        let ident = ident.as_ref();
-
-        if ident.eq_ignore_ascii_case("normal") {
-          if saw_normal || saw_scroll_state || size_type.is_some() {
-            return None;
-          }
-          saw_normal = true;
-          continue;
-        }
-
-        if ident.eq_ignore_ascii_case("scroll-state") {
-          if saw_scroll_state || saw_normal {
-            return None;
-          }
-          saw_scroll_state = true;
-          continue;
-        }
-
-        let parsed = parse_container_type_keyword(ident)?;
-        if parsed == ContainerType::Normal {
-          // `normal` is handled above, so treat it as invalid here to avoid mixing.
-          return None;
-        }
-        if let Some(existing) = size_type {
-          if existing != parsed {
-            return None;
-          }
-        } else {
-          size_type = Some(parsed);
-        }
-      }
-      _ => return None,
-    }
-  }
-
-  if saw_normal {
-    Some(ContainerType::Normal)
-  } else if let Some(size_type) = size_type {
-    Some(size_type)
-  } else if saw_scroll_state {
-    // `container-type: scroll-state` is valid per spec. FastRender does not currently model
-    // scroll-state query containers distinctly, but treating this as `normal` ensures the value
-    // still resets any previously-set size/inline-size container capability.
-    Some(ContainerType::Normal)
-  } else {
-    None
-  }
-}
-
-fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
-  let mut input = ParserInput::new(input);
-  let mut parser = Parser::new(&mut input);
-  parse_container_type_from_parser(&mut parser)
+  ContainerType::parse_from_parser(parser)
 }
 
 fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
   let PropertyValue::Keyword(text) = value else {
     return None;
   };
-  parse_container_type_from_str(text)
+  ContainerType::parse(text)
 }
 
 fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {

@@ -171,6 +171,111 @@ pub enum ContainerType {
   Normal,
   Size,
   InlineSize,
+  ScrollState,
+  SizeScrollState,
+  InlineSizeScrollState,
+}
+
+impl ContainerType {
+  #[inline]
+  pub fn is_normal(self) -> bool {
+    matches!(self, Self::Normal)
+  }
+
+  /// Returns true when this element establishes a size query container.
+  #[inline]
+  pub fn supports_size(self) -> bool {
+    matches!(self, Self::Size | Self::SizeScrollState)
+  }
+
+  /// Returns true when this element establishes an inline-size query container.
+  #[inline]
+  pub fn supports_inline_size(self) -> bool {
+    matches!(self, Self::InlineSize | Self::InlineSizeScrollState)
+  }
+
+  /// Returns true when this element establishes a scroll-state query container.
+  #[inline]
+  pub fn supports_scroll_state(self) -> bool {
+    matches!(
+      self,
+      Self::ScrollState | Self::SizeScrollState | Self::InlineSizeScrollState
+    )
+  }
+
+  /// Parse a `container-type` value.
+  ///
+  /// Spec: CSS Conditional Rules Level 5
+  /// Grammar: `normal | [ [ size | inline-size ] || scroll-state ]`
+  pub fn parse(raw: &str) -> Option<Self> {
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+    Self::parse_from_parser(&mut parser)
+  }
+
+  pub(crate) fn parse_from_parser<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<Self> {
+    let mut saw_normal = false;
+    let mut saw_size = false;
+    let mut saw_inline_size = false;
+    let mut saw_scroll_state = false;
+
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        Token::WhiteSpace(_) | Token::Comment(_) => continue,
+        Token::Ident(ident) => {
+          let ident = ident.as_ref();
+
+          if ident.eq_ignore_ascii_case("normal") {
+            if saw_normal || saw_size || saw_inline_size || saw_scroll_state {
+              return None;
+            }
+            saw_normal = true;
+            continue;
+          }
+
+          if ident.eq_ignore_ascii_case("size") {
+            if saw_normal || saw_size || saw_inline_size {
+              return None;
+            }
+            saw_size = true;
+            continue;
+          }
+
+          if ident.eq_ignore_ascii_case("inline-size") {
+            if saw_normal || saw_inline_size || saw_size {
+              return None;
+            }
+            saw_inline_size = true;
+            continue;
+          }
+
+          if ident.eq_ignore_ascii_case("scroll-state") {
+            if saw_normal || saw_scroll_state {
+              return None;
+            }
+            saw_scroll_state = true;
+            continue;
+          }
+
+          return None;
+        }
+        _ => return None,
+      }
+    }
+
+    if saw_normal {
+      return Some(Self::Normal);
+    }
+
+    match (saw_size, saw_inline_size, saw_scroll_state) {
+      (true, false, true) => Some(Self::SizeScrollState),
+      (true, false, false) => Some(Self::Size),
+      (false, true, true) => Some(Self::InlineSizeScrollState),
+      (false, true, false) => Some(Self::InlineSize),
+      (false, false, true) => Some(Self::ScrollState),
+      _ => None,
+    }
+  }
 }
 
 /// Border collapsing model for tables

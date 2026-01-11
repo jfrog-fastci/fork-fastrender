@@ -3318,7 +3318,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
     "container-type" => {
-      return keyword_in_list(parsed, &["normal", "size", "inline-size"]);
+      return keyword_parse(parsed, |kw| crate::style::types::ContainerType::parse(kw));
     }
     "flex-direction" => {
       return keyword_in_list(parsed, &["row", "row-reverse", "column", "column-reverse"])

@@ -496,10 +496,8 @@ fn container_query_matches(
 
   let result = match query {
     ContainerQuery::Size(size_query) => {
-      if !matches!(
-        container.container_type,
-        ContainerType::Size | ContainerType::InlineSize
-      ) {
+      if !(container.container_type.supports_size() || container.container_type.supports_inline_size())
+      {
         QueryResult::False
       } else {
         match size_query {
@@ -543,7 +541,13 @@ fn container_query_matches(
     ContainerQuery::Style(style_query) => {
       eval_style_query(style_query, container, container_parent, ctx)
     }
-    ContainerQuery::ScrollState(scroll_query) => eval_scroll_state_query(scroll_query, container),
+    ContainerQuery::ScrollState(scroll_query) => {
+      if !container.container_type.supports_scroll_state() {
+        QueryResult::False
+      } else {
+        eval_scroll_state_query(scroll_query, container)
+      }
+    }
     ContainerQuery::Unknown(_) => QueryResult::Unknown,
     ContainerQuery::Not(inner) => container_query_matches(
       container_id,
@@ -890,11 +894,9 @@ fn evaluate_container_size_feature(
   line_height: f32,
 ) -> QueryResult {
   let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
-  let supports_inline = matches!(
-    container.container_type,
-    ContainerType::Size | ContainerType::InlineSize
-  );
-  let supports_block = matches!(container.container_type, ContainerType::Size);
+  let supports_inline =
+    container.container_type.supports_size() || container.container_type.supports_inline_size();
+  let supports_block = container.container_type.supports_size();
 
   let clamp = |value: f32| {
     if value.is_finite() {
@@ -915,16 +917,20 @@ fn evaluate_container_size_feature(
     0.0
   };
 
-  let cqw_base = match container.container_type {
-    ContainerType::Size => clamp(container.width),
-    ContainerType::InlineSize if inline_horizontal => clamp(container.width),
-    _ => 0.0,
+  let cqw_base = if container.container_type.supports_size()
+    || (container.container_type.supports_inline_size() && inline_horizontal)
+  {
+    clamp(container.width)
+  } else {
+    0.0
   };
 
-  let cqh_base = match container.container_type {
-    ContainerType::Size => clamp(container.height),
-    ContainerType::InlineSize if !inline_horizontal => clamp(container.height),
-    _ => 0.0,
+  let cqh_base = if container.container_type.supports_size()
+    || (container.container_type.supports_inline_size() && !inline_horizontal)
+  {
+    clamp(container.height)
+  } else {
+    0.0
   };
 
   match feature {
@@ -1544,7 +1550,7 @@ fn evaluate_container_size_query(
     };
   }
 
-  if matches!(container.container_type, ContainerType::InlineSize) {
+  if container.container_type.supports_inline_size() {
     let inline_axis_is_horizontal =
       crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
     if !cq_media_query_inline_only(mq, inline_axis_is_horizontal) {
@@ -3586,11 +3592,9 @@ fn resolve_length_for_query(
 
 fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32, f32, f32) {
   let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
-  let supports_inline = matches!(
-    container.container_type,
-    ContainerType::Size | ContainerType::InlineSize
-  );
-  let supports_block = matches!(container.container_type, ContainerType::Size);
+  let supports_inline =
+    container.container_type.supports_size() || container.container_type.supports_inline_size();
+  let supports_block = container.container_type.supports_size();
 
   let clamp = |value: f32| {
     if value.is_finite() {
@@ -3611,30 +3615,30 @@ fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32
     0.0
   };
 
-  let cqw = match container.container_type {
-    ContainerType::Size => {
-      let width = if inline_horizontal {
-        container.inline_size
-      } else {
-        container.block_size
-      };
-      clamp(width)
-    }
-    ContainerType::InlineSize if inline_horizontal => clamp(container.inline_size),
-    _ => 0.0,
+  let cqw = if container.container_type.supports_size() {
+    let width = if inline_horizontal {
+      container.inline_size
+    } else {
+      container.block_size
+    };
+    clamp(width)
+  } else if container.container_type.supports_inline_size() && inline_horizontal {
+    clamp(container.inline_size)
+  } else {
+    0.0
   };
 
-  let cqh = match container.container_type {
-    ContainerType::Size => {
-      let height = if inline_horizontal {
-        container.block_size
-      } else {
-        container.inline_size
-      };
-      clamp(height)
-    }
-    ContainerType::InlineSize if !inline_horizontal => clamp(container.inline_size),
-    _ => 0.0,
+  let cqh = if container.container_type.supports_size() {
+    let height = if inline_horizontal {
+      container.block_size
+    } else {
+      container.inline_size
+    };
+    clamp(height)
+  } else if container.container_type.supports_inline_size() && !inline_horizontal {
+    clamp(container.inline_size)
+  } else {
+    0.0
   };
 
   (cqw, cqh, cqi, cqb)
@@ -3852,9 +3856,25 @@ fn parse_resolution_dppx(raw: &str) -> Option<f32> {
 const CQ_SUPPORT_SIZE: u8 = 1 << 0;
 const CQ_SUPPORT_INLINE_SIZE_HORIZ: u8 = 1 << 1;
 const CQ_SUPPORT_INLINE_SIZE_VERT: u8 = 1 << 2;
-const CQ_SUPPORT_INLINE_SIZE: u8 = CQ_SUPPORT_INLINE_SIZE_HORIZ | CQ_SUPPORT_INLINE_SIZE_VERT;
 const CQ_SUPPORT_STYLE: u8 = 1 << 3;
-const CQ_SUPPORT_ALL: u8 = CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE | CQ_SUPPORT_STYLE;
+const CQ_SUPPORT_SCROLL_STATE: u8 = 1 << 4;
+const CQ_SUPPORT_SIZE_SCROLL_STATE: u8 = 1 << 5;
+const CQ_SUPPORT_INLINE_SIZE_HORIZ_SCROLL_STATE: u8 = 1 << 6;
+const CQ_SUPPORT_INLINE_SIZE_VERT_SCROLL_STATE: u8 = 1 << 7;
+
+const CQ_SUPPORT_INLINE_SIZE: u8 = CQ_SUPPORT_INLINE_SIZE_HORIZ | CQ_SUPPORT_INLINE_SIZE_VERT;
+const CQ_SUPPORT_INLINE_SIZE_SCROLL_STATE: u8 =
+  CQ_SUPPORT_INLINE_SIZE_HORIZ_SCROLL_STATE | CQ_SUPPORT_INLINE_SIZE_VERT_SCROLL_STATE;
+const CQ_SUPPORT_SIZE_ANY: u8 = CQ_SUPPORT_SIZE | CQ_SUPPORT_SIZE_SCROLL_STATE;
+const CQ_SUPPORT_INLINE_SIZE_HORIZ_ANY: u8 =
+  CQ_SUPPORT_INLINE_SIZE_HORIZ | CQ_SUPPORT_INLINE_SIZE_HORIZ_SCROLL_STATE;
+const CQ_SUPPORT_INLINE_SIZE_VERT_ANY: u8 =
+  CQ_SUPPORT_INLINE_SIZE_VERT | CQ_SUPPORT_INLINE_SIZE_VERT_SCROLL_STATE;
+const CQ_SUPPORT_INLINE_SIZE_ANY: u8 = CQ_SUPPORT_INLINE_SIZE | CQ_SUPPORT_INLINE_SIZE_SCROLL_STATE;
+const CQ_SUPPORT_SCROLL_STATE_ANY: u8 =
+  CQ_SUPPORT_SCROLL_STATE | CQ_SUPPORT_SIZE_SCROLL_STATE | CQ_SUPPORT_INLINE_SIZE_SCROLL_STATE;
+const CQ_SUPPORT_ALL: u8 =
+  CQ_SUPPORT_STYLE | CQ_SUPPORT_SIZE_ANY | CQ_SUPPORT_INLINE_SIZE_ANY | CQ_SUPPORT_SCROLL_STATE_ANY;
 
 fn cq_type_bit(container: &ContainerQueryInfo) -> u8 {
   match container.container_type {
@@ -3865,6 +3885,15 @@ fn cq_type_bit(container: &ContainerQueryInfo) -> u8 {
         CQ_SUPPORT_INLINE_SIZE_HORIZ
       } else {
         CQ_SUPPORT_INLINE_SIZE_VERT
+      }
+    }
+    ContainerType::ScrollState => CQ_SUPPORT_SCROLL_STATE,
+    ContainerType::SizeScrollState => CQ_SUPPORT_SIZE_SCROLL_STATE,
+    ContainerType::InlineSizeScrollState => {
+      if container.styles.writing_mode == WritingMode::HorizontalTb {
+        CQ_SUPPORT_INLINE_SIZE_HORIZ_SCROLL_STATE
+      } else {
+        CQ_SUPPORT_INLINE_SIZE_VERT_SCROLL_STATE
       }
     }
   }
@@ -3903,12 +3932,12 @@ fn cq_media_query_inline_only(mq: &MediaQuery, inline_axis_is_horizontal: bool) 
 
 fn cq_size_query_support_mask(query: &ContainerSizeQuery) -> u8 {
   let mq = query.support_query();
-  let mut mask = CQ_SUPPORT_SIZE;
+  let mut mask = CQ_SUPPORT_SIZE_ANY;
   if cq_media_query_inline_only(mq, true) {
-    mask |= CQ_SUPPORT_INLINE_SIZE_HORIZ;
+    mask |= CQ_SUPPORT_INLINE_SIZE_HORIZ_ANY;
   }
   if cq_media_query_inline_only(mq, false) {
-    mask |= CQ_SUPPORT_INLINE_SIZE_VERT;
+    mask |= CQ_SUPPORT_INLINE_SIZE_VERT_ANY;
   }
   mask
 }
@@ -3917,7 +3946,7 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
-    ContainerQuery::ScrollState(_) => CQ_SUPPORT_ALL,
+    ContainerQuery::ScrollState(_) => CQ_SUPPORT_SCROLL_STATE_ANY,
     // Treat unknown/forward-compatible query terms as potentially referencing any container type.
     // This preserves expected OR short-circuit behavior like `(<size-feature>) or <unknown>`,
     // matching when the known branch is true.
@@ -36779,11 +36808,9 @@ fn container_query_unit_bases(
       continue;
     };
 
-    let supports_inline = matches!(
-      info.container_type,
-      ContainerType::Size | ContainerType::InlineSize
-    );
-    let supports_block = matches!(info.container_type, ContainerType::Size);
+    let supports_inline =
+      info.container_type.supports_size() || info.container_type.supports_inline_size();
+    let supports_block = info.container_type.supports_size();
 
     let container_inline_horizontal =
       crate::style::inline_axis_is_horizontal(info.styles.writing_mode);
@@ -36807,11 +36834,8 @@ fn container_query_unit_bases(
     }
 
     if !found_cqw {
-      let eligible = match info.container_type {
-        ContainerType::Size => true,
-        ContainerType::InlineSize => container_inline_horizontal,
-        _ => false,
-      };
+      let eligible = info.container_type.supports_size()
+        || (info.container_type.supports_inline_size() && container_inline_horizontal);
       if eligible {
         let width = if container_inline_horizontal {
           info.inline_size
@@ -36828,11 +36852,8 @@ fn container_query_unit_bases(
     }
 
     if !found_cqh {
-      let eligible = match info.container_type {
-        ContainerType::Size => true,
-        ContainerType::InlineSize => !container_inline_horizontal,
-        _ => false,
-      };
+      let eligible = info.container_type.supports_size()
+        || (info.container_type.supports_inline_size() && !container_inline_horizontal);
       if eligible {
         let height = if container_inline_horizontal {
           info.block_size

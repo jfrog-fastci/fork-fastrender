@@ -12417,15 +12417,18 @@ impl FastRender {
 
         if log_container_pass {
           let total = container_ctx.containers.len();
-          let (size_cnt, inline_cnt) =
-            container_ctx
-              .containers
-              .values()
-              .fold((0usize, 0usize), |(s, i), info| match info.container_type {
-                ContainerType::Size => (s + 1, i),
-                ContainerType::InlineSize => (s, i + 1),
-                _ => (s, i),
-              });
+          let (size_cnt, inline_cnt) = container_ctx.containers.values().fold(
+            (0usize, 0usize),
+            |(mut size_cnt, mut inline_cnt), info| {
+              if info.container_type.supports_size() {
+                size_cnt += 1;
+              }
+              if info.container_type.supports_inline_size() {
+                inline_cnt += 1;
+              }
+              (size_cnt, inline_cnt)
+            },
+          );
           eprintln!(
             "[container-pass] iter={} containers={} size={} inline_size={}",
             iter_idx + 1,
@@ -17908,6 +17911,9 @@ fn container_type_fingerprint(container_type: ContainerType) -> u8 {
     ContainerType::Normal => 0,
     ContainerType::Size => 1,
     ContainerType::InlineSize => 2,
+    ContainerType::ScrollState => 3,
+    ContainerType::SizeScrollState => 4,
+    ContainerType::InlineSizeScrollState => 5,
   }
 }
 
@@ -18310,6 +18316,9 @@ fn styled_style_summary(style: &ComputedStyle) -> String {
     ContainerType::Normal => "normal",
     ContainerType::Size => "size",
     ContainerType::InlineSize => "inline-size",
+    ContainerType::ScrollState => "scroll-state",
+    ContainerType::SizeScrollState => "size scroll-state",
+    ContainerType::InlineSizeScrollState => "inline-size scroll-state",
   };
   let names = if style.container_name.is_empty() {
     String::new()
@@ -19162,7 +19171,8 @@ fn build_container_query_context(
   if include_style_containers {
     // Style queries treat every element as a query container (including `container-type: normal`),
     // so pre-register all styled nodes. Size queries will still only match against size/inline-size
-    // containers via container-type gating in `ContainerQueryContext::find_container_impl`.
+    // containers (and scroll-state queries against scroll-state containers) via container-type
+    // gating in `ContainerQueryContext::find_container_impl`.
     for (styled_id, style) in &styles {
       containers.insert(
         *styled_id,
@@ -19290,9 +19300,10 @@ fn build_container_query_context(
     } else {
       0
     };
-    let is_sticky_container = include_scroll_state && style.position.is_sticky();
-    let is_scroll_state_container = include_scroll_state && (scroll_bounds.is_some() || is_sticky_container);
-    let is_size_container = matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize);
+    let is_scroll_state_container =
+      include_scroll_state && style.container_type.supports_scroll_state();
+    let is_size_container =
+      style.container_type.supports_size() || style.container_type.supports_inline_size();
 
     if has_layout_size && (is_size_container || is_scroll_state_container) {
       if let Some(styled_id) = styled_id {

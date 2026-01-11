@@ -899,10 +899,7 @@ pub fn creates_stacking_context(
   }
 
   // 18. container-type: size/inline-size creates a stacking context.
-  if !matches!(
-    style.container_type,
-    crate::style::types::ContainerType::Normal
-  ) {
+  if style.container_type.supports_size() || style.container_type.supports_inline_size() {
     return true;
   }
 
@@ -1004,10 +1001,7 @@ pub fn get_stacking_context_reason(
     }
   }
 
-  if !matches!(
-    style.container_type,
-    crate::style::types::ContainerType::Normal
-  ) {
+  if style.container_type.supports_size() || style.container_type.supports_inline_size() {
     return Some(StackingContextReason::ContainerType);
   }
 
