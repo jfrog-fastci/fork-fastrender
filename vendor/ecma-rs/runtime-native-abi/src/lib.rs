@@ -7,6 +7,7 @@ compile_error!("runtime-native ABI is currently only supported on 64-bit targets
 extern crate std;
 
 use core::ffi::c_void;
+use core::ffi::c_char;
 use core::sync::atomic::AtomicU64;
 
 /// ABI types shared between `runtime-native`, generated native code, and external tooling.
@@ -32,6 +33,11 @@ pub const RT_THREAD_KIND_MAIN: u32 = 0;
 pub const RT_THREAD_KIND_WORKER: u32 = 1;
 pub const RT_THREAD_KIND_IO: u32 = 2;
 pub const RT_THREAD_KIND_EXTERNAL: u32 = 3;
+
+// I/O watcher event flags (match `runtime-native/include/runtime_native.h`).
+pub const RT_IO_READABLE: u32 = 0x1;
+pub const RT_IO_WRITABLE: u32 = 0x2;
+pub const RT_IO_ERROR: u32 = 0x4;
 
 /// Raw pointer to a GC-managed object.
 ///
@@ -158,10 +164,42 @@ impl InternedId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u64);
 
+/// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TimerId(pub u64);
+
+/// Identifier returned by `rt_io_register`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct IoWatcherId(pub u64);
+
+/// File descriptor type used by I/O watcher registration.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RtFd(pub i32);
+
+/// Opaque value reference.
+///
+/// The full JS value representation is not implemented yet; treat as an opaque pointer payload.
+pub type ValueRef = *mut c_void;
+
 /// Stable persistent handle id (safe to store in OS event loop userdata like `epoll_event.data.u64`).
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HandleId(pub u64);
+
+/// Opaque runtime record used by the `rt_thread_attach` / `rt_thread_detach` APIs.
+#[repr(C)]
+pub struct Runtime {
+  _private: [u8; 0],
+}
+
+/// Opaque runtime thread record used by the `rt_thread_attach` / `rt_thread_detach` APIs.
+#[repr(C)]
+pub struct Thread {
+  _private: [u8; 0],
+}
 
 /// Opaque handle to a promise/coroutine managed by the runtime.
 #[repr(transparent)]
@@ -211,6 +249,94 @@ pub struct Coroutine {
   _private: [u8; 0],
 }
 
+/// Legacy promise placeholder (used by older runtime-native tests/utilities).
+#[repr(C)]
+pub struct RtPromise {
+  _private: [u8; 0],
+}
+
+pub type LegacyPromiseRef = *mut RtPromise;
+
+/// Payload layout for promises returned from `rt_parallel_spawn_promise`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PromiseLayout {
+  pub size: usize,
+  pub align: usize,
+}
+
+// -----------------------------------------------------------------------------
+// Legacy promise resolution ABI (PromiseResolve / thenable assimilation)
+// -----------------------------------------------------------------------------
+
+/// Tag for [`PromiseResolveInput`].
+pub type PromiseResolveKind = u8;
+pub const RT_PROMISE_RESOLVE_VALUE: PromiseResolveKind = 0;
+pub const RT_PROMISE_RESOLVE_PROMISE: PromiseResolveKind = 1;
+pub const RT_PROMISE_RESOLVE_THENABLE: PromiseResolveKind = 2;
+
+/// VTable describing a typed thenable (`PromiseLike<T>`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ThenableVTable {
+  pub call_then: unsafe extern "C" fn(
+    thenable: *mut u8,
+    on_fulfilled: extern "C" fn(*mut u8, PromiseResolveInput),
+    on_rejected: extern "C" fn(*mut u8, ValueRef),
+    data: *mut u8,
+  ) -> ValueRef,
+}
+
+/// ABI representation of a typed thenable value.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ThenableRef {
+  pub vtable: *const ThenableVTable,
+  pub ptr: *mut u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union PromiseResolvePayload {
+  pub value: ValueRef,
+  pub promise: LegacyPromiseRef,
+  pub thenable: ThenableRef,
+}
+
+/// Input to the native runtime's promise resolution procedure.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PromiseResolveInput {
+  pub kind: PromiseResolveKind,
+  pub payload: PromiseResolvePayload,
+}
+
+// -----------------------------------------------------------------------------
+// Legacy coroutine ABI (async/await lowering; will be removed once codegen migrates)
+// -----------------------------------------------------------------------------
+
+/// Status code returned by a legacy coroutine `resume` function.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RtCoroStatus {
+  Done = 0,
+  Pending = 1,
+  Yield = 2,
+}
+
+pub type RtCoroResumeFn = extern "C" fn(*mut RtCoroutineHeader) -> RtCoroStatus;
+
+/// Header that prefixes legacy LLVM-generated coroutine frame structs.
+#[repr(C)]
+pub struct RtCoroutineHeader {
+  pub resume: RtCoroResumeFn,
+  pub promise: LegacyPromiseRef,
+  pub state: u32,
+  pub await_is_error: u32,
+  pub await_value: ValueRef,
+  pub await_error: ValueRef,
+}
+
 /// Function pointer type for parallel task entrypoints.
 pub type RtTaskFn = extern "C" fn(*mut u8);
 
@@ -224,6 +350,8 @@ extern "C" {
   pub fn rt_thread_register(kind: u32) -> u64;
   pub fn rt_thread_unregister();
   pub fn rt_thread_set_parked(parked: bool);
+  pub fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread;
+  pub fn rt_thread_detach(thread: *mut Thread);
   pub fn rt_register_current_thread();
   pub fn rt_unregister_current_thread();
   pub fn rt_register_thread();
@@ -233,6 +361,9 @@ extern "C" {
   pub fn rt_alloc(size: usize, shape: RtShapeId) -> GcPtr;
   pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> GcPtr;
   pub fn rt_alloc_array(len: usize, elem_size: usize) -> GcPtr;
+  pub fn rt_alloc_ptr_array(len: usize) -> *mut u8;
+  pub fn rt_array_len(obj: *mut u8) -> usize;
+  pub fn rt_array_data(obj: *mut u8) -> *mut u8;
 
   pub fn rt_register_shape_table(table: *const RtShapeDescriptor, len: usize);
 
@@ -259,6 +390,8 @@ extern "C" {
   pub fn rt_gc_unregister_root_slot(handle: u32);
   pub fn rt_gc_pin(ptr: GcPtr) -> u32;
   pub fn rt_gc_unpin(handle: u32);
+  pub fn rt_gc_root_get(handle: u32) -> GcPtr;
+  pub fn rt_gc_root_set(handle: u32, ptr: GcPtr) -> bool;
 
   // Persistent handles (stable u64 ids).
   pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
@@ -283,16 +416,98 @@ extern "C" {
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
+  pub fn rt_parallel_spawn_promise(
+    task: extern "C" fn(*mut u8, PromiseRef),
+    data: *mut u8,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
+  pub fn rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef;
 
   // Async
   pub fn rt_promise_init(p: PromiseRef);
   pub fn rt_promise_fulfill(p: PromiseRef);
+  pub fn rt_promise_try_fulfill(p: PromiseRef) -> bool;
   pub fn rt_promise_reject(p: PromiseRef);
+  pub fn rt_promise_try_reject(p: PromiseRef) -> bool;
   pub fn rt_promise_mark_handled(p: PromiseRef);
+  pub fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8;
   pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_spawn_deferred(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_cancel_all();
   pub fn rt_async_poll() -> bool;
+  pub fn rt_async_wait();
+  pub fn rt_async_set_strict_await_yields(strict: bool);
+  pub fn rt_async_run_until_idle() -> bool;
+  pub fn rt_async_block_on(p: PromiseRef);
+
+  // Microtasks + timers (queueMicrotask / setTimeout / setInterval).
+  pub fn rt_async_sleep(delay_ms: u64) -> PromiseRef;
+  pub fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_queue_microtask_with_drop(
+    cb: extern "C" fn(*mut u8),
+    data: *mut u8,
+    drop_data: extern "C" fn(*mut u8),
+  );
+  pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
+  pub fn rt_set_timeout_with_drop(
+    cb: extern "C" fn(*mut u8),
+    data: *mut u8,
+    drop_data: extern "C" fn(*mut u8),
+    delay_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_interval(
+    cb: extern "C" fn(*mut u8),
+    data: *mut u8,
+    interval_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_interval_with_drop(
+    cb: extern "C" fn(*mut u8),
+    data: *mut u8,
+    drop_data: extern "C" fn(*mut u8),
+    interval_ms: u64,
+  ) -> TimerId;
+  pub fn rt_clear_timer(id: TimerId);
+
+  // I/O watchers (epoll-backed readiness notifications).
+  pub fn rt_io_register(
+    fd: i32,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+  ) -> IoWatcherId;
+  pub fn rt_io_update(id: IoWatcherId, interests: u32);
+  pub fn rt_io_unregister(id: IoWatcherId);
+
+  // Async runtime diagnostics/limits.
+  pub fn rt_async_set_limits(max_steps: usize, max_queue_len: usize);
+  pub fn rt_async_take_last_error() -> *mut c_char;
+  pub fn rt_async_free_c_string(s: *mut c_char);
+
+  // Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates).
+  pub fn rt_promise_new_legacy() -> LegacyPromiseRef;
+  pub fn rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef);
+  pub fn rt_promise_resolve_into_legacy(p: LegacyPromiseRef, value: PromiseResolveInput);
+  pub fn rt_promise_resolve_promise_legacy(p: LegacyPromiseRef, other: LegacyPromiseRef);
+  pub fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef);
+  pub fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef);
+  pub fn rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_promise_then_with_drop_legacy(
+    p: LegacyPromiseRef,
+    on_settle: extern "C" fn(*mut u8),
+    data: *mut u8,
+    drop_data: extern "C" fn(*mut u8),
+  );
+
+  pub fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef;
+  pub fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef;
+  pub fn rt_async_poll_legacy() -> bool;
+  pub fn rt_async_sleep_legacy(delay_ms: u64) -> LegacyPromiseRef;
+  pub fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef, next_state: u32);
+  pub fn rt_coro_await_value_legacy(
+    coro: *mut RtCoroutineHeader,
+    awaited: PromiseResolveInput,
+    next_state: u32,
+  );
 }
 
 #[cfg(test)]
@@ -326,6 +541,15 @@ mod tests {
     assert!(size_of::<TaskId>() == 8);
     assert!(align_of::<TaskId>() == 8);
 
+    assert!(size_of::<TimerId>() == 8);
+    assert!(align_of::<TimerId>() == 8);
+
+    assert!(size_of::<IoWatcherId>() == 8);
+    assert!(align_of::<IoWatcherId>() == 8);
+
+    assert!(size_of::<RtFd>() == 4);
+    assert!(align_of::<RtFd>() == 4);
+
     assert!(size_of::<HandleId>() == 8);
     assert!(align_of::<HandleId>() == 8);
 
@@ -339,6 +563,33 @@ mod tests {
 
     assert!(size_of::<StringRef>() == 16);
     assert!(align_of::<StringRef>() == 8);
+
+    assert!(size_of::<PromiseLayout>() == 16);
+    assert!(align_of::<PromiseLayout>() == 8);
+
+    assert!(size_of::<ValueRef>() == 8);
+    assert!(align_of::<ValueRef>() == 8);
+
+    assert!(size_of::<PromiseResolveKind>() == 1);
+    assert!(align_of::<PromiseResolveKind>() == 1);
+
+    assert!(size_of::<ThenableVTable>() == 8);
+    assert!(align_of::<ThenableVTable>() == 8);
+
+    assert!(size_of::<ThenableRef>() == 16);
+    assert!(align_of::<ThenableRef>() == 8);
+
+    assert!(size_of::<PromiseResolvePayload>() == 16);
+    assert!(align_of::<PromiseResolvePayload>() == 8);
+
+    assert!(size_of::<PromiseResolveInput>() == 24);
+    assert!(align_of::<PromiseResolveInput>() == 8);
+
+    assert!(size_of::<RtCoroStatus>() == 4);
+    assert!(align_of::<RtCoroStatus>() == 4);
+
+    assert!(size_of::<RtCoroutineHeader>() == 40);
+    assert!(align_of::<RtCoroutineHeader>() == 8);
 
     assert!(size_of::<RtShapeDescriptor>() == 24);
     assert!(align_of::<RtShapeDescriptor>() == 8);
@@ -359,6 +610,12 @@ mod tests {
       "RT_THREAD_KIND_WORKER",
       "RT_THREAD_KIND_IO",
       "RT_THREAD_KIND_EXTERNAL",
+      "RT_IO_READABLE",
+      "RT_IO_WRITABLE",
+      "RT_IO_ERROR",
+      "RT_PROMISE_RESOLVE_VALUE",
+      "RT_PROMISE_RESOLVE_PROMISE",
+      "RT_PROMISE_RESOLVE_THENABLE",
     ] {
       assert!(header.contains(c), "missing constant `{c}` in generated header");
     }
@@ -368,7 +625,27 @@ mod tests {
       header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
       "missing StringRef typedef"
     );
-    for ty in ["RtShapeId", "InternedId", "TaskId", "HandleId", "PromiseRef", "GcPtr", "GcHandle"] {
+    for ty in [
+      "RtShapeId",
+      "InternedId",
+      "TaskId",
+      "TimerId",
+      "IoWatcherId",
+      "RtFd",
+      "HandleId",
+      "PromiseRef",
+      "LegacyPromiseRef",
+      "PromiseLayout",
+      "ValueRef",
+      "PromiseResolveKind",
+      "ThenableVTable",
+      "ThenableRef",
+      "PromiseResolveInput",
+      "RtCoroStatus",
+      "RtCoroutineHeader",
+      "GcPtr",
+      "GcHandle",
+    ] {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
     assert!(
@@ -383,6 +660,8 @@ mod tests {
       "rt_thread_register(",
       "rt_thread_unregister(",
       "rt_thread_set_parked(",
+      "rt_thread_attach(",
+      "rt_thread_detach(",
       "rt_register_current_thread(",
       "rt_unregister_current_thread(",
       "rt_register_thread(",
@@ -390,6 +669,9 @@ mod tests {
       "rt_alloc(",
       "rt_alloc_pinned(",
       "rt_alloc_array(",
+      "rt_alloc_ptr_array(",
+      "rt_array_len(",
+      "rt_array_data(",
       "rt_register_shape_table(",
       "RT_GC_EPOCH",
       "rt_gc_safepoint(",
@@ -409,6 +691,8 @@ mod tests {
       "rt_gc_unregister_root_slot(",
       "rt_gc_pin(",
       "rt_gc_unpin(",
+      "rt_gc_root_get(",
+      "rt_gc_root_set(",
       "rt_handle_alloc(",
       "rt_handle_free(",
       "rt_handle_load(",
@@ -424,14 +708,51 @@ mod tests {
       "rt_parallel_spawn(",
       "rt_parallel_join(",
       "rt_parallel_for(",
+      "rt_parallel_spawn_promise(",
+      "rt_spawn_blocking(",
       "rt_promise_init(",
       "rt_promise_fulfill(",
+      "rt_promise_try_fulfill(",
       "rt_promise_reject(",
+      "rt_promise_try_reject(",
       "rt_promise_mark_handled(",
+      "rt_promise_payload_ptr(",
       "rt_async_spawn(",
       "rt_async_spawn_deferred(",
       "rt_async_cancel_all(",
       "rt_async_poll(",
+      "rt_async_wait(",
+      "rt_async_set_strict_await_yields(",
+      "rt_async_run_until_idle(",
+      "rt_async_block_on(",
+      "rt_async_sleep(",
+      "rt_queue_microtask(",
+      "rt_queue_microtask_with_drop(",
+      "rt_set_timeout(",
+      "rt_set_timeout_with_drop(",
+      "rt_set_interval(",
+      "rt_set_interval_with_drop(",
+      "rt_clear_timer(",
+      "rt_io_register(",
+      "rt_io_update(",
+      "rt_io_unregister(",
+      "rt_async_set_limits(",
+      "rt_async_take_last_error(",
+      "rt_async_free_c_string(",
+      "rt_promise_new_legacy(",
+      "rt_promise_resolve_legacy(",
+      "rt_promise_resolve_into_legacy(",
+      "rt_promise_resolve_promise_legacy(",
+      "rt_promise_resolve_thenable_legacy(",
+      "rt_promise_reject_legacy(",
+      "rt_promise_then_legacy(",
+      "rt_promise_then_with_drop_legacy(",
+      "rt_async_spawn_legacy(",
+      "rt_async_spawn_deferred_legacy(",
+      "rt_async_poll_legacy(",
+      "rt_async_sleep_legacy(",
+      "rt_coro_await_legacy(",
+      "rt_coro_await_value_legacy(",
     ] {
       assert!(
         header.contains(func),

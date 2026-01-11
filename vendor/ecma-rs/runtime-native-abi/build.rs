@@ -61,16 +61,22 @@ fn main() {
       modified = true;
     }
   }
-  if let Some(start) = header.find("typedef struct Coroutine {") {
-    if let Some(end_rel) = header[start..].find("} Coroutine;") {
-      let mut end = start + end_rel + "} Coroutine;".len();
-      if header[end..].starts_with("\r\n") {
-        end += 2;
-      } else if header[end..].starts_with('\n') {
-        end += 1;
+  // cbindgen emits opaque structs as a 0-length byte array field, which is a non-standard C
+  // extension. Replace those with true forward declarations for maximum compatibility.
+  for name in ["Coroutine", "Runtime", "Thread", "RtPromise"] {
+    let start_pat = format!("typedef struct {name} {{");
+    if let Some(start) = header.find(&start_pat) {
+      let end_pat = format!("}} {name};");
+      if let Some(end_rel) = header[start..].find(&end_pat) {
+        let mut end = start + end_rel + end_pat.len();
+        if header[end..].starts_with("\r\n") {
+          end += 2;
+        } else if header[end..].starts_with('\n') {
+          end += 1;
+        }
+        header.replace_range(start..end, &format!("typedef struct {name} {name};\n"));
+        modified = true;
       }
-      header.replace_range(start..end, "typedef struct Coroutine Coroutine;\n");
-      modified = true;
     }
   }
 
