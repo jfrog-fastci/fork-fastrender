@@ -331,6 +331,33 @@ struct StreamingParseState {
   last_synced_host_dom_generation: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseUntilBlockedContinueReason {
+  /// Parsing yielded because the per-task HTML parse budget was exhausted.
+  BudgetExhausted,
+  /// Parsing yielded at an async external `<script>` boundary to allow "fast" async scripts to
+  /// interleave with parsing before later scripts are discovered.
+  AsyncScriptInterleaving,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseUntilBlockedResult {
+  /// Parsing should not continue immediately:
+  /// - the parser is blocked (e.g. on stylesheets),
+  /// - parsing finished,
+  /// - parsing aborted for navigation,
+  /// - or parsing was re-entered and the call was ignored.
+  Done,
+  /// Parsing should continue on a future event-loop turn.
+  Continue(ParseUntilBlockedContinueReason),
+}
+
+impl ParseUntilBlockedResult {
+  fn should_continue(self) -> bool {
+    matches!(self, ParseUntilBlockedResult::Continue(_))
+  }
+}
+
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
@@ -799,8 +826,8 @@ impl BrowserTabHost {
       if let Some(state) = host.streaming_parse.as_mut() {
         state.parse_task_scheduled = false;
       }
-      let should_continue = task_result?;
-      if should_continue {
+      let outcome = task_result?;
+      if outcome.should_continue() {
         host.queue_parse_resume_task(event_loop)?;
       }
       Ok(())
@@ -898,7 +925,7 @@ impl BrowserTabHost {
           // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
           // deadlocking parser-blocking scripts.
           let _ = err;
-          while host.parse_until_blocked(event_loop)? {}
+          while host.parse_until_blocked(event_loop)?.should_continue() {}
         }
       }
       match load_result {
@@ -974,18 +1001,18 @@ impl BrowserTabHost {
     Ok(())
   }
  
-  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<bool> {
+  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<ParseUntilBlockedResult> {
     const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 
     if self.streaming_parse_in_progress {
       // Re-entrancy guard: when parsing is already active, callers should rely on the outer parse
       // loop to continue. This can happen if a parse-resume hook tries to parse synchronously while
       // we are already parsing on the stack.
-      return Ok(false);
+      return Ok(ParseUntilBlockedResult::Done);
     }
 
     let Some(mut state) = self.streaming_parse.take() else {
-      return Ok(false);
+      return Ok(ParseUntilBlockedResult::Done);
     };
 
     // Mark parsing as in-progress for the duration of this call so tasks triggered while parsing
@@ -1355,25 +1382,29 @@ impl BrowserTabHost {
     match outcome {
       Ok(Outcome::Blocked) => {
         self.streaming_parse = Some(state);
-        Ok(false)
+        Ok(ParseUntilBlockedResult::Done)
       }
       Ok(Outcome::BudgetExhausted) => {
         // Budget exhausted: snapshot parser DOM into the host so other tasks observe the most recent
         // parsed DOM state, then yield back to the event loop.
         self.commit_streaming_parser_dom_snapshot_to_host(&mut state)?;
         self.streaming_parse = Some(state);
-        Ok(true)
+        Ok(ParseUntilBlockedResult::Continue(
+          ParseUntilBlockedContinueReason::BudgetExhausted,
+        ))
       }
       Ok(Outcome::YieldedForAsyncScriptInterleaving) => {
         // We already committed a DOM snapshot at the `</script>` boundary above; just stash the
         // parser state and yield so queued async script tasks can run.
         self.streaming_parse = Some(state);
-        Ok(true)
+        Ok(ParseUntilBlockedResult::Continue(
+          ParseUntilBlockedContinueReason::AsyncScriptInterleaving,
+        ))
       }
       Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
         self.streaming_parse_active = false;
         self.document_write_state.set_parsing_active(false);
-        Ok(false)
+        Ok(ParseUntilBlockedResult::Done)
       }
       Err(err) => {
         self.streaming_parse_active = false;
@@ -3247,8 +3278,37 @@ impl BrowserTab {
     self.host.streaming_parse_active = true;
     self.host.document_write_state.set_parsing_active(true);
 
-    let should_continue = self.host.parse_until_blocked(&mut self.event_loop)?;
-    if should_continue {
+    let outcome = self.host.parse_until_blocked(&mut self.event_loop)?;
+    if matches!(
+      outcome,
+      ParseUntilBlockedResult::Continue(ParseUntilBlockedContinueReason::AsyncScriptInterleaving)
+    ) && document_url.is_some()
+    {
+      // When navigation parsing is initiated outside the event loop (as a synchronous call to
+      // `navigate_to_url`), we still want "fast" async scripts to be able to execute before we
+      // enqueue the parse-resume task. Running pending tasks *before* scheduling parse resumption
+      // ensures the async script fetch + execution tasks observe a lower global task sequence
+      // number than the eventual parse task, matching browser-visible interleaving semantics.
+      let trace = self.trace.clone();
+      let diagnostics = self.diagnostics.clone();
+      let limits = self.host.js_execution_options.event_loop_run_limits;
+      let _ = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
+        limits,
+        /*render_between_turns=*/ false,
+        move |err| {
+          let message = err.to_string();
+          if let Some(diag) = &diagnostics {
+            diag.record_js_exception(message.clone(), None);
+          }
+          if trace.is_enabled() {
+            let mut span = trace.span("js.uncaught_exception", "js");
+            span.arg_str("message", &message);
+          }
+        },
+        || {},
+      )?;
+    }
+    if outcome.should_continue() {
       self.host.queue_parse_resume_task(&mut self.event_loop)?;
     }
     let base_url = if let Some(state) = self.host.streaming_parse.as_ref() {
