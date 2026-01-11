@@ -9,7 +9,8 @@
 //!
 //! # Platform assumptions
 //! - Linux (ELF)
-//! - GNU ld or lld (supports `__start_<section>` / `__stop_<section>` symbols)
+//! - The final link step applies a linker script that defines
+//!   `__stackmaps_start` / `__stackmaps_end` (see `runtime-native/stackmaps.ld`).
 //! - `x86_64` or `aarch64`
 //!
 //! This is not a general purpose binary analysis crate; it implements the subset

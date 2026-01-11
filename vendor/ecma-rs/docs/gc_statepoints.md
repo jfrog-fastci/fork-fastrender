@@ -367,6 +367,7 @@ This repo supports two common ways to get that byte range:
 - `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
 - defines:
   - `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (preferred names)
+  - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
   - `__llvm_stackmaps_start`
   - `__llvm_stackmaps_end`
 
@@ -376,16 +377,23 @@ When linking a final ELF binary, apply it (example):
 cc ... -Wl,-T,runtime-native/stackmaps.ld ...
 ```
 
-Cargo applies this automatically when linking Rust binaries via `runtime-native/build.rs`, but you must pass it explicitly when linking from C/clang.
+When linking from Rust, you must pass the script to the **final link step**
+(e.g. via `RUSTFLAGS` or your build system). Cargo does not automatically
+propagate linker-script args from dependencies.
 
-#### Option B: conventional section start/stop (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
+#### Option B: GNU ld `__start_*/__stop_*` section symbols (not available on lld)
 
-Some ELF linkers/toolchains also provide conventional section boundary symbols of the form:
+Some toolchains using **GNU ld** provide conventional section boundary symbols of the form:
 
-- `__start_llvm_stackmaps`
-- `__stop_llvm_stackmaps`
+- `__start_<section>`
+- `__stop_<section>`
 
-If you rely on these instead of `stackmaps.ld`, ensure the section is still retained (not removed by `--gc-sections` / stripping).
+For `.llvm_stackmaps`, the names include the dot:
+
+- `__start_.llvm_stackmaps`
+- `__stop_.llvm_stackmaps`
+
+lld and mold do **not** synthesize these symbols, so prefer Option A.
 
 ---
 
