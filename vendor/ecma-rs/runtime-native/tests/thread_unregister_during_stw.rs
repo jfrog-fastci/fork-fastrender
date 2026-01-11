@@ -1,5 +1,6 @@
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
+use runtime_native::abi::RtThreadKind;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 extern "C" {
-  fn rt_thread_register(kind: u32) -> u64;
+  fn rt_thread_register(kind: RtThreadKind) -> u64;
   fn rt_thread_unregister();
 }
 
@@ -38,7 +39,7 @@ fn unregister_cycle(baseline_threads: usize) {
   let cv_worker = cv.clone();
 
   let handle = std::thread::spawn(move || {
-    unsafe { rt_thread_register(1) };
+    unsafe { rt_thread_register(RtThreadKind::RT_THREAD_WORKER) };
 
     // Enter a GC-safe region so the stop-the-world coordinator can treat this
     // thread as already quiescent while it blocks in the external condvar wait.
@@ -138,7 +139,7 @@ fn thread_unregister_during_stw_blocks_until_resumed() {
   let _resume_guard = ResumeWorldOnDrop;
 
   // Register the test harness thread as the runtime "main" thread via the ABI.
-  unsafe { rt_thread_register(0) };
+  unsafe { rt_thread_register(RtThreadKind::RT_THREAD_MAIN) };
   let baseline_threads = threading::thread_counts().total;
 
   unregister_cycle(baseline_threads);
@@ -151,7 +152,7 @@ fn thread_unregister_during_stw_stress() {
   let _rt = TestRuntimeGuard::new();
   let _resume_guard = ResumeWorldOnDrop;
 
-  unsafe { rt_thread_register(0) };
+  unsafe { rt_thread_register(RtThreadKind::RT_THREAD_MAIN) };
   let baseline_threads = threading::thread_counts().total;
 
   for _ in 0..100 {
@@ -160,4 +161,3 @@ fn thread_unregister_during_stw_stress() {
 
   unsafe { rt_thread_unregister() };
 }
-
