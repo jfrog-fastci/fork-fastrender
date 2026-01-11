@@ -441,3 +441,54 @@ fn symbol_at_resolves_object_literal_members() {
   let y_value_symbol = program.symbol_at(file_id, y_value).expect("y value symbol");
   assert_eq!(y_decl_symbol, y_value_symbol);
 }
+
+#[test]
+fn symbol_at_resolves_assignment_targets() {
+  {
+    let mut host = MemoryHost::default();
+    let file = FileKey::new("file.ts");
+    let source = "let x = 1; x = x + 1;";
+    host.insert(file.clone(), Arc::from(source.to_string()));
+
+    let program = Program::new(host, vec![file.clone()]);
+    let file_id = program.file_id(&file).expect("file id");
+
+    // Occurrence order: declaration, assignment target, RHS use.
+    let decl_symbol = symbol_for_occurrence(&program, file_id, source, "x", 0);
+    let assign_target_symbol = symbol_for_occurrence(&program, file_id, source, "x", 1);
+    let rhs_symbol = symbol_for_occurrence(&program, file_id, source, "x", 2);
+
+    assert_eq!(
+      decl_symbol, assign_target_symbol,
+      "assignment target should resolve to the declared symbol"
+    );
+    assert_eq!(
+      assign_target_symbol, rhs_symbol,
+      "RHS use should resolve to the same symbol as the assignment target"
+    );
+  }
+
+  // Also ensure assignment targets respect shadowing.
+  {
+    let mut host = MemoryHost::default();
+    let file = FileKey::new("shadow.ts");
+    let source = "let x = 1; { let x = 2; x = 3; }";
+    host.insert(file.clone(), Arc::from(source.to_string()));
+
+    let program = Program::new(host, vec![file.clone()]);
+    let file_id = program.file_id(&file).expect("file id");
+
+    let outer_symbol = symbol_for_occurrence(&program, file_id, source, "x", 0);
+    let inner_symbol = symbol_for_occurrence(&program, file_id, source, "x", 1);
+    let assign_target_symbol = symbol_for_occurrence(&program, file_id, source, "x", 2);
+
+    assert_ne!(
+      outer_symbol, inner_symbol,
+      "shadowed bindings should have distinct symbols"
+    );
+    assert_eq!(
+      inner_symbol, assign_target_symbol,
+      "assignment target should resolve to the innermost binding"
+    );
+  }
+}
