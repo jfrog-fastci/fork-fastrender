@@ -32,7 +32,9 @@ fn erases_ts_wrappers_and_drops_type_only_stmts() {
 interface Foo { x: string }
 type Bar = number;
 import type { Foo as Foo2 } from "foo";
+import { type Foo as Foo3, baz } from "foo";
 export type { Bar };
+export { type Foo3, baz };
 
 // Expression wrappers.
 (x as any).y;
@@ -61,6 +63,14 @@ class C { m(this: any, x: number) { return this; } }
   assert!(
     !out.contains("export type"),
     "output should erase `export type` statements: {out}"
+  );
+  assert!(
+    out.contains("import{baz}from") || out.contains("import {baz} from"),
+    "output should keep value imports when erasing type-only specifiers: {out}"
+  );
+  assert!(
+    out.contains("export{baz}") || out.contains("export {baz}"),
+    "output should keep value exports when erasing type-only specifiers: {out}"
   );
 
   // Must erase TS-only expression wrappers.
