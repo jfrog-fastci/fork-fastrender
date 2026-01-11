@@ -399,28 +399,16 @@ pub unsafe extern "C" fn rt_promise_try_reject(p: PromiseRef) -> bool {
 
 /// Mark a promise as handled for unhandled-rejection tracking.
 ///
-/// This is called by generated code whenever it attaches a rejection handler to a promise
-/// (e.g. `.catch`, `.then(_, onRejected)`, or `await`).
+/// This is used by the runtime's unhandled-rejection tracker: a promise rejected while it has no
+/// handlers is eligible to be reported as `unhandledrejection` at a microtask checkpoint; when a
+/// previously-unhandled rejected promise becomes handled later, it is eligible to be reported as
+/// `rejectionhandled`.
 ///
 /// # Safety
-/// `p` must point to a valid promise allocation whose prefix is [`async_abi::PromiseHeader`].
+/// `p` must point to a valid promise allocation (a [`PromiseHeader`] prefix at offset 0).
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_mark_handled(p: PromiseRef) {
-  crate::ffi::abort_on_panic(|| {
-    if p.is_null() {
-      return;
-    }
-
-    let ptr = p.0 as *mut async_abi::PromiseHeader;
-    if (ptr as usize) % core::mem::align_of::<async_abi::PromiseHeader>() != 0 {
-      std::process::abort();
-    }
-
-    // Mark the promise handled (idempotent) and notify the tracker.
-    let header = unsafe { &*ptr };
-    header.mark_handled();
-    unhandled_rejection::on_handle(p);
-  })
+  crate::ffi::abort_on_panic(|| crate::unhandled_rejection::mark_handled(p))
 }
 /// Request a stop-the-world GC safepoint.
 ///

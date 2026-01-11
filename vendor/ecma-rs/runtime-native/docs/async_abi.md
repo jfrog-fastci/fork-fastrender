@@ -49,6 +49,7 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_promise_try_fulfill(p: PromiseRef) -> bool`
 - `rt_promise_reject(p: PromiseRef)`
 - `rt_promise_try_reject(p: PromiseRef) -> bool`
+- `rt_promise_mark_handled(p: PromiseRef)`
 - `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_cancel_all()`
@@ -366,6 +367,16 @@ The runtime tracks unhandled rejections in a JS/HTML-shaped way:
   `unhandledrejection` at a microtask checkpoint.
 - If a previously-unhandled rejected promise later becomes handled, it is eligible to be reported as
   `rejectionhandled`.
+
+### Marking promises as handled
+
+The runtime uses `PromiseHeader.flags` bit 0 (`PromiseHeader::FLAG_HANDLED` on the Rust side) to track
+whether a promise has at least one rejection handler attached.
+
+- The runtime automatically sets this flag when it attaches internal reactions (e.g. via `await`).
+- Hosts/embedders that attach external handlers (e.g. JS `then`/`catch`) must call
+  `rt_promise_mark_handled(p)` to set the flag and trigger `rejectionhandled` behavior when
+  appropriate.
 
 Important: **`await` attaches a rejection handler**, even if the coroutine only propagates the error
 to its own returned promise. Therefore, awaiting a promise counts as making it “handled” for the

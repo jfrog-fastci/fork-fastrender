@@ -18,8 +18,6 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 const STATE_FULFILLING: u8 = 3;
 const STATE_REJECTING: u8 = 4;
 
-const PROMISE_FLAG_HANDLED: u8 = 1 << 0;
-
 /// Promise header flag indicating the promise has an associated out-of-line payload buffer.
 ///
 /// Currently this is used by `rt_parallel_spawn_promise` promises: the worker writes its result into
@@ -233,15 +231,7 @@ pub(crate) fn promise_is_handled(p: PromiseRef) -> bool {
 }
 
 pub(crate) fn promise_mark_handled(p: PromiseRef) {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
-    return;
-  }
-
-  let prev = unsafe { &(*ptr).header.flags }.fetch_or(PROMISE_FLAG_HANDLED, Ordering::AcqRel);
-  if (prev & PROMISE_FLAG_HANDLED) == 0 {
-    crate::unhandled_rejection::on_handle(p);
-  }
+  crate::unhandled_rejection::mark_handled(p);
 }
 
 /// Register a reaction node on a promise.
@@ -378,8 +368,7 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   state.store(PromiseHeader::REJECTED, Ordering::Release);
 
   // If no one attached a handler yet, schedule unhandled-rejection tracking.
-  let handled = (unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & PROMISE_FLAG_HANDLED) != 0;
-  if !handled {
+  if !promise_is_handled(p) {
     crate::unhandled_rejection::on_reject(p);
   }
 

@@ -16,6 +16,7 @@
 //! the error), so awaited promises are treated as "handled".
 
 use crate::abi::PromiseRef;
+use crate::async_abi::PromiseHeader;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -35,6 +36,31 @@ struct Tracker {
 }
 
 static TRACKER: Lazy<Mutex<Tracker>> = Lazy::new(|| Mutex::new(Tracker::default()));
+
+#[inline]
+fn promise_header_ptr(p: PromiseRef) -> *mut PromiseHeader {
+  if p.is_null() {
+    return core::ptr::null_mut();
+  }
+  let header = p.0.cast::<PromiseHeader>();
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  header
+}
+
+fn promise_is_handled_generic(p: PromiseRef) -> bool {
+  let header = promise_header_ptr(p);
+  if header.is_null() {
+    // Null is a "never settles" sentinel and is not eligible for rejection tracking.
+    return true;
+  }
+
+  // Safety: `header` is non-null and properly aligned; it must point to a `PromiseHeader` prefix
+  // because `PromiseRef` is an opaque handle to a promise allocation whose ABI contract requires a
+  // `PromiseHeader` at offset 0.
+  unsafe { &*header }.is_handled()
+}
 
 pub(crate) fn on_reject(promise: PromiseRef) {
   let mut tracker = TRACKER.lock();
@@ -58,6 +84,19 @@ pub(crate) fn on_handle(promise: PromiseRef) {
   }
 }
 
+pub(crate) fn mark_handled(promise: PromiseRef) {
+  let header = promise_header_ptr(promise);
+  if header.is_null() {
+    return;
+  }
+
+  // Safety: see `promise_is_handled_generic`.
+  let transitioned = unsafe { &*header }.mark_handled();
+  if transitioned {
+    on_handle(promise);
+  }
+}
+
 pub(crate) fn microtask_checkpoint() {
   let mut tracker = TRACKER.lock();
 
@@ -65,7 +104,7 @@ pub(crate) fn microtask_checkpoint() {
     // Drain the about-to-be-notified list and report any promises that remain unhandled.
     let to_check = std::mem::take(&mut tracker.about_to_be_notified);
     for promise in to_check {
-      if crate::async_rt::promise::promise_is_handled(promise) {
+      if promise_is_handled_generic(promise) {
         continue;
       }
 
