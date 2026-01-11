@@ -2974,6 +2974,10 @@ impl<'a> Evaluator<'a> {
     iter_scope.push_root(Value::Undefined)?;
     let mut v = Value::Undefined;
 
+    // If the loop uses a lexical declaration (`let`/`const`), we emulate per-iteration lexical
+    // environments by creating a fresh env record per iteration.
+    let outer_lex = self.env.lexical_env;
+
     loop {
       // Tick once per iteration so `for (x of xs) {}` is budgeted even when the body is empty.
       self.tick()?;
@@ -3002,6 +3006,15 @@ impl<'a> Evaluator<'a> {
       let Some(value) = next_value else {
         return Ok(Completion::normal(v));
       };
+
+      let mut iter_env: Option<GcEnv> = None;
+      if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+        if *mode == VarDeclMode::Let || *mode == VarDeclMode::Const {
+          let env = iter_scope.env_create(Some(outer_lex))?;
+          self.env.set_lexical_env(iter_scope.heap_mut(), env);
+          iter_env = Some(env);
+        }
+      }
 
       let bind_res: Result<(), VmError> = match &stmt.lhs {
         ForInOfLhs::Decl((mode, pat_decl)) => {
@@ -3043,6 +3056,9 @@ impl<'a> Evaluator<'a> {
       };
 
       if let Err(err) = bind_res {
+        if iter_env.is_some() {
+          self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+        }
         let _ = iterator::iterator_close(
           self.vm,
           &mut *self.host,
@@ -3056,6 +3072,9 @@ impl<'a> Evaluator<'a> {
       let body_completion = match self.eval_for_body(&mut iter_scope, &stmt.body.stx) {
         Ok(c) => c,
         Err(err) => {
+          if iter_env.is_some() {
+            self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+          }
           let _ = iterator::iterator_close(
             self.vm,
             &mut *self.host,
@@ -3066,6 +3085,10 @@ impl<'a> Evaluator<'a> {
           return Err(err);
         }
       };
+
+      if iter_env.is_some() {
+        self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+      }
 
       if !Self::loop_continues(&body_completion, label_set) {
         let _ = iterator::iterator_close(
