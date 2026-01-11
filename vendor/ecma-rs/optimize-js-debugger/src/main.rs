@@ -568,6 +568,7 @@ mod tests {
   use axum::body;
   use axum::body::Body;
   use axum::http::Request;
+  use optimize_js::cfg::cfg::{CfgBBlocks, CfgGraph};
   use rmp_serde::{from_slice, to_vec};
   use tower::ServiceExt;
 
@@ -689,5 +690,30 @@ mod tests {
     )
     .unwrap();
     assert_eq!(first_parsed, second_parsed);
+  }
+
+  #[test]
+  fn stable_cfg_uses_cfg_entry_for_bblock_order() {
+    let mut graph = CfgGraph::default();
+    // Insert two disconnected nodes (0 and 1) so we can verify we start traversal from `cfg.entry`.
+    graph.connect(0, 0);
+    graph.disconnect(0, 0);
+    graph.connect(1, 1);
+    graph.disconnect(1, 1);
+
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, vec![]);
+    bblocks.add(1, vec![]);
+
+    let cfg = Cfg {
+      graph,
+      bblocks,
+      entry: 1,
+    };
+
+    let stable = stable_cfg(&cfg);
+    assert_eq!(stable.bblock_order, vec![1]);
+    // Leaf nodes with no successors are omitted from cfg_children.
+    assert!(stable.cfg_children.is_empty());
   }
 }
