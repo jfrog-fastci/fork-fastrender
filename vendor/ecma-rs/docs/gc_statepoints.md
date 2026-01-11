@@ -434,6 +434,9 @@ Current runtime contract (v1):
 - Root locations may be either:
   - **addressable spill slots** (`Location::Indirect` based on SP/FP), or
   - **register locations** (`Location::Register`, encoded as a DWARF register number).
+  - Note: LLVM statepoint lowering typically spills GC roots so the runtime can scan caller frames
+    while stopped inside the statepoint callee, but register locations are legal in the stackmap
+    format and can appear depending on LLVM/codegen and for other stackmap users (e.g. patchpoints).
 - Derived pointers (base/derived locations that differ) are currently **rejected** to avoid silent corruption.
   - `native-js` should avoid keeping interior pointers live across safepoints; keep the base pointer live and recompute derived pointers after the safepoint if needed.
 
