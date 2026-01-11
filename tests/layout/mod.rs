@@ -297,6 +297,7 @@ mod subgrid_baseline_contribution;
 mod subgrid_nested_contributions;
 mod table_anonymous_inheritance;
 mod table_auto_layout_fills_forced_width;
+mod table_baseline_padding;
 mod table_border_spacing_edges;
 mod table_caption_does_not_widen_table;
 mod table_caption_explicit_width_overflows_wrapper;

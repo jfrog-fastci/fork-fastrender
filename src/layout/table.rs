@@ -7501,7 +7501,7 @@ impl FormattingContext for TableFormattingContext {
     let baseline_split = |laid: &LaidOutCell, heights: &[f32]| {
       let span_end = (laid.cell.row + laid.cell.rowspan).min(heights.len());
       let spacing_total = v_spacing * laid.cell.rowspan.saturating_sub(1) as f32;
-      let target_height = if laid.cell.rowspan > 1 && span_end > laid.cell.row {
+      let allocated_height = if laid.cell.rowspan > 1 && span_end > laid.cell.row {
         heights
           .get(laid.cell.row..span_end)
           .map(|rows| rows.iter().sum::<f32>() + spacing_total)
@@ -7510,11 +7510,17 @@ impl FormattingContext for TableFormattingContext {
         heights.get(laid.cell.row).copied().unwrap_or(laid.height)
       };
       let raw_baseline = laid.baseline.unwrap_or(laid.height);
-      let baseline = if raw_baseline >= laid.height && target_height > laid.height {
-        target_height
-      } else {
-        raw_baseline
-      };
+      let (target_height, baseline) =
+        if raw_baseline >= laid.height && allocated_height > laid.height {
+          (allocated_height, allocated_height)
+        } else {
+          let target_height = if laid.cell.rowspan == 1 && raw_baseline < laid.height {
+            laid.height
+          } else {
+            allocated_height
+          };
+          (target_height, raw_baseline)
+        };
       if laid.cell.rowspan > 1 && span_end > laid.cell.row {
         spanning_baseline_allocation(target_height, baseline, laid.cell.row, span_end, heights)
       } else {
