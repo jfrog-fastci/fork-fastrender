@@ -153,6 +153,12 @@ impl TaskState {
       std::process::abort();
     }
 
+    // Update `done` while holding the mutex to avoid lost wake-ups between the
+    // joiner checking the flag and beginning to wait on the condvar.
+    let _guard = self
+      .done_lock
+      .lock()
+      .unwrap_or_else(|_| std::process::abort());
     self.done.store(true, Ordering::Release);
     self.done_cv.notify_all();
   }
@@ -170,9 +176,11 @@ struct Scheduler {
 
 impl Scheduler {
   fn new() -> Self {
-    let worker_count = thread::available_parallelism()
-      .map(|n| n.get())
-      .unwrap_or(1);
+    let worker_count = std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&n| n > 0)
+      .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
     let inner = Arc::new(SchedulerInner {
       queue: Mutex::new(VecDeque::new()),

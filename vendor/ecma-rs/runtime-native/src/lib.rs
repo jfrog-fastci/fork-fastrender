@@ -123,6 +123,7 @@ pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::atomic::{AtomicUsize, Ordering};
 
   #[test]
   fn interning_is_deduplicated() {
@@ -360,5 +361,87 @@ mod tests {
 
     let parsed = StackMaps::parse(bytes).expect("stack maps should parse");
     assert_eq!(parsed.raw().version, 3);
+  }
+
+  extern "C" fn inc_atomic(data: *mut u8) {
+    let atomic = unsafe { &*(data as *const AtomicUsize) };
+    atomic.fetch_add(1, Ordering::Relaxed);
+  }
+
+  #[test]
+  fn parallel_spawn_and_join_increments_atomic() {
+    let counter = AtomicUsize::new(0);
+    let counter_ptr = (&counter as *const AtomicUsize).cast_mut().cast::<u8>();
+
+    let task_count = 128;
+    let mut tasks: Vec<abi::TaskId> = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+      let task = rt_parallel_spawn(inc_atomic, counter_ptr);
+      tasks.push(task);
+    }
+
+    rt_parallel_join(tasks.as_ptr(), tasks.len());
+
+    assert_eq!(counter.load(Ordering::Relaxed), task_count);
+  }
+
+  #[repr(C)]
+  struct FillData {
+    ptr: *mut u8,
+    len: usize,
+    value: u8,
+  }
+
+  extern "C" fn fill_slice(data: *mut u8) {
+    let data = unsafe { &*(data as *const FillData) };
+    unsafe {
+      std::slice::from_raw_parts_mut(data.ptr, data.len).fill(data.value);
+    }
+  }
+
+  #[test]
+  fn parallel_tasks_write_to_disjoint_slices() {
+    let mut out = vec![0u8; 1024];
+
+    let mut task_ids: Vec<abi::TaskId> = Vec::new();
+    let mut task_data: Vec<Box<FillData>> = Vec::new();
+
+    // Split the output into equal segments and fill each with a unique value.
+    let segments = 16usize;
+    let seg_len = out.len() / segments;
+    for i in 0..segments {
+      let start = i * seg_len;
+      let len = if i == segments - 1 {
+        out.len() - start
+      } else {
+        seg_len
+      };
+
+      let data = Box::new(FillData {
+        ptr: unsafe { out.as_mut_ptr().add(start) },
+        len,
+        value: (i as u8).wrapping_add(1),
+      });
+      let data_ptr = (&*data as *const FillData).cast_mut().cast::<u8>();
+
+      let task = rt_parallel_spawn(fill_slice, data_ptr);
+      task_ids.push(task);
+      task_data.push(data);
+    }
+
+    rt_parallel_join(task_ids.as_ptr(), task_ids.len());
+
+    for i in 0..segments {
+      let start = i * seg_len;
+      let len = if i == segments - 1 {
+        out.len() - start
+      } else {
+        seg_len
+      };
+      let expected = (i as u8).wrapping_add(1);
+      assert!(out[start..start + len].iter().all(|&b| b == expected));
+    }
+
+    drop(task_data);
   }
 }
