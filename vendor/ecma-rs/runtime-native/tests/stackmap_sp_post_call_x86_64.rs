@@ -120,8 +120,10 @@ fn sp_relative_stackmap_locations_use_post_call_rsp_for_pair_walker() {
   let mut visited: Vec<(usize, usize)> = Vec::new();
   let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   unsafe {
-    walk_gc_root_pairs_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |pair| {
-      visited.push((pair.base_slot as usize, pair.derived_slot as usize));
+    walk_gc_root_pairs_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |_pc, pairs| {
+      for &(base_slot, derived_slot) in pairs {
+        visited.push((base_slot as usize, derived_slot as usize));
+      }
     })
     .expect("walk");
   }
