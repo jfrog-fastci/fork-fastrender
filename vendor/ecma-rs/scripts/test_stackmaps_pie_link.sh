@@ -110,7 +110,7 @@ fi
 
 output="$("${out}")"
 echo "${output}"
-echo "${output}" | grep -q 'stackmaps: version=3' || {
+echo "${output}" | grep 'stackmaps: version=3' >/dev/null || {
   echo "error: expected stackmaps version output, got: ${output}" >&2
   exit 1
 }
