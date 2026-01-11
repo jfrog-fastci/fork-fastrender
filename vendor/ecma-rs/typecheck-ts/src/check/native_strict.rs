@@ -60,6 +60,19 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn expr_is_const_string(body: &Body, expr_id: hir_js::ExprId, value: &str) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    match &expr.kind {
+      ExprKind::Literal(Literal::String(s)) => s.lossy == value,
+      // `${...}` template literals are non-constant; only allow the fully
+      // literal `\`foo\`` form.
+      ExprKind::Template(tpl) => tpl.spans.is_empty() && tpl.head == value,
+      _ => false,
+    }
+  }
+
   fn expr_is_ident_or_global_this_member(
     body: &Body,
     expr_id: hir_js::ExprId,
@@ -365,23 +378,38 @@ pub fn validate_native_strict_body(
             }
 
             if let Some(first_arg) = call.args.first().map(|arg| arg.expr) {
-              let is_object_define = obj_is_object
-                && (object_key_is_ident(&member.property, define_property_name)
-                  || object_key_is_string(&member.property, "defineProperty")
-                  || object_key_is_literal_string(body, &member.property, "defineProperty")
-                  || object_key_is_ident(&member.property, define_properties_name)
-                  || object_key_is_string(&member.property, "defineProperties")
-                  || object_key_is_literal_string(body, &member.property, "defineProperties")
-                  || object_key_is_ident(&member.property, assign_name)
-                  || object_key_is_string(&member.property, "assign")
-                  || object_key_is_literal_string(body, &member.property, "assign"));
-              let is_reflect_define = obj_is_reflect
-                && (object_key_is_ident(&member.property, define_property_name)
-                  || object_key_is_string(&member.property, "defineProperty")
-                  || object_key_is_literal_string(body, &member.property, "defineProperty"));
-              if (is_object_define || is_reflect_define)
-                && expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name)
-              {
+              let is_define_property = object_key_is_ident(&member.property, define_property_name)
+                || object_key_is_string(&member.property, "defineProperty")
+                || object_key_is_literal_string(body, &member.property, "defineProperty");
+              let is_define_properties = object_key_is_ident(&member.property, define_properties_name)
+                || object_key_is_string(&member.property, "defineProperties")
+                || object_key_is_literal_string(body, &member.property, "defineProperties");
+              let is_assign = object_key_is_ident(&member.property, assign_name)
+                || object_key_is_string(&member.property, "assign")
+                || object_key_is_literal_string(body, &member.property, "assign");
+
+              let is_object_define_property = obj_is_object && is_define_property;
+              let is_object_define = obj_is_object && (is_define_property || is_define_properties || is_assign);
+              let is_reflect_define_property = obj_is_reflect && is_define_property;
+              let is_reflect_define = is_reflect_define_property;
+
+              let mut is_proto_mutation =
+                expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name);
+              // `Object/Reflect.defineProperty(Foo, "prototype", ...)` is another way to mutate a
+              // constructor's prototype after creation. Treat constant `"prototype"` / `"__proto__"`
+              // keys as prototype mutation too, even when the first argument isn't already a
+              // `.prototype` / `.__proto__` member chain.
+              if !is_proto_mutation && (is_object_define_property || is_reflect_define_property) {
+                if let Some(key_arg) = call.args.get(1).map(|arg| arg.expr) {
+                  if expr_is_const_string(body, key_arg, "prototype")
+                    || expr_is_const_string(body, key_arg, "__proto__")
+                  {
+                    is_proto_mutation = true;
+                  }
+                }
+              }
+
+              if (is_object_define || is_reflect_define) && is_proto_mutation {
                 let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
                 diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
                   "prototype mutation is forbidden when `native_strict` is enabled",

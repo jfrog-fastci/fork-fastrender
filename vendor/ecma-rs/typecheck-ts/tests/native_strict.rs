@@ -317,6 +317,40 @@ fn native_strict_bans_define_property_on_prototype() {
 }
 
 #[test]
+fn native_strict_bans_define_property_of_prototype_key() {
+  let source = "declare const Foo: { prototype: object };\nObject.defineProperty(Foo, \"prototype\", {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.defineProperty(Foo, \"prototype\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_define_property_of_prototype_key_template_literal() {
+  let source = "declare const Foo: { prototype: object };\nObject.defineProperty(Foo, `prototype`, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.defineProperty(Foo, `prototype`, {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_global_eval_computed_property() {
   let source = "globalThis[\"eval\"](\"1\");";
   let (diagnostics, file_id) = check(source, true);
