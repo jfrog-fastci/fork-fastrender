@@ -259,12 +259,13 @@ impl StackMaps {
         &self.callsites
     }
 
+    pub fn lookup_callsite(&self, pc: u64) -> Option<&Callsite> {
+        let idx = self.callsites.binary_search_by_key(&pc, |e| e.pc).ok()?;
+        self.callsites.get(idx)
+    }
+
     pub fn lookup(&self, pc: u64) -> Option<&StackMapRecord> {
-        let idx = self
-            .callsites
-            .binary_search_by_key(&pc, |e| e.pc)
-            .ok()?;
-        let rec_idx = self.callsites[idx].record_index;
+        let rec_idx = self.lookup_callsite(pc)?.record_index;
         self.records.get(rec_idx)
     }
 
@@ -520,7 +521,12 @@ fn parse_blob(
                 locations,
                 live_outs,
             });
-            callsites.push(Callsite { pc: callsite_pc, record_index });
+            callsites.push(Callsite {
+                pc: callsite_pc,
+                record_index,
+                function_address: func.address,
+                stack_size: func.stack_size,
+            });
 
             seen_records = seen_records
                 .checked_add(1)

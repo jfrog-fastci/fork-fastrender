@@ -141,4 +141,6 @@ impl StackMapRecord {
 pub struct Callsite {
     pub pc: u64,
     pub record_index: usize,
+    pub function_address: u64,
+    pub stack_size: u64,
 }
