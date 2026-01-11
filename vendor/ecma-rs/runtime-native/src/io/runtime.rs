@@ -434,14 +434,27 @@ fn run_io(op: &IoOpRecord) -> IoOpOutcome {
 
 #[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-  unsafe {
-    let flags = libc::fcntl(fd, libc::F_GETFL);
-    if flags < 0 {
-      return Err(io::Error::last_os_error());
+  let flags = loop {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+      break flags;
     }
-    if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-      return Err(io::Error::last_os_error());
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
     }
+    return Err(err);
+  };
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc >= 0 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
   }
   Ok(())
 }
