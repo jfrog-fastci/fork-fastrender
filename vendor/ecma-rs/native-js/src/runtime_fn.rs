@@ -1,12 +1,25 @@
 /// Metadata about runtime functions callable from compiled code.
 ///
-/// In the real system this will be the single registry for runtime entrypoints
-/// (Task 315). For now it is minimal but encodes the important property:
-/// whether the call may trigger GC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// This module is the single registry for runtime entrypoints (Task 315). It encodes the GC-safety
+/// properties needed by codegen:
+///
+/// - Whether a call may trigger GC (`may_gc`).
+/// - Whether the ABI contains raw GC pointers (`gc_ptr_args`), which is **unsound** for `may_gc`
+///   runtime functions unless the runtime provides its own argument-rooting mechanism.
+///
+/// See `native-js/docs/llvm_gc_strategy.md` for the full rationale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RuntimeFn {
   /// Allocation entrypoint: always may trigger GC.
   Alloc,
+  /// Pinned allocation entrypoint: always may trigger GC.
+  AllocPinned,
+  /// GC safepoint poll.
+  GcSafepoint,
+  /// Forces a GC cycle.
+  GcCollect,
+  /// Generational write barrier (must not allocate / GC).
+  WriteBarrier,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,17 +30,90 @@ pub enum GcEffect {
   MayGc,
 }
 
+/// Policy for how runtime functions handle GC pointer arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgRootingPolicy {
+  /// Default policy: runtime functions that may GC must not accept any raw GC pointers.
+  ///
+  /// Rationale: LLVM statepoints/stackmaps do not describe Rust/C runtime frames, so if the runtime
+  /// function triggers a GC while it has GC pointer arguments in its own native stack/registers,
+  /// those pointers will not be traced or relocated.
+  NoGcPointersAllowedIfMayGc,
+  /// The runtime guarantees it "roots" GC pointer arguments for the duration of the call (e.g.
+  /// shadow stack, handles, pinning, or an equivalent mechanism).
+  RuntimeRootsPointers,
+}
+
+impl Default for ArgRootingPolicy {
+  fn default() -> Self {
+    Self::NoGcPointersAllowedIfMayGc
+  }
+}
+
+/// Metadata describing a runtime function's GC-safety contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeFnSpec {
+  pub name: &'static str,
+  /// Whether this runtime function may allocate / safepoint / trigger GC.
+  pub may_gc: bool,
+  /// Number of arguments that are GC-managed pointers (i.e. raw pointers that refer to GC objects).
+  pub gc_ptr_args: usize,
+  pub arg_rooting: ArgRootingPolicy,
+}
+
 impl RuntimeFn {
   pub fn llvm_name(self) -> &'static str {
     match self {
       RuntimeFn::Alloc => "rt_alloc",
+      RuntimeFn::AllocPinned => "rt_alloc_pinned",
+      RuntimeFn::GcSafepoint => "rt_gc_safepoint",
+      RuntimeFn::GcCollect => "rt_gc_collect",
+      RuntimeFn::WriteBarrier => "rt_write_barrier",
     }
   }
 
   pub fn gc_effect(self) -> GcEffect {
     match self {
       RuntimeFn::Alloc => GcEffect::MayGc,
+      RuntimeFn::AllocPinned => GcEffect::MayGc,
+      RuntimeFn::GcSafepoint => GcEffect::MayGc,
+      RuntimeFn::GcCollect => GcEffect::MayGc,
+      RuntimeFn::WriteBarrier => GcEffect::NoGc,
+    }
+  }
+
+  pub const fn spec(self) -> RuntimeFnSpec {
+    match self {
+      RuntimeFn::Alloc => RuntimeFnSpec {
+        name: "rt_alloc",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::AllocPinned => RuntimeFnSpec {
+        name: "rt_alloc_pinned",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcSafepoint => RuntimeFnSpec {
+        name: "rt_gc_safepoint",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcCollect => RuntimeFnSpec {
+        name: "rt_gc_collect",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::WriteBarrier => RuntimeFnSpec {
+        name: "rt_write_barrier",
+        may_gc: false,
+        gc_ptr_args: 2,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
     }
   }
 }
-

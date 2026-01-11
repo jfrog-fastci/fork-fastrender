@@ -6,6 +6,7 @@ use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
 use inkwell::AddressSpace;
 
 use crate::llvm::gc;
+pub use crate::runtime_fn::{ArgRootingPolicy, RuntimeFn, RuntimeFnSpec};
 
 /// `native-js` ↔ `runtime-native` ABI boundary helpers.
 ///
@@ -366,86 +367,8 @@ pub struct RuntimeFns<'ctx> {
 }
 
 // -----------------------------------------------------------------------------
-// Runtime call registry + ABI validation
+// Runtime call ABI validation
 // -----------------------------------------------------------------------------
-
-/// Policy for how runtime functions handle GC pointer arguments.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ArgRootingPolicy {
-  /// Default policy: runtime functions that may GC must not accept any raw GC pointers.
-  ///
-  /// Rationale: LLVM statepoints/stackmaps do not describe Rust/C runtime frames, so if the runtime
-  /// function triggers a GC while it has GC pointer arguments in its own native stack/registers,
-  /// those pointers will not be traced or relocated.
-  NoGcPointersAllowedIfMayGc,
-  /// The runtime guarantees it "roots" GC pointer arguments for the duration of the call (e.g.
-  /// shadow stack, handles, pinning, or an equivalent mechanism).
-  RuntimeRootsPointers,
-}
-
-impl Default for ArgRootingPolicy {
-  fn default() -> Self {
-    Self::NoGcPointersAllowedIfMayGc
-  }
-}
-
-/// Metadata describing a runtime function's GC-safety contract.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RuntimeFnSpec {
-  pub name: &'static str,
-  /// Whether this runtime function may allocate / safepoint / trigger GC.
-  pub may_gc: bool,
-  /// Number of arguments that are GC-managed pointers (i.e. raw pointers that refer to GC objects).
-  pub gc_ptr_args: usize,
-  pub arg_rooting: ArgRootingPolicy,
-}
-
-/// Known runtime functions used by `native-js` codegen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum RuntimeFn {
-  Alloc,
-  AllocPinned,
-  GcSafepoint,
-  GcCollect,
-  WriteBarrier,
-}
-
-impl RuntimeFn {
-  pub const fn spec(self) -> RuntimeFnSpec {
-    match self {
-      RuntimeFn::Alloc => RuntimeFnSpec {
-        name: "rt_alloc",
-        may_gc: true,
-        gc_ptr_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::AllocPinned => RuntimeFnSpec {
-        name: "rt_alloc_pinned",
-        may_gc: true,
-        gc_ptr_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcSafepoint => RuntimeFnSpec {
-        name: "rt_gc_safepoint",
-        may_gc: true,
-        gc_ptr_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::GcCollect => RuntimeFnSpec {
-        name: "rt_gc_collect",
-        may_gc: true,
-        gc_ptr_args: 0,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-      RuntimeFn::WriteBarrier => RuntimeFnSpec {
-        name: "rt_write_barrier",
-        may_gc: false,
-        gc_ptr_args: 2,
-        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
-      },
-    }
-  }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeCallError {
