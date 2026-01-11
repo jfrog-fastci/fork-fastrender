@@ -95,8 +95,8 @@ objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o")
 
 must_have_stackmaps() {
   local bin="$1"
-  if ! "${READELF}" -W -S "${bin}" | grep -qF ".llvm_stackmaps"; then
-    echo "expected .llvm_stackmaps in: ${bin}" >&2
+  if ! "${READELF}" -W -S "${bin}" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'; then
+    echo "expected stackmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
@@ -104,9 +104,27 @@ must_have_stackmaps() {
 
 must_not_have_stackmaps() {
   local bin="$1"
-  if "${READELF}" -W -S "${bin}" | grep -qF ".llvm_stackmaps"; then
-    echo "expected no .llvm_stackmaps in: ${bin}" >&2
+  if "${READELF}" -W -S "${bin}" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'; then
+    echo "expected no stackmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
+must_have_textrel() {
+  local bin="$1"
+  if ! "${READELF}" -d "${bin}" 2>/dev/null | grep -q "TEXTREL"; then
+    echo "expected DT_TEXTREL in: ${bin}" >&2
+    "${READELF}" -d "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
+must_not_have_textrel() {
+  local bin="$1"
+  if "${READELF}" -d "${bin}" 2>/dev/null | grep -q "TEXTREL"; then
+    echo "expected no DT_TEXTREL in: ${bin}" >&2
+    "${READELF}" -d "${bin}" >&2 || true
     exit 1
   fi
 }
@@ -114,6 +132,26 @@ must_not_have_stackmaps() {
 echo "[stackmaps] link: ld (no-pie, no gc-sections)"
 "${CLANG}" -no-pie -o "${tmp}/a_ld_nogc" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_nogc"
+
+echo "[stackmaps] link: ld (pie) => EXPECTED DT_TEXTREL"
+if "${CLANG}" -pie -o "${tmp}/a_ld_pie_textrel" "${objs[@]}"; then
+  must_have_stackmaps "${tmp}/a_ld_pie_textrel"
+  must_have_textrel "${tmp}/a_ld_pie_textrel"
+else
+  echo "[stackmaps] note: ld PIE link failed; skipping DT_TEXTREL check" >&2
+fi
+
+echo "[stackmaps] link: ld (pie, patched stackmaps) => EXPECTED NO DT_TEXTREL"
+cp "${tmp}/mod_a.o" "${tmp}/mod_a.pie.o"
+cp "${tmp}/mod_b.o" "${tmp}/mod_b.pie.o"
+"${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_a.pie.o"
+"${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_b.pie.o"
+if "${CLANG}" -pie -o "${tmp}/a_ld_pie_no_textrel" "${tmp}/main.o" "${tmp}/mod_a.pie.o" "${tmp}/mod_b.pie.o" "${tmp}/callee.o"; then
+  must_have_stackmaps "${tmp}/a_ld_pie_no_textrel"
+  must_not_have_textrel "${tmp}/a_ld_pie_no_textrel"
+else
+  echo "[stackmaps] note: ld PIE link failed; skipping patched PIE check" >&2
+fi
 
 echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 "${CLANG}" -no-pie -Wl,--gc-sections -o "${tmp}/a_ld_gc" "${objs[@]}"
@@ -132,6 +170,14 @@ if [[ -n "${LLD_FUSE}" ]]; then
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -o "${tmp}/a_lld_nogc" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_nogc"
 
+  echo "[stackmaps] link: lld (pie, unpatched) => EXPECTED FAIL"
+  if "${CLANG}" -fuse-ld="${LLD_FUSE}" -pie -o "${tmp}/a_lld_pie_unpatched" "${objs[@]}"; then
+    echo "[stackmaps] warning: lld PIE link unexpectedly succeeded; ensuring no DT_TEXTREL" >&2
+    must_not_have_textrel "${tmp}/a_lld_pie_unpatched"
+  else
+    echo "[stackmaps] ok: lld rejected PIE without stackmaps patching (expected)"
+  fi
+
   echo "[stackmaps] link: lld (no-pie, --gc-sections) => EXPECTED DROP"
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -o "${tmp}/a_lld_gc" "${objs[@]}"
   must_not_have_stackmaps "${tmp}/a_lld_gc"
@@ -144,6 +190,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     echo "[stackmaps] link: native_link.sh (lld + PIE; stackmaps patched via llvm-objcopy)"
     ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
     must_have_stackmaps "${tmp}/a_policy_lld_pie"
+    must_not_have_textrel "${tmp}/a_policy_lld_pie"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
   fi
@@ -177,7 +224,7 @@ fi
 
 if [[ -n "${LLVM_READOBJ}" ]]; then
   echo "[stackmaps] inspect: llvm-readobj --sections"
-  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -qF ".llvm_stackmaps"
+  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'
 else
   echo "[stackmaps] note: llvm-readobj not found; skipping llvm-readobj check"
 fi

@@ -16,8 +16,10 @@ Environment:
 Notes:
   - `.llvm_stackmaps` has no inbound references; `--gc-sections` will drop it
     unless explicitly `KEEP`'d (we inject `keep_llvm_stackmaps.ld`).
-  - PIE + lld requires rewriting input object section flags so stackmaps live in
-    a writable segment for relocation (we do this via `llvm-objcopy`).
+  - On Linux x86_64, PIE binaries require runtime relocations for stackmap
+    FunctionAddress entries. If `.llvm_stackmaps` is read-only, GNU ld emits
+    `DT_TEXTREL` and lld typically rejects the link. We avoid this by rewriting
+    input objects so the stackmap sections are writable during relocation.
 EOF
 }
 
@@ -100,7 +102,7 @@ fi
 # stackmap sections are never dropped under `--gc-sections`.
 link_args+=("-Wl,-T,${stackmaps_script}")
 
-# PIE + lld: ensure `.llvm_stackmaps` relocations are allowed by making the
+# PIE (Linux/ELF): ensure `.llvm_stackmaps` relocations are allowed by making the
 # section writable in the *input* objects (see native-js/src/link.rs for details).
 patched_dir=""
 cleanup() {
@@ -110,16 +112,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${PIE}" == "1" && "${LINKER}" == "lld" ]]; then
+if [[ "${PIE}" == "1" && "${OSTYPE:-}" == linux* ]]; then
   objcopy=""
-  for cand in llvm-objcopy-18 llvm-objcopy; do
+  for cand in llvm-objcopy-18 llvm-objcopy objcopy; do
     if command -v "${cand}" >/dev/null 2>&1; then
       objcopy="${cand}"
       break
     fi
   done
   if [[ -z "${objcopy}" ]]; then
-    echo "native_link.sh: PIE+lld requires llvm-objcopy (expected llvm-objcopy-18 or llvm-objcopy) to patch .llvm_stackmaps flags" >&2
+    echo "native_link.sh: PIE requires llvm-objcopy/objcopy to patch .llvm_stackmaps flags" >&2
     exit 2
   fi
 
@@ -129,8 +131,13 @@ if [[ "${PIE}" == "1" && "${LINKER}" == "lld" ]]; then
     src="${objs[$i]}"
     dst="${patched_dir}/obj${i}.o"
     cp "${src}" "${dst}"
-    "${objcopy}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${dst}"
-    "${objcopy}" --set-section-flags .llvm_faultmaps=alloc,load,contents,data "${dst}"
+    if [[ "${objcopy}" == *llvm-objcopy* ]]; then
+      "${objcopy}" --set-section-flags=.llvm_stackmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags=.llvm_faultmaps=alloc,load,contents,data "${dst}"
+    else
+      "${objcopy}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags .llvm_faultmaps=alloc,load,contents,data "${dst}"
+    fi
     patched_objs+=("${dst}")
   done
   objs=("${patched_objs[@]}")

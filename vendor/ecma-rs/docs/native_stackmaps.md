@@ -2,6 +2,8 @@
 
 LLVM statepoints emit GC stack map metadata into a loadable ELF section named
 `.llvm_stackmaps` (and sometimes `.llvm_faultmaps`).
+When linking PIE binaries we prefer to relocate these bytes into
+`.data.rel.ro.llvm_stackmaps` so runtime relocations can be applied safely.
 
 This metadata is **not referenced by code**, so link-time and post-link size
 tools can accidentally remove it, breaking GC root discovery at runtime.
@@ -12,7 +14,7 @@ tools can accidentally remove it, breaking GC root discovery at runtime.
 - `.data.rel.ro.llvm_stackmaps` (hardened output location used by some link scripts)
 - `.llvm_faultmaps` / `.data.rel.ro.llvm_faultmaps` (keep if present; patchpoint/faultmap metadata)
 
-## Linker flags (ELF)
+## Linker flags (ELF): keeping stackmaps under `--gc-sections`
 
 Empirically (GNU ld 2.42 + LLVM/clang 18):
 
@@ -27,7 +29,7 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/scripts/keep_llvm_stackmaps.ld
 ```
 
-The repository’s default wrapper does this for you:
+The repository’s wrapper does this for you:
 
 ```bash
 bash vendor/ecma-rs/scripts/native_link.sh -o myapp <objs...>
@@ -53,6 +55,9 @@ For the Linux AOT/PIE linking policy used by the native-js toolchain scripts, se
 
 Naively linking a PIE with lld can fail (you’ll see `relocation R_X86_64_64 cannot be used ...`)
 because the linker needs to apply relocations to stackmap records.
+
+Naively linking a PIE with GNU ld can succeed but emit `DT_TEXTREL` warnings if
+`.llvm_stackmaps` is mapped read-only.
 
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
 relocation**. `native-js` (and `scripts/native_link.sh` when `ECMA_RS_NATIVE_PIE=1`) do this by
@@ -96,5 +101,5 @@ Run:
 bash vendor/ecma-rs/scripts/check_llvm_stackmaps.sh
 ```
 
-It builds a minimal multi-object statepoint example and verifies `.llvm_stackmaps`
-survives linking and common strip modes.
+It builds a minimal multi-object statepoint example and verifies the stackmaps
+section survives linking and common strip modes.
