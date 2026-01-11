@@ -366,13 +366,13 @@ FIFO by calling `rt_async_poll_legacy()`.
 From the repository root:
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh bench -p runtime-native
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native
 ```
 
 To enable trace counters during a run:
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh bench -p runtime-native --features rt-trace
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --features rt-trace
 ```
 
 ### Bench suite
