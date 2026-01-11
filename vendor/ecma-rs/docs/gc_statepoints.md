@@ -496,8 +496,9 @@ Fragments:
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE): keeps `.llvm_{stackmaps,faultmaps}*` (and
   `.data.rel.ro.llvm_*` if present) and anchors after `.text`.
 - `runtime-native/link/stackmaps.ld` (PIE + lld): keeps rewritten `.data.rel.ro.llvm_*` inputs
-  (after `objcopy`/`llvm-objcopy --rename-section`) and anchors after `.data` to avoid lld RELRO
-  contiguity failures.
+  (after `objcopy`/`llvm-objcopy --rename-section`) and inserts dedicated
+  `.data.rel.ro.llvm_{stackmaps,faultmaps}` output sections **before `.bss`** (an always-present
+  anchor, even for minimal PIE links) to avoid lld RELRO contiguity failures.
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE): avoids RWX segments when stackmaps must be
   writable for relocations.
 
@@ -738,7 +739,7 @@ segment to be writable.
 The repo's linker fragments avoid this by *not* inserting writable stackmaps immediately after
 `.text`:
 
-- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps after `.data`.
+- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps before `.bss`.
 - GNU ld + PIE: the wrappers (`scripts/native_link.sh`, `native_js::link`) select the GNU ld-specific
   fragment (`runtime-native/link/stackmaps_gnuld.ld`) automatically.
 

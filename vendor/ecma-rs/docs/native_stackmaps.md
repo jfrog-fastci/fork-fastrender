@@ -51,8 +51,9 @@ Both fragments work with **GNU ld** and **lld**, but they target different layou
    output section and anchors at `INSERT AFTER .text;` (which is always present).
 - `runtime-native/link/stackmaps.ld`: PIE/lld-friendly; expects stackmaps/faultmaps to be rewritten
   in the *input objects* as `.data.rel.ro.llvm_*` (see below), and emits dedicated
-  `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` output sections inserted before
-  `.bss` (outside the RELRO range) to avoid lld's RELRO contiguity checks.
+  `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` output sections inserted **before
+  `.bss`** (an always-present anchor, even for minimal PIE links; outside the RELRO range) to avoid
+  lld's RELRO contiguity checks.
 
 For GNU ld **PIE** builds where stackmaps must be writable for relocations,
 `scripts/native_link.sh` selects `runtime-native/link/stackmaps_gnuld.ld` automatically to keep
@@ -128,7 +129,7 @@ linkers (notably GNU ld) can merge that writable stackmaps section into the `.te
 producing an **RWX** segment. The repo avoids this by anchoring stackmaps in the RELRO/data region
 or data segment (never immediately after `.text`):
 
-- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps before `.bss` (outside the RELRO range).
+- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps **before `.bss`** (outside the RELRO range).
 - GNU ld + PIE: the wrappers select `runtime-native/link/stackmaps_gnuld.ld` automatically.
 
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
