@@ -41,7 +41,7 @@ pub fn analyze_cfg(cfg: &Cfg) -> FunctionAnalyses {
 
 /// Convenience wrapper for [`analyze_cfg`] when you have a [`ProgramFunction`].
 pub fn analyze_program_function(function: &ProgramFunction) -> FunctionAnalyses {
-  analyze_cfg(&function.body)
+  analyze_cfg(function.analyzed_cfg())
 }
 
 /// Typed entry point for [`analyze_cfg`].
@@ -59,7 +59,7 @@ pub fn analyze_program_function_typed(
   function: &ProgramFunction,
   types: &crate::types::TypeContext,
 ) -> FunctionAnalyses {
-  analyze_cfg_typed(&function.body, types)
+  analyze_cfg_typed(function.analyzed_cfg(), types)
 }
 
 /// Stable identifier for a function in a [`Program`].
