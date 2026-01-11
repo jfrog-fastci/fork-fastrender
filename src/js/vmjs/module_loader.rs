@@ -457,6 +457,20 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     }
     .map_err(|err| self.throw_type_error(vm, scope, &format!("failed to fetch module {url}: {err}")))?;
 
+    // If the fetcher followed redirects, prefer the final URL for:
+    // - the module's `import.meta.url`, and
+    // - the base URL used to resolve further module imports.
+    //
+    // This matches browser behavior where a module script's URL is the response's URL, not
+    // necessarily the initially requested URL.
+    let effective_url = res.final_url.as_deref().unwrap_or(url);
+    if effective_url != url {
+      if let Some(existing) = self.module_id_by_url.get(effective_url).copied() {
+        self.module_id_by_url.insert(url.to_string(), existing);
+        return Ok(existing);
+      }
+    }
+
     ensure_http_success(&res, url)
       .and_then(|_| ensure_script_mime_sane(&res, url))
       .and_then(|_| {
@@ -496,15 +510,17 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       self.throw_type_error(vm, scope, &format!("module {url} response was not valid UTF-8: {err}"))
     })?;
 
-    let source = Arc::new(vm_js::SourceText::new(url.to_string(), source_text));
+    let effective_url_owned = effective_url.to_string();
+    let source = Arc::new(vm_js::SourceText::new(effective_url_owned.clone(), source_text));
     let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
     let id = modules.add_module(record);
 
     self.module_id_by_url.insert(url.to_string(), id);
-    self.module_url_by_id.insert(id, url.to_string());
+    self.module_id_by_url.insert(effective_url_owned.clone(), id);
+    self.module_url_by_id.insert(id, effective_url_owned.clone());
     self
       .module_base_url_by_id
-      .insert(id, url.to_string());
+      .insert(id, effective_url_owned);
 
     Ok(id)
   }
@@ -1045,6 +1061,89 @@ mod tests {
     let dep_call = calls.iter().find(|call| call.url == dep_url).expect("dep module fetched");
     assert_eq!(dep_call.destination, FetchDestination::ScriptCors);
     assert_eq!(dep_call.referrer_url.as_deref(), Some(entry_url));
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_uses_final_url_as_base_url_after_redirects() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let redirected_url = "https://example.com/a/mod.js";
+    let final_url = "https://example.com/b/mod.js";
+    let dep_url = "https://example.com/b/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import x from './a/mod.js'; globalThis.result = x;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut redirected_resource = FetchedResource::new(
+      "import x from './dep.js'; export default x;"
+        .as_bytes()
+        .to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    redirected_resource.final_url = Some(final_url.to_string());
+    map.insert(redirected_url.to_string(), redirected_resource);
+
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export default 5;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url, 128 * 1024);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    assert_eq!(get_global_prop(&mut host, "result"), Value::Number(5.0));
+
+    let calls = fetcher.calls();
+    assert!(
+      calls.iter().any(|u| u == dep_url),
+      "expected {dep_url} fetch (resolved from final URL), got calls: {calls:?}"
+    );
+    assert!(
+      calls.iter().all(|u| u != "https://example.com/a/dep.js"),
+      "expected redirects to affect base URL resolution (no a/dep.js fetch), got calls: {calls:?}"
+    );
+
+    let calls_detailed = fetcher.calls_detailed();
+    let dep_call = calls_detailed
+      .iter()
+      .find(|call| call.url == dep_url)
+      .expect("dep module fetched");
+    assert_eq!(dep_call.referrer_url.as_deref(), Some(final_url));
+
+    let redirected_id = *loader
+      .module_id_by_url
+      .get(redirected_url)
+      .expect("redirected module id");
+    assert_eq!(
+      loader.module_url_by_id.get(&redirected_id).map(String::as_str),
+      Some(final_url)
+    );
+    assert_eq!(
+      loader
+        .module_base_url_by_id
+        .get(&redirected_id)
+        .map(String::as_str),
+      Some(final_url)
+    );
     Ok(())
   }
 
