@@ -18,6 +18,12 @@ From the **repo root** (the checkout that contains `vendor/ecma-rs/`), run:
 bash vendor/ecma-rs/scripts/check_system.sh
 ```
 
+If you’re working inside `vendor/ecma-rs/` directly:
+
+```bash
+bash scripts/check_system.sh
+```
+
 Expected output:
 
 - A list of `✓` / `✗` checks for `rustc`, `cargo`, `flock`, `prlimit`, LLVM, etc.
@@ -43,14 +49,22 @@ This is **stricter than** `tsc --strict`: code that TypeScript accepts can still
 
 Strict-native rejects (hard error, not warning):
 
-- `any` (explicit or inferred)
-- Type assertions that “lie” (casts that the checker can’t justify)
-- Non-null assertions on potentially-null/undefined values (`x!`)
-- Dynamic code execution: `eval()`, `new Function()`
-- `with`
-- `arguments` (use rest parameters instead)
+**Enforced today** by `native-js`’s strict validator (`native_js::strict::validate`):
+
+- `any` (explicit or inferred) (`NJS0001`)
+- Type assertions (`x as T`, `<T>x`) (`NJS0002`)
+- Non-null assertions (`x!`) (`NJS0003`)
+- `eval()` (`NJS0004`)
+- `new Function()` (`NJS0005`)
+- `with` statements (`NJS0006`)
+- Computed property access with non-literal keys (`obj[key]` where `key` is not a string/number literal) (`NJS0007`)
+- Use of the `arguments` identifier/object (`NJS0008`)
+
+See [`native-js/README.md`](../native-js/README.md) for the canonical “enforced today” list (with diagnostic codes).
+
+**Also rejected by the overall strict-native design** (in [`EXEC.plan.md`](../EXEC.plan.md); enforcement may land later):
+
 - Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
-- Computed property access with non-constant keys in strict paths (`obj[key]` where `key` isn’t a constant)
 - `Proxy` (disallowed or extremely restricted)
 
 ### Restricted constructs (allowed with constraints)
@@ -65,26 +79,56 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 
 ## 2) Typecheck in strict-native mode
 
-### Raw cargo command (inside the ecma-rs workspace)
+### TypeScript typechecking (tsc-like semantics)
 
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+cargo run -p typecheck-ts-cli -- typecheck path/to/file.ts
 ```
 
-### Recommended (agent-safe wrapper)
+### Strict-native validation (native-js strict subset)
+
+Strict-native is currently enforced by `native-js`’s strict validator (see `native-js/tests/strict_validator.rs` for examples).
+
+To run the strict validator regression tests:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_validator
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_llvm.sh test -p native-js --test strict_validator
+```
+
+> Note: a standalone CLI flag is expected to exist eventually (as described in `EXEC.plan.md`).
+> Once implemented, it should look like:
+>
+> ```bash
+> cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+> ```
+>
+> Or from the repo root with the wrapper:
+>
+> ```bash
+> bash scripts/cargo_agent.sh run \
+>   --manifest-path vendor/ecma-rs/Cargo.toml \
+>   -p typecheck-ts-cli -- \
+>   typecheck --strict-native path/to/file.ts
+> ```
+
+### Recommended wrapper (agent-safe)
 
 Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs workspace:
 
 ```bash
-# From the repo root:
+# From the repo root (recommended):
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -109,6 +153,13 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 ```bash
 cargo test -p native-oracle-harness
 ```
+
+> Note: if `native-oracle-harness` does not exist in your checkout yet, the closest “native pipeline smoke test”
+> today is `native-js-cli` (TS → LLVM IR → native executable) for a tiny expression-only subset:
+>
+> ```bash
+> bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
+> ```
 
 ### Recommended (LLVM-heavy wrapper)
 
@@ -136,6 +187,8 @@ At a high level, each oracle test case does:
    - and (when relevant) captured stdout/stderr.
 
 The important property is that `vm-js` is deterministic and spec-oriented, so the oracle result is stable across machines and CI.
+
+Note: `vm-js` executes **ECMAScript** (`Dialect::Ecma`) scripts, not TypeScript. The oracle flow therefore depends on a TS → JS “type erasure” step.
 
 ---
 
