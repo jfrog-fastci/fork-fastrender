@@ -1,0 +1,235 @@
+# Semantic definitions for a small, high-value subset of RxJS APIs.
+#
+# Canonical naming:
+# - `rxjs.*` for creation functions / classes from the `rxjs` entrypoint.
+# - `rxjs.operators.*` for pipeable operators from `rxjs/operators`.
+
+schema_version: 1
+symbols:
+  - name: rxjs.Observable
+    aliases: []
+    semantics: ObservableConstructor
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: observable
+      lazy: true
+      subscribe_function_argument: 0
+
+  - name: rxjs.of
+    aliases: []
+    semantics: ObservableOf
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: observable_creation
+      lazy: true
+
+  - name: rxjs.from
+    aliases: []
+    semantics: ObservableFrom
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: observable_creation
+      lazy: true
+      nondeterministic_if: input_is_promise_or_async_iterable
+
+  - name: rxjs.merge
+    aliases: []
+    semantics: ObservableMerge
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: observable_combinator
+      lazy: true
+      interleaves_sources: true
+
+  - name: rxjs.combineLatest
+    aliases: []
+    semantics: ObservableCombineLatest
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: observable_combinator
+      lazy: true
+      depends_on_scheduling: true
+
+  - name: rxjs.operators.map
+    aliases: []
+    semantics: Map
+    since: "v0.1.0"
+    purity:
+      template: depends_on_callback
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: operator
+      operator_type: transformation
+
+  - name: rxjs.operators.filter
+    aliases: []
+    semantics: Filter
+    since: "v0.1.0"
+    purity:
+      template: depends_on_callback
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: operator
+      operator_type: filtration
+
+  - name: rxjs.operators.mergeMap
+    aliases: []
+    semantics: MergeMap
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: operator
+      operator_type: flattening
+      concurrency: true
+
+  - name: rxjs.operators.switchMap
+    aliases: []
+    semantics: SwitchMap
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: operator
+      operator_type: flattening
+      cancels_previous_inner: true
+
+  - name: rxjs.operators.tap
+    aliases: []
+    semantics: Tap
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: operator
+      operator_type: side_effect
+
+  - name: rxjs.operators.catchError
+    aliases: []
+    semantics: CatchError
+    since: "v0.1.0"
+    purity:
+      template: depends_on_callback
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: operator
+      operator_type: error_handling
+
+  - name: rxjs.operators.take
+    aliases: []
+    semantics: Take
+    since: "v0.1.0"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+    properties:
+      kind: operator
+      operator_type: limiting
+
+  - name: rxjs.operators.debounceTime
+    aliases: []
+    semantics: DebounceTime
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+    properties:
+      kind: operator
+      operator_type: timing
+      timer_based: true
