@@ -57,6 +57,53 @@ fn var_decl_and_if_statement_execute() {
 }
 
 #[test]
+fn with_statement_reads_object_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var x = 10; var o = { x: 1 }; with (o) { x }"#)
+    .unwrap();
+  assert_eq!(value, Value::Number(1.0));
+}
+
+#[test]
+fn with_statement_writes_object_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var o = { x: 1 }; with (o) { x = 2; } o.x"#)
+    .unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn with_statement_missing_identifier_falls_back_to_global_in_sloppy_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"with ({}) { __with_test_global__ = 3; } __with_test_global__"#)
+    .unwrap();
+  assert_eq!(value, Value::Number(3.0));
+}
+
+#[test]
+fn with_statement_respects_symbol_unscopables() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var x = "outer"; var o = { x: "inner" }; o[Symbol.unscopables] = { x: true }; with (o) { x }"#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "outer");
+}
+
+#[test]
+fn delete_identifier_deletes_with_object_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var o = { x: 1 }; with (o) { delete x; } o.x"#)
+    .unwrap();
+  assert_eq!(value, Value::Undefined);
+}
+
+#[test]
 fn debugger_statement_is_noop() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"1; debugger;"#).unwrap();

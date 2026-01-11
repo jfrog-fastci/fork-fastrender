@@ -25,6 +25,7 @@ use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl, VarDeclMo
 use parse_js::ast::stmt::{
   BlockStmt, CatchBlock, DoWhileStmt, ExprStmt, ForBody, ForInOfLhs, ForInStmt, ForOfStmt,
   ForTripleStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchStmt, ThrowStmt, TryStmt, WhileStmt,
+  WithStmt,
 };
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
@@ -285,15 +286,121 @@ impl RuntimeEnv {
     self.lexical_env
   }
 
-  fn resolve_lexical_binding(&self, heap: &Heap, name: &str) -> Result<Option<GcEnv>, VmError> {
+  fn resolve_lexical_binding(
+    &self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scope: &mut Scope<'_>,
+    name: &str,
+  ) -> Result<Option<GcEnv>, VmError> {
+    enum EnvKind {
+      Declarative,
+      Object {
+        binding_object: GcObject,
+        with_environment: bool,
+      },
+    }
+
     let mut current = Some(self.lexical_env);
     while let Some(env) = current {
-      if heap.env_has_binding(env, name)? {
-        return Ok(Some(env));
+      let kind = match scope.heap().get_env_record(env)? {
+        crate::env::EnvRecord::Declarative(_) => EnvKind::Declarative,
+        crate::env::EnvRecord::Object(obj) => EnvKind::Object {
+          binding_object: obj.binding_object,
+          with_environment: obj.with_environment,
+        },
+      };
+
+      match kind {
+        EnvKind::Declarative => {
+          if scope.heap().env_has_binding(env, name)? {
+            return Ok(Some(env));
+          }
+        }
+        EnvKind::Object {
+          binding_object,
+          with_environment,
+        } => {
+          if self.object_env_has_binding(
+            vm,
+            host,
+            hooks,
+            scope,
+            binding_object,
+            with_environment,
+            name,
+          )? {
+            return Ok(Some(env));
+          }
+        }
       }
-      current = heap.env_outer(env)?;
+
+      current = scope.heap().env_outer(env)?;
     }
     Ok(None)
+  }
+
+  fn object_env_has_binding(
+    &self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    scope: &mut Scope<'_>,
+    binding_object: GcObject,
+    with_environment: bool,
+    name: &str,
+  ) -> Result<bool, VmError> {
+    // ObjectEnvironmentRecord.HasBinding (ECMA-262).
+    //
+    // This is only used for `with` environments today, but we keep the generic shape since the heap
+    // supports ObjectEnvRecord independently.
+    let mut check_scope = scope.reborrow();
+    check_scope.push_root(Value::Object(binding_object))?;
+    let name_s = check_scope.alloc_string(name)?;
+    check_scope.push_root(Value::String(name_s))?;
+    let name_key = PropertyKey::from_string(name_s);
+
+    // HasProperty(O, N)
+    if !check_scope.ordinary_has_property_with_tick(binding_object, name_key, || vm.tick())? {
+      return Ok(false);
+    }
+
+    if !with_environment {
+      return Ok(true);
+    }
+
+    // If `@@unscopables` blocks this name, treat it as not present so resolution falls back to the
+    // outer environment.
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let unscopables_key = PropertyKey::from_symbol(intr.well_known_symbols().unscopables);
+    let receiver = Value::Object(binding_object);
+
+    let unscopables = check_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      binding_object,
+      unscopables_key,
+      receiver,
+    )?;
+    check_scope.push_root(unscopables)?;
+    let Value::Object(unscopables_obj) = unscopables else {
+      return Ok(true);
+    };
+
+    check_scope.push_root(Value::Object(unscopables_obj))?;
+    let blocked = check_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      unscopables_obj,
+      name_key,
+      Value::Object(unscopables_obj),
+    )?;
+    Ok(!check_scope.heap().to_boolean(blocked)?)
   }
 
   fn declare_var(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, name: &str) -> Result<(), VmError> {
@@ -342,7 +449,31 @@ impl RuntimeEnv {
     scope: &mut Scope<'_>,
     name: &str,
   ) -> Result<Option<Value>, VmError> {
-    if let Some(env) = self.resolve_lexical_binding(scope.heap(), name)? {
+    if let Some(env) = self.resolve_lexical_binding(vm, host, hooks, scope, name)? {
+      let binding_object = match scope.heap().get_env_record(env)? {
+        crate::env::EnvRecord::Declarative(_) => None,
+        crate::env::EnvRecord::Object(obj) => Some(obj.binding_object),
+      };
+
+      if let Some(binding_object) = binding_object {
+        // Object environment record (e.g. `with (obj) { ... }`): resolve the binding via `Get(O, N)`.
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(Value::Object(binding_object))?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let receiver = Value::Object(binding_object);
+        let value = key_scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          binding_object,
+          key,
+          receiver,
+        )?;
+        return Ok(Some(value));
+      }
+
       match scope.heap().env_get_binding_value(env, name, false) {
         Ok(v) => return Ok(Some(v)),
         // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
@@ -389,7 +520,39 @@ impl RuntimeEnv {
     value: Value,
     strict: bool,
   ) -> Result<(), VmError> {
-    if let Some(env) = self.resolve_lexical_binding(scope.heap(), name)? {
+    if let Some(env) = self.resolve_lexical_binding(vm, host, hooks, scope, name)? {
+      let binding_object = match scope.heap().get_env_record(env)? {
+        crate::env::EnvRecord::Declarative(_) => None,
+        crate::env::EnvRecord::Object(obj) => Some(obj.binding_object),
+      };
+
+      if let Some(binding_object) = binding_object {
+        let receiver = Value::Object(binding_object);
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(receiver)?;
+        // Root `value` across key allocation and property assignment in case it triggers a GC.
+        key_scope.push_root(value)?;
+        let key_s = key_scope.alloc_string(name)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let ok = key_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          binding_object,
+          key,
+          value,
+          receiver,
+        )?;
+        if ok {
+          return Ok(());
+        }
+        if strict {
+          return Err(throw_type_error(vm, &mut key_scope, "Cannot assign to read-only property")?);
+        }
+        return Ok(());
+      }
+
       match scope
         .heap_mut()
         .env_set_mutable_binding(env, name, value, strict)
@@ -2234,6 +2397,7 @@ impl<'a> Evaluator<'a> {
       Stmt::ForTriple(stmt) => self.eval_for_triple(scope, &stmt.stx, label_set),
       Stmt::ForIn(stmt) => self.eval_for_in(scope, &stmt.stx, label_set),
       Stmt::ForOf(stmt) => self.eval_for_of(scope, &stmt.stx, label_set),
+      Stmt::With(stmt) => self.eval_with(scope, &stmt.stx, label_set),
       Stmt::Switch(stmt) => {
         let result = self.eval_switch(scope, &stmt.stx)?;
         Ok(Self::normalise_iteration_break(result))
@@ -2802,6 +2966,35 @@ impl<'a> Evaluator<'a> {
         return Ok(Completion::normal(v));
       }
     }
+  }
+
+  fn eval_with(
+    &mut self,
+    scope: &mut Scope<'_>,
+    stmt: &WithStmt,
+    label_set: &[String],
+  ) -> Result<Completion, VmError> {
+    // Minimal ECMA-262 `WithStatement` evaluation:
+    //
+    // - Evaluate the object expression, then `ToObject` it.
+    // - Create an ObjectEnvironmentRecord with `with_environment = true`.
+    // - Evaluate the body with that env record as the current lexical environment.
+    let mut with_scope = scope.reborrow();
+    let object_value = self.eval_expr(&mut with_scope, &stmt.object)?;
+    with_scope.push_root(object_value)?;
+    let binding_object =
+      with_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, object_value)?;
+    with_scope.push_root(Value::Object(binding_object))?;
+
+    let outer = self.env.lexical_env;
+    let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
+    self.env.set_lexical_env(with_scope.heap_mut(), with_env);
+
+    let result = self.eval_stmt_labelled(&mut with_scope, &stmt.body, label_set);
+
+    // Always restore the outer lexical environment so later statements run in the correct scope.
+    self.env.set_lexical_env(with_scope.heap_mut(), outer);
+    result
   }
 
   fn eval_for_triple(
@@ -4704,14 +4897,34 @@ impl<'a> Evaluator<'a> {
           }
 
           // Sloppy-mode: deleting an unqualified identifier returns `true` if the reference is
-          // unresolvable, otherwise it performs a global-object property delete. Lexical bindings
-          // are not deletable.
-          if self
-            .env
-            .resolve_lexical_binding(scope.heap(), &id.stx.name)?
-            .is_some()
-          {
-            return Ok(Value::Bool(false));
+          // unresolvable, otherwise it deletes the binding. Declarative env-record bindings are
+          // not deletable, but `with`-introduced ObjectEnvironmentRecord bindings are deletable (as
+          // they are backed by object properties).
+          if let Some(env) = self.env.resolve_lexical_binding(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            &id.stx.name,
+          )? {
+            match scope.heap().get_env_record(env)? {
+              crate::env::EnvRecord::Declarative(_) => return Ok(Value::Bool(false)),
+              crate::env::EnvRecord::Object(obj) => {
+                let binding_object = obj.binding_object;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_root(Value::Object(binding_object))?;
+                let key_s = key_scope.alloc_string(&id.stx.name)?;
+                key_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                return Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  binding_object,
+                  key,
+                )?));
+              }
+            }
           }
 
           let global_object = self.env.global_object;
@@ -4742,12 +4955,31 @@ impl<'a> Evaluator<'a> {
             )?);
           }
 
-          if self
-            .env
-            .resolve_lexical_binding(scope.heap(), &id.stx.name)?
-            .is_some()
-          {
-            return Ok(Value::Bool(false));
+          if let Some(env) = self.env.resolve_lexical_binding(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            &id.stx.name,
+          )? {
+            match scope.heap().get_env_record(env)? {
+              crate::env::EnvRecord::Declarative(_) => return Ok(Value::Bool(false)),
+              crate::env::EnvRecord::Object(obj) => {
+                let binding_object = obj.binding_object;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_root(Value::Object(binding_object))?;
+                let key_s = key_scope.alloc_string(&id.stx.name)?;
+                key_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                return Ok(Value::Bool(key_scope.ordinary_delete_with_host_and_hooks(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  binding_object,
+                  key,
+                )?));
+              }
+            }
           }
 
           let global_object = self.env.global_object;
