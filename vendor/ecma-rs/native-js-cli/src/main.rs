@@ -415,7 +415,9 @@ fn file_kind_for(path: &Path) -> FileKind {
 
 fn ensure_checked_pipeline_supported(cli: &Cli) {
   if cli.entry_fn.is_some() {
-    eprintln!("--entry-fn is not supported with --pipeline checked (native-js uses `export function main()` as the entrypoint)");
+    eprintln!(
+      "--entry-fn is not supported with --pipeline checked (native-js uses an exported `main()` function as the entrypoint)"
+    );
     exit(2);
   }
 }

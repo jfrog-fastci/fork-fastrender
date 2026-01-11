@@ -649,7 +649,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .left()
       .map(|v| v.into_int_value())
       .unwrap_or_else(|| self.i32_ty.const_zero());
-    // Chosen convention: the value returned from `export function main()` becomes the process exit
+    // Chosen convention: the value returned from the exported `main()` becomes the process exit
     // code (truncated by the OS to 8 bits on Unix). For `void`/`undefined` entrypoints the TS
     // codegen always returns `0`, so the process exits successfully.
     //

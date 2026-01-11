@@ -618,7 +618,7 @@ impl<'a> Compiler<'a> {
         )],
       })?;
 
-    // Locate `export function main()` and validate its shape.
+    // Locate the exported `main()` entrypoint and validate its shape.
     let entrypoint = crate::strict::entrypoint(self.program, self.entry)
       .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })?;
 
