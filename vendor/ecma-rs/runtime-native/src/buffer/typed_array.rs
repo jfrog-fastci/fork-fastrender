@@ -170,6 +170,11 @@ pub struct PinnedUint8Array {
   len: usize,
 }
 
+// SAFETY: `PinnedUint8Array` is an owned view over a `PinnedArrayBuffer` backing store. The guard
+// pins the underlying external allocation, and moving the value across threads transfers ownership
+// of that pin.
+unsafe impl Send for PinnedUint8Array {}
+
 impl PinnedUint8Array {
   #[inline]
   pub fn as_ptr(&self) -> *mut u8 {
@@ -194,5 +199,24 @@ impl PinnedUint8Array {
   #[inline]
   pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
     core::slice::from_raw_parts_mut(self.as_ptr(), self.len)
+  }
+}
+
+// SAFETY: `PinnedUint8Array` owns a `PinnedArrayBuffer`, which pins the underlying backing store
+// allocation for the lifetime of the guard. The returned pointer is therefore stable and valid for
+// `len` bytes until the guard is dropped.
+unsafe impl runtime_io_uring::IoBuf for PinnedUint8Array {
+  fn stable_ptr(&self) -> NonNull<u8> {
+    NonNull::new(self.as_ptr()).expect("PinnedUint8Array pointer must not be null")
+  }
+
+  fn len(&self) -> usize {
+    self.len
+  }
+}
+
+unsafe impl runtime_io_uring::IoBufMut for PinnedUint8Array {
+  fn stable_mut_ptr(&mut self) -> NonNull<u8> {
+    NonNull::new(self.as_ptr()).expect("PinnedUint8Array pointer must not be null")
   }
 }

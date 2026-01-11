@@ -58,12 +58,10 @@ struct BackingStoreInner {
   ref_count: AtomicUsize,
 }
 
-// Safety: a `BackingStore` points to a fixed, non-moving byte allocation that lives outside the GC
-// heap. The bytes may be accessed from other threads (e.g. kernel async I/O completion threads) via
-// raw pointers, so we allow backing store handles/guards to be sent and shared across threads.
-//
-// The contents are plain bytes; it is the caller's responsibility to uphold any synchronization
-// requirements when reading/writing through raw pointers.
+// SAFETY: `BackingStoreInner` is immutable metadata for an external non-moving allocation plus
+// atomic counters (`pin_count`, `ref_count`, external-bytes accounting). The backing bytes may be
+// accessed from other threads (e.g. io_uring completion) via raw pointers; callers are responsible
+// for synchronizing reads/writes to the underlying memory.
 unsafe impl Send for BackingStoreInner {}
 unsafe impl Sync for BackingStoreInner {}
 
