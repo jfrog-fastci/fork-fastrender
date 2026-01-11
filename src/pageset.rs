@@ -233,8 +233,31 @@ fn canonicalize_pageset_url(value: &str) -> Option<String> {
 
 /// Canonical pageset stem for filtering and reporting.
 pub fn pageset_stem(url_or_stem: &str) -> Option<String> {
-  let trimmed = strip_collision_suffix(trim_ascii_whitespace(url_or_stem));
-  normalize_page_name(trimmed)
+  let trimmed = trim_ascii_whitespace(url_or_stem);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Collision suffixes (`<stem>--deadbeef`) are only meaningful for already-normalized cache stems.
+  // If the caller provides a URL-ish input (schemeful URL, host+path, host+query, etc.), treat the
+  // `--<hash>` as part of the URL and let `normalize_page_name` handle sanitization.
+  let candidate = if input_looks_like_url(trimmed) {
+    trimmed
+  } else {
+    strip_collision_suffix(trimmed)
+  };
+
+  normalize_page_name(candidate)
+}
+
+fn input_looks_like_url(value: &str) -> bool {
+  // `Url::parse` only succeeds for schemeful URLs; additionally treat common URL separator
+  // characters as "URL-ish" so we don't strip collision suffixes from inputs like
+  // `example.com/path--deadbeef`.
+  Url::parse(value).is_ok()
+    || value
+      .chars()
+      .any(|c| matches!(c, '/' | '?' | '#' | ':' | '\\'))
 }
 
 /// Deterministic short hash used to disambiguate cache/progress stems for collisions.
@@ -464,6 +487,20 @@ mod tests {
     let base = pageset_stem("https://rust-lang.org").unwrap();
     let hashed = format!("{base}--deadbeef");
     assert_eq!(pageset_stem(&hashed).as_deref(), Some(base.as_str()));
+  }
+
+  #[test]
+  fn pageset_stem_does_not_strip_collision_suffix_from_urls() {
+    // `--deadbeef` may be a legitimate part of a URL (host or path); only treat it as a collision
+    // marker when the input is already a cache stem.
+    assert_eq!(
+      pageset_stem("https://example.com--deadbeef").as_deref(),
+      Some("example.com--deadbeef")
+    );
+    assert_eq!(
+      pageset_stem("example.com/path--deadbeef").as_deref(),
+      Some("example.com_path--deadbeef")
+    );
   }
 
   #[test]
