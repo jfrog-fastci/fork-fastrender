@@ -1,8 +1,15 @@
 //! Minimal ELF64 section reader.
 //!
-//! This is used by tests/debug tooling to extract `.llvm_stackmaps` from an
-//! object/executable file. The runtime path uses linker-provided start/end
-//! symbols instead (see [`crate::stackmap::stackmaps_bytes`]).
+//! This is used by tests/debug tooling to extract stackmaps from an
+//! object/executable file.
+//!
+//! LLVM typically emits stackmaps into the `.llvm_stackmaps` section in object
+//! files. When linking PIE binaries, this repository's linker-script fragment
+//! moves the bytes into a RELRO-friendly output section:
+//! `.data.rel.ro.llvm_stackmaps` (see `runtime-native/link/stackmaps.ld`).
+//!
+//! The runtime path uses linker-provided start/end symbols instead (see
+//! [`crate::stackmap::stackmaps_bytes`]).
 
 use std::fmt;
 
@@ -134,4 +141,3 @@ pub fn section_bytes<'a>(file: &'a [u8], section_name: &str) -> Result<&'a [u8],
 
     Err(ElfError { message: "ELF: section not found" })
 }
-

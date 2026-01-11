@@ -37,7 +37,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let file = fs::read(&path)?;
-    let section = elf::section_bytes(&file, ".llvm_stackmaps")?;
+    // In object files, LLVM writes stackmaps into `.llvm_stackmaps`.
+    // In final PIE binaries, our link pipeline moves them into `.data.rel.ro.llvm_stackmaps`.
+    let section = elf::section_bytes(&file, ".data.rel.ro.llvm_stackmaps")
+        .or_else(|_| elf::section_bytes(&file, ".llvm_stackmaps"))?;
     let maps = StackMaps::parse(section)?;
 
     println!(
@@ -90,4 +93,3 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-
