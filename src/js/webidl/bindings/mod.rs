@@ -1800,6 +1800,8 @@ mod tests {
       host: &mut Self,
       value: Value,
     ) -> Result<String, VmError> {
+      // Disambiguate `to_string` between the legacy `webidl_js_runtime::JsRuntime` surface (used by
+      // `generated_legacy`) and the `vm-js` bindings runtime (`WebIdlBindingsRuntime`).
       let s = WebIdlBindingsRuntime::to_string(rt, host, value)?;
       rt.js_string_to_rust_string(s)
     }
