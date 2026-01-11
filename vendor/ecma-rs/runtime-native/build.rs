@@ -138,7 +138,12 @@ fn generate_llvm_module(
 source_filename = "runtime_native_stackmap_test"
 target triple = "x86_64-unknown-linux-gnu"
 
-declare void @safepoint() nounwind
+; Keep the safepoint callee defined in this module so linking the generated
+; object into Rust test binaries does not require any extra runtime stubs.
+define void @safepoint() noinline nounwind {
+entry:
+  ret void
+}
 
 define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "statepoint-example" {
 entry:
