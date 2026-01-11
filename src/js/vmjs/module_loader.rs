@@ -7,7 +7,7 @@ use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::VmJsEventLoopHooks;
-use crate::js::EventLoop;
+use crate::js::{EventLoop, JsExecutionOptions};
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
   origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest, ResourceFetcher,
@@ -50,7 +50,6 @@ pub struct VmJsModuleLoader {
   fetcher: Arc<dyn ResourceFetcher>,
   document_url: String,
   document_origin: Option<DocumentOrigin>,
-  max_module_bytes: usize,
   module_graph: ModuleGraph,
   module_id_by_url: HashMap<String, ModuleId>,
   module_url_by_id: HashMap<ModuleId, String>,
@@ -58,14 +57,13 @@ pub struct VmJsModuleLoader {
 }
 
 impl VmJsModuleLoader {
-  pub fn new(fetcher: Arc<dyn ResourceFetcher>, document_url: impl Into<String>, max_module_bytes: usize) -> Self {
+  pub fn new(fetcher: Arc<dyn ResourceFetcher>, document_url: impl Into<String>) -> Self {
     let document_url = document_url.into();
     let document_origin = origin_from_url(&document_url);
     Self {
       fetcher,
       document_url,
       document_origin,
-      max_module_bytes,
       module_graph: ModuleGraph::new(),
       module_id_by_url: HashMap::new(),
       module_url_by_id: HashMap::new(),
@@ -167,7 +165,6 @@ impl VmJsModuleLoader {
       fetcher,
       document_url,
       document_origin,
-      max_module_bytes,
       module_graph,
       module_id_by_url,
       module_url_by_id,
@@ -176,15 +173,22 @@ impl VmJsModuleLoader {
     let fetcher = Arc::clone(fetcher);
     let document_url = document_url.clone();
     let document_origin = document_origin.clone();
-    let max_module_bytes = *max_module_bytes;
 
     with_event_loop(event_loop, move || {
+      let options = {
+        let (_, window_realm) = host.vm_host_and_window_realm();
+        window_realm.js_execution_options()
+      };
+
       let mut hooks = VmJsModuleHooks::<Host> {
         inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
         fetcher,
         document_url: document_url.as_str(),
         document_origin,
-        max_module_bytes,
+        options,
+        loaded_modules: 0,
+        loaded_bytes: 0,
+        module_depths: HashMap::new(),
         module_id_by_url,
         module_url_by_id,
         module_base_url_by_id,
@@ -220,7 +224,7 @@ impl VmJsModuleLoader {
 
           {
             let mut scope = heap.scope();
-             let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
+            let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
               EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
                 &mut vm,
                 &mut scope,
@@ -244,6 +248,7 @@ impl VmJsModuleLoader {
             };
 
             if let (Ok(_), Some(entry_id)) = (&outcome, entry_id) {
+              hooks.module_depths.insert(entry_id, 0);
               let load_promise = match vm_js::load_requested_modules(
                 &mut vm,
                 &mut scope,
@@ -383,7 +388,10 @@ struct VmJsModuleHooks<'a, Host: WindowRealmHost + 'static> {
   fetcher: Arc<dyn ResourceFetcher>,
   document_url: &'a str,
   document_origin: Option<DocumentOrigin>,
-  max_module_bytes: usize,
+  options: JsExecutionOptions,
+  loaded_modules: usize,
+  loaded_bytes: usize,
+  module_depths: HashMap<ModuleId, usize>,
   module_id_by_url: &'a mut HashMap<String, ModuleId>,
   module_url_by_id: &'a mut HashMap<ModuleId, String>,
   module_base_url_by_id: &'a mut HashMap<ModuleId, String>,
@@ -404,17 +412,37 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     base_url: &str,
     source_text: &str,
   ) -> std::result::Result<ModuleId, VmError> {
+    if let Err(err) = self.options.check_module_specifier(url) {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
+    }
+
     if let Some(existing) = self.module_id_by_url.get(url).copied() {
       return Ok(existing);
     }
 
-    if self.max_module_bytes != usize::MAX && source_text.as_bytes().len() > self.max_module_bytes {
-      return Err(self.throw_type_error(vm, scope, &format!(
-        "inline module {url} is too large ({} bytes > max {})",
-        source_text.as_bytes().len(),
-        self.max_module_bytes
-      )));
+    let next_modules = self
+      .loaded_modules
+      .checked_add(1)
+      .ok_or_else(|| VmError::OutOfMemory)?;
+    if let Err(err) = self.options.check_module_graph_modules(next_modules, url) {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
     }
+
+    let module_bytes = source_text.as_bytes().len();
+    let context = format!("source=module specifier={url}");
+    if let Err(err) = self.options.check_script_source_bytes(module_bytes, &context) {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
+    }
+
+    let next_bytes = match self
+      .options
+      .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, url)
+    {
+      Ok(next) => next,
+      Err(err) => return Err(self.throw_type_error(vm, scope, &err.to_string())),
+    };
+    self.loaded_modules = next_modules;
+    self.loaded_bytes = next_bytes;
 
     let source = Arc::new(vm_js::SourceText::new(url.to_string(), source_text.to_string()));
     let record = vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
@@ -437,9 +465,28 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     url: &str,
     referrer_url: Option<&str>,
   ) -> std::result::Result<ModuleId, VmError> {
+    if let Err(err) = self.options.check_module_specifier(url) {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
+    }
+
     if let Some(existing) = self.module_id_by_url.get(url).copied() {
       return Ok(existing);
     }
+
+    let next_modules = self
+      .loaded_modules
+      .checked_add(1)
+      .ok_or_else(|| VmError::OutOfMemory)?;
+
+    let remaining_total = self
+      .options
+      .max_module_graph_total_bytes
+      .saturating_sub(self.loaded_bytes);
+    let max_fetch = self
+      .options
+      .max_script_bytes
+      .min(remaining_total)
+      .saturating_add(1);
 
     // Fetch module scripts in CORS mode (`<script type="module">` / module imports).
     let mut req = FetchRequest::new(url, FetchDestination::ScriptCors);
@@ -449,14 +496,10 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     if let Some(origin) = self.document_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
-    let res = if self.max_module_bytes == usize::MAX {
-      self.fetcher.fetch_with_request(req)
-    } else {
-      self
-        .fetcher
-        .fetch_partial_with_request(req, self.max_module_bytes.saturating_add(1))
-    }
-    .map_err(|err| self.throw_type_error(vm, scope, &format!("failed to fetch module {url}: {err}")))?;
+    let res = self
+      .fetcher
+      .fetch_partial_with_request(req, max_fetch)
+      .map_err(|err| self.throw_type_error(vm, scope, &format!("failed to fetch module {url}: {err}")))?;
 
     // If the fetcher followed redirects, prefer the final URL for:
     // - the module's `import.meta.url`, and
@@ -466,10 +509,20 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     // necessarily the initially requested URL.
     let effective_url = res.final_url.as_deref().unwrap_or(url);
     if effective_url != url {
+      if let Err(err) = self.options.check_module_specifier(effective_url) {
+        return Err(self.throw_type_error(vm, scope, &err.to_string()));
+      }
       if let Some(existing) = self.module_id_by_url.get(effective_url).copied() {
         self.module_id_by_url.insert(url.to_string(), existing);
         return Ok(existing);
       }
+    }
+
+    if let Err(err) = self
+      .options
+      .check_module_graph_modules(next_modules, effective_url)
+    {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
     }
 
     ensure_http_success(&res, url)
@@ -499,13 +552,21 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       }
     }
 
-    if self.max_module_bytes != usize::MAX && res.bytes.len() > self.max_module_bytes {
-      return Err(self.throw_type_error(vm, scope, &format!(
-        "module {url} is too large ({} bytes > max {})",
-        res.bytes.len(),
-        self.max_module_bytes
-      )));
+    let module_bytes = res.bytes.len();
+    let context = format!("source=module specifier={effective_url}");
+    if let Err(err) = self.options.check_script_source_bytes(module_bytes, &context) {
+      return Err(self.throw_type_error(vm, scope, &err.to_string()));
     }
+
+    let next_bytes = match self
+      .options
+      .check_module_graph_total_bytes(self.loaded_bytes, module_bytes, effective_url)
+    {
+      Ok(next) => next,
+      Err(err) => return Err(self.throw_type_error(vm, scope, &err.to_string())),
+    };
+    self.loaded_modules = next_modules;
+    self.loaded_bytes = next_bytes;
 
     let source_text = String::from_utf8(res.bytes).map_err(|err| {
       self.throw_type_error(vm, scope, &format!("module {url} response was not valid UTF-8: {err}"))
@@ -707,6 +768,20 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
   ) -> std::result::Result<(), VmError> {
     let _ = host_defined;
 
+    if let Err(err) = self.options.check_module_specifier(&module_request.specifier) {
+      let thrown = self.throw_type_error(vm, scope, &err.to_string());
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(thrown),
+      )?;
+      return Ok(());
+    }
+
     let base_url = match referrer {
       ModuleReferrer::Module(module) => self
         .module_base_url_by_id
@@ -732,6 +807,42 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       }
     };
 
+    let depth = match referrer {
+      ModuleReferrer::Module(id) => {
+        let parent_depth = self.module_depths.get(&id).copied().unwrap_or(0);
+        match parent_depth.checked_add(1) {
+          Some(next) => next,
+          None => {
+            let thrown = self.throw_type_error(vm, scope, "module graph depth overflowed usize");
+            vm.finish_loading_imported_module(
+              scope,
+              modules,
+              self,
+              referrer,
+              module_request,
+              payload,
+              Err(thrown),
+            )?;
+            return Ok(());
+          }
+        }
+      }
+      _ => 0,
+    };
+    if let Err(err) = self.options.check_module_graph_depth(depth, &resolved_url) {
+      let thrown = self.throw_type_error(vm, scope, &err.to_string());
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(thrown),
+      )?;
+      return Ok(());
+    }
+
     let module_id = match self.get_or_fetch_module(vm, scope, modules, &resolved_url, Some(base_url.as_str())) {
       Ok(id) => id,
       Err(err) => {
@@ -747,6 +858,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
         return Ok(());
       }
     };
+
+    self
+      .module_depths
+      .entry(module_id)
+      .and_modify(|d| *d = (*d).min(depth))
+      .or_insert(depth);
 
     vm.finish_loading_imported_module(
       scope,
@@ -914,7 +1031,7 @@ mod tests {
       .vm_mut()
       .set_budget(Budget::unlimited(100));
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(42.0));
@@ -959,8 +1076,7 @@ mod tests {
 
     host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
-    let mut loader =
-      VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "ok"), Value::Bool(true));
@@ -1006,7 +1122,7 @@ mod tests {
       .vm_mut()
       .set_budget(Budget::unlimited(100));
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_a)?;
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_b)?;
 
@@ -1015,6 +1131,171 @@ mod tests {
     assert_eq!(
       dep_fetches, 1,
       "expected dep module to be fetched once, got calls: {calls:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_enforces_module_graph_module_count() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import './dep.js';".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut js_options = crate::js::JsExecutionOptions::default();
+    js_options.max_module_graph_modules = 1;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher, document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected module count budget to reject module graph");
+    assert!(
+      err.to_string().contains("max_module_graph_modules"),
+      "unexpected error: {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_enforces_module_graph_total_bytes() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+    let entry_source = "import './dep.js';";
+    let dep_source = "export const value = 1;";
+
+    let total_limit = entry_source
+      .as_bytes()
+      .len()
+      .saturating_add(dep_source.as_bytes().len())
+      .saturating_sub(1);
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(entry_source.as_bytes().to_vec(), Some("application/javascript".to_string())),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(dep_source.as_bytes().to_vec(), Some("application/javascript".to_string())),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut js_options = crate::js::JsExecutionOptions::default();
+    js_options.max_module_graph_total_bytes = total_limit;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher, document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected total bytes budget to reject module graph");
+    assert!(
+      err.to_string().contains("max_module_graph_total_bytes"),
+      "unexpected error: {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_enforces_module_graph_depth() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let a_url = "https://example.com/a.js";
+    let b_url = "https://example.com/b.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new("import './a.js';".as_bytes().to_vec(), Some("application/javascript".to_string())),
+    );
+    map.insert(
+      a_url.to_string(),
+      FetchedResource::new(
+        "import './b.js'; export const x = 1;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      b_url.to_string(),
+      FetchedResource::new("export const y = 1;".as_bytes().to_vec(), Some("application/javascript".to_string())),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut js_options = crate::js::JsExecutionOptions::default();
+    js_options.max_module_graph_depth = 1;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher, document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected depth budget to reject module graph");
+    assert!(
+      err.to_string().contains("max_module_graph_depth"),
+      "unexpected error: {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_enforces_module_specifier_length() -> Result<()> {
+    let document_url = "https://example.com/index.html";
+    let entry_url = "https://example.com/entry.js";
+    let long_specifier = format!("./{}.js", "a".repeat(40));
+    let entry_source = format!("import '{long_specifier}';");
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(entry_source.into_bytes(), Some("application/javascript".to_string())),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut js_options = crate::js::JsExecutionOptions::default();
+    js_options.max_module_specifier_length = 32;
+    let mut host =
+      crate::js::WindowHostState::new_with_fetcher_and_options(dom, document_url, fetcher.clone(), js_options)?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher, document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected module specifier length budget to reject module graph");
+    assert!(
+      err.to_string().contains("max_module_specifier_length"),
+      "unexpected error: {err}"
     );
     Ok(())
   }
@@ -1051,7 +1332,7 @@ mod tests {
 
     host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url, 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     let calls = fetcher.calls_detailed();
@@ -1108,7 +1389,7 @@ mod tests {
 
     host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url, 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(5.0));
@@ -1186,7 +1467,7 @@ mod tests {
     register_import_map(&mut import_map_state, parse_result)
       .map_err(|err| Error::Other(err.to_string()))?;
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_module_url_with_import_maps(
       &mut host,
       &mut event_loop,
@@ -1283,7 +1564,7 @@ mod tests {
     let mut import_map_state = ImportMapState::default();
     register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str(), 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str());
     loader.evaluate_module_url_with_import_maps(
       &mut host,
       &mut event_loop,
@@ -1456,7 +1737,7 @@ mod tests {
     let mut import_map_state = ImportMapState::default();
     register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
 
-    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str(), 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str());
     let err = loader
       .evaluate_module_url_with_import_maps(
         &mut host,
@@ -1511,7 +1792,7 @@ mod tests {
       let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
       host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
-      let mut loader = VmJsModuleLoader::new(fetcher, document_url, 128 * 1024);
+      let mut loader = VmJsModuleLoader::new(fetcher, document_url);
       let err = loader
         .evaluate_module_url(&mut host, &mut event_loop, entry_url)
         .expect_err("expected CORS failure");
@@ -1560,7 +1841,7 @@ mod tests {
       let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
       host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
-      let mut loader = VmJsModuleLoader::new(fetcher, document_url, 128 * 1024);
+      let mut loader = VmJsModuleLoader::new(fetcher, document_url);
       loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
       assert_eq!(
@@ -1583,8 +1864,7 @@ mod tests {
       install_dispatch_binding(vm, heap, realm).unwrap();
     }
 
-    let mut loader =
-      VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html", 128 * 1024);
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), "https://example.com/index.html");
     loader.evaluate_inline_module(
       &mut host,
       &mut event_loop,

@@ -370,6 +370,10 @@ impl WindowRealm {
     self.js_execution_options.vm_js_budget_now()
   }
 
+  pub fn js_execution_options(&self) -> JsExecutionOptions {
+    self.js_execution_options
+  }
+
   pub fn heap(&self) -> &Heap {
     &self.runtime.heap
   }

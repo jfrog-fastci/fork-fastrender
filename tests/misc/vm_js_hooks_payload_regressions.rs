@@ -301,7 +301,7 @@ fn webidl_dispatch_works_during_module_evaluation() -> FrResult<()> {
     ),
   );
 
-  let mut loader = VmJsModuleLoader::new(Arc::new(fetcher), "https://example.com/", usize::MAX);
+  let mut loader = VmJsModuleLoader::new(Arc::new(fetcher), "https://example.com/");
   let _ = loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
   assert_eq!(host.webidl.calls, 2);
@@ -338,7 +338,7 @@ fn vm_host_is_available_during_module_evaluation() -> FrResult<()> {
     ),
   );
 
-  let mut loader = VmJsModuleLoader::new(Arc::new(fetcher), "https://example.com/", usize::MAX);
+  let mut loader = VmJsModuleLoader::new(Arc::new(fetcher), "https://example.com/");
   let _ = loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
   Ok(())
