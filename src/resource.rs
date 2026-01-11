@@ -11302,11 +11302,12 @@ fn parse_cors_response_headers(headers: &HeaderMap) -> (Option<String>, bool) {
     .map(trim_http_whitespace)
     .filter(|value| !value.is_empty())
     .collect();
-  // Chromium expects `Access-Control-Allow-Credentials: true` exactly; treat multiple values as
+  // Fetch ABNF defines `Access-Control-Allow-Credentials = %s"true"` (case-sensitive). Chromium
+  // expects `Access-Control-Allow-Credentials: true` exactly as well; treat multiple values as
   // invalid.
   let allow_credentials = matches!(
     credentials_values.as_slice(),
-    [value] if value.eq_ignore_ascii_case("true")
+    [value] if *value == "true"
   );
   (allow_origin, allow_credentials)
 }
@@ -12100,6 +12101,28 @@ mod tests {
       !allow_credentials,
       "NBSP must not be treated as whitespace when matching allow-credentials"
     );
+  }
+
+  #[test]
+  fn parse_cors_response_headers_requires_case_sensitive_true() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "access-control-allow-credentials",
+      http::HeaderValue::from_static("True"),
+    );
+    let (_, allow_credentials) = parse_cors_response_headers(&headers);
+    assert!(
+      !allow_credentials,
+      "allow-credentials must be matched case-sensitively per Fetch ABNF"
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "access-control-allow-credentials",
+      http::HeaderValue::from_static("true"),
+    );
+    let (_, allow_credentials) = parse_cors_response_headers(&headers);
+    assert!(allow_credentials);
   }
 
   #[test]
