@@ -971,7 +971,7 @@ mod tests {
       scope
         .push_root(Value::Object(global))
         .map_err(|err| Error::Other(err.to_string()))?;
-      for name in ["URL", "URLSearchParams"] {
+      for name in ["EventTarget", "URL", "URLSearchParams"] {
         let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
         scope
           .push_root(Value::String(key_s))
@@ -1039,6 +1039,32 @@ mod tests {
       host_state.exec_script_in_event_loop(event_loop, "URL.parse('nope')")?
     };
     assert_eq!(got, Value::Null);
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(event_loop, "URL.parse('https://example.com/').href")?
+    };
+    assert_eq!(value_to_string(&host, got), "https://example.com/");
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        r#"
+        (() => {
+          let t = new EventTarget();
+          let n = 0;
+          function f() { n++; }
+          t.addEventListener('x', f);
+          t.dispatchEvent({ type: 'x' });
+          t.removeEventListener('x', f);
+          t.dispatchEvent({ type: 'x' });
+          return n;
+        })()
+        "#,
+      )?
+    };
+    assert!(matches!(got, Value::Number(n) if n == 1.0));
 
     let got = {
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
