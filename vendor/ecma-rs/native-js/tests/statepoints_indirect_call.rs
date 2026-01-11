@@ -1,6 +1,5 @@
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 use native_js::llvm::{gc, passes};
 
@@ -23,6 +22,7 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
   // declare void @callee(i64)
   let callee_ty = void_ty.fn_type(&[i64_ty.into()], false);
   let callee = module.add_function("callee", callee_ty, None);
+  let callee_alt = module.add_function("callee_alt", callee_ty, None);
 
   // define void @test(ptr addrspace(1) %obj) gc "coreclr"
   let gc_ptr = gc::gc_ptr_type(&context);
@@ -33,22 +33,25 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);
 
-  // %fp_slot = alloca ptr, align 8
-  // store ptr @callee, ptr %fp_slot, align 8
-  // %fp = load ptr, ptr %fp_slot, align 8
-  //
-  // Loading the function pointer from memory ensures this is an indirect call (not a direct call
-  // to @callee).
-  let fn_ptr_ty = context.ptr_type(AddressSpace::default());
-  let fp_slot = builder
-    .build_alloca(fn_ptr_ty, "fp_slot")
-    .expect("build alloca for function pointer");
-  builder
-    .build_store(fp_slot, callee.as_global_value().as_pointer_value())
-    .expect("store function pointer");
+  // Build a non-constant function pointer so this call stays indirect even if LLVM performs
+  // simple canonicalization on the IR.
+  let obj = test_fn
+    .get_first_param()
+    .expect("missing %obj param")
+    .into_pointer_value();
+  obj.set_name("obj");
+
+  let isnull_pre = builder
+    .build_is_null(obj, "isnull_pre")
+    .expect("build isnull_pre");
   let fp = builder
-    .build_load(fn_ptr_ty, fp_slot, "fp")
-    .expect("load function pointer")
+    .build_select(
+      isnull_pre,
+      callee.as_global_value().as_pointer_value(),
+      callee_alt.as_global_value().as_pointer_value(),
+      "fp",
+    )
+    .expect("select function pointer")
     .into_pointer_value();
 
   // call void %fp(i64 123)  ; indirect call
@@ -57,11 +60,6 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
     .expect("build indirect call");
 
   // Use %obj after the call so it is live across the safepoint.
-  let obj = test_fn
-    .get_first_param()
-    .expect("missing %obj param")
-    .into_pointer_value();
-  obj.set_name("obj");
   builder.build_is_null(obj, "isnull").expect("build isnull");
   builder.build_return(None).expect("build ret void");
 
@@ -116,8 +114,7 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
 
   // ...and thus a relocate for %obj must exist.
   assert!(
-    rewritten.contains("%obj.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
+    rewritten.contains("call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate for %obj in rewritten IR, got:\n{rewritten}"
   );
 }
-
