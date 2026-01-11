@@ -496,6 +496,7 @@ mod tests {
   fn trim_preserves_ascii_via_kb() {
     use crate::typed::TypedProgram;
     use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
+    use std::sync::Arc;
     use typecheck_ts::{FileKey, MemoryHost, Program};
     use std::sync::Arc;
 
