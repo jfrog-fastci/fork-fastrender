@@ -1,9 +1,9 @@
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::ptr;
 
 use super::GcHeap;
 use super::ObjHeader;
+use crate::threading::GcAwareMutex;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -141,7 +141,7 @@ impl WeakHandles {
   }
 }
 
-static WEAK_CLEANUPS: Lazy<Mutex<Vec<fn(&mut GcHeap)>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static WEAK_CLEANUPS: Lazy<GcAwareMutex<Vec<fn(&mut GcHeap)>>> = Lazy::new(|| GcAwareMutex::new(Vec::new()));
 
 pub fn register_weak_cleanup(f: fn(&mut GcHeap)) {
   WEAK_CLEANUPS.lock().push(f);
@@ -155,8 +155,9 @@ pub(crate) fn run_weak_cleanups(heap: &mut GcHeap) {
     cleanup(heap);
   }
 }
-
-static GLOBAL_WEAK_HANDLES: Lazy<Mutex<WeakHandles>> = Lazy::new(|| Mutex::new(WeakHandles::new()));
+ 
+static GLOBAL_WEAK_HANDLES: Lazy<GcAwareMutex<WeakHandles>> =
+  Lazy::new(|| GcAwareMutex::new(WeakHandles::new()));
 
 pub(crate) fn global_weak_add(ptr: *mut u8) -> WeakHandle {
   GLOBAL_WEAK_HANDLES.lock().weak_add(ptr)

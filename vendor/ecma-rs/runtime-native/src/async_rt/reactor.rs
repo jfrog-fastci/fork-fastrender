@@ -235,15 +235,17 @@ impl Reactor {
   pub fn wait(&self, timeout_ms: i32) -> io::Result<Vec<Task>> {
     const MAX_EVENTS: usize = 64;
     let mut events: [libc::epoll_event; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-
-    IN_EPOLL_WAIT.store(true, Ordering::Release);
-    // While blocked in `epoll_wait`, treat this thread as parked/idle inside the runtime. This
-    // allows stop-the-world GC coordination to consider it quiescent without needing to wake it.
-    threading::set_parked(true);
-    let res = self.epoll.wait(&mut events, timeout_ms);
-    threading::set_parked(false);
-    IN_EPOLL_WAIT.store(false, Ordering::Release);
-    let n = res?;
+    let n = if timeout_ms == 0 {
+      self.epoll.wait(&mut events, timeout_ms)?
+    } else {
+      IN_EPOLL_WAIT.store(true, Ordering::Release);
+      let guard = threading::ParkedGuard::new();
+      let res = self.epoll.wait(&mut events, timeout_ms);
+      // Clear this debug flag before potentially blocking while un-parking.
+      IN_EPOLL_WAIT.store(false, Ordering::Release);
+      drop(guard);
+      res?
+    };
 
     if n == 0 {
       return Ok(Vec::new());

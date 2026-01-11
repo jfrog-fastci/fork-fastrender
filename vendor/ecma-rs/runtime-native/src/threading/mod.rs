@@ -7,6 +7,7 @@
 
 pub mod registry;
 pub mod safepoint;
+mod parked;
 
 pub use registry::all_threads;
 pub use registry::thread_counts;
@@ -16,6 +17,11 @@ pub use registry::ThreadCounts;
 pub use registry::ThreadId;
 pub use registry::ThreadKind;
 pub use registry::ThreadState;
+pub use parked::park_while;
+pub use parked::ParkedGuard;
+
+pub use crate::sync::GcAwareMutex;
+pub use crate::sync::GcAwareRwLock;
 
 pub use crate::gc_safe::enter_gc_safe_region;
 pub use crate::gc_safe::GcSafeGuard;
@@ -41,7 +47,14 @@ pub fn register_reactor_waker(waker: fn()) {
 /// - Before executing mutator code after un-parking, the thread must poll a
 ///   safepoint (e.g. via [`safepoint_poll`]).
 pub fn set_parked(parked: bool) {
+  let is_registered = registry::current_thread_state().is_some();
   registry::set_current_thread_parked(parked);
+  // Leaving the parked/idle state must immediately poll the safepoint barrier
+  // so a thread that unblocks during an in-progress stop-the-world GC doesn't
+  // resume mutator work without observing the request.
+  if !parked && is_registered {
+    safepoint_poll();
+  }
 }
 
 /// Safepoint poll used at compiler-inserted and runtime-inserted safepoints.

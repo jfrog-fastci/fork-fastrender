@@ -5,6 +5,7 @@
 //! into a GC-safe ("native") region.
 
 pub mod gc_mutex;
+pub mod gc_rwlock;
 
 pub use gc_mutex::GcAwareMutex;
-
+pub use gc_rwlock::GcAwareRwLock;
