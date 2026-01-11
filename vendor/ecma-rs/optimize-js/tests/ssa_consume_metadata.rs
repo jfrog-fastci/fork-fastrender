@@ -37,8 +37,8 @@ fn ssa_cfg_is_annotated_with_consumption_metadata() {
   let ssa_cfg = func.cfg_ssa().expect("expected SSA body to be preserved");
   let ret = find_var_return(ssa_cfg).expect("return should exist in SSA cfg");
   assert_eq!(
-    ret.meta.arg_use_modes,
-    vec![ArgUseMode::Consume],
+    ret.meta.arg_use_mode(0),
+    ArgUseMode::Consume,
     "expected SSA return value to be marked as consumed"
   );
 
@@ -49,4 +49,3 @@ fn ssa_cfg_is_annotated_with_consumption_metadata() {
     "expected deconstructed cfg to be unannotated"
   );
 }
-
