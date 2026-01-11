@@ -8,7 +8,7 @@ fn has_cmd(cmd: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok()
+        .is_ok_and(|s| s.success())
 }
 
 fn find_tool<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {

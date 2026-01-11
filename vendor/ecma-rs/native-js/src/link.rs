@@ -143,7 +143,7 @@ fn find_clang() -> Option<&'static str> {
       .stdout(Stdio::null())
       .stderr(Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return Some(cand);
     }
@@ -158,7 +158,7 @@ fn find_clang_18() -> Option<&'static str> {
     .stdout(Stdio::null())
     .stderr(Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
   {
     Some(cand)
   } else {
@@ -173,7 +173,7 @@ fn find_llvm_objcopy() -> Option<&'static str> {
       .stdout(Stdio::null())
       .stderr(Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return Some(cand);
     }

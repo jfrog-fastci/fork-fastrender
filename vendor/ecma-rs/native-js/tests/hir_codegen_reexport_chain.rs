@@ -10,7 +10,7 @@ fn find_clang() -> Option<&'static str> {
       .stdout(std::process::Stdio::null())
       .stderr(std::process::Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return Some(cand);
     }
@@ -107,4 +107,3 @@ export function main(): number {
   assert_eq!(out.status.code(), Some(11));
   assert!(out.stdout.is_empty());
 }
-

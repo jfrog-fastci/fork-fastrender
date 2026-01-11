@@ -14,7 +14,11 @@ fn es5_host() -> MemoryHost {
 
 fn clang_available() -> bool {
   for cand in ["clang-18", "clang"] {
-    if Command::new(cand).arg("--version").output().is_ok() {
+    if Command::new(cand)
+      .arg("--version")
+      .output()
+      .is_ok_and(|out| out.status.success())
+    {
       return true;
     }
   }

@@ -41,7 +41,7 @@ fn find_clang() -> Result<&'static str> {
       .stdout(Stdio::null())
       .stderr(Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return Ok(cand);
     }
@@ -56,7 +56,7 @@ fn has_cmd(cmd: &str) -> bool {
     .stdout(Stdio::null())
     .stderr(Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
 }
 
 fn find_lld_fuse_arg() -> Option<&'static str> {

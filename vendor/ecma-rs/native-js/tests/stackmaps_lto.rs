@@ -18,7 +18,7 @@ fn has_clang_18() -> bool {
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
 }
 
 fn find_symbol<'data>(file: &object::File<'data>, name: &str) -> Option<(u64, SymbolScope)> {
