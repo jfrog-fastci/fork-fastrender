@@ -14,6 +14,7 @@
 //! - `NJS0010`: unsupported type in the native-js strict subset
 
 use crate::codes;
+use crate::resolve::{BindingId, Resolver};
 use diagnostics::{Diagnostic, Span};
 use hir_js::{Body, BodyId, BodyKind, ExprKind, FileKind, PatKind, StmtKind, UnaryOp, VarDeclKind};
 use typecheck_ts::{Program, TypeKindSummary};
@@ -25,6 +26,7 @@ use typecheck_ts::{Program, TypeKindSummary};
 /// native LLVM IR generation.
 pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>> {
   let mut diagnostics = Vec::new();
+  let resolver = Resolver::new(program);
 
   for file in program.reachable_files() {
     let Some(lowered) = program.hir_lowered(file) else {
@@ -37,7 +39,7 @@ pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>> 
     }
 
     for body in program.bodies_in_file(file) {
-      validate_body(program, file, body, &lowered, &mut diagnostics);
+      validate_body(program, &resolver, file, body, &lowered, &mut diagnostics);
     }
   }
 
@@ -51,6 +53,7 @@ pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>> 
 
 fn validate_body(
   program: &Program,
+  resolver: &Resolver<'_>,
   file: typecheck_ts::FileId,
   body: BodyId,
   lowered: &hir_js::LowerResult,
@@ -60,11 +63,18 @@ fn validate_body(
     return;
   };
 
-  validate_body_syntax(file, body_data, lowered, out);
-  validate_body_types(program, file, body, body_data, out);
+  validate_body_syntax(file, body_data, lowered, resolver, out);
+  validate_body_types(program, file, body, body_data, lowered, resolver, out);
 }
 
-fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_js::LowerResult, out: &mut Vec<Diagnostic>) {
+fn validate_body_syntax(
+  file: typecheck_ts::FileId,
+  body: &Body,
+  lowered: &hir_js::LowerResult,
+  resolver: &Resolver<'_>,
+  out: &mut Vec<Diagnostic>,
+) {
+  let file_resolver = resolver.for_file(file);
   // Body-level constructs.
   match body.kind {
     BodyKind::Class => {
@@ -150,6 +160,21 @@ fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_j
             out,
             Span::new(file, expr.span),
             "only direct identifier calls are supported by native-js yet",
+          );
+        }
+
+        // `print(...)` is a codegen intrinsic, so allow it even when it comes from `.d.ts` libs.
+        let is_print_intrinsic = callee_is_ident(body, lowered, call.callee, "print");
+        if !is_print_intrinsic
+          && !matches!(
+            file_resolver.resolve_expr_ident(body, call.callee),
+            Some(BindingId::Def(_))
+          )
+        {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "call callee must resolve to a global function definition",
           );
         }
 
@@ -291,9 +316,12 @@ fn validate_body_types(
   file: typecheck_ts::FileId,
   body: BodyId,
   hir: &Body,
+  lowered: &hir_js::LowerResult,
+  resolver: &Resolver<'_>,
   out: &mut Vec<Diagnostic>,
 ) {
   let result = program.check_body(body);
+  let file_resolver = resolver.for_file(file);
 
   // Direct calls such as `foo(1)` require the callee identifier to have a callable type.
   //
@@ -312,12 +340,22 @@ fn validate_body_types(
       if idx >= skip_expr_type_check.len() {
         continue;
       }
-      if matches!(
-        hir.exprs.get(idx).map(|e| &e.kind),
-        Some(ExprKind::Ident(_))
-      ) {
-        skip_expr_type_check[idx] = true;
+      if !matches!(hir.exprs.get(idx).map(|e| &e.kind), Some(ExprKind::Ident(_))) {
+        continue;
       }
+      // `print(...)` is a codegen intrinsic (lowered to `printf`), so allow it even though it is
+      // declared in a `.d.ts` and does not resolve to a `DefId`.
+      let is_print_intrinsic = callee_is_ident(hir, lowered, call.callee, "print");
+      if !is_print_intrinsic
+        && !matches!(
+          file_resolver.resolve_expr_ident(hir, call.callee),
+          Some(BindingId::Def(_))
+        )
+      {
+        continue;
+      }
+
+      skip_expr_type_check[idx] = true;
     }
   }
 

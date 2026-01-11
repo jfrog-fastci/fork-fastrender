@@ -188,6 +188,25 @@ fn accepts_direct_function_call() {
 }
 
 #[test]
+fn rejects_nested_function_call() {
+  let err = validate(
+    r#"
+      function outer(x: number): number {
+        function inner(y: number): number {
+          return y + 1;
+        }
+        return inner(x);
+      }
+
+      outer(1);
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn accepts_basic_numeric_function() {
   let ok = validate(
     r#"
