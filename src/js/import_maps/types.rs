@@ -322,6 +322,27 @@ impl ModuleSpecifierMap {
       .ok()
       .and_then(|idx| self.entries.get(idx).map(|(_, v)| v))
   }
+
+  /// Insert or replace an entry, maintaining deterministic descending key order.
+  ///
+  /// Returns the previous value for `key`, if any.
+  pub fn insert(&mut self, key: String, value: Option<Url>) -> Option<Option<Url>> {
+    match self.entries.binary_search_by(|(k, _)| code_unit_cmp(&key, k)) {
+      Ok(idx) => Some(std::mem::replace(&mut self.entries[idx].1, value)),
+      Err(idx) => {
+        self.entries.insert(idx, (key, value));
+        None
+      }
+    }
+  }
+
+  /// Remove an entry, if it exists, preserving sort order.
+  pub fn remove(&mut self, key: &str) -> Option<Option<Url>> {
+    match self.entries.binary_search_by(|(k, _)| code_unit_cmp(key, k)) {
+      Ok(idx) => Some(self.entries.remove(idx).1),
+      Err(_) => None,
+    }
+  }
 }
 
 /// A "scopes map" with scope prefixes sorted in descending code-unit order.
@@ -358,6 +379,37 @@ impl ScopesMap {
       .ok()
       .and_then(|idx| self.entries.get(idx).map(|(_, v)| v))
   }
+
+  /// Insert or replace a scope entry, maintaining deterministic descending key order.
+  ///
+  /// Returns the previous module specifier map for `scope_prefix`, if any.
+  pub fn insert(
+    &mut self,
+    scope_prefix: String,
+    scope_map: ModuleSpecifierMap,
+  ) -> Option<ModuleSpecifierMap> {
+    match self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(&scope_prefix, k))
+    {
+      Ok(idx) => Some(std::mem::replace(&mut self.entries[idx].1, scope_map)),
+      Err(idx) => {
+        self.entries.insert(idx, (scope_prefix, scope_map));
+        None
+      }
+    }
+  }
+
+  /// Remove a scope entry, if it exists, preserving sort order.
+  pub fn remove(&mut self, scope_prefix: &str) -> Option<ModuleSpecifierMap> {
+    match self
+      .entries
+      .binary_search_by(|(k, _)| code_unit_cmp(scope_prefix, k))
+    {
+      Ok(idx) => Some(self.entries.remove(idx).1),
+      Err(_) => None,
+    }
+  }
 }
 
 /// Alias for [`ScopesMap`].
@@ -393,6 +445,24 @@ impl ModuleIntegrityMap {
 
   pub fn get(&self, key: &str) -> Option<&str> {
     self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+  }
+
+  /// Insert or replace an integrity entry.
+  ///
+  /// Unlike `imports`/`scopes`, the HTML Standard does not require sorting this map; entries are
+  /// kept in insertion order (updates keep the existing entry position).
+  pub fn insert(&mut self, key: String, integrity: String) -> Option<String> {
+    if let Some((_, existing)) = self.entries.iter_mut().find(|(k, _)| k == &key) {
+      return Some(std::mem::replace(existing, integrity));
+    }
+    self.entries.push((key, integrity));
+    None
+  }
+
+  /// Remove an integrity entry, if it exists.
+  pub fn remove(&mut self, key: &str) -> Option<String> {
+    let idx = self.entries.iter().position(|(k, _)| k == key)?;
+    Some(self.entries.remove(idx).1)
   }
 }
 

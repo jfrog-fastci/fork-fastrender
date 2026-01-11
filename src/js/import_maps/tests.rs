@@ -908,3 +908,88 @@ fn registering_many_import_maps_is_bounded_by_merge_limits() {
   assert!(!state.import_map.imports.contains_key("c"));
   assert_eq!(state.import_map.imports.len(), 2);
 }
+
+#[test]
+fn module_specifier_map_insert_and_remove_preserve_descending_order() {
+  let mut map = ModuleSpecifierMap::default();
+  let url_a = Url::parse("https://example.com/a.js").unwrap();
+  let url_b = Url::parse("https://example.com/b.js").unwrap();
+  let url_b2 = Url::parse("https://example.com/b2.js").unwrap();
+
+  map.insert("b".to_string(), Some(url_b.clone()));
+  map.insert("a".to_string(), Some(url_a.clone()));
+  map.insert("c".to_string(), None);
+
+  let keys: Vec<&str> = map.iter_descending().map(|(k, _)| k).collect();
+  assert_eq!(keys, ["c", "b", "a"]);
+
+  let removed = map.remove("b").unwrap();
+  assert_eq!(removed.unwrap().as_str(), url_b.as_str());
+  assert!(!map.contains_key("b"));
+
+  map.insert("b".to_string(), Some(url_b2.clone()));
+  let keys: Vec<&str> = map.iter_descending().map(|(k, _)| k).collect();
+  assert_eq!(keys, ["c", "b", "a"]);
+
+  let old = map.insert("b".to_string(), None).unwrap();
+  assert_eq!(old.unwrap().as_str(), url_b2.as_str());
+  assert!(matches!(map.get("b").unwrap(), None));
+}
+
+#[test]
+fn scopes_map_insert_and_remove_preserve_descending_order() {
+  let mut scopes = ScopesMap::default();
+
+  let mut scope_a = ModuleSpecifierMap::default();
+  scope_a.insert(
+    "dep".to_string(),
+    Some(Url::parse("https://example.com/dep.js").unwrap()),
+  );
+
+  scopes.insert("b".to_string(), scope_a.clone());
+  scopes.insert("a".to_string(), ModuleSpecifierMap::default());
+  scopes.insert("c".to_string(), ModuleSpecifierMap::default());
+
+  let prefixes: Vec<&str> = scopes.iter_descending().map(|(k, _)| k).collect();
+  assert_eq!(prefixes, ["c", "b", "a"]);
+
+  let removed = scopes.remove("b").unwrap();
+  assert_eq!(removed, scope_a);
+  let prefixes: Vec<&str> = scopes.iter_descending().map(|(k, _)| k).collect();
+  assert_eq!(prefixes, ["c", "a"]);
+}
+
+#[test]
+fn module_integrity_map_insert_overwrites_in_place_and_removes() {
+  let mut integrity = ModuleIntegrityMap::default();
+
+  assert_eq!(
+    integrity.insert("https://example.com/a.js".to_string(), "sha256-a".to_string()),
+    None
+  );
+  assert_eq!(
+    integrity.insert("https://example.com/b.js".to_string(), "sha256-b".to_string()),
+    None
+  );
+
+  let old = integrity
+    .insert("https://example.com/a.js".to_string(), "sha256-a2".to_string())
+    .unwrap();
+  assert_eq!(old, "sha256-a");
+
+  let entries: Vec<(&str, &str)> = integrity.iter().collect();
+  assert_eq!(
+    entries,
+    [
+      ("https://example.com/a.js", "sha256-a2"),
+      ("https://example.com/b.js", "sha256-b")
+    ]
+  );
+
+  assert_eq!(
+    integrity.remove("https://example.com/a.js").unwrap(),
+    "sha256-a2"
+  );
+  let entries: Vec<(&str, &str)> = integrity.iter().collect();
+  assert_eq!(entries, [("https://example.com/b.js", "sha256-b")]);
+}
