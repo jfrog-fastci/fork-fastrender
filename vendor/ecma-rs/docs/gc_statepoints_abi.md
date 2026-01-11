@@ -13,6 +13,7 @@ In particular, this document predates changes where:
 - `.llvm_stackmaps` discovery uses `runtime-native/link/stackmaps.ld` (or the compat alias `runtime-native/stackmaps.ld`) and stable boundary symbols:
   - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
   - `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` / `__stackmaps_{start,end}` (aliases)
+- linking with dead-section GC (`-Wl,--gc-sections`) requires a linker script with `KEEP(*(.llvm_stackmaps ...))` or the section can be discarded entirely
 - `native-js` forces statepoint GC roots into stack slots (no stackmap `Register` roots) by setting LLVM codegen options
   such as `--fixup-allow-gcptr-in-csr=false` / `--fixup-max-csr-statepoints=0`.
 
@@ -178,26 +179,41 @@ Requirements:
 Rationale: stack scanning depends on a stable, walkable FP chain. Tail calls can
 elide frames and destroy the “return address identifies the safepoint” property.
 
-### 2.3 `.llvm_stackmaps` section must survive to the final binary
+### 2.3 Stackmaps section must survive to the final binary
 
-The runtime reads `.llvm_stackmaps` at runtime. Therefore:
+LLVM emits stackmap metadata into a dedicated ELF section (`.llvm_stackmaps`, and in this repo often
+an output section named `.data.rel.ro.llvm_stackmaps`).
 
-- The final linked artifact **must contain** the `.llvm_stackmaps` section.
+This metadata is **not referenced by code**, so link-time dead-section elimination can discard it.
+
+The runtime reads stackmaps at runtime. Therefore:
+
+- The final linked artifact **must contain** stackmaps bytes (either `.llvm_stackmaps` or the
+  repo’s preferred `.data.rel.ro.llvm_stackmaps` output section).
 - The section must be readable by the runtime **in memory** (after relocations).
   The simplest way to guarantee this is that `.llvm_stackmaps` is emitted as an
   **allocated** section (ELF `SHF_ALLOC`) and ends up in a loadable segment.
 - Build tooling must not strip it (explicit `strip`, `objcopy`, or post-link
   tooling must preserve it).
+- When linking with `-Wl,--gc-sections`, the final link step must also apply a linker script fragment
+  that `KEEP`s stackmaps; in this repo that is:
+  - `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat)
 
 Verification:
 
 ```bash
-llvm-readobj -S <binary> | rg '\.llvm_stackmaps'
+llvm-readobj --sections <binary> | rg llvm_stackmaps
 ```
 
 If stripping is required for release binaries, the build must be configured to
 keep `.llvm_stackmaps` (exact mechanism is toolchain-dependent; verify with the
 command above).
+
+In this repository, you can also run:
+
+```bash
+bash scripts/check_llvm_stackmaps.sh
+```
 
 Locating the section at runtime is a runtime-linking detail, but the ABI assumes
 the runtime can obtain a raw `&[u8]` containing the stack map payload from the
