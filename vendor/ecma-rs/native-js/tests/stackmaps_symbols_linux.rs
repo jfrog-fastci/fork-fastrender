@@ -98,6 +98,16 @@ fn exported_stackmap_symbols_match_section_bounds() {
   let (end, end_scope) =
     find_symbol(&file, LLVM_STACKMAPS_STOP_SYM).expect("missing __stop_llvm_stackmaps symbol");
 
+  // Project / legacy symbol aliases.
+  let (fastr_start, fastr_start_scope) = find_symbol(&file, "__fastr_stackmaps_start")
+    .expect("missing __fastr_stackmaps_start symbol");
+  let (fastr_end, fastr_end_scope) =
+    find_symbol(&file, "__fastr_stackmaps_end").expect("missing __fastr_stackmaps_end symbol");
+  let (llvm_start, llvm_start_scope) = find_symbol(&file, "__llvm_stackmaps_start")
+    .expect("missing __llvm_stackmaps_start symbol");
+  let (llvm_end, llvm_end_scope) =
+    find_symbol(&file, "__llvm_stackmaps_end").expect("missing __llvm_stackmaps_end symbol");
+
   // Generic aliases used by tooling that doesn't want project-specific symbol names.
   let (alias_start, alias_start_scope) =
     find_symbol(&file, "__stackmaps_start").expect("missing __stackmaps_start symbol");
@@ -124,6 +134,26 @@ fn exported_stackmap_symbols_match_section_bounds() {
     SymbolScope::Compilation,
     "__stackmaps_end must be globally linkable (not a local symbol)"
   );
+  assert_ne!(
+    fastr_start_scope,
+    SymbolScope::Compilation,
+    "__fastr_stackmaps_start must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    fastr_end_scope,
+    SymbolScope::Compilation,
+    "__fastr_stackmaps_end must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    llvm_start_scope,
+    SymbolScope::Compilation,
+    "__llvm_stackmaps_start must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    llvm_end_scope,
+    SymbolScope::Compilation,
+    "__llvm_stackmaps_end must be globally linkable (not a local symbol)"
+  );
 
   assert_eq!(
     start, section_addr,
@@ -134,8 +164,18 @@ fn exported_stackmap_symbols_match_section_bounds() {
     section_size,
     "end-start must equal the stackmaps section size"
   );
-  assert_eq!(alias_start, start, "__stackmaps_start must match __fastr_stackmaps_start");
-  assert_eq!(alias_end, end, "__stackmaps_end must match __fastr_stackmaps_end");
+  assert_eq!(fastr_start, start, "__fastr_stackmaps_start must match {LLVM_STACKMAPS_START_SYM}");
+  assert_eq!(fastr_end, end, "__fastr_stackmaps_end must match {LLVM_STACKMAPS_STOP_SYM}");
+  assert_eq!(llvm_start, start, "__llvm_stackmaps_start must match {LLVM_STACKMAPS_START_SYM}");
+  assert_eq!(llvm_end, end, "__llvm_stackmaps_end must match {LLVM_STACKMAPS_STOP_SYM}");
+  assert_eq!(
+    alias_start, start,
+    "__stackmaps_start must match {LLVM_STACKMAPS_START_SYM}"
+  );
+  assert_eq!(
+    alias_end, end,
+    "__stackmaps_end must match {LLVM_STACKMAPS_STOP_SYM}"
+  );
 
   // Optional: ensure the section is backed by a readable load segment so the runtime can read the
   // bytes directly from memory (via the start/end symbol pointers).
