@@ -629,6 +629,7 @@ mod tests {
       "RT_PROMISE_RESOLVE_VALUE",
       "RT_PROMISE_RESOLVE_PROMISE",
       "RT_PROMISE_RESOLVE_THENABLE",
+      "RT_ASYNC_ABI_VERSION",
     ] {
       assert!(header.contains(c), "missing constant `{c}` in generated header");
     }
