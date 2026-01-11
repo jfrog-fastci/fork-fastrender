@@ -7,6 +7,10 @@ use optimize_js::il::inst::{InstTyp, StringEncoding};
 use optimize_js::TopLevelMode;
 #[cfg(feature = "serde")]
 use serde_json::to_string;
+#[cfg(feature = "typed")]
+use optimize_js::analysis::analyze_cfg_typed;
+#[cfg(feature = "typed")]
+use optimize_js::types::TypeContext;
 
 #[test]
 fn analyses_driver_smoke_is_deterministic() {
@@ -95,4 +99,39 @@ fn annotate_program_populates_inst_meta() {
     saw_utf8_encoding,
     "expected at least one instruction to record Utf8 in InstMeta.result_type.string_encoding"
   );
+}
+
+#[cfg(feature = "typed")]
+#[test]
+fn analyses_driver_smoke_typed_is_deterministic() {
+  let source = r#"
+    const out = (() => {
+      let x = 1;
+      let y = x + 2;
+      if (y < 10) {
+        y = y + 1;
+      }
+      return y;
+    })();
+    void out;
+  "#;
+
+  let program = common::compile_source_typed(source, TopLevelMode::Module, false);
+  let cfg = &program.top_level.body;
+  let types = TypeContext::default();
+
+  let first = analyze_cfg_typed(cfg, &types);
+  let second = analyze_cfg_typed(cfg, &types);
+
+  assert_eq!(first, second, "typed analysis results should be stable across invocations");
+
+  #[cfg(feature = "serde")]
+  {
+    let first_json = to_string(&first).expect("serialize first typed analysis result");
+    let second_json = to_string(&second).expect("serialize second typed analysis result");
+    assert_eq!(
+      first_json, second_json,
+      "serialized typed analysis results should be deterministic across invocations"
+    );
+  }
 }
