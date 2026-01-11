@@ -471,22 +471,19 @@ See `docs/async_abi.md` for details.
 
 ## Threading + GC safepoints
 
-The legacy async runtime is **single-consumer**: at most one OS thread may drive the event loop at
-a time by calling:
+The JS-shaped async runtime is **single-driver**: at most one OS thread may *drive* the event loop
+at a time via the "driving" entrypoints (e.g. `rt_async_poll` / `rt_async_poll_legacy`,
+`rt_async_wait`, `rt_drain_microtasks`, `rt_async_run_until_idle`, `rt_async_block_on`,
+`rt_async_cancel_all`).
 
-* `rt_async_poll_legacy`
-* `rt_async_spawn_legacy` (runs the coroutine synchronously until its first suspension point)
+The first thread to drive becomes the runtime's **event-loop thread** and is registered as
+`ThreadKind::Main` so stop-the-world GC can wait for it and scan its roots.
 
-The **first** thread to call either API becomes the runtime's **event-loop thread**. The runtime
-registers it with `threading::register_current_thread(ThreadKind::Main)` so stop-the-world GC can
-wait for it and scan its roots.
+If another thread attempts to drive concurrently, the runtime aborts (fail-fast). Other threads may
+still enqueue work into the runtime (it is multi-producer); an `eventfd` wakeup is used to interrupt
+a blocking `epoll_wait`.
 
-Subsequent `rt_async_poll_legacy` / `rt_async_spawn_legacy` calls from other OS threads are
-serialized but those threads are registered as `ThreadKind::External`. Other threads may enqueue
-tasks into the runtime (it is multi-producer); an `eventfd` wakeup is used to interrupt a blocking
-`epoll_wait`.
-
-`rt_async_poll_legacy` also polls the GC safepoint barrier:
+`rt_async_poll` (and `rt_async_poll_legacy`) also polls the GC safepoint barrier:
 
 * at the start of each poll turn
 * immediately before entering `epoll_wait`
