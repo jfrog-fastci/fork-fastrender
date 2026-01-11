@@ -137,6 +137,21 @@ impl std::ops::BitAndAssign for ValueTypeSummary {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::ValueTypeSummary;
+
+  #[test]
+  fn value_type_summary_excludes_nullish_semantics() {
+    assert!(!ValueTypeSummary::UNKNOWN.excludes_nullish());
+    assert!(!ValueTypeSummary::NULL.excludes_nullish());
+    assert!(!ValueTypeSummary::UNDEFINED.excludes_nullish());
+    assert!(!ValueTypeSummary::NULLISH.excludes_nullish());
+    assert!(ValueTypeSummary::STRING.excludes_nullish());
+    assert!(!(ValueTypeSummary::STRING | ValueTypeSummary::NULL).excludes_nullish());
+  }
+}
+
 /// Optional TypeScript type information for the optimizer.
 ///
 /// The optimizer is designed to compile without a dependency on `typecheck-ts`.
