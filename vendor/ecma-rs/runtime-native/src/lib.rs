@@ -828,6 +828,7 @@ mod tests {
       "LegacyPromiseRef rt_promise_new(void);",
       "void rt_promise_resolve(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",

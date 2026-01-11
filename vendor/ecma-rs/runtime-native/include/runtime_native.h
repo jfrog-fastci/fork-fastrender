@@ -723,6 +723,7 @@ void rt_async_block_on(PromiseRef p);
 LegacyPromiseRef rt_promise_new(void);
 void rt_promise_resolve(LegacyPromiseRef p, ValueRef value);
 void rt_promise_then(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
+void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
 
 // Forward declare legacy coroutine headers so compatibility aliases can use the type.
 typedef struct RtCoroutineHeader RtCoroutineHeader;
