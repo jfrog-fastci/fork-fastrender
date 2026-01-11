@@ -86,7 +86,9 @@ pub(crate) fn is_stop_the_world_coordinator(epoch: u64) -> bool {
   if epoch & 1 == 0 {
     return false;
   }
-  STW_COORDINATOR_EPOCH.with(|cell| cell.get() == epoch)
+  STW_COORDINATOR_EPOCH
+    .try_with(|cell| cell.get() == epoch)
+    .unwrap_or(false)
 }
 
 /// Returns whether the current thread is acting as the stop-the-world coordinator.
@@ -95,7 +97,7 @@ pub(crate) fn is_stop_the_world_coordinator(epoch: u64) -> bool {
 /// locks while a stop-the-world epoch is active (it must do so to enumerate roots), while mutator
 /// threads must not resume execution during that epoch.
 pub(crate) fn in_stop_the_world() -> bool {
-  IN_STOP_THE_WORLD.with(|flag| flag.get())
+  IN_STOP_THE_WORLD.try_with(|flag| flag.get()).unwrap_or(false)
 }
 
 /// RAII guard that marks the current thread as the stop-the-world coordinator.
@@ -108,21 +110,24 @@ pub(crate) struct StopTheWorldCoordinatorGuard {
 
 impl Drop for StopTheWorldCoordinatorGuard {
   fn drop(&mut self) {
-    IN_STOP_THE_WORLD.with(|flag| flag.set(self.prev));
+    let _ = IN_STOP_THE_WORLD.try_with(|flag| flag.set(self.prev));
   }
 }
 
 pub(crate) fn enter_stop_the_world_coordinator() -> StopTheWorldCoordinatorGuard {
-  let prev = IN_STOP_THE_WORLD.with(|flag| {
-    let prev = flag.get();
-    flag.set(true);
-    prev
-  });
+  let prev = IN_STOP_THE_WORLD
+    .try_with(|flag| {
+      let prev = flag.get();
+      flag.set(true);
+      prev
+    })
+    .unwrap_or(false);
   StopTheWorldCoordinatorGuard { prev }
 }
 
 pub(crate) fn with_safepoint_fixup_start_fp<R>(fp: u64, f: impl FnOnce() -> R) -> R {
-  SAFEPOINT_FIXUP_START_FP.with(|cell| {
+  let mut f = Some(f);
+  match SAFEPOINT_FIXUP_START_FP.try_with(|cell| {
     let prev = cell.replace(fp);
     struct Restore<'a> {
       cell: &'a Cell<u64>,
@@ -134,8 +139,11 @@ pub(crate) fn with_safepoint_fixup_start_fp<R>(fp: u64, f: impl FnOnce() -> R) -
       }
     }
     let _restore = Restore { cell, prev };
-    f()
-  })
+    f.take().unwrap()()
+  }) {
+    Ok(res) => res,
+    Err(_) => f.take().unwrap()(),
+  }
 }
 struct SafepointCoordinator {
   /// How many threads are currently blocked inside [`rt_gc_safepoint`]'s slow path.
@@ -291,8 +299,8 @@ pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
       Ok(_) => {
         // Mark this thread as the active STW coordinator so GC-safe transitions and GC-aware locks
         // can distinguish it from mutators.
-        IN_STOP_THE_WORLD.with(|flag| flag.set(true));
-        STW_COORDINATOR_EPOCH.with(|cell| cell.set(next));
+        let _ = IN_STOP_THE_WORLD.try_with(|flag| flag.set(true));
+        let _ = STW_COORDINATOR_EPOCH.try_with(|cell| cell.set(next));
         coord.notify_all_locked(&guard);
         drop(guard);
         wake_all_gc_wakers();
@@ -376,14 +384,16 @@ pub(crate) fn fixup_safepoint_context_to_nearest_managed(
   let start_fp = ctx.fp as u64;
   let mut cursor = crate::stackwalk::find_nearest_managed_cursor(start_fp, stackmaps);
   if cursor.is_none() {
-    cursor = SAFEPOINT_FIXUP_START_FP.with(|cell| {
-      let override_fp = cell.get();
-      if override_fp != 0 && override_fp != start_fp {
-        crate::stackwalk::find_nearest_managed_cursor(override_fp, stackmaps)
-      } else {
-        None
-      }
-    });
+    cursor = SAFEPOINT_FIXUP_START_FP
+      .try_with(|cell| {
+        let override_fp = cell.get();
+        if override_fp != 0 && override_fp != start_fp {
+          crate::stackwalk::find_nearest_managed_cursor(override_fp, stackmaps)
+        } else {
+          None
+        }
+      })
+      .unwrap_or(None);
   }
 
   let Some(cursor) = cursor else {
@@ -456,21 +466,23 @@ pub fn stop_the_world<F, R>(reason: StopReason, f: F) -> R
 where
   F: FnOnce() -> R,
 {
-  let already_in_stw = IN_STOP_THE_WORLD.with(|flag| {
-    if flag.get() {
-      true
-    } else {
-      flag.set(true);
-      false
-    }
-  });
+  let already_in_stw = IN_STOP_THE_WORLD
+    .try_with(|flag| {
+      if flag.get() {
+        true
+      } else {
+        flag.set(true);
+        false
+      }
+    })
+    .unwrap_or(false);
   if already_in_stw {
     panic!("stop_the_world is not re-entrant");
   }
   struct ClearFlag;
   impl Drop for ClearFlag {
     fn drop(&mut self) {
-      IN_STOP_THE_WORLD.with(|flag| flag.set(false));
+      let _ = IN_STOP_THE_WORLD.try_with(|flag| flag.set(false));
     }
   }
   let _clear = ClearFlag;
@@ -491,7 +503,7 @@ where
   }
 
   let stop_epoch = cur + 1;
-  STW_COORDINATOR_EPOCH.with(|cell| cell.set(stop_epoch));
+  let _ = STW_COORDINATOR_EPOCH.try_with(|cell| cell.set(stop_epoch));
   RT_GC_EPOCH.store(stop_epoch, Ordering::Release);
   coord.notify_all_locked(&cv_guard);
 
@@ -569,7 +581,7 @@ where
     RT_GC_EPOCH.store(resume_epoch, Ordering::Release);
     coord.notify_all_locked(&guard);
   }
-  STW_COORDINATOR_EPOCH.with(|cell| cell.set(0));
+  let _ = STW_COORDINATOR_EPOCH.try_with(|cell| cell.set(0));
 
   let deadline = cfg!(debug_assertions).then(|| Instant::now() + Duration::from_secs(5));
   let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
@@ -867,19 +879,19 @@ pub fn rt_gc_resume_world() -> u64 {
   loop {
     if cur & 1 == 0 {
       // Already resumed.
-      IN_STOP_THE_WORLD.with(|flag| flag.set(false));
+      let _ = IN_STOP_THE_WORLD.try_with(|flag| flag.set(false));
       return cur;
     }
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
-        STW_COORDINATOR_EPOCH.with(|cell| {
+        let _ = STW_COORDINATOR_EPOCH.try_with(|cell| {
           if cell.get() == cur {
             cell.set(0);
           }
         });
         coord.notify_all_locked(&guard);
-        IN_STOP_THE_WORLD.with(|flag| flag.set(false));
+        let _ = IN_STOP_THE_WORLD.try_with(|flag| flag.set(false));
         return next;
       }
       Err(actual) => cur = actual,
