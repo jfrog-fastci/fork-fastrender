@@ -18,3 +18,18 @@ fn video_without_poster_does_not_paint_placeholder() -> Result<()> {
   assert_eq!(pixel(&pixmap, 500, 200), (23, 19, 33, 255));
   Ok(())
 }
+
+#[test]
+fn video_with_controls_without_poster_paints_placeholder() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = include_str!("../pages/fixtures/video_element_controls_placeholder/index.html");
+
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(140, 100))?;
+  let pixmap = prepared.paint_with_options(PreparedPaintOptions::new())?;
+
+  // `<video controls>` typically paints an opaque UI surface even before playback. FastRender
+  // doesn't implement native controls, so it should at least paint a deterministic placeholder
+  // instead of leaving the element transparent.
+  assert_ne!(pixel(&pixmap, 50, 50), (0, 255, 0, 255));
+  Ok(())
+}
