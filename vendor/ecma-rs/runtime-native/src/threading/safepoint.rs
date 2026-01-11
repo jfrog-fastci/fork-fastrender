@@ -276,12 +276,16 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
 }
 
 fn world_stopped(stop_epoch: u64, coordinator_id: Option<registry::ThreadId>) -> bool {
-  for thread in registry::all_threads() {
+  let mut ok = true;
+  registry::for_each_thread(|thread| {
+    if !ok {
+      return;
+    }
     if Some(thread.id()) == coordinator_id {
-      continue;
+      return;
     }
     if thread.is_parked() {
-      continue;
+      return;
     }
     if thread.is_native_safe() {
       debug_assert!(
@@ -292,14 +296,14 @@ fn world_stopped(stop_epoch: u64, coordinator_id: Option<registry::ThreadId>) ->
         "thread {:?} is NativeSafe but has no published safepoint ip",
         thread.id()
       );
-      continue;
+      return;
     }
     if thread.safepoint_epoch_observed() == stop_epoch {
-      continue;
+      return;
     }
-    return false;
-  }
-  true
+    ok = false;
+  });
+  ok
 }
 
 /// Resume all threads after stop-the-world.
@@ -380,9 +384,7 @@ pub fn for_each_root_slot_world_stopped(
   );
 
   // 1) Thread-local handle stacks.
-  for thread in registry::all_threads() {
-    thread.for_each_handle_slot(|slot| f(slot));
-  }
+  registry::for_each_thread(|thread| thread.for_each_handle_slot(|slot| f(slot)));
 
   // 2) Global roots.
   crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
@@ -393,15 +395,15 @@ pub fn for_each_root_slot_world_stopped(
   };
 
   let coordinator_id = registry::current_thread_id();
-  for thread in registry::all_threads() {
+  registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
     if Some(thread.id()) == coordinator_id {
-      continue;
+      return Ok(());
     }
     if thread.is_parked() || thread.is_native_safe() {
-      continue;
+      return Ok(());
     }
     if thread.safepoint_epoch_observed() != stop_epoch {
-      continue;
+      return Ok(());
     }
 
     let ctx = thread
@@ -419,7 +421,8 @@ pub fn for_each_root_slot_world_stopped(
         f(slot_addr as *mut *mut u8);
       })?;
     }
-  }
+    Ok(())
+  })?;
 
   Ok(())
 }

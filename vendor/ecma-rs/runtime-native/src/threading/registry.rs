@@ -323,6 +323,26 @@ pub fn all_threads() -> Vec<Arc<ThreadState>> {
   registry().all_threads()
 }
 
+/// Iterate all registered threads without allocating.
+///
+/// The callback is invoked while holding the thread registry lock; it must not call
+/// [`register_current_thread`] / [`unregister_current_thread`].
+pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
+  let threads = registry().threads.lock().unwrap();
+  for thread in threads.values() {
+    f(thread);
+  }
+}
+
+/// Like [`for_each_thread`], but allows fallible iteration.
+pub fn try_for_each_thread<E>(mut f: impl FnMut(&Arc<ThreadState>) -> Result<(), E>) -> Result<(), E> {
+  let threads = registry().threads.lock().unwrap();
+  for thread in threads.values() {
+    f(thread)?;
+  }
+  Ok(())
+}
+
 /// Snapshot thread counts by kind.
 pub fn thread_counts() -> ThreadCounts {
   registry().counts()
