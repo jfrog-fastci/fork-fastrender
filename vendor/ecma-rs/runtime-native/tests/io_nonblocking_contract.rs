@@ -170,6 +170,51 @@ fn rt_io_register_rejects_blocking_fd_and_reports_error() {
 }
 
 #[test]
+fn rt_io_register_rejects_empty_interests_and_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id = rt_io_register(rfd.as_raw_fd(), 0, noop_cb, std::ptr::null_mut());
+  assert_eq!(id, 0, "expected rt_io_register to fail for empty interests");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected empty-interest registration to be diagnosable"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rejects_duplicate_fd_and_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  let id2 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_ALREADY_REGISTERED,
+    "expected duplicate registration to be diagnosable"
+  );
+
+  rt_io_unregister(id1);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed for a valid watcher id"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
 fn async_fd_blocking_fd_errors_on_first_poll_and_does_not_leak_registration() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, wfd) = pipe_blocking().unwrap();
@@ -238,4 +283,3 @@ fn rt_io_update_closed_fd_fails_gracefully_and_can_be_unregistered() {
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
 }
-

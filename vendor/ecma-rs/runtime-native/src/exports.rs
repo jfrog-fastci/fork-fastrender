@@ -9,6 +9,7 @@ use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::async_runtime::PromiseLayout;
+use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_runtime;
@@ -22,6 +23,7 @@ use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
+use crate::rt_alloc as rt_alloc_mod;
 use crate::shape_table;
 use crate::rt_alloc as rt_alloc_mod;
 use crate::threading;
@@ -1587,7 +1589,8 @@ extern "C" fn drop_rooted_io_watcher_data(data: *mut u8) {
 /// be zero). To stop watching, call [`rt_io_unregister`].
 ///
 /// On failure, this function returns `0`. In debug builds, failures are logged to
-/// stderr to aid diagnosis.
+/// stderr to aid diagnosis. Tests may also call the `#[doc(hidden)]`
+/// [`rt_io_debug_take_last_error`] helper to retrieve a coarse failure code.
 #[no_mangle]
 pub extern "C" fn rt_io_register(
   fd: i32,
@@ -1757,6 +1760,9 @@ pub extern "C" fn rt_io_register_rooted(
 /// nonblocking contract, the update is ignored. In debug builds, failures are
 /// logged to stderr.
 ///
+/// Tests may call the `#[doc(hidden)]` [`rt_io_debug_take_last_error`] helper to
+/// retrieve a coarse failure code.
+///
 /// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not
 /// be zero). To stop watching, call [`rt_io_unregister`].
 #[no_mangle]
@@ -1791,6 +1797,9 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
 ///
 /// If the watcher is invalid, this is a no-op. In debug builds, failures are
 /// logged to stderr.
+///
+/// Tests may call the `#[doc(hidden)]` [`rt_io_debug_take_last_error`] helper to
+/// retrieve a coarse failure code.
 #[no_mangle]
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
   abort_on_panic(|| {

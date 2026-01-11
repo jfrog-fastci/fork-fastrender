@@ -100,6 +100,22 @@ The reactor is **edge-triggered** on all platforms:
 
 All file descriptors registered with the reactor **must be nonblocking** (`O_NONBLOCK`).
 
+## Nonblocking contract at API boundaries
+
+`runtime-native` does **not** implicitly set `O_NONBLOCK` on caller-owned file descriptors. This
+keeps the reactor contract explicit and avoids surprising cross-cutting side effects (e.g. changing a
+shared fd's flags behind the caller's back).
+
+Callers must set `O_NONBLOCK` **before** registering fds through any of these surfaces:
+
+- `reactor::Reactor::{register,reregister}`
+- `async_rt::AsyncRuntime::{register_fd,register_io,register_io_with_drop}`
+- C ABI: `rt_io_{register,update,unregister}`
+- Rust convenience API: `io::AsyncFd` (fails with `InvalidInput` on first await if the fd is blocking)
+
+The only fds created internally by the reactor itself (the wakeup `eventfd` on Linux, or the kqueue
+`EVFILT_USER`/pipe wake fallback on BSD/macOS) are always created as nonblocking.
+
 ### Requirements for consumers
 
 When an [`Event`] reports a source as readable or writable, consumers **must drain** the operation
