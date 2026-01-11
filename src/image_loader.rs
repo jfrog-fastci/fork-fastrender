@@ -8073,13 +8073,13 @@ impl ImageCache {
       }
       return Ok((DynamicImage::ImageRgba8(rgba), has_alpha));
     }
-
     if format == ImageFormat::WebP {
-      // Regression fix for discord.com: the `image` crate's WebP backend can decode some images
-      // with incorrect alpha blocks (manifesting as transparent stripes). Decode via libwebp to
-      // match browser output more closely.
+      // The `image` crate's WebP backend can produce subtly different pixels than Chrome/libwebp
+      // (and has regressed on real-world assets with corrupted alpha blocks). Decode via libwebp
+      // for closer browser parity.
       let img = self.decode_webp(bytes, url)?;
-      let has_alpha = Self::source_has_alpha(bytes, format).unwrap_or_else(|| img.color().has_alpha());
+      let has_alpha =
+        Self::source_has_alpha(bytes, format).unwrap_or_else(|| img.color().has_alpha());
       return Ok((img, has_alpha));
     }
 
@@ -8109,24 +8109,27 @@ impl ImageCache {
 
     let mut width: c_int = 0;
     let mut height: c_int = 0;
-    let ok = unsafe { libwebp_sys::WebPGetInfo(bytes.as_ptr(), bytes.len(), &mut width, &mut height) };
-    if ok == 0 {
-      return Err(Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: "Invalid WebP image".to_string(),
-      }));
+    unsafe {
+      if libwebp_sys::WebPGetInfo(bytes.as_ptr(), bytes.len(), &mut width, &mut height) == 0 {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: "libwebp WebPGetInfo failed".to_string(),
+        }));
+      }
     }
 
-    let width = u32::try_from(width).map_err(|_| {
+    let width_i32 = width;
+    let height_i32 = height;
+    let width = u32::try_from(width_i32).map_err(|_| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: "WebP width does not fit in u32".to_string(),
+        reason: format!("WebP width out of range ({width_i32})"),
       })
     })?;
-    let height = u32::try_from(height).map_err(|_| {
+    let height = u32::try_from(height_i32).map_err(|_| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: "WebP height does not fit in u32".to_string(),
+        reason: format!("WebP height out of range ({height_i32})"),
       })
     })?;
     if width == 0 || height == 0 {
@@ -8138,65 +8141,59 @@ impl ImageCache {
 
     self.enforce_decode_limits(width, height, url)?;
 
-    let rgba_len = u64::from(width)
+    let stride_bytes = u64::from(width)
+      .checked_mul(4)
+      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("WebP row byte size overflow (width={width})"),
+      }))?;
+    let stride = i32::try_from(stride_bytes).map_err(|_| {
+      Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: format!("WebP stride out of range ({stride_bytes})"),
+      })
+    })?;
+
+    let buf_size_bytes = stride_bytes
       .checked_mul(u64::from(height))
-      .and_then(|px| px.checked_mul(4))
-      .ok_or_else(|| {
-        Error::Image(ImageError::DecodeFailed {
-          url: url.to_string(),
-          reason: format!("WebP dimensions overflow ({width}x{height})"),
-        })
-      })?;
-    if rgba_len > MAX_PIXMAP_BYTES {
-      return Err(Error::Image(ImageError::DecodeFailed {
+      .ok_or_else(|| Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: format!(
-          "WebP decoded image {width}x{height} is {rgba_len} bytes (limit {MAX_PIXMAP_BYTES})"
-        ),
-      }));
-    }
-    let rgba_len = usize::try_from(rgba_len).map_err(|_| {
+        reason: format!("WebP decoded byte size overflow ({width}x{height})"),
+      }))?;
+    let buf_len = usize::try_from(buf_size_bytes).map_err(|_| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: "WebP decoded byte size does not fit in usize".to_string(),
+        reason: format!("WebP decoded byte size does not fit in usize ({width}x{height})"),
       })
     })?;
 
-    let stride = u64::from(width) * 4;
-    let stride = i32::try_from(stride).map_err(|_| {
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(buf_len).map_err(|err| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
-        reason: format!("WebP stride overflows i32 ({width}x{height})"),
+        reason: format!("WebP RGBA buffer allocation failed for {buf_size_bytes} bytes: {err}"),
       })
     })?;
-
-    let mut out = Vec::new();
-    out.try_reserve_exact(rgba_len).map_err(|err| {
-      Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: format!("WebP RGBA buffer allocation failed for {rgba_len} bytes: {err}"),
-      })
-    })?;
-    out.resize(rgba_len, 0);
+    buf.resize(buf_len, 0);
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
-    let decoded = unsafe {
-      libwebp_sys::WebPDecodeRGBAInto(
+    unsafe {
+      let out = libwebp_sys::WebPDecodeRGBAInto(
         bytes.as_ptr(),
         bytes.len(),
-        out.as_mut_ptr(),
-        out.len(),
+        buf.as_mut_ptr(),
+        buf.len(),
         stride,
-      )
-    };
-    if decoded.is_null() {
-      return Err(Error::Image(ImageError::DecodeFailed {
-        url: url.to_string(),
-        reason: "WebP decode failed".to_string(),
-      }));
+      );
+      if out.is_null() {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: "libwebp WebPDecodeRGBAInto failed".to_string(),
+        }));
+      }
     }
 
-    let rgba = RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+    let rgba = RgbaImage::from_raw(width, height, buf).ok_or_else(|| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
         reason: "WebP RGBA buffer was invalid".to_string(),
@@ -14475,6 +14472,24 @@ impl Clone for ImageCache {
       Error::Image(_) | Error::Render(RenderError::Timeout { .. }) => {}
       other => panic!("unexpected error kind: {other:?}"),
     }
+  }
+
+  #[test]
+  fn webp_decode_matches_libwebp() {
+    let bytes = include_bytes!("../tests/fixtures/webp/lossy_gradient.webp");
+    let cache = ImageCache::new();
+    let (img, has_alpha) = cache
+      .decode_with_format(bytes, ImageFormat::WebP, "lossy_gradient.webp")
+      .expect("decode webp");
+    assert!(!has_alpha, "expected lossy_gradient.webp to have no alpha");
+
+    let rgba = img.to_rgba8();
+    assert_eq!(rgba.dimensions(), (16, 16));
+
+    // Values sampled from libwebp decode output (matches Chrome).
+    assert_eq!(rgba.get_pixel(0, 0).0, [7, 6, 13, 255]);
+    assert_eq!(rgba.get_pixel(5, 7).0, [109, 152, 139, 255]);
+    assert_eq!(rgba.get_pixel(15, 15).0, [39, 103, 111, 255]);
   }
 
   #[test]

@@ -16681,10 +16681,10 @@ impl DisplayListRenderer {
       })
       .flatten();
 
-    // When a linear-filtered image is drawn into a destination rect with fractional device-pixel
-    // edges (either a subpixel translation or a non-integer size), the fractional phase influences
-    // sampling. tiny-skia's internal sampling differs slightly from Skia/Chrome in those cases,
-    // producing large "everything is off by 1" diffs across photo-heavy regions.
+    // When a scaled image is drawn with a fractional device-pixel phase (either a subpixel
+    // translation/non-integer size *or* a fractional `src_rect` crop common with
+    // `background-size: cover/contain`), tiny-skia's internal sampling differs slightly from
+    // Skia/Chrome and can produce large "everything is off by 1" diffs across photo-heavy regions.
     //
     // To improve fidelity, pre-rasterize a device-pixel-aligned pixmap for these draws (encoding the
     // sampling phase into the resample) and then draw it 1:1 with an integer translation.
@@ -16696,6 +16696,7 @@ impl DisplayListRenderer {
           && canvas_transform.ty.is_finite())
       {
         let device_rect = transform_rect(dest_rect, &canvas_transform);
+
         if device_rect.x().is_finite()
           && device_rect.y().is_finite()
           && device_rect.width().is_finite()
@@ -25123,6 +25124,41 @@ mod tests {
       blended.0 < 255 && blended.2 < 255,
       "expected interpolation with linear sampling"
     );
+  }
+
+  #[test]
+  fn image_src_rect_fractional_offsets_use_phase_corrected_resampling() {
+    // 4x1 black→red→black ramp rendered to 3 output pixels.
+    //
+    // Use a <2x downscale so the mipmap LOD stays at 0 and the subpixel translation phase affects
+    // the bilinear sample coordinates. This regression ensures fractional `src_rect` offsets are
+    // incorporated into the sampling phase (common with `background-size: cover/contain`).
+    let pixels = vec![
+      0, 0, 0, 255,   // black
+      255, 0, 0, 255, // red
+      0, 0, 0, 255,   // black
+      0, 0, 0, 255,   // black
+    ];
+    let image = Arc::new(ImageData::new_pixels(4, 1, pixels));
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 3.0, 1.0),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      // Forces a non-integer translation phase for the full image even though the destination is
+      // pixel-aligned.
+      src_rect: Some(Rect::from_xywh(0.25, 0.0, 4.0, 1.0)),
+    }));
+
+    let pixmap = DisplayListRenderer::new(3, 1, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    // The second output pixel samples 75% between the red and black texels, producing 63.75 which
+    // Chrome/Skia floors to 63 when converting to 8-bit channels.
+    assert_eq!(pixel(&pixmap, 1, 0), (63, 0, 0, 255));
   }
 
   #[test]

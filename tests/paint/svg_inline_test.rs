@@ -326,6 +326,37 @@ fn inline_svg_currentcolor_resolves_after_color_even_when_color_declared_later()
 }
 
 #[test]
+fn inline_svg_appends_computed_declarations_after_unterminated_var() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <g fill="none" style="fill: var(--missing">
+          <rect width="20" height="20"></rect>
+      </g>
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 255, 255, 255],
+        "expected fill to remain none despite malformed author style"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_nested_color_affects_unstyled_shapes_via_root_fill_current_color_injection_when_document_css_injection_disabled(
 ) {
   std::thread::Builder::new()

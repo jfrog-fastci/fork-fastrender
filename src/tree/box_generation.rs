@@ -1146,23 +1146,32 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
   if trim_ascii_whitespace(extra).is_empty() {
     return;
   }
-  fn style_value_has_unterminated_blocks(value: &str) -> bool {
-    // NOTE: We can't rely on `cssparser` for this check because its error recovery can differ from
-    // what SVG rasterizers (usvg/resvg) accept. We're looking specifically for author style strings
-    // that would swallow any extra declarations we append (e.g. `fill: var(--c;`), so a cheap
-    // balanced-delimiter scan is sufficient and keeps the logic independent of parser quirks.
-    let bytes = value.as_bytes();
-    let mut i = 0usize;
+
+  fn repair_unterminated_css_blocks(style: &str) -> Option<String> {
+    // Inline SVG serialization appends computed presentation properties into the element's `style=""`
+    // attribute. If the author style is malformed (e.g. `fill: var(--x;` missing a closing `)`),
+    // appending text can accidentally land inside an unterminated block, causing the injected
+    // declarations to be ignored by downstream SVG renderers (usvg/resvg).
+    //
+    // Browsers generally recover from unterminated blocks by treating EOF / a trailing `;` as the end
+    // of the block token. Mirror that recovery by closing any still-open (), [], {} blocks and
+    // unterminated strings/comments before trailing semicolons/whitespace so we can safely append
+    // new declarations.
+    let bytes = style.as_bytes();
+    if !bytes
+      .iter()
+      .any(|b| matches!(b, b'(' | b'[' | b'{' | b'"' | b'\'' | b'/' | b'\\'))
+    {
+      return None;
+    }
+
+    let mut stack: Vec<u8> = Vec::new();
     let mut in_comment = false;
     let mut in_string: Option<u8> = None;
     let mut string_escape = false;
-    let mut parens = 0usize;
-    let mut brackets = 0usize;
-    let mut braces = 0usize;
-
+    let mut i = 0usize;
     while i < bytes.len() {
       let b = bytes[i];
-
       if in_comment {
         if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
           in_comment = false;
@@ -1193,6 +1202,7 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
         continue;
       }
 
+      // Not inside a string/comment.
       if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
         in_comment = true;
         i += 2;
@@ -1205,27 +1215,29 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
         continue;
       }
 
+      if b == b'\\' {
+        // Outside strings, backslash escapes the next codepoint. Skip a single byte here; we're only
+        // interested in ASCII delimiters.
+        i = (i + 2).min(bytes.len());
+        continue;
+      }
+
       match b {
-        b'(' => parens += 1,
+        b'(' | b'[' | b'{' => stack.push(b),
         b')' => {
-          if parens == 0 {
-            return true;
+          if stack.last() == Some(&b'(') {
+            stack.pop();
           }
-          parens -= 1;
         }
-        b'[' => brackets += 1,
         b']' => {
-          if brackets == 0 {
-            return true;
+          if stack.last() == Some(&b'[') {
+            stack.pop();
           }
-          brackets -= 1;
         }
-        b'{' => braces += 1,
         b'}' => {
-          if braces == 0 {
-            return true;
+          if stack.last() == Some(&b'{') {
+            stack.pop();
           }
-          braces -= 1;
         }
         _ => {}
       }
@@ -1233,21 +1245,47 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
       i += 1;
     }
 
-    in_comment || in_string.is_some() || parens > 0 || brackets > 0 || braces > 0
+    if stack.is_empty() && !in_comment && in_string.is_none() {
+      return None;
+    }
+
+    let mut end = trim_ascii_whitespace_end(style).len();
+    while end > 0 && style.as_bytes()[end - 1] == b';' {
+      end -= 1;
+    }
+
+    let mut out = String::with_capacity(style.len() + stack.len() + 4);
+    out.push_str(&style[..end]);
+
+    if in_comment {
+      out.push_str("*/");
+    }
+    if let Some(quote) = in_string {
+      if string_escape {
+        // Trailing backslash escapes the next codepoint; insert a spacer so the closing quote isn't
+        // swallowed by the escape.
+        out.push(' ');
+      }
+      out.push(quote as char);
+    }
+
+    for opener in stack.iter().rev() {
+      out.push(match opener {
+        b'(' => ')',
+        b'[' => ']',
+        b'{' => '}',
+        _ => continue,
+      });
+    }
+    out.push_str(&style[end..]);
+    Some(out)
   }
   if let Some((_, value)) = attrs
     .iter_mut()
     .find(|(name, _)| name.eq_ignore_ascii_case("style"))
   {
-    // Inline SVG serialization appends computed CSS declarations after the authored `style`
-    // attribute. Malformed authored style values (e.g. unterminated `var(`/`url(`) can cause
-    // resvg/usvg to treat the rest of the attribute as part of the broken declaration, swallowing
-    // the injected computed declarations and producing major paint diffs.
-    //
-    // If the authored style value contains unterminated blocks, drop it entirely so the injected
-    // computed declarations remain parseable.
-    if !value.is_empty() && style_value_has_unterminated_blocks(value) {
-      value.clear();
+    if let Some(repaired) = repair_unterminated_css_blocks(value) {
+      *value = repaired;
     }
     if !trim_ascii_whitespace_end(value).ends_with(';') && !trim_ascii_whitespace(value).is_empty()
     {

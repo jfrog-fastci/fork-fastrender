@@ -9,6 +9,7 @@
 //! - Edge cases and error handling
 
 use fastrender::css::types::Declaration;
+use fastrender::css::parser::parse_declarations;
 use fastrender::style::custom_property_store::CustomPropertyStore;
 use fastrender::style::properties::apply_declaration;
 use fastrender::style::values::CustomPropertyValue;
@@ -527,6 +528,16 @@ fn unterminated_var_function_is_invalid_syntax_even_if_variable_exists() {
     matches!(resolved, VarResolutionResult::InvalidSyntax(_)),
     "expected invalid syntax result, got {resolved:?}"
   );
+}
+
+#[test]
+fn parse_declarations_keeps_trailing_semicolon_in_unterminated_var_call() {
+  let decls = parse_declarations("color: var(--primary-color;");
+  assert_eq!(decls.len(), 1);
+  match &decls[0].value {
+    PropertyValue::Keyword(raw) => assert_eq!(raw, "var(--primary-color;"),
+    other => panic!("expected Keyword value, got {:?}", other),
+  }
 }
 
 #[test]
