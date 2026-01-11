@@ -315,6 +315,7 @@ mod shape_outside;
 mod sideways_lr_regressions;
 mod vertical_writing_mode_metrics;
 mod sticky_nested;
+mod sticky_margin;
 mod sticky_padding;
 mod subgrid;
 mod subgrid_abspos_auto_placement_named_lines;

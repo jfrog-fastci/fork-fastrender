@@ -4990,8 +4990,8 @@ fn display_establishes_sticky_scrollport(display: crate::style::display::Display
 }
 
 fn sticky_delta_axis(
-  box_start: f32,
-  box_size: f32,
+  border_start: f32,
+  border_size: f32,
   scrollport_start: f32,
   scrollport_end: f32,
   inset_start: Option<f32>,
@@ -5006,8 +5006,8 @@ fn sticky_delta_axis(
   let view_start = scrollport_start + start_inset;
   let mut view_end = scrollport_end - end_inset;
 
-  if view_end - view_start < box_size {
-    view_end = view_start + box_size;
+  if view_end - view_start < border_size {
+    view_end = view_start + border_size;
   }
 
   let min_allowed = if inset_start.is_some() {
@@ -5016,7 +5016,7 @@ fn sticky_delta_axis(
     f32::NEG_INFINITY
   };
   let max_allowed = if inset_end.is_some() {
-    view_end - box_size
+    view_end - border_size
   } else {
     f32::INFINITY
   };
@@ -5024,14 +5024,14 @@ fn sticky_delta_axis(
   let desired_start = if max_allowed < min_allowed {
     min_allowed
   } else {
-    box_start.clamp(min_allowed, max_allowed)
+    border_start.clamp(min_allowed, max_allowed)
   };
-  desired_start - box_start
+  desired_start - border_start
 }
 
 fn clamp_delta_to_containing_block(
   delta: Point,
-  margin_box_screen: Rect,
+  position_box_screen: Rect,
   containing_block_screen: Rect,
   clamp_x: bool,
   clamp_y: bool,
@@ -5040,8 +5040,8 @@ fn clamp_delta_to_containing_block(
   let mut dy = delta.y;
 
   if clamp_x {
-    let min_dx = containing_block_screen.min_x() - margin_box_screen.min_x();
-    let max_dx = containing_block_screen.max_x() - margin_box_screen.max_x();
+    let min_dx = containing_block_screen.min_x() - position_box_screen.min_x();
+    let max_dx = containing_block_screen.max_x() - position_box_screen.max_x();
     dx = if min_dx <= max_dx {
       dx.clamp(min_dx, max_dx)
     } else {
@@ -5050,8 +5050,8 @@ fn clamp_delta_to_containing_block(
   }
 
   if clamp_y {
-    let min_dy = containing_block_screen.min_y() - margin_box_screen.min_y();
-    let max_dy = containing_block_screen.max_y() - margin_box_screen.max_y();
+    let min_dy = containing_block_screen.min_y() - position_box_screen.min_y();
+    let max_dy = containing_block_screen.max_y() - position_box_screen.max_y();
     dy = if min_dy <= max_dy {
       dy.clamp(min_dy, max_dy)
     } else {
@@ -5060,6 +5060,50 @@ fn clamp_delta_to_containing_block(
   }
 
   Point::new(dx, dy)
+}
+
+fn sticky_position_box_rect(
+  border_box_screen: Rect,
+  margin: crate::geometry::EdgeOffsets,
+  containing_block_screen: Rect,
+) -> Rect {
+  let border_left = border_box_screen.min_x();
+  let border_right = border_box_screen.max_x();
+  let border_top = border_box_screen.min_y();
+  let border_bottom = border_box_screen.max_y();
+
+  let cb_left = containing_block_screen.min_x();
+  let cb_right = containing_block_screen.max_x();
+  let cb_top = containing_block_screen.min_y();
+  let cb_bottom = containing_block_screen.max_y();
+
+  let effective_left_margin = if border_left - margin.left < cb_left {
+    border_left - cb_left
+  } else {
+    margin.left
+  };
+  let effective_right_margin = if border_right + margin.right > cb_right {
+    cb_right - border_right
+  } else {
+    margin.right
+  };
+  let effective_top_margin = if border_top - margin.top < cb_top {
+    border_top - cb_top
+  } else {
+    margin.top
+  };
+  let effective_bottom_margin = if border_bottom + margin.bottom > cb_bottom {
+    cb_bottom - border_bottom
+  } else {
+    margin.bottom
+  };
+
+  let x = border_left - effective_left_margin;
+  let y = border_top - effective_top_margin;
+  let width = (border_box_screen.width() + effective_left_margin + effective_right_margin).max(0.0);
+  let height =
+    (border_box_screen.height() + effective_top_margin + effective_bottom_margin).max(0.0);
+  Rect::from_xywh(x, y, width, height)
 }
 
 fn apply_sticky_offsets_with_context(
@@ -5110,18 +5154,7 @@ fn apply_sticky_offsets_with_context(
       );
 
       if constraints.has_constraints() {
-        let margin_width =
-          (abs_rect.width() + positioned.margin.left + positioned.margin.right).max(0.0);
-        let margin_height =
-          (abs_rect.height() + positioned.margin.top + positioned.margin.bottom).max(0.0);
-        let margin_box = Rect::from_xywh(
-          abs_rect.x() - positioned.margin.left,
-          abs_rect.y() - positioned.margin.top,
-          margin_width,
-          margin_height,
-        );
-
-        let margin_box_screen = margin_box.translate(Point::new(
+        let border_box_screen = abs_rect.translate(Point::new(
           -context.cumulative_scroll.x,
           -context.cumulative_scroll.y,
         ));
@@ -5137,16 +5170,16 @@ fn apply_sticky_offsets_with_context(
 
         let mut delta = Point::new(
           sticky_delta_axis(
-            margin_box_screen.min_x(),
-            margin_box_screen.width(),
+            border_box_screen.min_x(),
+            border_box_screen.width(),
             scrollport_screen_x.min_x(),
             scrollport_screen_x.max_x(),
             constraints.left,
             constraints.right,
           ),
           sticky_delta_axis(
-            margin_box_screen.min_y(),
-            margin_box_screen.height(),
+            border_box_screen.min_y(),
+            border_box_screen.height(),
             scrollport_screen_y.min_y(),
             scrollport_screen_y.max_y(),
             constraints.top,
@@ -5157,9 +5190,11 @@ fn apply_sticky_offsets_with_context(
         let containing_rect_screen = parent_content_rect
           .union(parent_overflow_rect)
           .translate(Point::new(-parent_screen_offset.x, -parent_screen_offset.y));
+        let position_box_screen =
+          sticky_position_box_rect(border_box_screen, positioned.margin, containing_rect_screen);
         delta = clamp_delta_to_containing_block(
           delta,
-          margin_box_screen,
+          position_box_screen,
           containing_rect_screen,
           constraints.left.is_some() || constraints.right.is_some(),
           constraints.top.is_some() || constraints.bottom.is_some(),
