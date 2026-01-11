@@ -426,6 +426,148 @@ fn text_encoder_encode(
   Ok(Value::Object(view))
 }
 
+fn text_encoder_encode_into(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_text_encoder_receiver(scope, this)?;
+
+  let intr = require_intrinsics(vm)?;
+
+  let source = args.get(0).copied().unwrap_or(Value::Undefined);
+  let destination = args.get(1).copied().ok_or(VmError::TypeError(
+    "TextEncoder.encodeInto expects a Uint8Array destination",
+  ))?;
+
+  let dest_obj = match destination {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "TextEncoder.encodeInto expects a Uint8Array destination",
+      ))
+    }
+  };
+  if !scope.heap().is_uint8_array_object(dest_obj) {
+    return Err(VmError::TypeError(
+      "TextEncoder.encodeInto expects a Uint8Array destination",
+    ));
+  }
+
+  let dest_len: usize = {
+    // Borrow the heap immutably only long enough to read the view length; we will mutate the
+    // backing ArrayBuffer during encoding.
+    scope.heap().uint8_array_data(dest_obj)?.len()
+  };
+  if dest_len > MAX_TEXT_ENCODER_OUTPUT_BYTES {
+    return Err(VmError::TypeError("TextEncoder destination too large"));
+  }
+
+  // `encodeInto` uses a default empty-string parameter value.
+  let source_string = if matches!(source, Value::Undefined) {
+    None
+  } else {
+    Some(match source {
+      Value::String(s) => s,
+      other => scope.heap_mut().to_string(other)?,
+    })
+  };
+
+  let (source_handle, source_len_units): (Option<vm_js::GcString>, usize) = match source_string {
+    None => (None, 0),
+    Some(s) => (Some(s), scope.heap().get_string(s)?.len_code_units()),
+  };
+
+  let mut read_units: usize = 0;
+  let mut written_bytes: usize = 0;
+
+  if let Some(source_handle) = source_handle {
+    while read_units < source_len_units && written_bytes < dest_len {
+      let (u0, u1) = {
+        let units = scope.heap().get_string(source_handle)?.as_code_units();
+        let u0 = units
+          .get(read_units)
+          .copied()
+          .ok_or(VmError::InvariantViolation(
+            "TextEncoder.encodeInto source index out of bounds",
+          ))?;
+        let u1 = units.get(read_units + 1).copied();
+        (u0, u1)
+      };
+
+      let is_high = (0xD800..=0xDBFF).contains(&u0);
+      let is_low = (0xDC00..=0xDFFF).contains(&u0);
+
+      let (ch, consumed_units) = if is_high {
+        if let Some(u1) = u1 {
+          if (0xDC00..=0xDFFF).contains(&u1) {
+            let high = (u0 as u32) - 0xD800;
+            let low = (u1 as u32) - 0xDC00;
+            let cp = 0x10000 + ((high << 10) | low);
+            (char::from_u32(cp).unwrap_or('\u{FFFD}'), 2)
+          } else {
+            ('\u{FFFD}', 1)
+          }
+        } else {
+          ('\u{FFFD}', 1)
+        }
+      } else if is_low {
+        ('\u{FFFD}', 1)
+      } else {
+        (char::from_u32(u0 as u32).unwrap_or('\u{FFFD}'), 1)
+      };
+
+      let mut buf = [0u8; 4];
+      let encoded = ch.encode_utf8(&mut buf);
+      if written_bytes + encoded.len() > dest_len {
+        break;
+      }
+      let wrote = scope
+        .heap_mut()
+        .uint8_array_write(dest_obj, written_bytes, encoded.as_bytes())?;
+      debug_assert_eq!(
+        wrote,
+        encoded.len(),
+        "uint8_array_write should write the full chunk when it fits"
+      );
+
+      written_bytes += wrote;
+      read_units += consumed_units;
+    }
+  }
+
+  // Return `{ read, written }`.
+  let result = scope.alloc_object()?;
+  scope.push_root(Value::Object(result))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(result, Some(intr.object_prototype()))?;
+
+  let data_desc = |value| PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  };
+
+  let read_key = alloc_key(scope, "read")?;
+  let written_key = alloc_key(scope, "written")?;
+  scope.define_property(result, read_key, data_desc(Value::Number(read_units as f64)))?;
+  scope.define_property(
+    result,
+    written_key,
+    data_desc(Value::Number(written_bytes as f64)),
+  )?;
+
+  Ok(Value::Object(result))
+}
+
 fn text_decoder_decode(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -538,6 +680,19 @@ pub(crate) fn install_window_text_encoding_bindings(
 
   let encode_key = alloc_key(&mut scope, "encode")?;
   scope.define_property(te_proto, encode_key, data_desc(Value::Object(te_encode_fn)))?;
+
+  let te_encode_into_call_id: NativeFunctionId = vm.register_native_call(text_encoder_encode_into)?;
+  let te_encode_into_name_s = scope.alloc_string("encodeInto")?;
+  scope.push_root(Value::String(te_encode_into_name_s))?;
+  let te_encode_into_fn =
+    scope.alloc_native_function(te_encode_into_call_id, None, te_encode_into_name_s, 2)?;
+  scope.push_root(Value::Object(te_encode_into_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(te_encode_into_fn, Some(intr.function_prototype()))?;
+
+  let encode_into_key = alloc_key(&mut scope, "encodeInto")?;
+  scope.define_property(te_proto, encode_into_key, data_desc(Value::Object(te_encode_into_fn)))?;
 
   let encoding_key = alloc_key(&mut scope, "encoding")?;
   let utf8_s = scope.alloc_string("utf-8")?;
@@ -720,6 +875,150 @@ mod tests {
       &[Value::Object(u8_obj)],
     )?;
     assert_eq!(get_string(scope.heap(), decoded), "ok");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_encoder_encode_into_writes_into_destination_and_returns_counts() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextEncoder()
+    let encoder_ctor_key = alloc_key(&mut scope, "TextEncoder")?;
+    let ctor = vm.get(&mut scope, global, encoder_ctor_key)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::InvariantViolation("TextEncoder missing"));
+    };
+    let enc = vm.construct_without_host(&mut scope, ctor, &[], Value::Object(ctor_obj))?;
+    let Value::Object(enc_obj) = enc else {
+      return Err(VmError::InvariantViolation("TextEncoder construct must return object"));
+    };
+    scope.push_root(Value::Object(enc_obj))?;
+
+    // new Uint8Array(1)
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let dest = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(1.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(dest_obj) = dest else {
+      return Err(VmError::InvariantViolation("Uint8Array must construct object"));
+    };
+    scope.push_root(Value::Object(dest_obj))?;
+
+    // enc.encodeInto("hi", dest)
+    let encode_into_key = alloc_key(&mut scope, "encodeInto")?;
+    let encode_into_fn = vm.get(&mut scope, enc_obj, encode_into_key)?;
+    let hi_s = scope.alloc_string("hi")?;
+    scope.push_root(Value::String(hi_s))?;
+    let out = vm.call_without_host(
+      &mut scope,
+      encode_into_fn,
+      Value::Object(enc_obj),
+      &[Value::String(hi_s), Value::Object(dest_obj)],
+    )?;
+
+    // Destination should contain only "h" (dest is too small for "hi").
+    let data = scope.heap().uint8_array_data(dest_obj)?;
+    assert_eq!(data, b"h");
+
+    // Result should be `{ read: 1, written: 1 }`.
+    let Value::Object(out_obj) = out else {
+      return Err(VmError::InvariantViolation("encodeInto must return object"));
+    };
+    scope.push_root(Value::Object(out_obj))?;
+    let read_key = alloc_key(&mut scope, "read")?;
+    let written_key = alloc_key(&mut scope, "written")?;
+    let read_val = vm.get(&mut scope, out_obj, read_key)?;
+    let written_val = vm.get(&mut scope, out_obj, written_key)?;
+    assert_eq!(read_val, Value::Number(1.0));
+    assert_eq!(written_val, Value::Number(1.0));
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_encoder_encode_into_does_not_write_partial_multi_byte_sequences() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextEncoder()
+    let encoder_ctor_key = alloc_key(&mut scope, "TextEncoder")?;
+    let ctor = vm.get(&mut scope, global, encoder_ctor_key)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::InvariantViolation("TextEncoder missing"));
+    };
+    let enc = vm.construct_without_host(&mut scope, ctor, &[], Value::Object(ctor_obj))?;
+    let Value::Object(enc_obj) = enc else {
+      return Err(VmError::InvariantViolation("TextEncoder construct must return object"));
+    };
+    scope.push_root(Value::Object(enc_obj))?;
+
+    // new Uint8Array(2)
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let dest = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(2.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(dest_obj) = dest else {
+      return Err(VmError::InvariantViolation("Uint8Array must construct object"));
+    };
+    scope.push_root(Value::Object(dest_obj))?;
+
+    // enc.encodeInto("€", dest) where "€" is 3-byte UTF-8.
+    let encode_into_key = alloc_key(&mut scope, "encodeInto")?;
+    let encode_into_fn = vm.get(&mut scope, enc_obj, encode_into_key)?;
+    let euro_s = scope.alloc_string("€")?;
+    scope.push_root(Value::String(euro_s))?;
+    let out = vm.call_without_host(
+      &mut scope,
+      encode_into_fn,
+      Value::Object(enc_obj),
+      &[Value::String(euro_s), Value::Object(dest_obj)],
+    )?;
+
+    let data = scope.heap().uint8_array_data(dest_obj)?;
+    assert_eq!(data, &[0, 0], "expected destination to remain unchanged");
+
+    let Value::Object(out_obj) = out else {
+      return Err(VmError::InvariantViolation("encodeInto must return object"));
+    };
+    scope.push_root(Value::Object(out_obj))?;
+    let read_key = alloc_key(&mut scope, "read")?;
+    let written_key = alloc_key(&mut scope, "written")?;
+    let read_val = vm.get(&mut scope, out_obj, read_key)?;
+    let written_val = vm.get(&mut scope, out_obj, written_key)?;
+    assert_eq!(read_val, Value::Number(0.0));
+    assert_eq!(written_val, Value::Number(0.0));
 
     drop(scope);
     realm.teardown(&mut heap);

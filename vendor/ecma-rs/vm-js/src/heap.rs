@@ -715,6 +715,50 @@ impl Heap {
       ))
   }
 
+  /// Writes `bytes` into a `Uint8Array` view starting at element index `index`.
+  ///
+  /// This is intended for host bindings that need to efficiently populate typed arrays without
+  /// round-tripping through JS property sets.
+  ///
+  /// Returns the number of bytes written, which is `min(bytes.len(), view.length - index)`. If
+  /// `index` is out of bounds, this returns `Ok(0)` (mirroring typed array out-of-bounds write
+  /// semantics).
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `obj` is not a live `Uint8Array` object or if the view's `byteOffset` +
+  /// `length` does not fit within its backing `ArrayBuffer`.
+  pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
+    // Extract view fields without holding a mutable borrow across ArrayBuffer access.
+    let (buffer, byte_offset, length) = {
+      let view = self.get_uint8_array(obj)?;
+      (view.viewed_array_buffer, view.byte_offset, view.length)
+    };
+
+    if index >= length || bytes.is_empty() {
+      return Ok(0);
+    }
+    let max_write = bytes.len().min(length - index);
+
+    let abs_start = byte_offset
+      .checked_add(index)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+    let abs_end = abs_start
+      .checked_add(max_write)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+
+    let buf_len = self.get_array_buffer(buffer)?.data.len();
+    if abs_end > buf_len {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array view references out-of-bounds ArrayBuffer data",
+      ));
+    }
+
+    let buf = self.get_array_buffer_mut(buffer)?;
+    buf.data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
+    Ok(max_write)
+  }
+
   /// Alias for [`Heap::is_promise_object`].
   pub fn is_promise(&self, obj: GcObject) -> bool {
     self.is_promise_object(obj)
