@@ -139,11 +139,11 @@ See [`docs/gc_stack_walking.md`](./docs/gc_stack_walking.md) for details.
 ## Diagnostics (codes)
 
 When `native-js` reports user-facing diagnostics, they use stable code strings
-with the `NJS####` prefix (see `vendor/ecma-rs/docs/diagnostic-codes.md` for the
-repo-wide policy).
+with the `NJS####` prefix (see [`docs/diagnostic-codes.md`](../docs/diagnostic-codes.md)
+for the repo-wide policy).
 
 The intended place to define new native-js diagnostics is
-`native-js/src/codes.rs`.
+[`src/codes.rs`](./src/codes.rs).
 
 ## Supported TypeScript subset (intended)
 
