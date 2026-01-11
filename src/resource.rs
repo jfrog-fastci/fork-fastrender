@@ -5302,6 +5302,11 @@ impl HttpFetcher {
       return Ok(());
     }
 
+    // Avoid pathological recursion / nonsense: a preflight request is itself an OPTIONS request.
+    if method.eq_ignore_ascii_case("OPTIONS") {
+      return Ok(());
+    }
+
     let method_is_safelisted = is_cors_safelisted_method(method);
 
     // Determine which user-specified headers are CORS-unsafe and would therefore need to be
@@ -17977,6 +17982,124 @@ mod tests {
         .starts_with(&format!("http://{}", addr)),
       "final_url should record redirect destination: {:?}",
       res.final_url
+    );
+  }
+
+  #[test]
+  fn http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests() {
+    let Some(listener) = try_bind_localhost(
+      "http_fetcher_preflights_redirect_followups_for_non_simple_cors_requests",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let mut received: Vec<(String, String)> = Vec::new();
+      let start = Instant::now();
+
+      while start.elapsed() < Duration::from_secs(2) && received.len() < 8 {
+        let (mut stream, _) = match listener.accept() {
+          Ok(res) => res,
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+          }
+          Err(err) => panic!("accept: {err}"),
+        };
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let request = read_http_request(&mut stream)
+          .unwrap()
+          .expect("expected HTTP request");
+        let req_str = String::from_utf8_lossy(&request);
+        let request_line = req_str.lines().next().unwrap_or("").trim_end_matches('\r');
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_ascii_uppercase();
+        let target = parts.next().unwrap_or("").to_string();
+        let path = Url::parse(&target)
+          .ok()
+          .map(|url| url.path().to_string())
+          .unwrap_or(target);
+        received.push((method.clone(), path.clone()));
+
+        match (method.as_str(), path.as_str()) {
+          ("OPTIONS", "/start") | ("OPTIONS", "/final") => {
+            let headers = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Methods: PUT\r\n",
+              "Access-Control-Allow-Headers: x-test\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+          }
+          ("PUT", "/start") => {
+            let headers = concat!(
+              "HTTP/1.1 302 Found\r\n",
+              "Location: /final\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+          }
+          ("PUT", "/final") => {
+            let body = b"ok";
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+            break;
+          }
+          _ => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+        }
+      }
+
+      received
+    });
+
+    let client_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = format!("http://{addr}/start");
+    let user_headers = vec![("X-Test".to_string(), "hello".to_string())];
+
+    let fetch = FetchRequest::new(&url, FetchDestination::Fetch).with_client_origin(&client_origin);
+    let request = HttpRequest {
+      fetch,
+      method: "PUT",
+      redirect: web_fetch::RequestRedirect::Follow,
+      headers: &user_headers,
+      body: None,
+    };
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let res = fetcher
+      .fetch_http_request(request)
+      .expect("fetch should follow redirect and succeed");
+    assert_eq!(res.bytes, b"ok");
+
+    let received = handle.join().unwrap();
+    assert_eq!(
+      received,
+      vec![
+        ("OPTIONS".to_string(), "/start".to_string()),
+        ("PUT".to_string(), "/start".to_string()),
+        ("OPTIONS".to_string(), "/final".to_string()),
+        ("PUT".to_string(), "/final".to_string()),
+      ],
+      "expected CORS preflight for each redirect target",
     );
   }
 

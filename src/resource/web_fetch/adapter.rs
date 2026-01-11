@@ -3428,6 +3428,7 @@ mod tests {
     ) {
       return;
     }
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let Some(listener) = try_bind_localhost(
       "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
     ) else {
