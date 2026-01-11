@@ -530,16 +530,18 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             ),
           });
         }
-        RecognizedPattern::MapGetOrDefault { map, key, default } => {
-          let span = diagnostics::TextRange::new(
-            body.exprs[map.0 as usize].span.start,
-            body.exprs[default.0 as usize].span.end,
-          );
+        RecognizedPattern::MapGetOrDefault {
+          conditional,
+          map,
+          key,
+          default,
+        } => {
+          let span = body.exprs[conditional.0 as usize].span;
           out.push(PatternLine {
             span,
             text: format!(
-              "[{}..{}] MapGetOrDefault: map={} key={} default={}",
-              span.start, span.end, map.0, key.0, default.0
+              "[{}..{}] MapGetOrDefault: conditional={} map={} key={} default={}",
+              span.start, span.end, conditional.0, map.0, key.0, default.0
             ),
           });
         }

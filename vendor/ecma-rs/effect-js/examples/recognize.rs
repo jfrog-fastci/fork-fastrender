@@ -53,7 +53,8 @@ async function asyncIterDemo() {
 
 // Typed Map.get-or-default pattern.
 const m: Map<string, number> = new Map();
-const v = m.get("a") ?? 0;
+const key = "a";
+const v = m.has(key) ? m.get(key) : 0;
 
 // Annotation-driven JSON.parse pattern.
 const parsed: { x: number } = JSON.parse("{\"x\": 1}");
@@ -131,9 +132,14 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       map_call.map(|id| id.0),
       fetch_call_count
     ),
-    RecognizedPattern::MapGetOrDefault { map, key, default } => format!(
-      "MapGetOrDefault(map={}, key={}, default={})",
-      map.0, key.0, default.0
+    RecognizedPattern::MapGetOrDefault {
+      conditional,
+      map,
+      key,
+      default,
+    } => format!(
+      "MapGetOrDefault(conditional={}, map={}, key={}, default={})",
+      conditional.0, map.0, key.0, default.0
     ),
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)

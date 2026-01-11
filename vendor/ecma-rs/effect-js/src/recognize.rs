@@ -218,12 +218,9 @@ pub enum RecognizedPattern {
     kind: GuardKind,
   },
 
-  /// Map get-with-default idioms (typed only).
-  ///
-  /// Matches:
-  /// - `map.get(key) ?? default`
-  /// - `map.has(key) ? map.get(key) : default` (including `map.get(key)!`)
+  /// `map.has(key) ? map.get(key) : default` (typed only).
   MapGetOrDefault {
+    conditional: ExprId,
     map: ExprId,
     key: ExprId,
     default: ExprId,
@@ -703,6 +700,7 @@ pub fn recognize_patterns_best_effort_untyped(
       }
 
       patterns.push(RecognizedPattern::MapGetOrDefault {
+        conditional: expr_id,
         map: has_map,
         key: has_key,
         default: *alternate,
@@ -1282,51 +1280,72 @@ pub fn recognize_patterns_typed(
       }
     }
 
-    // MapGetOrDefault.
+    // MapGetOrDefault: `map.has(k) ? map.get(k) : default`.
     if let ExprKind::Conditional {
       test,
       consequent,
       alternate,
     } = &expr.kind
     {
-      if let Some((map, key)) = map_get_or_default_conditional(lowered, body_ref, body, *test, *consequent, types) {
-        patterns.push(RecognizedPattern::MapGetOrDefault {
-          map,
-          key,
-          default: *alternate,
-        });
+      let test = strip_transparent_wrappers(body_ref, *test);
+      let consequent = strip_transparent_wrappers(body_ref, *consequent);
+
+      if resolve_api_call_typed(lowered, body, test, types) == Some(ApiId::MapPrototypeHas)
+        && resolve_api_call_typed(lowered, body, consequent, types) == Some(ApiId::MapPrototypeGet)
+      {
+        if let Some((map, key)) = map_get_or_default_conditional(
+          lowered,
+          body_ref,
+          body,
+          test,
+          consequent,
+          types,
+        ) {
+          patterns.push(RecognizedPattern::MapGetOrDefault {
+            conditional: expr_id,
+            map,
+            key,
+            default: *alternate,
+          });
+        }
       }
     }
 
+    // MapGetOrDefault: `map.get(k)! ?? default`.
     if let ExprKind::Binary { op, left, right } = &expr.kind {
-      if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
+      if !matches!(op, hir_js::BinaryOp::NullishCoalescing) {
         continue;
       }
+
       let left = strip_transparent_wrappers(body_ref, *left);
       if resolve_api_call_typed(lowered, body, left, types) != Some(ApiId::MapPrototypeGet) {
         continue;
       }
-      let Some(call) = body_ref.exprs.get(left.0 as usize) else {
+
+      let Some(left_expr) = body_ref.exprs.get(left.0 as usize) else {
         continue;
       };
-      let ExprKind::Call(call) = &call.kind else {
+      let ExprKind::Call(call) = &left_expr.kind else {
         continue;
       };
+      if call.optional || call.is_new || call.args.len() != 1 || call.args[0].spread {
+        continue;
+      }
+
       let Some(callee) = body_ref.exprs.get(call.callee.0 as usize) else {
         continue;
       };
       let ExprKind::Member(member) = &callee.kind else {
         continue;
       };
-      let Some(arg0) = call.args.first() else {
-        continue;
-      };
-      if arg0.spread {
+      if member.optional {
         continue;
       }
+
       patterns.push(RecognizedPattern::MapGetOrDefault {
+        conditional: expr_id,
         map: member.object,
-        key: arg0.expr,
+        key: call.args[0].expr,
         default: *right,
       });
     }
@@ -1435,7 +1454,10 @@ fn map_get_or_default_conditional(
     return None;
   }
 
-  Some((get_recv, get_key))
+  Some((
+    strip_transparent_wrappers(body_ref, has_recv),
+    strip_transparent_wrappers(body_ref, has_key),
+  ))
 }
 
 #[cfg(feature = "typed")]

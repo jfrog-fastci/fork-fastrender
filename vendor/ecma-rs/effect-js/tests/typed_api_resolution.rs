@@ -89,6 +89,9 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(apis.contains(&ApiId::StringPrototypeSplit));
   assert!(apis.contains(&ApiId::MapPrototypeGet));
   assert!(apis.contains(&ApiId::MapPrototypeHas));
+  assert!(apis.contains(&ApiId::StringPrototypeSplit));
+  assert!(apis.contains(&ApiId::MapPrototypeGet));
+  assert!(apis.contains(&ApiId::MapPrototypeHas));
   assert!(apis.contains(&ApiId::PromisePrototypeThen));
 
   let find_member_call = |recv_expected: &str, prop_expected: &str| -> ExprId {
