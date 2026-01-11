@@ -78,9 +78,10 @@ only when the `llvm_stackmaps_linker` Cargo feature is enabled.
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
 
-On Linux/ELF, `runtime-native/stackmaps.ld` defines the
-`__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols over the
-(possibly empty) `.llvm_stackmaps` section so the runtime can discover stack map metadata.
+On Linux/ELF, `runtime-native/stackmaps.ld` defines `__fastr_stackmaps_start` /
+`__fastr_stackmaps_end` (plus legacy `__llvm_stackmaps_start` /
+`__llvm_stackmaps_end` aliases) over the (possibly empty) `.llvm_stackmaps`
+section so the runtime can discover stack map metadata.
 
 ## Pinned allocations
 

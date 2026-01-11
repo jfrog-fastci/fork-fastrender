@@ -12,7 +12,7 @@ set -euo pipefail
 # - Rewrite `.llvm_stackmaps` to be writable in the object file (so relocations are applied to RW
 #   memory), using `llvm-objcopy-18`.
 # - Link with a tiny linker-script fragment that `KEEP`s the section (so `--gc-sections` can't drop
-#   it) and defines `__llvm_stackmaps_start` / `__llvm_stackmaps_end` (see
+#   it) and defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (see
 #   `runtime-native/stackmaps.ld`).
 #
 # See: ../docs/gc_statepoints.md

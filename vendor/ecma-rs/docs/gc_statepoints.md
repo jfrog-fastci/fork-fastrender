@@ -393,7 +393,7 @@ On Linux, native-js AOT output should be linked as **PIE** and must:
 
 2. Link with a linker script fragment that:
    - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can’t discard it
-   - defines `__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols
+   - defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` symbols
 
    The script lives at:
    - `vendor/ecma-rs/runtime-native/stackmaps.ld`
@@ -434,17 +434,22 @@ clang-18 -fuse-ld=lld -pie \
 
 The linker script defines the following symbols:
 
+- `__fastr_stackmaps_start`
+- `__fastr_stackmaps_end`
+
+It also defines legacy aliases:
+
 - `__llvm_stackmaps_start`
 - `__llvm_stackmaps_end`
 
-They span the retained `.llvm_stackmaps` contents in the final binary and are intended to be the
+All of these span the retained `.llvm_stackmaps` contents in the final binary and are intended to be the
 primary runtime discovery mechanism (instead of parsing ELF section headers at runtime).
 
 Example C usage:
 
 ```c
-extern const unsigned char __llvm_stackmaps_start[];
-extern const unsigned char __llvm_stackmaps_end[];
+extern const unsigned char __fastr_stackmaps_start[];
+extern const unsigned char __fastr_stackmaps_end[];
 
-size_t size = (size_t)(__llvm_stackmaps_end - __llvm_stackmaps_start);
+size_t size = (size_t)(__fastr_stackmaps_end - __fastr_stackmaps_start);
 ```
