@@ -1251,6 +1251,13 @@ mod tests {
       "runtime_native_abi.h is missing rt_* functions declared in runtime_native.h:\n{}",
       missing.join("\n")
     );
+
+    let extra: Vec<_> = provided.difference(&required).cloned().collect();
+    assert!(
+      extra.is_empty(),
+      "runtime_native_abi.h declares rt_* functions that are not in runtime_native.h:\n{}",
+      extra.join("\n")
+    );
   }
 
   #[test]
