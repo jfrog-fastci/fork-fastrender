@@ -284,3 +284,111 @@ impl IoOp {
     self.bufs.as_slice()
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::buffer::{ArrayBuffer, ArrayBufferError, BorrowError, GlobalBackingStoreAllocator};
+  use crate::io::limits::IoLimits;
+  use std::sync::Arc;
+
+  fn limiter_with_max_bytes(max_pinned_bytes: usize) -> Arc<IoLimiter> {
+    Arc::new(IoLimiter::new(IoLimits {
+      max_pinned_bytes,
+      max_inflight_ops: 8,
+      max_pinned_bytes_per_op: None,
+    }))
+  }
+
+  #[test]
+  fn pin_backing_store_range_charges_alloc_len_not_range_len() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+
+    // Range is only 1 byte, but the op retains the entire backing store allocation.
+    let limiter = limiter_with_max_bytes(1);
+    assert_eq!(
+      IoOp::pin_backing_store_range(&limiter, store.clone(), 0..1).unwrap_err(),
+      IoLimitError::LimitExceeded("max pinned bytes")
+    );
+    assert_eq!(limiter.counters().pinned_bytes_current, 0);
+    assert_eq!(limiter.counters().inflight_ops_current, 0);
+  }
+
+  #[test]
+  fn pin_vectored_dedupes_backing_store_for_limiter_and_pins_once() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+    let alloc_len = store.alloc_len();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    assert_eq!(buf.pin_count(), 0);
+    assert!(!store.is_io_borrowed());
+
+    let op = IoOp::pin_vectored(
+      &limiter,
+      vec![(store.clone(), 0..1), (store.clone(), 1..2)],
+    )
+    .unwrap();
+
+    assert_eq!(op.bufs().len(), 2);
+    assert_eq!(buf.pin_count(), 1, "IoOp should pin each unique store once");
+    assert!(store.is_io_borrowed(), "IoOp must hold I/O borrows until dropped");
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, alloc_len);
+    assert_eq!(counters.inflight_ops_current, 1);
+
+    // Safe access to the backing bytes should be blocked while the op is in flight.
+    assert_eq!(
+      buf.data_ptr().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+
+    drop(op);
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+    assert_eq!(buf.pin_count(), 0);
+    assert!(!store.is_io_borrowed());
+    assert!(buf.data_ptr().is_ok());
+  }
+
+  #[test]
+  fn pin_vectored_rolls_back_permit_when_borrow_fails() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+    let alloc_len = store.alloc_len();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    // Hold an exclusive write borrow; this should block the read borrow IoOp tries to take.
+    let _write = store.try_borrow_io_write().unwrap();
+    assert!(store.is_io_borrowed());
+
+    assert_eq!(
+      IoOp::pin_backing_store_range(&limiter, store.clone(), 0..1).unwrap_err(),
+      IoLimitError::BufferBorrowed
+    );
+
+    // Permit must have been dropped on the error path (no leaked accounting).
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+
+    // The store should not have been pinned (borrow acquisition happens before pinning).
+    assert_eq!(buf.pin_count(), 0);
+
+    // Sanity check: if we allow the borrow, the op is now allowed and charges alloc_len.
+    drop(_write);
+    let op = IoOp::pin_backing_store_range(&limiter, store.clone(), 0..1).unwrap();
+    assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
+    drop(op);
+    assert_eq!(limiter.counters().pinned_bytes_current, 0);
+  }
+}
