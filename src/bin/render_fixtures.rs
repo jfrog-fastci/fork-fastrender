@@ -397,17 +397,20 @@ fn fixture_runtime_toggles_from_env_map(
       .or_insert_with(|| "0".to_string());
   }
 
+  // `@font-face { font-display: swap }` is non-blocking in browsers, so layouts can shift after the
+  // font downloads.
+  //
   // `xtask chrome-baseline-fixtures` captures screenshots with a small `--virtual-time-budget`
-  // (~5s when JS is disabled). For offline fixtures this usually allows `font-display: swap` web
-  // fonts (especially icon fonts) to load and trigger the reflow before the screenshot is taken.
+  // (~5s when JS is disabled). For offline fixtures this usually allows swap-mode web fonts
+  // (including icon fonts) to load and trigger the reflow before the screenshot is taken.
   //
   // Wait briefly by default so fixture-chrome diffs are not dominated by fallback font
   // metric/layout differences (or missing icon glyphs). Keep this timeout short: pages can ship
   // many swap-mode fonts, and waiting for *all* of them can be expensive and often unnecessary for
   // the initial viewport.
   //
-  // Set `FASTR_WEB_FONT_WAIT_MS` explicitly to opt out (`0`) or to wait longer when debugging font
-  // behavior.
+  // Keep this opt-out via `FASTR_WEB_FONT_WAIT_MS=0` for cases where matching a pre-swap baseline is
+  // desirable.
   let default_web_font_wait_ms = "500";
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
@@ -2149,7 +2152,7 @@ mod tests {
   }
 
   #[test]
-  fn fixture_runtime_toggles_defaults_web_font_wait_ms_to_500() {
+  fn fixture_runtime_toggles_defaults_web_font_wait_ms_is_post_swap_by_default() {
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
     assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
 
@@ -2572,6 +2575,7 @@ mod tests {
       dpr: 1.0,
       animation_time: AnimationTimeArgs::default(),
       media: MediaTypeArg::Screen,
+      compat: CompatArgs::default(),
       fit_canvas_to_content: false,
       timeout: 1,
       write_snapshot: false,

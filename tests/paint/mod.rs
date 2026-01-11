@@ -179,6 +179,7 @@ mod stacking_context_blend_isolation_descendant_shadow_bounds;
 mod stacking_context_descendant_filter_bounds;
 mod stacking_context_descendant_svg_filter_bounds;
 mod stacking_context_descendant_shadow_bounds;
+mod stacking_context_filter_viewport_halo;
 mod stacking_context_text_shadow_bounds;
 mod stacking_context_layer_bounds_paint_overflow;
 mod stacking_context_transform_viewport_culling;

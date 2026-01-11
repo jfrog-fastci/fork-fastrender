@@ -3130,8 +3130,24 @@ impl DisplayListBuilder {
     // stacking context are emitted in *local* coordinates and will be transformed at render time
     // via the `PushStackingContext` item. For correct culling we must therefore convert the
     // visible rect into the local (pre-transform) coordinate space.
+    //
+    // Additionally, when this stacking context applies filters (e.g. `blur()`), offscreen pixels
+    // within the filter's kernel radius can contribute to visible output (e.g. a blurred element
+    // just outside the viewport edge). Expand the culling rect by the filter outsets so we don't
+    // incorrectly cull those source pixels away.
     let mut context_visibility = Visibility {
-      rect: Self::visible_in_local_space(visibility.rect, transform.as_ref()),
+      rect: Self::visible_in_local_space(visibility.rect, transform.as_ref()).map(|rect| {
+        if expand_left > 0.0 || expand_top > 0.0 || expand_right > 0.0 || expand_bottom > 0.0 {
+          Rect::from_xywh(
+            rect.x() - expand_left,
+            rect.y() - expand_top,
+            rect.width() + expand_left + expand_right,
+            rect.height() + expand_top + expand_bottom,
+          )
+        } else {
+          rect
+        }
+      }),
       hard_clip: visibility.hard_clip,
     };
     // Filters like `blur()` sample pixels outside the visible/clipped region. To avoid culling away

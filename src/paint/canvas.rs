@@ -931,7 +931,8 @@ impl Canvas {
           };
         }
         if let Some(mask) = self.current_state.clip_mask.take() {
-          crop_mask_i32(mask.as_ref(), origin_x, origin_y, width, height)?.map(Rc::new);
+          self.current_state.clip_mask =
+            crop_mask_i32(mask.as_ref(), origin_x, origin_y, width, height)?.map(Rc::new);
         }
       }
     }
@@ -4812,7 +4813,6 @@ pub(crate) fn crop_mask_i32(
   if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
     return Ok(None);
   }
-
   check_active(RenderStage::Paint)?;
   let Some(mut out) = Mask::new(width, height) else {
     return Ok(None);

@@ -23220,6 +23220,68 @@ mod tests {
   }
 
   #[test]
+  fn backdrop_filters_clamp_write_region_to_filtered_bounds() {
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = BackdropFilterScratch::default();
+    });
+
+    // Simulate a bounded layer that extends beyond the available backdrop root source pixmap.
+    // This can happen when a backdrop-filter stacking context is padded by filter outsets near the
+    // viewport edge.
+    //
+    // `apply_backdrop_filters_with_region_filler` clamps the filtered region size to the available
+    // source pixmap, but it must also clamp the destination write region to the filtered bounds so
+    // we don't index beyond `filtered_data` / masks.
+    let backdrop = {
+      let mut pixmap = new_pixmap(100, 20).unwrap();
+      for px in pixmap.data_mut().chunks_exact_mut(4) {
+        px[0] = 10;
+        px[1] = 20;
+        px[2] = 30;
+        px[3] = 255;
+      }
+      pixmap
+    };
+
+    let mut dest = new_pixmap(80, 20).unwrap();
+    dest.data_mut().fill(0);
+
+    // Destination layer at x=40 with width=80 covers source coords [40..120), but the source
+    // pixmap only covers [0..100). The last 20 columns should be ignored rather than indexing past
+    // the filtered scratch.
+    let dest_origin_in_src = (40, 0);
+    let bounds_in_src = Rect::from_xywh(40.0, 0.0, 80.0, 20.0);
+    let filters = vec![ResolvedFilter::Blur(0.0)];
+    let world_to_dest = Transform::from_translate(-(dest_origin_in_src.0 as f32), 0.0);
+
+    apply_backdrop_filters(
+      &mut dest,
+      &backdrop,
+      dest_origin_in_src,
+      bounds_in_src,
+      bounds_in_src,
+      &filters,
+      BorderRadii::uniform(4.0),
+      1.0,
+      None,
+      None,
+      (0, 0),
+      bounds_in_src,
+      world_to_dest,
+      None,
+      None,
+    )
+    .expect("apply backdrop filter");
+
+    // Pixels sourced from the backdrop should be written.
+    assert_eq!(pixel(&dest, 10, 10), (10, 20, 30, 255));
+    assert_eq!(pixel(&dest, 59, 10), (10, 20, 30, 255));
+    // Pixels beyond the available source should be left unchanged.
+    assert_eq!(pixel(&dest, 60, 10), (0, 0, 0, 0));
+    assert_eq!(pixel(&dest, 79, 10), (0, 0, 0, 0));
+  }
+
+  #[test]
   fn backdrop_filter_stacking_context_uses_bounded_layer_allocation() {
     let diag = Arc::new(LayerAllocationDiagnostics::default());
     let mut renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
