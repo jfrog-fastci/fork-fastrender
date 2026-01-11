@@ -9075,6 +9075,54 @@ impl FlexFormattingContext {
       // results so the propagated `nearest_positioned_cb` reflects the corrected size during child
       // layout.
       if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
+        let cb_width_for_child_percentage_margins = {
+          // Percentage margins on children resolve against the flex container's *content-box*
+          // inline size (CSS2.1 / Flexbox). Use the resolved border-box width from Taffy and
+          // subtract the container's own horizontal padding/border.
+          let cb_width = rect.width().max(0.0);
+          let inline_base = constraints
+            .inline_percentage_base
+            .filter(|w| w.is_finite())
+            .or_else(|| constraints.width().filter(|w| w.is_finite()))
+            .unwrap_or_else(|| {
+              if cb_width.is_finite() {
+                cb_width
+              } else {
+                self.viewport_size.width
+              }
+            })
+            .max(0.0);
+          let inline_base = if inline_base.is_finite() { inline_base } else { 0.0 };
+          let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+          let border_left = clamp_non_negative(self.resolve_length_for_width(
+            box_node.style.used_border_left_width(),
+            inline_base,
+            &box_node.style,
+          ));
+          let border_right = clamp_non_negative(self.resolve_length_for_width(
+            box_node.style.used_border_right_width(),
+            inline_base,
+            &box_node.style,
+          ));
+          let padding_left = clamp_non_negative(self.resolve_length_for_width(
+            box_node.style.padding_left,
+            inline_base,
+            &box_node.style,
+          ));
+          let padding_right = clamp_non_negative(self.resolve_length_for_width(
+            box_node.style.padding_right,
+            inline_base,
+            &box_node.style,
+          ));
+          let content_width =
+            (cb_width - border_left - border_right - padding_left - padding_right).max(0.0);
+          if content_width.is_finite() {
+            content_width
+          } else {
+            0.0
+          }
+        };
+
         let mut max_child_bottom = 0.0f32;
         let mut deadline_counter = 0usize;
         for child in box_node.children.iter() {
@@ -9090,8 +9138,18 @@ impl FlexFormattingContext {
           let child_layout = taffy_tree.layout(child_node).map_err(|e| {
             LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
           })?;
+          let margin_bottom = child
+            .style
+            .margin_bottom
+            .map(|m| {
+              self.resolve_length_for_width(m, cb_width_for_child_percentage_margins, &child.style)
+            })
+            .filter(|m| m.is_finite())
+            .unwrap_or(0.0);
+          // Include the cross-end margin when computing the "in-flow children enclosure" size.
+          // Negative margins shrink the margin box, and must not inflate the container size.
           let child_bottom =
-            (child_layout.location.y - rect.origin.y) + child_layout.size.height;
+            (child_layout.location.y - rect.origin.y) + child_layout.size.height + margin_bottom;
           if child_bottom.is_finite() {
             max_child_bottom = max_child_bottom.max(child_bottom);
           }
@@ -16371,6 +16429,50 @@ mod tests {
       fragment.children[1].bounds.y().abs() < 0.5,
       "expected item y≈0, got {}",
       fragment.children[1].bounds.y()
+    );
+  }
+
+  #[test]
+  fn flex_auto_height_respects_negative_margin_bottom() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.align_items = AlignItems::Center;
+
+    let mut item_a_style = ComputedStyle::default();
+    item_a_style.width = Some(Length::px(10.0));
+    item_a_style.height = Some(Length::px(96.0));
+    item_a_style.width_keyword = None;
+    item_a_style.height_keyword = None;
+    item_a_style.margin_top = Some(Length::px(-8.0));
+    item_a_style.margin_bottom = Some(Length::px(-8.0));
+    let item_a = BoxNode::new_block(Arc::new(item_a_style), FormattingContextType::Block, vec![]);
+
+    let mut item_b_style = ComputedStyle::default();
+    item_b_style.width = Some(Length::px(10.0));
+    item_b_style.height = Some(Length::px(80.0));
+    item_b_style.width_keyword = None;
+    item_b_style.height_keyword = None;
+    let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item_a, item_b],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    // The flex line's cross size is the max outer cross size (including margins). Negative margins
+    // shrink the margin box, so this container should use 80px (96 - 8 - 8), not the 88px border-box
+    // extent.
+    assert!(
+      (fragment.bounds.height() - 80.0).abs() < 0.5,
+      "expected container height≈80, got {}",
+      fragment.bounds.height()
     );
   }
 
