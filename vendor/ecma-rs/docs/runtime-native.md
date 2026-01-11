@@ -404,8 +404,8 @@ LLVM loads/stores can use correct `align` metadata.
 The runtime assumes:
 - LLVM statepoint records do **not** list roots as a flat array. Locations are
   encoded as:
-  - a 3-location constant prefix (`Constant(0)`), followed by
-  - optional deopt operand locations (if a `"deopt"` bundle is present), followed by
+  - a 3-location constant header prefix (`callconv`, `flags`, `deopt_count`), followed by
+  - `deopt_count` deopt operand locations (if a `"deopt"` bundle is present), followed by
   - `(base, derived)` relocation pairs for GC pointers that must be relocated
     across the safepoint.
 - The compiler must keep `gc.relocate` results live (by using the relocated SSA
