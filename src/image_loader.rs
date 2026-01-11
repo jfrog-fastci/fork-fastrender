@@ -6474,8 +6474,12 @@ impl ImageCache {
     }
 
     let options = usvg_options_for_url(url);
+    // `usvg` uses `roxmltree` under the hood. `roxmltree` deliberately rejects `<!DOCTYPE ...>`,
+    // but many real-world SVGs include a doctype (e.g. Adobe Illustrator output, including the
+    // IANA logo). Strip/blank out doctypes so vector images don't silently disappear.
+    let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-      usvg::Tree::from_str(svg_content, &options)
+      usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
     })) {
       Ok(Ok(tree)) => tree,
       Ok(Err(e)) => {
@@ -8847,8 +8851,9 @@ impl ImageCache {
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
     let svg_has_intrinsic_size = meta_width.filter(|w| *w > 0.0).is_some()
       || meta_height.filter(|h| *h > 0.0).is_some();
+    let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-      usvg::Tree::from_str(svg_content, &options)
+      usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
     })) {
       Ok(Ok(tree)) => tree,
       Ok(Err(e)) => {
@@ -9124,7 +9129,7 @@ impl Clone for ImageCache {
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
+  mod tests {
   use super::*;
   use crate::render_control::RenderDeadline;
   use crate::style::types::OrientationTransform;
@@ -9160,6 +9165,40 @@ mod tests {
     assert!(
       has_red_text_pixel,
       "expected SVG <text> to produce non-transparent red pixels; missing usvg fontdb?"
+    );
+  }
+
+  #[test]
+  fn svg_with_doctype_renders_via_usvg() {
+    let cache = ImageCache::new();
+    // `roxmltree` rejects `<!DOCTYPE ...>` declarations and `usvg` uses `roxmltree` internally.
+    // If we don't strip/blank doctypes, external SVG logos commonly disappear.
+    //
+    // Ensure the fast-path renderer is *not* used (`<rect>` is unsupported there), so the test
+    // exercises the `usvg` path.
+    let svg = r#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+  <rect width="10" height="10" fill="red" />
+</svg>"#;
+
+    let (img, _ratio, _aspect_none) = cache.render_svg_to_image(svg).expect("render svg to image");
+    let rgba = img.to_rgba8();
+    assert_eq!(rgba.dimensions(), (10, 10));
+    let px = rgba.get_pixel(5, 5).0;
+    assert!(
+      px[3] > 200 && px[0] > 200 && px[1] < 50 && px[2] < 50,
+      "expected opaque red pixel; got {px:?}"
+    );
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 10, 10, "svg-doctype", 1.0)
+      .expect("render svg pixmap");
+    let idx = (5 + 5 * 10) * 4;
+    let px = &pixmap.data()[idx..idx + 4];
+    assert!(
+      px[3] > 200 && px[0] > 200 && px[1] < 50 && px[2] < 50,
+      "expected opaque red pixel; got {px:?}"
     );
   }
 

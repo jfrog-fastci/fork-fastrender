@@ -78,8 +78,9 @@ pub(super) fn parse_svg_glyph(
 
   let mut options = resvg::usvg::Options::default();
   options.resources_dir = None;
+  let markup_for_parse = svg_markup_for_roxmltree(markup);
   let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    resvg::usvg::Tree::from_str(markup, &options)
+    resvg::usvg::Tree::from_str(markup_for_parse.as_ref(), &options)
   })) {
     Ok(Ok(tree)) => tree,
     Ok(Err(_)) => return None,
@@ -189,9 +190,10 @@ fn rasterize_svg_with_metrics(
 ) -> Option<ColorGlyphRaster> {
   let mut options = resvg::usvg::Options::default();
   options.resources_dir = None;
+  let svg_for_parse = svg_markup_for_roxmltree(svg_with_color);
 
   let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    resvg::usvg::Tree::from_str(svg_with_color, &options)
+    resvg::usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
   })) {
     Ok(Ok(tree)) => tree,
     Ok(Err(_)) => return None,
