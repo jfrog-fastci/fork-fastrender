@@ -126,7 +126,7 @@ llvm-objcopy \
 
 The more general `scripts/native_link.sh` uses `llvm-objcopy --set-section-flags` when
 `ECMA_RS_NATIVE_PIE=1` and relies on the injected `runtime-native/link/stackmaps.ld` linker script
-to place stackmaps in a writable/RELRO output section.
+to place stackmaps in a writable/RELRO-friendly output section.
 
 Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
 caller opts into PIE explicitly (note: non-PIE disables main-executable ASLR on Linux).
