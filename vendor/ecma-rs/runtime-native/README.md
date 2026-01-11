@@ -154,7 +154,7 @@ For `rustc`/Cargo consumers that don't use the feature-based build script hook, 
 
 ```bash
 # Example:
-#   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps.ld" cargo build ...
+#   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps.ld" bash scripts/cargo_agent.sh build ...
 ```
 
 PIE note (Linux): LLVM `.llvm_stackmaps` contains absolute code addresses, which become runtime

@@ -18,7 +18,13 @@ cd "${repo_root}"
 
 # Match raw cargo invocations in scripts/justfile. We intentionally only scan
 # developer tooling (scripts + justfile), not docs.
-pattern='^[[:space:]]*cargo[[:space:]]+(build|check|test|clippy|run|bench|fmt|metadata|generate-lockfile|install|publish)\\b'
+#
+# This catches common "inline env var" invocations too, e.g.:
+#   RUSTFLAGS="..." cargo test ...
+#   env RUSTFLAGS="..." cargo test ...
+# and toolchain overrides:
+#   cargo +nightly test ...
+pattern='^[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*cargo(?:[[:space:]]+\+[^[:space:]]+)?[[:space:]]+'
 
 fail=0
 
@@ -40,4 +46,3 @@ if [[ "${fail}" -ne 0 ]]; then
   echo "error: raw cargo invocations found; use scripts/cargo_agent.sh instead" >&2
   exit 1
 fi
-
