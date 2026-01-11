@@ -499,4 +499,62 @@ mod tests {
     drop(op);
     assert_eq!(limiter.counters().pinned_bytes_current, 0);
   }
+
+  #[test]
+  fn pin_backing_store_range_for_read_acquires_write_borrow_and_charges_alloc_len() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+    let alloc_len = store.alloc_len();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    let op = IoOp::pin_backing_store_range_for_read(&limiter, store.clone(), 0..1).unwrap();
+    assert_eq!(op.bufs().len(), 1);
+    assert_eq!(buf.pin_count(), 1);
+    assert!(store.is_io_borrowed());
+
+    assert_eq!(
+      buf.try_with_slice(|_| ()).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(store.try_with_slice(|_| ()), Err(BorrowError::Borrowed));
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, alloc_len);
+    assert_eq!(counters.inflight_ops_current, 1);
+
+    drop(op);
+
+    assert_eq!(buf.pin_count(), 0);
+    assert!(!store.is_io_borrowed());
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+  }
+
+  #[test]
+  fn pin_backing_store_range_for_read_rolls_back_permit_when_borrow_fails() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    // Hold a shared read borrow; this blocks the exclusive write borrow required for reads.
+    let _read = store.try_borrow_io_read().unwrap();
+    assert!(store.is_io_borrowed());
+
+    assert_eq!(
+      IoOp::pin_backing_store_range_for_read(&limiter, store.clone(), 0..1).unwrap_err(),
+      IoLimitError::BufferBorrowed
+    );
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+
+    assert_eq!(buf.pin_count(), 0);
+  }
 }
