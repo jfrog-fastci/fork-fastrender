@@ -86,11 +86,12 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
       continue;
     };
 
+    let stack_bounds = thread
+      .stack_bounds()
+      .and_then(|b| StackBounds::new(b.lo as u64, b.hi as u64).ok());
+
     let mut roots = 0usize;
-    let bounds = thread.stack_bounds().and_then(|b| {
-      StackBounds::new(b.lo as u64, b.hi as u64).ok()
-    });
-    let _ = visit_reloc_pairs_with_bounds(ctx.fp as u64, bounds, &mut |_, _| roots += 1);
+    let _ = visit_reloc_pairs_with_bounds(ctx.fp as u64, stack_bounds, &mut |_, _| roots += 1);
     let _ = (ctx, roots);
   }
 

@@ -87,6 +87,25 @@ pub enum WalkError {
     stack_size: u64,
     fp_record_size: u64,
   },
+  #[error("caller stack pointer {caller_sp:#x} is outside stack bounds [{lo:#x}, {hi:#x})")]
+  StackPointerOutOfBounds { caller_sp: u64, lo: u64, hi: u64 },
+  #[error(
+    "GC root slot address {slot_addr:#x} is not aligned to {alignment} bytes at return address {return_addr:#x}"
+  )]
+  MisalignedRootSlot {
+    return_addr: u64,
+    slot_addr: u64,
+    alignment: u64,
+  },
+  #[error(
+    "GC root slot address {slot_addr:#x} is outside stack bounds [{lo:#x}, {hi:#x}) at return address {return_addr:#x}"
+  )]
+  RootSlotOutOfBounds {
+    return_addr: u64,
+    slot_addr: u64,
+    lo: u64,
+    hi: u64,
+  },
   #[error("failed to decode statepoint record at return address {return_addr:#x}")]
   InvalidStatepoint {
     return_addr: u64,
@@ -263,7 +282,7 @@ pub unsafe fn walk_gc_roots_from_fp(
 
     match stackmaps.lookup(caller_ra) {
       Some(callsite) => {
-        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
       }
       None => {
         #[cfg(feature = "conservative_roots")]
@@ -347,7 +366,7 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
   match stackmaps.lookup(caller_ra) {
     Some(callsite) => {
-      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
     }
     None => {
       #[cfg(feature = "conservative_roots")]
@@ -407,6 +426,7 @@ fn enumerate_roots_for_frame(
   caller_fp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
+  bounds: Option<StackBounds>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
   let stack_size = callsite.stack_size;
@@ -450,6 +470,16 @@ fn enumerate_roots_for_frame(
   #[cfg(target_arch = "aarch64")]
   let caller_sp = caller_sp_checked;
 
+  if let Some(bounds) = bounds {
+    if caller_sp < bounds.lo || caller_sp > bounds.hi {
+      return Err(WalkError::StackPointerOutOfBounds {
+        caller_sp,
+        lo: bounds.lo,
+        hi: bounds.hi,
+      });
+    }
+  }
+
   let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
     WalkError::InvalidStatepoint {
       return_addr: caller_ra,
@@ -469,6 +499,8 @@ fn enumerate_roots_for_frame(
   for (base, derived) in statepoint.gc_pairs() {
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, base)?;
     let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, derived)?;
+    validate_root_slot(base_slot, bounds, caller_ra)?;
+    validate_root_slot(derived_slot, bounds, caller_ra)?;
     base_slots.push(base_slot);
 
     if base_slot != derived_slot {
@@ -577,6 +609,30 @@ fn add_signed_u64_i64(base: u64, offset: i64) -> Option<u64> {
     let abs = offset.checked_abs()? as u64;
     base.checked_sub(abs)
   }
+}
+
+#[inline]
+fn validate_root_slot(slot_addr: u64, bounds: Option<StackBounds>, return_addr: u64) -> Result<(), WalkError> {
+  if slot_addr % arch::WORD != 0 {
+    return Err(WalkError::MisalignedRootSlot {
+      return_addr,
+      slot_addr,
+      alignment: arch::WORD,
+    });
+  }
+
+  if let Some(bounds) = bounds {
+    if !bounds.contains_range(slot_addr, arch::WORD) {
+      return Err(WalkError::RootSlotOutOfBounds {
+        return_addr,
+        slot_addr,
+        lo: bounds.lo,
+        hi: bounds.hi,
+      });
+    }
+  }
+
+  Ok(())
 }
 
 #[inline]

@@ -1,5 +1,7 @@
 use std::mem::align_of;
 
+use crate::stackwalk::StackBounds;
+
 /// A view of a caller frame as observed from its callee (i.e. the frame we're currently in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameView {
@@ -23,19 +25,24 @@ pub struct StackWalker {
   prev_fp: usize,
   depth: usize,
   max_depth: usize,
+  bounds: Option<StackBounds>,
 }
 
 impl StackWalker {
   pub const DEFAULT_MAX_DEPTH: usize = 1024;
+  const FP_RECORD_SIZE: u64 = 16;
+  const FP_ALIGN: usize = 16;
+  const CALLER_SP_OFFSET: usize = 16;
 
   /// # Safety
   /// `top_callee_fp` must be a valid frame pointer for the current thread.
-  pub unsafe fn new(top_callee_fp: usize) -> Self {
+  pub unsafe fn new(top_callee_fp: usize, bounds: Option<StackBounds>) -> Self {
     Self {
       next_callee_fp: top_callee_fp,
       prev_fp: 0,
       depth: 0,
       max_depth: Self::DEFAULT_MAX_DEPTH,
+      bounds,
     }
   }
 
@@ -57,8 +64,14 @@ impl StackWalker {
     let callee_fp = self.next_callee_fp;
 
     // Basic alignment sanity check.
-    if callee_fp % align_of::<usize>() != 0 {
+    if callee_fp % Self::FP_ALIGN != 0 || callee_fp % align_of::<usize>() != 0 {
       return None;
+    }
+
+    if let Some(bounds) = self.bounds {
+      if !bounds.contains_range(callee_fp as u64, Self::FP_RECORD_SIZE) {
+        return None;
+      }
     }
 
     // Ensure the FP chain is monotonic (stack grows down; walking "up" should increase addresses).
@@ -79,7 +92,26 @@ impl StackWalker {
       return None;
     }
 
-    let caller_sp = callee_fp + 16;
+    if caller_fp % Self::FP_ALIGN != 0 || caller_fp % align_of::<usize>() != 0 {
+      return None;
+    }
+
+    if let Some(bounds) = self.bounds {
+      if !bounds.contains_range(caller_fp as u64, Self::FP_RECORD_SIZE) {
+        return None;
+      }
+    }
+
+    if !is_canonical_pc(return_address) {
+      return None;
+    }
+
+    let caller_sp = callee_fp.checked_add(Self::CALLER_SP_OFFSET)?;
+    if let Some(bounds) = self.bounds {
+      if caller_sp as u64 > bounds.hi {
+        return None;
+      }
+    }
 
     self.prev_fp = callee_fp;
     self.next_callee_fp = caller_fp;
@@ -93,3 +125,22 @@ impl StackWalker {
   }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn is_canonical_pc(pc: usize) -> bool {
+  // Canonical addresses are sign-extended from bit 47 (SysV x86_64).
+  let pc = pc as u64;
+  let sign = (pc >> 47) & 1;
+  let top = pc >> 48;
+  if sign == 0 {
+    top == 0
+  } else {
+    top == 0xffff
+  }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn is_canonical_pc(_pc: usize) -> bool {
+  true
+}

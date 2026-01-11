@@ -26,6 +26,7 @@ use std::ptr;
 
 use crate::stack_walk::{FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMapRecord, StackMaps};
+use crate::stackwalk::StackBounds;
 
 /// A `(base, derived)` relocation pair.
 ///
@@ -196,22 +197,34 @@ impl<'a> StackRootEnumerator<'a> {
   ///   are: a prefix of constant header entries (metadata), followed by `(base, derived)` pairs for
   ///   each `gc.relocate` in the frame.
   /// - Only `Location::Indirect` is supported for slot addressing (with DWARF reg RSP/RBP).
-  pub fn visit_reloc_pairs(&self, top_callee_fp: usize, mut f: impl FnMut(RelocPair)) {
+  pub fn visit_reloc_pairs(
+    &self,
+    top_callee_fp: usize,
+    bounds: Option<StackBounds>,
+    mut f: impl FnMut(RelocPair),
+  ) {
     unsafe {
-      let mut walker = StackWalker::new(top_callee_fp);
+      let mut walker = StackWalker::new(top_callee_fp, bounds);
       while let Some(frame) = walker.next_frame() {
         let Some(callsite) = self.stackmaps.lookup(frame.return_address as u64) else {
           // We likely reached an unmanaged/native frame (no stackmap entry). Stop.
           break;
         };
 
-        visit_callsite_reloc_pairs(callsite, &frame, &mut f);
+        if !visit_callsite_reloc_pairs(callsite, &frame, bounds, &mut f) {
+          break;
+        }
       }
     }
   }
 }
 
-fn visit_callsite_reloc_pairs(callsite: CallSite<'_>, frame: &FrameView, f: &mut dyn FnMut(RelocPair)) {
+fn visit_callsite_reloc_pairs(
+  callsite: CallSite<'_>,
+  frame: &FrameView,
+  bounds: Option<StackBounds>,
+  f: &mut dyn FnMut(RelocPair),
+) -> bool {
   let record: &StackMapRecord = callsite.record;
   let non_const: Vec<&Location> = record
     .locations
@@ -228,36 +241,54 @@ fn visit_callsite_reloc_pairs(callsite: CallSite<'_>, frame: &FrameView, f: &mut
 
   // LLVM 18 statepoint lowering emits locations in (base, derived) order for each gc.relocate.
   for chunk in non_const.chunks_exact(2) {
-    let base_slot = location_to_slot(frame, chunk[0]);
-    let derived_slot = location_to_slot(frame, chunk[1]);
+    let Some(base_slot) = location_to_slot(frame, chunk[0], bounds) else {
+      return false;
+    };
+    let Some(derived_slot) = location_to_slot(frame, chunk[1], bounds) else {
+      return false;
+    };
     f(RelocPair {
       base_slot,
       derived_slot,
     });
   }
+  true
 }
 
-fn location_to_slot(frame: &FrameView, loc: &Location) -> *mut usize {
+fn location_to_slot(frame: &FrameView, loc: &Location, bounds: Option<StackBounds>) -> Option<*mut usize> {
   match *loc {
     Location::Indirect { dwarf_reg, offset, size } => {
-      assert!(
-        size as usize == std::mem::size_of::<usize>(),
-        "unsupported stackmap slot size {size} (expected pointer-sized)"
-      );
+      if size as usize != std::mem::size_of::<usize>() {
+        return None;
+      }
       let base = match dwarf_reg {
         // x86_64 DWARF reg numbers.
         7 => frame.caller_sp, // RSP
         6 => frame.caller_fp, // RBP
-        _ => panic!("unsupported DWARF register {dwarf_reg} for stack slot"),
+        // aarch64 DWARF reg numbers.
+        31 => frame.caller_sp, // SP
+        29 => frame.caller_fp, // FP
+        _ => return None,
       };
-      let addr = (base as isize).wrapping_add(offset as isize) as usize;
-      assert!(
-        addr % std::mem::align_of::<usize>() == 0,
-        "stackmap slot address 0x{addr:x} is not word-aligned"
-      );
-      addr as *mut usize
+      let addr = add_signed_usize(base, offset)?;
+      if addr % std::mem::align_of::<usize>() != 0 {
+        return None;
+      }
+      if let Some(bounds) = bounds {
+        if !bounds.contains_range(addr as u64, size as u64) {
+          return None;
+        }
+      }
+      Some(addr as *mut usize)
     }
-    _ => panic!("unsupported stackmap location for mutable slot: {loc:?}"),
+    _ => None,
   }
 }
 
+fn add_signed_usize(base: usize, offset: i32) -> Option<usize> {
+  if offset >= 0 {
+    base.checked_add(offset as usize)
+  } else {
+    base.checked_sub((-offset) as usize)
+  }
+}
