@@ -2098,6 +2098,9 @@ fn fragment_tree_impl(
       // stacking additional rows vertically.
       let column = index % column_count;
       let row = index / column_count;
+      if options.column_count > 1 {
+        propagate_fragmentainer_columns(&mut clipped, row, column);
+      }
       let column_offset = column as f32 * column_step * inline_sign;
       let row_offset = row as f32 * fragment_step * block_sign;
       let mut offset = Point::new(0.0, 0.0);
@@ -2132,6 +2135,23 @@ pub(crate) fn propagate_fragment_metadata(node: &mut FragmentNode, index: usize,
   node.fragmentainer_index = node.fragmentainer.flattened_index();
   for child in node.children_mut() {
     propagate_fragment_metadata(child, index, count);
+  }
+}
+
+pub(crate) fn propagate_fragmentainer_columns(
+  node: &mut FragmentNode,
+  column_set: usize,
+  column: usize,
+) {
+  if node.fragmentainer.column_set_index.is_none() {
+    node.fragmentainer.column_set_index = Some(column_set);
+  }
+  if node.fragmentainer.column_index.is_none() {
+    node.fragmentainer.column_index = Some(column);
+  }
+  node.fragmentainer_index = node.fragmentainer.flattened_index();
+  for child in node.children_mut() {
+    propagate_fragmentainer_columns(child, column_set, column);
   }
 }
 

@@ -56,7 +56,8 @@ use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation::{
   clip_node_with_axes, forces_break_between, normalize_fragment_margins_with_axes,
-  propagate_fragment_metadata, FragmentationAnalyzer, FragmentationContext,
+  propagate_fragment_metadata, propagate_fragmentainer_columns, FragmentationAnalyzer,
+  FragmentationContext,
 };
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
@@ -7421,6 +7422,7 @@ impl BlockFormattingContext {
           index
         };
         let set = if fragmented_context { index / column_count } else { 0 };
+        propagate_fragmentainer_columns(&mut clipped, set, col);
         let offset = axes
           .inline_offset(col as f32 * stride)
           .translate(axes.block_offset(set as f32 * column_height));
