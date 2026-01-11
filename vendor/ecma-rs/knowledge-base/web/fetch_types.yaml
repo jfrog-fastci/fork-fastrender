@@ -93,6 +93,76 @@
     may_throw: true
   purity: Pure
 
+- name: Request.prototype.text
+  kind: function
+  aliases:
+    - Request.prototype.text
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Request.prototype.json
+  kind: function
+  aliases:
+    - Request.prototype.json
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Request.prototype.arrayBuffer
+  kind: function
+  aliases:
+    - Request.prototype.arrayBuffer
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Request.prototype.blob
+  kind: function
+  aliases:
+    - Request.prototype.blob
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Request.prototype.formData
+  kind: function
+  aliases:
+    - Request.prototype.formData
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
 - name: Response
   kind: constructor
   aliases:
@@ -119,6 +189,48 @@
   kind: function
   aliases:
     - Response.prototype.text
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Response.prototype.arrayBuffer
+  kind: function
+  aliases:
+    - Response.prototype.arrayBuffer
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Response.prototype.blob
+  kind: function
+  aliases:
+    - Response.prototype.blob
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: Response.prototype.formData
+  kind: function
+  aliases:
+    - Response.prototype.formData
   since: "baseline"
   effects:
     allocates: true
