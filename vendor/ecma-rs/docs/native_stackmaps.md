@@ -5,6 +5,16 @@ LLVM statepoints emit GC stack map metadata into a loadable ELF section named
 When linking PIE binaries we prefer to relocate these bytes into
 `.data.rel.ro.llvm_stackmaps` so runtime relocations can be applied safely.
 
+## Multi-object linking: concatenated stackmap blobs
+
+Each object file that uses statepoints emits its own StackMap v3 blob (starting with a
+`version=3` header) into `.llvm_stackmaps`. When linking multiple objects, ELF linkers concatenate
+the section payloads, so the final output section can contain **multiple independent v3 blobs
+back-to-back**, with optional alignment padding between them.
+
+Note: `llvm-readobj --stackmap` only prints the first blob in a concatenated section. The runtime
+must parse all blobs (see `runtime_native::stackmaps::StackMaps::parse`).
+
 This metadata is **not referenced by code**, so link-time and post-link size
 tools can accidentally remove it, breaking GC root discovery at runtime.
 
