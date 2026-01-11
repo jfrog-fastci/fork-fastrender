@@ -75,12 +75,11 @@ fn compiled_calls_to_gc_leaf_functions_are_plain_calls() {
   let ir = module.print_to_string().to_string();
 
   assert!(
-    ir.contains("call ptr addrspace(1) @callee"),
-    "expected a plain direct call to @callee, got:\n{ir}"
+    ir.contains("notail call ptr addrspace(1) @callee"),
+    "expected a plain notail direct call to @callee, got:\n{ir}"
   );
   assert!(
     !ir.contains("call token @llvm.experimental.gc.statepoint.p0"),
     "expected no statepoint callsites (leaf callee call must be plain), got:\n{ir}"
   );
 }
-
