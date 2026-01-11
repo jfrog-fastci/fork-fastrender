@@ -6,15 +6,21 @@ use runtime_native::gc::ObjHeader;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::io::AsyncFd;
 use runtime_native::rt_async_poll_legacy as rt_async_poll;
+use runtime_native::rt_handle_alloc;
+use runtime_native::rt_handle_load;
 use runtime_native::rt_io_debug;
 use runtime_native::rt_io_debug_take_last_error;
 use runtime_native::rt_io_register;
+use runtime_native::rt_io_register_handle;
+use runtime_native::rt_io_register_handle_with_drop;
 use runtime_native::rt_io_register_rooted;
 use runtime_native::rt_io_register_with_drop;
 use runtime_native::rt_io_unregister;
 use runtime_native::rt_io_update;
 use runtime_native::test_util::reset_runtime_state;
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::threading;
+use runtime_native::threading::ThreadKind;
 use runtime_native::GcHeap;
 use runtime_native::TypeDescriptor;
 use std::future::Future;
@@ -130,6 +136,28 @@ fn write_byte(fd: RawFd) {
 const HEADER_SIZE: usize = std::mem::size_of::<ObjHeader>();
 static NO_PTR_OFFSETS: [u32; 0] = [];
 static ROOTED_OBJ_DESC: TypeDescriptor = TypeDescriptor::new(HEADER_SIZE, &NO_PTR_OFFSETS);
+
+#[repr(C)]
+struct HandleDropCounterObj {
+  _header: ObjHeader,
+  drop_counter: *const AtomicUsize,
+}
+
+const HANDLE_DROP_COUNTER_SIZE: usize = std::mem::size_of::<HandleDropCounterObj>();
+static HANDLE_DROP_COUNTER_DESC: TypeDescriptor =
+  TypeDescriptor::new(HANDLE_DROP_COUNTER_SIZE, &NO_PTR_OFFSETS);
+
+extern "C" fn inc_handle_drop_count(obj: *mut u8) {
+  if obj.is_null() {
+    return;
+  }
+  let obj = unsafe { &*(obj as *const HandleDropCounterObj) };
+  if obj.drop_counter.is_null() {
+    return;
+  }
+  let ctr = unsafe { &*obj.drop_counter };
+  ctr.fetch_add(1, Ordering::SeqCst);
+}
 
 fn collect_major(heap: &mut GcHeap) {
   let mut roots = GlobalRootSet::new();
@@ -504,6 +532,182 @@ fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
   unsafe {
     drop(Box::from_raw(dropped_ptr));
   }
+}
+
+#[test]
+fn rt_io_register_handle_rejects_blocking_fd_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_blocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
+  assert_eq!(id, 0, "expected rt_io_register_handle to fail for blocking fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+    "expected registration failure to be diagnosable as nonblocking contract violation"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_register_handle must free the consumed handle on registration failure"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_handle_with_drop_calls_drop_on_registration_failure_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_blocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *const AtomicUsize = &*dropped;
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&HANDLE_DROP_COUNTER_DESC);
+  unsafe {
+    (*(obj as *mut HandleDropCounterObj)).drop_counter = dropped_ptr;
+  }
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
+  assert_eq!(
+    id, 0,
+    "expected rt_io_register_handle_with_drop to fail for blocking fd"
+  );
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on registration failure"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+    "expected registration failure to be diagnosable as nonblocking contract violation"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_register_handle_with_drop must free the consumed handle on registration failure"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_handle_with_drop_drops_data_on_unregister_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *const AtomicUsize = &*dropped;
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&HANDLE_DROP_COUNTER_DESC);
+  unsafe {
+    (*(obj as *mut HandleDropCounterObj)).drop_counter = dropped_ptr;
+  }
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
+  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    0,
+    "drop_data must not run before unregister"
+  );
+  assert!(
+    !rt_handle_load(handle).is_null(),
+    "handle must remain live while the watcher is registered"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  runtime_native::rt_async_run_until_idle();
+
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "drop_data must run when the watcher is unregistered"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_unregister must free the consumed handle"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_register_handle_callback_receives_relocated_ptr_after_gc() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, wfd) = pipe_nonblocking().unwrap();
+
+  ROOTED_CB_FIRED.store(false, Ordering::SeqCst);
+  ROOTED_CB_PTR.store(0, Ordering::SeqCst);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_ptr, handle);
+  assert_ne!(id, 0, "expected handle registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // Force a major GC to promote/move the object so the watcher must resolve the current pointer
+  // value via the persistent handle table.
+  collect_major(&mut heap);
+  let after_gc = rt_handle_load(handle);
+  assert!(!after_gc.is_null());
+  assert_ne!(
+    after_gc as usize,
+    obj as usize,
+    "expected major GC to move/promote the object"
+  );
+
+  // Ensure `rt_async_poll_legacy` will not block forever if the readiness edge is lost.
+  let timed_out = Box::new(AtomicBool::new(false));
+  let timed_out_ptr: *mut AtomicBool = Box::into_raw(timed_out);
+  let timer_id = runtime_native::async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_secs(1),
+    runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr.cast::<u8>()),
+  );
+
+  write_byte(wfd.as_raw_fd());
+  while !ROOTED_CB_FIRED.load(Ordering::SeqCst) {
+    let _ = rt_async_poll();
+    if unsafe { &*timed_out_ptr }.load(Ordering::SeqCst) {
+      panic!("timed out waiting for handle I/O watcher callback");
+    }
+  }
+
+  let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+  unsafe {
+    drop(Box::from_raw(timed_out_ptr));
+  }
+
+  assert_eq!(
+    ROOTED_CB_PTR.load(Ordering::SeqCst),
+    after_gc as usize,
+    "handle callback must receive the current relocated pointer value"
+  );
+
+  rt_io_unregister(id);
+  runtime_native::rt_async_run_until_idle();
+  assert!(rt_handle_load(handle).is_null(), "handle must be freed on unregister");
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
 }
 
 #[test]

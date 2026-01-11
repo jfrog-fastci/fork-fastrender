@@ -235,6 +235,19 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register_with_drop;
   let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> runtime_native::abi::IoWatcherId =
     runtime_native::rt_io_register_rooted;
+  let _io_register_handle: extern "C" fn(
+    i32,
+    u32,
+    extern "C" fn(u32, *mut u8),
+    u64,
+  ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register_handle;
+  let _io_register_handle_with_drop: extern "C" fn(
+    i32,
+    u32,
+    extern "C" fn(u32, *mut u8),
+    u64,
+    extern "C" fn(*mut u8),
+  ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register_handle_with_drop;
   let _io_update: extern "C" fn(runtime_native::abi::IoWatcherId, u32) = runtime_native::rt_io_update;
   let _io_unregister: extern "C" fn(runtime_native::abi::IoWatcherId) = runtime_native::rt_io_unregister;
 
@@ -303,6 +316,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _io_register,
     _io_register_with_drop,
     _io_register_rooted,
+    _io_register_handle,
+    _io_register_handle_with_drop,
     _io_update,
     _io_unregister,
     _promise_resolve_into_legacy,

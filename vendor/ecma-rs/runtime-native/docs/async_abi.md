@@ -477,6 +477,8 @@ Contract:
 - `rt_io_register(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_register_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
 - `rt_io_register_rooted(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
+- `rt_io_register_handle(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: u64) -> IoWatcherId`
+- `rt_io_register_handle_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: u64, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
 - `rt_io_update(id: IoWatcherId, interests: u32)`
 - `rt_io_unregister(id: IoWatcherId)`
 
