@@ -129,8 +129,7 @@ must_have_stackmaps() {
   local line
   line="$(
     "${READELF}" -W -S "${bin}" \
-      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {print $0}' \
-      | head -n 1
+      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" { if (!found) { print $0; found = 1 } }'
   )"
   if [[ -z "${line}" ]]; then
     echo "expected stackmaps section (.data.rel.ro.llvm_stackmaps or .llvm_stackmaps) in: ${bin}" >&2
@@ -157,10 +156,12 @@ must_have_stackmaps_symbols() {
   # in-process discovery (used by runtime-native's fast path).
   local start_hex stop_hex
   start_hex="$(
-    "${READELF}" -W -s "${bin}" | awk '$8=="__start_llvm_stackmaps" {print $2; exit}'
+    "${READELF}" -W -s "${bin}" \
+      | awk '$8=="__start_llvm_stackmaps" { if (!found) { print $2; found = 1 } }'
   )"
   stop_hex="$(
-    "${READELF}" -W -s "${bin}" | awk '$8=="__stop_llvm_stackmaps" {print $2; exit}'
+    "${READELF}" -W -s "${bin}" \
+      | awk '$8=="__stop_llvm_stackmaps" { if (!found) { print $2; found = 1 } }'
   )"
   if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
     echo "expected __start_llvm_stackmaps/__stop_llvm_stackmaps in: ${bin}" >&2
@@ -171,8 +172,7 @@ must_have_stackmaps_symbols() {
   local line
   line="$(
     "${READELF}" -W -S "${bin}" \
-      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {print $0}' \
-      | head -n 1
+      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" { if (!found) { print $0; found = 1 } }'
   )"
   if [[ -z "${line}" ]]; then
     echo "expected stackmaps section for symbol range check in: ${bin}" >&2
@@ -217,7 +217,7 @@ must_not_have_stackmaps() {
 
 must_have_textrel() {
   local bin="$1"
-  if ! "${READELF}" -d "${bin}" 2>/dev/null | grep -q "TEXTREL"; then
+  if ! "${READELF}" -d "${bin}" 2>/dev/null | grep "TEXTREL" >/dev/null; then
     echo "expected DT_TEXTREL in: ${bin}" >&2
     "${READELF}" -d "${bin}" >&2 || true
     exit 1
@@ -226,7 +226,7 @@ must_have_textrel() {
 
 must_not_have_textrel() {
   local bin="$1"
-  if "${READELF}" -d "${bin}" 2>/dev/null | grep -q "TEXTREL"; then
+  if "${READELF}" -d "${bin}" 2>/dev/null | grep "TEXTREL" >/dev/null; then
     echo "expected no DT_TEXTREL in: ${bin}" >&2
     "${READELF}" -d "${bin}" >&2 || true
     exit 1
@@ -235,7 +235,7 @@ must_not_have_textrel() {
 
 must_not_have_rwx_segment() {
   local bin="$1"
-  if "${READELF}" -l "${bin}" 2>/dev/null | grep -q "RWE"; then
+  if "${READELF}" -l "${bin}" 2>/dev/null | grep "RWE" >/dev/null; then
     echo "expected no RWX LOAD segment in: ${bin}" >&2
     "${READELF}" -l "${bin}" >&2 || true
     exit 1

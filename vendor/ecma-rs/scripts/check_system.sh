@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # Quick system check for ecma-rs native compilation project.
 # Run this to verify dependencies are installed correctly.
