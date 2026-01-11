@@ -961,7 +961,6 @@ pub fn translate_body(
   for stmt in root_statements(compiler.body) {
     compiler.compile_stmt(stmt)?;
   }
-
   if compiler.body.kind == BodyKind::Function {
     // Reaching the end of a function body in JS implicitly returns `undefined`.
     // We append this unconditionally; if the function already returns/throws on

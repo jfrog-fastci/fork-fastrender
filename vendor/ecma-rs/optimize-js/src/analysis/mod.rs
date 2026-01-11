@@ -26,8 +26,8 @@ pub(crate) mod serde;
 pub mod single_use_insts;
 
 pub use driver::{
-  analyze_cfg, analyze_program, analyze_program_function, annotate_program, FunctionAnalyses,
-  FunctionKey, ProgramAnalyses,
+  analyze_cfg, analyze_program, analyze_program_function, annotate_escape_and_ownership,
+  annotate_program, FunctionAnalyses, FunctionKey, ProgramAnalyses,
 };
 
 #[cfg(feature = "typed")]

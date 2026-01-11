@@ -1259,6 +1259,9 @@ pub enum LoweredInst {
     t_label: u32,
     f_label: u32,
   },
+  Return {
+    value: Option<LoweredArg>,
+  },
   Goto {
     label: u32,
   },
@@ -1282,9 +1285,6 @@ pub enum LoweredInst {
     obj: LoweredArg,
     prop: LoweredArg,
     value: LoweredArg,
-  },
-  Return {
-    value: Option<LoweredArg>,
   },
   Throw {
     value: LoweredArg,
@@ -1354,18 +1354,18 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       t_label: inst.labels[0],
       f_label: inst.labels[1],
     },
+    InstTyp::Return => LoweredInst::Return {
+      value: {
+        assert!(inst.args.len() <= 1, "return expects 0 or 1 args");
+        inst.args.get(0).map(lowered_arg)
+      },
+    },
     InstTyp::Call => LoweredInst::Call {
       tgt: inst.tgts.get(0).copied(),
       callee: lowered_arg(&inst.args[0]),
       this_: lowered_arg(&inst.args[1]),
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
-    },
-    InstTyp::Return => LoweredInst::Return {
-      value: {
-        assert!(inst.args.len() <= 1, "return expects 0 or 1 args");
-        inst.args.get(0).map(lowered_arg)
-      },
     },
     InstTyp::Throw => LoweredInst::Throw {
       value: {

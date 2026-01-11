@@ -161,6 +161,24 @@ fn annotate_cfg_escape_states(cfg: &mut Cfg, escapes: &escape::EscapeResult) {
   }
 }
 
+/// Annotate a single CFG with escape/ownership + consumption metadata for downstream codegen.
+///
+/// This is a convenience helper for native backends that need a compact per-instruction view of:
+/// - whether a produced allocation escapes (`InstMeta::result_escape`)
+/// - whether a produced value is owned/borrowed/shared (`InstMeta::ownership`)
+/// - how each argument is used (`InstMeta::arg_use_modes`, aligned with `Inst::args`)
+pub fn annotate_escape_and_ownership(
+  cfg: &mut Cfg,
+  params: &[u32],
+) -> (escape::EscapeResult, ownership::OwnershipResult) {
+  let escapes = escape::analyze_cfg_escapes_with_params(cfg, params);
+  annotate_cfg_escape_states(cfg, &escapes);
+  let ownership_result = ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, &escapes);
+  ownership::annotate_cfg_ownership(cfg, &ownership_result);
+  consume::annotate_cfg_consumption(cfg, &ownership_result);
+  (escapes, ownership_result)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct NullishComparison {
   tested_var: u32,
