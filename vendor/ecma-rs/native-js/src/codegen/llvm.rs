@@ -427,6 +427,47 @@ impl Codegen {
         }
       }
 
+      Expr::Unary(unary) => {
+        let arg = self.compile_expr(&unary.stx.argument)?;
+        match unary.stx.operator {
+          OperatorName::UnaryNegation => {
+            if arg.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "unary `-` currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!("  {out} = fneg double {}", arg.ir));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
+          OperatorName::UnaryPlus => {
+            if arg.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "unary `+` currently only supports numbers".to_string(),
+              ));
+            }
+            Ok(arg)
+          }
+          OperatorName::LogicalNot => {
+            if arg.ty != Ty::Bool {
+              return Err(CodegenError::TypeError(
+                "unary `!` currently only supports booleans".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!("  {out} = xor i1 {}, true", arg.ir));
+            Ok(Value {
+              ty: Ty::Bool,
+              ir: out,
+            })
+          }
+          other => Err(CodegenError::UnsupportedOperator(other)),
+        }
+      }
+
       Expr::Call(call) => {
         let builtin = recognize_builtin(call);
         if let Some(builtin) = builtin {
