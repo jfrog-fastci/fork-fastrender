@@ -31,6 +31,21 @@ struct Inner {
   state: Mutex<State>,
 }
 
+impl Inner {
+  fn alloc_generation(&self) -> u32 {
+    // Generation 0 is reserved for the reactor wakeup fd token.
+    //
+    // `AtomicU32::fetch_add` wraps, so defensively skip `0` on wraparound to avoid
+    // colliding with the wakeup token.
+    let gen = self.next_generation.fetch_add(1, Ordering::Relaxed);
+    if gen == WAKEUP_GENERATION {
+      self.next_generation.fetch_add(1, Ordering::Relaxed)
+    } else {
+      gen
+    }
+  }
+}
+
 #[derive(Default)]
 struct State {
   entries: HashMap<RawFd, Entry>,
@@ -102,7 +117,7 @@ impl Reactor {
         let desired_interest = desired_interest_from_wakers(&readable_waker, &writable_waker);
         debug_assert!(!desired_interest.is_empty());
 
-        let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
+        let generation = self.inner.alloc_generation();
         epoll_ctl_add(
           self.inner.epoll_fd.as_raw_fd(),
           fd,
@@ -147,7 +162,7 @@ impl Reactor {
         ) {
           Ok(()) => {}
           Err(err) if err.raw_os_error() == Some(libc::ENOENT) => {
-            let new_generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
+            let new_generation = self.inner.alloc_generation();
             epoll_ctl_add(
               self.inner.epoll_fd.as_raw_fd(),
               fd,
@@ -214,7 +229,7 @@ impl Reactor {
         ) {
           Ok(()) => {}
           Err(err) if err.raw_os_error() == Some(libc::ENOENT) => {
-            let new_generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
+            let new_generation = self.inner.alloc_generation();
             epoll_ctl_add(
               self.inner.epoll_fd.as_raw_fd(),
               fd,
