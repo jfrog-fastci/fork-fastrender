@@ -11,6 +11,55 @@ fn set_native_js_gc<'ctx>(func: inkwell::values::FunctionValue<'ctx>) {
 }
 
 #[test]
+fn indirect_callee_has_elementtype_attribute() {
+  // LLVM 18 (opaque pointers) requires `gc.statepoint`'s callee operand to carry
+  // `elementtype(<fn-ty>)` even when the callee is an *indirect* runtime function pointer (`ptr
+  // %fp`).
+  let context = Context::create();
+  let module = context.create_module("m");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let fp_ty = context.ptr_type(AddressSpace::default());
+  let gc_ptr_ty = context.ptr_type(AddressSpace::from(1));
+
+  let foo_ty = void_ty.fn_type(&[fp_ty.into(), gc_ptr_ty.into()], false);
+  let foo = module.add_function("foo", foo_ty, None);
+  set_native_js_gc(foo);
+
+  let fp = foo.get_nth_param(0).unwrap().into_pointer_value();
+  fp.set_name("fp");
+  let root = foo.get_nth_param(1).unwrap().into_pointer_value();
+  root.set_name("root");
+
+  let entry = context.append_basic_block(foo, "entry");
+  builder.position_at_end(entry);
+
+  let mut intrinsics = StatepointIntrinsics::new(&module);
+  let (_ret, relocated) = intrinsics.emit_statepoint_call(
+    &builder,
+    StatepointCallee::new(fp, void_ty.fn_type(&[], false)),
+    &[],
+    &[LiveGcPtr::new(root)],
+    None,
+  );
+  assert_eq!(relocated.len(), 1);
+
+  let _ = builder.build_return(None);
+  assert!(module.verify().is_ok(), "module failed LLVM verification");
+
+  let ir = module.print_to_string().to_string();
+  assert!(
+    ir.contains("ptr elementtype(void ()) %fp"),
+    "expected statepoint callee operand to include elementtype(void ()) for indirect call:\n{ir}"
+  );
+  assert!(
+    ir.contains("\"gc-live\"(ptr addrspace(1) %root)"),
+    "expected root to appear in gc-live bundle:\n{ir}"
+  );
+}
+
+#[test]
 fn emits_statepoint_result_and_relocates() {
   let context = Context::create();
   let module = context.create_module("m");
