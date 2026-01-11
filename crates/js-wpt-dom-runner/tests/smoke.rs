@@ -1,9 +1,29 @@
 use js_wpt_dom_runner::{
   discover_tests, BackendKind, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs,
 };
+use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
+
+#[test]
+fn cargo_toml_does_not_depend_on_selectors() {
+  // `selectors` is a heavy-ish dependency used elsewhere in the workspace, but `js-wpt-dom-runner`
+  // should not need it. Keep a lightweight regression guard here so the edge doesn't get
+  // reintroduced by accident.
+  let cargo_toml = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+    .expect("read js-wpt-dom-runner/Cargo.toml");
+  assert!(
+    !cargo_toml.contains("dep:selectors"),
+    "js-wpt-dom-runner vmjs feature should not include dep:selectors"
+  );
+  assert!(
+    !cargo_toml
+      .lines()
+      .any(|line| matches!(line.trim_start(), l if l.starts_with("selectors ") || l.starts_with("selectors="))),
+    "js-wpt-dom-runner should not declare a direct selectors dependency"
+  );
+}
 
 fn corpus_root() -> PathBuf {
   static ROOT: OnceLock<PathBuf> = OnceLock::new();
