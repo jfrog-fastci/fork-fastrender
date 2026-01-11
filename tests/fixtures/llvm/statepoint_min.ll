@@ -49,7 +49,9 @@ entry:
   %obj.reloc = call ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 0)
   %derived.reloc = call ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 1)
 
-  ; Keep the derived relocation live.
+  ; Keep relocations live. If a `gc.relocate` result is unused, LLVM is free to
+  ; DCE it, which can remove the corresponding relocation pair from the stackmap.
+  store i8 0, ptr addrspace(1) %obj.reloc
   store i8 0, ptr addrspace(1) %derived.reloc
 
   ret ptr addrspace(1) %call_res

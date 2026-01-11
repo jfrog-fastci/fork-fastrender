@@ -460,6 +460,12 @@ LLVM concepts:
 
 Statepoints for GC: LLVM has `gc.statepoint` and `gc.relocate` intrinsics for precise stack maps:
 
+> Note (LLVM 18 / opaque pointers): the verifier requirements are subtle
+> (mandatory trailing `i32 0, i32 0`, `elementtype(...)` on the callee operand,
+> GC pointers in `addrspace(1)` for `gc "statepoint-example"`, etc). See:
+> - `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md`
+> - `tests/fixtures/llvm/statepoint_min.ll`
+
 ```llvm
 %statepoint_token = call token (i64, i32, ptr, i32, i32, ...)
     @llvm.experimental.gc.statepoint.p0(

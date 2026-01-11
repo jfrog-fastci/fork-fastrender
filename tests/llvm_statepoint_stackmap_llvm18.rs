@@ -41,6 +41,47 @@ fn parse_stackmap_first_instruction_offset(stackmap: &str) -> Option<u64> {
   })
 }
 
+fn stackmap_first_record_has_non_constant_location(stackmap: &str) -> bool {
+  let mut in_first_record = false;
+  let mut in_locations = false;
+
+  for line in stackmap.lines() {
+    let line = line.trim_start();
+
+    if line.starts_with("Record ID: ") {
+      if in_first_record {
+        break;
+      }
+      in_first_record = true;
+      continue;
+    }
+    if !in_first_record {
+      continue;
+    }
+
+    if line.ends_with("locations:") {
+      in_locations = true;
+      continue;
+    }
+
+    if !in_locations {
+      continue;
+    }
+
+    if line.contains("live-outs:") {
+      break;
+    }
+
+    // Location lines look like:
+    //   #4: Indirect [R#7 + 0], size: 8
+    if line.starts_with('#') && !line.contains("Constant") {
+      return true;
+    }
+  }
+
+  false
+}
+
 fn parse_call_return_offset_from_objdump(objdump: &str, fn_name: &str) -> Option<u64> {
   let mut in_fn = false;
   let mut fn_start = 0u64;
@@ -131,6 +172,12 @@ fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
   let record_inst_offset = parse_stackmap_first_instruction_offset(&stackmap)
     .expect("could not find stackmap record instruction offset");
 
+  assert!(
+    stackmap_first_record_has_non_constant_location(&stackmap),
+    "expected stackmap record to contain at least one non-constant location (GC roots)\n\
+     stackmap:\n{stackmap}"
+  );
+
   // 4) Validate that the record's instruction offset is the return address.
   //
   // LLVM's stackmap record uses the address of the instruction *after* the call.
@@ -155,4 +202,3 @@ fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
      stackmap:\n{stackmap}"
   );
 }
-

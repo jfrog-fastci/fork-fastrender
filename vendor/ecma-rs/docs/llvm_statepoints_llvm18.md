@@ -161,6 +161,9 @@ Notes:
     "return address" if/when a call is patched in).
   This behavior is regression-tested by:
   * `scripts/test_statepoint_flags_patchbytes.sh`
+* For varargs intrinsics (like statepoint/stackmap), LLVM 18 is strict about
+  writing the full call signature at the callsite, e.g.:
+  `call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(...)`.
 * Operand bundles are written as a **single** bracket list with comma-separated
   bundles:
 
@@ -192,6 +195,23 @@ Example:
 %derived.reloc = call ptr addrspace(1)
   @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 1)
 ```
+
+## Important: `"gc-live"` does not automatically imply stackmap roots
+
+LLVM’s StackMap record is driven by **relocations** (and deopt state), not by the
+mere presence of values in `"gc-live"`.
+
+Practical implications for codegen:
+
+* If you add a GC pointer to `"gc-live"` but never use a corresponding
+  `gc.relocate` result (or it gets DCE’d), LLVM may emit a StackMap record with no
+  GC pointer locations for that value.
+* `gc.relocate` is `memory(none)` and can be optimized away if its result is not
+  used. Ensure every relocated pointer is consumed (typically by replacing all
+  post-safepoint uses of the original pointer with the relocated SSA value).
+
+The fixture keeps relocations live by using the relocated pointers after the
+statepoint.
 
 ## What to expect in `.llvm_stackmaps`
 
@@ -234,3 +254,10 @@ Frame-pointer note:
   a frame pointer (`-fno-omit-frame-pointer` / `frame-pointer="all"`). Stackmaps
   remain valid either way; the runtime just needs to interpret the register
   numbers in the record.
+
+Derived-pointer note:
+
+* LLVM may optimize derived (interior) pointers whose offset is known, and the
+  StackMap record may report identical base/derived locations even if the IR
+  contained a derived pointer. This is still correct if the backend recomputes
+  the derived address from the relocated base.

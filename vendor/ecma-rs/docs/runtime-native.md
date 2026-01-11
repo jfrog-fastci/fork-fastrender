@@ -356,12 +356,20 @@ The runtime assumes:
 - LLVM statepoint records do **not** list roots as a flat array. Locations are
   encoded as:
   - a 3-location constant prefix (`Constant(0)`), followed by
-  - `(base, derived)` pairs for each `"gc-live"` value.
+  - optional deopt operand locations (if a `"deopt"` bundle is present), followed by
+  - `(base, derived)` relocation pairs for GC pointers that must be relocated
+    across the safepoint.
+- The compiler must keep `gc.relocate` results live (by using the relocated SSA
+  values after the safepoint). If a relocation is DCE’d, LLVM may omit the
+  corresponding pair from the stackmap.
 - **v1 limitation:** the runtime currently only supports the common case where
   `base == derived` for all pairs (no derived / interior pointers live at the
   safepoint). If LLVM emits `base != derived`, the runtime must reject the
   stackmap record rather than tracing the derived address as a root.
 - No non-pointer values are encoded as `"gc-live"` locations.
+
+See `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md` for the LLVM 18
+verifier-correct IR call shape and a minimal fixture that emits `.llvm_stackmaps`.
 
 ### 5.2 Stackmaps in ELF: `.llvm_stackmaps`
 LLVM emits stackmap data into a dedicated ELF section:
