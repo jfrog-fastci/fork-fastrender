@@ -42,6 +42,7 @@ mod inline_border_padding_line_height;
 mod inline_box_baseline_uses_last_child;
 mod inline_box_fragmentation_remaining_width;
 mod inline_box_baseline_uses_strut;
+mod inline_nowrap_min_content;
 mod first_line_first_letter_integration_test;
 mod first_pseudo_layout;
 mod flex_abspos_static_position;

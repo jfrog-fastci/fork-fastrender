@@ -7724,8 +7724,11 @@ impl InlineFormattingContext {
     )
     .unwrap_or(0.0);
 
+    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
+      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+
     let width = match mode {
-      IntrinsicSizingMode::MinContent => self.min_content_width(&items),
+      IntrinsicSizingMode::MinContent => self.min_content_width(&items, allow_soft_wrap),
       IntrinsicSizingMode::MaxContent => self.max_content_width(&items),
     };
 
@@ -7801,7 +7804,9 @@ impl InlineFormattingContext {
       Err(_) => return Ok((0.0, 0.0)),
     };
 
-    let min_width = self.min_content_width(&min_items);
+    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
+      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+    let min_width = self.min_content_width(&min_items, allow_soft_wrap);
     let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
   }
@@ -7886,8 +7891,11 @@ impl InlineFormattingContext {
     )
     .unwrap_or(0.0);
 
+    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
+      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+
     Ok(match mode {
-      IntrinsicSizingMode::MinContent => self.min_content_width(&items),
+      IntrinsicSizingMode::MinContent => self.min_content_width(&items, allow_soft_wrap),
       IntrinsicSizingMode::MaxContent => self.max_content_width(&items),
     })
   }
@@ -7964,7 +7972,9 @@ impl InlineFormattingContext {
       Err(_) => return Ok((0.0, 0.0)),
     };
 
-    let min_width = self.min_content_width(&min_items);
+    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
+      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+    let min_width = self.min_content_width(&min_items, allow_soft_wrap);
     let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
   }
@@ -8000,9 +8010,9 @@ impl InlineFormattingContext {
     )
   }
 
-  fn min_content_width(&self, items: &[InlineItem]) -> f32 {
+  fn min_content_width(&self, items: &[InlineItem], allow_soft_wrap: bool) -> f32 {
     let mut tracker = SegmentTracker::new();
-    self.accumulate_min_segments(items, &mut tracker);
+    self.accumulate_min_segments(items, allow_soft_wrap, &mut tracker);
     tracker.finish()
   }
 
@@ -8149,7 +8159,12 @@ impl InlineFormattingContext {
     tracker.finish()
   }
 
-  fn accumulate_min_segments(&self, items: &[InlineItem], tracker: &mut dyn SegmentConsumer) {
+  fn accumulate_min_segments(
+    &self,
+    items: &[InlineItem],
+    allow_soft_wrap: bool,
+    tracker: &mut dyn SegmentConsumer,
+  ) {
     for (idx, item) in items.iter().enumerate() {
       let next_item = items.get(idx + 1);
       match item {
@@ -8158,7 +8173,9 @@ impl InlineFormattingContext {
           self.measure_text_min_content(text, tracker, next_char);
         }
         InlineItem::SoftBreak => {
-          tracker.break_segment();
+          if allow_soft_wrap {
+            tracker.break_segment();
+          }
         }
         InlineItem::Tab(tab) => {
           if tab.allow_wrap() {
@@ -8173,27 +8190,40 @@ impl InlineFormattingContext {
         InlineItem::InlineBox(inline_box) => {
           let mut boxed =
             InlineBoxSegment::new(tracker, inline_box.start_edge, inline_box.end_edge);
-          self.accumulate_min_segments(&inline_box.children, &mut boxed);
+          let child_allow_soft_wrap = !matches!(inline_box.style.text_wrap, TextWrap::NoWrap)
+            && !matches!(inline_box.style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+          self.accumulate_min_segments(&inline_box.children, child_allow_soft_wrap, &mut boxed);
           boxed.finish();
         }
         InlineItem::InlineBlock(block) => {
-          tracker.break_segment();
-          tracker.add_width(block.intrinsic_min_total_width());
-          tracker.break_segment();
+          if allow_soft_wrap {
+            tracker.break_segment();
+            tracker.add_width(block.intrinsic_min_total_width());
+            tracker.break_segment();
+          } else {
+            tracker.add_width(block.intrinsic_min_total_width());
+          }
         }
         InlineItem::Ruby(ruby) => {
-          tracker.break_segment();
-          tracker.add_width(ruby.width());
-          tracker.break_segment();
+          if allow_soft_wrap {
+            tracker.break_segment();
+            tracker.add_width(ruby.width());
+            tracker.break_segment();
+          } else {
+            tracker.add_width(ruby.width());
+          }
         }
         InlineItem::Replaced(replaced) => {
-          tracker.break_segment();
-          tracker.add_width(
-            self
-              .min_content_width_for_replaced(replaced)
-              .unwrap_or_else(|| replaced.total_width()),
-          );
-          tracker.break_segment();
+          let width = self
+            .min_content_width_for_replaced(replaced)
+            .unwrap_or_else(|| replaced.total_width());
+          if allow_soft_wrap {
+            tracker.break_segment();
+            tracker.add_width(width);
+            tracker.break_segment();
+          } else {
+            tracker.add_width(width);
+          }
         }
         InlineItem::Floating(_) => {
           tracker.break_segment();
