@@ -205,12 +205,20 @@ fn maybe_enable_stackmaps_linker_symbols() {
   //
   // Consumers can opt in to the same behavior for their final binaries with feature
   // `llvm_stackmaps_linker`.
-  println!("cargo:rustc-link-arg-tests=-Wl,-T,{}", script.display());
-  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_some() {
-    // Only inject the linker script for non-test builds when the consumer opted in to linker-defined
-    // stackmap symbols. This keeps runtime-native usable as a general-purpose library (tools, C
-    // linking) without requiring a custom linker script.
+  //
+  // Important: avoid injecting the same script twice for test targets. When the feature is enabled,
+  // `cargo:rustc-link-arg` applies to *all* targets (including tests), so also emitting
+  // `cargo:rustc-link-arg-tests` would result in duplicate `-T stackmaps.ld` arguments. lld will
+  // accept this, but the script's `INSERT AFTER` fragment runs twice, creating an extra empty
+  // `.data.rel.ro.llvm_stackmaps` output section and causing `__start_llvm_stackmaps` /
+  // `__stop_llvm_stackmaps` to incorrectly resolve to the empty one.
+  let feature_enabled = std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_some();
+  if feature_enabled {
+    // Apply to all targets (including tests) when the consumer opts in to linker-defined symbols.
     println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
+  } else {
+    // Otherwise, keep tests working without requiring the feature.
+    println!("cargo:rustc-link-arg-tests=-Wl,-T,{}", script.display());
   }
 }
 
