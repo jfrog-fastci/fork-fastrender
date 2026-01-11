@@ -21,6 +21,12 @@ CMAKE = { value = "tools/cmake_wrapper.sh", relative = true }
 # default. Bump the minimum stack size for spawned threads so `cargo test` is reliable.
 RUST_MIN_STACK = "4194304"
 
+# `vendor/ecma-rs` uses `RUSTC_BOOTSTRAP=1` so the nested workspace can use a stable toolchain while
+# still enabling a small number of unstable features (e.g. `#[thread_local]` in `runtime-native`).
+# Setting it at the repo root ensures `cargo test --manifest-path vendor/ecma-rs/...` works when
+# invoked from this workspace.
+RUSTC_BOOTSTRAP = "1"
+
 [build]
 # Some of our agent/CI environments configure a global `build.rustc-wrapper` (often `sccache`).
 # Under `scripts/run_limited.sh` (RLIMIT_AS), that wrapper can fail before Cargo even starts

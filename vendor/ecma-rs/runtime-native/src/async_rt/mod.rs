@@ -16,6 +16,7 @@
 mod event_loop;
 mod reactor;
 mod timer;
+mod teardown_queue;
 
 pub(crate) mod coroutine;
 pub(crate) mod promise;
@@ -26,6 +27,7 @@ pub use reactor::Interest;
 pub use reactor::WatcherId;
 pub use timer::TimerId;
 pub use timer::Timers;
+pub use teardown_queue::{Discard, TeardownQueue};
 
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};

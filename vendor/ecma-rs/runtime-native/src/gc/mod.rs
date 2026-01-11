@@ -17,8 +17,8 @@ mod keep_alive;
 
 pub use heap::GcHeap;
 pub use heap::PersistentRoot;
-pub use handle_table::{HandleId, HandleTable, PersistentHandle};
 pub use keep_alive::keep_alive_gc_ref;
+pub use handle_table::{HandleId, HandleTable, OwnedGcHandle, PersistentHandle};
 pub use roots::RememberedSet;
 pub use roots::RootHandle;
 pub use roots::RootSet;

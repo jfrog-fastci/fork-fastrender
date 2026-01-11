@@ -1,7 +1,9 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
+use parking_lot::Mutex;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A stable identifier for an entry in a [`HandleTable`].
 ///
@@ -280,5 +282,50 @@ impl<'a, T> PersistentHandle<'a, T> {
 impl<T> Drop for PersistentHandle<'_, T> {
   fn drop(&mut self) {
     self.table.free(self.id);
+  }
+}
+
+/// An owned persistent handle that can be stored in host queues.
+///
+/// Unlike [`PersistentHandle`], this type does not borrow the handle table; instead it keeps a
+/// shared reference to a mutex-protected table so it can be moved into long-lived host state (async
+/// tasks, I/O watchers, timers).
+#[must_use]
+pub struct OwnedGcHandle<T> {
+  table: Arc<Mutex<HandleTable<T>>>,
+  id: Option<HandleId>,
+}
+
+impl<T> OwnedGcHandle<T> {
+  /// Allocates a new persistent handle in `table`.
+  pub fn new(table: Arc<Mutex<HandleTable<T>>>, ptr: NonNull<T>) -> Self {
+    let id = table.lock().alloc(ptr);
+    Self {
+      table,
+      id: Some(id),
+    }
+  }
+
+  /// The underlying stable [`HandleId`].
+  #[inline]
+  pub fn id(&self) -> HandleId {
+    self.id.expect("OwnedGcHandle already released")
+  }
+
+  /// Releases this handle table entry, removing it from the persistent root set.
+  #[inline]
+  pub fn release(mut self) {
+    if let Some(id) = self.id.take() {
+      self.table.lock().free(id);
+    }
+  }
+}
+
+impl<T> Drop for OwnedGcHandle<T> {
+  fn drop(&mut self) {
+    let Some(id) = self.id.take() else {
+      return;
+    };
+    self.table.lock().free(id);
   }
 }

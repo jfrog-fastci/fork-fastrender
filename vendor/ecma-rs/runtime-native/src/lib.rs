@@ -145,7 +145,7 @@ pub use buffer::{
   BACKING_STORE_MIN_ALIGN,
 };
 pub use gc::GcHeap;
-pub use gc::{HandleId, HandleTable, PersistentHandle};
+pub use gc::{HandleId, HandleTable, OwnedGcHandle, PersistentHandle};
 pub use gc::RememberedSet;
 pub use gc::PersistentRoot;
 pub use gc::RootHandle;
