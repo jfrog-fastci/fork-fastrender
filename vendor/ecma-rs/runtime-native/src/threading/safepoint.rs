@@ -76,9 +76,14 @@ pub fn register_gc_waker(waker: fn()) {
 }
 
 fn wake_all_gc_wakers() {
-  let wakers = { gc_wakers().lock().unwrap().clone() };
-  for w in wakers {
-    w();
+  // Avoid allocating during GC coordination; copy out one function pointer at a time.
+  let mut idx = 0usize;
+  loop {
+    let Some(waker) = gc_wakers().lock().unwrap().get(idx).copied() else {
+      break;
+    };
+    waker();
+    idx += 1;
   }
 }
 
