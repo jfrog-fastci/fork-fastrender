@@ -45,6 +45,12 @@ u.hash;
 const s: string = "hi";
 s.length;
 
+const m: Map<string, number> = new Map();
+m.size;
+
+const set: Set<string> = new Set();
+set.size;
+
 const xs: number[] = [1];
 xs.length;
 "#;
@@ -115,6 +121,8 @@ fn resolves_known_member_reads_typed() {
   let search = find_member_expr(&lowered, body, "u", "search");
   let hash = find_member_expr(&lowered, body, "u", "hash");
   let str_length = find_member_expr(&lowered, body, "s", "length");
+  let map_size = find_member_expr(&lowered, body, "m", "size");
+  let set_size = find_member_expr(&lowered, body, "set", "size");
   let length = find_member_expr(&lowered, body, "xs", "length");
 
   let resolved_pathname = resolve_member(&lowered, root_body, pathname, &types).expect("resolve u.pathname");
@@ -157,6 +165,14 @@ fn resolves_known_member_reads_typed() {
     resolve_member(&lowered, root_body, str_length, &types).expect("resolve s.length");
   assert_eq!(resolved_str_length.api.as_str(), "String.prototype.length");
 
+  let resolved_map_size =
+    resolve_member(&lowered, root_body, map_size, &types).expect("resolve m.size");
+  assert_eq!(resolved_map_size.api.as_str(), "Map.prototype.size");
+
+  let resolved_set_size =
+    resolve_member(&lowered, root_body, set_size, &types).expect("resolve set.size");
+  assert_eq!(resolved_set_size.api.as_str(), "Set.prototype.size");
+
   let resolved_length = resolve_member(&lowered, root_body, length, &types).expect("resolve xs.length");
   assert_eq!(resolved_length.api.as_str(), "Array.prototype.length");
 
@@ -178,5 +194,13 @@ fn resolves_known_member_reads_typed() {
   assert_eq!(
     root_tables.resolved_member[str_length.0 as usize].map(|api| api.as_str()),
     Some("String.prototype.length")
+  );
+  assert_eq!(
+    root_tables.resolved_member[map_size.0 as usize].map(|api| api.as_str()),
+    Some("Map.prototype.size")
+  );
+  assert_eq!(
+    root_tables.resolved_member[set_size.0 as usize].map(|api| api.as_str()),
+    Some("Set.prototype.size")
   );
 }

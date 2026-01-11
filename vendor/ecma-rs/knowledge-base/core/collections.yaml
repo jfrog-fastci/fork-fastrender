@@ -21,6 +21,13 @@
   effects: Pure
   purity: Pure
 
+- name: Map.prototype.size
+  kind: property_get
+  effects: Pure
+  purity: Pure
+  properties:
+    returns: number
+
 - name: Map.prototype.delete
   effects: Pure
   purity: Impure
@@ -75,6 +82,13 @@
 - name: Set.prototype.has
   effects: Pure
   purity: Pure
+
+- name: Set.prototype.size
+  kind: property_get
+  effects: Pure
+  purity: Pure
+  properties:
+    returns: number
 
 - name: Set.prototype.delete
   effects: Pure

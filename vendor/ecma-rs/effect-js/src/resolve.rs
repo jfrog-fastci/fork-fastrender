@@ -958,6 +958,8 @@ pub fn resolve_member(
       ApiId::ArrayPrototypeLength
     }
     "length" if receiver_is_string(types, body, member.object) => ApiId::StringPrototypeLength,
+    "size" if receiver_is_named_ref(types, body, member.object, "Map") => ApiId::MapPrototypeSize,
+    "size" if receiver_is_named_ref(types, body, member.object, "Set") => ApiId::SetPrototypeSize,
     "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
     "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
     "origin" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeOrigin,
