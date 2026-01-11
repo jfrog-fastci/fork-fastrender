@@ -228,7 +228,9 @@ use native_js::compile_program(program, entry, opts) and pass an explicit FileId
     ))
   })?;
 
-  let artifact = compile_program(program, entry, options)?;
+  // Avoid running `Program::check()` a second time (compile_program also checks
+  // by default).
+  let artifact = compiler::compile_program_checked(program, entry, options)?;
   let llvm_ir = if options.emit == EmitKind::LlvmIr {
     let path = artifact.path.clone();
     Some(

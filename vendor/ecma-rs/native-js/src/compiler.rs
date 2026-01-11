@@ -556,6 +556,20 @@ pub(crate) fn compile_program(
   compiler.compile()
 }
 
+/// Compile a program assuming it has already been successfully type-checked via
+/// `Program::check()` (i.e. no `Severity::Error` diagnostics).
+///
+/// This is an internal helper used to avoid redundant typechecking when layering
+/// wrappers (e.g. [`crate::compile`] calling into [`crate::compile_program`]).
+pub(crate) fn compile_program_checked(
+  program: &Program,
+  entry: FileId,
+  opts: &CompilerOptions,
+) -> Result<Artifact, NativeJsError> {
+  let compiler = Compiler { program, entry, opts };
+  compiler.compile_checked()
+}
+
 struct Compiler<'a> {
   program: &'a Program,
   entry: FileId,
@@ -565,6 +579,10 @@ struct Compiler<'a> {
 impl<'a> Compiler<'a> {
   fn compile(&self) -> Result<Artifact, NativeJsError> {
     self.ensure_typecheck_ok()?;
+    self.compile_checked()
+  }
+
+  fn compile_checked(&self) -> Result<Artifact, NativeJsError> {
     let loaded = self.load_hir_and_types()?;
     self.validate_strict_subset()?;
     self.reject_disabled_builtins()?;
