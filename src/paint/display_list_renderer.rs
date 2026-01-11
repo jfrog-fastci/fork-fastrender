@@ -9825,20 +9825,22 @@ impl DisplayListRenderer {
       //
       // For non-translation transforms (rotation/scale/projective), fall back to tiny-skia so the
       // shadow pixmap is sampled correctly.
-      if Self::is_translation_only_transform(transform) {
-        let tx = transform.tx.round();
-        let ty = transform.ty.round();
-        if (transform.tx - tx).abs() <= 1e-6 && (transform.ty - ty).abs() <= 1e-6 {
-          composite_layer_into_pixmap(
-            pixmap,
-            &temp,
-            1.0,
-            blend_mode,
-            (dest_x + tx as i32, dest_y + ty as i32),
-            clip.as_deref(),
-          );
-          return;
-        }
+      if Self::is_translation_only_transform(transform)
+        && Self::is_near_integer(transform.tx)
+        && Self::is_near_integer(transform.ty)
+      {
+        composite_layer_into_pixmap(
+          pixmap,
+          &temp,
+          1.0,
+          blend_mode,
+          (
+            dest_x + transform.tx.round() as i32,
+            dest_y + transform.ty.round() as i32,
+          ),
+          clip.as_deref(),
+        );
+        return;
       }
 
       pixmap.draw_pixmap(dest_x, dest_y, temp.as_ref(), &paint, transform, clip.as_deref());

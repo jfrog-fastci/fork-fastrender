@@ -306,3 +306,35 @@ fn box_shadow_figma_modal_smoke() {
     "expected shadow to fade with distance"
   );
 }
+
+#[test]
+fn box_shadow_near_integer_translation_avoids_dither() {
+  // When a translation transform is extremely close to an integer pixel (common after float math),
+  // treat it as integer-aligned so we can use the manual `source-over` compositor instead of
+  // tiny-skia's ordered-dithered path.
+  let html = r#"
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; background: white; }
+      #target {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        /* Not exactly 1px, but close enough that rasterization should snap. */
+        transform: translateX(0.9998px);
+        /* Solid shadow strip with alpha 0.3. */
+        box-shadow: 4px 0 0 0 rgba(0, 0, 0, 0.3);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render(html, 40, 30);
+
+  // Shadow strip should be uniform over white:
+  //   out = 255 - round(0.3 * 255) = 178
+  for (x, y) in [(22, 12), (23, 13), (22, 14), (23, 15)] {
+    assert_eq!(rgba_at(&pixmap, x, y), (178, 178, 178, 255));
+  }
+}

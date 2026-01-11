@@ -34,6 +34,7 @@
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Rect;
 use crate::paint::blur::{apply_gaussian_blur_cached, BlurCache, BlurCacheOps};
+use crate::paint::canvas::composite_layer_into_pixmap;
 use crate::paint::display_list::BorderRadii;
 use crate::paint::display_list::BorderRadius;
 use crate::paint::pixmap::new_pixmap;
@@ -48,7 +49,6 @@ use tiny_skia::Paint;
 use tiny_skia::Path;
 use tiny_skia::PathBuilder;
 use tiny_skia::Pixmap;
-use tiny_skia::PixmapPaint;
 use tiny_skia::PremultipliedColorU8;
 use tiny_skia::Stroke;
 use tiny_skia::Transform;
@@ -1712,14 +1712,12 @@ fn render_outset_shadow(
   }
   crate::render_control::check_active(RenderStage::Paint)?;
 
-  let mut paint = PixmapPaint::default();
-  paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-  pixmap.draw_pixmap(
-    min_x as i32,
-    min_y as i32,
-    tmp.as_ref(),
-    &paint,
-    Transform::identity(),
+  composite_layer_into_pixmap(
+    pixmap,
+    &tmp,
+    1.0,
+    tiny_skia::BlendMode::SourceOver,
+    (min_x as i32, min_y as i32),
     mask,
   );
   Ok(true)
@@ -1930,14 +1928,12 @@ fn render_inset_shadow(
   }
   crate::render_control::check_active(RenderStage::Paint)?;
 
-  let mut final_paint = PixmapPaint::default();
-  final_paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-  pixmap.draw_pixmap(
-    min_x as i32,
-    min_y as i32,
-    tmp.as_ref(),
-    &final_paint,
-    Transform::identity(),
+  composite_layer_into_pixmap(
+    pixmap,
+    &tmp,
+    1.0,
+    tiny_skia::BlendMode::SourceOver,
+    (min_x as i32, min_y as i32),
     mask,
   );
   Ok(true)
