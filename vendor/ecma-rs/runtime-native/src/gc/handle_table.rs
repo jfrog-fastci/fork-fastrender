@@ -222,6 +222,28 @@ impl<T> HandleTable<T> {
     }
   }
 
+  /// Update the pointer stored in `id`'s slot.
+  ///
+  /// Returns `true` if `id` was live and successfully updated.
+  pub fn set(&self, id: HandleId, ptr: NonNull<T>) -> bool {
+    let mut inner = self.inner.write();
+    let slot = match inner.slots.get_mut(id.index() as usize) {
+      Some(slot) => slot,
+      None => return false,
+    };
+
+    match slot {
+      Slot::Live {
+        ptr: stored_ptr,
+        generation,
+      } if *generation == id.generation() => {
+        *stored_ptr = StoredPtr::from_nonnull(ptr);
+        true
+      }
+      _ => false,
+    }
+  }
+
   /// Frees `id`, removing it from the persistent root set and making its slot reusable.
   ///
   /// Returns the stored pointer if the handle was live.

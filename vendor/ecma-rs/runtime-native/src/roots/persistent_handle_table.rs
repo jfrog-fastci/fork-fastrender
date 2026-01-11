@@ -44,6 +44,14 @@ impl PersistentHandleTable {
     self.inner.lock().free(id).is_some()
   }
 
+  /// Update the pointer stored for `id`.
+  ///
+  /// Returns `true` if the handle was live and successfully updated.
+  pub fn set(&self, id: HandleId, ptr: *mut u8) -> bool {
+    let ptr = NonNull::new(ptr).unwrap_or_else(|| std::process::abort());
+    self.inner.lock().set(id, ptr)
+  }
+
   /// Enumerate all live pointer slots.
   ///
   /// This is intended to be used by the GC while the world is stopped, so it can trace/update

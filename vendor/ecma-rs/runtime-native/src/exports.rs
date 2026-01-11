@@ -16,6 +16,7 @@ use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
 use crate::async_abi::PromiseHeader;
+use crate::gc::HandleId;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
@@ -1052,13 +1053,13 @@ pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
 // -----------------------------------------------------------------------------
 //
 // These are stable integer IDs intended for crossing async / OS / thread boundaries (epoll/kqueue
-// userdata, cross-thread wakeups, ...). They are backed by `roots::RootRegistry` entries so the GC
-// can update the underlying slot when objects move.
+// userdata, cross-thread wakeups, ...). They are backed by the process-global persistent handle
+// table (`roots::PersistentHandleTable`) so the GC can update the stored pointer when objects move.
 
 /// Allocate a new persistent handle rooting `ptr`.
 #[no_mangle]
 pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
-  crate::roots::global_root_registry().pin(ptr) as u64
+  crate::roots::global_persistent_handle_table().alloc(ptr).to_u64()
 }
 
 /// Free a persistent handle created by [`rt_handle_alloc`].
@@ -1066,10 +1067,7 @@ pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
 /// Invalid handles are ignored.
 #[no_mangle]
 pub extern "C" fn rt_handle_free(handle: u64) {
-  let Ok(handle) = u32::try_from(handle) else {
-    return;
-  };
-  crate::roots::global_root_registry().unregister(handle);
+  let _ = crate::roots::global_persistent_handle_table().free(HandleId::from_u64(handle));
 }
 
 /// Resolve a persistent handle back to the (possibly relocated) pointer stored in its slot.
@@ -1077,11 +1075,8 @@ pub extern "C" fn rt_handle_free(handle: u64) {
 /// Returns null if the handle is invalid or has been freed.
 #[no_mangle]
 pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
-  let Ok(handle) = u32::try_from(handle) else {
-    return std::ptr::null_mut();
-  };
-  crate::roots::global_root_registry()
-    .get(handle)
+  crate::roots::global_persistent_handle_table()
+    .get(HandleId::from_u64(handle))
     .unwrap_or(std::ptr::null_mut())
 }
 
@@ -1090,10 +1085,7 @@ pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
 /// Invalid handles are ignored.
 #[no_mangle]
 pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
-  let Ok(handle) = u32::try_from(handle) else {
-    return;
-  };
-  let _ = crate::roots::global_root_registry().set(handle, ptr);
+  let _ = crate::roots::global_persistent_handle_table().set(HandleId::from_u64(handle), ptr);
 }
 
 #[cfg(feature = "gc_stats")]

@@ -17,6 +17,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_global_root_unregister(",
     "rt_gc_root_get(",
     "rt_gc_root_set(",
+    "rt_handle_alloc(",
+    "rt_handle_free(",
+    "rt_handle_load(",
+    "rt_handle_store(",
     "rt_root_push(",
     "rt_root_pop(",
     "rt_gc_set_young_range(",
@@ -129,6 +133,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _root_get: extern "C" fn(u32) -> *mut u8 = runtime_native::rt_gc_root_get;
   let _root_set: extern "C" fn(u32, *mut u8) -> bool = runtime_native::rt_gc_root_set;
 
+  // Persistent handles (stable u64 IDs).
+  let _handle_alloc: extern "C" fn(*mut u8) -> u64 = runtime_native::rt_handle_alloc;
+  let _handle_free: extern "C" fn(u64) = runtime_native::rt_handle_free;
+  let _handle_load: extern "C" fn(u64) -> *mut u8 = runtime_native::rt_handle_load;
+  let _handle_store: extern "C" fn(u64, *mut u8) = runtime_native::rt_handle_store;
+
   // Per-thread shadow stack root push/pop.
   let _root_push: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_push;
   let _root_pop: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_pop;
@@ -165,6 +175,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _global_root_unregister,
     _root_get,
     _root_set,
+    _handle_alloc,
+    _handle_free,
+    _handle_load,
+    _handle_store,
     _root_push,
     _root_pop,
   );
