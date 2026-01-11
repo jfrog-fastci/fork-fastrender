@@ -1,12 +1,12 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use diagnostics::paths::normalize_fs_path;
-use native_js::{compile_project_to_llvm_ir, CompileOptions};
+use native_js::compiler::compile_llvm_ir_to_artifact;
+use native_js::{compile_project_to_llvm_ir, CompileOptions, EmitKind};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tempfile::TempDir;
 use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile};
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
@@ -96,36 +96,35 @@ fn main() {
     Some(Commands::Build { entry, output }) => {
       let ir = compile_file_to_ir(&cli, entry);
       write_ir_debug(&cli, &ir);
-      let (ll_path, tmpdir) = write_ir_to_tempfile(&ir);
-      let _keep_tmpdir = tmpdir;
-      let clang = find_clang().unwrap_or_else(|| {
-        eprintln!("failed to find clang (tried clang-18 and clang)");
-        exit(1);
-      });
 
-      let mut cmd = Command::new(clang);
-      cmd.arg("-x").arg("ir").arg(&ll_path);
-      // On modern Linux toolchains `clang` defaults to PIE, but native-js stackmaps contain
-      // absolute code relocations that can trigger `DT_TEXTREL` when linked as PIE. Prefer a
-      // stable non-PIE executable by default.
-      if cfg!(target_os = "linux") {
-        cmd.arg("-no-pie");
-      }
-      cmd.arg("-o").arg(output);
-      let status = cmd.status().unwrap_or_else(|err| {
-        eprintln!("failed to invoke clang: {err}");
-        exit(1);
-      });
+      let mut opts = CompileOptions::default();
+      opts.builtins = !cli.no_builtins;
+      opts.emit = EmitKind::Executable;
 
-      if !status.success() {
-        exit(status.code().unwrap_or(1));
+      if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
+        eprintln!("{err}");
+        exit(1);
       }
     }
     Some(Commands::Run { entry, args }) => {
       let ir = compile_file_to_ir(&cli, entry);
       write_ir_debug(&cli, &ir);
-      let (exe_path, _tmpdir) = compile_ir_to_temp_exe(&ir);
-      run_exe(&exe_path, args);
+
+      let mut opts = CompileOptions::default();
+      opts.builtins = !cli.no_builtins;
+      opts.emit = EmitKind::Executable;
+
+      let code = {
+        let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
+          Ok(out) => out,
+          Err(err) => {
+            eprintln!("{err}");
+            exit(1);
+          }
+        };
+        run_exe(&out.path, args)
+      };
+      exit(code);
     }
     Some(Commands::EmitIr { entry, output }) => {
       let ir = compile_file_to_ir(&cli, entry);
@@ -148,8 +147,22 @@ fn main() {
 
       let ir = compile_file_to_ir(&cli, input);
       write_ir_debug(&cli, &ir);
-      let (exe_path, _tmpdir) = compile_ir_to_temp_exe(&ir);
-      run_exe(&exe_path, &[]);
+
+      let mut opts = CompileOptions::default();
+      opts.builtins = !cli.no_builtins;
+      opts.emit = EmitKind::Executable;
+
+      let code = {
+        let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
+          Ok(out) => out,
+          Err(err) => {
+            eprintln!("{err}");
+            exit(1);
+          }
+        };
+        run_exe(&out.path, &[])
+      };
+      exit(code);
     }
   }
 }
@@ -330,50 +343,7 @@ fn write_ir_debug(cli: &Cli, ir: &str) {
   }
 }
 
-fn write_ir_to_tempfile(ir: &str) -> (PathBuf, TempDir) {
-  let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
-    eprintln!("failed to create tempdir: {err}");
-    exit(1);
-  });
-
-  let ll_path = tmpdir.path().join("out.ll");
-  if let Err(err) = fs::write(&ll_path, ir) {
-    eprintln!("failed to write {}: {err}", ll_path.display());
-    exit(1);
-  }
-
-  (ll_path, tmpdir)
-}
-
-fn compile_ir_to_temp_exe(ir: &str) -> (PathBuf, TempDir) {
-  let (ll_path, tmpdir) = write_ir_to_tempfile(ir);
-
-  let exe_path = tmpdir.path().join("out");
-  let clang = find_clang().unwrap_or_else(|| {
-    eprintln!("failed to find clang (tried clang-18 and clang)");
-    exit(1);
-  });
-
-  let mut cmd = Command::new(clang);
-  cmd.arg("-x").arg("ir").arg(&ll_path);
-  // See note in `build`: prefer non-PIE executables by default on Linux.
-  if cfg!(target_os = "linux") {
-    cmd.arg("-no-pie");
-  }
-  cmd.arg("-o").arg(&exe_path);
-  let status = cmd.status().unwrap_or_else(|err| {
-    eprintln!("failed to invoke clang: {err}");
-    exit(1);
-  });
-
-  if !status.success() {
-    exit(status.code().unwrap_or(1));
-  }
-
-  (exe_path, tmpdir)
-}
-
-fn run_exe(exe_path: &Path, args: &[String]) {
+fn run_exe(exe_path: &Path, args: &[String]) -> i32 {
   let status = Command::new(exe_path)
     .args(args)
     .stdin(Stdio::inherit())
@@ -385,28 +355,6 @@ fn run_exe(exe_path: &Path, args: &[String]) {
       exit(1);
     });
 
-  exit(status.code().unwrap_or(1));
-}
-
-fn find_clang() -> Option<&'static str> {
-  if Command::new("clang-18")
-    .arg("--version")
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .status()
-    .is_ok()
-  {
-    return Some("clang-18");
-  }
-  if Command::new("clang")
-    .arg("--version")
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .status()
-    .is_ok()
-  {
-    return Some("clang");
-  }
-  None
+  status.code().unwrap_or(1)
 }
 

@@ -57,12 +57,15 @@ pub struct CompileOutput {
   _tempdir: Option<TempDir>,
 }
 
-/// Compile TypeScript source into an on-disk artifact specified by [`CompileOptions::emit`].
+/// Compile textual LLVM IR into an on-disk artifact specified by [`CompileOptions::emit`].
+///
+/// This is a low-level helper intended for tooling and tests that already have LLVM IR (for example
+/// `native-js-cli`, which uses the project/module resolver to build a multi-file IR module).
 ///
 /// If `output_path` is `None`, the artifact is written into a temporary directory and cleaned up
 /// when the returned [`CompileOutput`] is dropped (unless `opts.debug` is set).
-pub fn compile_typescript_to_artifact(
-  source: &str,
+pub fn compile_llvm_ir_to_artifact(
+  llvm_ir: &str,
   opts: CompileOptions,
   output_path: Option<PathBuf>,
 ) -> Result<CompileOutput, NativeJsError> {
@@ -74,11 +77,9 @@ pub fn compile_typescript_to_artifact(
 
   let (out_path, out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
 
-  let ir = compile_typescript_to_llvm_ir(source, opts.clone())?;
-
   match opts.emit {
     EmitKind::LlvmIr => {
-      write_file(&out_path, ir.as_bytes())?;
+      write_file(&out_path, llvm_ir.as_bytes())?;
       Ok(CompileOutput {
         path: out_path,
         _tempdir: out_tempdir,
@@ -87,7 +88,7 @@ pub fn compile_typescript_to_artifact(
 
     EmitKind::Bitcode | EmitKind::Object | EmitKind::Assembly | EmitKind::Executable => {
       let context = Context::create();
-      let module = parse_ir(&context, &ir)?;
+      let module = parse_ir(&context, llvm_ir)?;
 
       module
         .verify()
@@ -127,7 +128,7 @@ pub fn compile_typescript_to_artifact(
           write_file(&obj_path, &obj)?;
           if opts.debug {
             let ll_path = path_with_suffix(&out_path, ".ll");
-            write_file(&ll_path, ir.as_bytes())?;
+            write_file(&ll_path, llvm_ir.as_bytes())?;
           }
 
           link::link_object_to_executable(&obj_path, &out_path)?;
@@ -142,6 +143,19 @@ pub fn compile_typescript_to_artifact(
       })
     }
   }
+}
+
+/// Compile TypeScript source into an on-disk artifact specified by [`CompileOptions::emit`].
+///
+/// If `output_path` is `None`, the artifact is written into a temporary directory and cleaned up
+/// when the returned [`CompileOutput`] is dropped (unless `opts.debug` is set).
+pub fn compile_typescript_to_artifact(
+  source: &str,
+  opts: CompileOptions,
+  output_path: Option<PathBuf>,
+) -> Result<CompileOutput, NativeJsError> {
+  let ir = compile_typescript_to_llvm_ir(source, opts.clone())?;
+  compile_llvm_ir_to_artifact(&ir, opts, output_path)
 }
 
 fn parse_ir<'ctx>(
