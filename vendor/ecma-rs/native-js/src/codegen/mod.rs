@@ -613,61 +613,15 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .map(|v| v.into_int_value())
       .unwrap_or_else(|| self.i32_ty.const_zero());
 
-    match main_ret_kind {
-      TsAbiKind::Number => {
-        let printf = declare_printf(self.context, &self.module);
-        let fmt = builder
-          .build_global_string_ptr("%d\n", "native_js_main_ret_fmt")
-          .expect("failed to create printf format string");
-        builder
-          .build_call(
-            printf,
-            &[fmt.as_pointer_value().into(), ret_val.into()],
-            "native_js_print_main_ret",
-          )
-          .expect("failed to build printf call");
-      }
-      TsAbiKind::Boolean => {
-        let puts = declare_puts(self.context, &self.module);
-        let is_true = builder
-          .build_int_compare(IntPredicate::NE, ret_val, self.i32_ty.const_zero(), "is_true")
-          .expect("failed to build bool compare");
-
-        let true_s = builder
-          .build_global_string_ptr("true", "native_js_true")
-          .expect("failed to build true string");
-        let false_s = builder
-          .build_global_string_ptr("false", "native_js_false")
-          .expect("failed to build false string");
-
-        let sel = builder
-          .build_select(
-            is_true,
-            true_s.as_pointer_value(),
-            false_s.as_pointer_value(),
-            "native_js_bool_str",
-          )
-          .expect("failed to build select")
-          .into_pointer_value();
-
-        builder
-          .build_call(puts, &[sel.into()], "native_js_puts_bool")
-          .expect("failed to build puts call");
-      }
-      TsAbiKind::Void => {
-        // Chosen convention: `void`/`undefined` entrypoints print `undefined`.
-        let puts = declare_puts(self.context, &self.module);
-        let undef = builder
-          .build_global_string_ptr("undefined", "native_js_undefined")
-          .expect("failed to build undefined string");
-        builder
-          .build_call(puts, &[undef.as_pointer_value().into()], "native_js_puts_undefined")
-          .expect("failed to build puts call");
-      }
-    }
+    let exit_code = match main_ret_kind {
+      // `void` / `undefined` / `never`: treat as success.
+      TsAbiKind::Void => self.i32_ty.const_zero(),
+      // All supported non-void types lower to an i32 value already.
+      TsAbiKind::Number | TsAbiKind::Boolean => ret_val,
+    };
 
     builder
-      .build_return(Some(&self.i32_ty.const_zero()))
+      .build_return(Some(&exit_code))
       .expect("failed to build return");
   }
 
@@ -1441,7 +1395,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     self.loop_stack.pop();
 
     self.builder.position_at_end(latch_bb);
-    safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
     self
       .builder
       .build_unconditional_branch(cond_bb)
@@ -1493,7 +1446,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     self.loop_stack.pop();
 
     self.builder.position_at_end(latch_bb);
-    safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
     self
       .builder
       .build_unconditional_branch(body_bb)
@@ -1577,7 +1529,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       if let Some(update) = update {
         let _ = self.codegen_expr(update)?;
       }
-      safepoint::emit_backedge_gc_poll(self.cg.context, &self.cg.module, &self.builder, self.func);
       self
         .builder
         .build_unconditional_branch(cond_bb)
@@ -2227,15 +2178,6 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
   let i32_ty = context.i32_type();
   let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
-}
-
-fn declare_puts<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("puts") {
-    return existing;
-  }
-  let i32_ty = context.i32_type();
-  let ptr_ty = context.ptr_type(AddressSpace::default());
-  module.add_function("puts", i32_ty.fn_type(&[ptr_ty.into()], false), None)
 }
 
 fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'ctx>> {

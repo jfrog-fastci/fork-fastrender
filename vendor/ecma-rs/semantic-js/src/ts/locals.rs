@@ -639,6 +639,14 @@ impl DeclarePass {
           self.walk_stmt(alt);
         }
       }
+      AstStmt::While(while_stmt) => {
+        self.walk_expr(&mut while_stmt.stx.condition);
+        self.walk_stmt(&mut while_stmt.stx.body);
+      }
+      AstStmt::DoWhile(do_while) => {
+        self.walk_stmt(&mut do_while.stx.body);
+        self.walk_expr(&mut do_while.stx.condition);
+      }
       AstStmt::ForTriple(triple) => self.walk_for_triple(triple),
       AstStmt::ForIn(for_in) => self.walk_for_in(for_in),
       AstStmt::ForOf(for_of) => self.walk_for_of(for_of),
@@ -1429,6 +1437,14 @@ impl<'a> ResolvePass<'a> {
           self.walk_stmt(alt);
         }
       }
+      AstStmt::While(while_stmt) => {
+        self.walk_expr(&mut while_stmt.stx.condition);
+        self.walk_stmt(&mut while_stmt.stx.body);
+      }
+      AstStmt::DoWhile(do_while) => {
+        self.walk_stmt(&mut do_while.stx.body);
+        self.walk_expr(&mut do_while.stx.condition);
+      }
       AstStmt::ForTriple(triple) => {
         self.push_scope_from_assoc(&triple.assoc);
         match &mut triple.stx.init {
@@ -2187,6 +2203,14 @@ impl DeclareTablesPass {
         if let Some(alt) = &if_stmt.stx.alternate {
           self.walk_stmt(alt);
         }
+      }
+      AstStmt::While(while_stmt) => {
+        self.walk_expr(&while_stmt.stx.condition);
+        self.walk_stmt(&while_stmt.stx.body);
+      }
+      AstStmt::DoWhile(do_while) => {
+        self.walk_stmt(&do_while.stx.body);
+        self.walk_expr(&do_while.stx.condition);
       }
       AstStmt::ForTriple(triple) => self.walk_for_triple(triple),
       AstStmt::ForIn(for_in) => self.walk_for_in(for_in),
@@ -2949,6 +2973,14 @@ impl<'a> ResolveTablesPass<'a> {
         if let Some(alt) = &if_stmt.stx.alternate {
           self.walk_stmt(alt);
         }
+      }
+      AstStmt::While(while_stmt) => {
+        self.walk_expr(&while_stmt.stx.condition);
+        self.walk_stmt(&while_stmt.stx.body);
+      }
+      AstStmt::DoWhile(do_while) => {
+        self.walk_stmt(&do_while.stx.body);
+        self.walk_expr(&do_while.stx.condition);
       }
       AstStmt::ForTriple(triple) => {
         self.push_scope_for_node(triple);

@@ -822,7 +822,7 @@ x += 2;
   fs::write(
     &entry,
     r#"import { x } from "./reexport";
-export function main(): number { return x; }
+ export function main(): number { return x; }
 "#,
   )
   .unwrap();
@@ -893,7 +893,7 @@ print(42);
   fs::write(
     &entry,
     r#"export { type T } from "./dep";
-export function main(): number { return 0; }
+ export function main(): number { return 0; }
 "#,
   )
   .unwrap();
@@ -937,4 +937,137 @@ export function main(): number { return 0; }
     .assert()
     .success()
     .stdout(predicate::eq("0\n1\n2\n0\n"));
+}
+
+#[test]
+fn locals_and_while_loop_sum_0_to_9() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"
+export function main(): number {
+  let sum = 0;
+  let i = 0;
+  while (i < 10) {
+    sum += i;
+    i += 1;
+  }
+  return sum;
+}
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(45));
+}
+
+#[test]
+fn if_statement_controls_return_value() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"
+export function main(): number {
+  if (1 < 2) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(1));
+}
+
+#[test]
+fn direct_function_call_add() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+export function main(): number {
+  return add(1, 2);
+}
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(3));
+}
+
+#[test]
+fn recursion_fib_10() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"
+function fib(n: number): number {
+  if (n < 2) {
+    return n;
+  }
+  return fib(n - 1) + fib(n - 2);
+}
+
+export function main(): number {
+  return fib(10);
+}
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(55));
 }
