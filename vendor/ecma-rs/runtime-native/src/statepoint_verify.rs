@@ -15,10 +15,15 @@ use crate::statepoints::{
 use std::error::Error;
 use std::fmt;
 
-/// Default statepoint ID used by LLVM 18's `rewrite-statepoints-for-gc` pass.
+/// Default `gc.statepoint` ID used by LLVM 18 when `rewrite-statepoints-for-gc` is
+/// run without an explicit `"statepoint-id"` override.
 ///
-/// LLVM uses this constant ID when callsites are not annotated with the
-/// `"statepoint-id"` directive attribute.
+/// The StackMap record stores this value in its `patchpoint_id` field.
+///
+/// Note: this value is **not stable** across all statepoints in general; LLVM
+/// allows overriding it per callsite (and some tests/codegen paths do so). The
+/// verifier must therefore not rely on this as the only way to recognize
+/// statepoint-shaped records.
 pub const LLVM_STATEPOINT_PATCHPOINT_ID: u64 = 0xABCDEF00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +49,9 @@ impl DwarfArch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
   /// Only verify stack map records that look like LLVM statepoints.
+  ///
+  /// Detection is layout-based: the record must have the 3 leading constant
+  /// header locations (`callconv`, `flags`, `deopt_count`).
   StatepointsOnly,
   /// Verify all stack map records as if they were statepoints.
   AllRecords,
@@ -299,11 +307,10 @@ pub fn verify_statepoint_stackmap(
       })?;
       record_index += 1;
 
-      let looks_like_statepoint =
-        rec.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-          && rec.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-            .iter()
-            .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+      let looks_like_statepoint = rec.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+        && rec.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+          .iter()
+          .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
       if opts.mode == VerifyMode::StatepointsOnly && !looks_like_statepoint {
         continue;
       }

@@ -385,12 +385,6 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
 #[test]
 fn non_statepoint_records_are_skipped() {
   let mut bytes = build_stackmaps_with_derived_pointer();
-  // The stackmap parser runs a debug-mode verifier that (by convention) only checks records with
-  // `patchpoint_id == 0xABCDEF00`. Use a different ID so we can construct an obviously non-statepoint
-  // record without tripping the verifier.
-  //
-  // Offset: header (16) + function record (24) = 40.
-  bytes[40..48].copy_from_slice(&0x1234_5678u64.to_le_bytes());
 
   // Overwrite the first location kind so the record no longer matches the LLVM
   // statepoint layout (3 leading constant header locations).

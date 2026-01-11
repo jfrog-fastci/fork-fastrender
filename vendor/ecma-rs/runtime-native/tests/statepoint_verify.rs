@@ -217,6 +217,28 @@ fn verifier_accepts_deopt_operands() {
 }
 
 #[test]
+fn verifier_does_not_depend_on_patchpoint_id_constant() {
+  let mut stackmap = StackMap::parse(STATEPOINT_X86_64).unwrap();
+  assert!(
+    !stackmap.records.is_empty(),
+    "fixture should contain at least one stackmap record"
+  );
+
+  // LLVM allows overriding the per-statepoint ID (stored as `patchpoint_id` in the stackmap
+  // record). The verifier must therefore detect statepoints by *layout*, not by a fixed ID.
+  stackmap.records[0].patchpoint_id = 42;
+
+  verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap();
+}
+
+#[test]
 fn stackmaps_parse_runs_statepoint_verifier() {
   let mut bytes = if cfg!(target_arch = "x86_64") {
     STATEPOINT_X86_64.to_vec()
