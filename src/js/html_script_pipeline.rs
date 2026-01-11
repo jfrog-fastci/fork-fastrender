@@ -159,6 +159,18 @@ impl HtmlScriptPipelineState {
     Ok(was_blocked && self.blocked_parser_on.is_none())
   }
 
+  fn on_classic_fetch_failed<Host: HtmlScriptPipelineHost>(
+    &mut self,
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+    script_id: HtmlScriptId,
+  ) -> Result<bool> {
+    let was_blocked = self.blocked_parser_on.is_some();
+    let actions = self.scheduler.classic_fetch_failed(script_id)?;
+    self.apply_actions(host, event_loop, actions)?;
+    Ok(was_blocked && self.blocked_parser_on.is_none())
+  }
+
   fn on_module_graph_completed<Host: HtmlScriptPipelineHost>(
     &mut self,
     host: &mut Host,
@@ -167,6 +179,17 @@ impl HtmlScriptPipelineState {
     module_handle: String,
   ) -> Result<()> {
     let actions = self.scheduler.module_graph_completed(script_id, module_handle)?;
+    self.apply_actions(host, event_loop, actions)?;
+    Ok(())
+  }
+
+  fn on_module_graph_failed<Host: HtmlScriptPipelineHost>(
+    &mut self,
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+    script_id: HtmlScriptId,
+  ) -> Result<()> {
+    let actions = self.scheduler.module_graph_failed(script_id)?;
     self.apply_actions(host, event_loop, actions)?;
     Ok(())
   }
@@ -318,10 +341,17 @@ impl HtmlScriptPipelineState {
               ScriptEventKind::Error
             }
           });
+          let should_execute = Self::work_has_source(&work).unwrap_or(true);
 
-          {
-            let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-            self.execute_work_now(host, event_loop, script_id, node_id, &work)?;
+          if should_execute {
+            {
+              let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+              self.execute_work_now(host, event_loop, script_id, node_id, &work)?;
+            }
+          } else if self.blocked_parser_on == Some(script_id) {
+            // Fetch failed for a parser-blocking classic script. Unblock parsing even though no
+            // script body executed.
+            self.blocked_parser_on = None;
           }
 
           if let Some(event_kind) = event_kind {
@@ -331,7 +361,7 @@ impl HtmlScriptPipelineState {
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
           // microtasks until the outermost script returns.
-          if self.js_execution_depth.get() == 0 {
+          if should_execute && self.js_execution_depth.get() == 0 {
             event_loop.perform_microtask_checkpoint(host)?;
           }
         }
@@ -348,7 +378,15 @@ impl HtmlScriptPipelineState {
               ScriptEventKind::Error
             }
           });
-          self.queue_work_task(event_loop, script_id, node_id, work, event_kind)?;
+          let should_execute = Self::work_has_source(&work).unwrap_or(true);
+          if should_execute {
+            self.queue_work_task(event_loop, script_id, node_id, work, event_kind)?;
+          } else {
+            // Load failure: dispatch an element error event but do not execute any script body.
+            if let Some(event_kind) = event_kind {
+              self.queue_script_event_task(event_loop, node_id, event_kind)?;
+            }
+          }
         }
         HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
           self.queue_script_event_task(event_loop, node_id, event)?;
@@ -573,6 +611,33 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     })
   }
 
+  pub fn on_classic_fetch_failed(&mut self, host: &mut Host, script_id: HtmlScriptId) -> Result<()> {
+    let should_resume = {
+      let mut s = self.state.borrow_mut();
+      s.on_classic_fetch_failed(host, &mut self.event_loop, script_id)?
+    };
+    if should_resume {
+      self.queue_parse_task()?;
+    }
+    Ok(())
+  }
+
+  pub fn queue_classic_fetch_failure(&mut self, script_id: HtmlScriptId) -> Result<()> {
+    let state = Rc::clone(&self.state);
+    self
+      .event_loop
+      .queue_task(TaskSource::Networking, move |host, event_loop| {
+        let should_resume = {
+          let mut s = state.borrow_mut();
+          s.on_classic_fetch_failed(host, event_loop, script_id)?
+        };
+        if should_resume {
+          HtmlScriptPipeline::<Host>::queue_parse_task_rc(&state, event_loop)?;
+        }
+        Ok(())
+      })
+  }
+
   pub fn on_module_graph_completed(
     &mut self,
     host: &mut Host,
@@ -592,6 +657,19 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
     self.event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
       let mut s = state.borrow_mut();
       s.on_module_graph_completed(host, event_loop, script_id, module_handle)
+    })
+  }
+
+  pub fn on_module_graph_failed(&mut self, host: &mut Host, script_id: HtmlScriptId) -> Result<()> {
+    let mut s = self.state.borrow_mut();
+    s.on_module_graph_failed(host, &mut self.event_loop, script_id)
+  }
+
+  pub fn queue_module_graph_failure(&mut self, script_id: HtmlScriptId) -> Result<()> {
+    let state = Rc::clone(&self.state);
+    self.event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      let mut s = state.borrow_mut();
+      s.on_module_graph_failed(host, event_loop, script_id)
     })
   }
 }
@@ -638,6 +716,7 @@ mod tests {
     started_classic_fetches: Vec<(HtmlScriptId, String)>,
     started_module_fetches: Vec<(HtmlScriptId, String)>,
     started_inline_module_fetches: Vec<(HtmlScriptId, String)>,
+    dispatched_events: Vec<(NodeId, String)>,
     log: Vec<String>,
   }
 
@@ -649,6 +728,7 @@ mod tests {
         started_classic_fetches: Vec::new(),
         started_module_fetches: Vec::new(),
         started_inline_module_fetches: Vec::new(),
+        dispatched_events: Vec::new(),
         log: Vec::new(),
       }
     }
@@ -680,9 +760,12 @@ mod tests {
   impl ScriptElementEventHost for Host {
     fn dispatch_script_element_event(
       &mut self,
-      _script: NodeId,
-      _event_name: &'static str,
+      script: NodeId,
+      event_name: &'static str,
     ) -> Result<()> {
+      self
+        .dispatched_events
+        .push((script, event_name.to_string()));
       Ok(())
     }
   }
@@ -722,13 +805,15 @@ mod tests {
       script_node_id: NodeId,
       _event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
+      let Some(source_text) = source_text else {
+        return Ok(());
+      };
       assert_eq!(
         self.current_script(),
         Some(script_node_id),
         "expected classic script to set document.currentScript"
       );
-      let body = source_text.unwrap_or("<null>");
-      self.log.push(format!("classic:{body}"));
+      self.log.push(format!("classic:{source_text}"));
       Ok(())
     }
 
@@ -738,13 +823,15 @@ mod tests {
       _script_node_id: NodeId,
       _event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
+      let Some(module_handle) = module_handle else {
+        return Ok(());
+      };
       assert_eq!(
         self.current_script(),
         None,
         "module scripts must observe document.currentScript == null"
       );
-      let body = module_handle.unwrap_or("<null>");
-      self.log.push(format!("module:{body}"));
+      self.log.push(format!("module:{module_handle}"));
       Ok(())
     }
 
@@ -885,6 +972,61 @@ mod tests {
 
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.parsing_finished());
+    Ok(())
+  }
+
+  #[test]
+  fn classic_fetch_failure_unblocks_parser_and_queues_error_event() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
+      Some("https://ex/doc.html"),
+      ParseBudget::new(1),
+    );
+    p.feed_str(r#"<script src="/a.js"></script><script>RUN</script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(host.started_classic_fetches.len(), 1);
+    let script_id = host.started_classic_fetches[0].0;
+    assert_eq!(p.blocked_on_script(), Some(script_id));
+
+    p.on_classic_fetch_failed(&mut host, script_id)?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(p.parsing_finished());
+    assert_eq!(host.log, vec!["classic:RUN".to_string()]);
+    assert!(
+      host
+        .dispatched_events
+        .iter()
+        .any(|(_node, name)| name == "error"),
+      "expected an error event for the failed external script"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_graph_failure_queues_error_event_and_does_not_execute() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
+      Some("https://ex/doc.html"),
+      ParseBudget::new(1),
+    );
+    p.feed_str(r#"<script type=module src="/m.js"></script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(p.parsing_finished());
+    assert_eq!(host.started_module_fetches.len(), 1);
+    let script_id = host.started_module_fetches[0].0;
+
+    p.on_module_graph_failed(&mut host, script_id)?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(host.log.is_empty(), "failed module script must not execute");
+    assert!(
+      host
+        .dispatched_events
+        .iter()
+        .any(|(_node, name)| name == "error"),
+      "expected an error event for the failed module script"
+    );
     Ok(())
   }
 
