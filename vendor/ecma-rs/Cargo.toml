@@ -8,6 +8,7 @@ members = [
   "native-js",
   "native-js-cli",
   "stackmap",
+  "llvm-stackmaps",
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
