@@ -2205,9 +2205,38 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
   fn llvm18_stackmap_roundtrip_smoke() {
-    // This test requires LLVM 18 tools (`llc-18`, `llvm-readobj-18`) to be installed.
+    // This test cross-checks our stackmap parser against LLVM's `llvm-readobj --stackmap`
+    // output for a tiny, generated IR module.
+    //
+    // On some developer machines LLVM 18 tools may be missing (or an older LLVM may be
+    // installed). Rather than failing the whole suite, treat that as a skip.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+      return;
+    }
+ 
+    fn llvm18_tool<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+      for &tool in candidates {
+        let out = Command::new(tool).arg("--version").output();
+        let Ok(out) = out else {
+          continue;
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stdout.contains("version 18.") || stderr.contains("version 18.") {
+          return Some(tool);
+        }
+      }
+      None
+    }
+ 
+    let Some(llc) = llvm18_tool(&["llc-18", "llc"]) else {
+      return;
+    };
+    let Some(readobj) = llvm18_tool(&["llvm-readobj-18", "llvm-readobj"]) else {
+      return;
+    };
+ 
     let tmp = TempDir::new().unwrap();
     let ll_path = tmp.path().join("smoke.ll");
     let obj_path = tmp.path().join("smoke.o");
@@ -2232,31 +2261,39 @@ entry:
 "#;
     fs::write(&ll_path, ll).unwrap();
 
-    let status = Command::new("llc-18")
+    let out = Command::new(llc)
       .arg("-filetype=obj")
       .arg(&ll_path)
       .arg("-o")
       .arg(&obj_path)
-      .status();
-    let Ok(status) = status else {
-      return;
-    };
-    if !status.success() {
-      return;
-    }
+      .output()
+      .expect("failed to run llc");
+    assert!(
+      out.status.success(),
+      "llc failed:\nstdout:\n{}\nstderr:\n{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
 
     let obj = fs::read(&obj_path).unwrap();
-    let section =
-      read_elf64_le_section(&obj, ".llvm_stackmaps").expect("missing .llvm_stackmaps section");
+    let section = read_elf64_le_section(&obj, ".llvm_stackmaps")
+      .or_else(|| read_elf64_le_section(&obj, ".data.rel.ro.llvm_stackmaps"))
+      .expect("missing .llvm_stackmaps section");
 
     let sm = StackMap::parse(section).unwrap();
     assert_eq!(sm.version, 3);
 
-    let out = Command::new("llvm-readobj-18")
+    let out = Command::new(readobj)
       .arg("--stackmap")
       .arg(&obj_path)
       .output()
-      .unwrap();
+      .expect("failed to run llvm-readobj");
+    assert!(
+      out.status.success(),
+      "llvm-readobj failed:\nstdout:\n{}\nstderr:\n{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("StackMap Version: 3"));
 
