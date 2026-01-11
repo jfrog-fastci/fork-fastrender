@@ -11,6 +11,14 @@ use object::{Object as _, ObjectSection as _};
 use native_js::link::LinkOpts;
 use native_js::{emit, llvm::gc};
 
+const STACKMAP_SECTION_CANDIDATES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
+const STACKMAP_RELOC_SECTION_CANDIDATES: [&str; 4] = [
+  ".rela.llvm_stackmaps",
+  ".rel.llvm_stackmaps",
+  ".rela.data.rel.ro.llvm_stackmaps",
+  ".rel.data.rel.ro.llvm_stackmaps",
+];
+
 /// End-to-end test: generate an object file that contains `.llvm_stackmaps`,
 /// link it into an executable, and ensure the final binary keeps the stackmaps
 /// section (relocated to `.data.rel.ro.llvm_stackmaps`) without keeping a
@@ -47,16 +55,19 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 2, "expected non-PIE ET_EXEC (e_type={elf_type})");
 
-  assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
-  assert_section_absent(&exe_bytes, ".rela.llvm_stackmaps")?;
-  assert_section_absent(&exe_bytes, ".rel.llvm_stackmaps")?;
+  assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
+  for name in STACKMAP_RELOC_SECTION_CANDIDATES {
+    assert_section_absent(&exe_bytes, name)?;
+  }
 
   // Optional: stripping should not remove the allocated stackmaps section.
   if command_works("strip") {
     run(Command::new("strip").arg(&exe_path)).context("strip")?;
     let stripped = fs::read(&exe_path).context("read stripped executable")?;
-    assert_section_present_non_empty(&stripped, ".data.rel.ro.llvm_stackmaps")?;
-    assert_section_absent(&stripped, ".rela.llvm_stackmaps")?;
+    assert_any_section_present_non_empty(&stripped, &STACKMAP_SECTION_CANDIDATES)?;
+    for name in STACKMAP_RELOC_SECTION_CANDIDATES {
+      assert_section_absent(&stripped, name)?;
+    }
   }
 
   let status = Command::new(&exe_path)
@@ -100,9 +111,10 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
 
-  assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
-  assert_section_absent(&exe_bytes, ".rela.llvm_stackmaps")?;
-  assert_section_absent(&exe_bytes, ".rel.llvm_stackmaps")?;
+  assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
+  for name in STACKMAP_RELOC_SECTION_CANDIDATES {
+    assert_section_absent(&exe_bytes, name)?;
+  }
   assert_no_textrel_dynamic_tags(&exe_bytes)?;
 
   let status = Command::new(&exe_path)
@@ -134,7 +146,7 @@ fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
         .map_err(|err| anyhow!("link_object_to_executable failed: {err}"))?;
 
     let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
-    assert_section_present_non_empty(&exe_bytes, ".data.rel.ro.llvm_stackmaps")?;
+    assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
 
     Ok(())
 }

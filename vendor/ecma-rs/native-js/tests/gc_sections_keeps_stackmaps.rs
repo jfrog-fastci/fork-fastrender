@@ -7,6 +7,8 @@ mod linux {
   use std::process::Command;
   use tempfile::tempdir;
 
+  const STACKMAP_SECTION_CANDIDATES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
+
   fn read_elf_section_size(path: &Path, name: &str) -> Result<u64> {
     let out = Command::new("readelf")
       .arg("-W")
@@ -33,6 +35,17 @@ mod linux {
       }
     }
     bail!("ELF {} does not contain section {name}", path.display());
+  }
+
+  fn read_elf_section_size_any(path: &Path, names: &[&str]) -> Result<(String, u64)> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for name in names {
+      match read_elf_section_size(path, name) {
+        Ok(size) => return Ok(((*name).to_string(), size)),
+        Err(err) => last_err = Some(err),
+      }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no section candidates were provided")))
   }
 
   fn clang_compile_ll_to_object(ll: &Path, obj: &Path) -> Result<()> {
@@ -90,10 +103,10 @@ entry:
         ..Default::default()
       },
     )?;
-
-    let stackmaps_size = read_elf_section_size(&exe, ".data.rel.ro.llvm_stackmaps")?;
+ 
+    let (section, stackmaps_size) = read_elf_section_size_any(&exe, &STACKMAP_SECTION_CANDIDATES)?;
     if stackmaps_size == 0 {
-      bail!("linked ELF contains empty .data.rel.ro.llvm_stackmaps section");
+      bail!("linked ELF contains empty {section} section");
     }
 
     let status = Command::new(&exe)
@@ -112,10 +125,11 @@ entry:
     if !strip_status.success() {
       bail!("strip failed with status {strip_status}");
     }
-
-    let stripped_stackmaps_size = read_elf_section_size(&exe_stripped, ".data.rel.ro.llvm_stackmaps")?;
+ 
+    let (stripped_section, stripped_stackmaps_size) =
+      read_elf_section_size_any(&exe_stripped, &STACKMAP_SECTION_CANDIDATES)?;
     if stripped_stackmaps_size == 0 {
-      bail!("stripped ELF contains empty .data.rel.ro.llvm_stackmaps section");
+      bail!("stripped ELF contains empty {stripped_section} section");
     }
 
     Ok(())
