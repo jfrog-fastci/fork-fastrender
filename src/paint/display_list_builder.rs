@@ -8720,13 +8720,54 @@ impl DisplayListBuilder {
           );
 
           let quality = Self::image_filter_quality(Some(style));
-          let repeat_both_axes = matches!(
-            layer.repeat,
-            crate::style::types::BackgroundRepeat {
-              x: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
-              y: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
+          let origin_x = origin_rect.x() + offset_x;
+          let origin_y = origin_rect.y() + offset_y;
+
+          // We can emit a single repeating pattern fill (faster + tends to avoid per-tile sampling
+          // seams) when either:
+          // - the background repeats in both axes (`repeat`/`round`), or
+          // - the background repeats in exactly one axis and the visible clip region fits entirely
+          //   within the origin tile in the other axis (so repetition there is unobservable).
+          //
+          // This is especially common for `repeat-x` underline textures where the image is taller
+          // than the element's background painting area, meaning only the bottom slice is visible.
+          let clip_within_origin_tile = |clip_min: f32, clip_max: f32, origin: f32, tile: f32| -> bool {
+            if !clip_min.is_finite() || !clip_max.is_finite() || !origin.is_finite() || !tile.is_finite() {
+              return false;
             }
-          );
+            if tile <= 0.0 {
+              return false;
+            }
+            if clip_max <= clip_min {
+              return false;
+            }
+            // Allow a small epsilon for float noise from layout/pixel snapping.
+            let eps = 1e-3;
+            clip_min + eps >= origin && clip_max <= origin + tile + eps
+          };
+
+          let repeats_x =
+            matches!(layer.repeat.x, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
+          let repeats_y =
+            matches!(layer.repeat.y, BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round);
+          let repeat_both_axes = repeats_x
+            && repeats_y
+            || (repeats_x
+              && layer.repeat.y == BackgroundRepeatKeyword::NoRepeat
+              && clip_within_origin_tile(
+                visible_clip.min_y(),
+                visible_clip.max_y(),
+                origin_y,
+                tile_h,
+              ))
+            || (repeats_y
+              && layer.repeat.x == BackgroundRepeatKeyword::NoRepeat
+              && clip_within_origin_tile(
+                visible_clip.min_x(),
+                visible_clip.max_x(),
+                origin_x,
+                tile_w,
+              ));
 
           let image: Arc<ImageData> = if cached.is_vector {
             let Some(svg) = cached.svg_content.as_deref() else {
@@ -8832,32 +8873,37 @@ impl DisplayListBuilder {
             image
           };
 
-          // Fast path: for the common `repeat`/`round` in both axes case, emit a single pattern
-          // fill instead of one item per tile.
-          if repeat_both_axes {
+          let positions_x = Self::tile_axis_plan(
+            layer.repeat.x,
+            origin_rect.x(),
+            origin_rect.width(),
+            tile_w,
+            offset_x,
+            visible_clip.min_x(),
+            visible_clip.max_x(),
+          );
+          let positions_y = Self::tile_axis_plan(
+            layer.repeat.y,
+            origin_rect.y(),
+            origin_rect.height(),
+            tile_h,
+            offset_y,
+            visible_clip.min_y(),
+            visible_clip.max_y(),
+          );
+          let tiles = (positions_x.count as u64).saturating_mul(positions_y.count as u64);
+
+          // Fast path: emit a single pattern fill instead of one item per tile.
+          //
+          // Only use this when more than one tile is visible. When the tiling plan resolves to a
+          // single tile, falling back to `Image` avoids subtle sampling differences vs a pattern
+          // shader and does not cost extra display items.
+          let use_pattern = repeat_both_axes && tiles > 1;
+          if use_pattern {
             if let Some(counter) = self.background_pattern_fast_paths.as_ref() {
               counter.fetch_add(1, Ordering::Relaxed);
             }
             if let Some(counter) = self.background_tiles.as_ref() {
-              let positions_x = Self::tile_axis_plan(
-                layer.repeat.x,
-                origin_rect.x(),
-                origin_rect.width(),
-                tile_w,
-                offset_x,
-                visible_clip.min_x(),
-                visible_clip.max_x(),
-              );
-              let positions_y = Self::tile_axis_plan(
-                layer.repeat.y,
-                origin_rect.y(),
-                origin_rect.height(),
-                tile_h,
-                offset_y,
-                visible_clip.min_y(),
-                visible_clip.max_y(),
-              );
-              let tiles = (positions_x.count as u64).saturating_mul(positions_y.count as u64);
               if tiles > 0 {
                 counter.fetch_add(tiles, Ordering::Relaxed);
               }
@@ -8867,30 +8913,11 @@ impl DisplayListBuilder {
               dest_rect: visible_clip,
               image: image.clone(),
               tile_size: Size::new(tile_w, tile_h),
-              origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
+              origin: Point::new(origin_x, origin_y),
               repeat: ImagePatternRepeat::Repeat,
               filter_quality: quality,
             }));
           } else {
-            let positions_x = Self::tile_axis_plan(
-              layer.repeat.x,
-              origin_rect.x(),
-              origin_rect.width(),
-              tile_w,
-              offset_x,
-              visible_clip.min_x(),
-              visible_clip.max_x(),
-            );
-            let positions_y = Self::tile_axis_plan(
-              layer.repeat.y,
-              origin_rect.y(),
-              origin_rect.height(),
-              tile_h,
-              offset_y,
-              visible_clip.min_y(),
-              visible_clip.max_y(),
-            );
-
             let max_x = visible_clip.max_x();
             let max_y = visible_clip.max_y();
 
@@ -19246,6 +19273,137 @@ mod tests {
       let planned: Vec<f32> = plan.iter().collect();
       assert_eq!(planned, legacy, "repeat={repeat:?}");
     }
+  }
+
+  #[test]
+  fn background_repeat_x_uses_pattern_fast_path_when_y_fits_in_origin_tile() {
+    // Background-repeat: repeat-x + a tile taller than the painted area (so only one Y tile can
+    // contribute) should be emitted as a single ImagePattern item. This reduces per-tile sampling
+    // seams and avoids O(N) display items for common underline textures.
+    let url = data_url_for_color([0, 0, 0, 255]);
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::Url(url)),
+      repeat: BackgroundRepeat {
+        x: BackgroundRepeatKeyword::Repeat,
+        y: BackgroundRepeatKeyword::NoRepeat,
+      },
+      size: BackgroundSize::Explicit(
+        BackgroundSizeComponent::Length(Length::px(10.0)),
+        BackgroundSizeComponent::Length(Length::px(40.0)),
+      ),
+      ..BackgroundLayer::default()
+    }]);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 18.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let tree = FragmentTree::new(fragment);
+    let list = DisplayListBuilder::new().build_tree_with_stacking(&tree);
+
+    let patterns = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
+      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+
+    assert_eq!(patterns, 1, "expected a single pattern fill");
+    assert_eq!(images, 0, "expected pattern fast path to avoid per-tile images");
+  }
+
+  #[test]
+  fn background_repeat_x_does_not_use_pattern_when_origin_tile_does_not_cover_clip() {
+    // When the origin tile begins inside the clip region, `repeat-y` would become visible if we
+    // emitted a repeating pattern. Ensure we fall back to the per-tile path.
+    let url = data_url_for_color([0, 0, 0, 255]);
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::Url(url)),
+      repeat: BackgroundRepeat {
+        x: BackgroundRepeatKeyword::Repeat,
+        y: BackgroundRepeatKeyword::NoRepeat,
+      },
+      position: BackgroundPosition::Position {
+        x: crate::style::types::BackgroundPositionComponent {
+          alignment: 0.0,
+          offset: Length::percent(0.0),
+        },
+        y: crate::style::types::BackgroundPositionComponent {
+          alignment: 0.0,
+          offset: Length::px(10.0),
+        },
+      },
+      size: BackgroundSize::Explicit(
+        BackgroundSizeComponent::Length(Length::px(10.0)),
+        BackgroundSizeComponent::Length(Length::px(40.0)),
+      ),
+      ..BackgroundLayer::default()
+    }]);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 18.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let tree = FragmentTree::new(fragment);
+    let list = DisplayListBuilder::new().build_tree_with_stacking(&tree);
+
+    let patterns = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
+      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+
+    assert_eq!(patterns, 0, "expected per-tile path (no ImagePattern)");
+    assert!(images > 0, "expected background to be emitted as Image tile(s)");
+  }
+
+  #[test]
+  fn background_repeat_both_axes_uses_single_image_when_only_one_tile_is_visible() {
+    // When the resolved tiling plan would paint exactly one tile, emitting an Image item matches the
+    // repeat semantics without going through the ImagePattern renderer.
+    let url = data_url_for_color([0, 0, 0, 255]);
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::Url(url)),
+      repeat: BackgroundRepeat {
+        x: BackgroundRepeatKeyword::Repeat,
+        y: BackgroundRepeatKeyword::Repeat,
+      },
+      size: BackgroundSize::Explicit(
+        BackgroundSizeComponent::Length(Length::px(100.0)),
+        BackgroundSizeComponent::Length(Length::px(18.0)),
+      ),
+      ..BackgroundLayer::default()
+    }]);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 18.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let tree = FragmentTree::new(fragment);
+    let list = DisplayListBuilder::new().build_tree_with_stacking(&tree);
+
+    let patterns = list
+      .iter()
+      .filter(|item| matches!(item, DisplayItem::ImagePattern(_)))
+      .count();
+    let images = list.iter().filter(|item| matches!(item, DisplayItem::Image(_))).count();
+
+    assert_eq!(patterns, 0, "expected no ImagePattern for a single visible tile");
+    assert_eq!(images, 1, "expected exactly one Image item");
   }
 
   #[test]

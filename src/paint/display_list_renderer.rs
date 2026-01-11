@@ -17523,6 +17523,17 @@ fn mipmap_lod_for_scale(scale_x: f32, scale_y: f32) -> Option<(u32, f32)> {
   if !max_scale.is_finite() || max_scale <= 1.0 {
     return Some((0, 0.0));
   }
+
+  // Skia/Chrome's raster image filtering does not appear to switch to mipmapped sampling for a
+  // simple 2x downscale. Using mipmaps at exactly 2x produces noticeably different results for
+  // subpixel-positioned images (e.g. CSS background images placed at fractional device pixels),
+  // while full-resolution bilinear sampling more closely matches Chrome.
+  //
+  // Keep mipmaps for larger downscales where they materially reduce aliasing.
+  if max_scale <= 2.0 {
+    return Some((0, 0.0));
+  }
+
   let mut lod = max_scale.log2();
   if !lod.is_finite() || lod < 0.0 {
     lod = 0.0;
@@ -24725,8 +24736,8 @@ mod tests {
     }
     let image = ImageData::new_pixels(8, 1, pixels);
 
-    // Downscale to 4x1 at an integer origin. With a 2x downscale, mipmap level 1 is selected and
-    // each output pixel becomes the average of a 2px span.
+    // Downscale to 4x1 at an integer origin. With a 2x downscale, each output pixel becomes the
+    // average of a 2px span.
     let dest0 = Rect::from_xywh(0.0, 0.0, 4.0, 1.0);
     let origin0_x = (dest0.x() - 0.5).ceil();
     let origin0_y = (dest0.y() - 0.5).ceil();
@@ -24756,7 +24767,7 @@ mod tests {
     .unwrap()
     .unwrap();
     assert_eq!((pixmap1.width(), pixmap1.height()), (4, 1));
-    assert_eq!(pixel(&pixmap1, 0, 0), (16, 0, 0, 255));
+    assert_eq!(pixel(&pixmap1, 0, 0), (0, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 1, 0), (48, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 2, 0), (112, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 3, 0), (176, 0, 0, 255));

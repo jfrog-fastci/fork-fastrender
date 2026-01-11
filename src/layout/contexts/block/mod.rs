@@ -3942,7 +3942,10 @@ impl BlockFormattingContext {
       let child = &parent.children[idx];
       let child_margins = self.collapsed_block_margins(child, containing_width, child_margin_mode);
 
-      let box_y = if margin_ctx.is_at_start() && !child_margins.collapsible_through {
+      let at_start_before = margin_ctx.is_at_start();
+      let pending_margin = margin_ctx.pending_collapsible_margin();
+
+      let flow_box_y = if at_start_before && !child_margins.collapsible_through {
         // Parent/first-child margin collapsing is represented by the parent’s own collapsed
         // margins. Discard any leading collapsible-through margins and place the first
         // non-empty child at the block start.
@@ -3958,7 +3961,14 @@ impl BlockFormattingContext {
         current_y + offset
       };
 
-      let delta = box_y - fragment.bounds.y();
+      let layout_box_y = if child_margins.collapsible_through && !at_start_before {
+        let collapsed_top = pending_margin.collapse_with(child_margins.top).resolve();
+        current_y + collapsed_top
+      } else {
+        flow_box_y
+      };
+
+      let delta = layout_box_y - fragment.bounds.y();
       let delta = Point::new(0.0, delta);
       Self::translate_fragment_tree(&mut fragment, delta);
       let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size);
@@ -3969,8 +3979,12 @@ impl BlockFormattingContext {
         external_fixed_cb,
       );
 
-      let block_extent = fragment.bounds.height();
-      let next_y = box_y + block_extent;
+      let block_extent = if child_margins.collapsible_through {
+        0.0
+      } else {
+        fragment.bounds.height()
+      };
+      let next_y = flow_box_y + block_extent;
       content_height = content_height.max(next_y);
       current_y = next_y;
 
@@ -4829,11 +4843,6 @@ impl BlockFormattingContext {
     }
 
     let collapsible_through = !has_in_flow_content && is_margin_collapsible_through(style);
-    if collapsible_through {
-      let combined = top.collapse_with(bottom);
-      top = combined;
-      bottom = combined;
-    }
 
     let result = CollapsedBlockMargins {
       top,
@@ -5299,6 +5308,7 @@ impl BlockFormattingContext {
             child_margins
           );
         }
+        let at_start_before = margin_ctx.is_at_start();
         let pending_margin = margin_ctx.pending_collapsible_margin();
         if !trace_boxes.is_empty() && trace_boxes.contains(&child.id) {
           eprintln!(
@@ -5308,7 +5318,7 @@ impl BlockFormattingContext {
             child_margins.top,
             child_margins.bottom,
             child_margins.collapsible_through,
-            margin_ctx.is_at_start(),
+            at_start_before,
             collapse_with_parent_top
           );
         }
@@ -5328,7 +5338,7 @@ impl BlockFormattingContext {
           0.0
         };
 
-        let box_y = if clearance > 0.0 {
+        let flow_box_y = if clearance > 0.0 {
           // Clearance is added above the top margin edge and breaks margin adjoining.
           margin_ctx.mark_content_encountered();
           let (offset, _) = margin_ctx.process_child_with_clearance(
@@ -5339,7 +5349,7 @@ impl BlockFormattingContext {
           );
           current_y + offset
         } else if collapse_with_parent_top
-          && margin_ctx.is_at_start()
+          && at_start_before
           && !child_margins.collapsible_through
         {
           // Parent/first-child margin collapsing is represented by the parent's own collapsed
@@ -5357,12 +5367,28 @@ impl BlockFormattingContext {
           current_y + offset
         };
 
+        // For boxes that are "collapsed through" (their block-start and block-end margins are
+        // adjoining), CSS defines the position of their block-start border edge for the purposes
+        // of laying out descendants.
+        //
+        // In particular: when the box is not participating in parent/first-child margin
+        // collapsing, its block-start border edge is defined as if it had a non-zero block-end
+        // border (CSS Box 3 §4.3 “collapsed through” border edge position). This ensures that
+        // out-of-flow descendants (floats/abspos) are positioned after the collapsed sibling margin
+        // chain, even though the box itself is invisible in the block layout cursor.
+        let layout_box_y = if child_margins.collapsible_through && clearance == 0.0 && !at_start_before {
+          let collapsed_top = pending_margin.collapse_with(child_margins.top).resolve();
+          current_y + collapsed_top
+        } else {
+          flow_box_y
+        };
+
         let fragment = child_layout_ctx.layout_block_child(
           parent,
           child,
           containing_width,
           constraints,
-          box_y,
+          layout_box_y,
           nearest_positioned_cb,
           nearest_fixed_cb,
           Some(&mut *float_ctx_ref),
@@ -5370,8 +5396,12 @@ impl BlockFormattingContext {
           float_base_y,
           paint_viewport,
         )?;
-        let block_extent = fragment.bounds.height();
-        let next_y = box_y + block_extent;
+        let block_extent = if child_margins.collapsible_through {
+          0.0
+        } else {
+          fragment.bounds.height()
+        };
+        let next_y = flow_box_y + block_extent;
         Ok((fragment, next_y))
       };
 

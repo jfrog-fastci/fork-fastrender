@@ -562,6 +562,107 @@ fn bfc_with_only_floats_is_not_treated_as_empty_for_margin_collapse() {
 }
 
 #[test]
+fn collapsed_through_blocks_position_border_edge_for_descendants() {
+  let prev = block_with_height_and_margins(10.0, 0.0, 30.0);
+
+  let mut float_style = block_style_with_height(Some(10.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let float_container = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, float_container],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let float_container_fragment = &fragment.children[1];
+
+  assert_approx(
+    float_container_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    30.0,
+    "expected the collapsed sibling margin chain to offset the float container's border edge",
+  );
+  assert!(
+    !float_container_fragment.children.is_empty(),
+    "expected float-only block to produce a float fragment"
+  );
+  let float_fragment = &float_container_fragment.children[0];
+  assert_approx(
+    float_fragment.bounds.y(),
+    0.0,
+    "expected float to be placed at the top of its container",
+  );
+}
+
+#[test]
+fn float_only_blocks_still_allow_margin_collapse_through() {
+  // A block with only floated children can be "collapsed through" (its block-start and block-end
+  // margins are adjoining), but its border edge still needs a concrete position for laying out the
+  // float. That border edge position uses the collapsed top margin chain, while sibling margin
+  // collapsing continues to consider both the top and bottom margins.
+
+  let prev = block_with_height_and_margins(10.0, 0.0, 0.0);
+
+  let mut float_style = block_style_with_height(Some(10.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut float_container_style = block_style_with_height(None);
+  float_container_style.margin_top = Some(Length::px(10.0));
+  float_container_style.margin_bottom = Some(Length::px(20.0));
+  let float_container = BoxNode::new_block(
+    Arc::new(float_container_style),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
+
+  let next = block_with_height_and_margins(10.0, 0.0, 0.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, float_container, next],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let float_container_fragment = &fragment.children[1];
+  let next_fragment = &fragment.children[2];
+
+  assert_approx(
+    float_container_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    10.0,
+    "expected float container to be offset by its top margin",
+  );
+  assert_approx(
+    next_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    20.0,
+    "expected float container top/bottom margins to collapse through (max(10, 20) = 20)",
+  );
+}
+
+#[test]
 fn parent_last_child_margin_collapses() {
   let mut child_style = block_style_with_height(Some(10.0));
   child_style.margin_bottom = Some(Length::px(20.0));
