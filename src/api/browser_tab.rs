@@ -2266,7 +2266,7 @@ impl BrowserTabHost {
         };
         if let Some(source) = source {
           return Ok(FetchedResource::with_final_url(
-            source.as_bytes().to_vec(),
+            source.into_bytes(),
             Some("application/javascript".to_string()),
             Some(url.to_string()),
           ));
@@ -2284,7 +2284,7 @@ impl BrowserTabHost {
         };
         if let Some(source) = source {
           return Ok(FetchedResource::with_final_url(
-            source.as_bytes().to_vec(),
+            source.into_bytes(),
             Some("application/javascript".to_string()),
             Some(req.url.to_string()),
           ));
