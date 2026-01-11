@@ -47,10 +47,20 @@ db.validate().expect("knowledge base is internally consistent");
 
 ### Deterministic `ApiId`
 
-In addition to string-keyed APIs from `ApiDatabase`, `effect-js` has a small
-hand-curated `ApiId` enum for high-value "canonical" surfaces that we want to
-recognize quickly and refer to by a stable ID. `ApiId::as_str()` maps each
-variant to its canonical name.
+`effect-js` commonly refers to known APIs by a stable identifier type
+`effect_js::ApiId` (a re-export of `knowledge_base::ApiId`).
+
+An `ApiId` is a deterministic 64-bit FNV-1a hash of an API's *canonical* knowledge
+base name (e.g. `"JSON.parse"`). This allows analyses to store compact IDs while
+still being able to recover names via `ApiDatabase::get_by_id(...)`.
+
+To construct an ID directly (e.g. in tests), hash the canonical name:
+
+```rust
+use effect_js::ApiId;
+
+let json_parse = ApiId::from_name("JSON.parse");
+```
 
 ## Running pattern recognition on a TypeScript file
 
