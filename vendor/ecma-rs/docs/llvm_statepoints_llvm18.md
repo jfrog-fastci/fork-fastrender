@@ -141,6 +141,13 @@ Conceptually, a statepoint call looks like:
 Notes:
 
 * `<id>` becomes the StackMap **Record ID** (`llvm-readobj --stackmap` prints it).
+  * When using `rewrite-statepoints-for-gc` (instead of emitting `gc.statepoint`
+    intrinsics manually), LLVM 18 also supports overriding `<id>` and
+    `<num_patch_bytes>` by attaching callsite string attributes to the original
+    `call`/`invoke`:
+    - `"statepoint-id"="<u64>"`
+    - `"statepoint-num-patch-bytes"="<u32>"`
+    See [`llvm_statepoint_directives.md`](./llvm_statepoint_directives.md).
 * `<flags>` (5th argument) is a bitmask. On LLVM 18.x, the IR verifier only accepts
   values in the range **0..3** (bits 0 and 1). This project currently uses
   `flags = 0`.
