@@ -1,0 +1,31 @@
+# Core ECMAScript JSON APIs.
+
+schema_version: 1
+symbols:
+  - name: JSON.parse
+    aliases: []
+    semantics: JsonParse
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+
+  - name: JSON.stringify
+    aliases: []
+    semantics: JsonStringify
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false

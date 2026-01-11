@@ -1,19 +1,51 @@
 - name: String.prototype.slice
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
   properties:
     encoding.output: same_as_input
 
 - name: String.prototype.concat
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
   properties:
     # Depends on inputs; keep conservative and let analysis refine.
     encoding.output: unknown
 
 - name: String.prototype.toLowerCase
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
   properties:
     encoding.output: same_as_input
     encoding.preserves_input_if: ascii
     encoding.length_preserving_if: ascii
 
 - name: String.prototype.split
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
   properties:
     # Returns an array of strings; element encoding depends on inputs.
     encoding.output: unknown

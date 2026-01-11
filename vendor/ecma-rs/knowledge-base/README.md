@@ -43,11 +43,29 @@ The loader selects a parser based on the file extension.
 ```toml
 schema = 1
 
-[[apis]]
-name = "Math.sqrt"
-aliases = []
-effects = "Pure"
-purity = "Pure"
+ [[apis]]
+name = "Math.ceil"
+ aliases = []
+ effects = "Pure"
+ purity = "Pure"
+ ```
+
+### YAML module example (schema v1)
+
+```yaml
+schema_version: 1
+symbols:
+  - name: Array.prototype.map
+    aliases: []
+    purity:
+      template: depends_on_callback
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
 ```
 
 ## String encoding properties

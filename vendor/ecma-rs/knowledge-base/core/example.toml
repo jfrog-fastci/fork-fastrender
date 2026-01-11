@@ -1,7 +1,7 @@
 schema = 1
 
 [[apis]]
-name = "Math.sqrt"
+name = "Math.ceil"
 aliases = []
 effects = "Pure"
 purity = "Pure"
@@ -10,7 +10,7 @@ idempotent = true
 deterministic = true
 
 [[apis]]
-name = "Math.floor"
+name = "Math.round"
 aliases = []
 effects = "Pure"
 purity = "Pure"

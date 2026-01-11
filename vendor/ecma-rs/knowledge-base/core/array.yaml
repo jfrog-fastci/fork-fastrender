@@ -1,0 +1,27 @@
+- name: Array.prototype.map
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.filter
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.reduce
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.forEach
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.every
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.some
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+
+- name: Array.prototype.find
+  effects: DependsOnCallback
+  purity: DependsOnCallback

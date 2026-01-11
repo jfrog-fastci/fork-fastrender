@@ -1,2 +1,69 @@
-[]
+- name: Math.sqrt
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
 
+- name: Math.floor
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.abs
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.min
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.max
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure

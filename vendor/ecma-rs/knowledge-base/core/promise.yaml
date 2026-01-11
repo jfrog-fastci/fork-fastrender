@@ -1,0 +1,73 @@
+# Core ECMAScript Promise APIs.
+
+schema_version: 1
+symbols:
+  - name: Promise.all
+    aliases: []
+    semantics: PromiseAll
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+
+  - name: Promise.race
+    aliases: []
+    semantics: PromiseRace
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+
+  - name: Promise.resolve
+    aliases: []
+    semantics: PromiseResolve
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+
+  - name: Promise.reject
+    aliases: []
+    semantics: PromiseReject
+    since: "baseline"
+    purity:
+      template: pure
+    effects:
+      template: pure
+      may_throw: false
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: false
+
+  - name: Promise.prototype.then
+    aliases: []
+    semantics: PromiseThen
+    since: "baseline"
+    purity:
+      template: depends_on_callback
+    effects:
+      template: depends_on_callback
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true

@@ -779,6 +779,6 @@ purity: DependsOnCallback
     kb.validate().expect("validate knowledge base");
 
     // This entry lives in `core/example.toml` and exercises the TOML loader.
-    assert!(kb.get("Math.sqrt").is_some());
+    assert!(kb.get("Math.ceil").is_some());
   }
 }
