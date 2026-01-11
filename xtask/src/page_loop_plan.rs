@@ -289,3 +289,103 @@ pub fn build_inspect_frag_command(
   cmd.current_dir(repo_root);
   cmd
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::collections::HashMap;
+  use std::ffi::OsString;
+  use std::sync::{Mutex, OnceLock};
+
+  static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+  struct EnvVarRestore {
+    key: &'static str,
+    prev: Option<OsString>,
+  }
+
+  impl EnvVarRestore {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+      let prev = std::env::var_os(key);
+      match value {
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
+      }
+      Self { key, prev }
+    }
+  }
+
+  impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+      match self.prev.take() {
+        Some(value) => std::env::set_var(self.key, value),
+        None => std::env::remove_var(self.key),
+      }
+    }
+  }
+
+  fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .parent()
+      .expect("xtask crate should live under the repository root")
+      .to_path_buf()
+  }
+
+  fn default_args(patch: bool) -> InspectFragCommandArgs {
+    InspectFragCommandArgs {
+      fixture_html: PathBuf::from("fixture.html"),
+      overlay_png: None,
+      dump_json_dir: None,
+      filter_selector: None,
+      filter_id: None,
+      dump_custom_properties: false,
+      custom_property_prefix: Vec::new(),
+      custom_properties_limit: None,
+      patch_html_for_chrome_baseline: patch,
+      viewport: (1040, 1240),
+      dpr: 1.0,
+      media: "screen".to_string(),
+      compat_profile: None,
+      dom_compat: None,
+      timeout: 10,
+    }
+  }
+
+  fn env_map(cmd: &Command) -> HashMap<String, Option<String>> {
+    cmd
+      .get_envs()
+      .map(|(k, v)| {
+        (
+          k.to_string_lossy().into_owned(),
+          v.map(|v| v.to_string_lossy().into_owned()),
+        )
+      })
+      .collect()
+  }
+
+  #[test]
+  fn build_inspect_frag_command_defaults_web_font_wait_ms() {
+    let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _restore = EnvVarRestore::set("FASTR_WEB_FONT_WAIT_MS", None);
+
+    let cmd = build_inspect_frag_command(&repo_root(), true, &default_args(true));
+    let envs = env_map(&cmd);
+    assert_eq!(
+      envs.get("FASTR_WEB_FONT_WAIT_MS").and_then(|v| v.as_deref()),
+      Some("500")
+    );
+  }
+
+  #[test]
+  fn build_inspect_frag_command_does_not_override_web_font_wait_ms() {
+    let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _restore = EnvVarRestore::set("FASTR_WEB_FONT_WAIT_MS", Some("123"));
+
+    let cmd = build_inspect_frag_command(&repo_root(), true, &default_args(true));
+    let envs = env_map(&cmd);
+    assert!(
+      !envs.contains_key("FASTR_WEB_FONT_WAIT_MS"),
+      "expected inspect_frag command to inherit FASTR_WEB_FONT_WAIT_MS when explicitly set"
+    );
+  }
+}
