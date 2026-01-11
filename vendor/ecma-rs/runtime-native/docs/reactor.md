@@ -110,7 +110,7 @@ Callers must set `O_NONBLOCK` **before** registering fds through any of these su
 
 - `reactor::Reactor::{register,reregister}`
 - `async_rt::AsyncRuntime::{register_fd,register_io,register_io_with_drop}`
-- C ABI: `rt_io_{register,register_with_drop,register_rooted,register_handle,register_handle_with_drop,update,unregister}`
+- C ABI: `rt_io_{register,register_with_drop,register_rooted,register_rooted_h,register_handle,register_handle_with_drop,update,unregister}`
 - Rust convenience API: `io::AsyncFd` (fails with `InvalidInput` on first await if the fd is blocking)
 
 The only fds created internally by the reactor itself (the wakeup `eventfd` on Linux, or the kqueue

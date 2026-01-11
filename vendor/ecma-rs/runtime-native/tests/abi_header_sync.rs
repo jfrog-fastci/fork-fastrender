@@ -266,6 +266,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_queue_microtask;
   let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
     runtime_native::rt_queue_microtask_with_drop;
+  let _queue_microtask_handle: extern "C" fn(extern "C" fn(*mut u8), u64) =
+    runtime_native::rt_queue_microtask_handle;
+  let _queue_microtask_handle_with_drop: extern "C" fn(extern "C" fn(*mut u8), u64, extern "C" fn(*mut u8)) =
+    runtime_native::rt_queue_microtask_handle_with_drop;
   let _drain_microtasks: extern "C" fn() -> bool = runtime_native::rt_drain_microtasks_abi;
 
   // Per-thread shadow stack root push/pop.
@@ -288,10 +292,26 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_set_timeout_rooted;
   let _set_timeout_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_timeout_rooted_h;
+  let _set_timeout_handle: extern "C" fn(extern "C" fn(*mut u8), u64, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_timeout_handle;
+  let _set_timeout_handle_with_drop: extern "C" fn(
+    extern "C" fn(*mut u8),
+    u64,
+    extern "C" fn(*mut u8),
+    u64,
+  ) -> runtime_native::abi::TimerId = runtime_native::rt_set_timeout_handle_with_drop;
   let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_interval_rooted;
   let _set_interval_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_interval_rooted_h;
+  let _set_interval_handle: extern "C" fn(extern "C" fn(*mut u8), u64, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_interval_handle;
+  let _set_interval_handle_with_drop: extern "C" fn(
+    extern "C" fn(*mut u8),
+    u64,
+    extern "C" fn(*mut u8),
+    u64,
+  ) -> runtime_native::abi::TimerId = runtime_native::rt_set_interval_handle_with_drop;
   // I/O watchers.
   let _io_register: extern "C" fn(
     i32,
@@ -416,6 +436,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _weak_add_h,
     _queue_microtask,
     _queue_microtask_with_drop,
+    _queue_microtask_handle,
+    _queue_microtask_handle_with_drop,
     _drain_microtasks,
     _root_push,
     _root_pop,
@@ -426,8 +448,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _parallel_spawn_promise_rooted,
     _set_timeout_rooted,
     _set_timeout_rooted_h,
+    _set_timeout_handle,
+    _set_timeout_handle_with_drop,
     _set_interval_rooted,
     _set_interval_rooted_h,
+    _set_interval_handle,
+    _set_interval_handle_with_drop,
     _io_register,
     _io_register_with_drop,
     _io_register_rooted,

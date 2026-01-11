@@ -431,6 +431,22 @@ The `_h` ("handle") variant is preferred under a moving GC: it accepts a pointer
 the runtime can reload `data` after any potentially blocking lock acquisition while registering the
 persistent root.
 
+### Persistent-handle microtask payloads (`rt_queue_microtask_handle`)
+
+For embedders that already represent GC-managed objects as persistent handles (`HandleId`/`u64`,
+allocated via `rt_handle_alloc`), the runtime also exposes handle-based microtask helpers:
+
+- `rt_queue_microtask_handle(cb: extern "C" fn(*mut u8), data: u64)`
+- `rt_queue_microtask_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8))`
+
+Ownership contract:
+
+- The runtime consumes `data` and treats it as a strong GC root until the microtask runs (or is
+  discarded via `rt_async_cancel_all`).
+- For the `_with_drop` variant, `drop_data` is invoked exactly once when the microtask is torn down,
+  and runs before the runtime frees the handle.
+- If `data` is stale (freed), the callback is treated as a no-op.
+
 ## Exported symbols (async)
 
 ### Native async/await ABI (PromiseHeader prefix)
@@ -474,15 +490,21 @@ persistent root.
 - `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
 - `rt_queue_microtask_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle)`
+- `rt_queue_microtask_handle(cb: extern "C" fn(*mut u8), data: u64)`
+- `rt_queue_microtask_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8))`
 - `rt_drain_microtasks() -> bool`
 - `rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_timeout_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
 - `rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_timeout_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle, delay_ms: u64) -> TimerId`
+- `rt_set_timeout_handle(cb: extern "C" fn(*mut u8), data: u64, delay_ms: u64) -> TimerId`
+- `rt_set_timeout_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
 - `rt_set_interval(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
 - `rt_set_interval_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
 - `rt_set_interval_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
 - `rt_set_interval_rooted_h(cb: extern "C" fn(*mut u8), data: GcHandle, interval_ms: u64) -> TimerId`
+- `rt_set_interval_handle(cb: extern "C" fn(*mut u8), data: u64, interval_ms: u64) -> TimerId`
+- `rt_set_interval_handle_with_drop(cb: extern "C" fn(*mut u8), data: u64, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
 - `rt_clear_timer(id: TimerId)`
 
 ### I/O readiness watchers
