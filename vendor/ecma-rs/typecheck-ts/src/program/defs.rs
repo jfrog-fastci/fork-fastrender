@@ -78,6 +78,8 @@ fn default_var_mode() -> VarDeclMode {
 #[derive(Clone, Debug)]
 pub struct ImportData {
   pub target: ImportTarget,
+  #[cfg_attr(feature = "serde", serde(default))]
+  pub specifier: String,
   pub original: String,
 }
 

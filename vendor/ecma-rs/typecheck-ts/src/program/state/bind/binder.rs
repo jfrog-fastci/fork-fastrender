@@ -462,6 +462,7 @@ impl ProgramState {
                 export: false,
                 kind: DefKind::Import(ImportData {
                   target: import_target.clone(),
+                  specifier: module.clone(),
                   original: "default".to_string(),
                 }),
               },
@@ -514,6 +515,7 @@ impl ProgramState {
                     export: false,
                     kind: DefKind::Import(ImportData {
                       target: import_target.clone(),
+                      specifier: module.clone(),
                       original: name.clone(),
                     }),
                   },
@@ -559,6 +561,7 @@ impl ProgramState {
                   export: false,
                   kind: DefKind::Import(ImportData {
                     target: import_target.clone(),
+                    specifier: module.clone(),
                     original: "*".to_string(),
                   }),
                 },
@@ -619,6 +622,7 @@ impl ProgramState {
                 export: import_equals.stx.export,
                 kind: DefKind::Import(ImportData {
                   target: import_target.clone(),
+                  specifier: module.clone(),
                   original: "*".to_string(),
                 }),
               },

@@ -25,7 +25,10 @@ use types_ts_interned::{
 ///
 /// Version 15 removes the legacy `program` type store; snapshots now persist
 /// only the `types-ts-interned` store and interned type tables.
-pub const PROGRAM_SNAPSHOT_VERSION: u32 = 15;
+///
+/// Version 16 records module specifier strings for resolved imports, so
+/// downstream tools can map imported symbols back to stable module names.
+pub const PROGRAM_SNAPSHOT_VERSION: u32 = 16;
 
 /// File metadata captured in a snapshot, including an optional copy of the text
 /// to allow offline reconstruction. Snapshots are hybrid: when `text` is `None`

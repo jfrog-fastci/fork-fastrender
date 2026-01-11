@@ -245,6 +245,25 @@ impl Program {
     self.with_analyzed_state(|state| Ok(state.def_data.get(&def).map(|d| d.kind.clone())))
   }
 
+  pub fn import_specifier(&self, def: DefId) -> Option<String> {
+    match self.import_specifier_fallible(def) {
+      Ok(specifier) => specifier,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        None
+      }
+    }
+  }
+
+  pub fn import_specifier_fallible(&self, def: DefId) -> Result<Option<String>, FatalError> {
+    self.with_analyzed_state(|state| {
+      Ok(state.def_data.get(&def).and_then(|d| match &d.kind {
+        DefKind::Import(import) => Some(import.specifier.clone()),
+        _ => None,
+      }))
+    })
+  }
+
   /// Body attached to a definition, if any.
   pub fn body_of_def(&self, def: DefId) -> Option<BodyId> {
     match self.body_of_def_fallible(def) {
