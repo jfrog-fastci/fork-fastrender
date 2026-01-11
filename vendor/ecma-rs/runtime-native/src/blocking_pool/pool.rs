@@ -80,7 +80,8 @@ impl BlockingPool {
   }
 
   pub(crate) fn spawn(&self, task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8) -> PromiseRef {
-    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
+    // Ensure the async runtime is initialized so promise settlement can wake a thread blocked in the
+    // platform reactor wait syscall (`epoll_wait`/`kevent`).
     let _ = async_rt::global();
     let promise = async_rt::promise::promise_new();
 

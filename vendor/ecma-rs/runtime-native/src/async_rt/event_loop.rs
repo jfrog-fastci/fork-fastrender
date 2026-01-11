@@ -444,9 +444,9 @@ impl EventLoop {
       }
 
       // Nothing ready. Block until either:
-      // - a timer becomes due (epoll_wait timeout)
-      // - an I/O watcher becomes ready (epoll event)
-      // - another thread enqueues work and calls `wake()` (eventfd)
+      // - a timer becomes due (reactor timeout)
+      // - an I/O watcher becomes ready (reactor event)
+      // - another thread enqueues work and calls `wake()` (reactor waker)
       let timeout_ms = self.compute_timeout_ms();
 
       threading::safepoint_poll();
@@ -464,7 +464,7 @@ impl EventLoop {
         return;
       }
 
-      // `ready.is_empty()` can happen when the wake eventfd fired without any
+      // `ready.is_empty()` can happen when the reactor waker fired without any
       // watcher readiness (e.g. a microtask enqueue or GC safepoint wake).
       // Loop to re-check queues and timers.
     }
