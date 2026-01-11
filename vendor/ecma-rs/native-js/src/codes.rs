@@ -27,6 +27,9 @@ pub const STRICT_SUBSET_UNSUPPORTED_TYPE: Code =
 /// NJS0011: Type cannot be represented in the current native ABI/codegen layer.
 pub const UNSUPPORTED_NATIVE_TYPE: Code = Code::new("NJS0011", "unsupported type for native codegen");
 
+/// NJS0012: Builtin intrinsics are disabled by compiler options.
+pub const BUILTINS_DISABLED: Code = Code::new("NJS0012", "builtin intrinsics disabled");
+
 /// NJS0200: HIR expression form not supported by the native backend yet.
 pub const UNSUPPORTED_EXPR: Code = Code::new("NJS0200", "unsupported expression");
 

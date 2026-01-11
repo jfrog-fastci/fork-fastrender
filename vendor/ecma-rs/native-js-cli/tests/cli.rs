@@ -526,7 +526,7 @@ fn checked_pipeline_rejects_entry_fn_flag() {
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("--entry-fn")
@@ -542,13 +542,34 @@ fn checked_pipeline_rejects_entry_fn_flag() {
 }
 
 #[test]
-fn checked_pipeline_rejects_no_builtins_flag() {
+fn checked_pipeline_no_builtins_check_succeeds_without_print() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
   native_js_cli()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--no-builtins")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .success();
+}
+
+#[test]
+fn checked_pipeline_no_builtins_rejects_print() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { print(1 + 2); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
     .arg("--pipeline")
     .arg("checked")
     .arg("--no-builtins")
@@ -556,10 +577,8 @@ fn checked_pipeline_rejects_no_builtins_flag() {
     .arg(&entry)
     .assert()
     .failure()
-    .code(2)
-    .stderr(predicates::str::contains(
-      "--no-builtins is not supported with --pipeline checked",
-    ));
+    .code(1)
+    .stderr(predicates::str::contains("NJS0012"));
 }
 
 #[test]

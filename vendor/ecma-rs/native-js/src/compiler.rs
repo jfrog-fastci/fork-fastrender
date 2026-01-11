@@ -21,9 +21,7 @@ use crate::{
   NativeJsError, OptLevel,
 };
 use diagnostics::{Diagnostic, Severity, Span, TextRange};
-use hir_js::{
-  Body, BodyId, DefId, DefKind, FunctionData, NameId, PatKind,
-};
+use hir_js::{Body, BodyId, DefId, DefKind, ExprId, ExprKind, FileKind, FunctionData, NameId, PatKind};
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
@@ -569,6 +567,7 @@ impl<'a> Compiler<'a> {
     self.ensure_typecheck_ok()?;
     let loaded = self.load_hir_and_types()?;
     self.validate_strict_subset()?;
+    self.reject_disabled_builtins()?;
 
     let context = Context::create();
     let module = self.build_llvm_module(&context, &loaded)?;
@@ -628,6 +627,60 @@ impl<'a> Compiler<'a> {
   fn validate_strict_subset(&self) -> Result<(), NativeJsError> {
     crate::validate::validate_strict_subset(self.program)
       .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
+  }
+
+  fn reject_disabled_builtins(&self) -> Result<(), NativeJsError> {
+    if self.opts.builtins {
+      return Ok(());
+    }
+
+    fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: ExprId, target: &str) -> bool {
+      let Some(expr) = body.exprs.get(expr.0 as usize) else {
+        return false;
+      };
+      match &expr.kind {
+        ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
+        _ => false,
+      }
+    }
+
+    let mut diagnostics = Vec::new();
+    for file in self.program.reachable_files() {
+      let Some(lowered) = self.program.hir_lowered(file) else {
+        continue;
+      };
+      if matches!(lowered.hir.file_kind, FileKind::Dts) {
+        continue;
+      }
+
+      for body_id in self.program.bodies_in_file(file) {
+        let Some(body) = lowered.body(body_id) else {
+          continue;
+        };
+        for expr in body.exprs.iter() {
+          let ExprKind::Call(call) = &expr.kind else {
+            continue;
+          };
+          if callee_is_ident(body, lowered.as_ref(), call.callee, "print") {
+            diagnostics.push(
+              codes::BUILTINS_DISABLED
+                .error(
+                  "`print(...)` intrinsic is disabled because builtin intrinsics are disabled",
+                  Span::new(file, expr.span),
+                )
+                .with_note("re-enable builtin intrinsics by setting `CompilerOptions.builtins = true`"),
+            );
+          }
+        }
+      }
+    }
+
+    if diagnostics.is_empty() {
+      Ok(())
+    } else {
+      codes::normalize_diagnostics(&mut diagnostics);
+      Err(NativeJsError::Rejected { diagnostics })
+    }
   }
 
   fn build_llvm_module<'ctx>(

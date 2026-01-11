@@ -199,8 +199,9 @@ and lowers a handful of builtins:
 Passing `--no-builtins` makes these calls fail with `builtins disabled` so you
 can test the non-builtin path.
 
-This flag is only supported with `--pipeline project` (the checked pipeline has
-different builtin handling).
+For `--pipeline checked`, this flag disables the `print(...)` intrinsic (it is
+rejected when builtin intrinsics are disabled). Other builtins (`assert` /
+`panic` / `trap`) are currently only supported by `--pipeline project`.
 
 `console.log` / `print` formatting (current):
 
@@ -208,11 +209,6 @@ different builtin handling).
 - a trailing newline is always printed
 - numbers are formatted similar to `printf("%.15g")`, but special-cased for
   `NaN` / `Infinity` / `-Infinity`
-
-Note: today this flag only affects the legacy `--pipeline project` emitter. The
-typechecked `--pipeline checked` backend has different builtin handling and does
-not support `--no-builtins` (currently it only recognizes the `print(number)`
-intrinsic statement, and it is always enabled).
 
 ## Supported language subset (`--pipeline project`, current)
 

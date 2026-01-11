@@ -446,10 +446,6 @@ fn ensure_checked_pipeline_supported(cli: &Cli) {
     eprintln!("--entry-fn is not supported with --pipeline checked (native-js uses `export function main()` as the entrypoint)");
     exit(2);
   }
-  if cli.no_builtins {
-    eprintln!("--no-builtins is not supported with --pipeline checked");
-    exit(2);
-  }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
