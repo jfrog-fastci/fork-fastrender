@@ -381,6 +381,10 @@ After `rewrite-statepoints-for-gc` (LLVM 18), each safepoint record’s `locatio
 2. Then, for each `gc.relocate` call associated with that statepoint:
    - 2 locations: `(base, derived)` in that order
 
+`runtime-native` enumerates and updates roots from these `(base, derived)` pairs. Practically, this means:
+
+- Any GC pointer that must remain valid after a safepoint must have a corresponding `gc.relocate` (and the relocated SSA value must be used after the safepoint).
+
 So:
 
 ```
