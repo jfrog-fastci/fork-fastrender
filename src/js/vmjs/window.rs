@@ -1316,6 +1316,55 @@ mod tests {
   }
 
   #[test]
+  fn window_host_dynamic_import_resolves_relative_specifiers_against_script_url() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(
+      "https://example.invalid/scripts/mod.js",
+      FetchedResource::new(
+        "export default 42;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut host = WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.invalid/index.html",
+      fetcher,
+      options,
+    )?;
+
+    // Execute a classic script with an explicit URL "source name" so dynamic `import()` can resolve
+    // relative specifiers against the script URL (not the document URL).
+    host.host.exec_script_with_name_in_event_loop(
+      &mut host.event_loop,
+      "https://example.invalid/scripts/main.js",
+      r#"
+      globalThis.__x = 0;
+      globalThis.__err = "";
+      import("./mod.js")
+        .then(m => { globalThis.__x = m.default; })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+      "#,
+    )?;
+
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__x"),
+      Value::Number(n) if n == 42.0
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn window_host_dynamic_import_enforces_module_graph_module_count_budget() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let fetcher = Arc::new(MapResourceFetcher::default());

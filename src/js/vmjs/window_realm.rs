@@ -183,6 +183,7 @@ pub struct WindowRealm {
   heap_alive: Arc<AtomicBool>,
   js_execution_options: JsExecutionOptions,
   module_loader: ModuleLoaderHandle,
+  next_script_id_raw: u64,
 }
 
 pub(crate) struct WindowRealmUserData {
@@ -328,6 +329,7 @@ impl WindowRealm {
       heap_alive,
       js_execution_options,
       module_loader,
+      next_script_id_raw: 0,
     })
   }
 
@@ -549,7 +551,102 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     // Route Promise jobs through host hooks so embeddings can integrate with a host-owned microtask
     // queue (HTML event loop).
-    self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source))
+
+    // If the realm does not have module loading enabled, skip the extra execution-context work:
+    // dynamic `import()` will reject immediately and module loading hooks will never be invoked.
+    if self.runtime.vm.module_graph_ptr().is_none() {
+      return self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source));
+    }
+
+    let script_id = vm_js::ScriptId::from_raw(self.next_script_id_raw);
+    self.next_script_id_raw = self.next_script_id_raw.wrapping_add(1);
+
+    // Use the script's own URL as the referrer base for dynamic `import()` when the source name is
+    // URL-like (external scripts). Otherwise fall back to the document base URL (inline scripts).
+    let script_url = if Url::parse(source.name.as_ref()).is_ok() {
+      source.name.to_string()
+    } else {
+      let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      data
+        .base_url
+        .clone()
+        .unwrap_or_else(|| data.document_url.clone())
+    };
+
+    let module_loader = Rc::clone(&self.module_loader);
+    let realm_id = self.realm_id;
+
+    self.with_vm_budget(move |rt| {
+      // We want `GetActiveScriptOrModule()` to return a Script Record while this script is running
+      // so dynamic `import()` calls resolve relative to the script URL rather than the document.
+      //
+      // `vm-js`'s classic-script evaluator currently pushes an ExecutionContext whose
+      // `script_or_module` is `None`, so we push our own Script-or-Module execution context around
+      // the entire run. The engine will skip the inner `None` context and pick up this Script entry.
+      struct ScriptReferrerGuard {
+        vm: *mut Vm,
+        module_loader: ModuleLoaderHandle,
+        script_id: vm_js::ScriptId,
+        exec_ctx: vm_js::ExecutionContext,
+      }
+
+      impl ScriptReferrerGuard {
+        fn new(
+          vm: &mut Vm,
+          module_loader: ModuleLoaderHandle,
+          realm: RealmId,
+          script_id: vm_js::ScriptId,
+          script_url: String,
+        ) -> Result<Self, VmError> {
+          {
+            let mut loader = module_loader
+              .try_borrow_mut()
+              .map_err(|_| VmError::InvariantViolation("module loader already borrowed"))?;
+            loader.register_script_url(script_id, script_url)?;
+          }
+
+          let exec_ctx = vm_js::ExecutionContext {
+            realm,
+            script_or_module: Some(vm_js::ScriptOrModule::Script(script_id)),
+          };
+          vm.push_execution_context(exec_ctx);
+
+          Ok(Self {
+            vm: vm as *mut Vm,
+            module_loader,
+            script_id,
+            exec_ctx,
+          })
+        }
+      }
+
+      impl Drop for ScriptReferrerGuard {
+        fn drop(&mut self) {
+          // SAFETY: the guard is only constructed from a live `&mut Vm` owned by the current realm.
+          // It is dropped before the realm (and its VM) can be dropped.
+          let vm = unsafe { &mut *self.vm };
+          let popped = vm.pop_execution_context();
+          debug_assert_eq!(popped, Some(self.exec_ctx));
+
+          // Best-effort: do not panic if the module loader is already borrowed (should not happen).
+          if let Ok(mut loader) = self.module_loader.try_borrow_mut() {
+            loader.unregister_script_url(self.script_id);
+          }
+        }
+      }
+
+      let _guard = ScriptReferrerGuard::new(
+        &mut rt.vm,
+        module_loader,
+        realm_id,
+        script_id,
+        script_url,
+      )?;
+
+      rt.exec_script_source_with_host_and_hooks(host, hooks, source)
+    })
   }
 
   pub(crate) fn exec_script_source_with_hooks(

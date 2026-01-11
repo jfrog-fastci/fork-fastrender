@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use url::Url;
 use vm_js::{
-  ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, SourceText,
-  SourceTextModuleRecord, VmError,
+  ImportAttribute, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, ScriptId,
+  SourceText, SourceTextModuleRecord, VmError,
 };
 
 const BARE_SPECIFIER_TYPE_ERROR: &str =
@@ -114,6 +114,9 @@ pub struct ModuleLoader {
   pub module_map: HashMap<ModuleKey, ModuleId>,
   /// Reverse mapping used for `import.meta.url` and resolving child module specifiers.
   pub module_id_to_url: HashMap<ModuleId, String>,
+  /// Script referrer base URLs used when resolving module specifiers for dynamic `import()` calls
+  /// originating from classic scripts.
+  script_id_to_url: HashMap<ScriptId, String>,
   /// In-flight dedup map: multiple requests for the same key share the same fetch/parse work.
   pub inflight: HashMap<ModuleKey, Vec<PendingContinuation>>,
 }
@@ -143,6 +146,7 @@ impl ModuleLoader {
       module_depths: HashMap::new(),
       module_map: HashMap::new(),
       module_id_to_url: HashMap::new(),
+      script_id_to_url: HashMap::new(),
       inflight: HashMap::new(),
     }
   }
@@ -185,6 +189,23 @@ impl ModuleLoader {
 
   pub fn module_url(&self, module: ModuleId) -> Option<&str> {
     self.module_id_to_url.get(&module).map(|s| s.as_str())
+  }
+
+  pub fn register_script_url(&mut self, script_id: ScriptId, url: String) -> Result<(), VmError> {
+    self
+      .script_id_to_url
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self.script_id_to_url.insert(script_id, url);
+    Ok(())
+  }
+
+  pub fn unregister_script_url(&mut self, script_id: ScriptId) {
+    self.script_id_to_url.remove(&script_id);
+  }
+
+  fn script_url(&self, script_id: ScriptId) -> Option<&str> {
+    self.script_id_to_url.get(&script_id).map(|s| s.as_str())
   }
 
   fn register_module(
@@ -384,7 +405,8 @@ impl ModuleLoader {
           .map(|s| s.as_str())
           .ok_or(ModuleResolveError::UnknownReferrer)?,
       ),
-      ModuleReferrer::Realm(_) | ModuleReferrer::Script(_) => self.document_url.as_deref(),
+      ModuleReferrer::Realm(_) => self.document_url.as_deref(),
+      ModuleReferrer::Script(script) => self.script_url(script).or(self.document_url.as_deref()),
     };
 
     let Some(base_url) = base_url else {
@@ -556,7 +578,12 @@ impl ModuleLoader {
 
       let referrer_url = waiters.first().and_then(|waiter| match waiter.referrer {
         ModuleReferrer::Module(m) => self.module_id_to_url.get(&m).cloned(),
-        ModuleReferrer::Realm(_) | ModuleReferrer::Script(_) => self.document_url.clone(),
+        ModuleReferrer::Realm(_) => self.document_url.clone(),
+        ModuleReferrer::Script(script) => self
+          .script_id_to_url
+          .get(&script)
+          .cloned()
+          .or_else(|| self.document_url.clone()),
       });
 
       let remaining_total = self.max_module_graph_total_bytes.saturating_sub(self.loaded_bytes_total);
@@ -783,6 +810,20 @@ mod tests {
     let resolved =
       loader.resolve_request_url(ModuleReferrer::Realm(vm_js::RealmId::from_raw(1)), &ModuleRequest::new("./b.js", Vec::new()));
     assert_eq!(resolved.unwrap(), "https://example.com/doc/b.js");
+  }
+
+  #[test]
+  fn resolves_relative_specifiers_against_script_url_for_script_referrer() {
+    let mut loader = ModuleLoader::new(Some("https://example.com/doc/page.html".to_string()));
+    let script_id = ScriptId::from_raw(1);
+    loader
+      .register_script_url(script_id, "https://example.com/scripts/main.js".to_string())
+      .expect("register script url");
+    let resolved = loader.resolve_request_url(
+      ModuleReferrer::Script(script_id),
+      &ModuleRequest::new("./b.js", Vec::new()),
+    );
+    assert_eq!(resolved.unwrap(), "https://example.com/scripts/b.js");
   }
 
   #[test]
