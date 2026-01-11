@@ -230,11 +230,11 @@ pub struct ProgramFunction {
     serde(default, skip_serializing_if = "Vec::is_empty")
   )]
   pub params: Vec<u32>,
-  /// SSA-form CFG annotated with escape/ownership metadata.
+  /// SSA-form CFG annotated with escape/ownership/consumption metadata.
   ///
   /// This is produced after SSA construction and optimization passes converge, and
   /// before SSA deconstruction. Native backends should prefer this over
-  /// [`ProgramFunction::body`] when consuming ownership/escape metadata.
+  /// [`ProgramFunction::body`] when consuming ownership/escape/consumption metadata.
   #[cfg_attr(feature = "serde", serde(skip_serializing))]
   pub ssa_body: Option<Cfg>,
   #[cfg_attr(feature = "serde", serde(skip_serializing))]
@@ -658,11 +658,11 @@ pub(crate) fn build_program_function_with_options(
   }
 
   // Preserve an SSA-form CFG for downstream consumers (e.g. native codegen backends). We
-  // intentionally do not propagate escape/ownership metadata onto the deconstructed CFG; consumers
-  // should use `ProgramFunction::analyzed_cfg()` when they need ownership/escape results.
+  // intentionally do not propagate escape/ownership/consumption metadata onto the deconstructed
+  // CFG; consumers should use `ProgramFunction::analyzed_cfg()` when they need those results.
   //
-  // Escape/ownership metadata is annotated at the end of compilation using whole-program
-  // interprocedural summaries so direct `Arg::Fn` calls can be handled precisely.
+  // Escape/ownership/consumption metadata is annotated at the end of compilation using
+  // whole-program interprocedural summaries so direct `Arg::Fn` calls can be handled precisely.
   let ssa_cfg = cfg.clone();
 
   if !options.keep_ssa {
