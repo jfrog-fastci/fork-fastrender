@@ -234,6 +234,39 @@ Decoding the single `Location` (12 bytes):
 Kind=1 (Register), DwarfRegNum=0 (RAX), Size=8
 ```
 
+#### `llvm.experimental.stackmap` operand in an XMM register (non-statepoint)
+
+IR: `investigation/llvm_stackmaps/stackmap_register_xmm0.ll`
+
+`llvm-readobj-18 --stackmap`:
+
+```text
+Record ID: 43, instruction offset: 4
+  1 locations:
+    #1: Register R#17, size: 16
+```
+
+On x86_64, DWARF register 17 corresponds to `xmm0`. Note the `Size` reported is
+the full register width (16 bytes), even if the IR operand is a scalar `double`.
+
+Bytes:
+
+```text
+Hex dump of section '.llvm_stackmaps':
+0x00000000 03000000 01000000 00000000 01000000 ................
+0x00000010 00000000 00000000 08000000 00000000 ................
+0x00000020 01000000 00000000 2b000000 00000000 ........+.......
+0x00000030 04000000 00000100 01001000 11000000 ................
+0x00000040 00000000 00000000 00000000 00000000 ................
+```
+
+Decoding the single `Location`:
+
+```text
+01 00 10 00  11 00 00 00  00 00 00 00
+Kind=1 (Register), DwarfRegNum=17 (xmm0), Size=16
+```
+
 ### LocationKind = 2 (Direct)
 
 IR: `investigation/llvm_stackmaps/statepoint_deopt_direct.ll`
