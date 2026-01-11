@@ -208,18 +208,6 @@ impl ObjHeader {
   }
 
   #[inline]
-  pub(crate) fn set_remembered(&mut self, remembered: bool) {
-    if self.is_forwarded() {
-      return;
-    }
-    if remembered {
-      self.meta.fetch_or(META_REMEMBERED, Ordering::Release);
-    } else {
-      self.meta.fetch_and(!META_REMEMBERED, Ordering::Release);
-    }
-  }
-
-  #[inline]
   pub(crate) fn set_pinned(&mut self, pinned: bool) {
     debug_assert!(!self.is_forwarded(), "pinned objects must not be forwarded");
     if self.is_forwarded() {

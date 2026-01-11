@@ -107,9 +107,8 @@ fn c_can_link_and_call_runtime_native() {
     r#"
 #define _POSIX_C_SOURCE 200809L
 #include "runtime_native.h"
-#include <unistd.h>
 #include <time.h>
-
+#include <unistd.h>
 static void sleep_us(long us) {
   struct timespec ts;
   ts.tv_sec = us / 1000000;
@@ -159,6 +158,26 @@ int main(void) {
   uint8_t* pinned = rt_alloc_pinned(16, shape);
   (void)pinned;
 
+  // Warm up the blocking pool. The first `rt_spawn_blocking` call may need to
+  // spawn a full worker pool, which can take long enough for a short timeout to
+  // expire on slow/contended machines. This smoke test is about wakeups
+  // (promise settlement waking a blocked poll), not thread pool initialization.
+  int warm_settled = 0;
+  LegacyPromiseRef warm = rt_spawn_blocking(blocking_task, (uint8_t*)0);
+  rt_promise_then_legacy(warm, set_int, (uint8_t*)&warm_settled);
+  for (int i = 0; i < 10000 && !warm_settled; i++) {
+    rt_async_poll_legacy();
+    // On some platforms `rt_async_poll_legacy` can return quickly when idle.
+    // Avoid spinning too fast: give the blocking worker a chance to run.
+    if (!warm_settled) {
+      sleep_us(1000);
+    }
+  }
+  if (!warm_settled) {
+    rt_thread_deinit();
+    return 1;
+  }
+
   // Smoke test: resolve a promise from a blocking worker and run its continuation on the
   // event loop thread, waking the poll loop promptly (before the timer fires).
   //
@@ -170,7 +189,6 @@ int main(void) {
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
-
   // Drive the event loop until the promise settles.
   //
   // Under heavy CI load, the blocking worker may not run immediately. That's OK: this is a C

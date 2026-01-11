@@ -574,16 +574,28 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
     if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
       std::process::abort();
     }
-    // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
-    let header = unsafe { &mut *(obj as *mut ObjHeader) };
     if object_has_young_refs(obj) {
-      header.set_remembered(true);
+      // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
+      let header = unsafe { &*(obj as *const ObjHeader) };
+      // Keep the per-object remembered bit in sync with the rebuilt tracking list.
+      header.set_remembered_idempotent();
       REMEMBERED_SET.insert(obj);
     } else {
-      header.set_remembered(false);
+      // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
+      let header = unsafe { &*(obj as *const ObjHeader) };
+      header.clear_remembered_idempotent();
     }
   }
 }
+
+/// Returns the number of objects currently recorded in the global remembered set.
+///
+/// Intended for tests and debugging only.
+#[doc(hidden)]
+pub fn remembered_set_len_for_tests() -> usize {
+  REMEMBERED_SET.len.load(Ordering::Acquire).min(REMEMBERED_SET_CAPACITY)
+}
+
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());
