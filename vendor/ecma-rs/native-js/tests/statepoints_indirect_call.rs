@@ -242,6 +242,117 @@ fn llvm18_statepoint_rewrite_indirect_call_nonvoid_has_elementtype_and_gc_result
 }
 
 #[test]
+fn llvm18_statepoint_rewrite_indirect_call_gcptr_return_has_elementtype_and_gc_result() {
+  // Like `llvm18_statepoint_rewrite_indirect_call_has_elementtype`, but the indirect callee returns
+  // a GC pointer (`ptr addrspace(1)`) so LLVM must also materialize `gc.result.p1`.
+  native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
+
+  let context = Context::create();
+  let module = context.create_module("statepoints_indirect_call_gcptr_return");
+  let builder = context.create_builder();
+
+  let gc_ptr = gc::gc_ptr_type(&context);
+
+  // declare ptr addrspace(1) @alloc()
+  let callee_ty = gc_ptr.fn_type(&[], false);
+  let callee = module.add_function("alloc", callee_ty, None);
+  let callee_alt = module.add_function("alloc_alt", callee_ty, None);
+
+  // define ptr addrspace(1) @test(ptr addrspace(1) %obj) gc "coreclr"
+  let test_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+
+  // Build a non-constant function pointer so the call stays indirect.
+  let obj = test_fn
+    .get_first_param()
+    .expect("missing %obj param")
+    .into_pointer_value();
+  obj.set_name("obj");
+
+  let isnull_pre = builder
+    .build_is_null(obj, "isnull_pre")
+    .expect("build isnull_pre");
+  let fp = builder
+    .build_select(
+      isnull_pre,
+      callee.as_global_value().as_pointer_value(),
+      callee_alt.as_global_value().as_pointer_value(),
+      "fp",
+    )
+    .expect("select function pointer")
+    .into_pointer_value();
+
+  // %p = call ptr addrspace(1) %fp()
+  let p = builder
+    .build_indirect_call(callee_ty, fp, &[], "call_alloc")
+    .expect("build indirect call")
+    .try_as_basic_value()
+    .left()
+    .expect("non-void return")
+    .into_pointer_value();
+  p.set_name("p");
+
+  // Keep %obj live across the call.
+  builder.build_is_null(obj, "isnull").expect("build isnull");
+  builder.build_return(Some(&p)).expect("build ret gc ptr");
+
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("host target");
+  let tm = target
+    .create_target_machine(
+      &triple,
+      "generic",
+      "",
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("create target machine");
+  module.set_triple(&triple);
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_or_else(|err| {
+    panic!(
+      "rewrite-statepoints-for-gc failed: {err}\n\nAfter:\n{}",
+      module.print_to_string()
+    )
+  });
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "module verification failed after rewrite-statepoints-for-gc: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let rewritten = module.print_to_string().to_string();
+
+  assert!(
+    rewritten.contains("ptr elementtype(ptr addrspace(1) ()) %fp"),
+    "expected statepoint callee operand to be `ptr elementtype(ptr addrspace(1) ()) %fp`, got:\n{rewritten}"
+  );
+
+  assert!(
+    rewritten.contains("@llvm.experimental.gc.result.p1"),
+    "expected gc.result.p1 intrinsic for indirect call returning ptr addrspace(1), got:\n{rewritten}"
+  );
+
+  assert!(
+    rewritten.contains("\"gc-live\"(ptr addrspace(1) %obj)"),
+    "expected `\"gc-live\"(ptr addrspace(1) %obj)` operand bundle, got:\n{rewritten}"
+  );
+
+  assert!(
+    rewritten.contains("call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
+    "expected gc.relocate for %obj in rewritten IR, got:\n{rewritten}"
+  );
+}
+
+#[test]
 fn llvm18_manual_statepoint_indirect_call_has_elementtype() {
   // Our manual statepoint builder must attach `elementtype(<fn-ty>)` to the callee argument even
   // when the callee is a runtime function pointer (`ptr %fp`).
