@@ -291,7 +291,7 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 
 #### When to root a derived pointer vs recompute it
 
-**Important:** `runtime-native` currently rejects derived pointers at safepoints (it requires `base` and `derived` to be the same spill slot). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
+**Important:** `runtime-native` currently rejects derived pointers at safepoints (it requires `base` and `derived` to refer to the same storage location: the same spill slot or the same register). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
 
 If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
@@ -431,16 +431,20 @@ locations =
 
 Current runtime contract (v1):
 
-- Root locations must be **addressable spill slots** (`Location::Indirect` based on SP/FP), not values kept only in registers.
+- Root locations may be either:
+  - **addressable spill slots** (`Location::Indirect` based on SP/FP), or
+  - **register locations** (`Location::Register`, encoded as a DWARF register number).
 - Derived pointers (base/derived locations that differ) are currently **rejected** to avoid silent corruption.
   - `native-js` should avoid keeping interior pointers live across safepoints; keep the base pointer live and recompute derived pointers after the safepoint if needed.
 
-For each `(base, derived)` pair (where the locations are the same spill slot):
+For each `(base, derived)` pair (where `base` and `derived` refer to the same storage location):
 
-- Read the *current* pointer value from the spill slot.
+- Read the *current* pointer value from the root location.
 - If the pointer is `0` (null), treat it as non-root (skip).
 - Ask the GC to relocate it to `new_ptr` (moving/compacting collector).
-- Write `new_ptr` back to the spill slot (in place).
+- Write `new_ptr` back to the same root location:
+  - for spill slots: write to the stack memory slot (in place)
+  - for registers: update the stopped thread's register file (e.g. Linux `ucontext_t`) before resuming
 
 ---
 
