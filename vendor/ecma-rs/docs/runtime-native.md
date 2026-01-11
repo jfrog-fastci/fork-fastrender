@@ -197,6 +197,17 @@ pub struct RtShapeDescriptor {
   pub reserved: u32,
 }
 
+/// Raw pointer to a GC-managed object.
+pub type GcPtr = *mut u8;
+
+/// GC handle (pointer-to-slot) used for passing GC-managed pointers across `MayGC`
+/// runtime calls.
+///
+/// This is the "handle ABI": callers pass a pointer to a root slot that contains
+/// a `GcPtr`. A moving GC updates that slot during relocation, and the runtime
+/// reloads `*handle` after any safepoint.
+pub type GcHandle = *mut GcPtr;
+
 /// Stable identifier for an interned UTF-8 string.
 #[repr(transparent)]
 pub struct InternedId(pub u32);
@@ -249,6 +260,11 @@ pub fn rt_gc_poll() -> bool;
 pub fn rt_gc_safepoint_slow(epoch: u64);
 pub fn rt_gc_safepoint();
 pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
+
+// Temporary roots (shadow stack for Rust/FFI code)
+pub fn rt_root_push(slot: GcHandle);
+pub fn rt_root_pop(slot: GcHandle);
+
 pub fn rt_gc_collect();
 
 // Strings
@@ -304,6 +320,8 @@ generation strategy.
 | `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
 | `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint. |
 | `rt_gc_safepoint_relocate_h` | MayGC | Handle-based helper: safepoint + reload `*slot` for moving-GC safe runtime calls. |
+| `rt_root_push` | NoGC | Register an addressable root slot on the current thread's shadow stack. |
+| `rt_root_pop` | NoGC | Pop a root slot (must be called in strict LIFO order). |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer. |
