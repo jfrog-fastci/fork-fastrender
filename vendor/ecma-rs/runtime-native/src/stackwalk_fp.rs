@@ -153,6 +153,15 @@ pub enum WalkError {
   },
   #[error("missing stackmap entry for return address {return_addr:#x}")]
   MissingStackMap { return_addr: u64 },
+
+  #[error(
+    "statepoint record at return address {return_addr:#x} has gc_pair_count={gc_pair_count}, exceeding max={max}"
+  )]
+  GcPairCountOverflow {
+    return_addr: u64,
+    gc_pair_count: usize,
+    max: usize,
+  },
 }
 
 const MAX_FRAMES_CAP: usize = 1_000_000;
@@ -170,6 +179,51 @@ fn max_frames_for_bounds(bounds: StackBounds) -> usize {
   // Clamp so corrupted FP chains can't loop forever even if stack bounds are
   // huge (e.g. custom thread stacks).
   by_stack.clamp(1, MAX_FRAMES_CAP)
+}
+
+/// Upper bound on the number of GC `(base, derived)` pointer pairs we will process for a single
+/// statepoint record/frame while the world is stopped.
+///
+/// Stackmap-driven root enumeration must not allocate via the Rust global allocator. We therefore
+/// use fixed-capacity stack storage for per-frame scratch.
+///
+/// If a frame exceeds this limit, root enumeration returns [`WalkError::GcPairCountOverflow`].
+const MAX_GC_PAIRS_PER_FRAME: usize = 1024;
+
+#[derive(Clone, Copy, Debug)]
+struct GcPairScratchEntry {
+  base_slot: u64,
+  derived_slot: u64,
+  /// `(derived_old - base_old)` computed from pre-relocation values.
+  delta: i64,
+  /// Preserve `null` semantics: if either old pointer was `0`, force the derived slot to `0`
+  /// after relocation.
+  force_null: bool,
+}
+
+#[derive(Debug)]
+struct RootPairsScratch {
+  pairs: [(*mut usize, *mut usize); MAX_GC_PAIRS_PER_FRAME],
+  len: usize,
+}
+
+impl RootPairsScratch {
+  fn new() -> Self {
+    Self {
+      pairs: [(core::ptr::null_mut(), core::ptr::null_mut()); MAX_GC_PAIRS_PER_FRAME],
+      len: 0,
+    }
+  }
+
+  #[inline]
+  fn clear(&mut self) {
+    self.len = 0;
+  }
+
+  #[inline]
+  fn as_slice(&self) -> &[(*mut usize, *mut usize)] {
+    &self.pairs[..self.len]
+  }
 }
 
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -561,6 +615,7 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
 
   let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
   let mut cur_fp = start_fp;
+  let mut pairs_scratch = RootPairsScratch::new();
   let max_frames = max_frames_for_bounds(bounds);
   for depth in 0..max_frames {
     check_fp_alignment(cur_fp)?;
@@ -596,10 +651,16 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
 
     if let Some(callsite) = stackmaps.lookup(caller_ra) {
       let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
-      let pairs =
-        enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, bounds, Some(caller_sp))?;
+      let pairs = enumerate_root_pairs_for_frame(
+        caller_fp,
+        caller_ra,
+        callsite,
+        bounds,
+        Some(caller_sp),
+        &mut pairs_scratch,
+      )?;
       if !pairs.is_empty() {
-        visit_frame_reloc_pairs(caller_ra, &pairs);
+        visit_frame_reloc_pairs(caller_ra, pairs);
       }
     }
 
@@ -644,12 +705,20 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
     });
   }
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
+    let mut pairs_scratch = RootPairsScratch::new();
     // Prefer the captured stackmap-semantics SP for the top managed frame (see the note in
     // `walk_gc_roots_from_safepoint_context`).
     let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
-    let pairs = enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp)?;
+    let pairs = enumerate_root_pairs_for_frame(
+      caller_fp,
+      caller_ra,
+      callsite,
+      bounds,
+      caller_sp,
+      &mut pairs_scratch,
+    )?;
     if !pairs.is_empty() {
-      visit_frame_reloc_pairs(caller_ra, &pairs);
+      visit_frame_reloc_pairs(caller_ra, pairs);
     }
   }
 
@@ -859,36 +928,43 @@ fn enumerate_roots_for_frame(
     }
   }
 
-  // Collect + dedup within this frame to avoid double-visiting the same slot
-  // (LLVM can emit duplicated locations for relocated values).
+  let gc_pair_count = statepoint.gc_pair_count();
+  if gc_pair_count > MAX_GC_PAIRS_PER_FRAME {
+    return Err(WalkError::GcPairCountOverflow {
+      return_addr: caller_ra,
+      gc_pair_count,
+      max: MAX_GC_PAIRS_PER_FRAME,
+    });
+  }
+
+  // Collect + dedup within this frame to avoid double-visiting the same slot (LLVM can emit
+  // duplicated locations for relocated values).
   //
-  // For each `(base, derived)` pair, we always visit the base root slot. If the
-  // derived value is stored in a distinct slot, we compute its byte delta from
-  // the base value and update it after the base has been relocated by the
-  // callback.
-  let mut base_slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pair_count());
-  // (base_slot, derived_slot, delta, force_null)
+  // We process the `(base, derived)` pairs in deterministic `(base_slot, derived_slot)` order:
+  // - Visit each unique base slot once (roots are base slots).
+  // - Apply derived-pointer fixups after the base slot has potentially been relocated by `visit`.
   //
-  // `force_null` is used to preserve `null` derived values:
-  // - `derived_old == 0` must remain `0` after relocation (not `new_base + (0 - old_base)`),
-  // - `base_old == 0` implies the derived pointer is meaningless (treat as null),
-  // - if the GC writes `0` into the relocated base slot (should not happen, but stay safe), derived
-  //   becomes null too.
-  let mut derived_fixups: Vec<(u64, u64, i64, bool)> = Vec::new();
+  // Derived-pointer deltas are computed from the *pre-relocation* pointer values and stored in this
+  // scratch array.
+  let mut entries = [GcPairScratchEntry {
+    base_slot: 0,
+    derived_slot: 0,
+    delta: 0,
+    force_null: false,
+  }; MAX_GC_PAIRS_PER_FRAME];
+  let mut entry_len = 0usize;
+
   for pair in statepoint.gc_pairs() {
-    let base = &pair.base;
-    let derived = &pair.derived;
-    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, base)?;
-    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, derived)?;
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
-    base_slots.push(base_slot);
 
-    if base_slot != derived_slot {
+    let (delta, force_null) = if base_slot != derived_slot {
       let base_val = unsafe { read_u64(base_slot) };
       let derived_val = unsafe { read_u64(derived_slot) };
       if base_val == 0 || derived_val == 0 {
-        derived_fixups.push((base_slot, derived_slot, 0, true));
+        (0, true)
       } else {
         let delta_i128 = (derived_val as i128) - (base_val as i128);
         let delta = i64::try_from(delta_i128).map_err(|_| WalkError::DerivedPointerDeltaOverflow {
@@ -896,61 +972,88 @@ fn enumerate_roots_for_frame(
           base_val,
           derived_val,
         })?;
-        derived_fixups.push((base_slot, derived_slot, delta, false));
+        (delta, false)
       }
+    } else {
+      (0, false)
+    };
+
+    entries[entry_len] = GcPairScratchEntry {
+      base_slot,
+      derived_slot,
+      delta,
+      force_null,
+    };
+    entry_len += 1;
+  }
+
+  let entries = &mut entries[..entry_len];
+  entries.sort_unstable_by_key(|e| (e.base_slot, e.derived_slot));
+
+  // Dedup pairs by (base_slot, derived_slot). This also implies base-slot dedup, since we only
+  // visit a base slot when it differs from the previous entry's base.
+  let mut dedup_len = 0usize;
+  for i in 0..entries.len() {
+    if dedup_len == 0
+      || entries[i].base_slot != entries[dedup_len - 1].base_slot
+      || entries[i].derived_slot != entries[dedup_len - 1].derived_slot
+    {
+      entries[dedup_len] = entries[i];
+      dedup_len += 1;
     }
   }
-  base_slots.sort_unstable();
-  base_slots.dedup();
+  let entries = &entries[..dedup_len];
 
-  // Deterministic ordering + avoid double-updating the same derived slot.
-  derived_fixups.sort_unstable_by_key(|(base, derived, _, _)| (*base, *derived));
-  derived_fixups.dedup_by_key(|(base, derived, _, _)| (*base, *derived));
-
-  let mut fixup_idx = 0usize;
-  for base_slot in base_slots {
-    visit(base_slot as *mut u8);
-
-    // Apply any derived fixups that use this base slot.
-    while fixup_idx < derived_fixups.len() && derived_fixups[fixup_idx].0 < base_slot {
-      fixup_idx += 1;
+  let mut cur_base: Option<u64> = None;
+  let mut relocated_base_val: u64 = 0;
+  for e in entries {
+    if cur_base != Some(e.base_slot) {
+      cur_base = Some(e.base_slot);
+      visit(e.base_slot as *mut u8);
+      relocated_base_val = unsafe { read_u64(e.base_slot) };
     }
-    if fixup_idx >= derived_fixups.len() || derived_fixups[fixup_idx].0 != base_slot {
+
+    if e.derived_slot == e.base_slot {
       continue;
     }
 
-    let relocated_base_val = unsafe { read_u64(base_slot) };
-    while fixup_idx < derived_fixups.len() && derived_fixups[fixup_idx].0 == base_slot {
-      let (_base_slot, derived_slot, delta, force_null) = derived_fixups[fixup_idx];
-      if force_null || relocated_base_val == 0 {
-        unsafe { write_u64(derived_slot, 0) };
-      } else {
-        let new_derived = add_signed_u64_i64(relocated_base_val, delta)
-          .ok_or(WalkError::DerivedPointerRelocationOverflow {
-            return_addr: caller_ra,
-            base_val: relocated_base_val,
-            delta,
-          })?;
-        unsafe { write_u64(derived_slot, new_derived) };
-      }
-      fixup_idx += 1;
+    // Preserve `null` derived values:
+    // - `derived_old == 0` must remain `0` after relocation (not `new_base + (0 - old_base)`),
+    // - `base_old == 0` implies the derived pointer is meaningless (treat as null),
+    // - if the GC writes `0` into the relocated base slot (should not happen, but stay safe),
+    //   derived becomes null too.
+    if e.force_null || relocated_base_val == 0 {
+      unsafe { write_u64(e.derived_slot, 0) };
+      continue;
     }
+
+    let new_derived = add_signed_u64_i64(relocated_base_val, e.delta).ok_or(
+      WalkError::DerivedPointerRelocationOverflow {
+        return_addr: caller_ra,
+        base_val: relocated_base_val,
+        delta: e.delta,
+      },
+    )?;
+    unsafe { write_u64(e.derived_slot, new_derived) };
   }
 
   Ok(())
 }
 
-fn enumerate_root_pairs_for_frame(
+fn enumerate_root_pairs_for_frame<'a>(
   caller_fp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
-) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
+  scratch: &'a mut RootPairsScratch,
+) -> Result<&'a [(*mut usize, *mut usize)], WalkError> {
+  scratch.clear();
+
   // Only statepoint callsites contribute GC root relocation pairs.
   let statepoint = match crate::statepoints::StatepointRecord::new(callsite.record) {
     Ok(sp) => sp,
-    Err(_) => return Ok(Vec::new()),
+    Err(_) => return Ok(scratch.as_slice()),
   };
 
   let needs_sp = statepoint
@@ -976,28 +1079,42 @@ fn enumerate_root_pairs_for_frame(
     }
   }
 
-  let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(statepoint.gc_pair_count());
+  let gc_pair_count = statepoint.gc_pair_count();
+  if gc_pair_count > MAX_GC_PAIRS_PER_FRAME {
+    return Err(WalkError::GcPairCountOverflow {
+      return_addr: caller_ra,
+      gc_pair_count,
+      max: MAX_GC_PAIRS_PER_FRAME,
+    });
+  }
+
   for pair in statepoint.gc_pairs() {
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
     let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
-    pairs.push((base_slot, derived_slot));
-  }
-  pairs.sort_unstable();
-  pairs.dedup();
 
-  Ok(
-    pairs
-      .into_iter()
-      .map(|(base_slot, derived_slot)| {
-        (
-          base_slot as usize as *mut usize,
-          derived_slot as usize as *mut usize,
-        )
-      })
-      .collect(),
-  )
+    scratch.pairs[scratch.len] = (
+      base_slot as usize as *mut usize,
+      derived_slot as usize as *mut usize,
+    );
+    scratch.len += 1;
+  }
+
+  // Deterministic ordering and dedup.
+  let pairs = &mut scratch.pairs[..scratch.len];
+  pairs.sort_unstable_by_key(|&(base, derived)| (base as usize, derived as usize));
+
+  let mut dedup_len = 0usize;
+  for i in 0..pairs.len() {
+    if dedup_len == 0 || pairs[i].0 != pairs[dedup_len - 1].0 || pairs[i].1 != pairs[dedup_len - 1].1 {
+      pairs[dedup_len] = pairs[i];
+      dedup_len += 1;
+    }
+  }
+  scratch.len = dedup_len;
+
+  Ok(scratch.as_slice())
 }
 
 fn eval_root_location(
