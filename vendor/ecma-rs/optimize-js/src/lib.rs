@@ -702,8 +702,11 @@ fn annotate_ssa_cfg_escape_and_ownership(
   );
   analysis::ownership::annotate_cfg_ownership(cfg, &ownership);
   analysis::consume::annotate_cfg_consumption(cfg, &ownership);
-  for (_label, insts) in cfg.bblocks.all_mut() {
-    for inst in insts {
+  // Deterministic traversal over bblocks so SSA metadata annotation stays stable.
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+  for label in labels {
+    for inst in cfg.bblocks.get_mut(label).iter_mut() {
       let Some(tgt) = inst.tgts.get(0).copied() else {
         continue;
       };
