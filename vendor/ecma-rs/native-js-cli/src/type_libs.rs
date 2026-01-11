@@ -22,7 +22,8 @@ pub fn load_type_libs(
     options.jsx,
     Some(JsxMode::React | JsxMode::ReactJsx | JsxMode::ReactJsxdev | JsxMode::Preserve)
   ) {
-    if let (Some(import_source), Some(types)) = (cfg.jsx_import_source.as_ref(), types_override.as_mut())
+    if let (Some(import_source), Some(types)) =
+      (cfg.jsx_import_source.as_ref(), types_override.as_mut())
     {
       if !types.iter().any(|name| name == import_source) {
         types.push(import_source.clone());
@@ -200,4 +201,3 @@ fn type_package_entry(dir: &Path) -> Option<PathBuf> {
   let index = dir.join("index.d.ts");
   index.is_file().then_some(index)
 }
-

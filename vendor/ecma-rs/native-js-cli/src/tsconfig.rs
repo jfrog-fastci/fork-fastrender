@@ -173,8 +173,8 @@ fn load_raw_config(
 
   let text = fs::read_to_string(&canonical)
     .map_err(|err| format!("failed to read {}: {err}", canonical.display()))?;
-  let mut current: RawTsConfig =
-    json5::from_str(&text).map_err(|err| format!("failed to parse {}: {err}", canonical.display()))?;
+  let mut current: RawTsConfig = json5::from_str(&text)
+    .map_err(|err| format!("failed to parse {}: {err}", canonical.display()))?;
   let config_dir = canonical
     .parent()
     .ok_or_else(|| format!("invalid tsconfig path {}", canonical.display()))?;
@@ -230,9 +230,12 @@ fn resolve_extends_path(config_dir: &Path, extends: &str) -> Result<PathBuf, Str
   } else if candidate.extension().is_none() {
     candidate.set_extension("json");
   }
-  candidate
-    .canonicalize()
-    .map_err(|err| format!("failed to read tsconfig extends {}: {err}", candidate.display()))
+  candidate.canonicalize().map_err(|err| {
+    format!(
+      "failed to read tsconfig extends {}: {err}",
+      candidate.display()
+    )
+  })
 }
 
 fn merge_raw_configs(mut base: RawTsConfig, next: RawTsConfig) -> RawTsConfig {
@@ -387,8 +390,12 @@ fn build_globset(root_dir: &Path, patterns: &[String]) -> Result<GlobSet, String
     if pattern.is_empty() {
       continue;
     }
-    let glob = Glob::new(pattern)
-      .map_err(|err| format!("invalid glob pattern '{pattern}' in {}: {err}", root_dir.display()))?;
+    let glob = Glob::new(pattern).map_err(|err| {
+      format!(
+        "invalid glob pattern '{pattern}' in {}: {err}",
+        root_dir.display()
+      )
+    })?;
     builder.add(glob);
   }
   builder
@@ -561,4 +568,3 @@ fn parse_jsx_mode(raw: &str) -> Option<JsxMode> {
     _ => None,
   }
 }
-

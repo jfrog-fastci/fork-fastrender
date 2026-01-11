@@ -3,12 +3,16 @@ use parse_js::ast::node::Node;
 
 #[derive(Clone, Copy, Debug)]
 pub enum BuiltinCall<'a> {
-  Print { args: &'a [Node<CallArg>] },
+  Print {
+    args: &'a [Node<CallArg>],
+  },
   Assert {
     cond: &'a Node<Expr>,
     msg: Option<&'a Node<Expr>>,
   },
-  Panic { msg: Option<&'a Node<Expr>> },
+  Panic {
+    msg: Option<&'a Node<Expr>>,
+  },
   Trap,
 }
 

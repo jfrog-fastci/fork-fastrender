@@ -28,7 +28,10 @@ use inkwell::values::{FunctionValue, IntValue};
 ///
 /// Marking the poll as a *GC leaf* ensures LLVM's `rewrite-statepoints-for-gc`
 /// pass does not wrap it in a statepoint (the poll itself is just a cheap check).
-pub fn get_or_declare_rt_gc_poll<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+pub fn get_or_declare_rt_gc_poll<'ctx>(
+  context: &'ctx Context,
+  module: &Module<'ctx>,
+) -> FunctionValue<'ctx> {
   if let Some(existing) = module.get_function("rt_gc_poll") {
     return existing;
   }

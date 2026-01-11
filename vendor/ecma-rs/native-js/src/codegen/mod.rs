@@ -6,7 +6,6 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::IntType;
 use inkwell::values::{FunctionValue, IntValue};
-use inkwell::AddressSpace;
 use typecheck_ts::{FileId, Program};
 
 pub struct CodegenOptions {
@@ -71,14 +70,14 @@ fn declare_c_main<'ctx>(
   module: &Module<'ctx>,
   i32_ty: IntType<'ctx>,
 ) -> FunctionValue<'ctx> {
-  // LLVM 15+ uses opaque pointers by default, so we represent `char **argv` as
-  // a single `ptr` argument.
-  let argv_ty = context.ptr_type(AddressSpace::default());
-  let func = module.add_function(
-    "main",
-    i32_ty.fn_type(&[i32_ty.into(), argv_ty.into()], false),
-    None,
-  );
+  // Define `main` with no parameters (`int main(void)`), since our generated
+  // wrapper does not currently use `argc`/`argv`.
+  //
+  // This also avoids passing a raw `ptr` argument through a function marked with
+  // our GC strategy (`gc "coreclr"`), which would violate the GC pointer
+  // discipline lint (all pointers in GC function signatures must be
+  // `ptr addrspace(1)`).
+  let func = module.add_function("main", i32_ty.fn_type(&[], false), None);
   crate::stack_walking::apply_stack_walking_attrs(context, func);
   func
 }
@@ -101,13 +100,14 @@ fn build_ts_main<'ctx>(
     .body
   {
     hir_js::FunctionBody::Expr(expr) => Some(*expr),
-    hir_js::FunctionBody::Block(stmts) => stmts
-      .iter()
-      .rev()
-      .find_map(|stmt_id| match hir_body.stmts.get(stmt_id.0 as usize)?.kind {
-        hir_js::StmtKind::Return(expr) => expr,
-        _ => None,
-      }),
+    hir_js::FunctionBody::Block(stmts) => {
+      stmts.iter().rev().find_map(
+        |stmt_id| match hir_body.stmts.get(stmt_id.0 as usize)?.kind {
+          hir_js::StmtKind::Return(expr) => expr,
+          _ => None,
+        },
+      )
+    }
   }
   .ok_or_else(|| {
     vec![Diagnostic::error(
@@ -209,9 +209,15 @@ fn codegen_expr<'ctx>(
         BinaryOp::Remainder => builder
           .build_int_signed_rem(lhs, rhs, "rem")
           .expect("failed to build rem"),
-        BinaryOp::BitAnd => builder.build_and(lhs, rhs, "and").expect("failed to build and"),
-        BinaryOp::BitOr => builder.build_or(lhs, rhs, "or").expect("failed to build or"),
-        BinaryOp::BitXor => builder.build_xor(lhs, rhs, "xor").expect("failed to build xor"),
+        BinaryOp::BitAnd => builder
+          .build_and(lhs, rhs, "and")
+          .expect("failed to build and"),
+        BinaryOp::BitOr => builder
+          .build_or(lhs, rhs, "or")
+          .expect("failed to build or"),
+        BinaryOp::BitXor => builder
+          .build_xor(lhs, rhs, "xor")
+          .expect("failed to build xor"),
         BinaryOp::ShiftLeft => builder
           .build_left_shift(lhs, rhs, "shl")
           .expect("failed to build shl"),
@@ -292,6 +298,9 @@ pub enum CodegenError {
   TypeError(String),
 }
 
-pub fn emit_llvm_module(ast: &Node<TopLevel>, opts: CompileOptions) -> Result<String, CodegenError> {
+pub fn emit_llvm_module(
+  ast: &Node<TopLevel>,
+  opts: CompileOptions,
+) -> Result<String, CodegenError> {
   llvm::emit_llvm_module(ast, opts)
 }

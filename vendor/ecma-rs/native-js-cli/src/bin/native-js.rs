@@ -20,7 +20,11 @@ mod host;
 mod type_libs;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Compile TypeScript to native executables via native-js (LLVM)")]
+#[command(
+  author,
+  version,
+  about = "Compile TypeScript to native executables via native-js (LLVM)"
+)]
 struct Cli {
   #[command(subcommand)]
   command: Commands,
@@ -171,17 +175,28 @@ fn check(cli: &Cli, entry: &Path) -> Result<(), String> {
     "native-js code generation failed".to_string()
   })?;
 
+  let opt = opt_level(cli.opt)?;
+
   if let Some(kind) = cli.emit {
     let Some(path) = cli.emit_path.as_deref() else {
       unreachable!("validated --emit-path earlier");
     };
-    emit_artifact(&module, kind, path, opt_level(cli.opt)?)?;
-  }
 
-  // Ensure the LLVM target machine path works (without linking an executable).
-  let mut target = native_js::emit::TargetConfig::default();
-  target.opt_level = opt_level(cli.opt)?;
-  let _obj = native_js::emit::emit_object(&module, target);
+    // Emit the object first so `rewrite-statepoints-for-gc` runs exactly once on
+    // the module. This keeps `--emit obj/asm` deterministic and avoids assuming
+    // the pass is idempotent.
+    let mut target = native_js::emit::TargetConfig::default();
+    target.opt_level = opt;
+    let obj = native_js::emit::emit_object_with_statepoints(&module, target)
+      .map_err(|err| err.to_string())?;
+
+    emit_artifact(&module, kind, path, opt, &obj)?;
+  } else {
+    // Ensure the LLVM target machine path works (without linking an executable).
+    let mut target = native_js::emit::TargetConfig::default();
+    target.opt_level = opt;
+    let _obj = native_js::emit::emit_object(&module, target);
+  }
 
   Ok(())
 }
@@ -189,8 +204,12 @@ fn check(cli: &Cli, entry: &Path) -> Result<(), String> {
 fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
   if let Some(parent) = output.parent() {
     if !parent.as_os_str().is_empty() {
-      fs::create_dir_all(parent)
-        .map_err(|err| format!("failed to create output directory {}: {err}", parent.display()))?;
+      fs::create_dir_all(parent).map_err(|err| {
+        format!(
+          "failed to create output directory {}: {err}",
+          parent.display()
+        )
+      })?;
     }
   }
 
@@ -232,7 +251,8 @@ fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
   // idempotent when `--emit obj/asm` is used.
   let mut target = native_js::emit::TargetConfig::default();
   target.opt_level = opt;
-  let obj = native_js::emit::emit_object_with_statepoints(&module, target).map_err(|err| err.to_string())?;
+  let obj = native_js::emit::emit_object_with_statepoints(&module, target)
+    .map_err(|err| err.to_string())?;
 
   if let Some(kind) = cli.emit {
     let Some(path) = cli.emit_path.as_deref() else {
@@ -246,10 +266,7 @@ fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
   Ok(())
 }
 
-fn load_program(
-  cli: &Cli,
-  entry: &Path,
-) -> Result<(Program, host::DiskHost, FileId), String> {
+fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, host::DiskHost, FileId), String> {
   let project = match cli.project.as_deref() {
     Some(path) => Some(tsconfig::load_project_config(path)?),
     None => None,
@@ -291,11 +308,18 @@ fn load_program(
 
   let resolver = host::ModuleResolver {
     resolver: NodeResolver::new(resolve_options),
-    tsconfig: project.as_ref().and_then(host::TsconfigResolver::from_project),
+    tsconfig: project
+      .as_ref()
+      .and_then(host::TsconfigResolver::from_project),
   };
 
-  let (host, roots) =
-    host::DiskHost::new(&root_paths, resolver, compiler_options, extra_libs, type_roots)?;
+  let (host, roots) = host::DiskHost::new(
+    &root_paths,
+    resolver,
+    compiler_options,
+    extra_libs,
+    type_roots,
+  )?;
   let program = Program::new(host.clone(), roots);
 
   let entry_key = host
@@ -317,8 +341,12 @@ fn emit_artifact(
 ) -> Result<(), String> {
   if let Some(parent) = path.parent() {
     if !parent.as_os_str().is_empty() {
-      fs::create_dir_all(parent)
-        .map_err(|err| format!("failed to create output directory {}: {err}", parent.display()))?;
+      fs::create_dir_all(parent).map_err(|err| {
+        format!(
+          "failed to create output directory {}: {err}",
+          parent.display()
+        )
+      })?;
     }
   }
 
@@ -364,14 +392,17 @@ fn link_object(debug: bool, obj: &[u8], output: &Path) -> Result<(), String> {
   fs::write(&obj_path, obj)
     .map_err(|err| format!("failed to write {}: {err}", obj_path.display()))?;
 
-  let clang = find_clang().ok_or_else(|| "failed to find clang (tried clang-18 and clang)".to_string())?;
+  let clang =
+    find_clang().ok_or_else(|| "failed to find clang (tried clang-18 and clang)".to_string())?;
 
   let mut cmd = Command::new(clang);
   cmd.arg(&obj_path).arg("-o").arg(output);
   if debug {
     cmd.arg("-g");
   }
-  let status = cmd.status().map_err(|err| format!("failed to invoke clang: {err}"))?;
+  let status = cmd
+    .status()
+    .map_err(|err| format!("failed to invoke clang: {err}"))?;
   if !status.success() {
     return Err(format!(
       "clang failed with status {}",
@@ -410,7 +441,10 @@ fn render_and_print(program: &Program, host: &host::DiskHost, diagnostics: &[Dia
     ..RenderOptions::default()
   };
   for diag in diagnostics {
-    eprintln!("{}", render_diagnostic_with_options(&snapshot, diag, options));
+    eprintln!(
+      "{}",
+      render_diagnostic_with_options(&snapshot, diag, options)
+    );
   }
 }
 
