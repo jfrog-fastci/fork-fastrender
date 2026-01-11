@@ -16,7 +16,7 @@
     "layout": 35.021703521671824,
     "paint": 223.1382824380805
   },
-  "notes": "",
+  "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/discord.com`) shows correct overall layout/structure; the ~92% pixel diff at tolerance=0 is dominated by tiny per-channel differences (≈95% of pixels differ by ≤10) from text rasterization/hinting and minor blur/shadow/gradient rounding. No missing layout or paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 879966,
