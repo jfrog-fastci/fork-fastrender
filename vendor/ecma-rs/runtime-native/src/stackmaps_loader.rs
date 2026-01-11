@@ -1,14 +1,16 @@
 //! Loader for the current process's LLVM stackmaps section (`.llvm_stackmaps`).
 //!
-//! On Linux/ELF we support two strategies:
+//! On Linux/ELF we support three strategies:
 //! 1) **Fast path (zero I/O):** use linker-defined start/stop symbols emitted by
 //!    `runtime-native/link/stackmaps.ld`.
-//! 2) **Fallback (I/O):** parse `/proc/self/exe` to locate the section in the ELF
+//! 2) **Fallback (zero I/O):** scan mapped PT_LOAD segments via `dl_iterate_phdr`
+//!    and look for StackMap v3 blobs.
+//! 3) **Fallback (I/O):** parse `/proc/self/exe` to locate the section in the ELF
 //!    image and then return a pointer into the already-loaded in-memory image.
 //!
 //! The fast path is optional because it requires a linker script. When the
-//! symbols aren't available, we fall back to ELF parsing so non-AOT tools/tests
-//! still work.
+//! symbols aren't available, we fall back to in-memory scanning, and as a last
+//! resort ELF parsing so non-AOT tools/tests still work.
 //!
 //! On macOS/Mach-O, LLVM typically emits stackmaps into
 //! `__LLVM_STACKMAPS,__llvm_stackmaps`; we use dyld APIs to locate that section.
@@ -38,6 +40,11 @@ pub fn stackmaps_section() -> &'static [u8] {
       // Even if the section is empty (no stackmaps in this binary), treat the
       // linker-defined range as authoritative and avoid falling back to the
       // `/proc/self/exe` loader (which would do I/O just to discover the same).
+      return bytes;
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(bytes) = try_load_stackmaps_from_self_linux_phdr() {
       return bytes;
     }
 
@@ -405,5 +412,373 @@ mod tests {
     let parsed = StackMaps::parse(section).expect("stackmaps should parse");
     assert_eq!(parsed.raw().version, 3);
     assert_eq!(parsed.raw().records.len(), 0);
+  }
+}
+
+/// Best-effort lookup of the loaded stackmaps section for the current Linux
+/// process by scanning mapped PT_LOAD segments via `dl_iterate_phdr`.
+///
+/// This is a zero-I/O fallback when the binary is not linked with a stackmaps
+/// linker script.
+pub fn try_load_stackmaps_from_self_linux_phdr() -> Option<&'static [u8]> {
+  #[cfg(target_os = "linux")]
+  {
+    static CACHE: OnceLock<Option<&'static [u8]>> = OnceLock::new();
+    return *CACHE.get_or_init(|| unsafe { linux_phdr::scan_for_stackmaps() });
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  None
+}
+
+#[cfg(target_os = "linux")]
+mod linux_phdr {
+  use core::ffi::c_void;
+  use core::slice;
+
+  use libc::{c_int, dl_iterate_phdr, dl_phdr_info, size_t};
+
+  use crate::stackmaps::{StackMap, STACKMAP_VERSION};
+
+  #[cfg(target_pointer_width = "64")]
+  type ElfPhdr = libc::Elf64_Phdr;
+  #[cfg(target_pointer_width = "32")]
+  type ElfPhdr = libc::Elf32_Phdr;
+
+  const STACKMAP_V3_HEADER: [u8; 4] = [STACKMAP_VERSION, 0, 0, 0];
+
+  // Hard safety/perf caps (this path is best-effort and must not accidentally
+  // scan unbounded memory ranges if the process has unusual mappings).
+  const MAX_TOTAL_SCAN_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+  const MAX_SEGMENT_SCAN_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+  const MAX_SECTION_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+  const MAX_CANDIDATE_ATTEMPTS: usize = 128;
+  const MAX_CONCAT_BLOBS: usize = 4096;
+
+  #[derive(Clone, Copy)]
+  struct Candidate {
+    ptr: *const u8,
+    len: usize,
+    score: u32,
+  }
+
+  struct ScanState {
+    best: Option<Candidate>,
+    total_scanned: usize,
+    candidate_attempts: usize,
+  }
+
+  pub unsafe fn scan_for_stackmaps() -> Option<&'static [u8]> {
+    let mut state = ScanState {
+      best: None,
+      total_scanned: 0,
+      candidate_attempts: 0,
+    };
+
+    // Safety: we only pass a pointer to our stack-allocated `state` and keep it
+    // alive for the duration of the call.
+    dl_iterate_phdr(Some(callback), (&mut state as *mut ScanState).cast::<c_void>());
+
+    state
+      .best
+      .map(|c| unsafe { slice::from_raw_parts(c.ptr, c.len) })
+  }
+
+  unsafe extern "C" fn callback(
+    info: *mut dl_phdr_info,
+    _size: size_t,
+    data: *mut c_void,
+  ) -> c_int {
+    let state = unsafe { &mut *data.cast::<ScanState>() };
+    if state.total_scanned >= MAX_TOTAL_SCAN_BYTES || state.candidate_attempts >= MAX_CANDIDATE_ATTEMPTS {
+      return 1;
+    }
+
+    let Some(info) = (unsafe { info.as_ref() }) else {
+      return 0;
+    };
+
+    let base = info.dlpi_addr as u64;
+    let is_main = unsafe {
+      let name = info.dlpi_name;
+      name.is_null() || *name == 0
+    };
+
+    let phnum = info.dlpi_phnum as usize;
+    let phdrs = unsafe { slice::from_raw_parts(info.dlpi_phdr.cast::<ElfPhdr>(), phnum) };
+
+    let mut exec_ranges: Vec<core::ops::Range<u64>> = Vec::new();
+    for ph in phdrs {
+      if ph.p_type != libc::PT_LOAD {
+        continue;
+      }
+      if (ph.p_flags & libc::PF_X) == 0 {
+        continue;
+      }
+
+      let Some(start) = base.checked_add(ph.p_vaddr as u64) else {
+        continue;
+      };
+      let Some(end) = start.checked_add(ph.p_memsz as u64) else {
+        continue;
+      };
+      exec_ranges.push(start..end);
+    }
+
+    // Prefer non-executable segments (stackmaps are metadata).
+    for want_exec in [false, true] {
+      for ph in phdrs {
+        if ph.p_type != libc::PT_LOAD {
+          continue;
+        }
+        if (ph.p_flags & libc::PF_R) == 0 {
+          continue;
+        }
+
+        let seg_is_exec = (ph.p_flags & libc::PF_X) != 0;
+        if seg_is_exec != want_exec {
+          continue;
+        }
+
+        let Some(seg_start) = base.checked_add(ph.p_vaddr as u64) else {
+          continue;
+        };
+
+        let filesz = ph.p_filesz as u64;
+        if filesz == 0 {
+          continue;
+        }
+
+        let scan_len = core::cmp::min(filesz, MAX_SEGMENT_SCAN_BYTES as u64);
+        let Ok(scan_len) = usize::try_from(scan_len) else {
+          continue;
+        };
+        if scan_len == 0 {
+          continue;
+        }
+
+        let budget = MAX_TOTAL_SCAN_BYTES.saturating_sub(state.total_scanned);
+        let scan_len = core::cmp::min(scan_len, budget);
+        if scan_len == 0 {
+          return 1;
+        }
+
+        let Ok(seg_start_usize) = usize::try_from(seg_start) else {
+          continue;
+        };
+
+        let seg = unsafe { slice::from_raw_parts(seg_start_usize as *const u8, scan_len) };
+        state.total_scanned = state.total_scanned.saturating_add(scan_len);
+
+        if let Some((ptr, len)) =
+          scan_segment_for_stackmaps(seg_start, ph.p_flags as u32, seg, &exec_ranges, state)
+        {
+          let score = score_candidate(is_main, ph.p_flags as u32);
+          let cand = Candidate { ptr, len, score };
+          if is_better(cand, state.best) {
+            state.best = Some(cand);
+          }
+
+          // Main executable + non-exec segment is the highest confidence match we can get; stop early.
+          if is_main && (ph.p_flags & libc::PF_X) == 0 {
+            return 1;
+          }
+        }
+
+        if state.candidate_attempts >= MAX_CANDIDATE_ATTEMPTS {
+          return 1;
+        }
+      }
+    }
+
+    0
+  }
+
+  fn score_candidate(is_main: bool, flags: u32) -> u32 {
+    let mut score = 0;
+    if is_main {
+      score += 4;
+    }
+    if (flags & libc::PF_X as u32) == 0 {
+      score += 2;
+    }
+    score
+  }
+
+  fn is_better(new: Candidate, cur: Option<Candidate>) -> bool {
+    let Some(cur) = cur else {
+      return true;
+    };
+    if new.score != cur.score {
+      return new.score > cur.score;
+    }
+    new.len > cur.len
+  }
+
+  fn scan_segment_for_stackmaps(
+    seg_start: u64,
+    seg_flags: u32,
+    seg: &[u8],
+    exec_ranges: &[core::ops::Range<u64>],
+    state: &mut ScanState,
+  ) -> Option<(*const u8, usize)> {
+    // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
+    let Ok(seg_start_usize) = usize::try_from(seg_start) else {
+      return None;
+    };
+    let mut off = (8 - (seg_start_usize % 8)) % 8;
+
+    let mut best: Option<(*const u8, usize)> = None;
+
+    while off + 16 <= seg.len() {
+      if state.candidate_attempts >= MAX_CANDIDATE_ATTEMPTS {
+        break;
+      }
+
+      if seg.get(off..off + 4) != Some(&STACKMAP_V3_HEADER) {
+        off += 8;
+        continue;
+      }
+
+      state.candidate_attempts += 1;
+
+      let remaining = &seg[off..];
+      let cap = core::cmp::min(remaining.len(), MAX_SECTION_BYTES);
+      let bytes = &remaining[..cap];
+
+      let Some(len) = try_parse_stackmaps_region(bytes, exec_ranges) else {
+        off += 8;
+        continue;
+      };
+
+      // If we had to truncate the segment tail for MAX_SECTION_BYTES and the region consumes all
+      // available bytes, reject instead of potentially returning a partial section.
+      if remaining.len() > MAX_SECTION_BYTES && len == bytes.len() {
+        off += 8;
+        continue;
+      }
+
+      // Prefer non-exec segments when multiple candidates exist; score is applied by caller.
+      let start_ptr = unsafe { (seg_start_usize as *const u8).add(off) };
+
+      // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
+      if (start_ptr as usize) % 8 != 0 || len % 8 != 0 {
+        off += 8;
+        continue;
+      }
+
+      // Don't accept an empty region.
+      if len == 0 {
+        off += 8;
+        continue;
+      }
+
+      // `seg_flags` used to gate scanning order, but keep it in the signature so it's harder to
+      // accidentally call this helper on non-PT_LOAD data in the future.
+      let _ = seg_flags;
+
+      match best {
+        Some((_best_ptr, best_len)) if best_len >= len => {}
+        _ => best = Some((start_ptr, len)),
+      }
+
+      // Continue scanning; multiple matches are possible (false positives or multiple images of the
+      // same blob in memory).
+      off += 8;
+      continue;
+    }
+
+    best
+  }
+
+  fn try_parse_stackmaps_region(
+    bytes: &[u8],
+    exec_ranges: &[core::ops::Range<u64>],
+  ) -> Option<usize> {
+    let mut off: usize = 0;
+    let mut end: usize = 0;
+    let mut parsed_any = false;
+    let mut blobs = 0usize;
+
+    while off < bytes.len() {
+      // Skip linker padding between concatenated blobs.
+      while off < bytes.len() && bytes[off] == 0 {
+        off += 1;
+      }
+      if off >= bytes.len() {
+        break;
+      }
+
+      // Only accept a blob start when the v3 header signature matches. If it doesn't, we've likely
+      // reached the next unrelated section in the same PT_LOAD segment.
+      if bytes.get(off..off + 4) != Some(&STACKMAP_V3_HEADER) {
+        break;
+      }
+
+      if blobs >= MAX_CONCAT_BLOBS {
+        return None;
+      }
+
+      let parse_res = StackMap::parse_with_len(&bytes[off..]);
+      let (map, len) = match parse_res {
+        Ok(v) => v,
+        Err(_) => {
+          // Candidate start must parse; later failures are treated as end-of-section heuristics.
+          if parsed_any {
+            break;
+          }
+          return None;
+        }
+      };
+
+      // Quick sanity checks to avoid false positives and pathological allocations.
+      if len == 0 || len % 8 != 0 {
+        if parsed_any {
+          break;
+        }
+        return None;
+      }
+
+      if map.functions.is_empty() || map.records.is_empty() {
+        if parsed_any {
+          break;
+        }
+        return None;
+      }
+
+      // Verify that function addresses refer to executable memory in the same image. This is a
+      // strong filter against accidental matches inside unrelated data.
+      for func in &map.functions {
+        if !exec_ranges.iter().any(|r| r.contains(&func.address)) {
+          if parsed_any {
+            break;
+          }
+          return None;
+        }
+      }
+
+      // Basic internal consistency: the sum of per-function record_count must match the record table.
+      let mut expected_records: u64 = 0;
+      for func in &map.functions {
+        expected_records = expected_records.checked_add(func.record_count)?;
+      }
+      if expected_records != map.records.len() as u64 {
+        if parsed_any {
+          break;
+        }
+        return None;
+      }
+
+      parsed_any = true;
+      blobs += 1;
+      off = off.checked_add(len)?;
+      end = off;
+
+      if end > MAX_SECTION_BYTES {
+        return None;
+      }
+    }
+
+    parsed_any.then_some(end)
   }
 }

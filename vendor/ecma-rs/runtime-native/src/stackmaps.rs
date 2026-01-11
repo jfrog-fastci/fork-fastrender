@@ -121,7 +121,7 @@ impl StackMap {
     Ok(map)
   }
 
-  fn parse_with_len(section: &[u8]) -> Result<(Self, usize), StackMapError> {
+  pub(crate) fn parse_with_len(section: &[u8]) -> Result<(Self, usize), StackMapError> {
     let mut c = Cursor::new(section);
 
     let version = c.read_u8()?;
@@ -934,8 +934,9 @@ impl StackMaps {
   /// - `__fastr_stackmaps_{start,end}`
   /// - `__llvm_stackmaps_{start,end}`
   ///
-  /// For a higher-level API that falls back to ELF parsing when the linker
-  /// symbols are not available, see [`crate::stackmaps_loader::stackmaps_section`].
+  /// For a higher-level API that discovers stackmaps for the current process
+  /// without relying on linker-defined symbols, see [`crate::load_stackmaps_from_self`]
+  /// / [`crate::stackmaps_loader::try_load_stackmaps_from_self_linux_phdr`].
   #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   pub fn parse_from_linker_symbols() -> Result<Self, StackMapError> {
     let bytes = crate::stackmaps_loader::load_llvm_stackmaps_via_symbols().unwrap_or(&[]);
