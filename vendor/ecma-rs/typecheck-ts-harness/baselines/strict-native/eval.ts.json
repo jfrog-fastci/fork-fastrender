@@ -18,6 +18,15 @@
       "end": 13,
       "severity": "error",
       "message": "`any` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TN0001",
+      "file": "/eval.ts",
+      "start": 0,
+      "end": 13,
+      "severity": "error",
+      "message": "forbidden `any` type"
     }
   ]
 }

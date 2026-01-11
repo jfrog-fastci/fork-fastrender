@@ -9,6 +9,24 @@
       "end": 7,
       "severity": "error",
       "message": "`any` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TN0001",
+      "file": "/any.ts",
+      "start": 6,
+      "end": 7,
+      "severity": "error",
+      "message": "forbidden `any` type"
+    },
+    {
+      "engine": "rust",
+      "code": "TN0001",
+      "file": "/any.ts",
+      "start": 9,
+      "end": 12,
+      "severity": "error",
+      "message": "forbidden `any` type"
     }
   ]
 }

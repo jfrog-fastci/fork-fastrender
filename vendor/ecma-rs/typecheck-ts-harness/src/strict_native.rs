@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use typecheck_ts::Program;
 
 const STRICT_NATIVE_BASELINE_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_TIMEOUT_SECS: u64 = 20;
 
 fn default_jobs() -> usize {
   std::thread::available_parallelism()

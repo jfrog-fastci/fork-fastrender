@@ -825,13 +825,12 @@ impl ProgramState {
     self.rebuild_interned_named_def_types();
     self.recompute_global_bindings();
     if self.compiler_options.strict_native {
-      let entries: Vec<_> = self
-        .interned_def_types
-        .iter()
-        .map(|(def, ty)| (*def, *ty))
-        .collect();
-      for (def, ty) in entries {
-        let Some(data) = self.def_data.get(&def) else {
+      // Avoid cloning the entire `interned_def_types` map (which is dominated by
+      // library declarations when the default lib set is loaded). Instead, scan
+      // for offending defs first and then emit diagnostics in a second pass.
+      let mut offenders = Vec::new();
+      for (def, ty) in self.interned_def_types.iter() {
+        let Some(data) = self.def_data.get(def) else {
           continue;
         };
         if self.lib_file_ids.contains(&data.file)
@@ -839,12 +838,15 @@ impl ProgramState {
         {
           continue;
         }
-        if matches!(store.type_kind(store.canon(ty)), tti::TypeKind::Any) {
-          self.push_program_diagnostic(codes::FORBIDDEN_ANY.error(
-            "forbidden `any` type",
-            Span::new(data.file, data.span),
-          ));
+        if matches!(store.type_kind(store.canon(*ty)), tti::TypeKind::Any) {
+          offenders.push((data.file, data.span));
         }
+      }
+      for (file, span) in offenders {
+        self.push_program_diagnostic(codes::FORBIDDEN_ANY.error(
+          "forbidden `any` type",
+          Span::new(file, span),
+        ));
       }
     }
     codes::normalize_diagnostics(&mut self.diagnostics);
