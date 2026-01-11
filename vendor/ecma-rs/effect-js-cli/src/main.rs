@@ -184,22 +184,23 @@ fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
   if kb_calls.is_empty() {
     println!("(no resolved calls)");
   } else {
-    for call in kb_calls {
-      let Some(entry) = kb.get(&call.api) else {
+      for call in kb_calls {
+        let Some(entry) = kb.get(&call.api) else {
+          println!(
+            "[{}..{}] {} => {}",
+            call.span.start, call.span.end, call.call_text, call.api
+          );
+          continue;
+        };
+        let source = kb.source_of(&call.api).unwrap_or("<unknown>");
         println!(
-          "[{}..{}] {} => {}",
-          call.span.start, call.span.end, call.call_text, call.api
-        );
-        continue;
-      };
-      println!(
-        "[{}..{}] {} => {} (effects={:?}, purity={:?})",
-        call.span.start,
-        call.span.end,
-        call.call_text,
-        call.api,
-        entry.effects,
-        entry.purity,
+          "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
+          call.span.start,
+          call.span.end,
+          call.call_text,
+          call.api,
+          entry.effects,
+          entry.purity,
       );
     }
   }
@@ -213,8 +214,9 @@ fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
     for call in builtin_calls {
       // Show KB details when available; otherwise fall back to the canonical API name.
       if let Some(entry) = kb.get(call.api.as_str()) {
+        let source = kb.source_of(call.api.as_str()).unwrap_or("<unknown>");
         println!(
-          "[{}..{}] {} => {} (effects={:?}, purity={:?})",
+          "[{}..{}] {} => {} (source={source}, effects={:?}, purity={:?})",
           call.span.start,
           call.span.end,
           call.call_text,
