@@ -38,15 +38,14 @@ fn native_oracle_fixtures_pass() {
 
   assert!(!paths.is_empty(), "expected at least one fixture");
 
-  let mut ran = 0usize;
   for path in paths {
     let src = fs::read_to_string(&path).expect("read fixture");
-    let Some(expected) = parse_expected(&src, &path) else {
-      // Some fixtures are intended only for TS→JS erasure coverage (or are executed via other
-      // tests, e.g. Promise-returning `.js` fixtures). Only fixtures that declare an expected
-      // output participate in oracle output comparison.
-      continue;
-    };
+    let expected = parse_expected(&src, &path).unwrap_or_else(|| {
+      panic!(
+        "fixture {} missing // EXPECT: comment and .out file",
+        path.display()
+      )
+    });
 
     let actual = match run_fixture_ts_with_name(&path.to_string_lossy(), &src) {
       Ok(v) => v,
@@ -59,8 +58,5 @@ fn native_oracle_fixtures_pass() {
     };
 
     assert_eq!(actual, expected, "fixture {}", path.display());
-    ran += 1;
   }
-
-  assert!(ran > 0, "expected at least one fixture with // EXPECT:");
 }
