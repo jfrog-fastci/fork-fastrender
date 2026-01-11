@@ -719,6 +719,7 @@ pub fn recognize_patterns_best_effort_untyped(
         continue;
       }
       patterns.push(RecognizedPattern::MapGetOrDefault {
+        conditional: expr_id,
         map,
         key,
         default: *right,

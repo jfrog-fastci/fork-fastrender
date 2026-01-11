@@ -17,7 +17,7 @@ fn detects_map_get_or_default_nullish_once() {
   let found: Vec<_> = patterns
     .iter()
     .filter_map(|pat| match pat {
-      RecognizedPattern::MapGetOrDefault { map, key, default } => Some((*map, *key, *default)),
+      RecognizedPattern::MapGetOrDefault { map, key, default, .. } => Some((*map, *key, *default)),
       _ => None,
     })
     .collect();
@@ -40,4 +40,3 @@ fn detects_map_get_or_default_nullish_once() {
     "expected MapGetOrDefault.default to be a literal"
   );
 }
-
