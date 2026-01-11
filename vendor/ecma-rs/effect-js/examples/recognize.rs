@@ -87,6 +87,35 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)
     }
+    RecognizedPattern::StringTemplate { template } => {
+      format!("StringTemplate(template={})", template.0)
+    }
+    RecognizedPattern::ObjectSpread {
+      object,
+      spreads,
+      keys,
+    } => format!(
+      "ObjectSpread(object={}, spreads={}, keys={:?})",
+      object.0,
+      spreads.len(),
+      keys
+    ),
+    RecognizedPattern::ArrayDestructure {
+      source,
+      bindings,
+      has_rest,
+    } => format!(
+      "ArrayDestructure(source={}, bindings={}, has_rest={})",
+      source.0, bindings, has_rest
+    ),
+    RecognizedPattern::GuardClause {
+      test,
+      guard_kind,
+      subject,
+    } => format!(
+      "GuardClause(test={}, kind={:?}, subject={})",
+      test.0, guard_kind, subject.0
+    ),
   }
 }
 
@@ -144,6 +173,10 @@ fn run(
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
+          RecognizedPattern::StringTemplate { .. } => seen.insert("StringTemplate"),
+          RecognizedPattern::ObjectSpread { .. } => seen.insert("ObjectSpread"),
+          RecognizedPattern::ArrayDestructure { .. } => seen.insert("ArrayDestructure"),
+          RecognizedPattern::GuardClause { .. } => seen.insert("GuardClause"),
         };
         println!("  - {}", format_pattern(db, pat));
       }
