@@ -15,6 +15,8 @@ the `gc.safepoint_poll` declaration itself.
   ```llvm
   declare void @gc.safepoint_poll()
   ```
+  and ensure the symbol is defined at link time (runtime or per-module wrapper).
+  `runtime-native` exports `gc.safepoint_poll` for this purpose.
 - To run poll insertion + statepoint rewriting together under the new pass
   manager, use a pipeline that explicitly runs `place-safepoints` as a function
   pass, e.g.:

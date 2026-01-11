@@ -78,6 +78,19 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
+/// LLVM `place-safepoints` poll function.
+///
+/// LLVM's `place-safepoints` pass inserts calls to a symbol named
+/// `gc.safepoint_poll` in functions that use a statepoint-based GC strategy.
+/// Those calls are later rewritten into statepoints by `rewrite-statepoints-for-gc`.
+///
+/// We export this symbol from the runtime so codegen can use `place-safepoints`
+/// without needing to synthesize its own poll function body in every module.
+#[export_name = "gc.safepoint_poll"]
+pub extern "C" fn rt_gc_safepoint_poll() {
+  rt_gc_safepoint();
+}
+
 /// Update the active young-space address range used by the write barrier.
 ///
 /// This must be called by the GC during initialization and after each nursery

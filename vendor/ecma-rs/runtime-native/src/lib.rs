@@ -156,6 +156,20 @@ mod tests {
   }
 
   #[test]
+  fn gc_safepoint_poll_symbol_is_exported() {
+    extern "C" {
+      #[link_name = "gc.safepoint_poll"]
+      fn gc_safepoint_poll();
+    }
+
+    // Safety: the symbol is exported by this crate and is safe to call. When no
+    // stop-the-world GC is requested, the fast path returns immediately.
+    unsafe {
+      gc_safepoint_poll();
+    }
+  }
+
+  #[test]
   fn interned_lookup_roundtrip() {
     let id = rt_string_intern(b"zap".as_ptr(), b"zap".len());
     let out = crate::interner::lookup(id);
