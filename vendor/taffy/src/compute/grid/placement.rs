@@ -391,6 +391,12 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     }
   }
 
+  // Step 4 performs auto-placement of the remaining items. The auto-placement cursor used by this
+  // step is reset to the start of the grid, rather than continuing from any cursor state left by
+  // step 2/3 placements. This matches browser behaviour and the CSS Grid placement algorithm
+  // described in the spec.
+  grid_position = grid_start_position;
+
   // Step 4. Auto placement of the remaining items
   for (index, child_node, child_placement, style) in all_children.iter() {
     let primary_definite = placement_is_definite(axis_item(child_placement, primary_axis));

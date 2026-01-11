@@ -99,6 +99,102 @@ fn grid_row_longhand_inherit_preserves_other_side() {
 }
 
 #[test]
+fn grid_row_start_end_numeric_places_item_in_second_row() {
+  // Regression: numeric `grid-row-start/end` must use CSS grid line numbering (1-based) and place
+  // items in the correct row.
+  //
+  // w3.org's sticky footer uses:
+  //   .grid-wrap { grid-template-rows: 1fr auto; }
+  //   .global-footer { grid-row-start: 2; grid-row-end: 3; }
+  //
+  // A bug here causes the footer to be laid out in the first row (at y=0), pushing the main
+  // content down by the footer height.
+  let base = ComputedStyle::default();
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  apply_declaration(
+    &mut grid_style,
+    &decl("grid-template-columns", "100px"),
+    &base,
+    16.0,
+    16.0,
+  );
+  apply_declaration(
+    &mut grid_style,
+    &decl("grid-template-rows", "1fr auto"),
+    &base,
+    16.0,
+    16.0,
+  );
+
+  let mut wrap_style = ComputedStyle::default();
+  wrap_style.display = Display::Block;
+  wrap_style.height = Some(Length::px(50.0));
+
+  let mut footer_style = ComputedStyle::default();
+  footer_style.display = Display::Block;
+  footer_style.height = Some(Length::px(10.0));
+  apply_declaration(&mut footer_style, &decl("grid-row-start", "2"), &base, 16.0, 16.0);
+  apply_declaration(&mut footer_style, &decl("grid-row-end", "3"), &base, 16.0, 16.0);
+
+  let mut wrap = BoxNode::new_block(Arc::new(wrap_style), FormattingContextType::Block, vec![]);
+  wrap.id = 1;
+  let mut footer = BoxNode::new_block(Arc::new(footer_style), FormattingContextType::Block, vec![]);
+  footer.id = 2;
+
+  let mut grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![wrap, footer],
+  );
+  grid.id = 3;
+
+  let fc = GridFormattingContext::new();
+  let constraints = LayoutConstraints::new(
+    fastrender::AvailableSpace::Definite(100.0),
+    fastrender::AvailableSpace::Indefinite,
+  );
+  let fragment = fc.layout(&grid, &constraints).expect("grid layout succeeds");
+
+  assert_eq!(fragment.children.len(), 2);
+  let placements = fragment
+    .grid_fragmentation
+    .as_ref()
+    .expect("expected grid placement metadata")
+    .items
+    .as_slice();
+  assert_eq!(placements.len(), 2);
+  assert_eq!(placements[0].box_id, 1, "first item should be wrap");
+  assert_eq!(placements[1].box_id, 2, "second item should be footer");
+  assert_eq!(
+    (placements[0].row_start, placements[0].row_end),
+    (1, 2),
+    "wrap should be in the first row (placements={placements:?})"
+  );
+  assert_eq!(
+    (placements[1].row_start, placements[1].row_end),
+    (2, 3),
+    "footer should be in the second row (placements={placements:?})"
+  );
+
+  let wrap_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.content, fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(1) }))
+    .expect("wrap fragment");
+  let footer_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.content, fastrender::tree::fragment_tree::FragmentContent::Block { box_id: Some(2) }))
+    .expect("footer fragment");
+
+  assert_approx(wrap_fragment.bounds.y(), 0.0, "wrap y");
+  assert_approx(footer_fragment.bounds.y(), 50.0, "footer y (row 2)");
+}
+
+#[test]
 fn grid_area_auto_is_auto_placement() {
   // Regression test: `grid-area: auto` is the initial value and must not be treated as a named
   // area ("auto-start"/"auto-end").
