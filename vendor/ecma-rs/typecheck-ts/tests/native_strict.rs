@@ -225,6 +225,32 @@ fn native_strict_bans_non_constant_computed_member_keys() {
 }
 
 #[test]
+fn native_strict_bans_non_constant_computed_class_member_keys() {
+  let source = r#"
+  const key = 'a';
+  class C {
+    [key](): number { return 1; }
+    ["a"](): number { return 2; }
+    [`a`](): number { return 3; }
+  }
+"#;
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("[key]").expect("[key]") as u32 + 1;
+  let span = TextRange::new(start, start + "key".len() as u32);
+  let computed: Vec<_> = diagnostics
+    .iter()
+    .filter(|diag| diag.code.as_str() == codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str())
+    .collect();
+  assert_eq!(
+    computed.len(),
+    1,
+    "expected exactly one computed-key diagnostic, got {computed:?} (all={diagnostics:?})",
+  );
+  assert_eq!(computed[0].primary.file, file_id);
+  assert_eq!(computed[0].primary.range, span);
+}
+
+#[test]
 fn native_strict_bans_non_constant_computed_object_literal_keys() {
   let source = "const key = \"a\"; const obj = { [key]: 1 };";
   let (diagnostics, file_id) = check(source, true);

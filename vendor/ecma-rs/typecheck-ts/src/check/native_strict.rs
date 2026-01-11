@@ -1,7 +1,10 @@
 use crate::codes;
 use crate::BodyCheckResult;
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
-use hir_js::{Body, ExprKind, Literal, NameInterner, ObjectKey, PatKind, StmtKind};
+use hir_js::{
+  Body, ClassMemberKey, ClassMemberKind, ExprKind, Literal, NameInterner, ObjectKey, PatKind,
+  StmtKind,
+};
 use std::collections::{HashMap, HashSet};
 use types_ts_interned::{Indexer, ObjectType, RelateCtx, Shape, TypeId, TypeKind, TypeStore};
 
@@ -539,6 +542,37 @@ pub fn validate_native_strict_body(
         }
       }
       _ => {}
+    }
+  }
+
+  if let Some(class) = &body.class {
+    for member in &class.members {
+      let key = match &member.kind {
+        ClassMemberKind::Method { key, .. } | ClassMemberKind::Field { key, .. } => key,
+        _ => continue,
+      };
+      let ClassMemberKey::Computed(key_expr) = key else {
+        continue;
+      };
+      let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+        continue;
+      };
+      let key_is_const = matches!(
+        &key.kind,
+        ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
+      ) || matches!(&key.kind, ExprKind::Template(tpl) if tpl.spans.is_empty());
+      if key_is_const {
+        continue;
+      }
+      let span = result
+        .expr_spans
+        .get(key_expr.0 as usize)
+        .copied()
+        .unwrap_or(key.span);
+      diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
+        "computed property access requires a constant key when `native_strict` is enabled",
+        Span::new(file, span),
+      ));
     }
   }
 
