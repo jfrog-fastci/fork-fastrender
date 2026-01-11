@@ -111,9 +111,9 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
     let resolved_id = program
       .resolve_module(file, &es.specifier.value)
       .ok_or_else(|| NativeJsError::UnresolvedImport {
-      from: from_key.to_string(),
-      specifier: es.specifier.value.clone(),
-    })?;
+        from: from_key.to_string(),
+        specifier: es.specifier.value.clone(),
+      })?;
 
     info.deps.insert(resolved_id);
 
