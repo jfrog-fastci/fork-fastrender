@@ -987,6 +987,19 @@ mod tests {
       !bytes.is_empty(),
       "expected .llvm_stackmaps to be linked in (test includes a dummy section)"
     );
+    #[cfg(all(
+      target_os = "linux",
+      runtime_native_no_stackmap_test_artifact,
+      target_pointer_width = "64",
+      target_endian = "little"
+    ))]
+    {
+      let needle = &__RUNTIME_NATIVE_DUMMY_STACKMAPS[..];
+      assert!(
+        bytes.windows(needle.len()).any(|w| w == needle),
+        "expected stackmaps_section() to include the dummy StackMap v3 header"
+      );
+    }
     if bytes.is_empty() {
       // This loader is opt-in: when the `llvm_stackmaps_linker` feature is disabled (or stackmaps
       // are not present on this platform), we intentionally treat the stackmaps section as
