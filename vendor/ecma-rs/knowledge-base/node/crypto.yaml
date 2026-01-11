@@ -17,3 +17,13 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+
+- name: node:crypto.randomUUID
+  aliases:
+    - crypto.randomUUID
+  since: "v14.17.0"
+  effects:
+    Custom:
+      flags: ALLOCATES | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure

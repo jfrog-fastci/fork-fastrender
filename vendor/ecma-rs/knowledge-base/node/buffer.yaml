@@ -19,3 +19,19 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+
+- name: node:buffer.Buffer.isBuffer
+  aliases:
+    - buffer.Buffer.isBuffer
+    - Buffer.isBuffer
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:buffer.Buffer.byteLength
+  aliases:
+    - buffer.Buffer.byteLength
+    - Buffer.byteLength
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure

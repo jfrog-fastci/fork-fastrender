@@ -91,3 +91,87 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+
+- name: node:fs.mkdir
+  aliases:
+    - fs.mkdir
+  since: "v0.1.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.mkdirSync
+  aliases:
+    - fs.mkdirSync
+  since: "v0.1.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.promises.mkdir
+  aliases:
+    - fs.promises.mkdir
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.rm
+  aliases:
+    - fs.rm
+  since: "v14.14.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.rmSync
+  aliases:
+    - fs.rmSync
+  since: "v14.14.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.promises.rm
+  aliases:
+    - fs.promises.rm
+  since: "v14.14.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.unlink
+  aliases:
+    - fs.unlink
+  since: "v0.1.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.unlinkSync
+  aliases:
+    - fs.unlinkSync
+  since: "v0.1.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.promises.unlink
+  aliases:
+    - fs.promises.unlink
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.copyFile
+  aliases:
+    - fs.copyFile
+  since: "v8.5.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.copyFileSync
+  aliases:
+    - fs.copyFileSync
+  since: "v8.5.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs.promises.copyFile
+  aliases:
+    - fs.promises.copyFile
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
