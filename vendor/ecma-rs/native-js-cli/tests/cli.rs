@@ -454,6 +454,27 @@ fn print_builtin_writes_stdout() {
 }
 
 #[test]
+fn checked_pipeline_run_prints_stdout() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { print(1 + 2); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("3\n"));
+}
+
+#[test]
 fn checked_pipeline_check_succeeds_on_simple_program() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
