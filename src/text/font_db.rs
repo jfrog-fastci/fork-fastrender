@@ -2714,32 +2714,44 @@ impl FontMetrics {
     let descent = -(self.descent as f32) * scale; // Make positive
     let line_gap = (self.line_gap as f32) * scale;
     let raw_line_height = (self.line_height as f32) * scale;
-    // Headless Chrome's layout ends up with stable, whole-pixel line spacing for common system
-    // fonts (e.g. Liberation Sans at 16px). Our exact font-unit scaling produces fractional
-    // `line-height: normal` values (18.3984px for Liberation Sans), which accumulate into large
-    // vertical drift on text-heavy pages as many lines stack.
+    // Headless Chrome's layout ends up with stable, whole-pixel line spacing for many fonts (both
+    // system and webfonts). Our exact font-unit scaling produces fractional `line-height: normal`
+    // values, which can accumulate into visible vertical drift on text-heavy pages as many lines
+    // stack.
     //
-    // Snap the "normal" line height metric to whole CSS pixels to better match browser output and
-    // avoid this drift. Keep the per-face ascent/descent values un-snapped so baselines and glyph
+    // FreeType/Skia's hinted line metrics do not simply scale the font's line height and round
+    // once at the end; ascent/descent are grid-fitted independently. As a result, rounding the
+    // *sum* can be off by 1px compared to Chrome:
+    // - Noto @ 16px: ascent=17.104px, descent=4.688px → Chrome lines at 22px (not 21px).
+    // - Roboto Flex @ 21px: raw height 24.609px → Chrome lines at 24px (not 25px).
+    //
+    // Approximate this by snapping ascent, descent, and line-gap individually to whole CSS pixels
+    // and summing them. Keep the returned ascent/descent values un-snapped so baselines and glyph
     // alignment remain driven by the font metrics; only the overall line box height is snapped.
     //
-    // Headless Chrome (Skia/FreeType) appears to bias toward truncation for typical sizes (e.g.
-    // 20.16px → 20px), but fully truncating values that are *very* close to the next pixel (e.g.
-    // 10.94px → 10px) can compress text-heavy tables and accumulate visible drift (HN subtext rows
-    // end up 1px shorter per item).
+    // When the snapped sum underflows the raw height by almost a full pixel (e.g. 10.94px → 10px),
+    // bump it up to avoid dropping ~1px of line height per row on dense tables. This keeps the
+    // "don't over-inflate" invariant while avoiding pathological underflow for fractional font
+    // sizes (pt/em/etc.).
     //
-    // Use a biased snap:
-    // - default to `floor()` to avoid the +1px/line inflation that `round()` can cause
-    // - but round up when the fractional part is extremely high, to avoid dropping ~1px
-    //
-    // This keeps the "don't over-inflate" invariant while avoiding pathological underflow for
-    // fractional font sizes (pt/em/etc.).
-    let mut line_height = raw_line_height.floor();
-    if raw_line_height.is_finite() {
-      let frac = raw_line_height - line_height;
-      // 0.9 is intentionally conservative: only values very close to the next pixel round up.
-      if frac >= 0.9 {
-        line_height += 1.0;
+    // Defensive robustness: if callers construct an inconsistent `FontMetrics` where
+    // `line_height != ascent - descent + line_gap`, fall back to snapping the raw line-height
+    // value directly.
+    let mut line_height = ascent.round() + descent.round() + line_gap.round();
+    if raw_line_height.is_finite() && line_height.is_finite() && raw_line_height - line_height >= 0.9 {
+      line_height += 1.0;
+    }
+    let metric_snap_plausible = raw_line_height.is_finite()
+      && line_height.is_finite()
+      && (line_height - raw_line_height).abs() <= 2.0;
+    if !metric_snap_plausible {
+      line_height = raw_line_height.floor();
+      if raw_line_height.is_finite() {
+        let frac = raw_line_height - line_height;
+        // 0.9 is intentionally conservative: only values very close to the next pixel round up.
+        if frac >= 0.9 {
+          line_height += 1.0;
+        }
       }
     }
 
@@ -2962,6 +2974,57 @@ mod tests {
 
     let scaled = metrics.scale(1.0);
     assert_eq!(scaled.line_height, 11.0);
+  }
+
+  #[test]
+  fn normal_line_height_rounding_can_round_up_when_descent_crosses_half_pixel() {
+    // Mirrors the IANA webfont metrics: Noto @ 16px yields a raw `line-height: normal` of 21.792px
+    // (ascent=17.104px, descent=4.688px). Chrome's hinted metrics lay out lines at 22px, so we
+    // must not always truncate the total scaled line-height.
+    let metrics = FontMetrics {
+      units_per_em: 1000,
+      ascent: 1069,
+      descent: -293,
+      line_gap: 0,
+      line_height: 1362,
+      x_height: None,
+      cap_height: None,
+      underline_position: 0,
+      underline_thickness: 0,
+      strikeout_position: None,
+      strikeout_thickness: None,
+      is_bold: false,
+      is_italic: false,
+      is_monospace: false,
+    };
+
+    let scaled = metrics.scale(16.0);
+    assert_eq!(scaled.line_height, 22.0);
+  }
+
+  #[test]
+  fn normal_line_height_rounding_does_not_round_total_height_directly() {
+    // Roboto Flex @ 21px has a raw typographic line height of 24.609375px. Chrome ends up
+    // truncating this to 24px; rounding the total height would incorrectly inflate it to 25px.
+    let metrics = FontMetrics {
+      units_per_em: 2048,
+      ascent: 1900,
+      descent: -500,
+      line_gap: 0,
+      line_height: 2400,
+      x_height: None,
+      cap_height: None,
+      underline_position: 0,
+      underline_thickness: 0,
+      strikeout_position: None,
+      strikeout_thickness: None,
+      is_bold: false,
+      is_italic: false,
+      is_monospace: false,
+    };
+
+    let scaled = metrics.scale(21.0);
+    assert_eq!(scaled.line_height, 24.0);
   }
 
   #[test]
