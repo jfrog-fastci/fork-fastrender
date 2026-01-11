@@ -86,6 +86,18 @@ fn c_can_link_and_call_runtime_native() {
     &c_path,
     r#"
 #include "runtime_native.h"
+#include <unistd.h>
+
+static void on_settle(uint8_t* data) {
+  int* flag = (int*)data;
+  *flag = 1;
+}
+
+static void blocking_task(uint8_t* data, PromiseRef promise) {
+  (void)data;
+  usleep(1000);
+  rt_promise_resolve(promise, (ValueRef)0);
+}
 
 int main(void) {
   rt_thread_init(0);
@@ -105,6 +117,21 @@ int main(void) {
   RtShapeId shape = (RtShapeId)1;
   uint8_t* pinned = rt_alloc_pinned(16, shape);
   (void)pinned;
+
+  // Smoke test: resolve a promise from a blocking worker and run its continuation on the
+  // event loop thread.
+  int settled = 0;
+  PromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
+  rt_promise_then(p, on_settle, (uint8_t*)&settled);
+  for (int i = 0; i < 1000 && !settled; i++) {
+    rt_async_poll();
+    usleep(1000);
+  }
+  if (!settled) {
+    rt_thread_deinit();
+    return 1;
+  }
+
   rt_gc_safepoint();
   rt_gc_set_young_range((uint8_t*)0, (uint8_t*)0);
   rt_write_barrier_range((uint8_t*)0, (uint8_t*)0, 0);
