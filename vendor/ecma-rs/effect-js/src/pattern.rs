@@ -3,6 +3,9 @@ use hir_js::{
   PatId, PatKind, StmtId, StmtKind, TypeExprId, UnaryOp, VarDeclarator,
 };
 
+#[cfg(feature = "hir-semantic-ops")]
+use hir_js::ArrayChainOp;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecognizedPattern {
   MapFilterReduceChain {
@@ -341,6 +344,12 @@ fn visit_expr(
         out.push(pattern);
       }
     }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayChain { .. } => {
+      if let Some(pattern) = match_map_filter_reduce(body, names, expr_id) {
+        out.push(pattern.with_body(body_id));
+      }
+    }
     ExprKind::Conditional {
       test,
       consequent,
@@ -483,6 +492,60 @@ fn visit_expr(
         visit_expr(lowered, names, body_id, body, *attributes, out);
       }
     }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback }
+    | ExprKind::ArrayFilter { array, callback }
+    | ExprKind::ArrayFind { array, callback }
+    | ExprKind::ArrayEvery { array, callback }
+    | ExprKind::ArraySome { array, callback } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      visit_expr(lowered, names, body_id, body, *callback, out);
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init,
+    } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      visit_expr(lowered, names, body_id, body, *callback, out);
+      if let Some(init) = init {
+        visit_expr(lowered, names, body_id, body, *init, out);
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      for op in ops {
+        match op {
+          ArrayChainOp::Map(callback)
+          | ArrayChainOp::Filter(callback)
+          | ArrayChainOp::Find(callback)
+          | ArrayChainOp::Every(callback)
+          | ArrayChainOp::Some(callback) => visit_expr(lowered, names, body_id, body, *callback, out),
+          ArrayChainOp::Reduce(callback, init) => {
+            visit_expr(lowered, names, body_id, body, *callback, out);
+            if let Some(init) = init {
+              visit_expr(lowered, names, body_id, body, *init, out);
+            }
+          }
+        }
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+      for promise in promises {
+        visit_expr(lowered, names, body_id, body, *promise, out);
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::AwaitExpr { value, .. } => visit_expr(lowered, names, body_id, body, *value, out),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::KnownApiCall { args, .. } => {
+      for arg in args {
+        visit_expr(lowered, names, body_id, body, *arg, out);
+      }
+    }
     ExprKind::Jsx(_) => {}
   }
 }
@@ -572,7 +635,36 @@ impl PartialMapFilterReduce {
 }
 
 fn match_map_filter_reduce(body: &Body, names: &NameInterner, root: ExprId) -> Option<PartialMapFilterReduce> {
-  let ExprKind::Call(reduce_call) = &body.exprs.get(root.0 as usize)?.kind else {
+  let kind = &body.exprs.get(root.0 as usize)?.kind;
+
+  #[cfg(feature = "hir-semantic-ops")]
+  if let ExprKind::ArrayChain { array, ops } = kind {
+    if ops.len() != 3 {
+      return None;
+    }
+
+    let op0 = ops.get(0)?;
+    let op1 = ops.get(1)?;
+    let op2 = ops.get(2)?;
+
+    return match (op0, op1, op2) {
+      (
+        ArrayChainOp::Map(map_callback),
+        ArrayChainOp::Filter(filter_callback),
+        ArrayChainOp::Reduce(reduce_callback, reduce_init),
+      ) => Some(PartialMapFilterReduce {
+        root,
+        array: *array,
+        map_callback: *map_callback,
+        filter_callback: *filter_callback,
+        reduce_callback: *reduce_callback,
+        reduce_init: *reduce_init,
+      }),
+      _ => None,
+    };
+  }
+
+  let ExprKind::Call(reduce_call) = kind else {
     return None;
   };
   if reduce_call.optional || reduce_call.is_new {
@@ -668,23 +760,27 @@ fn match_promise_all_fetch(
   }
 
   let map_call_expr = all_call.args[0].expr;
-  let ExprKind::Call(map_call) = &body.exprs.get(map_call_expr.0 as usize)?.kind else {
-    return None;
+  let (urls, callback_expr) = match &body.exprs.get(map_call_expr.0 as usize)?.kind {
+    ExprKind::Call(map_call) => {
+      if map_call.optional || map_call.is_new {
+        return None;
+      }
+      if map_call.args.len() != 1 || map_call.args[0].spread {
+        return None;
+      }
+      let callback_expr = map_call.args[0].expr;
+      let ExprKind::Member(map_member) = &body.exprs.get(map_call.callee.0 as usize)?.kind else {
+        return None;
+      };
+      if !object_key_matches(&map_member.property, names, "map") {
+        return None;
+      }
+      (map_member.object, callback_expr)
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback } => (*array, *callback),
+    _ => return None,
   };
-  if map_call.optional || map_call.is_new {
-    return None;
-  }
-  if map_call.args.len() != 1 || map_call.args[0].spread {
-    return None;
-  }
-  let callback_expr = map_call.args[0].expr;
-  let ExprKind::Member(map_member) = &body.exprs.get(map_call.callee.0 as usize)?.kind else {
-    return None;
-  };
-  if !object_key_matches(&map_member.property, names, "map") {
-    return None;
-  }
-  let urls = map_member.object;
 
   let ExprKind::FunctionExpr {
     body: callback_body_id,
@@ -912,4 +1008,3 @@ function f(x?: number) {
     assert!(pats.iter().any(|p| matches!(p, RecognizedPattern::GuardClause { .. })));
   }
 }
-

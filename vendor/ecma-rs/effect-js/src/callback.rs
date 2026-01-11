@@ -593,12 +593,12 @@ impl CallbackAnalyzer<'_> {
 
       ExprKind::Ident(name) => self.record_ident(*name),
 
-      #[cfg(feature = "semantic-ops")]
-      ExprKind::AwaitExpr { value: expr, .. } => {
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::AwaitExpr { value, .. } => {
         // Awaiting is currently treated as a transparent wrapper around the
         // awaited expression. Downstream phases may want to model this as
         // nondeterministic + may_throw.
-        self.visit_expr(body, *expr);
+        self.visit_expr(body, *value);
       }
       ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::NonNull { expr } => {
         self.visit_expr(body, *expr);
@@ -659,7 +659,7 @@ impl CallbackAnalyzer<'_> {
       // `hir-js/semantic-ops`. Until we have full modeling for them in `effect-js`,
       // treat them conservatively as unknown effects while still visiting their
       // child expressions for identifier tracking.
-      #[cfg(feature = "semantic-ops")]
+      #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayMap { array, callback }
       | ExprKind::ArrayFilter { array, callback }
       | ExprKind::ArrayFind { array, callback }
@@ -669,7 +669,7 @@ impl CallbackAnalyzer<'_> {
         self.visit_expr(body, *array);
         self.visit_expr(body, *callback);
       }
-      #[cfg(feature = "semantic-ops")]
+      #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayReduce {
         array,
         callback,
@@ -682,7 +682,7 @@ impl CallbackAnalyzer<'_> {
           self.visit_expr(body, *init);
         }
       }
-      #[cfg(feature = "semantic-ops")]
+      #[cfg(feature = "hir-semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
         self.mark_unknown();
         self.visit_expr(body, *array);
@@ -704,14 +704,14 @@ impl CallbackAnalyzer<'_> {
           }
         }
       }
-      #[cfg(feature = "semantic-ops")]
+      #[cfg(feature = "hir-semantic-ops")]
       ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
         self.mark_unknown();
         for promise in promises {
           self.visit_expr(body, *promise);
         }
       }
-      #[cfg(feature = "semantic-ops")]
+      #[cfg(feature = "hir-semantic-ops")]
       ExprKind::KnownApiCall { args, .. } => {
         self.mark_unknown();
         for arg in args {
@@ -798,74 +798,6 @@ impl CallbackAnalyzer<'_> {
         self.visit_expr(body, *argument);
         if let Some(attributes) = attributes {
           self.visit_expr(body, *attributes);
-        }
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayMap { array, callback }
-      | ExprKind::ArrayFilter { array, callback }
-      | ExprKind::ArrayFind { array, callback }
-      | ExprKind::ArrayEvery { array, callback }
-      | ExprKind::ArraySome { array, callback } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        self.visit_expr(body, *callback);
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayReduce {
-        array,
-        callback,
-        init,
-      } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        self.visit_expr(body, *callback);
-        if let Some(init) = init {
-          self.visit_expr(body, *init);
-        }
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayChain { array, ops } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        for op in ops {
-          match *op {
-            ArrayChainOp::Map(cb)
-            | ArrayChainOp::Filter(cb)
-            | ArrayChainOp::Find(cb)
-            | ArrayChainOp::Every(cb)
-            | ArrayChainOp::Some(cb) => self.visit_expr(body, cb),
-            ArrayChainOp::Reduce(cb, init) => {
-              self.visit_expr(body, cb);
-              if let Some(init) = init {
-                self.visit_expr(body, init);
-              }
-            }
-          }
-        }
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
-        self.mark_unknown();
-        for promise in promises {
-          self.visit_expr(body, *promise);
-        }
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::AwaitExpr { value, .. } => {
-        self.mark_unknown();
-        self.visit_expr(body, *value);
-      }
-
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::KnownApiCall { args, .. } => {
-        self.mark_unknown();
-        for arg in args {
-          self.visit_expr(body, *arg);
         }
       }
 
@@ -959,16 +891,8 @@ mod tests {
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(Math.sqrt);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Pure);
