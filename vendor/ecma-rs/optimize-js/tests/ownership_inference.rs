@@ -26,6 +26,24 @@ fn find_unique_return_var(cfg: &Cfg) -> (u32, usize, u32) {
   found.expect("expected Return instruction with a variable argument")
 }
 
+fn find_unique_throw_var(cfg: &Cfg) -> (u32, usize, u32) {
+  let mut found = None;
+  for label in cfg.graph.labels_sorted() {
+    for (idx, inst) in cfg.bblocks.get(label).iter().enumerate() {
+      if inst.t != InstTyp::Throw {
+        continue;
+      }
+      let v = match &inst.args[0] {
+        Arg::Var(v) => *v,
+        _ => continue,
+      };
+      assert!(found.is_none(), "expected a single Throw in test CFG");
+      found = Some((label, idx, v));
+    }
+  }
+  found.expect("expected Throw instruction with a variable argument")
+}
+
 fn find_unique_prop_assign_value_var(cfg: &Cfg, prop: &str) -> u32 {
   let mut found = None;
   for label in cfg.graph.labels_sorted() {
@@ -175,6 +193,35 @@ fn non_last_use_assignment_does_not_consume_source() {
     ownership.var_ownership.get(&a_var),
     Some(&ValueOwnership::Shared),
     "expected `a` to be shared due to aliasing with `b` along some paths"
+  );
+}
+
+#[test]
+fn thrown_value_is_consumed_as_an_ownership_transfer() {
+  let src = r#"
+    const fail = () => {
+      let a = {};
+      throw a;
+    };
+    fail();
+  "#;
+  let program = compile_source(src, TopLevelMode::Module, false);
+  assert_eq!(program.functions.len(), 1);
+  let cfg = &program.functions[0].body;
+
+  let escapes = analyze_cfg_escapes(cfg);
+  let ownership = infer_ownership(cfg, &escapes);
+
+  let (label, idx, var) = find_unique_throw_var(cfg);
+  assert_eq!(
+    ownership.arg_use.get(&(label, idx)).unwrap()[0],
+    UseMode::Consume,
+    "expected thrown value to be consumed (ownership transferred out of function)"
+  );
+  assert_eq!(
+    ownership.var_ownership.get(&var),
+    Some(&ValueOwnership::Owned),
+    "expected thrown value to be owned"
   );
 }
 
