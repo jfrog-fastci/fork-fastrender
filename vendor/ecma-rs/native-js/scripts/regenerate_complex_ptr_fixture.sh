@@ -104,7 +104,7 @@ EOF
 } >"${OUT_LL}"
 
 "${LLVM_AS}" "${OUT_LL}" -o "${BC}"
-"${LLC}" -filetype=obj "${BC}" -o "${OBJ}"
+"${LLC}" --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj "${BC}" -o "${OBJ}"
 
 if ! "${LLVM_READOBJ}" --sections "${OBJ}" | grep -Eq '\.llvm_stackmaps|__llvm_stackmaps'; then
   "${LLVM_READOBJ}" --sections "${OBJ}" >&2 || true
