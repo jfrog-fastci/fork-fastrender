@@ -133,6 +133,7 @@ fn c_can_link_and_call_runtime_native() {
     r#"
 #define _POSIX_C_SOURCE 200809L
 #include "runtime_native.h"
+#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 static void sleep_us(long us) {
@@ -197,6 +198,24 @@ static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
   .resume = native_async_smoke_resume,
   .destroy = native_async_smoke_destroy,
   // Use conservative values: this smoke test treats PromiseHeader as opaque.
+  .promise_size = 64,
+  .promise_align = 16,
+  .promise_shape_id = 0,
+  .abi_version = RT_ASYNC_ABI_VERSION,
+  .reserved = {0, 0, 0, 0},
+};
+
+static void native_async_heap_destroy(CoroutineRef coro) {
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->destroyed) {
+    *c->destroyed = 1;
+  }
+  free(c);
+}
+
+static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
+  .resume = native_async_smoke_resume,
+  .destroy = native_async_heap_destroy,
   .promise_size = 64,
   .promise_align = 16,
   .promise_shape_id = 0,
@@ -339,6 +358,57 @@ int main(void) {
   if (rt_handle_load((HandleId)native_async_id) != (GcPtr)0) {
     rt_thread_deinit();
     return 35;
+  }
+
+  // Deferred spawn: must schedule the first resume as a microtask.
+  int deferred_ran = 0;
+  int deferred_destroyed = 0;
+  NativeAsyncSmokeCoro* deferred_coro = (NativeAsyncSmokeCoro*)malloc(sizeof(NativeAsyncSmokeCoro));
+  if (!deferred_coro) {
+    rt_thread_deinit();
+    return 36;
+  }
+  *deferred_coro = (NativeAsyncSmokeCoro){
+    .header =
+      {
+        .vtable = &NATIVE_ASYNC_HEAP_VTABLE,
+        .promise = (PromiseRef)0,
+        .next_waiter = (Coroutine*)0,
+        .flags = CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+    .ran = &deferred_ran,
+    .destroyed = &deferred_destroyed,
+  };
+  CoroutineId deferred_id = rt_handle_alloc((GcPtr)deferred_coro);
+  PromiseRef deferred_promise = rt_async_spawn_deferred(deferred_id);
+  if (deferred_promise == (PromiseRef)0) {
+    rt_thread_deinit();
+    return 37;
+  }
+  if (deferred_ran != 0) {
+    rt_thread_deinit();
+    return 38;
+  }
+  if (deferred_promise != deferred_coro->header.promise) {
+    rt_thread_deinit();
+    return 39;
+  }
+  rt_drain_microtasks();
+  if (deferred_ran != 1) {
+    rt_thread_deinit();
+    return 40;
+  }
+  if (deferred_destroyed != 1) {
+    rt_thread_deinit();
+    return 41;
+  }
+  if (rt_handle_load((HandleId)deferred_id) != (GcPtr)0) {
+    rt_thread_deinit();
+    return 42;
+  }
+  if (rt_promise_try_fulfill(deferred_promise)) {
+    rt_thread_deinit();
+    return 43;
   }
 
   rt_gc_safepoint();

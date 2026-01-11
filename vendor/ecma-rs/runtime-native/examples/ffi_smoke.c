@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -119,6 +120,24 @@ static const CoroutineVTable NATIVE_ASYNC_SMOKE_VTABLE = {
   .reserved = {0, 0, 0, 0},
 };
 
+static void native_async_heap_destroy(CoroutineRef coro) {
+  NativeAsyncSmokeCoro* c = (NativeAsyncSmokeCoro*)coro;
+  if (c->destroyed) {
+    *c->destroyed = 1;
+  }
+  free(c);
+}
+
+static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
+  .resume = native_async_smoke_resume,
+  .destroy = native_async_heap_destroy,
+  .promise_size = 64,
+  .promise_align = 16,
+  .promise_shape_id = 0,
+  .abi_version = RT_ASYNC_ABI_VERSION,
+  .reserved = {0, 0, 0, 0},
+};
+
 int main(void) {
   // The runtime expects mutator threads to register before executing compiled
   // code or participating in GC safepoints.
@@ -195,6 +214,33 @@ int main(void) {
   if (check(p == async_coro.header.promise)) { rc = 27; goto done; }
   if (check(!rt_promise_try_fulfill(p))) { rc = 28; goto done; }
   if (check(rt_handle_load(coro_id) == NULL)) { rc = 29; goto done; }
+
+  // Deferred spawn: must schedule the first resume as a microtask.
+  int deferred_ran = 0;
+  int deferred_destroyed = 0;
+  NativeAsyncSmokeCoro* deferred_coro = (NativeAsyncSmokeCoro*)malloc(sizeof(NativeAsyncSmokeCoro));
+  if (deferred_coro == NULL) { rc = 30; goto done; }
+  *deferred_coro = (NativeAsyncSmokeCoro){
+    .header =
+      {
+        .vtable = &NATIVE_ASYNC_HEAP_VTABLE,
+        .promise = NULL,
+        .next_waiter = NULL,
+        .flags = CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+    .ran = &deferred_ran,
+    .destroyed = &deferred_destroyed,
+  };
+  CoroutineId deferred_id = rt_handle_alloc((GcPtr)deferred_coro);
+  PromiseRef deferred_promise = rt_async_spawn_deferred(deferred_id);
+  if (check(deferred_promise != NULL)) { rc = 31; goto done; }
+  if (check(deferred_ran == 0)) { rc = 32; goto done; }
+  if (check(deferred_promise == deferred_coro->header.promise)) { rc = 33; goto done; }
+  rt_drain_microtasks();
+  if (check(deferred_ran == 1)) { rc = 34; goto done; }
+  if (check(deferred_destroyed == 1)) { rc = 35; goto done; }
+  if (check(rt_handle_load(deferred_id) == NULL)) { rc = 36; goto done; }
+  if (check(!rt_promise_try_fulfill(deferred_promise))) { rc = 37; goto done; }
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
