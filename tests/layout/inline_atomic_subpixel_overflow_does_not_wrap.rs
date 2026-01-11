@@ -60,3 +60,40 @@ fn inline_block_subpixel_overflow_does_not_force_wrap() {
   );
 }
 
+#[test]
+fn inline_block_overflow_above_half_pixel_wraps() {
+  // Counter-regression: allow *subpixel* overflow, but don't allow enough slack to keep content on
+  // a line when it genuinely exceeds the available width (which can shift wrapping on real pages).
+  let html = r#"
+    <style>
+      .row { width: 100px; font-size: 0px; line-height: 0px }
+      .row span { display: inline-block; height: 10px }
+    </style>
+    <div class="row">
+      <span style="width: 50px"></span> <span style="width: 50.6px"></span>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 800, 200)
+    .expect("layout document");
+
+  let row = find_first_block_with_line_children(&fragments.root)
+    .expect("expected a block fragment with line children");
+
+  let line_count = row
+    .children
+    .iter()
+    .filter(|child| matches!(child.content, FragmentContent::Line { .. }))
+    .count();
+
+  assert_eq!(
+    line_count, 2,
+    "expected >0.5px overflow to wrap onto a second line"
+  );
+}

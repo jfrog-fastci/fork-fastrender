@@ -103,8 +103,9 @@ const LINE_DEFAULT_ITEM_CAPACITY: usize = 8;
 const LINE_FIT_EPSILON: f32 = 0.01;
 // Some layout code paths effectively snap to whole pixels (e.g. flex/grid intrinsic sizing probes),
 // while inline content (text shaping, inline-block contents) retains subpixel advances. Allow a
-// one-pixel tolerance so accumulated rounding doesn't spuriously flip wrap decisions.
-const LINE_PIXEL_FIT_EPSILON: f32 = 1.0;
+// half-pixel tolerance so accumulated rounding doesn't spuriously flip wrap decisions without
+// noticeably widening lines (which can change wrapping on real-world pages).
+const LINE_PIXEL_FIT_EPSILON: f32 = 0.5;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
