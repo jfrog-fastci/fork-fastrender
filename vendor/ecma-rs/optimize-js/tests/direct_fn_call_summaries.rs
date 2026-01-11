@@ -42,6 +42,29 @@ fn find_top_level_object_alloc(program: &optimize_js::Program) -> u32 {
     .expect("expected object literal allocation in analyzed top-level CFG")
 }
 
+fn find_fn_object_alloc(program: &optimize_js::Program, fn_id: usize) -> u32 {
+  program
+    .functions
+    .get(fn_id)
+    .expect("missing function")
+    .analyzed_cfg()
+    .bblocks
+    .all()
+    .flat_map(|(_, block)| block.iter())
+    .find_map(|inst| {
+      if inst.t != InstTyp::Call {
+        return None;
+      }
+      let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+      if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") {
+        tgt
+      } else {
+        None
+      }
+    })
+    .expect("expected object literal allocation in analyzed function CFG")
+}
+
 #[test]
 fn direct_fn_call_return_fresh_alloc_is_owned() {
   let src = r#"
@@ -280,5 +303,30 @@ fn direct_fn_call_param_no_escape_through_captured_callee_is_respected() {
     escape.get(&alloc),
     Some(&EscapeState::NoEscape),
     "expected allocation to remain local when param only flows into a captured callee that does not escape it"
+  );
+}
+
+#[test]
+fn captured_callee_call_does_not_force_local_alloc_global_escape() {
+  let src = r#"
+    const g = (x) => { x; };
+    const f = () => { const o = {}; g(o); };
+    f();
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  let analyses = annotate_program(&mut program);
+
+  // g is function 0, f is function 1.
+  let alloc = find_fn_object_alloc(&program, 1);
+  let escape = analyses
+    .escape
+    .get(&FunctionKey::Fn(1))
+    .expect("escape results for f");
+
+  assert_eq!(
+    escape.get(&alloc),
+    Some(&EscapeState::NoEscape),
+    "expected allocation passed to captured constant callee to remain local"
   );
 }

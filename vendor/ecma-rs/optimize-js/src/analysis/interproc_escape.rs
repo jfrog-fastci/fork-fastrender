@@ -55,11 +55,16 @@ impl FnEscapeSummary {
 pub struct ProgramEscapeSummaries {
   pub top_level: FnEscapeSummary,
   pub functions: Vec<FnEscapeSummary>,
+  pub(crate) constant_foreign_fns: BTreeMap<SymbolId, FnId>,
 }
 
 impl ProgramEscapeSummaries {
   pub fn get(&self, id: FnId) -> Option<&FnEscapeSummary> {
     self.functions.get(id)
+  }
+
+  pub(crate) fn constant_foreign_fns(&self) -> &BTreeMap<SymbolId, FnId> {
+    &self.constant_foreign_fns
   }
 }
 
@@ -577,6 +582,7 @@ pub fn compute_program_escape_summaries(program: &Program) -> ProgramEscapeSumma
       .iter()
       .map(|f| FnEscapeSummary::new(f.params.len()))
       .collect(),
+    constant_foreign_fns: foreign_fns.clone(),
   };
 
   loop {

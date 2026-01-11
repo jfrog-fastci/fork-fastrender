@@ -2,6 +2,8 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, InstTyp};
 use crate::analysis::call_summary::{FnSummary, ReturnKind};
 use crate::analysis::interproc_escape::ProgramEscapeSummaries;
+use crate::symbol::semantics::SymbolId;
+use crate::FnId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Escape classification for allocations local to a function.
@@ -128,6 +130,100 @@ fn marker_call_is_safe(callee: &Arg) -> bool {
     marker_call(callee),
     Some(MarkerCall::Object | MarkerCall::Array | MarkerCall::Regex | MarkerCall::Template)
   )
+}
+
+#[derive(Clone, Debug)]
+enum CalleeVarDef {
+  Alias(u32),
+  Fn(FnId),
+  Phi(Vec<Arg>),
+  Unknown,
+}
+
+fn build_callee_var_defs(
+  cfg: &Cfg,
+  foreign_fns: &BTreeMap<SymbolId, FnId>,
+) -> BTreeMap<u32, CalleeVarDef> {
+  let mut defs = BTreeMap::<u32, CalleeVarDef>::new();
+  for label in cfg_labels_sorted(cfg) {
+    let Some(block) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    for inst in block.iter() {
+      let Some(&tgt) = inst.tgts.get(0) else {
+        continue;
+      };
+
+      let def = match inst.t {
+        InstTyp::VarAssign => match &inst.args[0] {
+          Arg::Var(src) => CalleeVarDef::Alias(*src),
+          Arg::Fn(id) => CalleeVarDef::Fn(*id),
+          _ => CalleeVarDef::Unknown,
+        },
+        InstTyp::Phi => CalleeVarDef::Phi(inst.args.clone()),
+        InstTyp::ForeignLoad => foreign_fns
+          .get(&inst.foreign)
+          .copied()
+          .map(CalleeVarDef::Fn)
+          .unwrap_or(CalleeVarDef::Unknown),
+        _ => CalleeVarDef::Unknown,
+      };
+
+      defs
+        .entry(tgt)
+        .and_modify(|existing| {
+          // Non-SSA CFGs may assign the same temp multiple times. Only keep
+          // definitions when we can prove the value is constant.
+          if !matches!(existing, CalleeVarDef::Unknown) {
+            *existing = CalleeVarDef::Unknown;
+          }
+        })
+        .or_insert(def);
+    }
+  }
+  defs
+}
+
+fn resolve_var_fn_id(var: u32, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  if visiting.contains(&var) {
+    return None;
+  }
+  visiting.push(var);
+
+  let out = match defs.get(&var) {
+    Some(CalleeVarDef::Fn(id)) => Some(*id),
+    Some(CalleeVarDef::Alias(src)) => resolve_var_fn_id(*src, defs, visiting),
+    Some(CalleeVarDef::Phi(args)) => {
+      let mut merged: Option<FnId> = None;
+      for arg in args {
+        let Some(id) = resolve_fn_id(arg, defs, visiting) else {
+          visiting.pop();
+          return None;
+        };
+        merged = match merged {
+          None => Some(id),
+          Some(prev) if prev == id => Some(prev),
+          _ => {
+            visiting.pop();
+            return None;
+          }
+        };
+      }
+      merged
+    }
+    _ => None,
+  };
+
+  visiting.pop();
+  out
+}
+
+fn resolve_fn_id(arg: &Arg, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  match arg {
+    Arg::Fn(id) => Some(*id),
+    Arg::Var(v) => resolve_var_fn_id(*v, defs, visiting),
+    _ => None,
+  }
 }
 
 fn collect_param_vars(cfg: &Cfg) -> BTreeSet<u32> {
@@ -367,6 +463,9 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
   call_summaries: Option<&[FnSummary]>,
 ) -> EscapeResult {
   let facts = collect_local_alloc_flow_facts(cfg, call_summaries);
+  let callee_defs = summaries.map(|summaries| {
+    build_callee_var_defs(cfg, summaries.constant_foreign_fns())
+  });
   let alloc_vars = facts.alloc_vars.clone();
 
   // Infer which local allocations may flow through each SSA variable.
@@ -398,6 +497,9 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
   // calls (e.g. `return ((x, obj) => { obj.p = x; return obj; })(x, obj)`).
   let mut call_store_edges: Vec<(Arg, Arg)> = Vec::new(); // (receiver, value)
   if let Some(summaries) = summaries {
+    let callee_defs = callee_defs
+      .as_ref()
+      .expect("callee defs should be built when interprocedural summaries are provided");
     for label in cfg_labels_sorted(cfg) {
       let Some(block) = cfg.bblocks.maybe_get(label) else {
         continue;
@@ -407,19 +509,19 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
           continue;
         }
         let (tgt, callee, _this, args, spreads) = inst.as_call();
-        let Arg::Fn(id) = callee else {
+        let Some(id) = resolve_fn_id(callee, callee_defs, &mut Vec::new()) else {
           continue;
         };
-        let Some(callee_summary) = summaries.get(*id) else {
+        let Some(callee_summary) = summaries.get(id) else {
           continue;
         };
-        // Spreads make argument position mapping ambiguous; stay conservative for now.
-        if !spreads.is_empty() {
-          continue;
-        }
+        let first_spread_arg = spreads.iter().copied().min().map(|idx| idx.saturating_sub(2));
 
         if let Some(tgt) = tgt {
           for &k in callee_summary.returns_param.iter() {
+            if first_spread_arg.is_some_and(|first| k >= first) {
+              continue;
+            }
             if let Some(arg) = args.get(k) {
               call_return_assigns.push((tgt, arg.clone()));
             }
@@ -428,7 +530,13 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
 
         let max = callee_summary.param_escape.len().min(args.len());
         for k in 0..max {
+          if first_spread_arg.is_some_and(|first| k >= first) {
+            continue;
+          }
           if let EscapeState::ArgEscape(j) = callee_summary.param_escape[k] {
+            if first_spread_arg.is_some_and(|first| j >= first) {
+              continue;
+            }
             if let (Some(receiver), Some(value)) = (args.get(j), args.get(k)) {
               call_store_edges.push((receiver.clone(), value.clone()));
             }
@@ -659,18 +767,16 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
 
           let first_spread_arg = spreads.iter().copied().min().map(|idx| idx.saturating_sub(2));
 
-          // If we have interprocedural summaries for direct `Arg::Fn` calls, use them to avoid
+          // If we have interprocedural summaries for nested functions, use them to avoid
           // conservatively forcing `GlobalEscape` for all passed allocations.
-          if let (Some(program_summaries), Arg::Fn(id)) = (summaries, callee) {
-            let Some(callee_summary) = program_summaries.get(*id) else {
-              // Missing summary should be impossible; fall back to conservative behaviour.
-              for arg in inst.args.iter() {
-                for alloc in allocs_for_arg(&var_allocs, arg) {
-                  join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
-                }
-              }
-              continue;
-            };
+          let callee_id = summaries.and_then(|program_summaries| {
+            let callee_defs = callee_defs
+              .as_ref()
+              .expect("callee defs should be built when interprocedural summaries are provided");
+            resolve_fn_id(callee, callee_defs, &mut Vec::new())
+              .and_then(|id| program_summaries.get(id).map(|summary| (id, summary)))
+          });
+          if let Some((_id, callee_summary)) = callee_id {
 
             // We don't model `this` in summaries; treat it conservatively.
             for alloc in allocs_for_arg(&var_allocs, this) {
