@@ -45,8 +45,9 @@ pub struct HostSlots {
 pub struct HeapLimits {
   /// Hard memory limit for heap memory usage, in bytes.
   ///
-  /// This is enforced against [`Heap::estimated_total_bytes`], which includes both live object
-  /// payload sizes and GC/heap metadata overhead (slot table, mark bits, root stacks, etc).
+  /// This is enforced against [`Heap::estimated_total_bytes`], which includes live heap payload
+  /// bytes, external allocations owned by heap objects (e.g. `ArrayBuffer` backing stores), and
+  /// GC/heap metadata overhead (slot table, mark bits, root stacks, etc).
   pub max_bytes: usize,
   /// When an allocation would cause [`Heap::estimated_total_bytes`] to exceed this threshold, the
   /// heap will trigger a GC cycle before attempting the allocation.
@@ -82,6 +83,11 @@ pub struct Heap {
   /// This intentionally excludes heap metadata overhead (slot table, mark bits, roots, etc) which
   /// is tracked via [`Heap::estimated_total_bytes`].
   used_bytes: usize,
+  /// Bytes used by external allocations owned by heap objects.
+  ///
+  /// This is tracked separately from [`Heap::used_bytes`] so the GC can account for non-GC memory
+  /// (e.g. `ArrayBuffer` backing stores) when deciding when to collect.
+  external_bytes: usize,
   gc_runs: u64,
 
   // GC-managed allocations.
@@ -177,6 +183,7 @@ impl Heap {
     Self {
       limits,
       used_bytes: 0,
+      external_bytes: 0,
       gc_runs: 0,
       slots: Vec::new(),
       marks: Vec::new(),
@@ -277,6 +284,33 @@ impl Heap {
     self.used_bytes
   }
 
+  /// Bytes currently used by external allocations owned by heap objects.
+  ///
+  /// This includes allocations that live outside the GC heap but are still owned by GC objects
+  /// (e.g. `ArrayBuffer` backing stores).
+  pub fn external_bytes(&self) -> usize {
+    self.external_bytes
+  }
+
+  /// Increments the external allocation counter.
+  ///
+  /// Callers should pair this with [`Heap::sub_external_bytes`] when the external allocation is
+  /// released (typically via a GC finalizer).
+  pub fn add_external_bytes(&mut self, bytes: usize) {
+    self.external_bytes = self.external_bytes.saturating_add(bytes);
+  }
+
+  /// Decrements the external allocation counter.
+  pub fn sub_external_bytes(&mut self, bytes: usize) {
+    debug_assert!(
+      bytes <= self.external_bytes,
+      "attempted to subtract more external bytes than currently tracked (tracked={}, sub={})",
+      self.external_bytes,
+      bytes
+    );
+    self.external_bytes = self.external_bytes.saturating_sub(bytes);
+  }
+
   /// The heap's configured memory limits.
   pub fn limits(&self) -> HeapLimits {
     self.limits
@@ -291,6 +325,9 @@ impl Heap {
 
     // Live payload bytes (dynamic allocations owned by live heap objects).
     total = total.saturating_add(self.used_bytes);
+
+    // External allocations owned by live heap objects (e.g. `ArrayBuffer` backing stores).
+    total = total.saturating_add(self.external_bytes);
 
     // Slot table + mark bits + free lists + GC worklist.
     total = total.saturating_add(self.slots.capacity().saturating_mul(mem::size_of::<Slot>()));
@@ -463,6 +500,9 @@ impl Heap {
       }
 
       // Unreachable: drop the object and free the slot.
+      if let Some(obj) = slot.value.as_mut() {
+        obj.finalize(&mut self.external_bytes);
+      }
       self.used_bytes = self.used_bytes.saturating_sub(slot.bytes);
       slot.value = None;
       slot.bytes = 0;
@@ -673,7 +713,11 @@ impl Heap {
   /// The returned slice is valid as long as the underlying `ArrayBuffer` remains live and the heap is
   /// not mutably borrowed.
   pub fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
-    Ok(self.get_array_buffer(obj)?.data.as_ref())
+    let buf = self.get_array_buffer(obj)?;
+    buf
+      .data
+      .as_deref()
+      .ok_or(VmError::InvariantViolation("ArrayBuffer backing store missing"))
   }
 
   pub(crate) fn uint8_array_length(&self, obj: GcObject) -> Result<usize, VmError> {
@@ -707,12 +751,12 @@ impl Heap {
       .checked_add(view.length)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    buf
-      .data
-      .get(start..end)
-      .ok_or(VmError::InvariantViolation(
-        "Uint8Array view references out-of-bounds ArrayBuffer data",
-      ))
+    let data = buf.data.as_deref().ok_or(VmError::InvariantViolation(
+      "Uint8Array view references missing ArrayBuffer backing store",
+    ))?;
+    data.get(start..end).ok_or(VmError::InvariantViolation(
+      "Uint8Array view references out-of-bounds ArrayBuffer data",
+    ))
   }
 
   /// Writes `bytes` into a `Uint8Array` view starting at element index `index`.
@@ -747,7 +791,14 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    let buf_len = self.get_array_buffer(buffer)?.data.len();
+    let buf_len = self
+      .get_array_buffer(buffer)?
+      .data
+      .as_deref()
+      .ok_or(VmError::InvariantViolation(
+        "Uint8Array view references missing ArrayBuffer backing store",
+      ))?
+      .len();
     if abs_end > buf_len {
       return Err(VmError::InvariantViolation(
         "Uint8Array view references out-of-bounds ArrayBuffer data",
@@ -755,7 +806,10 @@ impl Heap {
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    buf.data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
+    let data = buf.data.as_deref_mut().ok_or(VmError::InvariantViolation(
+      "Uint8Array view references missing ArrayBuffer backing store",
+    ))?;
+    data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
 
@@ -1137,7 +1191,7 @@ impl Heap {
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
-      ArrayBuffer { data_len: usize },
+      ArrayBuffer,
       Uint8Array,
       Function {
         bound_args_len: usize,
@@ -1170,9 +1224,7 @@ impl Heap {
             .properties
             .iter()
             .position(|prop| self.property_key_eq(&prop.key, key)),
-          TargetKind::ArrayBuffer {
-            data_len: buf.data.len(),
-          },
+          TargetKind::ArrayBuffer,
           buf.base.properties.len(),
         ),
         HeapObject::Uint8Array(arr) => (
@@ -1219,9 +1271,7 @@ impl Heap {
     let new_property_count = property_count.saturating_sub(1);
     let new_bytes = match target_kind {
       TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
-      TargetKind::ArrayBuffer { data_len } => {
-        JsArrayBuffer::heap_size_bytes_for_counts(new_property_count, data_len)
-      }
+      TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::Uint8Array => JsUint8Array::heap_size_bytes_for_property_count(new_property_count),
       TargetKind::Function {
         bound_args_len,
@@ -1873,13 +1923,12 @@ impl Heap {
       .checked_add(index)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
-    buf
-      .data
-      .get(abs)
-      .copied()
-      .ok_or(VmError::InvariantViolation(
-        "Uint8Array view references out-of-bounds ArrayBuffer data",
-      ))
+    let data = buf.data.as_deref().ok_or(VmError::InvariantViolation(
+      "Uint8Array view references missing ArrayBuffer backing store",
+    ))?;
+    data.get(abs).copied().ok_or(VmError::InvariantViolation(
+      "Uint8Array view references out-of-bounds ArrayBuffer data",
+    ))
   }
 
   fn uint8_array_set_element(
@@ -1903,7 +1952,14 @@ impl Heap {
       .checked_add(index)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    let buf_len = self.get_array_buffer(buffer)?.data.len();
+    let buf_len = self
+      .get_array_buffer(buffer)?
+      .data
+      .as_deref()
+      .ok_or(VmError::InvariantViolation(
+        "Uint8Array view references missing ArrayBuffer backing store",
+      ))?
+      .len();
     if abs >= buf_len {
       return Err(VmError::InvariantViolation(
         "Uint8Array view references out-of-bounds ArrayBuffer data",
@@ -1911,7 +1967,10 @@ impl Heap {
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    buf.data[abs] = value;
+    let data = buf.data.as_deref_mut().ok_or(VmError::InvariantViolation(
+      "Uint8Array view references missing ArrayBuffer backing store",
+    ))?;
+    data[abs] = value;
     Ok(())
   }
 
@@ -2702,7 +2761,7 @@ impl Heap {
     #[derive(Clone, Copy)]
     enum TargetKind {
       OrdinaryObject,
-      ArrayBuffer { data_len: usize },
+      ArrayBuffer,
       Uint8Array,
       Function {
         bound_args_len: usize,
@@ -2741,9 +2800,7 @@ impl Heap {
             .iter()
             .position(|entry| self.property_key_eq(&entry.key, &key));
           (
-            TargetKind::ArrayBuffer {
-              data_len: obj.data.len(),
-            },
+            TargetKind::ArrayBuffer,
             obj.base.properties.len(),
             slot.bytes,
             existing_idx,
@@ -2848,9 +2905,7 @@ impl Heap {
           .ok_or(VmError::OutOfMemory)?;
         let new_bytes = match target_kind {
           TargetKind::OrdinaryObject => JsObject::heap_size_bytes_for_property_count(new_property_count),
-          TargetKind::ArrayBuffer { data_len } => {
-            JsArrayBuffer::heap_size_bytes_for_counts(new_property_count, data_len)
-          }
+          TargetKind::ArrayBuffer => JsArrayBuffer::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::Uint8Array => JsUint8Array::heap_size_bytes_for_property_count(new_property_count),
           TargetKind::Function {
             bound_args_len,
@@ -3018,11 +3073,17 @@ impl Heap {
     slot.bytes = new_bytes;
   }
 
-  fn alloc_unchecked(&mut self, obj: HeapObject, new_bytes: usize) -> Result<HeapId, VmError> {
-    // Pre-flight allocation with a dynamic cost model because running GC can populate `free_list`,
-    // which avoids slot-table growth.
-    self.ensure_can_allocate_with(|heap| heap.additional_bytes_for_heap_alloc(new_bytes))?;
-
+  fn alloc_unchecked_inner(
+    &mut self,
+    obj: HeapObject,
+    new_bytes: usize,
+    preflight: bool,
+  ) -> Result<HeapId, VmError> {
+    if preflight {
+      // Pre-flight allocation with a dynamic cost model because running GC can populate
+      // `free_list`, which avoids slot-table growth.
+      self.ensure_can_allocate_with(|heap| heap.additional_bytes_for_heap_alloc(new_bytes))?;
+    }
     let idx = match self.free_list.pop() {
       Some(idx) => idx as usize,
       None => {
@@ -3049,6 +3110,18 @@ impl Heap {
     self.debug_assert_used_bytes_is_correct();
 
     Ok(id)
+  }
+
+  fn alloc_unchecked(&mut self, obj: HeapObject, new_bytes: usize) -> Result<HeapId, VmError> {
+    self.alloc_unchecked_inner(obj, new_bytes, true)
+  }
+
+  fn alloc_unchecked_after_ensure(
+    &mut self,
+    obj: HeapObject,
+    new_bytes: usize,
+  ) -> Result<HeapId, VmError> {
+    self.alloc_unchecked_inner(obj, new_bytes, false)
   }
 
   fn symbol_registry_get(&self, key: &JsString) -> Result<Option<GcSymbol>, VmError> {
@@ -3685,9 +3758,13 @@ impl<'a> Scope<'a> {
   ///
   /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
   pub fn alloc_array_buffer(&mut self, byte_length: usize) -> Result<GcObject, VmError> {
-    let new_bytes = JsArrayBuffer::heap_size_bytes_for_counts(0, byte_length);
-    self.heap.ensure_can_allocate(new_bytes)?;
- 
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate_with(|heap| {
+      heap
+        .additional_bytes_for_heap_alloc(new_bytes)
+        .saturating_add(byte_length)
+    })?;
+  
     // Allocate the backing buffer fallibly so hostile input cannot abort the host process on OOM.
     let mut buf: Vec<u8> = Vec::new();
     buf
@@ -3695,9 +3772,11 @@ impl<'a> Scope<'a> {
       .map_err(|_| VmError::OutOfMemory)?;
     buf.resize(byte_length, 0);
     let data = buf.into_boxed_slice();
-
+ 
     let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
-    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+    let id = self.heap.alloc_unchecked_after_ensure(obj, new_bytes)?;
+    self.heap.add_external_bytes(byte_length);
+    Ok(GcObject(id))
   }
 
   /// Allocates a new `ArrayBuffer` object backed by the provided bytes.
@@ -3705,8 +3784,12 @@ impl<'a> Scope<'a> {
   /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
   pub fn alloc_array_buffer_from_u8_vec(&mut self, bytes: Vec<u8>) -> Result<GcObject, VmError> {
     let byte_length = bytes.len();
-    let new_bytes = JsArrayBuffer::heap_size_bytes_for_counts(0, byte_length);
-    self.heap.ensure_can_allocate(new_bytes)?;
+    let new_bytes = JsArrayBuffer::heap_size_bytes_for_property_count(0);
+    self.heap.ensure_can_allocate_with(|heap| {
+      heap
+        .additional_bytes_for_heap_alloc(new_bytes)
+        .saturating_add(byte_length)
+    })?;
 
     // Avoid process abort on allocator OOM: if `bytes` has spare capacity, converting it to a boxed
     // slice may reallocate. Preserve the original allocation only when it's already exact-sized.
@@ -3722,7 +3805,9 @@ impl<'a> Scope<'a> {
     };
 
     let obj = HeapObject::ArrayBuffer(JsArrayBuffer::new(None, data));
-    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+    let id = self.heap.alloc_unchecked_after_ensure(obj, new_bytes)?;
+    self.heap.add_external_bytes(byte_length);
+    Ok(GcObject(id))
   }
 
   /// Allocates a new `Uint8Array` view over `viewed_array_buffer`.
@@ -4446,6 +4531,25 @@ impl Trace for HeapObject {
   }
 }
 
+impl HeapObject {
+  fn finalize(&mut self, external_bytes: &mut usize) {
+    let freed = match self {
+      HeapObject::ArrayBuffer(buf) => buf.finalize(),
+      _ => 0,
+    };
+    if freed == 0 {
+      return;
+    }
+    debug_assert!(
+      freed <= *external_bytes,
+      "finalizer freed more external bytes than currently tracked (tracked={}, freed={})",
+      *external_bytes,
+      freed
+    );
+    *external_bytes = (*external_bytes).saturating_sub(freed);
+  }
+}
+
 impl Trace for JsString {
   fn trace(&self, _tracer: &mut Tracer<'_>) {
     // Strings have no outgoing GC references.
@@ -4594,27 +4698,41 @@ impl Trace for JsObject {
 #[derive(Debug)]
 struct JsArrayBuffer {
   base: ObjectBase,
-  data: Box<[u8]>,
+  data: Option<Box<[u8]>>,
 }
 
 impl JsArrayBuffer {
   fn new(prototype: Option<GcObject>, data: Box<[u8]>) -> Self {
     Self {
       base: ObjectBase::new(prototype),
-      data,
+      data: Some(data),
     }
   }
 
   fn byte_length(&self) -> usize {
-    self.data.len()
+    let Some(data) = self.data.as_deref() else {
+      debug_assert!(false, "ArrayBuffer backing store missing");
+      return 0;
+    };
+    data.len()
   }
 
   fn heap_size_bytes(&self) -> usize {
-    Self::heap_size_bytes_for_counts(self.base.properties.len(), self.data.len())
+    Self::heap_size_bytes_for_property_count(self.base.properties.len())
   }
 
-  fn heap_size_bytes_for_counts(property_count: usize, data_len: usize) -> usize {
-    ObjectBase::properties_heap_size_bytes_for_count(property_count).saturating_add(data_len)
+  fn heap_size_bytes_for_property_count(property_count: usize) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(property_count)
+  }
+
+  fn finalize(&mut self) -> usize {
+    let Some(data) = self.data.take() else {
+      debug_assert!(false, "ArrayBuffer finalized twice");
+      return 0;
+    };
+    let len = data.len();
+    drop(data);
+    len
   }
 }
 
