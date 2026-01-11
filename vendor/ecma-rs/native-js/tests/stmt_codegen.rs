@@ -121,10 +121,18 @@ fn run_main(source: &str) -> i32 {
     .expect("create ee");
 
   unsafe {
+    let init_sym = native_js::llvm_symbol_for_file_init(file);
+
+    if module.get_function(&init_sym).is_some() {
+      let init = engine
+        .get_function::<unsafe extern "C" fn()>(&init_sym)
+        .expect("get file init");
+      init.call();
+    }
+
     let main = engine
-      // native-js codegen emits a C `main` wrapper that prints the TS return value and returns an
-      // exit code. For these JIT-level statement tests we want the raw TS result value, so call the
-      // TS `main` function directly.
+      // native-js codegen also emits a C `main` wrapper for executables. For these JIT-level
+      // statement tests we want to call the TS entrypoint directly.
       .get_function::<unsafe extern "C" fn() -> i32>(&ts_main_sym)
       .expect("get main");
     main.call()
