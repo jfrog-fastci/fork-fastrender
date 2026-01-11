@@ -104,16 +104,16 @@ symbols:
 
 Standardized keys:
 
-- `properties.encoding.output`: `ascii|latin1|utf8|unknown|same_as_input`
-- `properties.encoding.preserves_input_if`: `ascii|latin1|utf8`
-- `properties.encoding.length_preserving_if`: `ascii|latin1|utf8` (optional)
+- `encoding.output`: `ascii|latin1|utf8|unknown|same_as_input`
+- `encoding.preserves_input_if`: `ascii|latin1|utf8`
+- `encoding.length_preserving_if`: `ascii|latin1|utf8` (optional)
 
 Interpretation:
 
-- `properties.encoding.output = same_as_input`: the API returns a string with the same encoding as
-  its input.
-- `properties.encoding.preserves_input_if`: the encoding is only considered preserved when the
-  input encoding matches; otherwise the result is treated as `unknown`.
+ - `encoding.output = same_as_input`: the API returns a string with the same encoding as
+   its input.
+ - `encoding.preserves_input_if`: the encoding is only considered preserved when the
+   input encoding matches; otherwise the result is treated as `unknown`.
 
 In YAML, `properties` is typically a map of string keys; encoding keys use a dotted namespace like
 `encoding.output`:
