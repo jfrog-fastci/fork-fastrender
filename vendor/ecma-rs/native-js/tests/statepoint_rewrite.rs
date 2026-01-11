@@ -491,6 +491,56 @@ fn gc_pointer_call_argument_is_in_gc_live_even_if_dead_after_call() {
 }
 
 #[test]
+fn gc_pointer_vararg_call_argument_is_in_gc_live_bundle() {
+  // Some runtime calls may be varargs (e.g. debug/trace helpers). Ensure GC
+  // pointers passed via the varargs portion are still rooted by the statepoint.
+  let before = r#"
+  declare void @callee(i32, ...)
+
+  define void @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    call void (i32, ...) @callee(i32 1, ptr addrspace(1) %obj, i64 42)
+    ret void
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void (i32, ...)) @callee"))
+    .unwrap_or_else(|| panic!("missing @callee statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("call token")
+      && statepoint_line.contains("@llvm.experimental.gc.statepoint")
+      && statepoint_line.contains("i32 3, i32 0"),
+    "expected varargs call to be rewritten to `call token gc.statepoint` with 3 call args, got:\n{statepoint_line}\n\n{func}"
+  );
+
+  assert!(
+    !func.contains("call void (i32, ...) @callee"),
+    "expected @callee call to be rewritten (no direct varargs call):\n{func}"
+  );
+
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%obj".to_string()],
+    "expected gc-live to contain only %obj, got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %obj relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+}
+
+#[test]
 fn gc_pointer_select_is_relocated_across_safepoint() {
   // JS runtimes frequently have control-flow-dependent pointer selection (e.g.
   // polymorphic inline caches). Ensure a `select`-produced GC pointer is tracked
