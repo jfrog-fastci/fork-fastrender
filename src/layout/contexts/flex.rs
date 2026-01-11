@@ -9066,7 +9066,6 @@ impl FlexFormattingContext {
     // root rect sanitisation/corrections (when Taffy returns 0/NaN) and should not meaningfully
     // affect normal layout.
     let rect_eps = 0.01;
-
     // Get layout from Taffy
     taffy_tree
       .layout(taffy_node)

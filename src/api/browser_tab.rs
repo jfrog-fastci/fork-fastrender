@@ -9096,6 +9096,110 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn import_meta_url_is_defined_for_inline_module_scripts() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      r#"<!doctype html><body>
+        <script type="module">
+          document.body.setAttribute("data-import-meta-url", import.meta.url);
+        </script>
+      </body>"#,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    let url = dom
+      .get_attribute(body, "data-import-meta-url")
+      .expect("get_attribute should succeed")
+      .expect("import.meta.url should be set");
+    let parsed = url::Url::parse(&url).expect("import.meta.url should be a URL");
+    assert!(
+      parsed
+        .fragment()
+        .map(|frag| frag.starts_with("inline-module-"))
+        .unwrap_or(false),
+      "unexpected import.meta.url: {url}",
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_works_in_classic_scripts_when_module_scripts_supported() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let module = "data:text/javascript,export%20default%20123%3B";
+    let html = format!(
+      r#"<!doctype html><body>
+        <script>
+          import("{module}").then(m => {{
+            document.body.setAttribute("data-dynamic-import", String(m.default));
+          }});
+        </script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-dynamic-import")
+        .expect("get_attribute should succeed"),
+      Some("123")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_works_in_promise_microtasks_when_module_scripts_supported() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let module = "data:text/javascript,export%20default%20456%3B";
+    let html = format!(
+      r#"<!doctype html><body>
+        <script>
+          Promise.resolve()
+            .then(() => import("{module}"))
+            .then(m => {{
+              document.body.setAttribute("data-microtask-dynamic-import", String(m.default));
+            }});
+        </script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-microtask-dynamic-import")
+        .expect("get_attribute should succeed"),
+      Some("456")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn import_maps_remap_bare_specifiers_in_module_scripts() -> Result<()> {
     let mut js_options = JsExecutionOptions::default();
     js_options.supports_module_scripts = true;

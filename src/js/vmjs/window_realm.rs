@@ -39,8 +39,8 @@ use std::sync::OnceLock;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, PropertyDescriptor,
-  PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost,
-  VmHostHooks, VmOptions,
+  ModuleGraph, ModuleId, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
+  VmError, VmHost, VmHostHooks, VmOptions,
 };
 use webidl_vm_js::{VmJsHostHooksPayload, WebIdlBindingsHost};
 
@@ -168,6 +168,44 @@ pub struct WindowRealm {
   vm_host: (),
 }
 
+pub(crate) struct WindowRealmModuleLoaderState {
+  /// Realm-wide module graph used for module scripts and dynamic `import()`.
+  ///
+  /// This is boxed so `Vm::module_graph_ptr` can point to a stable heap allocation without
+  /// aliasing the surrounding `WindowRealmUserData` struct (host hooks may borrow the user data
+  /// while `vm-js` holds an active `&mut ModuleGraph` during module loading).
+  pub(crate) module_graph: Box<ModuleGraph>,
+  /// Cache mapping a canonical resolved module URL → module id.
+  ///
+  /// This is required to satisfy ECMA-262's `HostLoadImportedModule` caching invariant for dynamic
+  /// `import()` requests whose referrer is a Script/Realm record (which do not currently expose a
+  /// `[[LoadedModules]]` list in `vm-js`).
+  pub(crate) module_map: HashMap<String, ModuleId>,
+  pub(crate) import_map_state: crate::js::import_maps::ImportMapState,
+  pub(crate) fetcher: Arc<dyn ResourceFetcher>,
+  pub(crate) max_script_bytes: usize,
+  pub(crate) document_origin: Option<crate::resource::DocumentOrigin>,
+  pub(crate) cors_mode: CorsMode,
+}
+
+impl WindowRealmModuleLoaderState {
+  pub(crate) fn new(
+    fetcher: Arc<dyn ResourceFetcher>,
+    max_script_bytes: usize,
+    document_origin: Option<crate::resource::DocumentOrigin>,
+  ) -> Self {
+    Self {
+      module_graph: Box::new(ModuleGraph::new()),
+      module_map: HashMap::new(),
+      import_map_state: crate::js::import_maps::ImportMapState::new_empty(),
+      fetcher,
+      max_script_bytes,
+      document_origin,
+      cors_mode: CorsMode::Anonymous,
+    }
+  }
+}
+
 pub(crate) struct WindowRealmUserData {
   document_url: String,
   pub(crate) base_url: Option<String>,
@@ -186,6 +224,7 @@ pub(crate) struct WindowRealmUserData {
   /// Cached JS `document` object for rooting event listener callbacks and mapping
   /// `EventTargetId::Document` back into JS.
   document_obj: Option<GcObject>,
+  pub(crate) module_loader: Option<WindowRealmModuleLoaderState>,
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -198,6 +237,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("has_window_obj", &self.window_obj.is_some())
       .field("has_document_obj", &self.document_obj.is_some())
+      .field("has_module_loader", &self.module_loader.is_some())
       .finish()
   }
 }
@@ -214,7 +254,12 @@ impl WindowRealmUserData {
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       window_obj: None,
       document_obj: None,
+      module_loader: None,
     }
+  }
+
+  pub(crate) fn document_url(&self) -> &str {
+    &self.document_url
   }
 }
 
@@ -364,6 +409,10 @@ impl WindowRealm {
   }
 
   pub fn teardown(&mut self) {
+    // If module support was enabled for this realm, `Vm::module_graph_ptr` points into the
+    // realm-owned module graph allocation. Clear the pointer before dropping the user data so it
+    // cannot dangle.
+    self.runtime.vm.clear_module_graph();
     self.time_bindings.take();
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);
@@ -372,12 +421,43 @@ impl WindowRealm {
       unregister_match_media_env(id);
     }
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.module_loader = None;
       if let Some(platform) = data.dom_platform.as_mut() {
         platform.teardown(&mut self.runtime.heap);
       }
     }
     let realm_id = self.runtime.realm().id();
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
+  }
+
+  pub(crate) fn enable_module_loader(
+    &mut self,
+    fetcher: Arc<dyn ResourceFetcher>,
+    max_script_bytes: usize,
+    document_origin: Option<crate::resource::DocumentOrigin>,
+  ) -> Result<(), VmError> {
+    let vm = self.vm_mut();
+    let graph_ptr = {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      data.module_loader = Some(WindowRealmModuleLoaderState::new(
+        fetcher,
+        max_script_bytes,
+        document_origin,
+      ));
+      let loader = data
+        .module_loader
+        .as_mut()
+        .expect("module_loader set above");
+      (&mut *loader.module_graph) as *mut ModuleGraph
+    };
+    // SAFETY: the `ModuleGraph` is stored in a `Box` owned by the VM's `WindowRealmUserData` and is
+    // cleared in `WindowRealm::teardown` before the user data is dropped.
+    unsafe {
+      vm.set_module_graph(&mut *graph_ptr);
+    }
+    Ok(())
   }
 
   pub fn set_cookie_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {

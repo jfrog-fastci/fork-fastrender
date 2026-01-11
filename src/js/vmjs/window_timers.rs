@@ -9,19 +9,31 @@
 //! keep behavior deterministic.
 
 use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
+use crate::js::import_maps::{resolve_module_specifier, ImportMapError};
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
+use crate::js::script_encoding::decode_classic_script_bytes;
+use crate::js::sri;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
   dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost,
+  WindowRealmUserData,
 };
+use crate::resource::{
+  cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
+  FetchDestination, FetchRequest,
+};
+use encoding_rs::UTF_8;
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 use vm_js::{
-  ExecutionContext, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation, PromiseState,
-  PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks, VmJobContext,
+  ExecutionContext, Heap, HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseHandle, PromiseRejectionOperation,
+  PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, SourceText,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 use webidl_vm_js::VmJsHostHooksPayload;
@@ -86,6 +98,20 @@ fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
     Ok(s) => VmError::Throw(Value::String(s)),
     Err(_) => VmError::Throw(Value::Undefined),
   }
+}
+
+fn make_type_error_value(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+  vm_js::new_type_error_object(scope, &intr, message)
+}
+
+fn make_syntax_error_value(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+  vm_js::new_syntax_error_object(scope, &intr, message)
 }
 
 fn value_to_number(heap: &mut Heap, value: Value) -> Result<f64, VmError> {
@@ -622,6 +648,320 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         }
       }
     }
+  }
+
+  fn host_get_import_meta_properties(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    module: ModuleId,
+  ) -> Result<Vec<ImportMetaProperty>, VmError> {
+    let Some(modules_ptr) = vm.module_graph_ptr() else {
+      return Ok(Vec::new());
+    };
+    // SAFETY: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the
+    // VM, and FastRender clears the pointer in `WindowRealm::teardown`.
+    let modules = unsafe { &*modules_ptr };
+    let Some(url) = modules
+      .get_module(module)
+      .and_then(|m| m.source.as_ref())
+      .map(|s| s.name.as_ref())
+    else {
+      return Ok(Vec::new());
+    };
+
+    let key_s = scope.alloc_string("url")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let url_s = scope.alloc_string(url)?;
+    scope.push_root(Value::String(url_s))?;
+
+    Ok(vec![ImportMetaProperty {
+      key,
+      value: Value::String(url_s),
+    }])
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    let _ = host_defined;
+
+    // Collect module loader state from the realm user data. Use raw pointers for interior
+    // mutability so we can call back into `vm-js` APIs that also borrow `&mut Vm`.
+    let (
+      fetcher,
+      max_script_bytes,
+      document_origin,
+      cors_mode,
+      document_url,
+      base_url,
+      module_map_ptr,
+      import_map_state_ptr,
+    ) = {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        let err_value = make_type_error_value(vm, scope, "module loading requires a window realm")?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      };
+
+      let document_url = data.document_url().to_string();
+      let base_url = data.base_url.clone();
+
+      let Some(loader) = data.module_loader.as_mut() else {
+        let err_value = make_type_error_value(vm, scope, "module loading is not enabled for this realm")?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      };
+
+      (
+        loader.fetcher.clone(),
+        loader.max_script_bytes,
+        loader.document_origin.clone(),
+        loader.cors_mode,
+        document_url,
+        base_url,
+        &mut loader.module_map as *mut HashMap<String, ModuleId>,
+        &mut loader.import_map_state as *mut crate::js::import_maps::ImportMapState,
+      )
+    };
+
+    let default_base = base_url.unwrap_or_else(|| document_url.clone());
+    let referrer_url = match referrer {
+      ModuleReferrer::Module(module_id) => modules
+        .get_module(module_id)
+        .and_then(|m| m.source.as_ref())
+        .map(|s| s.name.as_ref())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| default_base.clone()),
+      ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => default_base.clone(),
+    };
+
+    let base_url_parsed =
+      Url::parse(&referrer_url).unwrap_or_else(|_| Url::parse("about:blank").unwrap());
+
+    let resolved_url = match resolve_module_specifier(
+      unsafe { &mut *import_map_state_ptr },
+      &module_request.specifier,
+      &base_url_parsed,
+    ) {
+      Ok(url) => url.to_string(),
+      Err(err) => {
+        let message = match err {
+          ImportMapError::TypeError(message) => message,
+          ImportMapError::Json(err) => err.to_string(),
+          ImportMapError::LimitExceeded(message) => message,
+        };
+        let err_value = make_type_error_value(vm, scope, &message)?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    };
+
+    // Check the URL-level module cache first (required for dynamic import caching invariants).
+    if let Some(existing) = unsafe { (&*module_map_ptr).get(&resolved_url).copied() } {
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Ok(existing),
+      )?;
+      return Ok(());
+    }
+
+    // Fetch the module source.
+    let max_fetch = max_script_bytes.saturating_add(1);
+    let mut req = FetchRequest::new(&resolved_url, FetchDestination::ScriptCors);
+    // Prefer the module referrer's URL for the Referer header. If the referrer is a Script/Realm
+    // record, fall back to the document URL.
+    let referrer_for_fetch = match referrer {
+      ModuleReferrer::Module(_) => Some(referrer_url.as_str()),
+      ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => Some(document_url.as_str()),
+    };
+    if let Some(referrer_url) = referrer_for_fetch {
+      req = req.with_referrer_url(referrer_url);
+    }
+    if let Some(origin) = document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
+    req = req.with_credentials_mode(cors_mode.credentials_mode());
+
+    let fetched = match fetcher.fetch_partial_with_request(req, max_fetch) {
+      Ok(fetched) => fetched,
+      Err(err) => {
+        let message = format!("failed to fetch module {resolved_url}: {err}");
+        let err_value = make_type_error_value(vm, scope, &message)?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    };
+
+    if let Err(err) = ensure_http_success(&fetched, &resolved_url) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
+    if let Err(err) = ensure_script_mime_sane(&fetched, &resolved_url) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
+    if cors_enforcement_enabled() {
+      if let Err(err) =
+        ensure_cors_allows_origin(document_origin.as_ref(), &fetched, &resolved_url, cors_mode)
+      {
+        let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    }
+
+    // HTML import maps: enforce Subresource Integrity metadata (when present).
+    let integrity_metadata = Url::parse(&resolved_url)
+      .ok()
+      .map(|url| unsafe { &*import_map_state_ptr }.resolve_module_integrity_metadata(&url))
+      .unwrap_or("");
+    if !integrity_metadata.is_empty() {
+      if let Err(message) = sri::verify_integrity(&fetched.bytes, integrity_metadata) {
+        let err_value = make_type_error_value(
+          vm,
+          scope,
+          &format!("SRI blocked module {resolved_url}: {message}"),
+        )?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    }
+
+    if fetched.bytes.len() > max_script_bytes {
+      let message = format!(
+        "module {resolved_url} is too large ({} bytes > max {})",
+        fetched.bytes.len(),
+        max_script_bytes
+      );
+      let err_value = make_type_error_value(vm, scope, &message)?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
+    let source_text =
+      decode_classic_script_bytes(&fetched.bytes, fetched.content_type.as_deref(), UTF_8);
+    let source = std::sync::Arc::new(SourceText::new(resolved_url.clone(), source_text));
+    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source) {
+      Ok(record) => record,
+      Err(VmError::Syntax(diags)) => {
+        let message =
+          vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+        let err_value = make_syntax_error_value(vm, scope, &message)?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+      Err(err) => {
+        vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Err(err))?;
+        return Ok(());
+      }
+    };
+
+    let id = modules.add_module(record);
+    unsafe {
+      (&mut *module_map_ptr).insert(resolved_url.clone(), id);
+    }
+
+    vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Ok(id))?;
+    Ok(())
   }
 }
 
