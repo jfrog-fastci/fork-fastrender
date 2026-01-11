@@ -28,6 +28,7 @@ pub fn reset_runtime_state() {
   crate::roots::global_root_registry().clear_for_tests();
   time::debug_clear_state_for_tests();
   crate::async_runtime::reset_for_tests();
+  crate::clear_write_barrier_state_for_tests();
 }
 
 /// A per-test guard that serializes access to the global runtime singleton.

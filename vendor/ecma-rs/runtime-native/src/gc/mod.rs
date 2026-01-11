@@ -1,5 +1,6 @@
 use std::mem;
 use std::slice;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::array;
 use crate::trap;
@@ -42,6 +43,9 @@ pub(crate) fn align_up(value: usize, align: usize) -> usize {
     .unwrap_or_else(|| trap::rt_trap_invalid_arg("align_up overflow"))
 }
 
+/// Number of bytes covered by a single card in a per-object card table.
+pub const CARD_SIZE: usize = 512;
+
 /// Object header that prefixes every GC-managed allocation.
 ///
 /// # Layout
@@ -51,7 +55,7 @@ pub(crate) fn align_up(value: usize, align: usize) -> usize {
 #[repr(C)]
 pub struct ObjHeader {
   pub(crate) type_desc: *const TypeDescriptor,
-  pub(crate) meta: usize,
+  pub(crate) meta: AtomicUsize,
 }
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
@@ -66,6 +70,7 @@ const META_MARK_SHIFT: usize = 1;
 const META_MARK_MASK: usize = 1 << META_MARK_SHIFT;
 const META_REMEMBERED: usize = 1 << 2;
 const META_PINNED: usize = 1 << 3;
+const META_FLAGS_MASK: usize = META_FORWARDED | META_MARK_MASK | META_REMEMBERED | META_PINNED;
 
 impl ObjHeader {
   #[inline]
@@ -76,13 +81,13 @@ impl ObjHeader {
 
   #[inline]
   pub(crate) fn is_forwarded(&self) -> bool {
-    (self.meta & META_FORWARDED) != 0
+    (self.meta.load(Ordering::Acquire) & META_FORWARDED) != 0
   }
 
   #[inline]
   pub(crate) fn forwarding_ptr(&self) -> *mut u8 {
     debug_assert!(self.is_forwarded());
-    (self.meta & !META_FORWARDED) as *mut u8
+    (self.meta.load(Ordering::Acquire) & !META_FORWARDED) as *mut u8
   }
 
   #[inline]
@@ -92,19 +97,27 @@ impl ObjHeader {
       !self.is_pinned(),
       "attempted to evacuate/forward a pinned object"
     );
-    self.meta = (new_location as usize) | META_FORWARDED;
+    self.meta.store((new_location as usize) | META_FORWARDED, Ordering::Release);
   }
 
   #[inline]
   pub fn is_remembered(&self) -> bool {
-    !self.is_forwarded() && (self.meta & META_REMEMBERED) != 0
+    // When the header is in the "forwarded" state, `meta` is a tagged forwarding pointer, so any
+    // other bit tests are meaningless.
+    !self.is_forwarded() && (self.meta.load(Ordering::Acquire) & META_REMEMBERED) != 0
   }
 
   #[inline]
   pub fn is_pinned(&self) -> bool {
     // When the header is in the "forwarded" state, `meta` is a tagged forwarding pointer, so any
     // other bit tests are meaningless.
-    !self.is_forwarded() && (self.meta & META_PINNED) != 0
+    !self.is_forwarded() && (self.meta.load(Ordering::Acquire) & META_PINNED) != 0
+  }
+
+  #[inline]
+  pub(crate) fn set_remembered_idempotent(&self) -> bool {
+    let prev = self.meta.fetch_or(META_REMEMBERED, Ordering::AcqRel);
+    (prev & META_REMEMBERED) == 0
   }
 
   #[inline]
@@ -113,9 +126,9 @@ impl ObjHeader {
       return;
     }
     if remembered {
-      self.meta |= META_REMEMBERED;
+      self.meta.fetch_or(META_REMEMBERED, Ordering::Release);
     } else {
-      self.meta &= !META_REMEMBERED;
+      self.meta.fetch_and(!META_REMEMBERED, Ordering::Release);
     }
   }
 
@@ -125,15 +138,15 @@ impl ObjHeader {
       return;
     }
     if pinned {
-      self.meta |= META_PINNED;
+      self.meta.fetch_or(META_PINNED, Ordering::Release);
     } else {
-      self.meta &= !META_PINNED;
+      self.meta.fetch_and(!META_PINNED, Ordering::Release);
     }
   }
 
   #[inline]
   pub(crate) fn mark_epoch(&self) -> u8 {
-    ((self.meta & META_MARK_MASK) >> META_MARK_SHIFT) as u8
+    ((self.meta.load(Ordering::Acquire) & META_MARK_MASK) >> META_MARK_SHIFT) as u8
   }
 
   #[inline]
@@ -151,7 +164,45 @@ impl ObjHeader {
       // forwarded from-space objects.
       return;
     }
-    self.meta = (self.meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
+    let mut meta = self.meta.load(Ordering::Relaxed);
+    meta = (meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
+    self.meta.store(meta, Ordering::Release);
+  }
+
+  /// Returns a pointer to the per-object card table bitset, or null if the
+  /// object has no card table.
+  ///
+  /// The pointer is stored in the high bits of `meta` (with the low flag bits
+  /// reserved for GC metadata). As a result, card table allocations must be
+  /// aligned such that the low [`META_FLAGS_MASK`] bits are zero.
+  #[inline]
+  #[doc(hidden)]
+  pub fn card_table_ptr(&self) -> *mut AtomicU64 {
+    if self.is_forwarded() {
+      return core::ptr::null_mut();
+    }
+    let meta = self.meta.load(Ordering::Acquire);
+    (meta & !META_FLAGS_MASK) as *mut AtomicU64
+  }
+
+  /// Install (or clear) the per-object card table pointer.
+  ///
+  /// # Safety
+  /// The caller must ensure `ptr` points to a valid allocation containing at
+  /// least `ceil(obj_size / CARD_SIZE).div_ceil(64)` [`AtomicU64`] words.
+  #[inline]
+  #[doc(hidden)]
+  pub unsafe fn set_card_table_ptr(&mut self, ptr: *mut AtomicU64) {
+    debug_assert!(
+      (ptr as usize & META_FLAGS_MASK) == 0,
+      "card table pointer must be aligned so low meta flag bits are free"
+    );
+    debug_assert!(
+      !self.is_forwarded(),
+      "forwarded headers must not carry card table pointers"
+    );
+    let flags = self.meta.load(Ordering::Relaxed) & META_FLAGS_MASK;
+    self.meta.store((ptr as usize) | flags, Ordering::Release);
   }
 }
 

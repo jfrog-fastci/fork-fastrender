@@ -172,6 +172,13 @@ void rt_gc_safepoint_slow(uint64_t epoch);
 // `rt_alloc` (i.e. pointer to the start of the object's header), and `slot` must
 // point to the field being written.
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);
+// Generational range write barrier for bulk writes.
+//
+// Contract: called after a bulk write into `obj`.
+// - `start_slot` points within `obj` to the first written byte (typically the first pointer slot).
+// - `len` is the number of bytes written starting at `start_slot`.
+//
+// This barrier is conservative and may over-mark cards (it does not inspect the written values).
 void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
 // Bytes currently owned by non-moving `ArrayBuffer`/`TypedArray` backing stores (allocated outside

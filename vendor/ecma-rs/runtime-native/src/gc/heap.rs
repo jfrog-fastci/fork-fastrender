@@ -2,6 +2,7 @@ use std::alloc::handle_alloc_error;
 use std::alloc::Layout;
 use std::mem;
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::roots::RootHandle;
@@ -271,7 +272,7 @@ impl GcHeap {
       ptr::write_bytes(obj, 0, desc.size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = desc as *const TypeDescriptor;
-      header.meta = 0;
+      header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
     }
 
@@ -306,14 +307,14 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-      let header = &mut *(obj as *mut ObjHeader);
-      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-      header.meta = 0;
-      header.set_mark_epoch(self.mark_epoch);
+       let header = &mut *(obj as *mut ObjHeader);
+       header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+       header.meta.store(0, Ordering::Relaxed);
+       header.set_mark_epoch(self.mark_epoch);
 
-      let arr = &mut *(obj as *mut RtArrayHeader);
-      arr.len = len;
-      arr.elem_size = spec.elem_size as u32;
+       let arr = &mut *(obj as *mut RtArrayHeader);
+       arr.len = len;
+       arr.elem_size = spec.elem_size as u32;
       arr.elem_flags = spec.elem_flags;
     }
 
@@ -332,7 +333,7 @@ impl GcHeap {
       ptr::write_bytes(obj, 0, desc.size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = desc as *const TypeDescriptor;
-      header.meta = 0;
+      header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
     }
 
@@ -355,7 +356,7 @@ impl GcHeap {
       ptr::write_bytes(obj, 0, desc.size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = desc as *const TypeDescriptor;
-      header.meta = 0;
+      header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
       header.set_pinned(true);
     }

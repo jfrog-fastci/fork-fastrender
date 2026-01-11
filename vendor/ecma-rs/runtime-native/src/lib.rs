@@ -336,7 +336,10 @@ mod tests {
     // Safety: the symbol is exported by this crate and is safe to call. When no
     // stop-the-world GC is requested, the fast path returns immediately.
     unsafe {
+      // The safepoint poll is only meaningful for registered mutator threads.
+      rt_thread_init(0);
       gc_safepoint_poll();
+      rt_thread_deinit();
     }
 
     if !was_registered {
@@ -454,7 +457,7 @@ mod tests {
     let mut obj = DummyObject {
       header: crate::gc::ObjHeader {
         type_desc: &DESC,
-        meta: 0,
+        meta: std::sync::atomic::AtomicUsize::new(0),
       },
       payload: DummyPayload {
         non_ptr0: 123,

@@ -14,10 +14,11 @@ It also records proposed policy defaults for **per-object card tables** intended
 
 `runtime-native` contains a prototype generational GC under `src/gc/*` (exercised by Rust tests), and the exported barrier is implemented.
 
-- The exported symbol **`rt_write_barrier`** exists (see `src/exports.rs`).
-  - It loads the pointer value from `slot` and performs the young-range fast-path checks described in this document.
-  - On an old→young store it sets the `REMEMBERED` bit in the object header and enqueues the base object into a process-global remembered set (used by future minor GC wiring).
-  - It does **not** yet implement per-object card tables for large pointer arrays.
+- The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
+  - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
+  - On an old→young store it sets the `REMEMBERED` bit in the object header and (idempotently) enqueues the base object into a process-global remembered set (used by future minor GC wiring).
+  - For objects with per-object card tables, it marks the relevant card dirty.
+  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
 - The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
 
@@ -122,6 +123,57 @@ Callers must guarantee:
    * `NULL` (0).
 
 Violating these invariants is memory-unsafe.
+
+---
+
+## ABI: `rt_write_barrier_range`
+
+### Signature
+
+Stable C ABI (**authoritative**: `include/runtime_native.h`):
+
+```c
+void rt_write_barrier_range(uint8_t* obj, uint8_t* start, size_t len_bytes);
+```
+
+Rust side (for the exported symbol name / ABI):
+
+```rust
+#[no_mangle]
+pub extern "C" fn rt_write_barrier_range(obj: *mut u8, start: *mut u8, len_bytes: usize);
+```
+
+### When to use
+
+Use `rt_write_barrier_range` after **bulk pointer writes** that do not naturally expose per-slot stores, for example:
+
+- Lowering of `Array.prototype.concat` / `push` loops
+- Object/array spread lowering
+- `memcpy`/`memmove` of composite values containing GC pointers
+
+### Call-site contract (MUST)
+
+`rt_write_barrier_range` is called **after** the bulk write.
+
+- `obj` is the base pointer of the GC-managed object that was written.
+- `start` points *within* `obj` to the first written byte (typically the first pointer slot).
+- `len_bytes` is the number of bytes written starting at `start`.
+
+### Semantics
+
+Fast paths:
+
+- If `obj` is young → return.
+- If `len_bytes == 0` → return.
+
+Slow path (old object):
+
+- If the object has a per-object card table, mark **all cards covering** the written range dirty (atomically).
+- Ensure the object is in the remembered set (idempotently via the header `REMEMBERED` flag).
+
+`rt_write_barrier_range` is **conservative**: it does not inspect the values that were written and may over-mark cards. This is correct because minor GC scanning + sticky rebuild filters out cards/objects that contain no young pointers.
+
+If an object does not have a card table, `rt_write_barrier_range` falls back to remembering the whole object (idempotently).
 
 ---
 

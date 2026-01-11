@@ -12,6 +12,7 @@ use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
 use crate::gc::ObjHeader;
+use crate::gc::RememberedSet;
 use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
@@ -24,12 +25,10 @@ use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {
@@ -56,6 +55,47 @@ fn thread_kind_from_abi(kind: u32) -> threading::ThreadKind {
   }
 }
 
+#[inline(always)]
+fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usize) {
+  debug_assert!(!card_table.is_null());
+  debug_assert!(start_card <= end_card);
+
+  let start_word = start_card / 64;
+  let end_word = end_card / 64;
+  let start_bit = start_card % 64;
+  let end_bit = end_card % 64;
+
+  unsafe {
+    if start_word == end_word {
+      let high_mask = if end_bit == 63 {
+        !0u64
+      } else {
+        (1u64 << (end_bit + 1)) - 1
+      };
+      let low_mask = (!0u64) << start_bit;
+      let mask = high_mask & low_mask;
+      (*card_table.add(start_word)).fetch_or(mask, Ordering::Release);
+      return;
+    }
+
+    // First word: mark from start_bit..=63.
+    (*card_table.add(start_word)).fetch_or((!0u64) << start_bit, Ordering::Release);
+
+    // Middle words: mark all bits.
+    for word in (start_word + 1)..end_word {
+      (*card_table.add(word)).fetch_or(!0u64, Ordering::Release);
+    }
+
+    // Last word: mark 0..=end_bit.
+    let last_mask = if end_bit == 63 {
+      !0u64
+    } else {
+      (1u64 << (end_bit + 1)) - 1
+    };
+    (*card_table.add(end_word)).fetch_or(last_mask, Ordering::Release);
+  }
+}
+
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   #[cfg(feature = "gc_stats")]
@@ -77,7 +117,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8 {
       std::ptr::write_bytes(obj, 0, size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
-      header.meta = 0;
+      header.meta.store(0, Ordering::Relaxed);
     }
 
     obj
@@ -113,7 +153,7 @@ pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
       std::ptr::write_bytes(obj, 0, size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
-      header.meta = 0;
+      header.meta.store(0, Ordering::Relaxed);
       header.set_pinned(true);
     }
 
@@ -142,7 +182,7 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   unsafe {
     let header = &mut *(obj as *mut ObjHeader);
     header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-    header.meta = 0;
+    header.meta.store(0, Ordering::Relaxed);
 
     let arr = &mut *(obj as *mut RtArrayHeader);
     arr.len = len;
@@ -300,6 +340,20 @@ pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end:
 
 static REMEMBERED_SET: Lazy<Mutex<SimpleRememberedSet>> = Lazy::new(|| Mutex::new(SimpleRememberedSet::new()));
 
+/// Reset write barrier state (remembered set) for tests.
+#[doc(hidden)]
+pub fn clear_write_barrier_state_for_tests() {
+  REMEMBERED_SET.lock().clear();
+}
+
+/// Returns true if `obj` has been added to the global remembered set.
+///
+/// Intended for tests and debugging only.
+#[doc(hidden)]
+pub fn remembered_set_contains(obj: *mut u8) -> bool {
+  REMEMBERED_SET.lock().contains(obj)
+}
+
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());
@@ -352,14 +406,25 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
 
   // Old → young store. Record the base object so minor GC can rescan it.
   remember_old_object(obj);
+
+  // If this object has a per-object card table, mark the card for the written slot.
+  let header = &*(obj as *const ObjHeader);
+  let card_table = header.card_table_ptr();
+  if !card_table.is_null() {
+    let slot_offset = (slot as usize).wrapping_sub(obj as usize);
+    let card = slot_offset / crate::gc::CARD_SIZE;
+    mark_card_range(card_table, card, card);
+  }
 }
 
 /// Range write barrier for GC.
 ///
-/// Like [`rt_write_barrier`], but for a contiguous run of pointer slots.
+/// Called after a bulk write into `obj`.
 ///
-/// - `start_slot` is the address of the first pointer slot.
-/// - `len` is the number of bytes to scan (must cover a whole number of pointer slots).
+/// - `start_slot` points within `obj` to the first written byte (typically the first pointer slot).
+/// - `len` is the number of bytes written starting at `start_slot`.
+///
+/// This barrier is conservative and does not inspect the stored values; it may over-mark cards.
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u8, len: usize) {
   #[cfg(feature = "gc_stats")]
@@ -374,24 +439,43 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
     return;
   }
 
+  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    std::process::abort();
+  }
+
+  // Old-object bulk write. Remember the base object (idempotently) so minor GC
+  // can consult its dirty cards and/or rescan it.
+  remember_old_object(obj);
+
   let header = &*(obj as *const ObjHeader);
-  if header.is_remembered() {
+  let card_table = header.card_table_ptr();
+  if card_table.is_null() {
     return;
   }
 
-  // Scan slots for any young pointer. If we see one, remember the object.
-  let slot_count = len / core::mem::size_of::<*mut u8>();
-  let slots = start_slot as *const *mut u8;
-  for i in 0..slot_count {
-    let value = slots.add(i).read();
-    if value.is_null() {
-      continue;
-    }
-    if YOUNG_SPACE.contains(value as usize) {
-      remember_old_object(obj);
-      return;
-    }
+  let obj_addr = obj as usize;
+  let start_addr = start_slot as usize;
+  if start_addr < obj_addr {
+    std::process::abort();
   }
+  let start_offset = start_addr - obj_addr;
+
+  if header.type_desc.is_null() {
+    std::process::abort();
+  }
+  let obj_size = (*header.type_desc).size;
+  if start_offset >= obj_size {
+    return;
+  }
+
+  let end_offset = start_offset.saturating_add(len).min(obj_size);
+  if end_offset <= start_offset {
+    return;
+  }
+
+  let start_card = start_offset / crate::gc::CARD_SIZE;
+  let end_card = (end_offset - 1) / crate::gc::CARD_SIZE;
+  mark_card_range(card_table, start_card, end_card);
 }
 
 #[cfg(test)]
@@ -431,7 +515,7 @@ mod write_barrier_tests {
       let mut old = Box::new(DummyObject {
         header: ObjHeader {
           type_desc: std::ptr::null(),
-          meta: 0,
+          meta: std::sync::atomic::AtomicUsize::new(0),
         },
         field: young_ptr,
       });
@@ -469,7 +553,7 @@ mod write_barrier_tests {
       let mut old = Box::new(DummyArray {
         header: ObjHeader {
           type_desc: std::ptr::null(),
-          meta: 0,
+          meta: std::sync::atomic::AtomicUsize::new(0),
         },
         slots: [std::ptr::null_mut(); 4],
       });
