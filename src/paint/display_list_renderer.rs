@@ -16341,7 +16341,7 @@ impl DisplayListRenderer {
 
       // If the cropped region is being downscaled, sample directly from the original `ImageData`
       // into a scaled pixmap. This avoids building an intermediate cropped pixmap and ensures we
-      // still use the Skia-aligned bilinear sampler for clipped draws.
+      // still use the Skia-aligned mipmapped linear sampler for clipped draws.
       if can_use_scaled_pixmap
         && Self::should_use_scaled_image_pixmap(item.filter_quality, crop_w, crop_h, target_w, target_h)
       {
@@ -16431,8 +16431,8 @@ impl DisplayListRenderer {
     // it) instead of letting `tiny-skia` resample at draw time.
     //
     // This is both a performance win (smaller pixmap + cheaper draw) and, importantly, it lets us
-    // use our Skia-aligned bilinear sampler (see `image_data_to_scaled_pixmap_inner`), which has
-    // significantly better fixture-vs-Chrome stability for common news-site thumbnails.
+    // use our Skia-aligned mipmapped linear sampler (see `image_data_to_scaled_pixmap_inner`),
+    // which has significantly better fixture-vs-Chrome stability for scaled raster images.
     //
     // Avoid generating nearly-identical copies for tiny downscales (which can explode cache
     // memory). The threshold here is intentionally conservative: a <= 10% reduction in pixel area
@@ -16651,6 +16651,215 @@ fn image_data_to_pixmap_inner(image: &ImageData) -> RenderResult<Option<Pixmap>>
   Ok(Pixmap::from_vec(data, size))
 }
 
+#[derive(Clone)]
+struct MipmapLevelBuf {
+  width: u32,
+  height: u32,
+  /// Premultiplied RGBA8 pixels.
+  pixels: Vec<u8>,
+}
+
+#[inline]
+fn read_image_pixel_premul(
+  src_pixels: &[u8],
+  idx: usize,
+  premultiplied: bool,
+) -> (f32, f32, f32, f32) {
+  let r = src_pixels[idx] as f32;
+  let g = src_pixels[idx + 1] as f32;
+  let b = src_pixels[idx + 2] as f32;
+  let a = src_pixels[idx + 3] as f32;
+  if premultiplied {
+    (r, g, b, a)
+  } else {
+    let af = a / 255.0;
+    (r * af, g * af, b * af, a)
+  }
+}
+
+fn mipmap_lod_for_scale(scale_x: f32, scale_y: f32) -> Option<(u32, f32)> {
+  let max_scale = scale_x.max(scale_y);
+  if !max_scale.is_finite() || max_scale <= 1.0 {
+    return Some((0, 0.0));
+  }
+  let mut lod = max_scale.log2();
+  if !lod.is_finite() || lod < 0.0 {
+    lod = 0.0;
+  }
+  let mut base = lod.floor();
+  let mut frac = lod - base;
+
+  // Keep the boundary stable when `lod` is extremely close to an integer. This avoids dithering
+  // between mip levels due to float noise.
+  let eps = 1e-6;
+  if frac < eps {
+    frac = 0.0;
+  } else if frac > 1.0 - eps {
+    base += 1.0;
+    frac = 0.0;
+  }
+  Some((base as u32, frac))
+}
+
+fn downsample_mipmap_level(
+  src_pixels: &[u8],
+  src_width: u32,
+  src_height: u32,
+  premultiplied: bool,
+) -> RenderResult<Option<MipmapLevelBuf>> {
+  if src_width == 0 || src_height == 0 {
+    return Ok(None);
+  }
+  if src_width == 1 && src_height == 1 {
+    return Ok(None);
+  }
+  let out_width = if src_width > 1 { src_width / 2 } else { 1 };
+  let out_height = if src_height > 1 { src_height / 2 } else { 1 };
+  if IntSize::from_wh(out_width, out_height).is_none() {
+    return Ok(None);
+  };
+  let Some(bytes) = u64::from(out_width)
+    .checked_mul(u64::from(out_height))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+
+  let mut data = match reserve_buffer(bytes, "mipmap level") {
+    Ok(buf) => buf,
+    Err(_) => return Ok(None),
+  };
+  data.resize(bytes as usize, 0);
+
+  check_active(RenderStage::Paint)?;
+  let src_w = src_width as usize;
+  let mut pixel_counter = 0usize;
+  if src_width > 1 && src_height > 1 {
+    // 2x2 box filter.
+    for y in 0..out_height {
+      let src_y = (y * 2) as usize;
+      let row0 = src_y * src_w;
+      let row1 = (src_y + 1) * src_w;
+      for x in 0..out_width {
+        if (pixel_counter & 4095) == 0 {
+          check_active(RenderStage::Paint)?;
+        }
+        pixel_counter = pixel_counter.wrapping_add(1);
+
+        let src_x = (x * 2) as usize;
+        let idx00 = (row0 + src_x) * 4;
+        let idx10 = idx00 + 4;
+        let idx01 = (row1 + src_x) * 4;
+        let idx11 = idx01 + 4;
+
+        let (r00, g00, b00, a00) = read_image_pixel_premul(src_pixels, idx00, premultiplied);
+        let (r10, g10, b10, a10) = read_image_pixel_premul(src_pixels, idx10, premultiplied);
+        let (r01, g01, b01, a01) = read_image_pixel_premul(src_pixels, idx01, premultiplied);
+        let (r11, g11, b11, a11) = read_image_pixel_premul(src_pixels, idx11, premultiplied);
+
+        let inv = 0.25;
+        let sum_r = (r00 + r10 + r01 + r11) * inv;
+        let sum_g = (g00 + g10 + g01 + g11) * inv;
+        let sum_b = (b00 + b10 + b01 + b11) * inv;
+        let sum_a = (a00 + a10 + a01 + a11) * inv;
+
+        let a = sum_a.floor().clamp(0.0, 255.0) as u8;
+        let mut r = sum_r.floor().clamp(0.0, 255.0) as u8;
+        let mut g = sum_g.floor().clamp(0.0, 255.0) as u8;
+        let mut b = sum_b.floor().clamp(0.0, 255.0) as u8;
+
+        r = r.min(a);
+        g = g.min(a);
+        b = b.min(a);
+
+        let dst_idx = (y * out_width + x) as usize * 4;
+        data[dst_idx] = r;
+        data[dst_idx + 1] = g;
+        data[dst_idx + 2] = b;
+        data[dst_idx + 3] = a;
+      }
+    }
+  } else if src_width > 1 {
+    // 2x1 box filter (vertical dimension is already 1).
+    for x in 0..out_width {
+      if (pixel_counter & 4095) == 0 {
+        check_active(RenderStage::Paint)?;
+      }
+      pixel_counter = pixel_counter.wrapping_add(1);
+
+      let src_x = (x * 2) as usize;
+      let idx0 = src_x * 4;
+      let idx1 = idx0 + 4;
+
+      let (r0, g0, b0, a0) = read_image_pixel_premul(src_pixels, idx0, premultiplied);
+      let (r1, g1, b1, a1) = read_image_pixel_premul(src_pixels, idx1, premultiplied);
+
+      let inv = 0.5;
+      let sum_r = (r0 + r1) * inv;
+      let sum_g = (g0 + g1) * inv;
+      let sum_b = (b0 + b1) * inv;
+      let sum_a = (a0 + a1) * inv;
+
+      let a = sum_a.floor().clamp(0.0, 255.0) as u8;
+      let mut r = sum_r.floor().clamp(0.0, 255.0) as u8;
+      let mut g = sum_g.floor().clamp(0.0, 255.0) as u8;
+      let mut b = sum_b.floor().clamp(0.0, 255.0) as u8;
+
+      r = r.min(a);
+      g = g.min(a);
+      b = b.min(a);
+
+      let dst_idx = x as usize * 4;
+      data[dst_idx] = r;
+      data[dst_idx + 1] = g;
+      data[dst_idx + 2] = b;
+      data[dst_idx + 3] = a;
+    }
+  } else {
+    // 1x2 box filter (horizontal dimension is already 1).
+    for y in 0..out_height {
+      if (pixel_counter & 4095) == 0 {
+        check_active(RenderStage::Paint)?;
+      }
+      pixel_counter = pixel_counter.wrapping_add(1);
+
+      let src_y = (y * 2) as usize;
+      let idx0 = src_y * 4;
+      let idx1 = idx0 + src_w * 4;
+
+      let (r0, g0, b0, a0) = read_image_pixel_premul(src_pixels, idx0, premultiplied);
+      let (r1, g1, b1, a1) = read_image_pixel_premul(src_pixels, idx1, premultiplied);
+
+      let inv = 0.5;
+      let sum_r = (r0 + r1) * inv;
+      let sum_g = (g0 + g1) * inv;
+      let sum_b = (b0 + b1) * inv;
+      let sum_a = (a0 + a1) * inv;
+
+      let a = sum_a.floor().clamp(0.0, 255.0) as u8;
+      let mut r = sum_r.floor().clamp(0.0, 255.0) as u8;
+      let mut g = sum_g.floor().clamp(0.0, 255.0) as u8;
+      let mut b = sum_b.floor().clamp(0.0, 255.0) as u8;
+
+      r = r.min(a);
+      g = g.min(a);
+      b = b.min(a);
+
+      let dst_idx = y as usize * out_width as usize * 4;
+      data[dst_idx] = r;
+      data[dst_idx + 1] = g;
+      data[dst_idx + 2] = b;
+      data[dst_idx + 3] = a;
+    }
+  }
+
+  Ok(Some(MipmapLevelBuf {
+    width: out_width,
+    height: out_height,
+    pixels: data,
+  }))
+}
+
 fn image_data_to_scaled_pixmap_with_phase_inner(
   image: &ImageData,
   dest_device: Rect,
@@ -16659,7 +16868,11 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   out_origin_x_device: f32,
   out_origin_y_device: f32,
 ) -> RenderResult<Option<Pixmap>> {
-  if out_width == 0 || out_height == 0 {
+  if out_width == 0
+    || out_height == 0
+    || !out_origin_x_device.is_finite()
+    || !out_origin_y_device.is_finite()
+  {
     return Ok(None);
   }
   if !(dest_device.width().is_finite()
@@ -16716,121 +16929,231 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
     t: f32,
   }
 
-  let scale_x = src_w as f32 / dest_device.width();
-  let scale_y = src_h as f32 / dest_device.height();
-  if !scale_x.is_finite() || !scale_y.is_finite() {
+  // Skia uses linear filtering with mipmaps when downscaling raster images. This behaves closer to
+  // an area filter than a single bilinear sample from the full-resolution image and materially
+  // reduces fixture-vs-Chrome diffs for photo-heavy regions.
+  let scale_x0 = src_w as f32 / dest_device.width();
+  let scale_y0 = src_h as f32 / dest_device.height();
+  if !scale_x0.is_finite() || !scale_y0.is_finite() {
     return Ok(None);
   }
-  let max_x = src_w as f32 - 1.0;
-  let max_y = src_h as f32 - 1.0;
 
-  let mut xs = Vec::new();
-  if xs.try_reserve_exact(out_width as usize).is_err() {
-    return Ok(None);
-  }
-  for x in 0..out_width {
-    let device_x = out_origin_x_device + x as f32 + 0.5;
-    let mut sx = (device_x - dest_device.x()) * scale_x - 0.5;
-    if !sx.is_finite() {
+  let (mut base_level, mut blend_t) = mipmap_lod_for_scale(scale_x0, scale_y0).unwrap_or((0, 0.0));
+  let mut needs_second_level = blend_t > 0.0;
+  let max_level = base_level + if needs_second_level { 1 } else { 0 };
+
+  let mut mipmaps: Vec<MipmapLevelBuf> = Vec::new();
+  if max_level > 0 {
+    if mipmaps.try_reserve_exact(max_level as usize).is_err() {
       return Ok(None);
     }
-    sx = sx.clamp(0.0, max_x);
-    let sx0 = sx.floor() as u32;
-    let sx1 = (sx0 + 1).min(src_w - 1);
-    xs.push(AxisSample {
-      i0: sx0,
-      i1: sx1,
-      t: sx - sx0 as f32,
-    });
-  }
-
-  let mut ys = Vec::new();
-  if ys.try_reserve_exact(out_height as usize).is_err() {
-    return Ok(None);
-  }
-  for y in 0..out_height {
-    let device_y = out_origin_y_device + y as f32 + 0.5;
-    let mut sy = (device_y - dest_device.y()) * scale_y - 0.5;
-    if !sy.is_finite() {
-      return Ok(None);
+    for level in 1..=max_level {
+      let next = if level == 1 {
+        downsample_mipmap_level(src_pixels, src_w, src_h, image.premultiplied)?
+      } else {
+        let prev = &mipmaps[(level - 2) as usize];
+        downsample_mipmap_level(prev.pixels.as_slice(), prev.width, prev.height, true)?
+      };
+      let Some(next) = next else {
+        break;
+      };
+      mipmaps.push(next);
     }
-    sy = sy.clamp(0.0, max_y);
-    let sy0 = sy.floor() as u32;
-    let sy1 = (sy0 + 1).min(src_h - 1);
-    ys.push(AxisSample {
-      i0: sy0,
-      i1: sy1,
-      t: sy - sy0 as f32,
-    });
   }
 
-  let premultiplied = image.premultiplied;
+  let max_available = mipmaps.len() as u32;
+  if base_level > max_available {
+    base_level = max_available;
+    blend_t = 0.0;
+    needs_second_level = false;
+  } else if needs_second_level && base_level + 1 > max_available {
+    blend_t = 0.0;
+    needs_second_level = false;
+  }
+
+  let level_a = base_level;
+  let level_b = needs_second_level.then(|| base_level + 1);
+
+  let level_info = |level: u32| -> (u32, u32, &[u8], bool) {
+    if level == 0 {
+      (src_w, src_h, src_pixels, image.premultiplied)
+    } else {
+      let lvl = &mipmaps[(level - 1) as usize];
+      (lvl.width, lvl.height, lvl.pixels.as_slice(), true)
+    }
+  };
+
+  let build_axis = |out_len: u32,
+                    out_origin: f32,
+                    dest_origin: f32,
+                    dest_size: f32,
+                    src_len: u32|
+   -> Option<Vec<AxisSample>> {
+    if out_len == 0 || src_len == 0 || dest_size <= 0.0 || !dest_size.is_finite() {
+      return None;
+    }
+    let scale = src_len as f32 / dest_size;
+    if !scale.is_finite() {
+      return None;
+    }
+    let max = src_len as f32 - 1.0;
+    let mut samples = Vec::new();
+    if samples.try_reserve_exact(out_len as usize).is_err() {
+      return None;
+    }
+    for i in 0..out_len {
+      let device = out_origin + i as f32 + 0.5;
+      let mut s = (device - dest_origin) * scale - 0.5;
+      if !s.is_finite() {
+        return None;
+      }
+      s = s.clamp(0.0, max);
+      let i0 = s.floor() as u32;
+      let i1 = (i0 + 1).min(src_len - 1);
+      samples.push(AxisSample {
+        i0,
+        i1,
+        t: s - i0 as f32,
+      });
+    }
+    Some(samples)
+  };
+
+  let (w_a, h_a, pixels_a, premul_a) = level_info(level_a);
+  let Some(xs_a) =
+    build_axis(out_width, out_origin_x_device, dest_device.x(), dest_device.width(), w_a)
+  else {
+    return Ok(None);
+  };
+  let Some(ys_a) =
+    build_axis(out_height, out_origin_y_device, dest_device.y(), dest_device.height(), h_a)
+  else {
+    return Ok(None);
+  };
+
+  let (w_b, _h_b, pixels_b, premul_b, xs_b, ys_b) = if let Some(level_b) = level_b {
+    let (w_b, _h_b, pixels_b, premul_b) = level_info(level_b);
+    let Some(xs_b) =
+      build_axis(out_width, out_origin_x_device, dest_device.x(), dest_device.width(), w_b)
+    else {
+      return Ok(None);
+    };
+    let Some(ys_b) =
+      build_axis(out_height, out_origin_y_device, dest_device.y(), dest_device.height(), _h_b)
+    else {
+      return Ok(None);
+    };
+    (w_b, _h_b, pixels_b, premul_b, Some(xs_b), Some(ys_b))
+  } else {
+    (0, 0, &[][..], true, None, None)
+  };
+
   let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+  let w0 = 1.0 - blend_t;
+  let w1 = blend_t;
+
   let mut pixel_counter = 0usize;
-  for (y, ysamp) in ys.iter().enumerate() {
-    let y = y as u32;
-    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
-    let row0 = sy0 as usize * src_w as usize;
-    let row1 = sy1 as usize * src_w as usize;
-    for (x, xsamp) in xs.iter().enumerate() {
+  for (y, ysamp_a) in ys_a.iter().enumerate() {
+    let y_u = y as u32;
+    let (sy0_a, sy1_a, fy_a) = (ysamp_a.i0, ysamp_a.i1, ysamp_a.t);
+    let row0_a = sy0_a as usize * w_a as usize;
+    let row1_a = sy1_a as usize * w_a as usize;
+
+    let (row0_b, row1_b, fy_b) = if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref())
+    {
+      let ysamp_b = &ys_b[y];
+      let row0_b = ysamp_b.i0 as usize * w_b as usize;
+      let row1_b = ysamp_b.i1 as usize * w_b as usize;
+      (Some(row0_b), Some(row1_b), Some(ysamp_b.t))
+    } else {
+      (None, None, None)
+    };
+
+    for (x, xsamp_a) in xs_a.iter().enumerate() {
       if (pixel_counter & 4095) == 0 {
         check_active(RenderStage::Paint)?;
       }
       pixel_counter = pixel_counter.wrapping_add(1);
 
-      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
+      let (sx0_a, sx1_a, fx_a) = (xsamp_a.i0, xsamp_a.i1, xsamp_a.t);
 
-      let idx00 = (row0 + sx0 as usize) * 4;
-      let idx10 = (row0 + sx1 as usize) * 4;
-      let idx01 = (row1 + sx0 as usize) * 4;
-      let idx11 = (row1 + sx1 as usize) * 4;
+      let idx00_a = (row0_a + sx0_a as usize) * 4;
+      let idx10_a = (row0_a + sx1_a as usize) * 4;
+      let idx01_a = (row1_a + sx0_a as usize) * 4;
+      let idx11_a = (row1_a + sx1_a as usize) * 4;
 
-      let read = |idx: usize| -> (f32, f32, f32, f32) {
-        let r = src_pixels[idx] as f32;
-        let g = src_pixels[idx + 1] as f32;
-        let b = src_pixels[idx + 2] as f32;
-        let a = src_pixels[idx + 3] as f32;
-        if premultiplied {
-          (r, g, b, a)
-        } else {
-          let af = a / 255.0;
-          (r * af, g * af, b * af, a)
-        }
-      };
+      let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_a, idx00_a, premul_a);
+      let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_a, idx10_a, premul_a);
+      let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_a, idx01_a, premul_a);
+      let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_a, idx11_a, premul_a);
 
-      let (r00, g00, b00, a00) = read(idx00);
-      let (r10, g10, b10, a10) = read(idx10);
-      let (r01, g01, b01, a01) = read(idx01);
-      let (r11, g11, b11, a11) = read(idx11);
+      let top_r_a = lerp(r00, r10, fx_a);
+      let top_g_a = lerp(g00, g10, fx_a);
+      let top_b_a = lerp(b00, b10, fx_a);
+      let top_a_a = lerp(a00, a10, fx_a);
 
-      let top_r = lerp(r00, r10, fx);
-      let top_g = lerp(g00, g10, fx);
-      let top_b = lerp(b00, b10, fx);
-      let top_a = lerp(a00, a10, fx);
+      let bot_r_a = lerp(r01, r11, fx_a);
+      let bot_g_a = lerp(g01, g11, fx_a);
+      let bot_b_a = lerp(b01, b11, fx_a);
+      let bot_a_a = lerp(a01, a11, fx_a);
 
-      let bot_r = lerp(r01, r11, fx);
-      let bot_g = lerp(g01, g11, fx);
-      let bot_b = lerp(b01, b11, fx);
-      let bot_a = lerp(a01, a11, fx);
+      let mut r = lerp(top_r_a, bot_r_a, fy_a);
+      let mut g = lerp(top_g_a, bot_g_a, fy_a);
+      let mut b = lerp(top_b_a, bot_b_a, fy_a);
+      let mut a = lerp(top_a_a, bot_a_a, fy_a);
 
-      // Chrome/Skia's bilinear sampling rounds down when converting to 8-bit channels.
-      // Using `floor()` instead of `round()` materially reduces fixture-vs-Chrome diffs for scaled
-      // raster images (notably large news-site thumbnails).
-      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
-      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
+      if let (Some(xs_b), Some(row0_b), Some(row1_b), Some(fy_b)) =
+        (xs_b.as_ref(), row0_b, row1_b, fy_b)
+      {
+        let xsamp_b = &xs_b[x];
+        let (sx0_b, sx1_b, fx_b) = (xsamp_b.i0, xsamp_b.i1, xsamp_b.t);
 
-      // Keep premultiplied invariants stable even after rounding.
-      r = r.min(a);
-      g = g.min(a);
-      b = b.min(a);
+        let idx00_b = (row0_b + sx0_b as usize) * 4;
+        let idx10_b = (row0_b + sx1_b as usize) * 4;
+        let idx01_b = (row1_b + sx0_b as usize) * 4;
+        let idx11_b = (row1_b + sx1_b as usize) * 4;
 
-      let dst_idx = (y * out_width + x as u32) as usize * 4;
-      data[dst_idx] = r;
-      data[dst_idx + 1] = g;
-      data[dst_idx + 2] = b;
-      data[dst_idx + 3] = a;
+        let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_b, idx00_b, premul_b);
+        let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_b, idx10_b, premul_b);
+        let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_b, idx01_b, premul_b);
+        let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_b, idx11_b, premul_b);
+
+        let top_r_b = lerp(r00, r10, fx_b);
+        let top_g_b = lerp(g00, g10, fx_b);
+        let top_b_b = lerp(b00, b10, fx_b);
+        let top_a_b = lerp(a00, a10, fx_b);
+
+        let bot_r_b = lerp(r01, r11, fx_b);
+        let bot_g_b = lerp(g01, g11, fx_b);
+        let bot_b_b = lerp(b01, b11, fx_b);
+        let bot_a_b = lerp(a01, a11, fx_b);
+
+        let r_b = lerp(top_r_b, bot_r_b, fy_b);
+        let g_b = lerp(top_g_b, bot_g_b, fy_b);
+        let b_b = lerp(top_b_b, bot_b_b, fy_b);
+        let a_b = lerp(top_a_b, bot_a_b, fy_b);
+
+        r = r * w0 + r_b * w1;
+        g = g * w0 + g_b * w1;
+        b = b * w0 + b_b * w1;
+        a = a * w0 + a_b * w1;
+      }
+
+      // Chrome/Skia rounds down when converting to 8-bit channels.
+      let a_u8 = a.floor().clamp(0.0, 255.0) as u8;
+      let mut r_u8 = r.floor().clamp(0.0, 255.0) as u8;
+      let mut g_u8 = g.floor().clamp(0.0, 255.0) as u8;
+      let mut b_u8 = b.floor().clamp(0.0, 255.0) as u8;
+
+      r_u8 = r_u8.min(a_u8);
+      g_u8 = g_u8.min(a_u8);
+      b_u8 = b_u8.min(a_u8);
+
+      let dst_idx = (y_u * out_width + x as u32) as usize * 4;
+      data[dst_idx] = r_u8;
+      data[dst_idx + 1] = g_u8;
+      data[dst_idx + 2] = b_u8;
+      data[dst_idx + 3] = a_u8;
     }
   }
 
@@ -16858,161 +17181,8 @@ fn image_data_to_scaled_pixmap_inner(
     return image_data_to_pixmap_inner(image);
   }
 
-  let Some(size) = IntSize::from_wh(target_width, target_height) else {
-    return Ok(None);
-  };
-  let Some(bytes) = u64::from(target_width)
-    .checked_mul(u64::from(target_height))
-    .and_then(|px| px.checked_mul(4))
-  else {
-    return Ok(None);
-  };
-
-  let mut data = match reserve_buffer(bytes, "scaled image pixmap") {
-    Ok(buf) => buf,
-    Err(_) => return Ok(None),
-  };
-  data.resize(bytes as usize, 0);
-
-  check_active(RenderStage::Paint)?;
-  let src_pixels = image.pixels.as_ref().as_slice();
-  let Some(expected_src_bytes) = u64::from(src_w)
-    .checked_mul(u64::from(src_h))
-    .and_then(|px| px.checked_mul(4))
-  else {
-    return Ok(None);
-  };
-  let Ok(expected_src_len) = usize::try_from(expected_src_bytes) else {
-    return Ok(None);
-  };
-  if src_pixels.len() != expected_src_len {
-    return Ok(None);
-  }
-
-  #[derive(Clone, Copy)]
-  struct AxisSample {
-    i0: u32,
-    i1: u32,
-    t: f32,
-  }
-
-  let scale_x = src_w as f32 / target_width as f32;
-  let scale_y = src_h as f32 / target_height as f32;
-  if !scale_x.is_finite() || !scale_y.is_finite() {
-    return Ok(None);
-  }
-  let max_x = src_w as f32 - 1.0;
-  let max_y = src_h as f32 - 1.0;
-
-  let mut xs = Vec::new();
-  if xs.try_reserve_exact(target_width as usize).is_err() {
-    return Ok(None);
-  }
-  for x in 0..target_width {
-    let mut sx = (x as f32 + 0.5) * scale_x - 0.5;
-    if !sx.is_finite() {
-      return Ok(None);
-    }
-    sx = sx.clamp(0.0, max_x);
-    let sx0 = sx.floor() as u32;
-    let sx1 = (sx0 + 1).min(src_w - 1);
-    xs.push(AxisSample {
-      i0: sx0,
-      i1: sx1,
-      t: sx - sx0 as f32,
-    });
-  }
-
-  let mut ys = Vec::new();
-  if ys.try_reserve_exact(target_height as usize).is_err() {
-    return Ok(None);
-  }
-  for y in 0..target_height {
-    let mut sy = (y as f32 + 0.5) * scale_y - 0.5;
-    if !sy.is_finite() {
-      return Ok(None);
-    }
-    sy = sy.clamp(0.0, max_y);
-    let sy0 = sy.floor() as u32;
-    let sy1 = (sy0 + 1).min(src_h - 1);
-    ys.push(AxisSample {
-      i0: sy0,
-      i1: sy1,
-      t: sy - sy0 as f32,
-    });
-  }
-
-  let premultiplied = image.premultiplied;
-  let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-  let mut pixel_counter = 0usize;
-  for (y, ysamp) in ys.iter().enumerate() {
-    let y = y as u32;
-    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
-    let row0 = sy0 as usize * src_w as usize;
-    let row1 = sy1 as usize * src_w as usize;
-    for (x, xsamp) in xs.iter().enumerate() {
-      if (pixel_counter & 4095) == 0 {
-        check_active(RenderStage::Paint)?;
-      }
-      pixel_counter = pixel_counter.wrapping_add(1);
-
-      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
-
-      let idx00 = (row0 + sx0 as usize) * 4;
-      let idx10 = (row0 + sx1 as usize) * 4;
-      let idx01 = (row1 + sx0 as usize) * 4;
-      let idx11 = (row1 + sx1 as usize) * 4;
-
-      let read = |idx: usize| -> (f32, f32, f32, f32) {
-        let r = src_pixels[idx] as f32;
-        let g = src_pixels[idx + 1] as f32;
-        let b = src_pixels[idx + 2] as f32;
-        let a = src_pixels[idx + 3] as f32;
-        if premultiplied {
-          (r, g, b, a)
-        } else {
-          let af = a / 255.0;
-          (r * af, g * af, b * af, a)
-        }
-      };
-
-      let (r00, g00, b00, a00) = read(idx00);
-      let (r10, g10, b10, a10) = read(idx10);
-      let (r01, g01, b01, a01) = read(idx01);
-      let (r11, g11, b11, a11) = read(idx11);
-
-      let top_r = lerp(r00, r10, fx);
-      let top_g = lerp(g00, g10, fx);
-      let top_b = lerp(b00, b10, fx);
-      let top_a = lerp(a00, a10, fx);
-
-      let bot_r = lerp(r01, r11, fx);
-      let bot_g = lerp(g01, g11, fx);
-      let bot_b = lerp(b01, b11, fx);
-      let bot_a = lerp(a01, a11, fx);
-
-      // Chrome/Skia's bilinear sampling rounds down when converting to 8-bit channels.
-      // Using `floor()` instead of `round()` materially reduces fixture-vs-Chrome diffs for scaled
-      // raster images (notably large news-site thumbnails).
-      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
-      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
-
-      // Keep premultiplied invariants stable even after rounding.
-      r = r.min(a);
-      g = g.min(a);
-      b = b.min(a);
-
-      let dst_idx = (y * target_width + x as u32) as usize * 4;
-      data[dst_idx] = r;
-      data[dst_idx + 1] = g;
-      data[dst_idx + 2] = b;
-      data[dst_idx + 3] = a;
-    }
-  }
-
-  Ok(Pixmap::from_vec(data, size))
+  let dest = Rect::from_xywh(0.0, 0.0, target_width as f32, target_height as f32);
+  image_data_to_scaled_pixmap_with_phase_inner(image, dest, target_width, target_height, 0.0, 0.0)
 }
 
 fn image_data_to_scaled_pixmap_from_rect_inner(
@@ -17092,115 +17262,297 @@ fn image_data_to_scaled_pixmap_from_rect_inner(
     t: f32,
   }
 
-  let scale_x = src_w as f32 / target_width as f32;
-  let scale_y = src_h as f32 / target_height as f32;
-  if !scale_x.is_finite() || !scale_y.is_finite() {
+  let scale_x0 = src_w as f32 / target_width as f32;
+  let scale_y0 = src_h as f32 / target_height as f32;
+  if !scale_x0.is_finite() || !scale_y0.is_finite() {
     return Ok(None);
   }
-  let max_x = src_w as f32 - 1.0;
-  let max_y = src_h as f32 - 1.0;
 
-  let mut xs = Vec::new();
-  if xs.try_reserve_exact(target_width as usize).is_err() {
-    return Ok(None);
-  }
-  for x in 0..target_width {
-    let mut sx = (x as f32 + 0.5) * scale_x - 0.5;
-    if !sx.is_finite() {
+  let (mut base_level, mut blend_t) =
+    mipmap_lod_for_scale(scale_x0, scale_y0).unwrap_or((0, 0.0));
+  let mut needs_second_level = blend_t > 0.0;
+  let max_level = base_level + if needs_second_level { 1 } else { 0 };
+
+  // Build a mipmap chain for the cropped region. Level 0 is the source crop; level 1 is generated
+  // directly from the original image pixels without allocating an intermediate full-resolution crop.
+  let mut mipmaps: Vec<MipmapLevelBuf> = Vec::new();
+  if max_level > 0 {
+    if mipmaps.try_reserve_exact(max_level as usize).is_err() {
       return Ok(None);
     }
-    sx = sx.clamp(0.0, max_x);
-    let sx0 = sx.floor() as u32;
-    let sx1 = (sx0 + 1).min(src_w - 1);
-    xs.push(AxisSample {
-      i0: src_x + sx0,
-      i1: src_x + sx1,
-      t: sx - sx0 as f32,
-    });
-  }
 
-  let mut ys = Vec::new();
-  if ys.try_reserve_exact(target_height as usize).is_err() {
-    return Ok(None);
-  }
-  for y in 0..target_height {
-    let mut sy = (y as f32 + 0.5) * scale_y - 0.5;
-    if !sy.is_finite() {
-      return Ok(None);
+    // Level 1: downsample from the crop region in the original image.
+    let out_w1 = src_w / 2;
+    let out_h1 = src_h / 2;
+    if out_w1 > 0 && out_h1 > 0 && IntSize::from_wh(out_w1, out_h1).is_some() {
+      let Some(level1_bytes) = u64::from(out_w1)
+        .checked_mul(u64::from(out_h1))
+        .and_then(|px| px.checked_mul(4))
+      else {
+        return Ok(None);
+      };
+      let mut level1 = match reserve_buffer(level1_bytes, "mipmap level (crop)") {
+        Ok(buf) => buf,
+        Err(_) => return Ok(None),
+      };
+      level1.resize(level1_bytes as usize, 0);
+
+      check_active(RenderStage::Paint)?;
+      let full_w_usize = full_w as usize;
+      let premultiplied = image.premultiplied;
+      let mut pixel_counter = 0usize;
+      for y in 0..out_h1 {
+        let oy0 = (src_y + y * 2) as usize;
+        let oy1 = oy0 + 1;
+        let row0 = oy0 * full_w_usize;
+        let row1 = oy1 * full_w_usize;
+        for x in 0..out_w1 {
+          if (pixel_counter & 4095) == 0 {
+            check_active(RenderStage::Paint)?;
+          }
+          pixel_counter = pixel_counter.wrapping_add(1);
+
+          let ox0 = (src_x + x * 2) as usize;
+          let idx00 = (row0 + ox0) * 4;
+          let idx10 = idx00 + 4;
+          let idx01 = (row1 + ox0) * 4;
+          let idx11 = idx01 + 4;
+
+          let (r00, g00, b00, a00) = read_image_pixel_premul(src_pixels, idx00, premultiplied);
+          let (r10, g10, b10, a10) = read_image_pixel_premul(src_pixels, idx10, premultiplied);
+          let (r01, g01, b01, a01) = read_image_pixel_premul(src_pixels, idx01, premultiplied);
+          let (r11, g11, b11, a11) = read_image_pixel_premul(src_pixels, idx11, premultiplied);
+
+          let inv = 0.25;
+          let sum_r = (r00 + r10 + r01 + r11) * inv;
+          let sum_g = (g00 + g10 + g01 + g11) * inv;
+          let sum_b = (b00 + b10 + b01 + b11) * inv;
+          let sum_a = (a00 + a10 + a01 + a11) * inv;
+
+          let a = sum_a.floor().clamp(0.0, 255.0) as u8;
+          let mut r = sum_r.floor().clamp(0.0, 255.0) as u8;
+          let mut g = sum_g.floor().clamp(0.0, 255.0) as u8;
+          let mut b = sum_b.floor().clamp(0.0, 255.0) as u8;
+
+          r = r.min(a);
+          g = g.min(a);
+          b = b.min(a);
+
+          let dst_idx = (y * out_w1 + x) as usize * 4;
+          level1[dst_idx] = r;
+          level1[dst_idx + 1] = g;
+          level1[dst_idx + 2] = b;
+          level1[dst_idx + 3] = a;
+        }
+      }
+
+      mipmaps.push(MipmapLevelBuf {
+        width: out_w1,
+        height: out_h1,
+        pixels: level1,
+      });
     }
-    sy = sy.clamp(0.0, max_y);
-    let sy0 = sy.floor() as u32;
-    let sy1 = (sy0 + 1).min(src_h - 1);
-    ys.push(AxisSample {
-      i0: src_y + sy0,
-      i1: src_y + sy1,
-      t: sy - sy0 as f32,
-    });
+
+    // Higher levels: downsample the previous premultiplied level.
+    for level in 2..=max_level {
+      let next = if let Some(prev) = mipmaps.get((level - 2) as usize) {
+        downsample_mipmap_level(prev.pixels.as_slice(), prev.width, prev.height, true)?
+      } else {
+        None
+      };
+      let Some(next) = next else {
+        break;
+      };
+      mipmaps.push(next);
+    }
   }
 
-  let premultiplied = image.premultiplied;
+  let max_available = mipmaps.len() as u32;
+  if base_level > max_available {
+    base_level = max_available;
+    blend_t = 0.0;
+    needs_second_level = false;
+  } else if needs_second_level && base_level + 1 > max_available {
+    blend_t = 0.0;
+    needs_second_level = false;
+  }
+
+  let level_a = base_level;
+  let level_b = needs_second_level.then(|| base_level + 1);
+
+  let build_axis = |out_len: u32, src_len: u32| -> Option<Vec<AxisSample>> {
+    if out_len == 0 || src_len == 0 {
+      return None;
+    }
+    let scale = src_len as f32 / out_len as f32;
+    if !scale.is_finite() {
+      return None;
+    }
+    let max = src_len as f32 - 1.0;
+    let mut samples = Vec::new();
+    if samples.try_reserve_exact(out_len as usize).is_err() {
+      return None;
+    }
+    for i in 0..out_len {
+      let mut s = (i as f32 + 0.5) * scale - 0.5;
+      if !s.is_finite() {
+        return None;
+      }
+      s = s.clamp(0.0, max);
+      let i0 = s.floor() as u32;
+      let i1 = (i0 + 1).min(src_len - 1);
+      samples.push(AxisSample {
+        i0,
+        i1,
+        t: s - i0 as f32,
+      });
+    }
+    Some(samples)
+  };
+
+  let level_info = |level: u32| -> (u32, u32, &[u8], bool, u32, u32) {
+    if level == 0 {
+      (src_w, src_h, src_pixels, image.premultiplied, src_x, src_y)
+    } else {
+      let lvl = &mipmaps[(level - 1) as usize];
+      (lvl.width, lvl.height, lvl.pixels.as_slice(), true, 0, 0)
+    }
+  };
+
+  let (w_a, h_a, pixels_a, premul_a, off_x_a, off_y_a) = level_info(level_a);
+  let Some(xs_a) = build_axis(target_width, w_a) else {
+    return Ok(None);
+  };
+  let Some(ys_a) = build_axis(target_height, h_a) else {
+    return Ok(None);
+  };
+
+  let (w_b, pixels_b, premul_b, off_x_b, off_y_b, xs_b, ys_b) = if let Some(level_b) = level_b {
+    let (w_b, h_b, pixels_b, premul_b, off_x_b, off_y_b) = level_info(level_b);
+    let Some(xs_b) = build_axis(target_width, w_b) else {
+      return Ok(None);
+    };
+    let Some(ys_b) = build_axis(target_height, h_b) else {
+      return Ok(None);
+    };
+    (w_b, pixels_b, premul_b, off_x_b, off_y_b, Some(xs_b), Some(ys_b))
+  } else {
+    (0, &[][..], true, 0, 0, None, None)
+  };
+
   let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+  let w0 = 1.0 - blend_t;
+  let w1 = blend_t;
+
   let mut pixel_counter = 0usize;
-  for (y, ysamp) in ys.iter().enumerate() {
-    let y = y as u32;
-    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
-    let row0 = sy0 as usize * full_w as usize;
-    let row1 = sy1 as usize * full_w as usize;
-    for (x, xsamp) in xs.iter().enumerate() {
+  for (y, ysamp_a) in ys_a.iter().enumerate() {
+    let y_u = y as u32;
+    let (sy0_a, sy1_a, fy_a) = (ysamp_a.i0 + off_y_a, ysamp_a.i1 + off_y_a, ysamp_a.t);
+    let stride_a = if level_a == 0 { full_w as usize } else { w_a as usize };
+    let row0_a = sy0_a as usize * stride_a;
+    let row1_a = sy1_a as usize * stride_a;
+
+    let (row0_b, row1_b, fy_b) =
+      if let (Some(_), Some(ys_b)) = (xs_b.as_ref(), ys_b.as_ref()) {
+        let ysamp_b = &ys_b[y];
+        let sy0_b = ysamp_b.i0 + off_y_b;
+        let sy1_b = ysamp_b.i1 + off_y_b;
+        let stride_b = if level_b.is_some_and(|lvl| lvl == 0) {
+          full_w as usize
+        } else {
+          w_b as usize
+        };
+        let row0_b = sy0_b as usize * stride_b;
+        let row1_b = sy1_b as usize * stride_b;
+        (Some(row0_b), Some(row1_b), Some(ysamp_b.t))
+      } else {
+        (None, None, None)
+      };
+
+    for (x, xsamp_a) in xs_a.iter().enumerate() {
       if (pixel_counter & 4095) == 0 {
         check_active(RenderStage::Paint)?;
       }
       pixel_counter = pixel_counter.wrapping_add(1);
 
-      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
+      let (sx0_a, sx1_a, fx_a) = (xsamp_a.i0 + off_x_a, xsamp_a.i1 + off_x_a, xsamp_a.t);
 
-      let idx00 = (row0 + sx0 as usize) * 4;
-      let idx10 = (row0 + sx1 as usize) * 4;
-      let idx01 = (row1 + sx0 as usize) * 4;
-      let idx11 = (row1 + sx1 as usize) * 4;
+      let idx00_a = (row0_a + sx0_a as usize) * 4;
+      let idx10_a = (row0_a + sx1_a as usize) * 4;
+      let idx01_a = (row1_a + sx0_a as usize) * 4;
+      let idx11_a = (row1_a + sx1_a as usize) * 4;
 
-      let read = |idx: usize| -> (f32, f32, f32, f32) {
-        let r = src_pixels[idx] as f32;
-        let g = src_pixels[idx + 1] as f32;
-        let b = src_pixels[idx + 2] as f32;
-        let a = src_pixels[idx + 3] as f32;
-        if premultiplied {
-          (r, g, b, a)
-        } else {
-          let af = a / 255.0;
-          (r * af, g * af, b * af, a)
-        }
-      };
+      let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_a, idx00_a, premul_a);
+      let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_a, idx10_a, premul_a);
+      let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_a, idx01_a, premul_a);
+      let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_a, idx11_a, premul_a);
 
-      let (r00, g00, b00, a00) = read(idx00);
-      let (r10, g10, b10, a10) = read(idx10);
-      let (r01, g01, b01, a01) = read(idx01);
-      let (r11, g11, b11, a11) = read(idx11);
+      let top_r_a = lerp(r00, r10, fx_a);
+      let top_g_a = lerp(g00, g10, fx_a);
+      let top_b_a = lerp(b00, b10, fx_a);
+      let top_a_a = lerp(a00, a10, fx_a);
 
-      let top_r = lerp(r00, r10, fx);
-      let top_g = lerp(g00, g10, fx);
-      let top_b = lerp(b00, b10, fx);
-      let top_a = lerp(a00, a10, fx);
+      let bot_r_a = lerp(r01, r11, fx_a);
+      let bot_g_a = lerp(g01, g11, fx_a);
+      let bot_b_a = lerp(b01, b11, fx_a);
+      let bot_a_a = lerp(a01, a11, fx_a);
 
-      let bot_r = lerp(r01, r11, fx);
-      let bot_g = lerp(g01, g11, fx);
-      let bot_b = lerp(b01, b11, fx);
-      let bot_a = lerp(a01, a11, fx);
+      let mut r = lerp(top_r_a, bot_r_a, fy_a);
+      let mut g = lerp(top_g_a, bot_g_a, fy_a);
+      let mut b = lerp(top_b_a, bot_b_a, fy_a);
+      let mut a = lerp(top_a_a, bot_a_a, fy_a);
 
-      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
-      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
+      if let (Some(xs_b), Some(row0_b), Some(row1_b), Some(fy_b)) =
+        (xs_b.as_ref(), row0_b, row1_b, fy_b)
+      {
+        let xsamp_b = &xs_b[x];
+        let (sx0_b, sx1_b, fx_b) = (xsamp_b.i0 + off_x_b, xsamp_b.i1 + off_x_b, xsamp_b.t);
 
-      r = r.min(a);
-      g = g.min(a);
-      b = b.min(a);
+        let idx00_b = (row0_b + sx0_b as usize) * 4;
+        let idx10_b = (row0_b + sx1_b as usize) * 4;
+        let idx01_b = (row1_b + sx0_b as usize) * 4;
+        let idx11_b = (row1_b + sx1_b as usize) * 4;
 
-      let dst_idx = (y * target_width + x as u32) as usize * 4;
-      data[dst_idx] = r;
-      data[dst_idx + 1] = g;
-      data[dst_idx + 2] = b;
-      data[dst_idx + 3] = a;
+        let (r00, g00, b00, a00) = read_image_pixel_premul(pixels_b, idx00_b, premul_b);
+        let (r10, g10, b10, a10) = read_image_pixel_premul(pixels_b, idx10_b, premul_b);
+        let (r01, g01, b01, a01) = read_image_pixel_premul(pixels_b, idx01_b, premul_b);
+        let (r11, g11, b11, a11) = read_image_pixel_premul(pixels_b, idx11_b, premul_b);
+
+        let top_r_b = lerp(r00, r10, fx_b);
+        let top_g_b = lerp(g00, g10, fx_b);
+        let top_b_b = lerp(b00, b10, fx_b);
+        let top_a_b = lerp(a00, a10, fx_b);
+
+        let bot_r_b = lerp(r01, r11, fx_b);
+        let bot_g_b = lerp(g01, g11, fx_b);
+        let bot_b_b = lerp(b01, b11, fx_b);
+        let bot_a_b = lerp(a01, a11, fx_b);
+
+        let r_b = lerp(top_r_b, bot_r_b, fy_b);
+        let g_b = lerp(top_g_b, bot_g_b, fy_b);
+        let b_b = lerp(top_b_b, bot_b_b, fy_b);
+        let a_b = lerp(top_a_b, bot_a_b, fy_b);
+
+        r = r * w0 + r_b * w1;
+        g = g * w0 + g_b * w1;
+        b = b * w0 + b_b * w1;
+        a = a * w0 + a_b * w1;
+      }
+
+      let a_u8 = a.floor().clamp(0.0, 255.0) as u8;
+      let mut r_u8 = r.floor().clamp(0.0, 255.0) as u8;
+      let mut g_u8 = g.floor().clamp(0.0, 255.0) as u8;
+      let mut b_u8 = b.floor().clamp(0.0, 255.0) as u8;
+
+      r_u8 = r_u8.min(a_u8);
+      g_u8 = g_u8.min(a_u8);
+      b_u8 = b_u8.min(a_u8);
+
+      let dst_idx = (y_u * target_width + x as u32) as usize * 4;
+      data[dst_idx] = r_u8;
+      data[dst_idx + 1] = g_u8;
+      data[dst_idx + 2] = b_u8;
+      data[dst_idx + 3] = a_u8;
     }
   }
 
@@ -23361,31 +23713,34 @@ mod tests {
 
   #[test]
   fn scaled_image_resampling_accounts_for_subpixel_translation_phase() {
-    // 8x1 red ramp (0..224) so we can reason about bilinear interpolation.
+    // 8x1 red ramp (0..224) so we can reason about sampling.
     let mut pixels = Vec::new();
     for i in 0..8u8 {
       pixels.extend_from_slice(&[i * 32, 0, 0, 255]);
     }
     let image = ImageData::new_pixels(8, 1, pixels);
 
-    // Downscale to 1x1 at an integer origin: sample should land halfway between src pixels 3 and 4.
-    let dest0 = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
-    let origin0_x = dest0.x().floor();
-    let origin0_y = dest0.y().floor();
-    let out0_w = ((dest0.x() + dest0.width()).ceil() - origin0_x).round() as u32;
-    let out0_h = ((dest0.y() + dest0.height()).ceil() - origin0_y).round() as u32;
+    // Downscale to 4x1 at an integer origin. With a 2x downscale, mipmap level 1 is selected and
+    // each output pixel becomes the average of a 2px span.
+    let dest0 = Rect::from_xywh(0.0, 0.0, 4.0, 1.0);
+    let origin0_x = (dest0.x() - 0.5).ceil();
+    let origin0_y = (dest0.y() - 0.5).ceil();
+    let out0_w = ((dest0.x() + dest0.width() - 0.5).ceil() - origin0_x).round() as u32;
+    let out0_h = ((dest0.y() + dest0.height() - 0.5).ceil() - origin0_y).round() as u32;
     let pixmap0 = super::image_data_to_scaled_pixmap_with_phase_inner(
       &image, dest0, out0_w, out0_h, origin0_x, origin0_y,
     )
     .unwrap()
     .unwrap();
-    assert_eq!((pixmap0.width(), pixmap0.height()), (1, 1));
-    assert_eq!(pixel(&pixmap0, 0, 0), (112, 0, 0, 255));
+    assert_eq!((pixmap0.width(), pixmap0.height()), (4, 1));
+    assert_eq!(pixel(&pixmap0, 0, 0), (16, 0, 0, 255));
+    assert_eq!(pixel(&pixmap0, 1, 0), (80, 0, 0, 255));
+    assert_eq!(pixel(&pixmap0, 2, 0), (144, 0, 0, 255));
+    assert_eq!(pixel(&pixmap0, 3, 0), (208, 0, 0, 255));
 
-    // A fractional destination origin changes sampling phase. With dest_x=0.5, the first output
-    // pixel center aligns with the left edge of the destination rect, so it should clamp to the
-    // first source pixel (0).
-    let dest1 = Rect::from_xywh(0.5, 0.0, 1.0, 1.0);
+    // A fractional destination origin changes sampling phase (subpixel translations should not be
+    // treated as an afterthought once the image has been downsampled).
+    let dest1 = Rect::from_xywh(0.5, 0.0, 4.0, 1.0);
     let origin1_x = (dest1.x() - 0.5).ceil();
     let origin1_y = (dest1.y() - 0.5).ceil();
     let out1_w = ((dest1.x() + dest1.width() - 0.5).ceil() - origin1_x).round() as u32;
@@ -23395,8 +23750,53 @@ mod tests {
     )
     .unwrap()
     .unwrap();
-    assert_eq!((pixmap1.width(), pixmap1.height()), (1, 1));
-    assert_eq!(pixel(&pixmap1, 0, 0), (0, 0, 0, 255));
+    assert_eq!((pixmap1.width(), pixmap1.height()), (4, 1));
+    assert_eq!(pixel(&pixmap1, 0, 0), (16, 0, 0, 255));
+    assert_eq!(pixel(&pixmap1, 1, 0), (48, 0, 0, 255));
+    assert_eq!(pixel(&pixmap1, 2, 0), (112, 0, 0, 255));
+    assert_eq!(pixel(&pixmap1, 3, 0), (176, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_uses_mipmapped_trilinear_filtering() {
+    // 8x1 red ramp (0..224).
+    let mut pixels = Vec::new();
+    for i in 0..8u8 {
+      pixels.extend_from_slice(&[i * 32, 0, 0, 255]);
+    }
+    let image = ImageData::new_pixels(8, 1, pixels);
+
+    // Downscale to 3px wide: scale is between mip levels 1 (4px) and 2 (2px), so we should blend
+    // between them.
+    let pixmap = super::image_data_to_scaled_pixmap_inner(&image, 3, 1, ImageFilterQuality::Linear)
+      .unwrap()
+      .unwrap();
+    assert_eq!((pixmap.width(), pixmap.height()), (3, 1));
+    assert_eq!(pixel(&pixmap, 0, 0), (35, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 1, 0), (112, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 2, 0), (188, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_continues_mipmap_chain_when_axis_hits_one_pixel() {
+    // 2x8 image: last row is bright red, remaining rows are black. This exercises a mip chain where
+    // width reaches 1px quickly but height needs additional levels.
+    let mut pixels = Vec::new();
+    for y in 0..8u8 {
+      let r = if y == 7 { 255 } else { 0 };
+      for _ in 0..2u8 {
+        pixels.extend_from_slice(&[r, 0, 0, 255]);
+      }
+    }
+    let image = ImageData::new_pixels(2, 8, pixels);
+
+    // Downscale to 1x1: lod is driven by the vertical scale (8x). If the mipmap builder stops once
+    // width reaches 1, we would sample from a 1x4 level and miss the bright row entirely.
+    let pixmap = super::image_data_to_scaled_pixmap_inner(&image, 1, 1, ImageFilterQuality::Linear)
+      .unwrap()
+      .unwrap();
+    assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
+    assert_eq!(pixel(&pixmap, 0, 0), (31, 0, 0, 255));
   }
 
   #[test]
