@@ -51,7 +51,10 @@ fn manual_function_with_unreachable_block(inst: Inst) -> ProgramFunction {
 
   let mut bblocks = CfgBBlocks::default();
   bblocks.add(0, vec![inst]);
-  bblocks.add(1, vec![]);
+  bblocks.add(
+    1,
+    vec![Inst::throw(Arg::Const(Const::Num(JsNumber(2.0))))],
+  );
 
   ProgramFunction {
     debug: None,
@@ -71,6 +74,11 @@ fn decompile_stops_after_return() {
   let func =
     manual_function_with_unreachable_block(Inst::ret(Some(Arg::Const(Const::Num(JsNumber(1.0))))));
   let stmts = decompile_function(&func).expect("decompile");
+  assert_eq!(
+    stmts.len(),
+    1,
+    "expected decompiler to ignore unreachable blocks, got: {stmts:?}"
+  );
   assert!(
     stmts.iter().any(|stmt| matches!(stmt.stx.as_ref(), Stmt::Return(_))),
     "expected a Return statement, got: {stmts:?}"
@@ -82,6 +90,11 @@ fn decompile_stops_after_throw() {
   let func =
     manual_function_with_unreachable_block(Inst::throw(Arg::Const(Const::Num(JsNumber(1.0)))));
   let stmts = decompile_function(&func).expect("decompile");
+  assert_eq!(
+    stmts.len(),
+    1,
+    "expected decompiler to ignore unreachable blocks, got: {stmts:?}"
+  );
   assert!(
     stmts.iter().any(|stmt| matches!(stmt.stx.as_ref(), Stmt::Throw(_))),
     "expected a Throw statement, got: {stmts:?}"
