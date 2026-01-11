@@ -26,7 +26,7 @@ gc_stats = []
 gc_debug = []
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 ahash = { workspace = true }
