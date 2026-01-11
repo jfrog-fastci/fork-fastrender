@@ -22,6 +22,7 @@ pub struct ApiSemantics {
   /// `effect-js` uses this for optional string encoding semantics such as:
   /// - `encoding.output: same_as_input`
   /// - `encoding.preserves_input_if: ascii`
+  /// - `encoding.length_preserving_if: ascii`
   ///
   /// Values are strings to keep the schema stable and easy to author.
   #[serde(default)]
@@ -160,6 +161,9 @@ struct ApiRaw {
 
   #[serde(default)]
   throws: Option<String>,
+
+  #[serde(default)]
+  properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -238,7 +242,7 @@ fn normalize_api(raw: ApiRaw) -> ApiSemantics {
     aliases: raw.aliases,
     effects,
     purity,
-    properties: BTreeMap::new(),
+    properties: raw.properties,
   }
 }
 
@@ -500,11 +504,10 @@ pub fn parse_api_semantics_yaml_str(yaml: &str) -> Result<Vec<ApiSemantics>, ser
     ApiSemanticsFile::Many(many) => many,
   })
 }
-
 #[cfg(test)]
 mod tests {
   use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
   };
@@ -586,6 +589,61 @@ purity: DependsOnCallback
         );
       }
     }
+  }
+
+  #[test]
+  fn encoding_contracts_minimum_set() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+
+    let slice = kb.get("String.prototype.slice").unwrap();
+    assert_eq!(
+      slice.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("same_as_input")
+    );
+
+    let concat = kb.get("String.prototype.concat").unwrap();
+    assert_eq!(
+      concat.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("unknown")
+    );
+
+    let lower = kb.get("String.prototype.toLowerCase").unwrap();
+    assert_eq!(
+      lower.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("same_as_input")
+    );
+    assert_eq!(
+      lower
+        .properties
+        .get("encoding.preserves_input_if")
+        .map(|s| s.as_str()),
+      Some("ascii")
+    );
+    assert_eq!(
+      lower
+        .properties
+        .get("encoding.length_preserving_if")
+        .map(|s| s.as_str()),
+      Some("ascii")
+    );
+
+    let split = kb.get("String.prototype.split").unwrap();
+    assert_eq!(
+      split.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("unknown")
+    );
+
+    let iso = kb.get("Date.prototype.toISOString").unwrap();
+    assert_eq!(
+      iso.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("ascii")
+    );
+
+    let pathname = kb.get("URL.prototype.pathname").unwrap();
+    assert_eq!(
+      pathname.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("ascii")
+    );
   }
 
   fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) {

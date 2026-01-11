@@ -1,6 +1,6 @@
 # knowledge-base
 
-Semantic knowledge base for `ecma-rs` analysis passes.
+Semantic knowledge base for `ecma-rs` analysis passes, expressed as YAML.
 
 ## Bundled file formats
 
@@ -36,20 +36,24 @@ purity = "Pure"
 
 Standardized keys:
 
-- `encoding.output`: one of
-  - `ascii`
-  - `latin1`
-  - `utf8`
-  - `unknown`
-  - `same_as_input`
-- `encoding.preserves_input_if` (optional): one of
-  - `ascii`
-  - `latin1`
-  - `utf8`
+- `properties.encoding.output`: `ascii|latin1|utf8|unknown|same_as_input`
+- `properties.encoding.preserves_input_if`: `ascii|latin1|utf8`
+- `properties.encoding.length_preserving_if`: `ascii|latin1|utf8` (optional)
 
 Interpretation:
 
-- `encoding.output = same_as_input`: the API returns a string with the same encoding as its input.
-- When `encoding.preserves_input_if` is present, the encoding is only considered preserved when the
+- `properties.encoding.output = same_as_input`: the API returns a string with the same encoding as
+  its input.
+- `properties.encoding.preserves_input_if`: the encoding is only considered preserved when the
   input encoding matches; otherwise the result is treated as `unknown`.
 
+In YAML, `properties` is typically a map of string keys; encoding keys use a dotted namespace like
+`encoding.output`:
+
+```yaml
+- name: String.prototype.toLowerCase
+  properties:
+    encoding.output: same_as_input
+    encoding.preserves_input_if: ascii
+    encoding.length_preserving_if: ascii
+```

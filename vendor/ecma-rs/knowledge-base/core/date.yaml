@@ -18,3 +18,5 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Pure
+  properties:
+    encoding.output: ascii

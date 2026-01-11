@@ -1,0 +1,19 @@
+- name: String.prototype.slice
+  properties:
+    encoding.output: same_as_input
+
+- name: String.prototype.concat
+  properties:
+    # Depends on inputs; keep conservative and let analysis refine.
+    encoding.output: unknown
+
+- name: String.prototype.toLowerCase
+  properties:
+    encoding.output: same_as_input
+    encoding.preserves_input_if: ascii
+    encoding.length_preserving_if: ascii
+
+- name: String.prototype.split
+  properties:
+    # Returns an array of strings; element encoding depends on inputs.
+    encoding.output: unknown
