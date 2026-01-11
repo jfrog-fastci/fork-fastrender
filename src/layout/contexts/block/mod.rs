@@ -1986,7 +1986,6 @@ impl BlockFormattingContext {
           .with_inline_percentage_base(Some(containing_width))
           .with_block_percentage_base(containing_height_for_percentages)
           .with_used_border_box_size(used_border_box_width, used_border_box_height);
-
           let mut fragment = FormattingContextFactory::with_viewport_scroll_override(
             child_scroll,
             || fc.layout(child, &fc_constraints),

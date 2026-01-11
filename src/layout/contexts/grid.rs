@@ -9347,6 +9347,20 @@ impl GridFormattingContext {
         taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
       )
     {
+      // Computing a block-axis intrinsic size for a grid item must take the orthogonal axis into
+      // account. Taffy can probe min/max-content heights while still providing a *definite* width
+      // (the resolved grid area width). The `FormattingContext::compute_intrinsic_block_size` API
+      // intentionally measures block sizes under intrinsic inline constraints and therefore ignores
+      // that definite width, which can drastically over-estimate heights (e.g. by laying out text in
+      // a min-content column and producing thousands of pixels of wrapping).
+      //
+      // When the width is definite, fall back to the full layout path below so the measured height
+      // is computed under the correct inline constraint.
+      let width_is_definite = known_dimensions.width.is_some()
+        || matches!(available_space.width, taffy::style::AvailableSpace::Definite(_));
+      if width_is_definite {
+        // Leave `intrinsic_height` unset so we don't take the intrinsic probe early-return path.
+      } else {
       // CSS Grid track sizing uses intrinsic min/max-content contributions. When the item has a
       // definite preferred block size (e.g. `height: 100px`), browsers use that size as the
       // contribution even when the track is `min-content`/`max-content`. Taffy requests these
@@ -9396,9 +9410,10 @@ impl GridFormattingContext {
                 Err(_) => 0.0,
               },
             )
-          }),
+        }),
         _ => None,
       };
+      }
     }
 
     if !(wants_baseline_y || wants_baseline_x)
@@ -9537,33 +9552,23 @@ impl GridFormattingContext {
       let height = if let Some(border_height) = intrinsic_height {
         (border_height - height_inset).max(0.0)
       } else {
-        let normalize_known =
-          |known: Option<f32>, avail: taffy::style::AvailableSpace| match (known, avail) {
-            (Some(value), taffy::style::AvailableSpace::Definite(avail))
-              if value <= 1.0 && avail <= 1.0 =>
-            {
-              None
-            }
-            _ => known,
-          };
-        let known_height = normalize_known(known_dimensions.height, available_space.height);
-        match (known_height, available_space.height) {
-          (Some(h), _) => h.max(0.0),
-          (_, taffy::style::AvailableSpace::Definite(h)) if h > 1.0 => h.max(0.0),
-          _ => {
-            let mode = match available_space.width {
-              taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
-              taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
-              _ => IntrinsicSizingMode::MaxContent,
-            };
-            let border_block_size = match fc.compute_intrinsic_block_size(box_node, mode) {
-              Ok(size) => size,
-              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-              Err(_) => 0.0,
-            };
-            (border_block_size - height_inset).max(0.0)
-          }
-        }
+        // When Taffy probes intrinsic inline sizes (min-/max-content width), it can still provide
+        // a "known" or definite block size. That value is not the box's intrinsic height; it's a
+        // sizing artifact of the grid algorithm and must not leak back into track sizing (doing so
+        // can balloon auto rows and stretch every grid item to a viewport-sized height).
+        //
+        // Always answer width probes with a content-based intrinsic block size.
+        let mode = match available_space.width {
+          taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+          taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
+          _ => IntrinsicSizingMode::MaxContent,
+        };
+        let border_block_size = match fc.compute_intrinsic_block_size(box_node, mode) {
+          Ok(size) => size,
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => 0.0,
+        };
+        (border_block_size - height_inset).max(0.0)
       };
 
       let size = taffy::geometry::Size { width, height };
@@ -13991,6 +13996,192 @@ mod tests {
     assert!(
       size.size.height > 0.1,
       "expected intrinsic width probes to compute a non-zero height (got {size:?})"
+    );
+  }
+
+  #[test]
+  fn grid_intrinsic_width_probe_does_not_use_definite_available_height_as_height() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // Use a percentage height to prevent `drop_definite_available_height_for_measure` from
+    // normalizing away the definite height, so this test exercises the intrinsic-width probe
+    // early-return path with a non-trivial available height.
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.height = Some(Length::percent(100.0));
+    let style = Arc::new(style);
+    let text_child = BoxNode::new_text(style.clone(), "Flipped side".to_string());
+    let mut item = BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child]);
+    item.id = 1;
+    let node_ptr: *const BoxNode = &item;
+
+    // Use a dummy node id for the measured item (only used for per-node key tracking).
+    let mut taffy: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let node_id = taffy
+      .new_leaf(taffy::style::Style::default())
+      .expect("create leaf node");
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+    let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+
+    let unconstrained = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: None,
+      },
+      taffy::geometry::Size {
+        width: taffy::style::AvailableSpace::MaxContent,
+        height: taffy::style::AvailableSpace::Definite(0.0),
+      },
+      Some(260.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    let definite_height = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: None,
+      },
+      taffy::geometry::Size {
+        width: taffy::style::AvailableSpace::MaxContent,
+        height: taffy::style::AvailableSpace::Definite(1040.0),
+      },
+      Some(260.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    let known_height = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: Some(1040.0),
+      },
+      taffy::geometry::Size {
+        width: taffy::style::AvailableSpace::MaxContent,
+        height: taffy::style::AvailableSpace::Definite(1040.0),
+      },
+      Some(260.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert!(
+      unconstrained.size.height > 0.1,
+      "expected intrinsic-width probe to compute a non-zero height (got {unconstrained:?})"
+    );
+    assert!(
+      unconstrained.size.height < 200.0,
+      "expected intrinsic-width probe height to stay content-sized (got {unconstrained:?})"
+    );
+    assert!(
+      (definite_height.size.height - unconstrained.size.height).abs() < 0.5,
+      "expected intrinsic-width probe height to be content-based even when a definite height is passed (got unconstrained={unconstrained:?} definite_height={definite_height:?})"
+    );
+    assert!(
+      (known_height.size.height - unconstrained.size.height).abs() < 0.5,
+      "expected intrinsic-width probe height to ignore known height (got unconstrained={unconstrained:?} known_height={known_height:?})"
+    );
+  }
+
+  #[test]
+  fn grid_intrinsic_height_probe_respects_definite_available_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // Construct a text-heavy item where the laid-out height depends strongly on the available width
+    // (lots of wrap opportunities).
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+    let text = std::iter::repeat("a").take(200).collect::<Vec<_>>().join(" ");
+    let text_child = BoxNode::new_text(style.clone(), text);
+    let mut item = BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child]);
+    item.id = 1;
+    let node_ptr: *const BoxNode = &item;
+
+    // Dummy node id for the measured item (only used for per-node key tracking).
+    let mut taffy: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let node_id = taffy
+      .new_leaf(taffy::style::Style::default())
+      .expect("create leaf node");
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+    let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+
+    let narrow = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: None,
+      },
+      taffy::geometry::Size {
+        width: taffy::style::AvailableSpace::Definite(50.0),
+        height: taffy::style::AvailableSpace::MinContent,
+      },
+      Some(400.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    let wide = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      taffy::geometry::Size {
+        width: None,
+        height: None,
+      },
+      taffy::geometry::Size {
+        width: taffy::style::AvailableSpace::Definite(400.0),
+        height: taffy::style::AvailableSpace::MinContent,
+      },
+      Some(400.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert!(
+      narrow.size.height > 0.1 && wide.size.height > 0.1,
+      "expected intrinsic height probes to return non-zero heights (narrow={narrow:?} wide={wide:?})"
+    );
+    assert!(
+      narrow.size.height > wide.size.height + 1.0,
+      "expected intrinsic height probe to depend on the definite available width (narrow={narrow:?} wide={wide:?})"
     );
   }
 
