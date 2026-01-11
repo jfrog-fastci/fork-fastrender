@@ -643,7 +643,8 @@ at the same range:
 They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
-- `runtime-native/link/stackmaps.ld` (lld-friendly, anchored at `INSERT BEFORE .dynamic;`)
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE, anchored at `INSERT AFTER .text;`)
+- `runtime-native/link/stackmaps.ld` (lld-friendly PIE/DSO, anchored at `INSERT BEFORE .dynamic;`)
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE/DSO hardening; avoids RWX text segments)
 
 ```ld
@@ -678,9 +679,10 @@ When linking from Rust/Cargo:
   produced by the `runtime-native` package itself (tests / cdylib on Linux).
 - For downstream Rust binaries that depend on `runtime-native` as an `rlib`,
   Cargo does **not** automatically propagate linker-script args from
-  dependencies. You must pass `-Wl,-T,runtime-native/link/stackmaps.ld` at the
-  final link step (or use the `native_js::link` / `scripts/native_link.sh`
-  helpers, which always inject it).
+  dependencies. You must pass the appropriate fragment at the final link step
+  (e.g. `-Wl,-T,runtime-native/link/stackmaps_nopie.ld` for non-PIE output), or
+  use the `native_js::link` / `scripts/native_link.sh` helpers (which select the
+  correct fragment automatically).
 
 Because these are normal ELF symbols, the dynamic loader applies any necessary
 relocations (PIE or non-PIE). The runtime can therefore read stackmap bytes
