@@ -22,12 +22,12 @@
  * writable during relocation without requiring text relocations (DT_TEXTREL).
  *
  * RELRO + lld constraints:
- * - lld enforces that RELRO sections are contiguous in the final layout; custom
- *   output sections placed within the RELRO range can trigger:
+ * - lld enforces that RELRO sections are contiguous in the final layout; placing
+ *   custom `.data.rel.ro.*` output sections inside the RELRO range can trigger:
  *     "section: .dynamic is not contiguous with other relro sections"
- * - To remain lld-friendly while still keeping stackmaps under `PT_GNU_RELRO`,
- *   we place stackmaps/faultmaps into the standard `.data.rel.ro` output
- *   section, anchored before `.dynamic`.
+ * - To remain lld-friendly while preserving the dedicated
+ *   `.data.rel.ro.llvm_{stackmaps,faultmaps}` section names, we insert these
+ *   output sections immediately before `.bss` (outside the RELRO range).
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.
@@ -38,21 +38,17 @@
  */
 
 SECTIONS {
-  /* Keep stackmaps/faultmaps in RELRO-friendly data (writable during relocation,
-   * then protected by `PT_GNU_RELRO`). */
-  .data.rel.ro : ALIGN(8) {
+  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
-
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     /* Legacy: some objects/tools still use the `.llvm_stackmaps` name. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
-
     /* StackMap v3 uses 64-bit fields and is 8-byte aligned; keep the exported
      * symbol range 8-byte aligned even if the linker inserts padding between
      * concatenated blobs. */
@@ -61,10 +57,9 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-
-    /* Faultmaps are emitted by some patchpoint configurations. Keep them for
-     * parity with `.llvm_stackmaps` and to avoid accidental removal under
-     * `--gc-sections`. */
+  }
+ 
+  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
@@ -74,4 +69,4 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-} INSERT BEFORE .dynamic;
+} INSERT BEFORE .bss;

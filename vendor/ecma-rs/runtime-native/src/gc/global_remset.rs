@@ -124,6 +124,22 @@ impl ThreadRemsetBuffer {
     }
   }
 
+  /// Iterate all recorded object pointers without modifying the buffer.
+  ///
+  /// # Stop-the-world requirement
+  /// This must only be called when no mutator threads can be concurrently
+  /// executing the write barrier on this thread state.
+  pub(crate) fn for_each_raw(&self, mut f: impl FnMut(*mut u8)) {
+    let len = self.len.load(Ordering::Acquire).min(THREAD_REMSET_CAPACITY);
+    for i in 0..len {
+      let obj = self.entries[i].load(Ordering::Acquire) as *mut u8;
+      if obj.is_null() {
+        continue;
+      }
+      f(obj);
+    }
+  }
+
   #[inline]
   pub(crate) fn insert(&self, obj: *mut u8) {
     debug_assert!(!obj.is_null());
@@ -279,6 +295,19 @@ impl RememberedSet for WorldStoppedRememberedSet {
       }
       f(obj);
     }
+
+    // Include per-thread remembered buffers populated by registered mutators.
+    registry::for_each_thread(|thread| {
+      thread.remset_for_each_raw(|obj| {
+        if obj.is_null() {
+          return;
+        }
+        if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+          std::process::abort();
+        }
+        f(obj);
+      });
+    });
   }
 
   fn clear(&mut self) {
@@ -297,6 +326,23 @@ impl RememberedSet for WorldStoppedRememberedSet {
         (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
       }
     }
+
+    // Clear per-thread buffers too: registered threads record remembered objects
+    // in their `ThreadState` remset, not in the global buffer.
+    registry::for_each_thread(|thread| {
+      thread.remset_drain_raw(|obj| {
+        if obj.is_null() {
+          return;
+        }
+        if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+          std::process::abort();
+        }
+        // SAFETY: entries originate from the write barrier contract (object base pointers).
+        unsafe {
+          (&*(obj as *const ObjHeader)).clear_remembered_idempotent();
+        }
+      });
+    });
   }
 
   fn on_promoted_object(&mut self, obj: *mut u8, has_young_refs: bool) {

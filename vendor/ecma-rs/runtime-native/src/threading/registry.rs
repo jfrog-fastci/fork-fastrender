@@ -282,6 +282,11 @@ impl ThreadState {
   }
 
   #[inline]
+  pub(crate) fn remset_for_each_raw(&self, f: impl FnMut(*mut u8)) {
+    self.remset.for_each_raw(f);
+  }
+
+  #[inline]
   pub(crate) fn remset_clear_for_tests(&self) {
     self.remset.clear();
   }

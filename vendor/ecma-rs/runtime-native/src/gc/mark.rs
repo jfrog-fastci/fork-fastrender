@@ -190,6 +190,7 @@ impl GcHeap {
     self.stats.last_major_live_bytes = self.immix.line_map_used_bytes() + self.los.live_bytes(epoch);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);
+    crate::rt_alloc::bump_major_epoch();
 
     let pause = start.elapsed();
     self.stats.last_major_pause = pause;

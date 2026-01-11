@@ -19,13 +19,26 @@ use crate::threading::ThreadId;
 use crate::shape_table;
 use std::cell::{Cell, UnsafeCell};
 use std::ptr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 #[inline(always)]
 fn align_up(addr: usize, align: usize) -> usize {
   debug_assert!(align.is_power_of_two());
   (addr + (align - 1)) & !(align - 1)
+}
+
+pub(crate) static NURSERY_EPOCH: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MAJOR_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+pub(crate) fn bump_nursery_epoch() {
+  NURSERY_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn bump_major_epoch() {
+  MAJOR_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
 #[derive(Debug)]
@@ -74,7 +87,8 @@ impl ImmixCursor {
 struct ThreadAlloc {
   nursery: ThreadNursery,
   immix: ImmixCursor,
-  gc_epoch_observed: u64,
+  nursery_epoch: u64,
+  major_epoch: u64,
 }
 
 impl ThreadAlloc {
@@ -82,7 +96,8 @@ impl ThreadAlloc {
     Self {
       nursery: ThreadNursery::new(),
       immix: ImmixCursor::new(),
-      gc_epoch_observed: 0,
+      nursery_epoch: 0,
+      major_epoch: 0,
     }
   }
 
@@ -96,6 +111,24 @@ impl ThreadAlloc {
   pub fn clear_after_major(&mut self) {
     self.nursery.clear();
     self.immix.clear();
+  }
+
+  #[inline(always)]
+  fn refresh_nursery_epoch(&mut self) {
+    let global = NURSERY_EPOCH.load(Ordering::Relaxed);
+    if self.nursery_epoch != global {
+      self.nursery.clear();
+      self.nursery_epoch = global;
+    }
+  }
+
+  #[inline(always)]
+  fn refresh_major_epoch(&mut self) {
+    let global = MAJOR_EPOCH.load(Ordering::Relaxed);
+    if self.major_epoch != global {
+      self.immix.clear();
+      self.major_epoch = global;
+    }
   }
 }
 
@@ -177,19 +210,6 @@ fn current_mark_epoch(global: &GlobalHeap) -> u8 {
   unsafe { (*(global.heap as *mut crate::gc::GcHeap)).mark_epoch }
 }
 
-#[inline]
-fn refresh_tls_after_gc(epoch: u64) {
-  TLS_ALLOC.with(|alloc| unsafe {
-    let alloc = &mut *alloc.get();
-    if alloc.gc_epoch_observed != epoch {
-      // Any stop-the-world GC resets the nursery bump pointer, invalidating outstanding TLAB
-      // reservations. Clear cached alloc state lazily on the first allocation after a GC cycle.
-      alloc.clear_after_major();
-      alloc.gc_epoch_observed = epoch;
-    }
-  });
-}
-
 fn with_heap_lock_mutator<R>(f: impl FnOnce(&mut crate::gc::GcHeap) -> R) -> R {
   let global = global_heap();
   let _guard = global.heap_lock.lock();
@@ -236,6 +256,12 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
     }
     flag.set(true);
   });
+
+  TLS_ALLOC.with(|alloc| unsafe {
+    let alloc = &mut *alloc.get();
+    alloc.nursery_epoch = NURSERY_EPOCH.load(Ordering::Relaxed);
+    alloc.major_epoch = MAJOR_EPOCH.load(Ordering::Relaxed);
+  });
 }
 
 pub(crate) fn on_thread_unregistered(_id: ThreadId) {
@@ -249,7 +275,6 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
-  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
   let size = shape_desc.size as usize;
@@ -283,7 +308,9 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
 
   // Fast path: per-thread nursery TLAB.
   if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
-    (*alloc.get()).nursery.alloc(size, align, nursery(global))
+    let alloc = &mut *alloc.get();
+    alloc.refresh_nursery_epoch();
+    alloc.nursery.alloc(size, align, nursery(global))
   }) {
     unsafe { init_object(obj, size, type_desc, epoch, false) };
     return obj;
@@ -297,7 +324,6 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
-  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
     crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
@@ -335,7 +361,9 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   }
 
   if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
-    (*alloc.get()).nursery.alloc(size, align, nursery(global))
+    let alloc = &mut *alloc.get();
+    alloc.refresh_nursery_epoch();
+    alloc.nursery.alloc(size, align, nursery(global))
   }) {
     unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
     unsafe {
@@ -400,7 +428,6 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
   ensure_global_heap_init();
-  refresh_tls_after_gc(crate::threading::safepoint::current_epoch());
 
   let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
   let size = shape_desc.size as usize;
@@ -435,7 +462,11 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
 
 fn alloc_old(size: usize, align: usize, desc: &'static TypeDescriptor, epoch: u8) -> *mut u8 {
   // Fast path: bump within the current thread-local Immix hole.
-  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe { (*alloc.get()).immix.alloc_fast(size, align) }) {
+  if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
+    let alloc = &mut *alloc.get();
+    alloc.refresh_major_epoch();
+    alloc.immix.alloc_fast(size, align)
+  }) {
     unsafe { init_object(obj, size, desc, epoch, false) };
     return obj;
   }

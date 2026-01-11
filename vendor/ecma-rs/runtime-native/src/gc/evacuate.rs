@@ -99,6 +99,7 @@ impl GcHeap {
     unsafe {
       self.nursery.reset();
     }
+    crate::rt_alloc::bump_nursery_epoch();
     #[cfg(any(debug_assertions, feature = "gc_debug"))]
     unsafe {
       ptr::write_bytes(self.nursery.start(), 0xDD, nursery_poison_len);
