@@ -63,11 +63,12 @@ fn validate_body(
     return;
   };
 
-  validate_body_syntax(file, body_data, lowered, resolver, out);
+  validate_body_syntax(program, file, body_data, lowered, resolver, out);
   validate_body_types(program, file, body, body_data, lowered, resolver, out);
 }
 
 fn validate_body_syntax(
+  program: &Program,
   file: typecheck_ts::FileId,
   body: &Body,
   lowered: &hir_js::LowerResult,
@@ -165,17 +166,23 @@ fn validate_body_syntax(
 
         // `print(...)` is a codegen intrinsic, so allow it even when it comes from `.d.ts` libs.
         let is_print_intrinsic = callee_is_ident(body, lowered, call.callee, "print");
-        if !is_print_intrinsic
-          && !matches!(
-            file_resolver.resolve_expr_ident(body, call.callee),
-            Some(BindingId::Def(_))
-          )
-        {
-          push_unsupported_syntax(
-            out,
-            Span::new(file, expr.span),
-            "call callee must resolve to a global function definition",
-          );
+        if !is_print_intrinsic {
+          let ok = (|| {
+            let BindingId::Def(def) = file_resolver.resolve_expr_ident(body, call.callee)? else {
+              return None;
+            };
+            let resolved = resolve_import_def(program, def)?;
+            is_codegen_callable_function_def(program, resolved).then_some(())
+          })()
+          .is_some();
+
+          if !ok {
+            push_unsupported_syntax(
+              out,
+              Span::new(file, expr.span),
+              "call callee must resolve to a top-level function definition",
+            );
+          }
         }
 
         // Detect `eval(...)` and `Function(...)` / `new Function(...)` by callee identifier.
@@ -252,6 +259,13 @@ fn validate_body_syntax(
 
   for stmt in body.stmts.iter() {
     match &stmt.kind {
+      StmtKind::Decl(_) if !matches!(body.kind, BodyKind::TopLevel) => {
+        push_unsupported_syntax(
+          out,
+          Span::new(file, stmt.span),
+          "nested declarations are not supported by native-js yet",
+        );
+      }
       StmtKind::With { .. } => {
         push_unsupported_syntax(out, Span::new(file, stmt.span), "`with` statements are not supported yet");
       }
@@ -346,13 +360,19 @@ fn validate_body_types(
       // `print(...)` is a codegen intrinsic (lowered to `printf`), so allow it even though it is
       // declared in a `.d.ts` and does not resolve to a `DefId`.
       let is_print_intrinsic = callee_is_ident(hir, lowered, call.callee, "print");
-      if !is_print_intrinsic
-        && !matches!(
-          file_resolver.resolve_expr_ident(hir, call.callee),
-          Some(BindingId::Def(_))
-        )
-      {
-        continue;
+      if !is_print_intrinsic {
+        let ok = (|| {
+          let BindingId::Def(def) = file_resolver.resolve_expr_ident(hir, call.callee)? else {
+            return None;
+          };
+          let resolved = resolve_import_def(program, def)?;
+          is_codegen_callable_function_def(program, resolved).then_some(())
+        })()
+        .is_some();
+
+        if !ok {
+          continue;
+        }
       }
 
       skip_expr_type_check[idx] = true;
@@ -443,4 +463,48 @@ fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: hir_js::Exp
     ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
     _ => false,
   }
+}
+
+fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typecheck_ts::DefId> {
+  let mut cur = def;
+  let mut seen = std::collections::HashSet::<typecheck_ts::DefId>::new();
+  loop {
+    if !seen.insert(cur) {
+      return None;
+    }
+    let kind = program.def_kind(cur)?;
+    let typecheck_ts::DefKind::Import(import) = kind else {
+      return Some(cur);
+    };
+    match import.target {
+      typecheck_ts::ImportTarget::File(target_file) => {
+        cur = program
+          .exports_of(target_file)
+          .get(import.original.as_str())
+          .and_then(|entry| entry.def)?;
+      }
+      _ => return None,
+    }
+  }
+}
+
+fn is_codegen_callable_function_def(program: &Program, def: typecheck_ts::DefId) -> bool {
+  // Match `native-js` codegen: only top-level function definitions in non-`.d.ts` files are
+  // compiled and callable via the direct-call lowering path.
+  let Some(lowered) = program.hir_lowered(def.file()) else {
+    return false;
+  };
+  if matches!(lowered.hir.file_kind, FileKind::Dts) {
+    return false;
+  }
+  let Some(def_data) = lowered.def(def) else {
+    return false;
+  };
+  if def_data.parent.is_some() {
+    return false;
+  }
+  if def_data.path.kind != hir_js::DefKind::Function {
+    return false;
+  }
+  def_data.body.is_some()
 }
