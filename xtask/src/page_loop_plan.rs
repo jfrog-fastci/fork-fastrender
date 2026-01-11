@@ -19,8 +19,11 @@ use crate::cmd;
 
 // Chrome baseline screenshots are captured via `--virtual-time-budget=5000`. Animated images start
 // animating slightly after the budget begins (decode/paint delay), so sample at an offset that
-// matches the baseline output. Keep this value away from common frame boundaries (e.g. 30ms GIFs)
-// so we don't systematically land exactly on a frame transition.
+// matches the baseline output.
+//
+// Note: `--patch-html-for-chrome-baseline` rewrites `.gif` images to a static first-frame PNG for
+// determinism (see `cli_utils::fixture_html_patch`), so this mostly matters for other animated image
+// formats (e.g. APNG/animated WebP) or animated images referenced outside `<img>/<picture>` tags.
 const CHROME_BASELINE_ANIMATION_TIME_MS: &str = "4940";
 
 fn resolve_cargo_target_dir(repo_root: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {

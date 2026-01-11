@@ -161,8 +161,7 @@ pub fn patch_html_bytes(
   // Chrome baselines are rendered with `--hide-scrollbars`, which removes scrollbar gutters from
   // layout. FastRender reserves classic scrollbar space during layout (15px for `auto`), so inject
   // `scrollbar-width: none` to keep our layout viewport aligned with Chrome.
-  const HIDE_SCROLLBARS_STYLE: &str =
-    "<style>* { scrollbar-width: none !important; }</style>\n";
+  const HIDE_SCROLLBARS_STYLE: &str = "<style>* { scrollbar-width: none !important; }</style>\n";
   const FORCE_LIGHT_META: &str = "<meta name=\"color-scheme\" content=\"light\">\n";
   const FORCE_LIGHT_STYLE: &str =
     "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n";
@@ -236,7 +235,7 @@ pub fn patch_html_bytes(
     out = replace_all_bytes_with_ascii_boundaries(&out, b"loading=lazy", b"loading=eager");
 
     if let Some(base_url) = base_url {
-      out = rewrite_gif_img_srcs_to_static_png_data_urls(&out, base_url);
+      out = rewrite_gif_image_srcs_to_static_png_data_urls(&out, base_url);
     }
   }
 
@@ -299,7 +298,7 @@ fn ascii_boundary(b: u8) -> bool {
   matches!(b, b'>' | b' ' | b'\n' | b'\r' | b'\t' | b'/')
 }
 
-fn rewrite_gif_img_srcs_to_static_png_data_urls(html: &[u8], base_url: &str) -> Vec<u8> {
+fn rewrite_gif_image_srcs_to_static_png_data_urls(html: &[u8], base_url: &str) -> Vec<u8> {
   let base = match Url::parse(base_url) {
     Ok(url) => url,
     Err(_) => return html.to_vec(),
@@ -315,21 +314,36 @@ fn rewrite_gif_img_srcs_to_static_png_data_urls(html: &[u8], base_url: &str) -> 
   let mut cache: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
   let mut out = Vec::with_capacity(html.len());
+  // Avoid quadratic scans when only one of the tags exists (e.g. pages with many `<img>` tags but
+  // no `<source>`). Scan once for `<`, then check whether it's an `<img`/`<source` tag we care
+  // about.
   let mut cursor = 0usize;
+  let mut scan = 0usize;
 
   const IMG: &[u8] = b"<img";
-  while let Some(rel) = lower[cursor..]
-    .windows(IMG.len())
-    .position(|window| window == IMG)
-  {
-    let pos = cursor + rel;
-    let after = lower.get(pos + IMG.len());
+  const SOURCE: &[u8] = b"<source";
+  while scan < lower.len() {
+    let Some(rel) = lower[scan..].iter().position(|&b| b == b'<') else {
+      break;
+    };
+    let pos = scan + rel;
+
+    let tag_len = if lower[pos..].starts_with(IMG) {
+      IMG.len()
+    } else if lower[pos..].starts_with(SOURCE) {
+      SOURCE.len()
+    } else {
+      scan = pos + 1;
+      continue;
+    };
+
+    let after = lower.get(pos + tag_len);
     let boundary_ok = matches!(
       after,
       Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/')
     );
     if !boundary_ok {
-      cursor = pos + IMG.len();
+      scan = pos + 1;
       continue;
     }
 
@@ -339,25 +353,30 @@ fn rewrite_gif_img_srcs_to_static_png_data_urls(html: &[u8], base_url: &str) -> 
     let end = pos + end_rel + 1;
 
     out.extend_from_slice(&html[cursor..pos]);
-    out.extend_from_slice(&rewrite_img_tag_src_gif_to_data_url(
+    out.extend_from_slice(&rewrite_image_tag_gif_urls_to_data_urls(
       &html[pos..end],
       &lower[pos..end],
       &base,
       &mut cache,
     ));
     cursor = end;
+    scan = end;
   }
 
   out.extend_from_slice(&html[cursor..]);
   out
 }
 
-fn rewrite_img_tag_src_gif_to_data_url(
+fn rewrite_image_tag_gif_urls_to_data_urls(
   tag: &[u8],
   tag_lower: &[u8],
   base: &Url,
   cache: &mut HashMap<Vec<u8>, Vec<u8>>,
 ) -> Vec<u8> {
+  let mut out = Vec::with_capacity(tag.len());
+  let mut last_copied = 0usize;
+  let mut mutated = false;
+
   let mut i = 0usize;
   while i < tag.len() {
     // Find the start of the next attribute name.
@@ -422,31 +441,95 @@ fn rewrite_img_tag_src_gif_to_data_url(
       }
     }
 
-    if name != b"src" {
-      continue;
-    }
-    if !src_is_gif(raw_value) {
-      return tag.to_vec();
-    }
-
-    let replacement = if let Some(cached) = cache.get(raw_value) {
-      cached.clone()
+    let replacement = if name == b"src" {
+      if !src_is_gif(raw_value) {
+        continue;
+      }
+      gif_url_to_png_data_url_cached(raw_value, base, cache)
+    } else if name == b"srcset" {
+      rewrite_srcset_gif_urls_to_data_urls(raw_value, base, cache)
     } else {
-      let Some(data_url) = gif_src_to_png_data_url(raw_value, base) else {
-        return tag.to_vec();
-      };
-      cache.insert(raw_value.to_vec(), data_url.clone());
-      data_url
+      continue;
     };
 
-    let mut out = Vec::with_capacity(tag.len() + replacement.len());
-    out.extend_from_slice(&tag[..value_start]);
+    let Some(replacement) = replacement else {
+      continue;
+    };
+    mutated = true;
+    out.extend_from_slice(&tag[last_copied..value_start]);
     out.extend_from_slice(&replacement);
-    out.extend_from_slice(&tag[value_end..]);
-    return out;
+    last_copied = value_end;
   }
 
-  tag.to_vec()
+  if !mutated {
+    return tag.to_vec();
+  }
+  out.extend_from_slice(&tag[last_copied..]);
+  out
+}
+
+fn gif_url_to_png_data_url_cached(
+  raw_value: &[u8],
+  base: &Url,
+  cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+) -> Option<Vec<u8>> {
+  if let Some(cached) = cache.get(raw_value) {
+    return Some(cached.clone());
+  }
+  let data_url = gif_src_to_png_data_url(raw_value, base)?;
+  cache.insert(raw_value.to_vec(), data_url.clone());
+  Some(data_url)
+}
+
+fn rewrite_srcset_gif_urls_to_data_urls(
+  raw_value: &[u8],
+  base: &Url,
+  cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+) -> Option<Vec<u8>> {
+  let srcset = std::str::from_utf8(raw_value).ok()?.trim();
+  if srcset.is_empty() {
+    return None;
+  }
+
+  let mut rewritten_any = false;
+  let mut out = Vec::<String>::new();
+  for candidate in srcset.split(',') {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+      continue;
+    }
+    let mut parts = candidate.split_whitespace();
+    let url = parts.next().unwrap_or_default();
+    if url.is_empty() {
+      continue;
+    }
+    let descriptor = parts.collect::<Vec<_>>().join(" ");
+
+    let url_bytes = url.as_bytes();
+    let replacement_url = if src_is_gif(url_bytes) {
+      gif_url_to_png_data_url_cached(url_bytes, base, cache)
+        .map(|data_url| String::from_utf8_lossy(&data_url).into_owned())
+    } else {
+      None
+    };
+
+    let (final_url, did_rewrite) = match replacement_url {
+      Some(url) => (url, true),
+      None => (url.to_string(), false),
+    };
+    rewritten_any |= did_rewrite;
+
+    if descriptor.is_empty() {
+      out.push(final_url);
+    } else {
+      out.push(format!("{final_url} {descriptor}"));
+    }
+  }
+
+  if !rewritten_any {
+    return None;
+  }
+  Some(out.join(", ").into_bytes())
 }
 
 fn is_attr_name_start(b: u8) -> bool {
@@ -478,9 +561,7 @@ fn gif_src_to_png_data_url(raw_value: &[u8], base: &Url) -> Option<Vec<u8>> {
     return None;
   }
 
-  let end = raw
-    .find(|c| matches!(c, '?' | '#'))
-    .unwrap_or(raw.len());
+  let end = raw.find(|c| matches!(c, '?' | '#')).unwrap_or(raw.len());
   let raw = raw[..end].trim();
   if raw.is_empty() {
     return None;
@@ -640,7 +721,8 @@ mod tests {
 
   #[test]
   fn patch_html_forces_sync_img_decoding_when_js_disabled() {
-    let input = b"<!doctype html><html><head></head><body><img decoding=\"async\" src=\"x\"></body></html>";
+    let input =
+      b"<!doctype html><html><head></head><body><img decoding=\"async\" src=\"x\"></body></html>";
     let output = patch_html_bytes(input, None, true, false, true);
     let output_str = String::from_utf8_lossy(&output);
     assert!(
@@ -728,7 +810,7 @@ mod tests {
     std::fs::write(&gif_path, gif_bytes).expect("write gif");
 
     let base_url = Url::from_directory_path(dir.path()).expect("base url");
-    let input = b"<!doctype html><html><head></head><body><img src=\"x.gif\"></body></html>";
+    let input = b"<!doctype html><html><head></head><body><picture><source srcset=\"x.gif 1x\"><img src=\"x.gif\"></picture></body></html>";
     let output = patch_html_bytes(input, Some(base_url.as_str()), true, false, true);
     let output_str = String::from_utf8_lossy(&output);
 
@@ -740,23 +822,52 @@ mod tests {
       !output_str.contains("x.gif"),
       "expected original GIF src to be removed; got: {output_str}"
     );
+    assert!(
+      output_str.contains("1x"),
+      "expected srcset descriptor to be preserved; got: {output_str}"
+    );
 
     let prefix = "data:image/png;base64,";
-    let start = output_str
-      .find(prefix)
-      .expect("expected PNG data URL")
-      + prefix.len();
-    let end = output_str[start..]
-      .find('"')
-      .expect("expected closing quote after data url")
-      + start;
-    let b64 = &output_str[start..end];
+    let start = output_str.find(prefix).expect("expected PNG data URL") + prefix.len();
+    let rest = &output_str[start..];
+    let end = rest
+      .find(|c: char| !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
+      .unwrap_or(rest.len());
+    let b64 = &rest[..end];
     let png = base64::engine::general_purpose::STANDARD
       .decode(b64.as_bytes())
       .expect("decode png base64");
     assert!(
       png.starts_with(b"\x89PNG\r\n\x1a\n"),
       "expected rewritten data URL to decode to a PNG; got bytes: {png:?}"
+    );
+  }
+
+  #[test]
+  fn patch_html_rewrites_multiple_gif_srcset_candidates() {
+    let dir = tempdir().expect("tempdir");
+    let gif_bytes = base64::engine::general_purpose::STANDARD
+      .decode("R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs=")
+      .expect("decode gif base64");
+    std::fs::write(dir.path().join("a.gif"), &gif_bytes).expect("write a.gif");
+    std::fs::write(dir.path().join("b.gif"), &gif_bytes).expect("write b.gif");
+
+    let base_url = Url::from_directory_path(dir.path()).expect("base url");
+    let input = b"<!doctype html><html><head></head><body><img srcset=\"a.gif 1x, b.gif 2x\" src=\"a.gif\"></body></html>";
+    let output = patch_html_bytes(input, Some(base_url.as_str()), true, false, true);
+    let output_str = String::from_utf8_lossy(&output);
+
+    assert!(
+      output_str.contains("data:image/png;base64,"),
+      "expected GIF srcset URLs to be rewritten to PNG data URLs; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("a.gif") && !output_str.contains("b.gif"),
+      "expected original GIF URLs to be removed; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("2x"),
+      "expected srcset descriptors to be preserved; got: {output_str}"
     );
   }
 }
