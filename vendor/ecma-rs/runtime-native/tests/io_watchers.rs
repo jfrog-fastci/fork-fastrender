@@ -310,7 +310,7 @@ mod kqueue {
 
   #[test]
   fn register_rejects_blocking_fd_without_leaking_registration() {
-    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+    let _rt = TestRuntimeGuard::new();
 
     // Use a blocking pipe to ensure the reactor enforces the edge-triggered/nonblocking contract.
     let mut fds = [0i32; 2];
@@ -334,7 +334,7 @@ mod kqueue {
 
   #[test]
   fn register_rejects_empty_interests_without_leaking_pending_work() {
-    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+    let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
     assert_eq!(
       rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()),
@@ -365,7 +365,7 @@ mod kqueue {
 
   #[test]
   fn thread_safe_register_unregister_wakes_poll() {
-    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+    let _rt = TestRuntimeGuard::new();
 
     // Block the event loop thread in `rt_async_poll` by registering a pipe read end that isn't
     // ready.

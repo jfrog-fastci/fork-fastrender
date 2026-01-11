@@ -102,7 +102,12 @@ struct WakerInner {
 ))]
 enum WakerInner {
   User { kqueue: OwnedFd, ident: libc::uintptr_t },
-  Pipe { read_keepalive: OwnedFd, write: OwnedFd },
+  Pipe {
+    // Keep a duplicate read-end alive so wake writes never observe a reader-less pipe (EPIPE /
+    // SIGPIPE) even if the reactor is dropped before the waker.
+    _read_keepalive: OwnedFd,
+    write: OwnedFd,
+  },
 }
 
 #[cfg(not(any(
@@ -151,7 +156,7 @@ impl Waker {
     {
       match &*self.inner {
         WakerInner::User { kqueue, ident } => loop {
-          let mut kev = libc::kevent {
+          let kev = libc::kevent {
             ident: *ident,
             filter: libc::EVFILT_USER,
             flags: 0,
@@ -570,12 +575,12 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 
       let (wake_read, waker_inner) = if cfg!(feature = "force_pipe_wake") {
         let (read, write) = create_pipe()?;
-        let read_keepalive = read.try_clone()?;
+        let _read_keepalive = read.try_clone()?;
         register_pipe_waker(kqueue.as_raw_fd(), read.as_raw_fd())?;
         (
           Some(read),
           super::WakerInner::Pipe {
-            read_keepalive,
+            _read_keepalive,
             write,
           },
         )
@@ -591,12 +596,12 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
           ),
           Err(err) if is_evfilt_user_unsupported(&err) => {
             let (read, write) = create_pipe()?;
-            let read_keepalive = read.try_clone()?;
+            let _read_keepalive = read.try_clone()?;
             register_pipe_waker(kqueue.as_raw_fd(), read.as_raw_fd())?;
             (
               Some(read),
               super::WakerInner::Pipe {
-                read_keepalive,
+                _read_keepalive,
                 write,
               },
             )
@@ -918,7 +923,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   }
 
   fn register_user_waker(kqueue: RawFd, ident: libc::uintptr_t) -> io::Result<()> {
-    let mut kev = libc::kevent {
+    let kev = libc::kevent {
       ident,
       filter: libc::EVFILT_USER,
       flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
@@ -949,7 +954,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   }
 
   fn register_pipe_waker(kqueue: RawFd, read_fd: RawFd) -> io::Result<()> {
-    let mut kev = libc::kevent {
+    let kev = libc::kevent {
       ident: read_fd as libc::uintptr_t,
       filter: libc::EVFILT_READ,
       flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,

@@ -1,6 +1,9 @@
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
 fn has_cmd(cmd: &str) -> bool {
   Command::new(cmd)
     .arg("--version")

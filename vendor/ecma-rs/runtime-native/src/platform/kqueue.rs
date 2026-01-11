@@ -138,14 +138,7 @@ impl Waker {
   pub fn wake(&self) {
     match self {
       Waker::User { kqueue, ident, token } => loop {
-        let kev = libc::kevent {
-          ident: *ident,
-          filter: libc::EVFILT_USER,
-          flags: 0,
-          fflags: libc::NOTE_TRIGGER,
-          data: 0,
-          udata: (*token as usize) as *mut libc::c_void,
-        };
+        let kev = make_kevent_user(*ident, *token as u64, 0, libc::NOTE_TRIGGER);
         let rc = unsafe {
           libc::kevent(
             *kqueue,
@@ -213,14 +206,12 @@ impl Waker {
 }
 
 fn register_user_waker(kqueue: RawFd, ident: libc::uintptr_t, token: usize) -> io::Result<()> {
-  let kev = libc::kevent {
+  let kev = make_kevent_user(
     ident,
-    filter: libc::EVFILT_USER,
-    flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
-    fflags: libc::NOTE_FFNOP,
-    data: 0,
-    udata: (token as usize) as *mut libc::c_void,
-  };
+    token as u64,
+    libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+    libc::NOTE_FFNOP,
+  );
   loop {
     let rc = unsafe {
       libc::kevent(

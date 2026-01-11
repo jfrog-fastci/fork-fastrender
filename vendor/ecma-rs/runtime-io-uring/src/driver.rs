@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,7 @@ use crate::buf::{IoBuf, IoBufMut};
 pub struct OpId(u64);
 
 impl OpId {
+    #[cfg(target_os = "linux")]
     pub(crate) fn from_u64(id: u64) -> Self {
         Self(id)
     }
@@ -33,11 +35,13 @@ pub struct OpCompletion<R> {
 }
 
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct OpShared<R> {
     id: OpId,
     completion: Mutex<Option<OpCompletion<R>>>,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl<R> OpShared<R> {
     fn new(id: OpId) -> Self {
         Self {

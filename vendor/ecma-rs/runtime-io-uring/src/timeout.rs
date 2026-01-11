@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 use io_uring::types::Timespec;
 
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]

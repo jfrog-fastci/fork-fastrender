@@ -47,6 +47,7 @@
 //! use-after-free. To prevent accidental misuse, `SEND_ZC` support is **disabled by default** and
 //! must be enabled explicitly via the crate feature `send_zc`.
 
+#[cfg(target_os = "linux")]
 mod debug_stability;
 
 pub mod buf;
