@@ -55,6 +55,48 @@ pub(crate) fn align_up(value: usize, align: usize) -> usize {
 
 /// Number of bytes covered by a single card in a per-object card table.
 pub const CARD_SIZE: usize = 512;
+
+/// Minimum array payload size (in bytes) to enable a per-object card table.
+///
+/// Card tables are only installed for **old-generation pointer arrays** whose
+/// element payload is at least this large. For smaller arrays, rescanning the
+/// full object is typically cheaper than maintaining card metadata.
+///
+/// See `docs/write_barrier.md` for the benchmark-driven default heuristic.
+pub const CARD_TABLE_MIN_BYTES: usize = 8 * CARD_SIZE;
+
+/// Return the number of `AtomicU64` words required for a per-object card table
+/// covering an object of `obj_size` bytes.
+///
+/// Card table bitset layout:
+/// - `cards = ceil(obj_size / CARD_SIZE)` bits
+/// - `words = ceil(cards / 64)` 64-bit words
+#[inline]
+pub(crate) fn card_table_word_count(obj_size: usize) -> usize {
+  // `obj_size` should always be > 0, but be defensive in case callers route a
+  // malformed descriptor here.
+  let cards = obj_size.div_ceil(CARD_SIZE).max(1);
+  cards.div_ceil(64).max(1)
+}
+
+/// Clear the card table bitset for `obj` if one is installed.
+///
+/// # Safety
+/// `obj` must be a valid GC object base pointer.
+pub(crate) unsafe fn clear_card_table_for_obj(obj: *mut u8) {
+  debug_assert!(!obj.is_null());
+  let header = &*(obj as *const ObjHeader);
+  let card_table = header.card_table_ptr();
+  if card_table.is_null() {
+    return;
+  }
+
+  let size = obj_size(obj);
+  let words = card_table_word_count(size);
+  for i in 0..words {
+    (*card_table.add(i)).store(0, Ordering::Release);
+  }
+}
 /// Object header that prefixes every GC-managed allocation.
 ///
 /// # Layout

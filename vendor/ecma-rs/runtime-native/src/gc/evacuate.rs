@@ -64,6 +64,13 @@ impl GcHeap {
       evac.err
     };
 
+    // After evacuation, the nursery is empty, so old objects cannot contain any
+    // young pointers. Clear any per-object card tables on remembered objects so
+    // future minors start from a clean slate.
+    remembered.for_each_remembered_obj(&mut |obj| unsafe {
+      super::clear_card_table_for_obj(obj);
+    });
+
     // All nursery pointers reachable from roots/remembered objects should now be
     // forwarded to old-gen.
     if let Some(err) = err {
@@ -115,6 +122,13 @@ impl Evacuator<'_> {
       let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>())?;
 
       ptr::copy_nonoverlapping(obj, new_obj, size);
+
+      // If this is a large pointer array being promoted to old-gen, ensure it
+      // has a per-object card table so the exported write barrier can mark
+      // dirty cards on future old→young stores.
+      self
+        .heap
+        .maybe_install_card_table_for_array(new_obj, size);
       header.set_forwarding_ptr(new_obj);
       #[cfg(any(debug_assertions, feature = "gc_debug"))]
       {

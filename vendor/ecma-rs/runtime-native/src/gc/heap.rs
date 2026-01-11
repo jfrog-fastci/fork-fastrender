@@ -1,8 +1,9 @@
+use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::config::{HeapConfig, HeapLimits};
@@ -67,6 +68,70 @@ pub enum AllocError {
   OutOfMemory,
 }
 
+/// Heap-owned arena for per-object card table bitsets.
+///
+/// Card tables live *outside* the GC heap (they are metadata, not traced
+/// objects). Today they are not reclaimed when an object is swept; instead, we
+/// free all card table allocations when the heap is dropped.
+///
+/// This is intentionally simple until object reclamation wiring learns how to
+/// free per-object card tables.
+#[derive(Default)]
+struct CardTableSpace {
+  allocs: Vec<CardTableAlloc>,
+}
+
+struct CardTableAlloc {
+  ptr: *mut AtomicU64,
+  layout: Layout,
+}
+
+impl CardTableSpace {
+  fn alloc_words(&mut self, words: usize) -> *mut AtomicU64 {
+    debug_assert!(words > 0);
+    let bytes = words
+      .checked_mul(mem::size_of::<AtomicU64>())
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"));
+
+    // `ObjHeader` stores the card table pointer in the high bits of `meta`, so
+    // the pointer must be aligned enough that the low meta flag bits remain
+    // free. See `ObjHeader::set_card_table_ptr`.
+    const META_ALIGN: usize = (super::META_FLAGS_MASK + 1).next_power_of_two();
+    let align = META_ALIGN.max(mem::align_of::<AtomicU64>());
+    let layout = Layout::from_size_align(bytes, align).expect("invalid card table layout");
+
+    // SAFETY: layout is non-zero and well-formed.
+    let raw = unsafe { alloc_zeroed(layout) };
+    if raw.is_null() {
+      handle_alloc_error(layout);
+    }
+    let ptr = raw.cast::<AtomicU64>();
+
+    // Initialize the atomics (even though the memory is zeroed) so the values
+    // are fully-formed `AtomicU64`s.
+    for i in 0..words {
+      // SAFETY: `ptr` points to `words` `AtomicU64` slots.
+      unsafe {
+        ptr.add(i).write(AtomicU64::new(0));
+      }
+    }
+
+    self.allocs.push(CardTableAlloc { ptr, layout });
+    ptr
+  }
+}
+
+impl Drop for CardTableSpace {
+  fn drop(&mut self) {
+    for alloc in self.allocs.drain(..) {
+      // SAFETY: `ptr` was allocated with `layout` in `alloc_words`.
+      unsafe {
+        dealloc(alloc.ptr.cast::<u8>(), alloc.layout);
+      }
+    }
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct GcStats {
   pub minor_collections: usize,
@@ -111,6 +176,7 @@ pub struct GcHeap {
 
   pub(crate) nursery: nursery::NurserySpace,
   pub(crate) nursery_tlab: ThreadNursery,
+  card_tables: CardTableSpace,
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
   weak_handles: WeakHandles,
@@ -220,6 +286,7 @@ impl GcHeap {
       limits: HeapLimits::default(),
       nursery: nursery::NurserySpace::new(nursery_size).expect("failed to reserve nursery space"),
       nursery_tlab: ThreadNursery::new(),
+      card_tables: CardTableSpace::default(),
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
@@ -246,6 +313,7 @@ impl GcHeap {
       limits,
       nursery_tlab: ThreadNursery::new(),
       nursery,
+      card_tables: CardTableSpace::default(),
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
@@ -576,19 +644,109 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-       let header = &mut *(obj as *mut ObjHeader);
-       header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-       header.meta.store(0, Ordering::Relaxed);
-       header.set_mark_epoch(self.mark_epoch);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+      header.set_mark_epoch(self.mark_epoch);
 
-       let arr = &mut *(obj as *mut RtArrayHeader);
-       arr.len = len;
-       arr.elem_size = spec.elem_size as u32;
+      let arr = &mut *(obj as *mut RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
       arr.elem_flags = spec.elem_flags;
     }
 
     self.stats.bytes_allocated_young += size;
     obj
+  }
+
+  /// Allocate a GC-managed array object directly into the old generation.
+  ///
+  /// This mirrors [`GcHeap::alloc_array_young`], but uses the old-generation
+  /// allocator (`alloc_old_raw`) instead of the nursery TLAB.
+  ///
+  /// Large pointer arrays allocated directly into old-gen will automatically
+  /// receive a per-object card table (see [`super::CARD_TABLE_MIN_BYTES`]).
+  pub fn alloc_array_old(&mut self, len: usize, elem_size: usize) -> *mut u8 {
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(&array::RT_ARRAY_TYPE_DESC);
+
+    let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
+      trap::rt_trap_invalid_arg("invalid rt_alloc_array elem_size");
+    };
+    let size = array::checked_total_bytes(len, spec.elem_size)
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+
+    let payload_bytes = array::checked_payload_bytes(len, spec.elem_size)
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+    let should_install_card_table = (spec.elem_flags & array::RT_ARRAY_FLAG_PTR_ELEMS) != 0
+      && payload_bytes >= super::CARD_TABLE_MIN_BYTES;
+
+    let obj = self
+      .alloc_old_raw(size, OBJ_ALIGN)
+      .unwrap_or_else(|_| panic!("old allocation out of space"));
+
+    // SAFETY: the allocation is valid for `size` bytes.
+    unsafe {
+      // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
+      ptr::write_bytes(obj, 0, size);
+
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+      header.meta.store(0, Ordering::Relaxed);
+      header.set_mark_epoch(self.mark_epoch);
+
+      let arr = &mut *(obj as *mut RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
+
+      if should_install_card_table {
+        self.install_card_table_for_obj(header, size);
+      }
+    }
+
+    obj
+  }
+
+  /// Install a zeroed per-object card table for `obj` (if one is not already installed).
+  ///
+  /// `obj_size` must be the total object size in bytes (including the header).
+  fn install_card_table_for_obj(&mut self, header: &mut ObjHeader, obj_size: usize) {
+    if !header.card_table_ptr().is_null() {
+      return;
+    }
+    let words = super::card_table_word_count(obj_size);
+    let card_table = self.card_tables.alloc_words(words);
+    // SAFETY: `card_table` points to `words` `AtomicU64`s and is aligned so
+    // `ObjHeader` can store it in `meta`.
+    unsafe {
+      header.set_card_table_ptr(card_table);
+    }
+  }
+
+  /// Install a per-object card table on `obj` if it is a large pointer array and does not already
+  /// have one.
+  ///
+  /// `obj_size` must be the total object size in bytes (including the header).
+  pub(crate) unsafe fn maybe_install_card_table_for_array(&mut self, obj: *mut u8, obj_size: usize) {
+    debug_assert!(!obj.is_null());
+    let header = &mut *(obj as *mut ObjHeader);
+    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+      return;
+    }
+
+    let arr = &*(obj as *const RtArrayHeader);
+    if (arr.elem_flags & array::RT_ARRAY_FLAG_PTR_ELEMS) == 0 {
+      return;
+    }
+
+    let payload_bytes = array::checked_payload_bytes(arr.len, arr.elem_size as usize)
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("array size overflow"));
+    if payload_bytes < super::CARD_TABLE_MIN_BYTES {
+      return;
+    }
+
+    self.install_card_table_for_obj(header, obj_size);
   }
 
   pub fn alloc_old(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
