@@ -134,6 +134,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     InstTyp::CondGoto
     | InstTyp::Un
     | InstTyp::VarAssign
+    | InstTyp::Return
     | InstTyp::Phi
     | InstTyp::Return
     | InstTyp::_Label => {}
