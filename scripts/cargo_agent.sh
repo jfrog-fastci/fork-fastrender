@@ -125,6 +125,44 @@ set -- "${argv[@]}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Compatibility: `vendor/ecma-rs` is a nested workspace (excluded from the
+# top-level Cargo workspace). Some workflows still want to run commands like:
+#   bash scripts/cargo_agent.sh test -p optimize-js --lib
+# from the repo root.
+#
+# If the requested package name matches a crate directory under
+# `vendor/ecma-rs/` and the caller did not explicitly provide `--manifest-path`,
+# automatically scope the cargo invocation to `vendor/ecma-rs/Cargo.toml` so the
+# package can be resolved.
+if [[ "$*" != *"--manifest-path"* ]]; then
+  argv=("$@")
+  pkg=""
+  for ((i = 0; i < ${#argv[@]}; i++)); do
+    case "${argv[$i]}" in
+      -p|--package)
+        pkg="${argv[$((i + 1))]:-}"
+        ;;
+      --package=*)
+        pkg="${argv[$i]#--package=}"
+        ;;
+    esac
+    if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${pkg}/Cargo.toml" ]]; then
+      subcmd_pos=0
+      if [[ "${argv[0]:-}" == +* ]]; then
+        subcmd_pos=1
+      fi
+      insert_pos=$((subcmd_pos + 1))
+      argv=(
+        "${argv[@]:0:${insert_pos}}"
+        --manifest-path "${repo_root}/vendor/ecma-rs/Cargo.toml"
+        "${argv[@]:${insert_pos}}"
+      )
+      set -- "${argv[@]}"
+      break
+    fi
+  done
+fi
+
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
 # When the sccache daemon is unhealthy, it can fail *some* compilations mid-run and surface as a
 # spurious `could not compile ... process didn't exit successfully: sccache rustc ...` error.
