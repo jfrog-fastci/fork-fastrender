@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::js::import_maps::{
   resolve_module_specifier as resolve_module_specifier_with_import_maps, ImportMapError, ImportMapState,
 };
-use crate::js::runtime::with_event_loop;
+use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
@@ -195,122 +195,147 @@ impl VmJsModuleLoader {
         import_map_state,
       };
 
+      // Attach the loader's module graph to the VM while we load + evaluate modules *and* while we
+      // drain the post-evaluation microtask checkpoint. This ensures dynamic `import()` continues
+      // to work for Promise jobs queued during module evaluation.
+      let mut module_graph_guard: Option<VmModuleGraphGuard> = None;
+      let mut hooks_finish_err: Option<Error> = None;
+
       // Borrow-split: the VM needs `&mut ModuleGraph`, while module loading uses the hooks' maps.
       // Module evaluation also needs both the embedder `VmHost` and the `WindowRealm`.
       // Pass the real embedder `VmHost` context into module evaluation (same as `WindowHost`'s
       // classic-script path). This avoids dummy-host indirection and keeps downcasting reliable.
-      let (vm_host, window_realm) = host.vm_host_and_window_realm();
-      let budget = window_realm.vm_budget_now();
-      let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
-      let mut vm = vm.push_budget(budget);
-      // Attach the loader's module graph to the VM while we load + evaluate modules. `vm-js` uses
-      // this pointer to support dynamic `import()` expressions from nested function calls.
-      //
-      // Note: this guard scopes the pointer to this evaluation call. If the embedding needs dynamic
-      // `import()` from callbacks executed *after* this function returns (e.g. Promise reactions run
-      // at a later microtask checkpoint), the embedding must ensure the module graph remains
-      // attached for that dynamic extent as well.
-      let _module_graph_guard = VmModuleGraphGuard::new(&mut vm, module_graph);
-      let global_object = realm.global_object();
-      let realm_id = realm.id();
+      let outcome: Result<Value> = {
+        let (vm_host, window_realm) = host.vm_host_and_window_realm();
+        let budget = window_realm.vm_budget_now();
+        let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+        let mut vm = vm.push_budget(budget);
+        module_graph_guard = Some(VmModuleGraphGuard::new(&mut vm, module_graph));
+        let global_object = realm.global_object();
+        let realm_id = realm.id();
 
-      let tick_result: std::result::Result<(), VmError> = vm.tick();
-      let outcome: Result<Value> = match tick_result {
-        Ok(()) => {
-          // First: fetch/parse the entry module and load its static dependency graph.
-          let mut entry_module: Option<ModuleId> = None;
-          let mut outcome: Result<Value> = Ok(Value::Undefined);
+        let tick_result: std::result::Result<(), VmError> = vm.tick();
+        let outcome: Result<Value> = match tick_result {
+          Ok(()) => {
+            // First: fetch/parse the entry module and load its static dependency graph.
+            let mut entry_module: Option<ModuleId> = None;
+            let mut outcome: Result<Value> = Ok(Value::Undefined);
 
-          {
-            let mut scope = heap.scope();
-            let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
-              EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
-                &mut vm,
-                &mut scope,
-                module_graph,
-                url,
-                Some(hooks.document_url),
-              ),
-              EntryModule::Inline {
-                url,
-                base_url,
-                source_text,
-              } => hooks.get_or_parse_inline_module(&mut vm, &mut scope, module_graph, url, base_url, source_text),
-            };
-
-            let entry_id = match entry_id_result {
-              Ok(id) => Some(id),
-              Err(err) => {
-                outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                None
-              }
-            };
-
-            if let (Ok(_), Some(entry_id)) = (&outcome, entry_id) {
-              hooks.module_depths.insert(entry_id, 0);
-              let load_promise = match vm_js::load_requested_modules(
-                &mut vm,
-                &mut scope,
-                module_graph,
-                &mut hooks,
-                entry_id,
-                HostDefined::default(),
-              ) {
-                Ok(p) => p,
-                Err(err) => {
-                  outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                  Value::Undefined
+            {
+              let mut scope = heap.scope();
+              let entry_id_result: std::result::Result<ModuleId, VmError> = match entry {
+                EntryModule::ExternalUrl(url) => hooks.get_or_fetch_module(
+                  &mut vm,
+                  &mut scope,
+                  module_graph,
+                  url,
+                  Some(hooks.document_url),
+                ),
+                EntryModule::Inline {
+                  url,
+                  base_url,
+                  source_text,
+                } => {
+                  hooks.get_or_parse_inline_module(&mut vm, &mut scope, module_graph, url, base_url, source_text)
                 }
               };
 
-              if outcome.is_ok() {
-                if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise) {
+              let entry_id = match entry_id_result {
+                Ok(id) => Some(id),
+                Err(err) => {
                   outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                } else {
-                  entry_module = Some(entry_id);
+                  None
+                }
+              };
+
+              if let (Ok(_), Some(entry_id)) = (&outcome, entry_id) {
+                hooks.module_depths.insert(entry_id, 0);
+                let load_promise = match vm_js::load_requested_modules(
+                  &mut vm,
+                  &mut scope,
+                  module_graph,
+                  &mut hooks,
+                  entry_id,
+                  HostDefined::default(),
+                ) {
+                  Ok(p) => p,
+                  Err(err) => {
+                    outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+                    Value::Undefined
+                  }
+                };
+
+                if outcome.is_ok() {
+                  if let Err(err) = ensure_promise_fulfilled(&mut scope, load_promise) {
+                    outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
+                  } else {
+                    entry_module = Some(entry_id);
+                  }
                 }
               }
             }
+
+            // Second: link + evaluate.
+            if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
+              let mut scope = heap.scope();
+              let eval_result: std::result::Result<Value, VmError> = (|| {
+                module_graph.evaluate_sync_with_scope(
+                  &mut vm,
+                  &mut scope,
+                  global_object,
+                  realm_id,
+                  entry_id,
+                  vm_host,
+                  &mut hooks,
+                )?;
+
+                // Return a fulfilled Promise for API compatibility with the previous
+                // `ModuleGraph::evaluate`-based implementation.
+                let promise_prototype = realm.intrinsics().promise_prototype();
+                let promise = scope.alloc_promise_with_prototype(Some(promise_prototype))?;
+                scope.heap_mut().promise_fulfill(promise, Value::Undefined)?;
+                Ok(Value::Object(promise))
+              })();
+
+              outcome = match eval_result {
+                Ok(value) => Ok(value),
+                Err(err) => Err(vm_error_to_error_in_scope(&mut scope, err)),
+              };
+            }
+
+            outcome
           }
+          Err(err) => Err(vm_error_to_error_with_fresh_scope(heap, err)),
+        };
 
-          // Second: link + evaluate.
-          if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
-            let mut scope = heap.scope();
-            let eval_result: std::result::Result<Value, VmError> = (|| {
-              module_graph.evaluate_sync_with_scope(
-                &mut vm,
-                &mut scope,
-                global_object,
-                realm_id,
-                entry_id,
-                vm_host,
-                &mut hooks,
-              )?;
-
-              // Return a fulfilled Promise for API compatibility with the previous
-              // `ModuleGraph::evaluate`-based implementation.
-              let promise_prototype = realm.intrinsics().promise_prototype();
-              let promise = scope.alloc_promise_with_prototype(Some(promise_prototype))?;
-              scope.heap_mut().promise_fulfill(promise, Value::Undefined)?;
-              Ok(Value::Object(promise))
-            })();
-
-            outcome = match eval_result {
-              Ok(value) => Ok(value),
-              Err(err) => Err(vm_error_to_error_in_scope(&mut scope, err)),
-            };
-          }
-
-          outcome
-        }
-        Err(err) => Err(vm_error_to_error_with_fresh_scope(heap, err)),
+        hooks_finish_err = hooks.finish(heap);
+        outcome
       };
 
-      if let Some(err) = hooks.finish(heap) {
+      // HTML: after executing a script/module, perform a microtask checkpoint.
+      let microtask_result = current_event_loop_mut::<Host>()
+        .expect("expected current event loop to be installed by with_event_loop")
+        .perform_microtask_checkpoint(host);
+
+      // Keep the module graph attached until after the checkpoint, then restore the previous VM
+      // state as the function returns.
+      let _module_graph_guard = module_graph_guard;
+
+      if let Some(err) = hooks_finish_err {
+        let _ = microtask_result;
         return Err(err);
       }
 
-      outcome
+      match outcome {
+        Ok(value) => {
+          microtask_result?;
+          Ok(value)
+        }
+        Err(err) => {
+          let _ = microtask_result;
+          Err(err)
+        }
+      }
     })
   }
 }
@@ -1130,6 +1155,35 @@ mod tests {
       msg.contains(entry_url),
       "expected stack trace to include module URL {entry_url:?}; got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_performs_microtask_checkpoint_after_evaluation() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let document_url = "https://example.com/index.html";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "Promise.resolve().then(() => { globalThis.result = 1; });"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    assert_eq!(get_global_prop(&mut host, "result"), Value::Number(1.0));
     Ok(())
   }
 
