@@ -100,6 +100,12 @@ clang-18 \
   -ldl -lpthread -lm
 
 echo "[runtime-native] Running C smoke test..."
-bash "${SUPER_ROOT}/scripts/run_limited.sh" --as 1G --cpu 60 -- "${out_bin}"
+# The runtime-native bump allocator reserves a large virtual-address arena by
+# default. Under the tight `--as 1G` limit used by this smoke test, that default
+# can fail even though the smoke test itself allocates very little.
+#
+# Use a small bump arena unless the caller explicitly configured one.
+RUNTIME_NATIVE_BUMP_ARENA_SIZE="${RUNTIME_NATIVE_BUMP_ARENA_SIZE:-256M}" \
+  bash "${SUPER_ROOT}/scripts/run_limited.sh" --as 1G --cpu 60 -- "${out_bin}"
 
 echo "[runtime-native] OK"
