@@ -20,6 +20,17 @@ fn runtime_wrappers_use_addrspacecasts() {
   );
 
   assert!(
+    ir.contains("define internal ptr addrspace(1) @rt_alloc_pinned_gc"),
+    "missing rt_alloc_pinned_gc wrapper:\n{ir}"
+  );
+  assert!(
+    ir.contains("call ptr @rt_alloc_pinned")
+      && ir.contains("addrspacecast ptr")
+      && ir.contains("to ptr addrspace(1)"),
+    "missing addrspacecast to addrspace(1) in rt_alloc_pinned_gc:\n{ir}"
+  );
+
+  assert!(
     ir.contains("define internal void @rt_write_barrier_gc"),
     "missing rt_write_barrier_gc wrapper:\n{ir}"
   );
@@ -71,9 +82,10 @@ fn emitted_object_contains_llvm_stackmaps_section() {
   let entry = context.append_basic_block(main, "entry");
   builder.position_at_end(entry);
 
-  let stackmap_ty = context
-    .void_type()
-    .fn_type(&[context.i64_type().into(), context.i32_type().into()], true);
+  let stackmap_ty = context.void_type().fn_type(
+    &[context.i64_type().into(), context.i32_type().into()],
+    true,
+  );
   let stackmap = module.add_function("llvm.experimental.stackmap", stackmap_ty, None);
 
   let _ = builder

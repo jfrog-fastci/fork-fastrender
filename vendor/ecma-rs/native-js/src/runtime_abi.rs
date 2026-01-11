@@ -45,6 +45,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   pub fn ensure_wrappers(&self) -> RuntimeFns<'ctx> {
     RuntimeFns {
       rt_alloc_gc: self.rt_alloc_gc(),
+      rt_alloc_pinned_gc: self.rt_alloc_pinned_gc(),
       rt_gc_safepoint_gc: self.rt_gc_safepoint_gc(),
       rt_write_barrier_gc: self.rt_write_barrier_gc(),
     }
@@ -95,8 +96,21 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     //   `rt_alloc(size: usize, shape: u128) -> *mut u8`
     let i64_ty = self.context.i64_type();
     let i128_ty = self.context.i128_type();
-    let fn_ty = self.ptr_raw().fn_type(&[i64_ty.into(), i128_ty.into()], false);
+    let fn_ty = self
+      .ptr_raw()
+      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
     self.get_or_declare("rt_alloc", fn_ty)
+  }
+
+  fn rt_alloc_pinned_raw(&self) -> FunctionValue<'ctx> {
+    // `runtime-native` exports:
+    //   `rt_alloc_pinned(size: usize, shape: u128) -> *mut u8`
+    let i64_ty = self.context.i64_type();
+    let i128_ty = self.context.i128_type();
+    let fn_ty = self
+      .ptr_raw()
+      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+    self.get_or_declare("rt_alloc_pinned", fn_ty)
   }
 
   fn rt_gc_safepoint_raw(&self) -> FunctionValue<'ctx> {
@@ -119,7 +133,9 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   fn rt_alloc_gc(&self) -> FunctionValue<'ctx> {
     let i64_ty = self.context.i64_type();
     let i128_ty = self.context.i128_type();
-    let fn_ty = self.ptr_gc().fn_type(&[i64_ty.into(), i128_ty.into()], false);
+    let fn_ty = self
+      .ptr_gc()
+      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
 
     self.get_or_define_internal("rt_alloc_gc", fn_ty, |func| {
       let raw = self.rt_alloc_raw();
@@ -136,6 +152,42 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .try_as_basic_value()
         .left()
         .expect("rt_alloc returns ptr")
+        .into_pointer_value();
+
+      let gc_ptr = self
+        .builder
+        .build_address_space_cast(raw_ptr, self.ptr_gc(), "gc_ptr")
+        .expect("addrspacecast to gc ptr");
+
+      self
+        .builder
+        .build_return(Some(&gc_ptr))
+        .expect("return gc ptr");
+    })
+  }
+
+  fn rt_alloc_pinned_gc(&self) -> FunctionValue<'ctx> {
+    let i64_ty = self.context.i64_type();
+    let i128_ty = self.context.i128_type();
+    let fn_ty = self
+      .ptr_gc()
+      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+
+    self.get_or_define_internal("rt_alloc_pinned_gc", fn_ty, |func| {
+      let raw = self.rt_alloc_pinned_raw();
+      let entry = self.context.append_basic_block(func, "entry");
+      self.builder.position_at_end(entry);
+
+      let size = func.get_nth_param(0).expect("size").into_int_value();
+      let shape = func.get_nth_param(1).expect("shape").into_int_value();
+
+      let raw_ptr = self
+        .builder
+        .build_call(raw, &[size.into(), shape.into()], "raw")
+        .expect("call rt_alloc_pinned")
+        .try_as_basic_value()
+        .left()
+        .expect("rt_alloc_pinned returns ptr")
         .into_pointer_value();
 
       let gc_ptr = self
@@ -202,6 +254,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
 #[derive(Clone, Copy)]
 pub struct RuntimeFns<'ctx> {
   pub rt_alloc_gc: FunctionValue<'ctx>,
+  pub rt_alloc_pinned_gc: FunctionValue<'ctx>,
   pub rt_gc_safepoint_gc: FunctionValue<'ctx>,
   pub rt_write_barrier_gc: FunctionValue<'ctx>,
 }
