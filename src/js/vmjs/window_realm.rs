@@ -248,6 +248,8 @@ pub(crate) struct WindowRealmUserData {
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
   dom_platform: Option<DomPlatform>,
+  /// Deterministic per-realm PRNG state used by `window.crypto` RNG APIs.
+  pub(crate) crypto_rng_state: u64,
   /// Fallback `dom2::Document` used for events when the realm is not backed by a host DOM.
   ///
   /// This enables `window`/`document` (and `new EventTarget()`) event listeners in minimal realms
@@ -270,6 +272,7 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_dom_platform", &self.dom_platform.is_some())
+      .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
       .field("has_document_obj", &self.document_obj.is_some())
       .field("has_module_loader", &self.module_loader.is_some())
@@ -279,6 +282,7 @@ impl std::fmt::Debug for WindowRealmUserData {
 
 impl WindowRealmUserData {
   pub(crate) fn new(document_url: String) -> Self {
+    let crypto_rng_state = crate::js::window_crypto::crypto_rng_seed_from_document_url(&document_url);
     Self {
       base_url: Some(document_url.clone()),
       pending_navigation: None,
@@ -286,6 +290,7 @@ impl WindowRealmUserData {
       cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
       dom_platform: None,
+      crypto_rng_state,
       events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
       window_obj: None,
       document_obj: None,
@@ -16238,6 +16243,7 @@ fn init_window_globals(
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
   drop(scope);
   crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
+  crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
 
@@ -16440,6 +16446,104 @@ mod tests {
 
     let decoded = realm.exec_script("new TextDecoder().decode(new TextEncoder().encode('hi'))")?;
     assert_eq!(get_string(realm.heap(), decoded), "hi");
+    Ok(())
+  }
+
+  #[test]
+  fn window_crypto_exists_and_is_spec_shaped() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          const ok1 = typeof crypto === 'object';\n\
+          const ok2 = typeof Crypto === 'function';\n\
+          const ok3 = crypto instanceof Crypto;\n\
+          let illegal = false;\n\
+          try { new Crypto(); } catch (e) {\n\
+            illegal = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
+          }\n\
+          return ok1 && ok2 && ok3 && illegal;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_crypto_get_random_values_fills_bytes_and_is_stateful() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          const a = new Uint8Array(16);\n\
+          crypto.getRandomValues(a);\n\
+          let allZero = true;\n\
+          for (var i = 0; i < a.length; i++) { if (a[i] !== 0) { allZero = false; break; } }\n\
+          const b = new Uint8Array(16);\n\
+          crypto.getRandomValues(b);\n\
+          let same = true;\n\
+          for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { same = false; break; } }\n\
+          return !allZero && !same;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_crypto_get_random_values_enforces_quota() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let name = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          crypto.getRandomValues(new Uint8Array(65537));\n\
+          return 'no error';\n\
+        } catch (e) {\n\
+          return e && e.name;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), name), "QuotaExceededError");
+    Ok(())
+  }
+
+  #[test]
+  fn window_crypto_random_uuid_is_rfc4122_v4() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          var a = crypto.randomUUID();\n\
+          var b = crypto.randomUUID();\n\
+          function ok(u) {\n\
+            if (u.length !== 36) return false;\n\
+            if (u.charCodeAt(8) !== 45 || u.charCodeAt(13) !== 45 || u.charCodeAt(18) !== 45 || u.charCodeAt(23) !== 45) return false;\n\
+            for (var i = 0; i < u.length; i++) {\n\
+              var c = u.charCodeAt(i);\n\
+              if (i === 8 || i === 13 || i === 18 || i === 23) {\n\
+                if (c !== 45) return false;\n\
+                continue;\n\
+              }\n\
+              var isDigit = c >= 48 && c <= 57;\n\
+              var isLowerHex = c >= 97 && c <= 102;\n\
+              if (!(isDigit || isLowerHex)) return false;\n\
+            }\n\
+            if (u.charCodeAt(14) !== 52) return false;\n\
+            var v = u.charCodeAt(19);\n\
+            if (!(v === 56 || v === 57 || v === 97 || v === 98)) return false;\n\
+            return true;\n\
+          }\n\
+          return ok(a) && ok(b) && a !== b;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
     Ok(())
   }
 

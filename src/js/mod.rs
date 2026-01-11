@@ -90,6 +90,8 @@ pub mod window;
 pub mod window_abort;
 #[path = "vmjs/window_animation_frame.rs"]
 pub mod window_animation_frame;
+#[path = "vmjs/window_crypto.rs"]
+pub mod window_crypto;
 #[path = "vmjs/window_text_encoding.rs"]
 pub mod window_text_encoding;
 #[path = "vmjs/window_env.rs"]
