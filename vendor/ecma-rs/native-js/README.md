@@ -19,7 +19,7 @@ support the full JavaScript/TypeScript language.
 
 ## What it does
 
-At a high level, the native pipeline looks like:
+At a high level, the **planned** native pipeline looks like:
 
 ```
 TypeScript source
@@ -34,9 +34,17 @@ TypeScript source
 representing the program (usually a single entry function plus any referenced
 helpers/runtime stubs).
 
-> Note: the long-term plan is typechecked/HIR-based codegen, but the currently
-> implemented `compile_typescript_to_llvm_ir` entrypoint is **parse-js-only** and
-> does not perform type checking.
+The **current** minimal pipeline (used by `native-js-cli`) is:
+
+```
+TypeScript source
+  → parse-js (parser)
+  → native-js `compile_typescript_to_llvm_ir` (minimal parse-js-only emitter)
+  → clang (compile IR to native executable)
+```
+
+> Note: `compile_typescript_to_llvm_ir` is **parse-js-only** and does not perform
+> type checking.
 
 ## Build prerequisites
 
