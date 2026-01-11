@@ -381,6 +381,32 @@ It emits stable `NJS####` codes:
 This validator is intentionally conservative and is expected to be relaxed
 incrementally as more language features are lowered safely.
 
+### Rejected constructs (enforced today)
+
+The strict subset validator currently rejects (non-exhaustive, but directly
+matching the validator’s checks):
+
+- Unsupported syntax (`NJS0009`), including:
+  - classes / class expressions
+  - `async` / generator functions, `await`, `yield`
+  - object literals, array literals, and destructuring patterns
+  - property access (`obj.prop`, `obj["prop"]`)
+  - template literals / tagged templates
+  - `import()` expressions, `import.meta`
+  - `super`, `new.target`
+  - JSX
+  - `with`, `try`, `throw`
+  - `eval()` and `Function()` / `new Function()`
+  - use of the `arguments` identifier/object
+- Unsupported types (`NJS0010`):
+  - anything other than the primitive types `number`/`boolean`/`string` plus
+    `null`/`undefined`/`void`/`never` and their literal types
+  - e.g. unions/intersections, object types, function types, nominal/reference
+    types, `bigint`, `symbol`, template-literal types, etc.
+
+Even if the strict subset validator passes, note that the current HIR-based
+backend is still minimal; some programs may still fail later during codegen.
+
 ## Legacy strict validator (`native_js::strict`)
 
 `typecheck-ts` implements TypeScript’s semantics (including unsafe escape hatches

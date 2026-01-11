@@ -304,6 +304,11 @@ renders source-context diagnostics (file/line caret spans) from:
 
 - The HIR-based backend is still extremely small (enough for early smoke tests).
   `native-js-cli` remains the better tool for builtin/lowering debugging.
+- `build`/`run` enforce the current native backend subset via
+  `native_js::validate::validate_strict_subset` (`NJS0009` / `NJS0010`), which
+  currently rejects many common JS/TS constructs (objects/arrays, property
+  access, async/await, etc). See [`native-js/README.md`](../native-js/README.md)
+  for the current list.
 
 ## Tests
 
