@@ -5900,11 +5900,15 @@ impl InlineFormattingContext {
     let mut subsequent_line_width = subsequent_line_width;
 
     let fallback_width = self.viewport_size.width.max(0.0);
-    if !first_line_width.is_finite() || first_line_width <= 0.0 {
+    if !first_line_width.is_finite() {
       first_line_width = fallback_width;
+    } else {
+      first_line_width = first_line_width.max(0.0);
     }
-    if !subsequent_line_width.is_finite() || subsequent_line_width <= 0.0 {
+    if !subsequent_line_width.is_finite() {
       subsequent_line_width = fallback_width;
+    } else {
+      subsequent_line_width = subsequent_line_width.max(0.0);
     }
     let clamp_limit = fallback_width;
     if first_line_width.is_finite() && first_line_width > clamp_limit * 5.0 {
@@ -12531,21 +12535,23 @@ impl InlineFormattingContext {
     let inline_percent_base = constraints
       .inline_percentage_base
       .or(inline_space.to_option());
+    let viewport_inline = if inline_vertical {
+      self.viewport_size.height
+    } else {
+      self.viewport_size.width
+    };
     let mut available_inline = match inline_space {
       AvailableSpace::Definite(w) => w,
-      _ => inline_percent_base.unwrap_or(if inline_vertical {
-        self.viewport_size.height
-      } else {
-        self.viewport_size.width
-      }),
+      _ => inline_percent_base.unwrap_or(viewport_inline),
     };
-    if !available_inline.is_finite() || available_inline <= 0.0 {
-      available_inline = if inline_vertical {
-        self.viewport_size.height
-      } else {
-        self.viewport_size.width
-      }
-      .max(0.0);
+    // `available_inline` can legitimately be 0px (e.g. intrinsic sizing probes where the
+    // min-content inline size is 0). Avoid falling back to the viewport in that case: doing so
+    // inflates intrinsic block-size measurements and breaks percentage sizing (notably for inline
+    // replaced elements sized with `width: 100%`).
+    if !available_inline.is_finite() {
+      available_inline = viewport_inline.max(0.0);
+    } else {
+      available_inline = available_inline.max(0.0);
     }
 
     // When a parent layout mode provides a definite used border-box inline size (e.g. flex/grid
