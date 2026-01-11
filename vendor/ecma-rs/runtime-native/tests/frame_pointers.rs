@@ -127,14 +127,16 @@ runtime-native = {{ path = "{}", features = ["fp_regression"] }}
   )
   .expect("write Cargo.toml");
   fs::write(
-    project_dir.join("src/main.rs"),
-    r#"fn main() {
+    project_dir.join("src/lib.rs"),
+    r#"#![allow(dead_code)]
+
+pub fn entry() -> u64 {
   // Force a reference so the dependency is not pruned by any link-time tooling.
-  let _ = runtime_native::rt_fp_test_entry(123);
+  runtime_native::rt_fp_test_entry(123)
 }
 "#,
   )
-  .expect("write main.rs");
+  .expect("write lib.rs");
 
   let mut target_dir = env::var_os("CARGO_TARGET_DIR")
     .map(PathBuf::from)
@@ -167,6 +169,9 @@ runtime-native = {{ path = "{}", features = ["fp_regression"] }}
     // Ensure the `.rlib` contains disassemblable object files (not LLVM bitcode).
     .env("CARGO_PROFILE_RELEASE_LTO", "false")
     .env("CARGO_PROFILE_RELEASE_STRIP", "none")
+    // Use a lighter optimization level to keep this nested release build fast while still
+    // catching frame-pointer omissions that only occur under optimization.
+    .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "1")
     .env("RUSTFLAGS", rustflags)
     .arg("build")
     .arg("--offline")
