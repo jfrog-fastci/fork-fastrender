@@ -3,6 +3,7 @@ use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
+use crate::js::CurrentScriptStateHandle;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::{BoxNode, BoxType};
@@ -42,6 +43,13 @@ pub struct BrowserDocumentDom2 {
   dom: Box<crate::dom2::Document>,
   dom_source_id: Option<u64>,
   active_events: ActiveEventStack,
+  /// Host-side `Document.currentScript` bookkeeping shared with JS bindings.
+  ///
+  /// `BrowserTabHost` owns the authoritative current-script state, but `vm-js` native handlers see
+  /// the embedder `VmHost` as the document (`BrowserDocumentDom2`). Storing the handle here allows
+  /// `document.currentScript` to be resolved via downcast on the real `VmHost` without relying on
+  /// the legacy `VmJsHostContext` shim.
+  current_script: CurrentScriptStateHandle,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
@@ -86,6 +94,7 @@ impl BrowserDocumentDom2 {
       dom,
       dom_source_id: None,
       active_events: ActiveEventStack::default(),
+      current_script: CurrentScriptStateHandle::default(),
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -119,6 +128,14 @@ impl BrowserDocumentDom2 {
     f: impl FnOnce(&mut crate::web::events::Event) -> R,
   ) -> Option<R> {
     self.active_events.with_event(event_id, f)
+  }
+
+  pub(crate) fn current_script_handle(&self) -> &CurrentScriptStateHandle {
+    &self.current_script
+  }
+
+  pub(crate) fn set_current_script_handle(&mut self, handle: CurrentScriptStateHandle) {
+    self.current_script = handle;
   }
 
   /// Fetches and prepares a URL using the internal renderer, replacing the live `dom2` document
@@ -234,6 +251,7 @@ impl BrowserDocumentDom2 {
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
     self.unregister_dom_source_if_needed();
+    self.current_script.reset();
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
     let dom = Box::new(dom);
     self.dom = dom;
@@ -254,6 +272,7 @@ impl BrowserDocumentDom2 {
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
     self.unregister_dom_source_if_needed();
+    self.current_script.reset();
     let dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
     let dom = Box::new(dom);

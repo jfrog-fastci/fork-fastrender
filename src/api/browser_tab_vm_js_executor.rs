@@ -46,7 +46,6 @@ pub struct VmJsBrowserTabExecutor {
   document_url: String,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
-  current_script_state: Option<CurrentScriptStateHandle>,
   /// Cached `vm-js` host context for Rust-driven event dispatch.
   ///
   /// `BrowserTabHost` owns the `BrowserDocumentDom2` for the lifetime of this executor, so we can
@@ -66,7 +65,6 @@ impl VmJsBrowserTabExecutor {
       document_url: "about:blank".to_string(),
       pending_navigation: None,
       diagnostics: None,
-      current_script_state: None,
       vm_host: None,
       webidl_bindings_host: None,
     }
@@ -137,7 +135,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   ) -> Result<()> {
     self.pending_navigation = None;
     self.diagnostics = document.shared_diagnostics();
-    self.current_script_state = Some(current_script.clone());
+    // `document.currentScript` is read from the embedder `VmHost` (the document) by vm-js native
+    // handlers. Share the stable per-tab `CurrentScriptStateHandle` so JS observes the same
+    // bookkeeping mutated by `BrowserTabHost`'s orchestrator.
+    document.set_current_script_handle(current_script.clone());
     self.vm_host = Some(NonNull::from(document as &mut dyn VmHost));
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.
@@ -231,8 +232,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       Arc::from("<inline>")
     };
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
-
-    let current_script_state = self.current_script_state.clone();
     let exec_result: Result<()> = with_event_loop(event_loop, || {
       update_time_bindings_clock(realm.heap(), clock.clone())
         .map_err(|err| Error::Other(err.to_string()))?;
@@ -247,15 +246,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           loader.cors_mode = CorsMode::Anonymous;
         }
       }
-
-      let dom_ptr = document.dom_non_null();
-      let mut host_ctx = crate::js::VmJsHostContext::new(Some(dom_ptr), current_script_state.clone());
       let webidl_bindings_host = match webidl_bindings_host {
         Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
         None => None,
       };
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
-        &mut host_ctx,
+        document,
         realm,
         webidl_bindings_host,
       );
@@ -562,7 +558,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
-    let current_script_state = self.current_script_state.clone();
     let webidl_bindings_host = self.webidl_bindings_host;
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
@@ -572,14 +567,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       // Route Promise jobs (including module-loading promise reactions) through FastRender's
       // microtask queue.
-      let dom_ptr = document.dom_non_null();
-      let mut host_ctx = crate::js::VmJsHostContext::new(Some(dom_ptr), current_script_state.clone());
       let webidl_bindings_host = match webidl_bindings_host {
         Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
         None => None,
       };
       let inner_hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
-        &mut host_ctx,
+        document,
         realm,
         webidl_bindings_host,
       );

@@ -11872,6 +11872,9 @@ fn document_current_script_get_native(
     {
       return document.current_script_handle().borrow().current_script;
     }
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      return document.current_script_handle().borrow().current_script;
+    }
     if let Some(ctx) = host.as_any_mut().downcast_mut::<crate::js::VmJsHostContext>() {
       return ctx
         .current_script_state()
