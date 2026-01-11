@@ -146,7 +146,7 @@ pub struct NullabilityNarrowing {
   pub when_false: Nullability,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct InstMeta {
@@ -167,7 +167,7 @@ pub struct InstMeta {
   pub ownership: OwnershipState,
   #[cfg_attr(
     feature = "serde",
-    serde(default, skip_serializing_if = "Purity::is_default")
+    serde(default, skip_serializing_if = "crate::analysis::purity::is_default_purity")
   )]
   pub callee_purity: Purity,
   #[cfg_attr(
@@ -182,12 +182,24 @@ impl InstMeta {
     self.effects.is_default()
       && self.result_type.is_default()
       && self.ownership.is_default()
-      && self.callee_purity.is_default()
+      && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
   }
 
   pub fn is_pure(&self) -> bool {
     self.effects.is_pure()
+  }
+}
+
+impl Default for InstMeta {
+  fn default() -> Self {
+    Self {
+      effects: EffectSet::default(),
+      result_type: TypeInfo::default(),
+      ownership: OwnershipState::default(),
+      callee_purity: Purity::Impure,
+      nullability_narrowing: None,
+    }
   }
 }
 

@@ -3,42 +3,41 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::EffectSet;
 use crate::il::inst::{Arg, InstTyp};
 use crate::{FnId, Program};
+pub use effect_model::Purity;
 use effect_model::{EffectFlags, ThrowBehavior};
 
-/// Conservative purity lattice for JS operations.
+/// `optimize-js` uses the canonical purity taxonomy from `effect-model`.
 ///
-/// Ordering is deterministic (via `Ord`) and reflects "less pure" moving upwards.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub enum Purity {
-  /// No reads, writes, allocation, or unknown effects.
-  Pure,
-  /// May read program state but does not write/allocate/unknown.
-  ReadOnly,
-  /// Pure except for allocation.
-  Allocating,
-  /// May write state or has unknown effects.
-  #[default]
-  Impure,
-}
-
-impl Purity {
-  pub fn is_default(&self) -> bool {
-    matches!(self, Self::Impure)
-  }
+/// Note: We treat "unknown purity" as [`Purity::Impure`] in this pass (i.e. we
+/// stay conservative when we can't prove purity).
+pub(crate) fn is_default_purity(purity: &Purity) -> bool {
+  matches!(purity, Purity::Impure)
 }
 
 /// Purity summaries for every function in a [`crate::Program`].
 ///
 /// `functions` is index-aligned with `Program::functions` and `FnId`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct FnPurityMap {
   pub top_level: Purity,
   pub functions: Vec<Purity>,
 }
 
+impl Default for FnPurityMap {
+  fn default() -> Self {
+    Self {
+      top_level: Purity::Impure,
+      functions: Vec::new(),
+    }
+  }
+}
+
 impl FnPurityMap {
+  pub fn new(top_level: Purity, functions: Vec<Purity>) -> Self {
+    Self { top_level, functions }
+  }
+
   pub fn for_fn(&self, id: FnId) -> Purity {
     self.functions.get(id).copied().unwrap_or(Purity::Impure)
   }
