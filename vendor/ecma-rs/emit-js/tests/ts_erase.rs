@@ -1,3 +1,5 @@
+#![cfg(feature = "ts_erase")]
+
 use diagnostics::FileId;
 use emit_js::{emit_ecma_from_ts_top_level, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
