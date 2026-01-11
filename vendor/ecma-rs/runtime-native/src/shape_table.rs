@@ -1,5 +1,6 @@
 use crate::abi::{RtShapeDescriptor, RtShapeId};
 use crate::gc::{ObjHeader, TypeDescriptor};
+use crate::ffi::abort_on_panic;
 use std::mem;
 use std::sync::OnceLock;
 
@@ -54,7 +55,7 @@ static SHAPE_TABLE: OnceLock<ShapeTable> = OnceLock::new();
 ///   duration of the process (codegen should emit them as static data).
 #[no_mangle]
 pub unsafe extern "C" fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
-  register_shape_table(ptr, len);
+  abort_on_panic(|| register_shape_table(ptr, len));
 }
 
 pub(crate) unsafe fn register_shape_table(ptr: *const RtShapeDescriptor, len: usize) {
