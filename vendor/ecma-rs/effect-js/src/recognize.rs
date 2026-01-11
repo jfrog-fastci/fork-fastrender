@@ -66,6 +66,9 @@ pub enum RecognizedPattern {
     guard_kind: GuardKind,
     subject: ExprId,
   },
+
+  /// `for await (... of asyncIterable) { ... }`.
+  AsyncIterator { iterable: ExprId },
 }
 
 fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(&StmtKind)) {
@@ -376,6 +379,14 @@ pub fn recognize_patterns_best_effort_untyped(
               has_rest,
             });
           }
+        }
+        StmtKind::ForIn {
+          right,
+          is_for_of: true,
+          await_: true,
+          ..
+        } => {
+          patterns.push(RecognizedPattern::AsyncIterator { iterable: *right });
         }
         StmtKind::If {
           test,

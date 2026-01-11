@@ -116,6 +116,9 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       "GuardClause(test={}, kind={:?}, subject={})",
       test.0, guard_kind, subject.0
     ),
+    RecognizedPattern::AsyncIterator { iterable } => {
+      format!("AsyncIterator(iterable={})", iterable.0)
+    }
   }
 }
 
@@ -177,6 +180,7 @@ fn run(
           RecognizedPattern::ObjectSpread { .. } => seen.insert("ObjectSpread"),
           RecognizedPattern::ArrayDestructure { .. } => seen.insert("ArrayDestructure"),
           RecognizedPattern::GuardClause { .. } => seen.insert("GuardClause"),
+          RecognizedPattern::AsyncIterator { .. } => seen.insert("AsyncIterator"),
         };
         println!("  - {}", format_pattern(db, pat));
       }

@@ -429,6 +429,16 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             ),
           });
         }
+        RecognizedPattern::AsyncIterator { iterable } => {
+          let span = body.exprs[iterable.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] AsyncIterator: iterable={}",
+              span.start, span.end, iterable.0
+            ),
+          });
+        }
       }
     }
   }
