@@ -65,12 +65,6 @@ struct VmJsHostContext {
 }
 
 impl VmJsHostContext {
-  fn with_current_script_state(current_script_state: CurrentScriptStateHandle) -> Self {
-    Self {
-      current_script_state: Some(current_script_state),
-    }
-  }
-
   fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
     self.current_script_state.as_ref()
   }
@@ -16306,7 +16300,9 @@ mod tests {
   #[test]
   fn current_script_state_handle_from_vm_host_supports_vmjs_host_context() {
     let handle = CurrentScriptStateHandle::default();
-    let mut host_ctx = VmJsHostContext::with_current_script_state(handle.clone());
+    let mut host_ctx = VmJsHostContext {
+      current_script_state: Some(handle.clone()),
+    };
     let mut hooks = NoopHostHooks::default();
 
     let found = current_script_state_handle_from_vm_host(&mut host_ctx, &mut hooks)
