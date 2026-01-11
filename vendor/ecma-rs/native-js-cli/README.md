@@ -145,18 +145,24 @@ This is especially useful when LLVM rejects the generated IR (verification /
 codegen) or when linking fails (the CLI normally writes IR to a temporary
 directory that is deleted on exit).
 
-Note: `native-js-cli` still runs the compiled program after writing the IR. If
-you want to stop after compilation, compile the emitted IR yourself:
+Notes:
+
+- `--emit-llvm` does not change execution: in the default mode (no subcommand)
+  and `run`, the CLI still builds and runs the program after writing the IR.
+- If you only want the `.ll` (no build/run), use the `emit-ir` subcommand:
 
 ```bash
-clang -x ir /tmp/out.ll -o /tmp/out
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+  emit-ir /tmp/main.ts -o /tmp/out.ll
 ```
 
-`native-js-cli` does not currently have a flag to keep the intermediate object
-file, but you can produce one from the emitted IR:
+If you want to build an executable without running it, use `build` (you can
+combine it with `--emit-llvm`):
 
 ```bash
-clang -x ir -c /tmp/out.ll -o /tmp/out.o
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+  --emit-llvm /tmp/out.ll \
+  build /tmp/main.ts -o /tmp/out
 ```
 
 ### `--no-builtins`
