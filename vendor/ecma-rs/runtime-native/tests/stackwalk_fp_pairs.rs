@@ -137,6 +137,127 @@ fn root_pairs_use_callee_fp_callsite_sp_not_stack_size() {
   assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn fixture_stack_enumerates_root_pairs_from_stackmaps_with_callsite_sp_adjustment() {
+  use runtime_native::stackmaps::Location;
+  use runtime_native::statepoints::StatepointRecord;
+  use std::collections::BTreeSet;
+
+  let stackmaps =
+    StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin")).expect("parse stackmaps");
+
+  // Pick two callsite records so we can build a multi-frame managed call chain.
+  let callsites: Vec<(u64, runtime_native::stackmaps::CallSite<'_>)> =
+    stackmaps.iter().take(2).collect();
+  assert!(
+    callsites.len() >= 2,
+    "fixture must contain at least two callsites to test multi-frame walking"
+  );
+
+  // Fake stack memory.
+  let mut stack = vec![0u8; 4096];
+  let base = stack.as_mut_ptr() as usize;
+
+  // Construct a 2-frame managed call chain:
+  //   runtime_frame (start_fp) -> caller1_fp -> caller2_fp -> null
+  let start_fp = align_up(base + 0x100, 16);
+  let caller1_fp = align_up(base + 0x600, 16);
+  let caller2_fp = align_up(base + 0xB00, 16);
+
+  // Stackmap locations are based on the *callsite* SP in the caller. With frame pointers enforced,
+  // we derive that SP from the callee frame pointer (`callee_fp + 16`).
+  let caller1_sp_callsite = start_fp + 16;
+  let caller2_sp_callsite = caller1_fp + 16;
+
+  unsafe {
+    // runtime frame -> caller1
+    write_u64(start_fp + 0, caller1_fp as u64);
+    write_u64(start_fp + 8, callsites[0].0);
+
+    // caller1 -> caller2
+    write_u64(caller1_fp + 0, caller2_fp as u64);
+    write_u64(caller1_fp + 8, callsites[1].0);
+
+    // caller2 -> null
+    write_u64(caller2_fp + 0, 0);
+    write_u64(caller2_fp + 8, 0);
+  }
+
+  // Regression guard: ensure our synthetic frame pointers model a callsite with extra SP adjustment
+  // (e.g. outgoing stack args) such that reconstructing SP from `stack_size` would be wrong for
+  // non-top frames.
+  let stack_size = callsites[1].1.stack_size;
+  assert_ne!(
+    stack_size,
+    u64::MAX,
+    "fixture must not use stack_size=u64::MAX for this regression"
+  );
+  let old_locals = stack_size.checked_sub(8).expect("stack_size < FP_RECORD_SIZE");
+  let old_sp = (caller2_fp as u64)
+    .checked_sub(old_locals)
+    .expect("old SP estimate underflow");
+  assert_ne!(
+    old_sp, caller2_sp_callsite as u64,
+    "test requires callsite SP to differ from stack_size-based estimate"
+  );
+
+  // Fill each unique root slot in each frame with a distinct pointer value, and record the
+  // expected `(base_slot, derived_slot)` addresses.
+  let mut expected_pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+  let mut unique_slots: BTreeSet<usize> = BTreeSet::new();
+  for (frame_sp, callsite) in [
+    (caller1_sp_callsite, callsites[0].1),
+    (caller2_sp_callsite, callsites[1].1),
+  ] {
+    let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
+    for pair in statepoint.gc_pairs() {
+      let base_slot = match &pair.base {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+          assert_eq!(*dwarf_reg, 7, "fixture roots must be [SP + off]");
+          add_signed_u64(frame_sp as u64, *offset).expect("base slot addr") as usize
+        }
+        other => panic!("unexpected base location kind in fixture: {other:?}"),
+      };
+      let derived_slot = match &pair.derived {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+          assert_eq!(*dwarf_reg, 7, "fixture roots must be [SP + off]");
+          add_signed_u64(frame_sp as u64, *offset).expect("derived slot addr") as usize
+        }
+        other => panic!("unexpected derived location kind in fixture: {other:?}"),
+      };
+      expected_pairs.insert((base_slot, derived_slot));
+      unique_slots.insert(base_slot);
+      unique_slots.insert(derived_slot);
+    }
+  }
+
+  for slot_addr in unique_slots {
+    let obj = Box::into_raw(Box::new(0u8)) as u64;
+    unsafe {
+      write_u64(slot_addr, obj);
+    }
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let mut visited_pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+  unsafe {
+    runtime_native::stackwalk_fp::walk_gc_root_pairs_from_fp(
+      start_fp as u64,
+      Some(bounds),
+      &stackmaps,
+      |_ra, pairs| {
+        for &(base_slot, derived_slot) in pairs {
+          visited_pairs.insert((base_slot as usize, derived_slot as usize));
+        }
+      },
+    )
+    .expect("walk");
+  }
+
+  assert_eq!(visited_pairs, expected_pairs);
+}
+
 #[test]
 fn root_pairs_from_safepoint_context_use_ctx_sp() {
   let mut mem = AlignedStack([0usize; 64]);
@@ -194,4 +315,20 @@ fn root_pairs_from_safepoint_context_use_ctx_sp() {
   }
 
   assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
+}
+
+fn align_up(v: usize, align: usize) -> usize {
+  (v + (align - 1)) & !(align - 1)
+}
+
+unsafe fn write_u64(addr: usize, val: u64) {
+  (addr as *mut u64).write_unaligned(val);
+}
+
+fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
+  if offset >= 0 {
+    base.checked_add(offset as u64)
+  } else {
+    base.checked_sub((-offset) as u64)
+  }
 }
