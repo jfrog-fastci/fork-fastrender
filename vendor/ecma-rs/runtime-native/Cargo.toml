@@ -36,6 +36,9 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 
+[build-dependencies]
+object = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 rand = { workspace = true }
@@ -46,3 +49,4 @@ object = { workspace = true }
 [[bench]]
 name = "card_table"
 harness = false
+

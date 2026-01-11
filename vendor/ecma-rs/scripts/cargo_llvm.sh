@@ -45,6 +45,18 @@ cd "${REPO_ROOT}"
 # Higher RAM limit for LLVM operations (default 96GB, override with LLVM_LIMIT_AS)
 export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
 
+# Precise GC via LLVM statepoint stackmaps requires reliable stack walking. We currently
+# enforce frame-pointer walking as the first milestone, so all Rust code that can run on
+# GC-managed threads must be compiled with frame pointers enabled.
+#
+# Note: We deliberately set this in the LLVM wrapper script instead of globally for the
+# whole workspace, since most crates don't need frame pointers.
+if [[ -z "${RUSTFLAGS:-}" ]]; then
+  export RUSTFLAGS="-C force-frame-pointers=yes"
+else
+  export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+fi
+
 # Auto-detect LLVM 18 on Ubuntu if not already set
 if [[ -z "${LLVM_SYS_180_PREFIX:-}" ]]; then
   if [[ -d /usr/lib/llvm-18 ]]; then

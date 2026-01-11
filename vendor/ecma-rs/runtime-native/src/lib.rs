@@ -31,6 +31,7 @@ pub mod threading;
 pub mod stackmaps;
 pub mod stackmaps_loader;
 pub mod statepoints;
+pub mod stackwalk;
 pub mod stackwalk_fp;
 pub mod test_util;
 pub mod statepoint_verify;

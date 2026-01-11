@@ -20,6 +20,7 @@ graph TD
     minify_js_nodejs["minify-js-nodejs"]
     native_js["native-js"]
     native_js_cli["native-js-cli"]
+    native_oracle_harness["native-oracle-harness"]
     optimize_js["optimize-js"]
     optimize_js_debugger["optimize-js-debugger"]
     parse_js["parse-js"]
@@ -74,6 +75,11 @@ graph TD
     native_js_cli --> diagnostics
     native_js_cli --> native_js
     native_js_cli --> typecheck_ts
+    native_oracle_harness --> emit_js
+    native_oracle_harness --> optimize_js
+    native_oracle_harness --> parse_js
+    native_oracle_harness --> runtime_js
+    native_oracle_harness --> vm_js
     optimize_js --> diagnostics
     optimize_js --> effect_model
     optimize_js --> emit_js
