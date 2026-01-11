@@ -2,8 +2,9 @@ use effect_model::{EffectSet, Purity};
 use hir_js::{
   ArrayElement, BinaryOp, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId,
   ObjectKey, ObjectProperty, PatId, PatKind, StmtId, StmtKind, TypeArenas, TypeExprId, TypeExprKind,
-  VarDecl,
+  VarDecl, VarDeclKind,
 };
+use hir_js::hir::SwitchCase;
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayChainOp;
 use knowledge_base::{ApiKind, KnowledgeBase};
@@ -263,6 +264,7 @@ pub fn analyze_inline_callback(
     array_param,
     uses_index: false,
     uses_array: false,
+    shadow_stack: vec![ShadowScope::default()],
     effects: EffectSet::empty(),
     purity: Purity::Pure,
   };
@@ -326,8 +328,15 @@ struct CallbackAnalyzer<'a> {
   array_param: Option<NameId>,
   uses_index: bool,
   uses_array: bool,
+  shadow_stack: Vec<ShadowScope>,
   effects: EffectSet,
   purity: Purity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ShadowScope {
+  shadow_index: bool,
+  shadow_array: bool,
 }
 
 impl CallbackAnalyzer<'_> {
@@ -342,6 +351,117 @@ impl CallbackAnalyzer<'_> {
   fn mark_unknown(&mut self) {
     self.merge_effects(EffectSet::UNKNOWN_CALL);
     self.merge_purity(Purity::Impure);
+  }
+
+  fn scan_shadow_in_stmts(&self, body: &Body, stmts: &[StmtId]) -> ShadowScope {
+    let mut scope = ShadowScope::default();
+    if self.index_param.is_none() && self.array_param.is_none() {
+      return scope;
+    }
+    let index = self.index_param;
+    let array = self.array_param;
+    for stmt_id in stmts {
+      let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+        continue;
+      };
+      let StmtKind::Var(var) = &stmt.kind else {
+        continue;
+      };
+      if !is_lexical_var_decl(var) {
+        continue;
+      }
+      if let Some(index) = index {
+        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+          scope.shadow_index = true;
+        }
+      }
+      if let Some(array) = array {
+        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+          scope.shadow_array = true;
+        }
+      }
+    }
+    scope
+  }
+
+  fn scan_shadow_in_switch(&self, body: &Body, cases: &[SwitchCase]) -> ShadowScope {
+    let mut scope = ShadowScope::default();
+    if self.index_param.is_none() && self.array_param.is_none() {
+      return scope;
+    }
+    let index = self.index_param;
+    let array = self.array_param;
+    for case in cases {
+      for stmt_id in &case.consequent {
+        let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+          continue;
+        };
+        let StmtKind::Var(var) = &stmt.kind else {
+          continue;
+        };
+        if !is_lexical_var_decl(var) {
+          continue;
+        }
+        if let Some(index) = index {
+          if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+            scope.shadow_index = true;
+          }
+        }
+        if let Some(array) = array {
+          if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+            scope.shadow_array = true;
+          }
+        }
+      }
+    }
+    scope
+  }
+
+  fn scan_shadow_in_var_decl(&self, body: &Body, var: &VarDecl) -> ShadowScope {
+    let mut scope = ShadowScope::default();
+    let Some(index) = self.index_param else {
+      if let Some(array) = self.array_param {
+        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+          scope.shadow_array = true;
+        }
+      }
+      return scope;
+    };
+
+    if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+      scope.shadow_index = true;
+    }
+    if let Some(array) = self.array_param {
+      if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+        scope.shadow_array = true;
+      }
+    }
+    scope
+  }
+
+  fn scan_shadow_in_pat(&self, body: &Body, pat: PatId) -> ShadowScope {
+    let mut scope = ShadowScope::default();
+    if let Some(index) = self.index_param {
+      if pat_binds_name(body, pat, index) {
+        scope.shadow_index = true;
+      }
+    }
+    if let Some(array) = self.array_param {
+      if pat_binds_name(body, pat, array) {
+        scope.shadow_array = true;
+      }
+    }
+    scope
+  }
+
+  fn name_is_shadowed(&self, name: NameId) -> bool {
+    if Some(name) == self.index_param {
+      return self.shadow_stack.iter().any(|s| s.shadow_index);
+    }
+    if Some(name) == self.array_param {
+      return self.shadow_stack.iter().any(|s| s.shadow_array);
+    }
+    false
   }
 
   fn visit_stmt(&mut self, body: &Body, stmt_id: StmtId) {
@@ -362,9 +482,12 @@ impl CallbackAnalyzer<'_> {
         }
       }
       StmtKind::Block(stmts) => {
+        let scope = self.scan_shadow_in_stmts(body, stmts);
+        self.shadow_stack.push(scope);
         for stmt in stmts {
           self.visit_stmt(body, *stmt);
         }
+        self.shadow_stack.pop();
       }
       StmtKind::If {
         test,
@@ -387,6 +510,13 @@ impl CallbackAnalyzer<'_> {
         update,
         body: inner,
       } => {
+        let mut pushed = false;
+        if let Some(ForInit::Var(var)) = init.as_ref() {
+          if is_lexical_var_decl(var) {
+            self.shadow_stack.push(self.scan_shadow_in_var_decl(body, var));
+            pushed = true;
+          }
+        }
         if let Some(init) = init {
           match init {
             ForInit::Expr(expr) => self.visit_expr(body, *expr),
@@ -400,17 +530,32 @@ impl CallbackAnalyzer<'_> {
           self.visit_expr(body, *update);
         }
         self.visit_stmt(body, *inner);
+        if pushed {
+          self.shadow_stack.pop();
+        }
       }
       StmtKind::ForIn { left, right, body: inner, .. } => {
+        let mut pushed = false;
+        if let ForHead::Var(var) = left {
+          if is_lexical_var_decl(var) {
+            self.shadow_stack.push(self.scan_shadow_in_var_decl(body, var));
+            pushed = true;
+          }
+        }
         match left {
           ForHead::Pat(pat) => self.visit_assign_pat(body, *pat),
           ForHead::Var(var) => self.visit_var_decl(body, var),
         }
         self.visit_expr(body, *right);
         self.visit_stmt(body, *inner);
+        if pushed {
+          self.shadow_stack.pop();
+        }
       }
       StmtKind::Switch { discriminant, cases } => {
         self.visit_expr(body, *discriminant);
+        let scope = self.scan_shadow_in_switch(body, cases);
+        self.shadow_stack.push(scope);
         for case in cases {
           if let Some(test) = case.test {
             self.visit_expr(body, test);
@@ -419,6 +564,7 @@ impl CallbackAnalyzer<'_> {
             self.visit_stmt(body, *stmt);
           }
         }
+        self.shadow_stack.pop();
       }
       StmtKind::Try {
         block,
@@ -427,10 +573,16 @@ impl CallbackAnalyzer<'_> {
       } => {
         self.visit_stmt(body, *block);
         if let Some(catch) = catch {
+          let mut pushed = false;
           if let Some(param) = catch.param {
+            self.shadow_stack.push(self.scan_shadow_in_pat(body, param));
+            pushed = true;
             self.visit_binding_pat(body, param);
           }
           self.visit_stmt(body, catch.body);
+          if pushed {
+            self.shadow_stack.pop();
+          }
         }
         if let Some(finally_block) = finally_block {
           self.visit_stmt(body, *finally_block);
@@ -819,15 +971,53 @@ impl CallbackAnalyzer<'_> {
   }
 
   fn record_ident(&mut self, name: NameId) {
-    if Some(name) == self.index_param {
+    if Some(name) == self.index_param && !self.name_is_shadowed(name) {
       self.uses_index = true;
     }
-    if Some(name) == self.array_param {
+    if Some(name) == self.array_param && !self.name_is_shadowed(name) {
       self.uses_array = true;
     }
   }
 }
 
+fn is_lexical_var_decl(var: &VarDecl) -> bool {
+  matches!(
+    var.kind,
+    VarDeclKind::Let | VarDeclKind::Const | VarDeclKind::Using | VarDeclKind::AwaitUsing
+  )
+}
+
+fn pat_binds_name(body: &Body, pat: PatId, name: NameId) -> bool {
+  let Some(pat) = body.pats.get(pat.0 as usize) else {
+    return false;
+  };
+  match &pat.kind {
+    PatKind::Ident(id) => *id == name,
+    PatKind::Array(arr) => {
+      for element in arr.elements.iter().flatten() {
+        if pat_binds_name(body, element.pat, name) {
+          return true;
+        }
+      }
+      arr
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Object(obj) => {
+      for prop in &obj.props {
+        if pat_binds_name(body, prop.value, name) {
+          return true;
+        }
+      }
+      obj
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Rest(inner) => pat_binds_name(body, **inner, name),
+    PatKind::Assign { target, .. } => pat_binds_name(body, *target, name),
+    PatKind::AssignTarget(_) => false,
+  }
+}
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1045,6 +1235,62 @@ mod tests {
     assert_eq!(info.callback_is_pure, Some(true));
     assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn block_shadow_does_not_count_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { { let i = 0; return i; } });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn for_loop_shadow_does_not_count_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { for (let i = 0; i < 1; i++) {} return x; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn catch_param_shadow_does_not_count_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { try { throw 1; } catch (i) { return i; } });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn switch_case_shadow_does_not_hide_discriminant_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { switch (i) { case 0: let i = 0; return i; } });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
   }
 
   #[test]
