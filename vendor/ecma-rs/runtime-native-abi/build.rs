@@ -145,6 +145,39 @@ fn main() {
     }
   }
 
+  // Convenience helper for ELF DSOs: emit a constructor that registers this module's stackmaps at
+  // load time (mirrors `runtime_native.h`).
+  if !header.contains("RT_STACKMAPS_AUTO_REGISTER") {
+    if let Some(pos) = header.find("extern bool rt_stackmaps_unregister") {
+      if let Some(line_end) = header[pos..].find('\n') {
+        let insert_at = pos + line_end + 1;
+        header.insert_str(
+          insert_at,
+          concat!(
+            "\n// Convenience helper for ELF DSOs: emit a constructor that registers this\n",
+            "// module's stackmaps at load time.\n",
+            "//\n",
+            "// Usage:\n",
+            "//   RT_STACKMAPS_AUTO_REGISTER();\n",
+            "//\n",
+            "// (Call once per module.)\n",
+            "#if defined(__GNUC__) && !defined(_WIN32)\n",
+            "#define RT_STACKMAPS_AUTO_REGISTER()                                                \\\n",
+            "  static void __attribute__((constructor)) __rt_stackmaps_ctor(void) {              \\\n",
+            "    extern uint8_t __llvm_stackmaps_start;                                          \\\n",
+            "    extern uint8_t __llvm_stackmaps_end;                                            \\\n",
+            "    (void)rt_stackmaps_register(&__llvm_stackmaps_start, &__llvm_stackmaps_end);    \\\n",
+            "  }\n",
+            "#else\n",
+            "#define RT_STACKMAPS_AUTO_REGISTER()\n",
+            "#endif\n",
+          ),
+        );
+        modified = true;
+      }
+    }
+  }
+
   // Flexible array members (`[u8; 0]` in Rust) are emitted by cbindgen as
   // `uint8_t data[0]`, which is rejected by strict C++ compilers. Model the same
   // C/C++ split used in `runtime_native.h`:

@@ -1079,6 +1079,7 @@ mod tests {
       "rt_debug_shape_count(",
       "rt_debug_shape_descriptor(",
       "rt_debug_validate_heap(",
+      "RT_STACKMAPS_AUTO_REGISTER",
       "rt_weak_add(",
       "rt_weak_get(",
       "rt_weak_remove(",
