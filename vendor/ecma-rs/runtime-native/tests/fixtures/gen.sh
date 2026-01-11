@@ -39,6 +39,24 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_const_x86_64.bin" \
   "${TMP}/stackmap_const_x86_64.o"
 
+# stackmap_direct (x86_64)
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/stackmap_direct.ll" \
+  -o "${TMP}/stackmap_direct_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_direct_x86_64.bin" \
+  "${TMP}/stackmap_direct_x86_64.o"
+
+# stackmap_register (x86_64)
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/stackmap_register.ll" \
+  -o "${TMP}/stackmap_register_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_register_x86_64.bin" \
+  "${TMP}/stackmap_register_x86_64.o"
+
 # statepoint_gcroot2 (rewrite-statepoints-for-gc + stackmaps)
 opt-18 -mtriple=x86_64-unknown-linux-gnu -passes=rewrite-statepoints-for-gc -S \
   "${IR_DIR}/statepoint_gcroot2.ll" \
@@ -65,4 +83,3 @@ llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_aarch64.bi
   "${TMP}/statepoint_aarch64.o"
 
 echo "ok: regenerated stackmap fixtures into ${BIN_DIR}"
-
