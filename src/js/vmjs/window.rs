@@ -3669,6 +3669,40 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_inline_script_oversized_integrity_attribute_does_not_execute_and_is_not_started(
+  ) -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    host.exec_script(&format!(
+      "(() => {{\n\
+        this.__ran = false;\n\
+        const s = document.createElement('script');\n\
+        s.setAttribute('id', 's');\n\
+        s.setAttribute('integrity', '{integrity}');\n\
+        s.appendChild(document.createTextNode('this.__ran = true;'));\n\
+        document.head.appendChild(s);\n\
+      }})()"
+    ))?;
+
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    let script = host
+      .host()
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script");
+    assert!(
+      !host.host().dom().node(script).script_already_started,
+      "expected scripts with invalid integrity metadata not to be marked already started"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_external_script_sri_cross_origin_without_crossorigin_blocks_execution() -> Result<()> {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
