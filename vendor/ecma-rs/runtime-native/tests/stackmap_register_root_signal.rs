@@ -19,10 +19,10 @@ use object::{Object, ObjectSection};
 extern "C" {}
 
 static STACKMAPS: OnceLock<StackMaps> = OnceLock::new();
+static OBSERVED_VALUE: AtomicU64 = AtomicU64::new(0);
 static MUTATED_VALUE: AtomicU64 = AtomicU64::new(0);
 static HANDLED: AtomicBool = AtomicBool::new(false);
-
-const XOR_CONST: u64 = 0x0f0e_0d0c_0b0a_0908;
+static NEW_VALUE: AtomicU64 = AtomicU64::new(0);
 
 fn tool_available(tool: &str) -> bool {
   Command::new(tool)
@@ -72,7 +72,8 @@ unsafe extern "C" fn sigill_handler(_sig: libc::c_int, _info: *mut libc::siginfo
   };
 
   let old = slot.read_u64(&ctx);
-  let new = old ^ XOR_CONST;
+  OBSERVED_VALUE.store(old, Ordering::Relaxed);
+  let new = NEW_VALUE.load(Ordering::Relaxed);
   slot.write_u64(&mut ctx, new);
   MUTATED_VALUE.store(new, Ordering::Relaxed);
 
@@ -156,11 +157,11 @@ target triple = "x86_64-unknown-linux-gnu"
 declare void @llvm.experimental.stackmap(i64 immarg, i32 immarg, ...)
 declare void @llvm.trap()
 
-define i64 @foo(i64 %x) {
+define ptr @foo(ptr %x) {
 entry:
-  call void (i64, i32, ...) @llvm.experimental.stackmap(i64 1, i32 0, i64 %x)
+  call void (i64, i32, ...) @llvm.experimental.stackmap(i64 1, i32 0, ptr %x)
   call void @llvm.trap()
-  ret i64 %x
+  ret ptr %x
 }
 "#,
   )
@@ -201,13 +202,20 @@ entry:
     libc::sigemptyset(&mut sa.sa_mask);
     assert_eq!(libc::sigaction(libc::SIGILL, &sa, core::ptr::null_mut()), 0);
 
-    let foo: extern "C" fn(u64) -> u64 = core::mem::transmute(sym);
-    let input = 0x1111_2222_3333_4444u64;
+    let foo: extern "C" fn(*mut u8) -> *mut u8 = core::mem::transmute(sym);
+    let mut old_box = Box::new(0x1111_2222_3333_4444u64);
+    let mut new_box = Box::new(0xaaaa_bbbb_cccc_ddddu64);
+    let input = (&mut *old_box) as *mut u64 as *mut u8;
+    let expected = (&mut *new_box) as *mut u64 as *mut u8;
+    NEW_VALUE.store(expected as u64, Ordering::Relaxed);
+
     let ret = foo(input);
 
     assert!(HANDLED.load(Ordering::Acquire), "SIGILL handler did not run");
-    let expected = MUTATED_VALUE.load(Ordering::Relaxed);
+    assert_eq!(OBSERVED_VALUE.load(Ordering::Relaxed), input as u64);
     assert_eq!(ret, expected);
+    // Safety: we wrote a valid pointer value into the register root.
+    assert_eq!(*(ret as *const u64), *new_box);
 
     // Restore default handler to avoid affecting other tests.
     let mut sa_default: libc::sigaction = core::mem::zeroed();
