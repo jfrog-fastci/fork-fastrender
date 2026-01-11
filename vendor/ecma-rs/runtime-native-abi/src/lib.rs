@@ -380,6 +380,8 @@ extern "C" {
   pub fn rt_write_barrier_range(obj: GcPtr, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
   pub fn rt_backing_store_external_bytes() -> usize;
+  pub fn rt_stackmaps_register(start: *const u8, end: *const u8) -> bool;
+  pub fn rt_stackmaps_unregister(start: *const u8) -> bool;
 
   // Global roots / handles
   pub fn rt_root_push(slot: GcHandle);
@@ -683,6 +685,8 @@ mod tests {
       "rt_write_barrier_range(",
       "rt_gc_collect(",
       "rt_backing_store_external_bytes(",
+      "rt_stackmaps_register(",
+      "rt_stackmaps_unregister(",
       "rt_root_push(",
       "rt_root_pop(",
       "rt_global_root_register(",

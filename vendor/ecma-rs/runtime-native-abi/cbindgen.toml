@@ -71,6 +71,8 @@ include = [
   "rt_write_barrier_range",
   "rt_gc_collect",
   "rt_backing_store_external_bytes",
+  "rt_stackmaps_register",
+  "rt_stackmaps_unregister",
   "rt_root_push",
   "rt_root_pop",
   "rt_global_root_register",
