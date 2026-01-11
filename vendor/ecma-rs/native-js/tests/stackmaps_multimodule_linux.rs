@@ -8,7 +8,8 @@ use native_js::llvm::gc;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 fn init_llvm() {
   native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
@@ -34,11 +35,7 @@ fn host_target_machine() -> TargetMachine {
     .expect("create target machine")
 }
 
-fn define_void_function<'ctx>(
-  ctx: &'ctx Context,
-  module: &inkwell::module::Module<'ctx>,
-  name: &str,
-) {
+fn define_void_function<'ctx>(ctx: &'ctx Context, module: &inkwell::module::Module<'ctx>, name: &str) {
   let builder = ctx.create_builder();
   let void_ty = ctx.void_type();
   let ty = void_ty.fn_type(&[], false);
@@ -268,7 +265,8 @@ fn parse_stackmap_blob(bytes: &[u8]) -> (StackMapHeader, usize) {
   }
 
   assert_eq!(
-    record_count_sum, num_records as u64,
+    record_count_sum,
+    num_records as u64,
     "stackmap function RecordCount sum ({record_count_sum}) != header NumRecords ({num_records})"
   );
 
@@ -475,4 +473,155 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
       blob.offset + blob.len + i
     );
   }
+}
+
+// -----------------------------------------------------------------------------
+// Clang-produced `.llvm_stackmaps` section concatenation regression
+// -----------------------------------------------------------------------------
+
+fn clang() -> &'static str {
+  for cand in ["clang-18", "clang"] {
+    if Command::new(cand)
+      .arg("--version")
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .is_ok()
+    {
+      return cand;
+    }
+  }
+  panic!("unable to locate clang (expected `clang-18` or `clang`)");
+}
+
+fn write_file(path: &Path, contents: &str) {
+  fs::write(path, contents).unwrap();
+}
+
+fn run(cmd: &mut Command) {
+  let out = cmd.output().unwrap();
+  if out.status.success() {
+    return;
+  }
+  panic!(
+    "command failed: {cmd:?}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+    out.status,
+    String::from_utf8_lossy(&out.stdout),
+    String::from_utf8_lossy(&out.stderr),
+  );
+}
+
+fn compile_ll_to_obj(out_dir: &Path, name: &str, ll_src: &str) -> PathBuf {
+  let ll_path = out_dir.join(format!("{name}.ll"));
+  let obj_path = out_dir.join(format!("{name}.o"));
+  write_file(&ll_path, ll_src);
+
+  let mut cmd = Command::new(clang());
+  cmd.args(["-c", "-o"]).arg(&obj_path).arg(&ll_path);
+  run(&mut cmd);
+  obj_path
+}
+
+fn llvm_stackmaps_obj_section_size(obj: &Path) -> usize {
+  let bytes = fs::read(obj).unwrap();
+  let file = object::File::parse(&*bytes).unwrap();
+  let section = file
+    .section_by_name(".llvm_stackmaps")
+    .expect("missing .llvm_stackmaps section");
+  usize::try_from(section.size()).expect(".llvm_stackmaps section size overflows usize")
+}
+
+fn align_up(v: usize, align: usize) -> usize {
+  assert!(align.is_power_of_two());
+  (v + (align - 1)) & !(align - 1)
+}
+
+#[test]
+fn object_link_concatenates_multiple_stackmap_blobs_from_clang_ir() {
+  // Link two independent object files containing real StackMap v3 tables produced by LLVM, and
+  // assert the final output contains multiple concatenated blobs (with possible alignment padding).
+  let module_a = r#"
+declare void @llvm.experimental.stackmap(i64, i32, ...)
+
+define void @foo_a() {
+entry:
+  call void (i64, i32, ...) @llvm.experimental.stackmap(i64 0, i32 0)
+  ret void
+}
+
+declare void @foo_b()
+
+define i32 @main() {
+entry:
+  call void @foo_a()
+  call void @foo_b()
+  ret i32 0
+}
+"#;
+
+  let module_b = r#"
+declare void @llvm.experimental.stackmap(i64, i32, ...)
+
+define void @foo_b() {
+entry:
+  call void (i64, i32, ...) @llvm.experimental.stackmap(i64 1, i32 0)
+  ret void
+}
+"#;
+
+  let td = tempfile::tempdir().unwrap();
+  let obj_a = compile_ll_to_obj(td.path(), "a", module_a);
+  let obj_b = compile_ll_to_obj(td.path(), "b", module_b);
+
+  let size_a = llvm_stackmaps_obj_section_size(&obj_a);
+  let size_b = llvm_stackmaps_obj_section_size(&obj_b);
+  assert!(
+    size_a > 0,
+    "expected obj A to contain a non-empty .llvm_stackmaps section"
+  );
+  assert!(
+    size_b > 0,
+    "expected obj B to contain a non-empty .llvm_stackmaps section"
+  );
+
+  let elf = td.path().join("a.out");
+  native_js::link::link_elf_executable(&elf, &[obj_a, obj_b]).unwrap();
+  let stackmaps = llvm_stackmaps_section(&elf);
+  assert!(!stackmaps.is_empty(), "expected non-empty stackmaps section");
+
+  // StackMap v3 starts with:
+  // - Version: u8 (3)
+  // - Reserved0: u8 (0)
+  // - Reserved1: u16 (0)
+  assert_eq!(
+    stackmaps.get(0..4),
+    Some(&[3u8, 0, 0, 0][..]),
+    "expected StackMap v3 header at start of output section"
+  );
+
+  let expected_start = align_up(size_a, 8);
+  let expected_min = size_a;
+  let expected_max = size_a + 7;
+  assert!(
+    stackmaps.len() >= size_a + size_b,
+    "output stackmaps section too small for concatenation: size_a={size_a} size_b={size_b} out={}",
+    stackmaps.len()
+  );
+
+  let mut found_second = None;
+  for off in expected_min..=expected_max {
+    if stackmaps.get(off..off + 4) == Some(&[3u8, 0, 0, 0][..]) {
+      found_second = Some(off);
+      break;
+    }
+  }
+
+  let Some(second_off) = found_second else {
+    panic!(
+      "failed to find a second StackMap v3 header in output stackmaps section in the expected range \
+[size_a, size_a+7] = [{expected_min}, {expected_max}] (size_a={size_a}, expected_start={expected_start}, out_len={})",
+      stackmaps.len()
+    );
+  };
+  let _ = second_off;
 }

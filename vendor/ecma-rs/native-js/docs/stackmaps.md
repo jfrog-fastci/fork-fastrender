@@ -70,4 +70,6 @@ needed to skip to the end of the blob. A robust decoder should:
 
 Linux regression tests covering both modes live in:
 
-- `native-js/tests/stackmaps_multimodule_linux.rs`
+- `vendor/ecma-rs/native-js/tests/stackmaps_multimodule_linux.rs` (object-file section concatenation)
+- `vendor/ecma-rs/native-js/tests/stackmaps_lto.rs` (LTO link path; stackmaps often merged into a single blob)
+- `vendor/ecma-rs/native-js/tests/stackmaps_symbols_linux.rs` (start/end symbol bounds)
