@@ -1,4 +1,4 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::stackmaps::{StackMap, StackMapError};
 
@@ -59,4 +59,3 @@ fn malformed_stackmaps_do_not_panic_or_attempt_huge_allocations() {
     }
   }
 }
-

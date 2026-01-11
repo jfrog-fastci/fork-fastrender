@@ -1,4 +1,4 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::stackmaps::{Location, StackMap, StackMaps};
 
