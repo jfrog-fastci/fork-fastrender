@@ -13,6 +13,7 @@ use runtime_native::rt_io_register_rooted;
 use runtime_native::rt_io_register_with_drop;
 use runtime_native::rt_io_unregister;
 use runtime_native::rt_io_update;
+use runtime_native::test_util::reset_runtime_state;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
 use runtime_native::TypeDescriptor;
@@ -407,6 +408,59 @@ fn rt_io_register_with_drop_drops_data_on_unregister() {
 }
 
 #[test]
+fn rt_io_register_with_drop_drops_data_on_reset_runtime_state() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    0,
+    "drop_data must not run before teardown"
+  );
+
+  // Simulate runtime teardown without explicitly unregistering.
+  reset_runtime_state();
+
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data must run when the runtime clears watchers during teardown"
+  );
+
+  // The watcher id should now be invalid and must not re-run the drop hook.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after runtime teardown"
+  );
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data must not be invoked twice"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after teardown");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
 fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
@@ -538,6 +592,55 @@ fn rt_io_register_rooted_keeps_gc_object_alive_until_unregistered() {
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_register_rooted_releases_gc_root_on_reset_runtime_state() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
+  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // With the watcher still registered, the rooted context must keep the object alive across GC.
+  collect_major(&mut heap);
+  assert!(
+    !runtime_native::rt_weak_get(weak).is_null(),
+    "object should remain alive while rooted watcher is registered"
+  );
+
+  // Simulate runtime teardown without explicitly unregistering.
+  reset_runtime_state();
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after runtime teardown (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after runtime teardown"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after teardown");
 }
 
 #[test]
