@@ -512,7 +512,18 @@ impl<'a> FunctionDecompiler<'a> {
           }))));
         }
         structurer::Terminator::Stop => {
-          body.push(break_stmt(None));
+          // A Stop terminator means there are no outgoing CFG edges. In the state-machine fallback,
+          // we model this as `break;` out of the dispatch loop. However, if the block already ends
+          // in `return`/`throw`, the `break;` would be unreachable and needlessly noisy.
+          let ends_in_exit_stmt = body.last().is_some_and(|stmt| {
+            matches!(
+              stmt.stx.as_ref(),
+              Stmt::Return(_) | Stmt::Throw(_)
+            )
+          });
+          if !ends_in_exit_stmt {
+            body.push(break_stmt(None));
+          }
         }
       }
       let test = node(Expr::Binary(node(BinaryExpr {
