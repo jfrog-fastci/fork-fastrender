@@ -104,7 +104,6 @@ RULES = [
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
     Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"ts-erase"}),
     Rule("MINIFY", r"^MINIFY\d{4}$", allowed_crates={"bench/minify-js"}),
-    Rule("VMJS", r"^VMJS\d{4}$", allowed_crates={"vm-js"}),
     Rule("CONF", r"^CONF\d{4}$", allowed_crates={"parse-js"}),
     Rule("T262", r"^T262\d{4}$", allowed_crates={"test262"}),
     Rule("HOST", r"^HOST\d{4}$", shared=True),
