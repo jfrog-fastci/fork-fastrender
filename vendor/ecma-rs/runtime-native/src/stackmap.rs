@@ -53,14 +53,14 @@ pub fn try_stackmaps() -> Option<&'static crate::stackmaps::StackMaps> {
         }));
       }
 
-      // Fallback for Linux x86_64 builds that don't use the linker-script based
+      // Fallback for Linux 64-bit little-endian builds that don't use the linker-script based
       // stackmap boundary symbols. This loads stackmaps from the mapped main
       // executable (PIE/ASLR-safe).
-      #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+      #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
       {
         crate::stackmaps::StackMaps::load_self().ok()
       }
-      #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+      #[cfg(not(all(target_os = "linux", target_pointer_width = "64", target_endian = "little")))]
       {
         None
       }
