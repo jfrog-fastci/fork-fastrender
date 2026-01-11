@@ -77,7 +77,7 @@ BC="${TMP_DIR}/statepoint.bc"
 OBJ="${TMP_DIR}/statepoint.o"
 
 "${LLVM_AS}" "${FIXTURE_LL}" -o "${BC}"
-"${LLC}" -filetype=obj "${BC}" -o "${OBJ}"
+LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -filetype=obj "${BC}" -o "${OBJ}"
 
 if ! "${LLVM_READOBJ}" --sections "${OBJ}" | grep -qF ".llvm_stackmaps"; then
   "${LLVM_READOBJ}" --sections "${OBJ}" >&2 || true

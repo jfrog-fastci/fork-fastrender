@@ -81,7 +81,7 @@ run_llc() {
   local in="$1"
   local out="$2"
   local err="${tmpdir}/$(basename "${out}").llc.err"
-  if ! "${LLC}" -O0 -filetype=obj "${in}" -o "${out}" 2>"${err}"; then
+  if ! LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -O0 -filetype=obj "${in}" -o "${out}" 2>"${err}"; then
     echo "llc failed for: ${in}" >&2
     cat "${err}" >&2
     exit 1
