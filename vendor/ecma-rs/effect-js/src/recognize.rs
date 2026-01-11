@@ -1,10 +1,17 @@
-use hir_js::{ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectKey, StmtId, StmtKind};
-
-#[cfg(feature = "typed")]
-use hir_js::BinaryOp;
+use hir_js::{
+  ArrayElement, BinaryOp, BodyId, ExprId, ExprKind, Literal, LowerResult, ObjectKey, ObjectProperty,
+  PatKind, UnaryOp, StmtId, StmtKind,
+};
 
 use crate::api::ApiId;
 use crate::resolve::resolve_api_call_untyped;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardKind {
+  ReturnVoid,
+  ReturnValue,
+  Throw,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecognizedPattern {
@@ -34,6 +41,31 @@ pub enum RecognizedPattern {
 
   /// `const x: T = JSON.parse(input)` (untyped; uses declared annotation).
   JsonParseTyped { call: ExprId, target: hir_js::TypeExprId },
+
+  /// Template literal with 2+ spans (e.g. `` `${a} ${b}` ``).
+  StringTemplate { template: ExprId },
+
+  /// Object literal with spreads and static keys (e.g. `{ ...a, x: 1 }`).
+  ObjectSpread {
+    object: ExprId,
+    spreads: Vec<ExprId>,
+    keys: Vec<String>,
+  },
+
+  /// Array destructuring with an initializer (e.g. `const [a, b] = arr`).
+  ArrayDestructure {
+    source: ExprId,
+    bindings: usize,
+    has_rest: bool,
+  },
+
+  /// Guard clause in an `if` statement with an early `return` or `throw`
+  /// (e.g. `if (!x) return;` or `if (x == null) throw ...;`).
+  GuardClause {
+    test: ExprId,
+    guard_kind: GuardKind,
+    subject: ExprId,
+  },
 }
 
 fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(&StmtKind)) {
@@ -191,32 +223,188 @@ pub fn recognize_patterns_best_effort_untyped(
 
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    if !matches!(expr.kind, ExprKind::Call(_)) {
-      continue;
-    }
+    match &expr.kind {
+      ExprKind::Call(_) => {
+        // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+        if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
+          if chain.len() == 3
+            && chain[2].1 == "reduce"
+            && chain[0].1 == "map"
+            && chain[1].1 == "filter"
+          {
+            patterns.push(RecognizedPattern::MapFilterReduce {
+              base,
+              map_call: chain[0].0,
+              filter_call: chain[1].0,
+              reduce_call: chain[2].0,
+            });
+          }
+        }
 
-    // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
-    if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
-      if chain.len() == 3
-        && chain[2].1 == "reduce"
-        && chain[0].1 == "map"
-        && chain[1].1 == "filter"
-      {
-        patterns.push(RecognizedPattern::MapFilterReduce {
-          base,
-          map_call: chain[0].0,
-          filter_call: chain[1].0,
-          reduce_call: chain[2].0,
-        });
+        if let Some(fetch_calls) = promise_all_fetch_calls(body_ref, lowered, expr_id) {
+          patterns.push(RecognizedPattern::PromiseAllFetch {
+            all_call: expr_id,
+            fetch_calls,
+          });
+        }
+      }
+      ExprKind::Template(template) => {
+        if template.spans.len() >= 2 {
+          patterns.push(RecognizedPattern::StringTemplate { template: expr_id });
+        }
+      }
+      ExprKind::Object(object) => {
+        let mut spreads = Vec::new();
+        let mut keys = Vec::new();
+        let mut ok = true;
+        for prop in &object.properties {
+          match prop {
+            ObjectProperty::Spread(expr) => spreads.push(*expr),
+            ObjectProperty::Getter { .. } | ObjectProperty::Setter { .. } => {
+              ok = false;
+              break;
+            }
+            ObjectProperty::KeyValue { key, .. } => match key {
+              ObjectKey::Ident(name) => match lowered.names.resolve(*name) {
+                Some(s) => keys.push(s.to_string()),
+                None => {
+                  ok = false;
+                  break;
+                }
+              },
+              ObjectKey::String(s) => keys.push(s.clone()),
+              ObjectKey::Number(n) => keys.push(n.clone()),
+              ObjectKey::Computed(_) => {
+                ok = false;
+                break;
+              }
+            },
+          }
+        }
+        if ok && !spreads.is_empty() {
+          patterns.push(RecognizedPattern::ObjectSpread {
+            object: expr_id,
+            spreads,
+            keys,
+          });
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn peel_guard_subject(body: &hir_js::Body, mut expr_id: ExprId) -> ExprId {
+    loop {
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return expr_id;
+      };
+      match &expr.kind {
+        ExprKind::TypeAssertion { expr, .. } => expr_id = *expr,
+        ExprKind::NonNull { expr } => expr_id = *expr,
+        ExprKind::Satisfies { expr, .. } => expr_id = *expr,
+        _ => return expr_id,
       }
     }
+  }
 
-    if let Some(fetch_calls) = promise_all_fetch_calls(body_ref, lowered, expr_id) {
-      patterns.push(RecognizedPattern::PromiseAllFetch {
-        all_call: expr_id,
-        fetch_calls,
-      });
+  fn is_stable_guard_subject(body: &hir_js::Body, expr_id: ExprId) -> bool {
+    let expr_id = peel_guard_subject(body, expr_id);
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    match &expr.kind {
+      ExprKind::Ident(_) | ExprKind::This | ExprKind::Super => true,
+      ExprKind::Member(member) => {
+        if member.optional {
+          return false;
+        }
+        if matches!(member.property, ObjectKey::Computed(_)) {
+          return false;
+        }
+        is_stable_guard_subject(body, member.object)
+      }
+      _ => false,
     }
+  }
+
+  fn guard_subject(body: &hir_js::Body, test: ExprId) -> Option<ExprId> {
+    let test_expr = body.exprs.get(test.0 as usize)?;
+    match &test_expr.kind {
+      ExprKind::Unary { op: UnaryOp::Not, expr } => {
+        let subj = peel_guard_subject(body, *expr);
+        is_stable_guard_subject(body, subj).then_some(subj)
+      }
+      ExprKind::Binary {
+        op: BinaryOp::Equality | BinaryOp::StrictEquality,
+        left,
+        right,
+      } => {
+        let left_expr = body.exprs.get(left.0 as usize)?;
+        let right_expr = body.exprs.get(right.0 as usize)?;
+        let candidate = match (&left_expr.kind, &right_expr.kind) {
+          (ExprKind::Literal(Literal::Null | Literal::Undefined), _) => *right,
+          (_, ExprKind::Literal(Literal::Null | Literal::Undefined)) => *left,
+          _ => return None,
+        };
+        let subj = peel_guard_subject(body, candidate);
+        is_stable_guard_subject(body, subj).then_some(subj)
+      }
+      _ => None,
+    }
+  }
+
+  // Statement-level patterns (destructuring, guard clauses).
+  for stmt_id in &body_ref.root_stmts {
+    walk_stmt(body_ref, *stmt_id, |stmt| {
+      match stmt {
+        StmtKind::Var(var) => {
+          for decl in &var.declarators {
+            let Some(init) = decl.init else {
+              continue;
+            };
+            let Some(pat) = body_ref.pats.get(decl.pat.0 as usize) else {
+              continue;
+            };
+            let PatKind::Array(array_pat) = &pat.kind else {
+              continue;
+            };
+            let bindings = array_pat.elements.iter().filter(|el| el.is_some()).count();
+            let has_rest = array_pat.rest.is_some();
+            patterns.push(RecognizedPattern::ArrayDestructure {
+              source: init,
+              bindings,
+              has_rest,
+            });
+          }
+        }
+        StmtKind::If {
+          test,
+          consequent,
+          alternate: None,
+        } => {
+          let Some(consequent_stmt) = body_ref.stmts.get(consequent.0 as usize) else {
+            return;
+          };
+          let guard_kind = match &consequent_stmt.kind {
+            StmtKind::Return(None) => GuardKind::ReturnVoid,
+            StmtKind::Return(Some(_)) => GuardKind::ReturnValue,
+            StmtKind::Throw(_) => GuardKind::Throw,
+            _ => return,
+          };
+
+          let Some(subject) = guard_subject(body_ref, *test) else {
+            return;
+          };
+
+          patterns.push(RecognizedPattern::GuardClause {
+            test: *test,
+            guard_kind,
+            subject,
+          });
+        }
+        _ => {}
+      };
+    });
   }
 
   patterns
