@@ -498,6 +498,94 @@ fn diff_renders_handles_dimension_mismatches() {
 }
 
 #[test]
+fn diff_renders_dimension_mismatch_reports_overlap_perceptual_and_region() {
+  use fastrender::image_compare::CompareConfig;
+
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let before = tmp.path().join("before");
+  let after = tmp.path().join("after");
+  fs::create_dir_all(&before).unwrap();
+  fs::create_dir_all(&after).unwrap();
+
+  // Baseline ("before") is wider, but the top-left 2x2 overlap differs by one pixel.
+  let mut before_img = RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 0, 255]));
+  before_img.put_pixel(1, 0, image::Rgba([10, 10, 10, 255]));
+  before_img.save(before.join("page.png")).expect("save before");
+
+  let mut after_img = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+  after_img.put_pixel(1, 0, image::Rgba([40, 40, 40, 255]));
+  after_img.save(after.join("page.png")).expect("save after");
+
+  let status = diff_renders_cmd(tmp.path())
+    .args([
+      "--before",
+      before.to_str().unwrap(),
+      "--after",
+      after.to_str().unwrap(),
+    ])
+    .status()
+    .expect("run diff_renders");
+
+  assert!(
+    !status.success(),
+    "expected non-zero exit code for dimension mismatch"
+  );
+
+  let report: Value = serde_json::from_str(
+    &fs::read_to_string(tmp.path().join("diff_report.json")).expect("read json"),
+  )
+  .unwrap();
+
+  let metrics = &report["results"][0]["metrics"];
+  let perceptual = metrics["perceptual_distance"]
+    .as_f64()
+    .expect("perceptual_distance missing");
+
+  // Compute expected perceptual distance over the overlapping 2x2 region.
+  let mut before_overlap = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+  for y in 0..2 {
+    for x in 0..2 {
+      before_overlap.put_pixel(x, y, *before_img.get_pixel(x, y));
+    }
+  }
+  let config = CompareConfig::strict().with_compare_alpha(true);
+  let expected = fastrender::image_compare::compare_images(&after_img, &before_overlap, &config)
+    .statistics
+    .perceptual_distance;
+
+  assert!(
+    (perceptual - expected).abs() < 1e-9,
+    "expected perceptual_distance {expected}, got {perceptual}"
+  );
+
+  assert_eq!(
+    metrics["dimension_mismatch"]["rendered"]["width"].as_u64(),
+    Some(2),
+    "expected rendered width in JSON report"
+  );
+  assert_eq!(
+    metrics["dimension_mismatch"]["expected"]["width"].as_u64(),
+    Some(3),
+    "expected baseline width in JSON report"
+  );
+  assert_eq!(
+    metrics["perceptual_region"]["policy"],
+    "overlap",
+    "expected perceptual policy to be recorded"
+  );
+  assert_eq!(
+    metrics["perceptual_region"]["width"].as_u64(),
+    Some(2),
+    "expected perceptual overlap width"
+  );
+  assert_eq!(
+    metrics["perceptual_region"]["height"].as_u64(),
+    Some(2),
+    "expected perceptual overlap height"
+  );
+}
+
+#[test]
 fn diff_renders_reports_perceptual_metric() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let before = tmp.path().join("before");

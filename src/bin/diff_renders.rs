@@ -173,8 +173,39 @@ struct MetricsSummary {
   diff_percentage: f64,
   perceptual_distance: f64,
   max_channel_diff: u8,
+  /// When set, the compared PNG dimensions differed.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  dimension_mismatch: Option<DimensionMismatchSummary>,
+  /// How the perceptual distance was computed when dimensions differed.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  perceptual_region: Option<PerceptualRegionSummary>,
   #[serde(skip_serializing_if = "Option::is_none")]
   first_mismatch: Option<FirstMismatchSummary>,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct DimensionMismatchSummary {
+  rendered: DimensionsSummary,
+  expected: DimensionsSummary,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct DimensionsSummary {
+  width: u32,
+  height: u32,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct PerceptualRegionSummary {
+  policy: PerceptualRegionPolicy,
+  width: u32,
+  height: u32,
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum PerceptualRegionPolicy {
+  Overlap,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -187,12 +218,41 @@ struct FirstMismatchSummary {
 
 impl From<DiffMetrics> for MetricsSummary {
   fn from(metrics: DiffMetrics) -> Self {
+    let dimension_mismatch = if metrics.rendered_dimensions != metrics.expected_dimensions {
+      Some(DimensionMismatchSummary {
+        rendered: DimensionsSummary {
+          width: metrics.rendered_dimensions.0,
+          height: metrics.rendered_dimensions.1,
+        },
+        expected: DimensionsSummary {
+          width: metrics.expected_dimensions.0,
+          height: metrics.expected_dimensions.1,
+        },
+      })
+    } else {
+      None
+    };
+
+    let perceptual_region = dimension_mismatch.map(|_| PerceptualRegionSummary {
+      policy: PerceptualRegionPolicy::Overlap,
+      width: metrics
+        .rendered_dimensions
+        .0
+        .min(metrics.expected_dimensions.0),
+      height: metrics
+        .rendered_dimensions
+        .1
+        .min(metrics.expected_dimensions.1),
+    });
+
     MetricsSummary {
       pixel_diff: metrics.pixel_diff,
       total_pixels: metrics.total_pixels,
       diff_percentage: metrics.diff_percentage,
       perceptual_distance: metrics.perceptual_distance,
       max_channel_diff: metrics.max_channel_diff,
+      dimension_mismatch,
+      perceptual_region,
       first_mismatch: metrics
         .first_mismatch
         .and_then(|(x, y)| {

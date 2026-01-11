@@ -396,6 +396,58 @@ pub fn compare_images(
   }
 }
 
+/// Compute SSIM-derived perceptual distance over the given region of two images.
+///
+/// The region is interpreted as the top-left `width`×`height` rectangle. Callers must ensure
+/// `width <= actual.width()`, `height <= actual.height()`, and the same for `expected`.
+///
+/// This helper exists so callers can compute a meaningful perceptual metric even when the two
+/// images have different dimensions (e.g. by passing `min(width)`/`min(height)`).
+pub(crate) fn perceptual_distance_region(
+  actual: &RgbaImage,
+  expected: &RgbaImage,
+  compare_alpha: bool,
+  width: u32,
+  height: u32,
+) -> f64 {
+  if width == 0 || height == 0 {
+    return 0.0;
+  }
+
+  let mut ssim = SsimAccumulator::default();
+  for y in 0..height {
+    for x in 0..width {
+      let actual_px = actual.get_pixel(x, y);
+      let expected_px = expected.get_pixel(x, y);
+
+      // Perceptual metric uses luminance; optionally include alpha as a multiplier.
+      let alpha_actual = if compare_alpha {
+        actual_px[3] as f64 / 255.0
+      } else {
+        1.0
+      };
+      let alpha_expected = if compare_alpha {
+        expected_px[3] as f64 / 255.0
+      } else {
+        1.0
+      };
+
+      let luma_actual = (0.2126 * actual_px[0] as f64
+        + 0.7152 * actual_px[1] as f64
+        + 0.0722 * actual_px[2] as f64)
+        * alpha_actual;
+      let luma_expected = (0.2126 * expected_px[0] as f64
+        + 0.7152 * expected_px[1] as f64
+        + 0.0722 * expected_px[2] as f64)
+        * alpha_expected;
+      ssim.push(luma_actual, luma_expected);
+    }
+  }
+
+  let similarity = ssim.finish();
+  1.0 - similarity.clamp(0.0, 1.0)
+}
+
 /// Compare two PNG byte buffers.
 pub fn compare_png(
   rendered: &[u8],

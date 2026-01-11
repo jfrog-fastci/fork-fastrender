@@ -30,6 +30,12 @@ pub struct DiffMetrics {
   pub total_pixels: u64,
   pub diff_percentage: f64,
   /// SSIM-derived perceptual distance (0.0 = identical, higher = more different).
+  ///
+  /// When image dimensions match, this is computed over the full image.
+  ///
+  /// When dimensions differ, this is computed over the overlapping region (top-left
+  /// `min(width)`×`min(height)` rectangle) so the value remains useful for triage even when the
+  /// render surface size changes.
   pub perceptual_distance: f64,
   /// Maximum per-channel delta across all compared pixels (0-255).
   ///
@@ -627,9 +633,16 @@ pub fn diff_png_with_alpha(
     pixel_diff: different_pixels,
     total_pixels,
     diff_percentage,
-    // Perceptual distance is ill-defined when dimensions don't match; treat this as maximally
-    // different for now.
-    perceptual_distance: 1.0,
+    // For triage we want a perceptual signal even when the canvas/viewport size differs.
+    // Compute SSIM over the overlapping top-left region; the pixel diff percent still reflects
+    // the union (missing pixels count as differences).
+    perceptual_distance: image_compare::perceptual_distance_region(
+      &rendered_img,
+      &expected_img,
+      compare_alpha,
+      rendered_img.width().min(expected_img.width()),
+      rendered_img.height().min(expected_img.height()),
+    ),
     max_channel_diff,
     rendered_dimensions: (rendered_img.width(), rendered_img.height()),
     expected_dimensions: (expected_img.width(), expected_img.height()),
