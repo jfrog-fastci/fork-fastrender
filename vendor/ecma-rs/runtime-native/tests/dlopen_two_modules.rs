@@ -92,6 +92,8 @@ fn dlopen_registers_multiple_stackmap_modules() {
 
 #[test]
 fn dlopen_registers_stackmaps_with_start_stop_symbols() {
+  let _rt = TestRuntimeGuard::new();
+
   // Skip if dlopen is somehow not available.
   if unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) }.is_null() {
     eprintln!("dlopen unavailable; skipping");
@@ -113,6 +115,13 @@ fn dlopen_registers_stackmaps_with_start_stop_symbols() {
 
     let pc = stackmap_first_callsite_pc_with_symbols(h, "__start_llvm_stackmaps", "__stop_llvm_stackmaps") as usize;
     assert!(lookup(pc).is_some(), "mod_start_stop callsite should be registered");
+
+    // Clean up so this test doesn't leak global registry state into other tests.
+    let start = dlsym(h, "__start_llvm_stackmaps") as *const u8;
+    assert!(
+      runtime_native::rt_stackmaps_unregister(start),
+      "unregister mod_start_stop should succeed"
+    );
   }
 }
 
