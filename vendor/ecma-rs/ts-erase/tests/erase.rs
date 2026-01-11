@@ -412,6 +412,47 @@ fn full_mode_preserves_export_lists_of_runtime_ts_constructs() {
 }
 
 #[test]
+fn full_mode_declares_bindings_for_nested_namespaces() {
+  let src = r#"
+    namespace Outer {
+      export namespace Inner {
+        export const x = 1;
+      }
+    }
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert!(
+    output.contains("var Outer"),
+    "expected lowered outer namespace to declare a runtime binding: {output}"
+  );
+  assert!(
+    output.contains("var Inner"),
+    "expected lowered nested namespace to declare a runtime binding: {output}"
+  );
+}
+
+#[test]
+fn full_mode_declares_bindings_for_nested_enums() {
+  let src = r#"
+    namespace N {
+      export enum E { A = 1 }
+      export const x = E.A;
+    }
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert!(
+    output.contains("var N"),
+    "expected lowered namespace to declare a runtime binding: {output}"
+  );
+  assert!(
+    output.contains("var E"),
+    "expected lowered nested enum to declare a runtime binding: {output}"
+  );
+}
+
+#[test]
 fn erases_abstract_class_members() {
   let src = r#"
     abstract class A {
