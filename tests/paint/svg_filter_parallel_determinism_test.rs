@@ -211,6 +211,18 @@ fn build_seam_displacement_map_svg_filter() -> Arc<fastrender::paint::svg_filter
   parse_svg_filter_from_svg_document(svg, Some("f"), &image_cache).expect("parse svg filter")
 }
 
+fn build_seam_offset_svg_filter() -> Arc<fastrender::paint::svg_filter::SvgFilter> {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0">
+      <filter id="f" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
+        <feOffset in="SourceGraphic" dx="20" dy="0" />
+      </filter>
+    </svg>
+  "#;
+  let image_cache = ImageCache::new();
+  parse_svg_filter_from_svg_document(svg, Some("f"), &image_cache).expect("parse svg filter")
+}
+
 fn build_seam_display_list(
   filter: Arc<fastrender::paint::svg_filter::SvgFilter>,
   bounds: Rect,
@@ -432,6 +444,54 @@ fn svg_filter_parallel_matches_serial_across_tile_boundaries_convolve_matrix() {
 #[test]
 fn svg_filter_parallel_matches_serial_across_tile_boundaries_displacement_map() {
   let filter = build_seam_displacement_map_svg_filter();
+  let list = build_seam_display_list(filter, Rect::from_xywh(0.0, 0.0, 64.0, 32.0));
+  let font_ctx = FontContext::new();
+
+  const SEAM_WIDTH: u32 = 64;
+  const SEAM_HEIGHT: u32 = 32;
+
+  let serial_pixmap =
+    DisplayListRenderer::new(SEAM_WIDTH, SEAM_HEIGHT, Rgba::WHITE, font_ctx.clone())
+      .expect("renderer")
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .expect("serial render");
+
+  let parallelism = PaintParallelism {
+    tile_size: 32,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    max_threads: Some(4),
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new()
+    .num_threads(4)
+    .build()
+    .expect("rayon pool");
+
+  let parallel = pool.install(|| {
+    DisplayListRenderer::new(SEAM_WIDTH, SEAM_HEIGHT, Rgba::WHITE, font_ctx)
+      .expect("renderer")
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel render")
+  });
+
+  assert!(
+    parallel.parallel_used,
+    "expected svg-filter scene to use parallel tiling (fallback={:?})",
+    parallel.fallback_reason
+  );
+  assert!(parallel.tiles > 1, "expected multiple tiles to be rendered");
+  assert_pixmap_eq(&serial_pixmap, &parallel.pixmap);
+}
+
+#[test]
+fn svg_filter_parallel_matches_serial_across_tile_boundaries_offset() {
+  let filter = build_seam_offset_svg_filter();
   let list = build_seam_display_list(filter, Rect::from_xywh(0.0, 0.0, 64.0, 32.0));
   let font_ctx = FontContext::new();
 

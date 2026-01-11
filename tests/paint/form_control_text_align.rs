@@ -2,6 +2,7 @@ use fastrender::geometry::Rect;
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::style::types::{Appearance, CaretColor, TextAlign};
+use fastrender::text::caret::CaretAffinity;
 use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType, TextControlKind};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{ComputedStyle, Rgba};
@@ -18,6 +19,7 @@ fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> Frag
       size_attr: None,
       kind: TextControlKind::Plain,
       caret,
+      caret_affinity: CaretAffinity::Downstream,
       selection: None,
     },
     appearance: Appearance::Auto,

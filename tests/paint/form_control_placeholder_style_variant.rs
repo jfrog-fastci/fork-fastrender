@@ -2,6 +2,7 @@ use fastrender::geometry::Rect;
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::style::types::Appearance;
+use fastrender::text::caret::CaretAffinity;
 use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType, TextControlKind};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{ComputedStyle, Rgba};
@@ -27,6 +28,7 @@ fn placeholder_style_from_form_control_kind_is_used() {
       size_attr: None,
       kind: TextControlKind::Plain,
       caret: 0,
+      caret_affinity: CaretAffinity::Downstream,
       selection: None,
     },
     appearance: Appearance::Auto,
