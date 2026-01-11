@@ -1114,6 +1114,75 @@ x += 2;
 }
 
 #[test]
+fn renamed_reexported_module_init_runs() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export let x: number = 40;
+x += 2;
+"#,
+  )
+  .unwrap();
+
+  let reexport = tmp.path().join("reexport.ts");
+  fs::write(&reexport, r#"export { x as y } from "./dep";"#).unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { y } from "./reexport";
+export function main(): number { return y; }
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let output = StdCommand::new(&out).output().unwrap();
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
+}
+
+#[test]
+fn side_effect_only_reexport_runs() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(&dep, "print(42);\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"export {} from "./dep";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
 fn export_all_reexport_initializes_dependency() {
   let tmp = TempDir::new().unwrap();
 
