@@ -243,6 +243,9 @@ pub struct CoroutineId(pub u64);
 /// Milestone 1 representation is a `{ptr,len}` pair (used by the current
 /// `runtime-native` crate). A future milestone may instead make strings opaque
 /// GC-managed handles, but that would be a separate ABI decision.
+///
+/// Note: `StringRef` bytes returned by `rt_string_concat` are currently allocated
+/// **outside** the GC heap and are leak-only (valid for process lifetime).
 #[repr(C)]
 pub struct StringRef {
   pub ptr: *const u8,
@@ -361,7 +364,7 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_keep_alive_gc_ref` | NoGC | Extends liveness of a GC reference until a specific program point (prevents UAF for derived raw pointers like backing-store `uint8_t*`). |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
-| `rt_string_concat` | MayGC | Allocates a new string buffer. |
+| `rt_string_concat` | MayGC | Allocates a new string buffer (currently outside the GC heap; leak-only). |
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
 | `rt_string_pin_interned` | MayGC | May allocate/promote and pin interned strings. |
 | `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
