@@ -199,4 +199,151 @@ impl Program {
       })
       .unwrap_or_default()
   }
+
+  /// Resolve a module specifier relative to a file, returning the file-backed [`FileId`].
+  ///
+  /// This uses the module resolution edges recorded in the program's internal salsa database
+  /// (the same results observed by the checker) instead of calling [`Host::resolve`](crate::Host).
+  ///
+  /// Returns `None` when the module specifier is unresolved, refers to an ambient module, or
+  /// otherwise does not map to a file in the program.
+  pub fn resolve_module(&self, from: FileId, specifier: &str) -> Option<FileId> {
+    match self.with_analyzed_state(|state| {
+      Ok(db::queries::module_resolve_ref(
+        &state.typecheck_db,
+        from,
+        specifier,
+      ))
+    }) {
+      Ok(resolved) => resolved,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        None
+      }
+    }
+  }
+
+  /// Deterministically list file-backed module dependencies recorded for a file.
+  ///
+  /// Returned entries are ordered by module specifier (stable across runs) and include only
+  /// specifiers that resolved to a file in the program (ambient modules are excluded).
+  pub fn resolved_module_deps(&self, from: FileId) -> Vec<(String, FileId)> {
+    match self.with_analyzed_state(|state| {
+      Ok(
+        state
+          .typecheck_db
+          .module_resolutions_snapshot_for_file(from)
+          .into_iter()
+          .filter_map(|(specifier, resolved)| resolved.map(|file| (specifier, file)))
+          .collect(),
+      )
+    }) {
+      Ok(deps) => deps,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        Vec::new()
+      }
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use crate::{FileKey, MemoryHost, Program};
+
+  #[test]
+  fn resolve_module_returns_expected_file_ids() {
+    let mut host = MemoryHost::new();
+    let entry = FileKey::new("entry.ts");
+    let dep = FileKey::new("dep.ts");
+    host.insert(
+      entry.clone(),
+      r#"
+import { value } from "./dep";
+import { missing } from "./missing";
+export const out = value;
+"#,
+    );
+    host.insert(dep.clone(), "export const value = 1;");
+    host.link(entry.clone(), "./dep", dep.clone());
+
+    let program = Program::new(host, vec![entry.clone()]);
+    let entry_id = program.file_id(&entry).unwrap();
+    let dep_id = program.file_id(&dep).unwrap();
+
+    assert_eq!(program.resolve_module(entry_id, "./dep"), Some(dep_id));
+    assert_eq!(program.resolve_module(entry_id, "./missing"), None);
+  }
+
+  #[test]
+  fn resolved_module_deps_are_deterministic_and_file_backed() {
+    let mut host = MemoryHost::new();
+    let entry = FileKey::new("entry.ts");
+    let a = FileKey::new("a.ts");
+    let b = FileKey::new("b.ts");
+    let c = FileKey::new("c.ts");
+
+    host.insert(
+      entry.clone(),
+      r#"
+import "./b";
+import "./a";
+export * from "./c";
+import "./missing";
+"#,
+    );
+    host.insert(a.clone(), "export const a = 1;");
+    host.insert(b.clone(), "export const b = 2;");
+    host.insert(c.clone(), "export const c = 3;");
+
+    host.link(entry.clone(), "./a", a.clone());
+    host.link(entry.clone(), "./b", b.clone());
+    host.link(entry.clone(), "./c", c.clone());
+
+    let program = Program::new(host, vec![entry.clone()]);
+    let entry_id = program.file_id(&entry).unwrap();
+    let a_id = program.file_id(&a).unwrap();
+    let b_id = program.file_id(&b).unwrap();
+    let c_id = program.file_id(&c).unwrap();
+
+    assert_eq!(
+      program.resolved_module_deps(entry_id),
+      vec![
+        ("./a".to_string(), a_id),
+        ("./b".to_string(), b_id),
+        ("./c".to_string(), c_id),
+      ]
+    );
+  }
+
+  #[test]
+  fn ambient_modules_are_not_file_backed() {
+    let mut host = MemoryHost::new();
+    let entry = FileKey::new("entry.ts");
+    let ambient_decls = FileKey::new("ambient_decls.ts");
+    host.insert(
+      entry.clone(),
+      r#"
+import { x } from "ambient";
+export const y = x;
+"#,
+    );
+    host.insert(
+      ambient_decls.clone(),
+      r#"
+declare module "ambient" {
+  export const x: number;
+}
+"#,
+    );
+
+    let program = Program::new(host, vec![entry.clone(), ambient_decls.clone()]);
+    assert!(
+      program.check().is_empty(),
+      "expected ambient module import to avoid unresolved-module diagnostics"
+    );
+    let entry_id = program.file_id(&entry).unwrap();
+    assert_eq!(program.resolve_module(entry_id, "ambient"), None);
+    assert!(program.resolved_module_deps(entry_id).is_empty());
+  }
 }

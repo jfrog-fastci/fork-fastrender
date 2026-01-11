@@ -377,6 +377,22 @@ impl Database {
     entries
   }
 
+  /// Snapshot module resolution inputs stored for a single `from` file.
+  ///
+  /// Returned entries are ordered deterministically by `specifier`.
+  pub fn module_resolutions_snapshot_for_file(&self, from: FileId) -> Vec<(String, Option<FileId>)> {
+    self
+      .module_resolutions
+      .get(&from)
+      .map(|inner| {
+        inner
+          .iter()
+          .map(|(specifier, input)| (specifier.as_ref().to_string(), input.resolved(self)))
+          .collect()
+      })
+      .unwrap_or_default()
+  }
+
   /// Remove module resolution inputs for `from` that are not needed anymore.
   ///
   /// This keeps the stored module graph consistent with the current set of
