@@ -41,6 +41,10 @@ impl<'a> Cursor<'a> {
         self.pos
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+
     fn read_exact(&mut self, n: usize) -> Result<&'a [u8], ParseError> {
         let start = self.pos;
         let end = start.checked_add(n).ok_or_else(|| ParseError::new(start, "offset overflow"))?;
@@ -280,6 +284,22 @@ fn parse_blob(
     let num_records_usize =
         usize::try_from(num_records).map_err(|_| ParseError::new(c.pos(), "num_records does not fit in usize"))?;
 
+    // Defensive validation of header counts against remaining bytes.
+    //
+    // Stackmaps are typically trusted metadata (emitted by LLVM in our own build), but these
+    // checks prevent pathological allocations if the section is corrupted or if the caller
+    // accidentally points at the wrong byte range.
+    const FUNCTION_ENTRY_SIZE: usize = 24;
+    if num_functions_usize > c.remaining() / FUNCTION_ENTRY_SIZE {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_functions ({num_functions_usize}) exceeds remaining bytes ({})",
+                c.remaining()
+            ),
+        ));
+    }
+
     let mut functions = Vec::with_capacity(num_functions_usize);
     for _ in 0..num_functions_usize {
         functions.push(StackMapFunction {
@@ -289,9 +309,48 @@ fn parse_blob(
         });
     }
 
+    // The header's num_records should match the sum of per-function record_count.
+    let mut expected_records: u64 = 0;
+    for f in &functions {
+        expected_records = expected_records
+            .checked_add(f.record_count)
+            .ok_or_else(|| ParseError::new(c.pos(), "record_count overflow while summing functions"))?;
+    }
+    if expected_records != u64::from(num_records) {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "record count mismatch: functions expect {expected_records}, header says {num_records}"
+            ),
+        ));
+    }
+
+    const CONSTANT_ENTRY_SIZE: usize = 8;
+    if num_constants_usize > c.remaining() / CONSTANT_ENTRY_SIZE {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_constants ({num_constants_usize}) exceeds remaining bytes ({})",
+                c.remaining()
+            ),
+        ));
+    }
+
     let mut constants = Vec::with_capacity(num_constants_usize);
     for _ in 0..num_constants_usize {
         constants.push(c.read_u64()?);
+    }
+
+    // Each record is at least 24 bytes, even with 0 locations and 0 live-outs.
+    const MIN_RECORD_SIZE: usize = 24;
+    if num_records_usize > c.remaining() / MIN_RECORD_SIZE {
+        return Err(ParseError::new(
+            c.pos(),
+            format!(
+                "num_records ({num_records_usize}) exceeds remaining bytes ({})",
+                c.remaining()
+            ),
+        ));
     }
 
     let mut records = Vec::with_capacity(num_records_usize);
@@ -309,6 +368,17 @@ fn parse_blob(
             let instruction_offset = c.read_u32()?;
             let _reserved = c.read_u16()?;
             let num_locations = c.read_u16()? as usize;
+
+            const LOCATION_ENTRY_SIZE: usize = 12;
+            if num_locations > c.remaining() / LOCATION_ENTRY_SIZE {
+                return Err(ParseError::new(
+                    record_start,
+                    format!(
+                        "num_locations ({num_locations}) exceeds remaining bytes ({})",
+                        c.remaining()
+                    ),
+                ));
+            }
 
             let mut locations = Vec::with_capacity(num_locations);
             for _ in 0..num_locations {
@@ -377,6 +447,17 @@ fn parse_blob(
             c.align_to(8)?;
             let _padding = c.read_u16()?;
             let num_live_outs = c.read_u16()? as usize;
+
+            const LIVEOUT_ENTRY_SIZE: usize = 4;
+            if num_live_outs > c.remaining() / LIVEOUT_ENTRY_SIZE {
+                return Err(ParseError::new(
+                    record_start,
+                    format!(
+                        "num_live_outs ({num_live_outs}) exceeds remaining bytes ({})",
+                        c.remaining()
+                    ),
+                ));
+            }
 
             let mut live_outs = Vec::with_capacity(num_live_outs);
             for _ in 0..num_live_outs {
