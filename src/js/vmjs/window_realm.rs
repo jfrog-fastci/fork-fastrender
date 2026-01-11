@@ -904,6 +904,11 @@ impl WindowRealm {
         }
       }
 
+      // Use a lightweight `VmHost` context for Promise job execution when the higher-level
+      // `WindowHost`/event-loop pipeline is not in use.
+      //
+      // `HostDocumentState` carries the `Document.currentScript` handle, so Promise jobs run in this
+      // fallback path can still observe/override `currentScript` when needed.
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
 

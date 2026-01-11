@@ -212,16 +212,30 @@ In practice:
 - **Spec algorithms** (WebIDL conversions and overload resolution) live in `vendor/ecma-rs/webidl`
   and are re-exported as `fastrender::js::webidl`.
 - **`vm-js` realm bindings runtime helpers** (property definition presets, small numeric helpers used
-  by generated glue) live in `crates/webidl-vm-js` (e.g.
-  `webidl_vm_js::bindings_runtime::to_int32_f64` / `to_uint32_f64`).
+  by generated glue) live in `crates/webidl-vm-js`:
+  - `webidl_vm_js::bindings_runtime` contains installer/runtime helpers (`BindingsRuntime`,
+    `DataPropertyAttributes`, `to_int32_f64` / `to_uint32_f64`, etc.).
+  - `webidl_vm_js::conversions` contains shared `vm-js`-specific conversion helpers that generated
+    bindings should call (sequence/record/enum conversion and union discrimination predicates),
+    rather than emitting the conversion logic inline.
 - **Host return-value conversion** from `BindingValue` back to a JS value is provided once as
   `fastrender::js::bindings::binding_value_to_js` (rather than emitting a copy per generated
   module).
-- **Iterator acquisition** for list conversions (`sequence<T>` / `FrozenArray<T>`) should call
-  `WebIdlBindingsRuntime::get_iterator` so runtime-specific iterable handling (like Array
-  fast-paths in `vm-js`) is implemented once. For real `vm-js` realms, the bindings runtime
-  delegates these operations to `vm_js::iterator` to avoid duplicating ECMA-262 iterator logic in
-  FastRender.
+- **Iterator acquisition** for list conversions (`sequence<T>` / `FrozenArray<T>`) should call a
+  shared helper (rather than emitting the iterator loop inline):
+  - `vm-js` realm backend: `webidl_vm_js::conversions::to_iterable_list` (wraps `vm_js::iterator`,
+    including the Array fast-path).
+  - Legacy backend: `WebIdlBindingsRuntime::get_iterator` / `iterator_step_value` (real `vm-js`
+    realms delegate to `vm_js::iterator`).
+
+Notes:
+
+- `src/js/webidl/*` should stay as **thin re-exports/adapters**. In particular,
+  `src/js/webidl/conversions.rs` exists to support the legacy `webidl-js-runtime` backend and should
+  not be used by the `vm-js` realm backend.
+- If you find yourself pasting a WebIDL algorithm (record/sequence conversion loops, union
+  discrimination, etc.) into the generator output, it probably belongs in `vendor/ecma-rs/webidl` or
+  `crates/webidl-vm-js` instead.
 
 ### Troubleshooting
 

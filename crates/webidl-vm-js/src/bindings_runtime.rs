@@ -19,6 +19,8 @@ use vm_js::{
   PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
 };
 
+use webidl::WebIdlLimits;
+
 use crate::WebIdlBindingsHost;
 
 /// A minimally-typed value container used by generated binding shims when crossing into the host.
@@ -290,6 +292,7 @@ impl WebIdlBindingsHost for BindingsHost {
 pub struct BindingsRuntime<'a> {
   pub vm: &'a mut Vm,
   pub scope: Scope<'a>,
+  limits: WebIdlLimits,
   interned: HashMap<&'static str, GcString>,
 }
 
@@ -304,8 +307,24 @@ impl<'a> BindingsRuntime<'a> {
     Self {
       vm,
       scope,
+      limits: WebIdlLimits::default(),
       interned: HashMap::new(),
     }
+  }
+
+  /// WebIDL conversion limits configured for this bindings runtime.
+  ///
+  /// Generated bindings should treat these limits as the source of truth when materializing
+  /// potentially unbounded values such as `sequence<T>` and `record<K, V>`.
+  #[inline]
+  pub fn limits(&self) -> WebIdlLimits {
+    self.limits
+  }
+
+  /// Override the conversion limits used by this bindings runtime.
+  #[inline]
+  pub fn set_limits(&mut self, limits: WebIdlLimits) {
+    self.limits = limits;
   }
 
   #[inline]
@@ -598,6 +617,48 @@ impl<'a> BindingsRuntime<'a> {
   /// Convert a host-returned [`BindingValue`] into a `vm-js` [`Value`].
   pub fn binding_value_to_js(&mut self, value: BindingValue) -> Result<Value, VmError> {
     binding_value_to_js(&mut *self.vm, &mut self.scope, value)
+  }
+
+  /// Derive the prototype used for a WebIDL constructor-created wrapper object.
+  ///
+  /// Generated constructors cache their interface prototype object in a native slot. When invoked
+  /// with `new`, JavaScript subclassing semantics require:
+  /// - defaulting to that cached prototype, and
+  /// - overriding it with `new_target.prototype` when `new_target` is an object and the property is
+  ///   itself an object.
+  ///
+  /// This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`.
+  pub fn derive_prototype_from_new_target(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn vm_js::VmHostHooks,
+    default_proto: GcObject,
+    new_target: Value,
+  ) -> Result<GcObject, VmError> {
+    // Root inputs across property lookups (which can invoke user code and allocate).
+    let _ = self.root(Value::Object(default_proto))?;
+    let _ = self.root(new_target)?;
+
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      let _ = self.root(Value::Object(new_target_obj))?;
+
+      let proto_key = self.property_key("prototype")?;
+      let candidate = self.scope.ordinary_get_with_host_and_hooks(
+        &mut *self.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        let _ = self.root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
+      }
+    }
+
+    Ok(wrapper_proto)
   }
 
   /// Create and throw a realm-aware `TypeError` object with the given message.

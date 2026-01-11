@@ -26,6 +26,7 @@ use webidl_bindings_core::runtime::{
 };
 
 pub mod bindings_runtime;
+pub mod conversions;
 
 /// Borrow-splits a `vm-js` [`VmJsRuntime`] into its `(vm, heap, realm)` components.
 ///

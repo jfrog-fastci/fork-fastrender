@@ -4,289 +4,241 @@
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
 
 pub mod window {
-  use std::ptr::NonNull;
-  use std::sync::OnceLock;
-
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
-  use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
-  use webidl_vm_js::{host_from_hooks, VmJsWebIdlCx};
-
-  use webidl_ir::{
-    DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
-    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
+  use webidl_vm_js::bindings_runtime::{
+    to_int32_f64, BindingValue, BindingsRuntime, DataPropertyAttributes,
   };
-  use webidl_js_runtime::{
-    convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, InterfaceId,
-    JsRuntime as _, Optionality, OverloadArg, OverloadSig, WebIdlHooks, WebIdlJsRuntime as _,
-    WebIdlLimits,
-  };
+  use webidl_vm_js::conversions;
+  use webidl_vm_js::{host_from_hooks, IterableKind};
 
-  struct NoHooks;
-
-  impl WebIdlHooks<Value> for NoHooks {
-    fn is_platform_object(&self, _value: Value) -> bool {
-      false
-    }
-
-    fn implements_interface(&self, _value: Value, _interface: InterfaceId) -> bool {
-      false
-    }
-  }
-
-  static NO_HOOKS: NoHooks = NoHooks;
-
-  fn type_context() -> &'static TypeContext {
-    static CTX: OnceLock<TypeContext> = OnceLock::new();
-    CTX.get_or_init(|| {
-      let mut ctx = TypeContext::default();
-
-      ctx.add_dictionary(DictionarySchema {
-        name: "FooOptions".to_string(),
-        inherits: None,
-        members: vec![DictionaryMemberSchema {
-          name: "capture".to_string(),
-          required: false,
-          ty: IdlType::Boolean,
-          default: None,
-        }],
-      });
-      ctx
-    })
-  }
-
-  fn converted_value_to_js(
-    cx: &mut VmJsWebIdlCx<'_>,
-    value: ConvertedValue<Value>,
+  #[allow(dead_code)]
+  fn js_to_dict_foo_options(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
   ) -> Result<Value, VmError> {
-    Ok(match value {
-      ConvertedValue::Undefined => Value::Undefined,
-      ConvertedValue::Null => Value::Null,
-      ConvertedValue::Boolean(b) => Value::Bool(b),
-      ConvertedValue::Byte(n) => Value::Number(n as f64),
-      ConvertedValue::Octet(n) => Value::Number(n as f64),
-      ConvertedValue::Short(n) => Value::Number(n as f64),
-      ConvertedValue::UnsignedShort(n) => Value::Number(n as f64),
-      ConvertedValue::Long(n) => Value::Number(n as f64),
-      ConvertedValue::UnsignedLong(n) => Value::Number(n as f64),
-      ConvertedValue::LongLong(n) => Value::Number(n as f64),
-      ConvertedValue::UnsignedLongLong(n) => Value::Number(n as f64),
-      ConvertedValue::Float(n) => Value::Number(n as f64),
-      ConvertedValue::UnrestrictedFloat(n) => Value::Number(n as f64),
-      ConvertedValue::Double(n) => Value::Number(n),
-      ConvertedValue::UnrestrictedDouble(n) => Value::Number(n),
-      ConvertedValue::String(s) | ConvertedValue::Enum(s) => cx.alloc_string(&s)?,
-      ConvertedValue::Any(v) | ConvertedValue::Object(v) => v,
-      ConvertedValue::PlatformObject(obj) => cx
-        .platform_object_to_js_value(&obj)
-        .ok_or_else(|| cx.throw_type_error("Unsupported platform object value for this runtime"))?,
-      ConvertedValue::Sequence { values, .. } => {
-        let arr = cx.alloc_array()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = cx.property_key_from_u32(idx as u32)?;
-          let value = converted_value_to_js(cx, item)?;
-          cx.define_data_property(arr, key, value, true)?;
-        }
-        arr
+    let _ = (host, hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary FooOptions"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("capture")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "capture",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
       }
-      ConvertedValue::Record { entries, .. } => {
-        let obj = cx.alloc_object()?;
-        for (k, v) in entries {
-          let key = cx.property_key_from_str(&k)?;
-          let value = converted_value_to_js(cx, v)?;
-          cx.define_data_property(obj, key, value, true)?;
-        }
-        obj
-      }
-      ConvertedValue::Dictionary { members, .. } => {
-        let obj = cx.alloc_object()?;
-        for (k, v) in members {
-          let key = cx.property_key_from_str(&k)?;
-          let value = converted_value_to_js(cx, v)?;
-          cx.define_data_property(obj, key, value, true)?;
-        }
-        obj
-      }
-      ConvertedValue::Union { value, .. } => {
-        return converted_value_to_js(cx, *value);
-      }
-    })
+    }
+    Ok(Value::Object(out_obj))
   }
 
   #[allow(dead_code)]
   fn bar_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Bar",
-      "entries",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
   fn bar_for_each(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![vec![
-        ArgumentSchema {
-          name: "callback",
-          ty: IdlType::Any,
-          optional: false,
-          variadic: false,
-          default: None,
-        },
-        ArgumentSchema {
-          name: "thisArg",
-          ty: IdlType::Any,
-          optional: true,
-          variadic: false,
-          default: None,
-        },
-      ]]
-    });
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Bar",
-      "forEach",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(mut pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      };
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
+        &mut rt.scope,
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
+    }
+    Ok(Value::Undefined)
   }
 
   #[allow(dead_code)]
   fn bar_keys(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Bar",
-      "keys",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
   fn bar_values(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Bar",
-      "values",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -311,63 +263,31 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    args: &[Value],
+    _args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    let slots = cx.scope.heap().get_function_native_slots(callee)?;
-    let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(default_proto) = proto_slot else {
-      return Err(VmError::InvariantViolation(
-        "Bar constructor missing prototype slot",
-      ));
-    };
-    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
-    //
-    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
-    // - default to the interface prototype cached in native slots,
-    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
-    cx.scope.push_root(Value::Object(default_proto))?;
-    cx.scope.push_root(new_target)?;
-    let mut wrapper_proto = default_proto;
-    if let Value::Object(new_target_obj) = new_target {
-      cx.scope.push_root(Value::Object(new_target_obj))?;
-      let proto_key = cx.property_key_from_str("prototype")?;
-      let candidate = cx.get(Value::Object(new_target_obj), proto_key)?;
-      if let Value::Object(candidate_obj) = candidate {
-        cx.scope.push_root(Value::Object(candidate_obj))?;
-        wrapper_proto = candidate_obj;
-      }
-    }
-    let obj = cx.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
-    cx.scope.push_root(Value::Object(obj))?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "Bar constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
 
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Bar",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    let _ = bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      Some(Value::Object(obj)),
-      "Bar",
-      "constructor",
-      overload_index,
-      &converted_js_args,
-    )?;
-    Ok(Value::Object(obj))
   }
 
   #[allow(dead_code)]
@@ -380,76 +300,59 @@ pub mod window {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![
-        vec![ArgumentSchema {
-          name: "s",
-          ty: IdlType::String(StringType::DomString),
-          optional: false,
-          variadic: false,
-          default: None,
-        }],
-        vec![ArgumentSchema {
-          name: "x",
-          ty: IdlType::Numeric(NumericType::Long),
-          optional: false,
-          variadic: false,
-          default: None,
-        }],
-      ]
-    });
-    let overload_index: usize = {
-      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
-      let overloads = OVERLOADS.get_or_init(|| {
-        vec![
-          OverloadSig {
-            args: vec![OverloadArg {
-              ty: IdlType::String(StringType::DomString),
-              optionality: Optionality::Required,
-              default: None,
-            }],
-            decl_index: 0,
-            distinguishing_arg_index_by_arg_count: None,
-          },
-          OverloadSig {
-            args: vec![OverloadArg {
-              ty: IdlType::Numeric(NumericType::Long),
-              optionality: Optionality::Required,
-              default: None,
-            }],
-            decl_index: 1,
-            distinguishing_arg_index_by_arg_count: None,
-          },
-        ]
-      });
-      resolve_overload(&mut cx, overloads, args)?.overload_index
-    };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+    let args = if args.len() > 1 { &args[..1] } else { args };
+    if args.len() == 1 && (matches!(args[0], Value::String(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Foo",
+          "baz",
+          0,
+          &converted_args,
+        )
+      }
+    } else if args.len() == 1 && (matches!(args[0], Value::Number(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted =
+          Value::Number(to_int32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?) as f64);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Foo",
+          "baz",
+          1,
+          &converted_args,
+        )
+      }
+    } else {
+      Err(rt.throw_type_error("no matching overload for Foo.baz"))
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      receiver,
-      "Foo",
-      "baz",
-      overload_index,
-      &converted_js_args,
-    )
   }
 
   #[allow(dead_code)]
@@ -462,289 +365,288 @@ pub mod window {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![
-        vec![
-          ArgumentSchema {
-            name: "name",
-            ty: IdlType::String(StringType::DomString),
-            optional: false,
-            variadic: false,
-            default: None,
+    let args = if args.len() > 2 { &args[..2] } else { args };
+    if args.len() >= 1 && args.len() <= 2 && (matches!(args[0], Value::String(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let v1 = if args.len() > 1 {
+          args[1]
+        } else {
+          Value::Undefined
+        };
+        let converted = if matches!(v1, Value::Undefined) {
+          {
+            let obj = rt.alloc_object()?;
+            Value::Object(obj)
+          }
+        } else {
+          {
+            let v = v1;
+            if false {
+              Value::Undefined
+            } else if matches!(v, Value::Null | Value::Undefined) {
+              js_to_dict_foo_options(rt, host, hooks, v)?
+            } else if let Value::Object(obj) = v {
+              js_to_dict_foo_options(rt, host, hooks, v)?
+            } else if matches!(v, Value::Bool(_)) {
+              Value::Bool(rt.scope.heap().to_boolean(v)?)
+            } else {
+              Value::Bool(rt.scope.heap().to_boolean(v)?)
+            }
+          }
+        };
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Foo",
+          "doThing",
+          0,
+          &converted_args,
+        )
+      }
+    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let v1 = if args.len() > 1 {
+          args[1]
+        } else {
+          Value::Undefined
+        };
+        let converted = conversions::to_iterable_list(
+          rt,
+          host,
+          hooks,
+          v1,
+          "expected object for sequence",
+          |rt, host, hooks, next| {
+            Ok(Value::String(rt.scope.to_string(
+              &mut *rt.vm,
+              host,
+              hooks,
+              next,
+            )?))
           },
-          ArgumentSchema {
-            name: "options",
-            ty: IdlType::Union(vec![
-              IdlType::Named(NamedType {
-                name: "FooOptions".to_string(),
-                kind: NamedTypeKind::Dictionary,
-              }),
-              IdlType::Boolean,
-            ]),
-            optional: true,
-            variadic: false,
-            default: Some(DefaultValue::EmptyDictionary),
-          },
-        ],
-        vec![
-          ArgumentSchema {
-            name: "name",
-            ty: IdlType::String(StringType::DomString),
-            optional: false,
-            variadic: false,
-            default: None,
-          },
-          ArgumentSchema {
-            name: "items",
-            ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
-            optional: false,
-            variadic: false,
-            default: None,
-          },
-        ],
-        vec![
-          ArgumentSchema {
-            name: "name",
-            ty: IdlType::String(StringType::DomString),
-            optional: false,
-            variadic: false,
-            default: None,
-          },
-          ArgumentSchema {
-            name: "item",
-            ty: IdlType::String(StringType::DomString),
-            optional: false,
-            variadic: false,
-            default: None,
-          },
-        ],
-      ]
-    });
-    let overload_index: usize = {
-      static OVERLOADS: OnceLock<Vec<OverloadSig>> = OnceLock::new();
-      let overloads = OVERLOADS.get_or_init(|| {
-        vec![
-          OverloadSig {
-            args: vec![
-              OverloadArg {
-                ty: IdlType::String(StringType::DomString),
-                optionality: Optionality::Required,
-                default: None,
-              },
-              OverloadArg {
-                ty: IdlType::Union(vec![
-                  IdlType::Named(NamedType {
-                    name: "FooOptions".to_string(),
-                    kind: NamedTypeKind::Dictionary,
-                  }),
-                  IdlType::Boolean,
-                ]),
-                optionality: Optionality::Optional,
-                default: Some(DefaultValue::EmptyDictionary),
-              },
-            ],
-            decl_index: 0,
-            distinguishing_arg_index_by_arg_count: None,
-          },
-          OverloadSig {
-            args: vec![
-              OverloadArg {
-                ty: IdlType::String(StringType::DomString),
-                optionality: Optionality::Required,
-                default: None,
-              },
-              OverloadArg {
-                ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
-                optionality: Optionality::Required,
-                default: None,
-              },
-            ],
-            decl_index: 1,
-            distinguishing_arg_index_by_arg_count: None,
-          },
-          OverloadSig {
-            args: vec![
-              OverloadArg {
-                ty: IdlType::String(StringType::DomString),
-                optionality: Optionality::Required,
-                default: None,
-              },
-              OverloadArg {
-                ty: IdlType::String(StringType::DomString),
-                optionality: Optionality::Required,
-                default: None,
-              },
-            ],
-            decl_index: 2,
-            distinguishing_arg_index_by_arg_count: None,
-          },
-        ]
-      });
-      resolve_overload(&mut cx, overloads, args)?.overload_index
-    };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+        )?;
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Foo",
+          "doThing",
+          1,
+          &converted_args,
+        )
+      }
+    } else if args.len() == 2 && (matches!(args[0], Value::String(_))) {
+      {
+        let mut converted_args: Vec<Value> = Vec::new();
+        let v0 = if args.len() > 0 {
+          args[0]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let v1 = if args.len() > 1 {
+          args[1]
+        } else {
+          Value::Undefined
+        };
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v1)?);
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+        let bindings_host = host_from_hooks(hooks)?;
+        bindings_host.call_operation(
+          &mut *rt.vm,
+          &mut rt.scope,
+          receiver,
+          "Foo",
+          "doThing",
+          2,
+          &converted_args,
+        )
+      }
+    } else {
+      Err(rt.throw_type_error("no matching overload for Foo.doThing"))
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      receiver,
-      "Foo",
-      "doThing",
-      overload_index,
-      &converted_js_args,
-    )
   }
 
   #[allow(dead_code)]
   fn foo_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Foo",
-      "entries",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
   fn foo_for_each(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![vec![
-        ArgumentSchema {
-          name: "callback",
-          ty: IdlType::Any,
-          optional: false,
-          variadic: false,
-          default: None,
-        },
-        ArgumentSchema {
-          name: "thisArg",
-          ty: IdlType::Any,
-          optional: true,
-          variadic: false,
-          default: None,
-        },
-      ]]
-    });
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Foo",
-      "forEach",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(mut pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      };
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
+        &mut rt.scope,
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
+    }
+    Ok(Value::Undefined)
   }
 
   #[allow(dead_code)]
   fn foo_keys(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Foo",
-      "keys",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -757,45 +659,35 @@ pub mod window {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![vec![ArgumentSchema {
-        name: "options",
-        ty: IdlType::Named(NamedType {
-          name: "FooOptions".to_string(),
-          kind: NamedTypeKind::Dictionary,
-        }),
-        optional: true,
-        variadic: false,
-        default: None,
-      }]]
-    });
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Undefined) {
+        Value::Undefined
+      } else {
+        js_to_dict_foo_options(rt, host, hooks, v0)?
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Foo",
+        "qux",
+        0,
+        &converted_args,
+      )
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      receiver,
-      "Foo",
-      "qux",
-      overload_index,
-      &converted_js_args,
-    )
   }
 
   #[allow(dead_code)]
@@ -808,47 +700,42 @@ pub mod window {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![vec![ArgumentSchema {
-        name: "values",
-        ty: IdlType::Annotated {
-          annotations: vec![TypeAnnotation::EnforceRange],
-          inner: Box::new(IdlType::FrozenArray(Box::new(IdlType::Numeric(
-            NumericType::Long,
-          )))),
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = conversions::to_iterable_list(
+        rt,
+        host,
+        hooks,
+        v0,
+        "expected object for FrozenArray",
+        |rt, host, hooks, next| {
+          Ok(Value::Number(
+            to_int32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, next)?) as f64,
+          ))
         },
-        optional: false,
-        variadic: false,
-        default: None,
-      }]]
-    });
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+      )?;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Foo",
+        "takesFrozenArray",
+        0,
+        &converted_args,
+      )
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      receiver,
-      "Foo",
-      "takesFrozenArray",
-      overload_index,
-      &converted_js_args,
-    )
   }
 
   #[allow(dead_code)]
@@ -861,87 +748,89 @@ pub mod window {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
-      vec![vec![ArgumentSchema {
-        name: "values",
-        ty: IdlType::Annotated {
-          annotations: vec![TypeAnnotation::Clamp],
-          inner: Box::new(IdlType::Sequence(Box::new(IdlType::Numeric(
-            NumericType::Long,
-          )))),
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = conversions::to_iterable_list(
+        rt,
+        host,
+        hooks,
+        v0,
+        "expected object for sequence",
+        |rt, host, hooks, next| {
+          Ok(Value::Number(
+            to_int32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, next)?) as f64,
+          ))
         },
-        optional: false,
-        variadic: false,
-        default: None,
-      }]]
-    });
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+      )?;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Foo",
+        "takesSequence",
+        0,
+        &converted_args,
+      )
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      receiver,
-      "Foo",
-      "takesSequence",
-      overload_index,
-      &converted_js_args,
-    )
   }
 
   #[allow(dead_code)]
   fn foo_values(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
-    args: &[Value],
+    _args: &[Value],
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    cx.scope.push_root(this)?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
     let receiver = Some(this);
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
-    }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
       receiver,
       "Foo",
-      "values",
-      overload_index,
-      &converted_js_args,
-    )
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -966,63 +855,31 @@ pub mod window {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: GcObject,
-    args: &[Value],
+    _args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let mut bindings_host = {
-      let host = host_from_hooks(hooks)?;
-      NonNull::from(host)
-    };
-    let mut cx =
-      VmJsWebIdlCx::from_native_call(vm, scope, host, hooks, WebIdlLimits::default(), &NO_HOOKS);
-    let slots = cx.scope.heap().get_function_native_slots(callee)?;
-    let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
-    let Value::Object(default_proto) = proto_slot else {
-      return Err(VmError::InvariantViolation(
-        "Foo constructor missing prototype slot",
-      ));
-    };
-    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
-    //
-    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
-    // - default to the interface prototype cached in native slots,
-    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
-    cx.scope.push_root(Value::Object(default_proto))?;
-    cx.scope.push_root(new_target)?;
-    let mut wrapper_proto = default_proto;
-    if let Value::Object(new_target_obj) = new_target {
-      cx.scope.push_root(Value::Object(new_target_obj))?;
-      let proto_key = cx.property_key_from_str("prototype")?;
-      let candidate = cx.get(Value::Object(new_target_obj), proto_key)?;
-      if let Value::Object(candidate_obj) = candidate {
-        cx.scope.push_root(Value::Object(candidate_obj))?;
-        wrapper_proto = candidate_obj;
-      }
-    }
-    let obj = cx.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
-    cx.scope.push_root(Value::Object(obj))?;
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "Foo constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
 
-    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
-    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
-    let overload_index: usize = { 0 };
-    let params = &arg_schemas[overload_index];
-    let ctx = type_context();
-    let converted_args = convert_arguments(&mut cx, args, params, ctx)?;
-    let mut converted_js_args: Vec<Value> = Vec::with_capacity(converted_args.len());
-    for value in converted_args {
-      converted_js_args.push(converted_value_to_js(&mut cx, value)?);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Foo",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
     }
-    let bindings_host = unsafe { bindings_host.as_mut() };
-    let _ = bindings_host.call_operation(
-      cx.vm,
-      &mut cx.scope,
-      Some(Value::Object(obj)),
-      "Foo",
-      "constructor",
-      overload_index,
-      &converted_js_args,
-    )?;
-    Ok(Value::Object(obj))
   }
 
   pub fn install_bar_bindings_vm_js(

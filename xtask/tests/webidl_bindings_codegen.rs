@@ -68,21 +68,33 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
   .unwrap();
   assert_eq!(out1, out2, "expected deterministic output across runs");
 
-  // Spot-check that the codegen is using shared, spec-shaped overload resolution + conversions
-  // rather than bespoke, ad-hoc predicates.
-  assert!(
-    out1.contains("resolve_overload"),
-    "expected bindings to call shared overload resolution"
-  );
-  assert!(
-    out1.contains("convert_arguments"),
-    "expected bindings to call shared WebIDL conversions"
-  );
+  // Spot-check that the legacy backend keeps using the shared WebIDL overload resolution +
+  // conversion algorithms.
+  if backend == WebIdlBindingsBackend::Legacy {
+    assert!(
+      out1.contains("resolve_overload"),
+      "expected legacy bindings to call shared overload resolution"
+    );
+    assert!(
+      out1.contains("convert_arguments"),
+      "expected legacy bindings to call shared WebIDL conversions"
+    );
+  }
 
   if backend == WebIdlBindingsBackend::Vmjs {
     assert!(
       out1.contains("install_foo_bindings_vm_js"),
       "expected vm-js backend to emit per-interface installer functions"
+    );
+    // vm-js bindings intentionally avoid the legacy runtime's conversion/overload machinery; they
+    // call vm-js specific helpers instead.
+    assert!(
+      !out1.contains("resolve_overload"),
+      "expected vm-js bindings to not depend on legacy overload resolution helpers"
+    );
+    assert!(
+      !out1.contains("convert_arguments"),
+      "expected vm-js bindings to not depend on legacy conversion helpers"
     );
   }
 
@@ -150,8 +162,8 @@ fn vmjs_overload_dispatch_does_not_emit_usize_len_ge_zero_checks() {
     "vm-js backend should not emit useless `args.len() >= 0` checks (usize is always >= 0)"
   );
   assert!(
-    out.contains("resolve_overload"),
-    "expected vm-js backend to use shared overload resolution instead of length-based heuristics"
+    out.contains("args.is_empty()") || out.contains("args.len() == 0"),
+    "expected 0-arg overload dispatch to use an `args is empty` check"
   );
 }
 
