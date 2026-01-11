@@ -235,7 +235,7 @@ Compile the fixture and inspect the stackmap:
 
 ```bash
 llvm-as-18 fixtures/llvm_stackmap_abi/statepoint.ll -o /tmp/sp.bc
-llc-18 -filetype=obj /tmp/sp.bc -o /tmp/sp.o
+llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj /tmp/sp.bc -o /tmp/sp.o
 llvm-readobj-18 --stackmap /tmp/sp.o
 llvm-objdump-18 -d --no-show-raw-insn /tmp/sp.o
 ```
@@ -269,7 +269,9 @@ Key observations (x86_64):
 Frame-pointer note:
 
 * Depending on optimization level and code shape, LLVM may report locations
-  relative to `RSP`, `RBP`, or in registers.
+  relative to `RSP`, `RBP`, or (without spill-to-stack flags) in registers.
+  `runtime-native` currently requires stack-slot-only statepoint roots; see
+  `docs/stackmaps.md` for the enforced contract and required codegen flags.
 * If the runtime wants more predictable frame layouts, compile GC functions with
   a frame pointer (`-fno-omit-frame-pointer` / `frame-pointer="all"`). Stackmaps
   remain valid either way; the runtime just needs to interpret the register
