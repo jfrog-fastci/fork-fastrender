@@ -42,6 +42,11 @@ always inject a linker-script fragment and export:
 For linking arbitrary programs against `runtime-native` (e.g. from C), see
 `runtime-native/stackmaps.ld` and `runtime-native/README.md`.
 
+For the Linux AOT/PIE linking policy used by the native-js toolchain scripts, see:
+
+- `scripts/native_js_link_linux.sh` (objcopy rewrite + lld PIE link)
+- `scripts/test_stackmaps_pie_link.sh` (DT_TEXTREL regression test)
+
 ## PIE / textrels (Task 408 interaction)
 
 `.llvm_stackmaps` contains absolute relocations into `.text`.

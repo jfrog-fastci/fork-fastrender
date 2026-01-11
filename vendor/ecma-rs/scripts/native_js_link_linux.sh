@@ -117,11 +117,20 @@ for obj in "$@"; do
   cp "${obj}" "${patched}"
 
   # If present, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` (RELRO-friendly).
-  if readelf -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_stackmaps'; then
+  if readelf -W -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_stackmaps'; then
     : # already rewritten
-  elif readelf -S "${patched}" 2>/dev/null | grep -q '\.llvm_stackmaps'; then
+  elif readelf -W -S "${patched}" 2>/dev/null | grep -q '\.llvm_stackmaps'; then
     "${objcopy}" --rename-section \
       .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+      "${patched}"
+  fi
+
+  # Same for `.llvm_faultmaps` if present (patchpoint metadata).
+  if readelf -W -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_faultmaps'; then
+    : # already rewritten
+  elif readelf -W -S "${patched}" 2>/dev/null | grep -q '\.llvm_faultmaps'; then
+    "${objcopy}" --rename-section \
+      .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       "${patched}"
   fi
 

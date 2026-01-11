@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Rename LLVM stackmap sections in object files to avoid DT_TEXTREL when linking
-# PIE binaries / DSOs.
+# Rename LLVM stackmap / faultmap sections in object files to avoid DT_TEXTREL
+# when linking PIE binaries / DSOs.
 #
 # Why:
 # - `.llvm_stackmaps` is typically read-only but needs relocations (function addresses),
@@ -40,15 +40,21 @@ for obj in "$@"; do
 
   # Skip if already renamed.
   if llvm-readobj-18 --sections "${obj}" | grep -q -- ".data.rel.ro.llvm_stackmaps"; then
-    continue
-  fi
-
-  # Only rename if the legacy section exists.
-  if llvm-readobj-18 --sections "${obj}" | grep -q -- ".llvm_stackmaps"; then
+    : # already renamed
+  elif llvm-readobj-18 --sections "${obj}" | grep -q -- ".llvm_stackmaps"; then
     # Important: set section flags to "data" (writable) so linkers that don't
     # automatically fold `.data.rel.ro.*` into `.data.rel.ro` still won't emit TEXTREL.
     llvm-objcopy-18 \
       --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+      "${obj}"
+  fi
+
+  # Same policy for `.llvm_faultmaps` when present.
+  if llvm-readobj-18 --sections "${obj}" | grep -q -- ".data.rel.ro.llvm_faultmaps"; then
+    : # already renamed
+  elif llvm-readobj-18 --sections "${obj}" | grep -q -- ".llvm_faultmaps"; then
+    llvm-objcopy-18 \
+      --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       "${obj}"
   fi
 done

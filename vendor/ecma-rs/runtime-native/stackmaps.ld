@@ -43,6 +43,20 @@ SECTIONS
     __llvm_stackmaps_end = .;
     __stop_llvm_stackmaps = .;
   }
+
+  /* Faultmaps are emitted by some patchpoint configurations. Keep them for
+   * parity with `.llvm_stackmaps` and to avoid accidental removal under
+   * `--gc-sections`. */
+  .data.rel.ro.llvm_faultmaps : ALIGN(8)
+  {
+    __llvm_faultmaps_start = .;
+    KEEP(*(.data.rel.ro.llvm_faultmaps))
+    KEEP(*(.data.rel.ro.llvm_faultmaps.*))
+    /* Legacy: older LLVM/object files may still emit `.llvm_faultmaps`. */
+    KEEP(*(.llvm_faultmaps))
+    KEEP(*(.llvm_faultmaps.*))
+    __llvm_faultmaps_end = .;
+  }
 }
 
 INSERT AFTER .text;
