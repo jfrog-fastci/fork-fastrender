@@ -1230,6 +1230,228 @@ pub fn validate_native_strict_body(
                     ));
                   }
 
+                  // `Reflect.apply(Function.prototype.call, target, [thisArg, ...args])` and
+                  // `Reflect.apply(Function.prototype.apply, target, [thisArg, argsArray])` can be
+                  // used to indirectly invoke a function.
+                  let target_is_function_prototype_call = expr_is_function_prototype_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    call_name,
+                    "call",
+                  );
+                  let target_is_function_prototype_apply = expr_is_function_prototype_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    apply_name,
+                    "apply",
+                  );
+                  if target_is_function_prototype_call || target_is_function_prototype_apply {
+                    if let Some(called_target) =
+                      call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                    {
+                      let called_target_span = result
+                        .expr_spans
+                        .get(called_target.0 as usize)
+                        .copied()
+                        .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
+                        .unwrap_or(target_span);
+
+                      if expr_is_ident_or_global_this_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        eval_name,
+                        "eval",
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                          "`eval` is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+                      if expr_is_ident_or_global_this_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        function_name,
+                        "Function",
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                          "`Function` constructor is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+                      if expr_is_ident_or_global_this_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        proxy_name,
+                        "Proxy",
+                      ) || expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        proxy_name,
+                        "Proxy",
+                        revocable_name,
+                        "revocable",
+                      ) {
+                        diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                          "`Proxy` is forbidden when `native_strict` is enabled",
+                          Span::new(file, called_target_span),
+                        ));
+                      }
+
+                      if expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        set_prototype_of_name,
+                        "setPrototypeOf",
+                      ) || expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        set_prototype_of_name,
+                        "setPrototypeOf",
+                      ) {
+                        let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                        diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                          "prototype mutation is forbidden when `native_strict` is enabled",
+                          Span::new(file, span),
+                        ));
+                      }
+
+                      let called_target_is_object_define_property = expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let called_target_is_reflect_define_property = expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let called_target_is_object_define_properties = expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_properties_name,
+                        "defineProperties",
+                      );
+                      let called_target_is_object_assign = expr_is_builtin_member(
+                        body,
+                        called_target,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        assign_name,
+                        "assign",
+                      );
+                      if called_target_is_object_define_property
+                        || called_target_is_reflect_define_property
+                        || called_target_is_object_define_properties
+                        || called_target_is_object_assign
+                      {
+                        if let Some(args_list_expr) =
+                          call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                        {
+                          let args_for_target = if target_is_function_prototype_call {
+                            array_literal_exprs(body, args_list_expr).map(|mut args_list| {
+                              if !args_list.is_empty() {
+                                args_list.remove(0);
+                              }
+                              args_list
+                            })
+                          } else if target_is_function_prototype_apply {
+                            array_literal_exprs(body, args_list_expr)
+                              .and_then(|args_list| args_list.get(1).copied())
+                              .and_then(|inner| array_literal_exprs(body, inner))
+                          } else {
+                            None
+                          };
+                          if let Some(args_list) = args_for_target {
+                            if let Some(target_obj) = args_list.first().copied() {
+                              let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                body,
+                                target_obj,
+                                prototype_name,
+                                proto_name,
+                              );
+
+                              if !is_proto_mutation
+                                && (called_target_is_object_define_property
+                                  || called_target_is_reflect_define_property)
+                              {
+                                if let Some(key_arg) = args_list.get(1).copied() {
+                                  if expr_is_const_string(body, key_arg, "prototype")
+                                    || expr_is_const_string(body, key_arg, "__proto__")
+                                  {
+                                    is_proto_mutation = true;
+                                  }
+                                }
+                              }
+
+                              if !is_proto_mutation && called_target_is_object_define_properties {
+                                if let Some(props_arg) = args_list.get(1).copied() {
+                                  if expr_is_object_literal_with_proto_key(
+                                    body,
+                                    props_arg,
+                                    prototype_name,
+                                    proto_name,
+                                  ) {
+                                    is_proto_mutation = true;
+                                  }
+                                }
+                              }
+
+                              if !is_proto_mutation && called_target_is_object_assign {
+                                for source_arg in args_list.iter().skip(1).copied() {
+                                  if expr_is_object_literal_with_proto_key(
+                                    body,
+                                    source_arg,
+                                    prototype_name,
+                                    proto_name,
+                                  ) {
+                                    is_proto_mutation = true;
+                                    break;
+                                  }
+                                }
+                              }
+
+                              if is_proto_mutation {
+                                let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                  "prototype mutation is forbidden when `native_strict` is enabled",
+                                  Span::new(file, span),
+                                ));
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
                   if expr_is_builtin_member(
                     body,
                     target_arg,

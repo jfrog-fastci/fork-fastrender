@@ -192,6 +192,38 @@ fn native_strict_bans_eval_via_reflect_apply() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_reflect_apply_function_prototype_call() {
+  let source = "Reflect.apply(Function.prototype.call, eval, [null, \"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_reflect_apply_function_prototype_apply() {
+  let source = "Reflect.apply(Function.prototype.apply, eval, [null, [\"1\"]]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_new_function() {
   let source = "new Function(\"return 1\");";
   let (diagnostics, file_id) = check(source, true);
@@ -681,6 +713,23 @@ fn native_strict_bans_define_property_of_prototype_key_via_function_prototype_ca
   let source = "declare const Foo: { prototype: object };\nFunction.prototype.call.call(Object.defineProperty, Object, Foo, \"prototype\", {});";
   let (diagnostics, file_id) = check(source, true);
   let needle = "Function.prototype.call.call(Object.defineProperty, Object, Foo, \"prototype\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_define_property_of_prototype_key_via_reflect_apply_function_prototype_call() {
+  let source = "declare const Foo: { prototype: object };\nReflect.apply(Function.prototype.call, Object.defineProperty, [Object, Foo, \"prototype\", {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Reflect.apply(Function.prototype.call, Object.defineProperty, [Object, Foo, \"prototype\", {}])";
   let start = source.find(needle).expect("call") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
@@ -1232,6 +1281,24 @@ fn native_strict_bans_set_prototype_of_via_reflect_apply() {
   let source = "const value: object = {};\nReflect.apply(Object.setPrototypeOf, Object, [value, {}]);";
   let (diagnostics, file_id) = check(source, true);
   let needle = "Reflect.apply(Object.setPrototypeOf, Object, [value, {}])";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_set_prototype_of_via_reflect_apply_function_prototype_call() {
+  let source = "const value: object = {};\nReflect.apply(Function.prototype.call, Object.setPrototypeOf, [Object, value, {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let needle =
+    "Reflect.apply(Function.prototype.call, Object.setPrototypeOf, [Object, value, {}])";
   let start = source.find(needle).expect("call") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
