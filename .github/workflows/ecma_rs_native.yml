@@ -1,0 +1,124 @@
+name: ecma-rs native groundwork
+
+on:
+  push:
+    paths:
+      - "vendor/ecma-rs/**"
+      - "scripts/cargo_agent.sh"
+      - "scripts/run_limited.sh"
+      - ".github/workflows/ecma_rs_native.yml"
+  pull_request:
+    paths:
+      - "vendor/ecma-rs/**"
+      - "scripts/cargo_agent.sh"
+      - "scripts/run_limited.sh"
+      - ".github/workflows/ecma_rs_native.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  ecma-rs-native:
+    name: ecma-rs native (Rust 1.92.0)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Keep CI lightweight: do not fetch heavyweight nested corpora submodules (test262,
+          # TypeScript, ...). This job relies only on the vendored source + fixtures.
+          submodules: false
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Match `vendor/ecma-rs/rust-toolchain.toml`.
+          toolchain: "1.92.0"
+
+      - name: Ensure build dependencies are available
+        run: |
+          set -euo pipefail
+          pkgs=()
+          if ! command -v mold >/dev/null 2>&1; then
+            pkgs+=(mold)
+          fi
+          if ! command -v rg >/dev/null 2>&1; then
+            pkgs+=(ripgrep)
+          fi
+          if [[ ${#pkgs[@]} -eq 0 ]]; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y "${pkgs[@]}"
+
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Cache cargo registry (ecma-rs native)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-ecma-rs-native-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-cargo-registry-
+
+      - name: Cache cargo git (ecma-rs native)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-ecma-rs-native-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-ecma-rs-native-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-target-1.92.0-
+
+      - name: Diagnostic code policy
+        run: bash vendor/ecma-rs/scripts/check_diagnostic_codes.sh
+
+      - name: typecheck-ts (strict-native groundwork)
+        working-directory: vendor/ecma-rs
+        env:
+          # Keep cargo_agent locks within the ecma-rs workspace target dir (avoids polluting the
+          # root target/ cache used by MSRV-focused workflows).
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: bash ../../scripts/cargo_agent.sh test -p typecheck-ts
+
+      - name: emit-js (TS erasure groundwork)
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: bash ../../scripts/cargo_agent.sh test -p emit-js
+
+      - name: ts-erase (if present)
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          if cargo metadata --no-deps --format-version 1 | rg -q '"name":"ts-erase"'; then
+            bash ../../scripts/cargo_agent.sh test -p ts-erase
+          else
+            echo "ts-erase package not present in this checkout; skipping."
+          fi
+
+      - name: native-oracle-harness (if present)
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          if cargo metadata --no-deps --format-version 1 | rg -q '"name":"native-oracle-harness"'; then
+            bash ../../scripts/cargo_agent.sh test -p native-oracle-harness
+          else
+            echo "native-oracle-harness package not present in this checkout; skipping."
+          fi

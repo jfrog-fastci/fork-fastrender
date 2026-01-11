@@ -30,6 +30,7 @@ repo-wide policy and registry):
 - `PS####`: `parse-js` parser
 - `BIND####`: `semantic-js` binder
 - `LOWER####`: `hir-js` lowering
+- `VMJS####`: `vm-js` VM/runtime
 - `TC####`: `typecheck-ts` type checker
 - `TN####`: `typecheck-ts` strict-native diagnostics
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)

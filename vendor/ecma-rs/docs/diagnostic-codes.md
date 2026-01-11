@@ -43,6 +43,7 @@ prefixes for planned crates) and where they come from.
 | `PS####` | `parse-js` | Parser syntax errors (see `parse-js/src/error.rs`). |
 | `BIND####` | `semantic-js` | Binder / name-resolution diagnostics (JS + TS binding). |
 | `LOWER####` | `hir-js` | AST→HIR lowering warnings. |
+| `VMJS####` | `vm-js` | VM/runtime diagnostics. |
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `TN####` | `typecheck-ts` | Strict-native diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `EFF####` | `effect-js` | Effect inference diagnostics. |
