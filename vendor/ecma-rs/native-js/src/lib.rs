@@ -42,6 +42,7 @@ pub mod codegen;
 pub mod codes;
 pub mod emit;
 pub mod link;
+pub mod llvm;
 pub mod strict;
 
 mod stack_walking;
@@ -193,4 +194,3 @@ mod tests {
     }
   }
 }
-
