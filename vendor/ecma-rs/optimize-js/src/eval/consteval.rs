@@ -733,7 +733,8 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.sqrt", Num(a)) => Num(JN(a.0.sqrt())),
       ("Math.tan", Num(a)) => Num(JN(a.0.tan())),
       ("Math.trunc", Num(a)) => Num(JN(a.0.trunc())),
-      ("Number", Str(a)) => Num(JN(coerce_str_to_num(&a))),
+      ("Number", BigInt(_)) => return None,
+      ("Number", a) => Num(JN(coerce_to_num(a))),
       _ => return None,
     }
     _ => return None,

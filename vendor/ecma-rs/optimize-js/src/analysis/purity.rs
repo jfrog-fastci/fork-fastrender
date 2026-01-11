@@ -1,11 +1,13 @@
 use crate::analysis::effect::FnEffectMap;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::EffectSet;
-use crate::il::inst::{Arg, InstTyp};
+use crate::il::inst::{Arg, InstTyp, ValueTypeSummary};
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 pub use crate::il::meta::Purity;
 use std::collections::BTreeMap;
+
+use super::value_types::ValueTypeSummaries;
 
 pub fn purity_of_effects(effects: &EffectSet) -> Purity {
   purity_from_effects(effects)
@@ -57,8 +59,30 @@ pub fn compute_program_purity(program: &Program, effects: &FnEffectMap) -> FnPur
   }
 }
 
-fn builtin_callee_purity(path: &str) -> Purity {
-  // Keep in sync with `eval/consteval.rs:maybe_eval_const_builtin_call` for calls we treat as pure.
+fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummaries) -> Purity {
+  // Keep in sync with `eval/consteval.rs:maybe_eval_const_builtin_call` for calls we can safely
+  // treat as pure in our current model.
+  //
+  // NOTE: Many JS builtins coerce their arguments with `ToNumber`, which can either:
+  // - throw (BigInt/Symbol), or
+  // - invoke user code (`ToPrimitive` on objects/functions via `valueOf`/`toString`).
+  //
+  // We only mark these calls as pure when the first argument is known to be a non-BigInt,
+  // non-Symbol primitive. In untyped builds this generally means "literal constants"; typed builds
+  // can propagate more precise summaries through `Inst.value_type`.
+  let safe_to_number_arg = |ty: ValueTypeSummary| {
+    !ty.is_unknown()
+      && !ty.contains(ValueTypeSummary::BIGINT)
+      && !ty.contains(ValueTypeSummary::SYMBOL)
+      && !ty.contains(ValueTypeSummary::OBJECT)
+      && !ty.contains(ValueTypeSummary::FUNCTION)
+  };
+
+  let first_arg_type = || match args.get(0) {
+    Some(arg) => value_types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN),
+    None => ValueTypeSummary::UNDEFINED,
+  };
+
   match path {
     "Math.abs"
     | "Math.acos"
@@ -76,7 +100,13 @@ fn builtin_callee_purity(path: &str) -> Purity {
     | "Math.sqrt"
     | "Math.tan"
     | "Math.trunc"
-    | "Number" => Purity::Pure,
+    | "Number" => {
+      if safe_to_number_arg(first_arg_type()) {
+        Purity::Pure
+      } else {
+        Purity::Impure
+      }
+    }
 
     // Internal lowering helpers that construct literals / allocate.
     "__optimize_js_array"
@@ -94,7 +124,7 @@ fn builtin_callee_purity(path: &str) -> Purity {
 fn callee_purity(callee: &Arg, purities: &FnPurityMap) -> Purity {
   match callee {
     Arg::Fn(id) => purities.for_fn(*id),
-    Arg::Builtin(path) => builtin_callee_purity(path),
+    Arg::Builtin(_) => Purity::Impure,
     _ => Purity::Impure,
   }
 }
@@ -210,14 +240,18 @@ pub fn annotate_cfg_purity(
   foreign_fns: &BTreeMap<SymbolId, FnId>,
 ) {
   let defs = build_callee_var_defs(cfg, foreign_fns);
+  let value_types = ValueTypeSummaries::new(cfg);
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
       if inst.t != InstTyp::Call {
         continue;
       }
 
-      let (_, callee, _, _, _) = inst.as_call();
-      inst.meta.callee_purity = callee_purity_resolved(callee, purities, &defs);
+      let (_, callee, _, args, _) = inst.as_call();
+      inst.meta.callee_purity = match callee {
+        Arg::Builtin(path) => builtin_call_purity(path, args, &value_types),
+        _ => callee_purity_resolved(callee, purities, &defs),
+      };
     }
   }
 }
@@ -300,6 +334,19 @@ mod tests {
     let mut cfg = cfg_with_single_call(Arg::Builtin("Math.abs".to_string()));
     annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
+  }
+
+  #[test]
+  fn builtin_call_is_not_pure_when_first_arg_is_bigint() {
+    let mut cfg = cfg_single_block(vec![Inst::call(
+      None::<u32>,
+      Arg::Builtin("Math.abs".to_string()),
+      Arg::Const(Const::Undefined),
+      vec![Arg::Const(Const::BigInt(num_bigint::BigInt::from(1)))],
+      Vec::new(),
+    )]);
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
   }
 
   #[test]

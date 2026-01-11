@@ -10,19 +10,30 @@ use std::cmp::Ordering;
 
 #[test]
 fn number_builtin_matches_string_to_number() {
-  let eval_number = |s: &str| match maybe_eval_const_builtin_call("Number", &[ConstStr(s.into())]) {
+  let eval_number = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("Number", &[arg]) {
     Some(ConstNum(JN(v))) => v,
-    other => panic!("unexpected eval result for {s:?}: {other:?}"),
+    other => panic!("unexpected eval result: {other:?}"),
   };
 
-  assert_eq!(eval_number("  "), 0.0);
-  assert_eq!(eval_number("0x10"), 16.0);
-  assert_eq!(eval_number("0b10"), 2.0);
-  assert_eq!(eval_number("0o10"), 8.0);
+  assert_eq!(eval_number(ConstStr("  ".into())), 0.0);
+  assert_eq!(eval_number(ConstStr("0x10".into())), 16.0);
+  assert_eq!(eval_number(ConstStr("0b10".into())), 2.0);
+  assert_eq!(eval_number(ConstStr("0o10".into())), 8.0);
 
-  let inf = eval_number("Infinity");
+  assert_eq!(eval_number(optimize_js::il::inst::Const::Bool(true)), 1.0);
+  assert_eq!(eval_number(optimize_js::il::inst::Const::Bool(false)), 0.0);
+  assert_eq!(eval_number(optimize_js::il::inst::Const::Null), 0.0);
+  assert!(eval_number(optimize_js::il::inst::Const::Undefined).is_nan());
+
+  let inf = eval_number(ConstStr("Infinity".into()));
   assert!(inf.is_infinite() && inf.is_sign_positive());
-  assert!(eval_number("not a number").is_nan());
+  assert!(eval_number(ConstStr("not a number".into())).is_nan());
+
+  // `Number(1n)` throws a TypeError.
+  assert_eq!(
+    maybe_eval_const_builtin_call("Number", &[ConstBigInt(BigInt::from(1))]),
+    None
+  );
 }
 
 #[test]
