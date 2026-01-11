@@ -74,12 +74,6 @@ Strict-native rejects (hard error, not warning):
 - `TC4008`: `Proxy` (incl `Proxy.revocable(...)`)
 - `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, etc.)
 
-`typecheck-ts` can also emit `TN####` strict-native dialect diagnostics (today `TN0001`–`TN0003`), primarily for type/lowering checks:
-
-- `TN0001`: `any` type is forbidden
-- `TN0002`: unsafe type assertions (expression type must be assignable to asserted type)
-- `TN0003`: invalid non-null assertions (only allowed when they are a no-op after narrowing)
-
 > Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
 > proceeds.
 
