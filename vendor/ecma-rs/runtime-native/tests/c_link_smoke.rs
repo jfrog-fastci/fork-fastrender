@@ -411,6 +411,64 @@ int main(void) {
     return 43;
   }
 
+  // Cancellation: a deferred runtime-owned coroutine that never runs must still be destroyed and
+  // have its CoroutineId handle freed (and its scheduled resume microtask discarded).
+  int cancel_ran = 0;
+  int cancel_destroyed = 0;
+  NativeAsyncSmokeCoro* cancel_coro = (NativeAsyncSmokeCoro*)malloc(sizeof(NativeAsyncSmokeCoro));
+  if (!cancel_coro) {
+    rt_thread_deinit();
+    return 44;
+  }
+  *cancel_coro = (NativeAsyncSmokeCoro){
+    .header =
+      {
+        .vtable = &NATIVE_ASYNC_HEAP_VTABLE,
+        .promise = (PromiseRef)0,
+        .next_waiter = (Coroutine*)0,
+        .flags = CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+    .ran = &cancel_ran,
+    .destroyed = &cancel_destroyed,
+  };
+  CoroutineId cancel_id = rt_handle_alloc((GcPtr)cancel_coro);
+  PromiseRef cancel_promise = rt_async_spawn_deferred(cancel_id);
+  if (cancel_promise == (PromiseRef)0) {
+    rt_thread_deinit();
+    return 45;
+  }
+  if (cancel_promise != cancel_coro->header.promise) {
+    rt_thread_deinit();
+    return 46;
+  }
+  if (cancel_ran != 0) {
+    rt_thread_deinit();
+    return 47;
+  }
+  if (cancel_destroyed != 0) {
+    rt_thread_deinit();
+    return 48;
+  }
+  rt_async_cancel_all();
+  if (cancel_ran != 0) {
+    rt_thread_deinit();
+    return 49;
+  }
+  if (cancel_destroyed != 1) {
+    rt_thread_deinit();
+    return 50;
+  }
+  if (rt_handle_load((HandleId)cancel_id) != (GcPtr)0) {
+    rt_thread_deinit();
+    return 51;
+  }
+  // Draining after cancellation should be a no-op and must not run stale resume microtasks.
+  rt_drain_microtasks();
+  if (cancel_ran != 0) {
+    rt_thread_deinit();
+    return 52;
+  }
+
   rt_gc_safepoint();
   rt_gc_set_young_range((uint8_t*)0, (uint8_t*)0);
   rt_write_barrier_range((uint8_t*)0, (uint8_t*)0, 0);
