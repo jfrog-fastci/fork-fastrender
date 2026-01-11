@@ -262,6 +262,114 @@ const_assert!(
   core::mem::size_of::<PromiseHeader>() % core::mem::align_of::<PromiseHeader>() == 0
 );
 
+// The coroutine ABI structs are mirrored in `runtime-native-abi` for header generation and external
+// tooling. Keep the layouts in sync to avoid silent ABI drift between crates.
+//
+// Note: `PromiseHeader` itself is intentionally *not* mirrored there: it is runtime-owned and can
+// evolve as long as the stable exported entrypoints continue to treat `PromiseRef` as an opaque
+// handle.
+const_assert_eq!(
+  core::mem::size_of::<PromiseRef>(),
+  core::mem::size_of::<runtime_native_abi::PromiseRef>()
+);
+const_assert_eq!(
+  core::mem::align_of::<PromiseRef>(),
+  core::mem::align_of::<runtime_native_abi::PromiseRef>()
+);
+
+const_assert_eq!(
+  CoroutineStepTag::Await as u32,
+  runtime_native_abi::CoroutineStepTag::RT_CORO_STEP_AWAIT as u32
+);
+const_assert_eq!(
+  CoroutineStepTag::Complete as u32,
+  runtime_native_abi::CoroutineStepTag::RT_CORO_STEP_COMPLETE as u32
+);
+
+const_assert_eq!(
+  core::mem::size_of::<CoroutineStep>(),
+  core::mem::size_of::<runtime_native_abi::CoroutineStep>()
+);
+const_assert_eq!(
+  core::mem::align_of::<CoroutineStep>(),
+  core::mem::align_of::<runtime_native_abi::CoroutineStep>()
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineStep, tag),
+  core::mem::offset_of!(runtime_native_abi::CoroutineStep, tag)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineStep, await_promise),
+  core::mem::offset_of!(runtime_native_abi::CoroutineStep, await_promise)
+);
+
+const_assert_eq!(
+  core::mem::size_of::<CoroutineVTable>(),
+  core::mem::size_of::<runtime_native_abi::CoroutineVTable>()
+);
+const_assert_eq!(
+  core::mem::align_of::<CoroutineVTable>(),
+  core::mem::align_of::<runtime_native_abi::CoroutineVTable>()
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, resume),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, resume)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, destroy),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, destroy)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, promise_size),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, promise_size)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, promise_align),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, promise_align)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, promise_shape_id),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, promise_shape_id)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, abi_version),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, abi_version)
+);
+const_assert_eq!(
+  core::mem::offset_of!(CoroutineVTable, reserved),
+  core::mem::offset_of!(runtime_native_abi::CoroutineVTable, reserved)
+);
+
+const_assert_eq!(
+  core::mem::size_of::<Coroutine>(),
+  core::mem::size_of::<runtime_native_abi::Coroutine>()
+);
+const_assert_eq!(
+  core::mem::align_of::<Coroutine>(),
+  core::mem::align_of::<runtime_native_abi::Coroutine>()
+);
+const_assert_eq!(
+  core::mem::offset_of!(Coroutine, vtable),
+  core::mem::offset_of!(runtime_native_abi::Coroutine, vtable)
+);
+const_assert_eq!(
+  core::mem::offset_of!(Coroutine, promise),
+  core::mem::offset_of!(runtime_native_abi::Coroutine, promise)
+);
+const_assert_eq!(
+  core::mem::offset_of!(Coroutine, next_waiter),
+  core::mem::offset_of!(runtime_native_abi::Coroutine, next_waiter)
+);
+const_assert_eq!(
+  core::mem::offset_of!(Coroutine, flags),
+  core::mem::offset_of!(runtime_native_abi::Coroutine, flags)
+);
+
+const_assert_eq!(
+  CORO_FLAG_RUNTIME_OWNS_FRAME,
+  runtime_native_abi::CORO_FLAG_RUNTIME_OWNS_FRAME
+);
+
 const _: () = {
   use core::mem::{align_of, offset_of, size_of};
 

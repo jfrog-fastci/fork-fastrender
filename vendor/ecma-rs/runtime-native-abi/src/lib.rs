@@ -829,10 +829,11 @@ mod tests {
     assert!(size_of::<CoroutineId>() == 8);
     assert!(align_of::<CoroutineId>() == 8);
 
-    assert!(size_of::<Microtask>() == 16);
+    assert!(size_of::<Microtask>() == 24);
     assert!(align_of::<Microtask>() == 8);
     assert!(core::mem::offset_of!(Microtask, func) == 0);
     assert!(core::mem::offset_of!(Microtask, data) == 8);
+    assert!(core::mem::offset_of!(Microtask, drop) == 16);
 
     assert!(size_of::<PromiseRef>() == 8);
     assert!(align_of::<PromiseRef>() == 8);

@@ -38,6 +38,22 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_io_register_handle_with_drop(",
     "rt_root_push(",
     "rt_root_pop(",
+    // Stable native promise + coroutine ABI.
+    "rt_promise_init(",
+    "rt_promise_fulfill(",
+    "rt_promise_try_fulfill(",
+    "rt_promise_reject(",
+    "rt_promise_try_reject(",
+    "rt_promise_mark_handled(",
+    "rt_promise_payload_ptr(",
+    "rt_async_spawn(",
+    "rt_async_spawn_deferred(",
+    "rt_async_cancel_all(",
+    "rt_async_poll(",
+    "rt_async_wait(",
+    "rt_async_set_strict_await_yields(",
+    "rt_async_run_until_idle(",
+    "rt_async_block_on(",
     "rt_gc_set_young_range(",
     "rt_gc_get_young_range(",
     "rt_gc_poll(",
@@ -179,6 +195,26 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     *mut u8,
   ) -> runtime_native::abi::PromiseRef = runtime_native::rt_parallel_spawn_promise_legacy;
 
+  // Stable native promise + coroutine ABI.
+  let _promise_init: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_init;
+  let _promise_fulfill: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_fulfill;
+  let _promise_try_fulfill: unsafe extern "C" fn(runtime_native::PromiseRef) -> bool = runtime_native::rt_promise_try_fulfill;
+  let _promise_reject: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_reject;
+  let _promise_try_reject: unsafe extern "C" fn(runtime_native::PromiseRef) -> bool = runtime_native::rt_promise_try_reject;
+  let _promise_mark_handled: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_promise_mark_handled;
+  let _promise_payload_ptr: extern "C" fn(runtime_native::PromiseRef) -> *mut u8 =
+    runtime_native::rt_promise_payload_ptr;
+  let _async_spawn: unsafe extern "C" fn(runtime_native::CoroutineId) -> runtime_native::PromiseRef =
+    runtime_native::rt_async_spawn;
+  let _async_spawn_deferred: unsafe extern "C" fn(runtime_native::CoroutineId) -> runtime_native::PromiseRef =
+    runtime_native::rt_async_spawn_deferred;
+  let _async_cancel_all: extern "C" fn() = runtime_native::rt_async_cancel_all;
+  let _async_poll: extern "C" fn() -> bool = runtime_native::rt_async_poll;
+  let _async_wait: extern "C" fn() = runtime_native::rt_async_wait;
+  let _async_set_strict_await_yields: extern "C" fn(bool) = runtime_native::rt_async_set_strict_await_yields;
+  let _async_run_until_idle: unsafe extern "C" fn() -> bool = runtime_native::rt_async_run_until_idle_abi;
+  let _async_block_on: unsafe extern "C" fn(runtime_native::PromiseRef) = runtime_native::rt_async_block_on;
+
   // Global root registration.
   let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 =
     runtime_native::rt_gc_register_root_slot;
@@ -291,6 +327,21 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _backing_store_external_bytes,
     _keep_alive,
     _parallel_spawn_promise,
+    _promise_init,
+    _promise_fulfill,
+    _promise_try_fulfill,
+    _promise_reject,
+    _promise_try_reject,
+    _promise_mark_handled,
+    _promise_payload_ptr,
+    _async_spawn,
+    _async_spawn_deferred,
+    _async_cancel_all,
+    _async_poll,
+    _async_wait,
+    _async_set_strict_await_yields,
+    _async_run_until_idle,
+    _async_block_on,
     _register_root_slot,
     _unregister_root_slot,
     _pin,
