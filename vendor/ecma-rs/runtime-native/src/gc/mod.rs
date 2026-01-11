@@ -118,8 +118,19 @@ impl ObjHeader {
 
   #[inline]
   pub(crate) fn set_remembered_idempotent(&self) -> bool {
+    if self.is_forwarded() {
+      return false;
+    }
     let prev = self.meta.fetch_or(META_REMEMBERED, Ordering::AcqRel);
     (prev & META_REMEMBERED) == 0
+  }
+
+  #[inline]
+  pub(crate) fn clear_remembered_idempotent(&self) {
+    if self.is_forwarded() {
+      return;
+    }
+    self.meta.fetch_and(!META_REMEMBERED, Ordering::AcqRel);
   }
 
   #[inline]

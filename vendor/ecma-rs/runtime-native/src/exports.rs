@@ -498,8 +498,7 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 /// - retaining only objects for which `object_has_young_refs` returns `true`
 /// - clearing the per-object `REMEMBERED` bit for removed objects
 ///
-/// The `objs` argument is currently unused; it exists so tests can pass their known set of old
-/// objects and to keep the function signature flexible while the exported GC ABI is still evolving.
+/// `objs` is the set of candidate old-generation objects that might be remembered.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
   objs: &[*mut u8],
@@ -577,9 +576,6 @@ pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u
   }
 
   // Old → young store. Mark the base object as remembered.
-  //
-  // Note: `rt_write_barrier` is `NoGC` (must not allocate or safepoint), so we
-  // cannot enqueue into a growable remembered set here.
   remember_old_object(obj);
 
   // If this object has a per-object card table, mark the card for the written slot.

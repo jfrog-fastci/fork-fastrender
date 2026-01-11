@@ -423,4 +423,80 @@ mod unix {
 
     Ok(())
   }
+
+  #[test]
+  fn recvmsg_reports_sender_name() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::net::UnixDatagram;
+
+    let dir = tempfile::Builder::new()
+      .prefix("rn_iovec")
+      .tempdir_in("/tmp")
+      .or_else(|_| tempfile::tempdir())?;
+    let path_a = dir.path().join("a.sock");
+    let path_b = dir.path().join("b.sock");
+
+    // Keep the filesystem socket paths safely under the platform's `sockaddr_un.sun_path` limit.
+    let max_path_len = unsafe { std::mem::zeroed::<libc::sockaddr_un>().sun_path.len() };
+    let path_a_bytes = path_a.as_os_str().as_bytes();
+    let path_b_bytes = path_b.as_os_str().as_bytes();
+    if path_a_bytes.len() >= max_path_len || path_b_bytes.len() >= max_path_len {
+      eprintln!("skipping: unix socket path too long");
+      return Ok(());
+    }
+
+    let sock_a = match UnixDatagram::bind(&path_a) {
+      Ok(s) => s,
+      Err(err) => {
+        if err.raw_os_error() == Some(libc::ENAMETOOLONG) {
+          eprintln!("skipping: unix socket path too long");
+          return Ok(());
+        }
+        return Err(err.into());
+      }
+    };
+    let sock_b = match UnixDatagram::bind(&path_b) {
+      Ok(s) => s,
+      Err(err) => {
+        if err.raw_os_error() == Some(libc::ENAMETOOLONG) {
+          eprintln!("skipping: unix socket path too long");
+          return Ok(());
+        }
+        return Err(err.into());
+      }
+    };
+
+    // Send a datagram using the stdlib API (sendto). We only need the recvmsg side to validate
+    // `PinnedMsgHdr` name buffers.
+    sock_a.send_to(b"hi", &path_b)?;
+
+    let out = ArrayBuffer::new_zeroed(2).unwrap();
+    let read_ranges = vec![IoVecRange::whole_array_buffer(&out)];
+    let read_iov = PinnedIoVec::try_from_ranges(&read_ranges).unwrap();
+    let name_buf = vec![0u8; std::mem::size_of::<libc::sockaddr_storage>()];
+    let mut recv_hdr = PinnedMsgHdr::with_name(read_iov, name_buf);
+
+    let nr = unsafe { libc::recvmsg(sock_b.as_raw_fd(), recv_hdr.as_msghdr_mut_ptr(), 0) };
+    if nr < 0 {
+      return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(nr as usize, 2);
+
+    let out_bytes = unsafe { out.pin().unwrap().as_slice().to_vec() };
+    assert_eq!(&out_bytes, b"hi");
+
+    let name = recv_hdr.name().unwrap();
+    assert!(recv_hdr.name_len() > 0);
+
+    // The returned sockaddr bytes should contain the bound path somewhere in the payload.
+    assert!(
+      name
+        .windows(path_a_bytes.len())
+        .any(|w| w == path_a_bytes),
+      "recvmsg name did not contain sender path; name={name:?} sender_path={path_a:?}"
+    );
+
+    Ok(())
+  }
 }

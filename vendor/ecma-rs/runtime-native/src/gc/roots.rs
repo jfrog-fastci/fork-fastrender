@@ -96,8 +96,8 @@ impl SimpleRememberedSet {
       return;
     }
     // SAFETY: `obj` must point to the start of a valid GC-managed object.
-    let header = unsafe { &mut *(obj as *mut super::ObjHeader) };
-    header.set_remembered(false);
+    let header = unsafe { &*(obj as *const super::ObjHeader) };
+    header.clear_remembered_idempotent();
 
     if let Some(idx) = self.objs.iter().position(|&x| x == obj) {
       self.objs.swap_remove(idx);
@@ -111,7 +111,7 @@ impl SimpleRememberedSet {
         new.push(obj);
       } else {
         // SAFETY: `obj` must point to the start of a valid GC-managed object.
-        unsafe { (&mut *(obj as *mut super::ObjHeader)).set_remembered(false) };
+        unsafe { (&*(obj as *const super::ObjHeader)).clear_remembered_idempotent() };
       }
     }
     self.objs = new;
@@ -128,7 +128,7 @@ impl RememberedSet for SimpleRememberedSet {
   fn clear(&mut self) {
     for &obj in &self.objs {
       // SAFETY: `obj` must point to the start of a valid GC-managed object.
-      unsafe { (&mut *(obj as *mut super::ObjHeader)).set_remembered(false) };
+      unsafe { (&*(obj as *const super::ObjHeader)).clear_remembered_idempotent() };
     }
     self.objs.clear();
   }

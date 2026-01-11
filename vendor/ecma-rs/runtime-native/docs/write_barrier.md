@@ -204,7 +204,11 @@ In Rust, this is modeled by the [`RememberedSet`](../src/gc/roots.rs) trait; tes
 
 ### Exported barrier status (important)
 
-The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and records newly remembered objects into a fixed-capacity process-global remembered set without allocating (the barrier remains `NoGC`). When a per-object card table is present, it marks the corresponding card. Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
+The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and records newly remembered objects into a fixed-capacity process-global remembered set without allocating (the barrier remains `NoGC`). When a per-object card table is present, it marks the corresponding card.
+
+Because the remembered set stores raw object pointers, tests that manually allocate/free mock objects must clear it via `clear_write_barrier_state_for_tests` to avoid dangling pointers.
+
+Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
 
 ### Minor GC behavior (current `GcHeap`)
 
@@ -214,7 +218,7 @@ The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and 
 
 ## (Future) Per-object card table semantics (pointer arrays)
 
-`runtime-native` does not currently implement card marking in the exported write barrier. This section records the intended design and benchmark-driven defaults.
+`runtime-native` implements card marking in the exported write barrier when a per-object card table is installed, but does not yet allocate/install card tables automatically. This section records the intended design and benchmark-driven defaults.
 
 Large arrays whose elements are GC pointers would use per-object **card marking** to avoid rescanning the entire array on every minor GC.
 
