@@ -1,4 +1,5 @@
 use crate::arch;
+use crate::stackwalk::StackBounds;
 use crate::threading;
 use crate::WalkError;
 use std::time::Duration;
@@ -11,6 +12,18 @@ pub fn visit_reloc_pairs(
   top_callee_fp: u64,
   visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
 ) -> Result<(), WalkError> {
+  visit_reloc_pairs_with_bounds(top_callee_fp, None, visit)
+}
+
+/// Like [`visit_reloc_pairs`], but allows passing stack bounds for additional safety checks.
+///
+/// When available, stack bounds help catch bogus frame-pointer chains early by ensuring each frame
+/// pointer stays within the stopped thread's stack range.
+pub fn visit_reloc_pairs_with_bounds(
+  top_callee_fp: u64,
+  bounds: Option<StackBounds>,
+  visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
+) -> Result<(), WalkError> {
   let Some(stackmaps) = crate::stackmap::try_stackmaps() else {
     return Ok(());
   };
@@ -18,7 +31,7 @@ pub fn visit_reloc_pairs(
   // Safety: stackmap-driven root enumeration inherently walks raw pointers into
   // thread stacks.
   unsafe {
-    crate::walk_gc_roots_from_fp(top_callee_fp, None, stackmaps, |slot_addr| {
+    crate::walk_gc_roots_from_fp(top_callee_fp, bounds, stackmaps, |slot_addr| {
       let slot = slot_addr as *mut *mut u8;
       // Read the current pointer value in the slot so GC can relocate it.
       let value = slot.read();
@@ -74,7 +87,10 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
     };
 
     let mut roots = 0usize;
-    let _ = visit_reloc_pairs(ctx.fp as u64, &mut |_, _| roots += 1);
+    let bounds = thread.stack_bounds().and_then(|b| {
+      StackBounds::new(b.lo as u64, b.hi as u64).ok()
+    });
+    let _ = visit_reloc_pairs_with_bounds(ctx.fp as u64, bounds, &mut |_, _| roots += 1);
     let _ = (ctx, roots);
   }
 
