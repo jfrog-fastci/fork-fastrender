@@ -208,6 +208,7 @@ mod grid_parallel_flow_fragmentation;
 mod grid_percent_gap;
 mod grid_calc_gap_cache_key;
 mod grid_padding_calc_percent;
+mod grid_padding_inline_custom_property;
 mod grid_width_calc_percent;
 mod grid_percent_height_auto_track;
 mod grid_item_percent_height_definite_fr_track;
