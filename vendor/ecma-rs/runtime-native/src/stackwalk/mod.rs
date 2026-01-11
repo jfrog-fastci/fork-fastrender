@@ -106,6 +106,14 @@ fn find_nearest_managed_cursor_with(
     return None;
   }
 
+  // When walking raw frame pointers, bound reads to the current thread's stack range when possible.
+  // This avoids potentially crashing by dereferencing bogus `fp_caller` values if the FP chain is
+  // corrupted.
+  let bounds = crate::thread_stack::current_thread_stack_bounds()
+    .ok()
+    .and_then(|b| StackBounds::new(b.low as u64, b.high as u64).ok())
+    .or_else(|| StackBounds::current_thread().ok());
+
   // Skip frames until we find a return address that belongs to managed code (has a stackmap entry).
   let mut fp_cur = start_fp;
   for _ in 0..MAX_CURSOR_DEPTH {
@@ -116,6 +124,12 @@ fn find_nearest_managed_cursor_with(
     // Basic sanity: frame pointers must obey alignment.
     if fp_cur % arch::FRAME_POINTER_ALIGNMENT != 0 {
       return None;
+    }
+
+    if let Some(bounds) = bounds {
+      if !bounds.contains_range(fp_cur, arch::FRAME_RECORD_SIZE) {
+        return None;
+      }
     }
 
     // SAFETY: Caller supplies a valid frame pointer chain.
@@ -130,8 +144,19 @@ fn find_nearest_managed_cursor_with(
       return None;
     }
 
+    if let Some(bounds) = bounds {
+      if !bounds.contains_range(fp_caller, arch::FRAME_RECORD_SIZE) {
+        return None;
+      }
+    }
+
     if has_stackmap(pc_return) {
-      let sp_callsite = fp_cur + arch::CALLER_SP_OFFSET;
+      let sp_callsite = fp_cur.checked_add(arch::CALLER_SP_OFFSET)?;
+      if let Some(bounds) = bounds {
+        if sp_callsite > bounds.hi {
+          return None;
+        }
+      }
       return Some(FrameCursor {
         fp: fp_caller,
         pc: pc_return,
