@@ -348,93 +348,61 @@ LLVM/LLD typically emit a symbol named `__LLVM_StackMaps`, but it is marked with
 - Attempting to declare `extern void __LLVM_StackMaps[];` in the runtime is not
   a robust way to locate stackmaps.
 
-Therefore the runtime must locate stackmaps by **section discovery**, not by
-symbol lookup.
+Therefore the runtime must not rely on LLVM’s local symbol; it must locate the
+stackmap bytes some other way.
 
 ### 5.3 Locating stackmaps at runtime (Linux/ELF)
-We locate the in-memory `.llvm_stackmaps` section in two steps:
+Instead of parsing `/proc/self/exe`, the `native-js` link step exports two
+**global** symbols that delimit the in-memory `.llvm_stackmaps` blob:
 
-1) **Parse the ELF file** at `/proc/self/exe` to find the section header for
-   `.llvm_stackmaps`, yielding:
-   - `sh_addr`: the section virtual address as linked (relative for PIE)
-   - `sh_size`: section size
-2) Determine the **load bias** (base address) of the main executable via
-   `dl_iterate_phdr`, then compute:
-   - `stackmaps_ptr = (uint8_t*)(load_bias + sh_addr)`
+- `__fastr_stackmaps_start`
+- `__fastr_stackmaps_end`
 
-We intentionally use the *in-memory* section contents because it reflects any
-relocations applied by the dynamic loader; reading raw bytes from
-`/proc/self/exe` would require manually applying relocations to the stackmap’s
-embedded addresses.
+They are defined by a small linker-script fragment injected during the final
+link (the `KEEP` is important so `--gc-sections` does not discard stackmaps):
 
-Note: some toolchains will warn about `TEXTREL` when producing PIE binaries if
-`.llvm_stackmaps` ends up requiring runtime relocations; using `-no-pie` avoids
-this in a minimal LLVM 18 experiment.
-
-#### Pseudocode (C)
-```c
-#include <link.h>
-#include <elf.h>
-
-static uintptr_t find_main_load_bias(void) {
-  uintptr_t bias = 0;
-  dl_iterate_phdr(
-    [](struct dl_phdr_info* info, size_t size, void* data) -> int {
-      // Main executable typically has empty dlpi_name.
-      if (info->dlpi_name == NULL || info->dlpi_name[0] == '\0') {
-        *(uintptr_t*)data = (uintptr_t)info->dlpi_addr;
-        return 1; // stop iteration
-      }
-      return 0;
-    },
-    &bias
-  );
-  return bias;
-}
-
-static int find_section_addr_size(
-  const char* path,
-  const char* section_name,
-  uint64_t* out_sh_addr,
-  uint64_t* out_sh_size
-) {
-  // 1) open() + read() the ELF header and section headers from /proc/self/exe
-  // 2) locate the section name string table (e_shstrndx)
-  // 3) iterate section headers, compare names to ".llvm_stackmaps"
-  // 4) return sh_addr and sh_size
-  return 0;
-}
-
-void* rt_stackmaps_ptr(uint64_t* out_size) {
-  uint64_t sh_addr = 0, sh_size = 0;
-  if (find_section_addr_size("/proc/self/exe", ".llvm_stackmaps", &sh_addr, &sh_size) != 0) {
-    abort();
+```ld
+SECTIONS {
+  .llvm_stackmaps : {
+    __fastr_stackmaps_start = .;
+    KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
+    __fastr_stackmaps_end = .;
   }
-  uintptr_t bias = find_main_load_bias();
-  *out_size = sh_size;
-  return (void*)(bias + (uintptr_t)sh_addr);
-}
+} INSERT AFTER .text;
 ```
 
-#### ELF parsing details (what must be implemented)
-To implement `find_section_addr_size` correctly:
+Because these are normal ELF symbols, the dynamic loader applies any necessary
+relocations (PIE or non-PIE). The runtime can therefore read stackmap bytes
+directly from memory using pointer arithmetic; no ELF parsing and no
+`dl_iterate_phdr` load-bias logic is required.
 
-- Read `Elf64_Ehdr` and validate:
-  - magic (`0x7F 'E' 'L' 'F'`)
-  - class = `ELFCLASS64`
-  - data = `ELFDATA2LSB`
-  - `e_shoff != 0`, `e_shentsize == sizeof(Elf64_Shdr)`
-- Read all section headers (`e_shnum * e_shentsize`) from `e_shoff`.
-- Read the section header string table:
-  - `Elf64_Shdr shstr = shdrs[e_shstrndx]`
-  - read `shstr.sh_size` bytes at `shstr.sh_offset`
-- For each section header:
-  - `const char* name = shstrtab + shdr.sh_name`
-  - compare to `.llvm_stackmaps`
-- Return `shdr.sh_addr` and `shdr.sh_size`.
+#### Runtime usage (Rust)
 
-**Operational requirement:** `native-js` must not strip section headers from the
-final executable. The runtime needs `e_shoff`/`SHT_*` information at runtime.
+```rust
+extern "C" {
+  static __fastr_stackmaps_start: u8;
+  static __fastr_stackmaps_end: u8;
+}
+
+let start = unsafe { &__fastr_stackmaps_start as *const u8 };
+let end = unsafe { &__fastr_stackmaps_end as *const u8 };
+let len = unsafe { end.offset_from(start) as usize };
+let stackmaps = unsafe { std::slice::from_raw_parts(start, len) };
+```
+
+#### Runtime usage (C)
+
+```c
+extern const unsigned char __fastr_stackmaps_start;
+extern const unsigned char __fastr_stackmaps_end;
+
+const uint8_t* start = &__fastr_stackmaps_start;
+const uint8_t* end = &__fastr_stackmaps_end;
+size_t len = (size_t)(end - start);
+```
+
+`len == 0` means no stackmaps were linked in (e.g. the program contains no
+statepoints); treat that as “stackmaps unavailable”.
 
 ### 5.4 Stackmap binary format (LLVM StackMap v3)
 The runtime must parse the `.llvm_stackmaps` section to map an instruction

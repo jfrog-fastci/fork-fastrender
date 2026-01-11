@@ -8,8 +8,10 @@ publish = false
 build = "build.rs"
 
 [features]
-# Enables parsing the in-memory `.llvm_stackmaps` section via GNU ld/lld
-# `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` symbols.
+# Enables parsing the in-memory `.llvm_stackmaps` section via the native-js
+# exported boundary symbols:
+# - `__fastr_stackmaps_start`
+# - `__fastr_stackmaps_end`
 #
 # Keep this feature opt-in: test binaries and non-AOT tools don't always link a
 # `.llvm_stackmaps` section, and missing symbols would otherwise fail the link.

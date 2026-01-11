@@ -181,11 +181,30 @@ pub enum Location {
   // Note: `offset` is semantically unused for `Register` locations, but the field is present in
   // the on-disk encoding for all location kinds. Keeping it enables better diagnostics when
   // verifying stackmap invariants.
-  Register { size: u16, dwarf_reg: u16, offset: i32 },
-  Direct { size: u16, dwarf_reg: u16, offset: i32 },
-  Indirect { size: u16, dwarf_reg: u16, offset: i32 },
-  Constant { size: u16, value: u64 },
-  ConstIndex { size: u16, index: u32, value: u64 },
+  Register {
+    size: u16,
+    dwarf_reg: u16,
+    offset: i32,
+  },
+  Direct {
+    size: u16,
+    dwarf_reg: u16,
+    offset: i32,
+  },
+  Indirect {
+    size: u16,
+    dwarf_reg: u16,
+    offset: i32,
+  },
+  Constant {
+    size: u16,
+    value: u64,
+  },
+  ConstIndex {
+    size: u16,
+    index: u32,
+    value: u64,
+  },
 }
 
 impl Location {
@@ -247,10 +266,12 @@ fn parse_location(
         });
       }
       let index = offset_or_small_const as u32;
-      let value = *constants.get(index as usize).ok_or(StackMapError::InvalidConstIndex {
-        index,
-        constants_len: constants.len(),
-      })?;
+      let value = *constants
+        .get(index as usize)
+        .ok_or(StackMapError::InvalidConstIndex {
+          index,
+          constants_len: constants.len(),
+        })?;
       Location::ConstIndex { size, index, value }
     }
     other => return Err(StackMapError::InvalidLocationKind(other)),
@@ -353,7 +374,9 @@ impl<'a> CallSite<'a> {
     let mut out: Vec<i32> = Vec::new();
     for loc in &self.record.locations {
       match *loc {
-        Location::Indirect { dwarf_reg, offset, .. } => {
+        Location::Indirect {
+          dwarf_reg, offset, ..
+        } => {
           let rbp_off = match dwarf_reg {
             X86_64_DWARF_REG_RBP => offset,
             X86_64_DWARF_REG_RSP => {
@@ -436,8 +459,8 @@ impl StackMaps {
     let mut callsites: Vec<CallsiteEntry> = Vec::with_capacity(raw.records.len());
     let mut record_index: usize = 0;
     for f in &raw.functions {
-      let record_count = usize::try_from(f.record_count)
-        .map_err(|_| StackMapError::RecordCountTooLarge {
+      let record_count =
+        usize::try_from(f.record_count).map_err(|_| StackMapError::RecordCountTooLarge {
           record_count: f.record_count,
         })?;
 
@@ -514,29 +537,40 @@ impl StackMaps {
     &self.raw
   }
 
-  /// Parse the in-memory `.llvm_stackmaps` section using GNU ld/lld start/stop symbols.
+  /// Parse the in-memory `.llvm_stackmaps` section using native-js exported
+  /// boundary symbols.
   ///
-  /// This requires the final linked binary to contain a `.llvm_stackmaps` section and for the
-  /// linker to provide `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` symbols.
+  /// This requires the final linked binary to contain a `.llvm_stackmaps`
+  /// section and define:
+  /// - `__fastr_stackmaps_start`
+  /// - `__fastr_stackmaps_end`
+  ///
+  /// These symbols are provided by a small linker script fragment in the
+  /// native-js link pipeline (and `KEEP`ed so `--gc-sections` does not discard
+  /// them).
   ///
   /// Fallback options (not implemented here):
   /// - Use `dl_iterate_phdr` to locate the section in the loaded ELF image.
   /// - Parse `/proc/self/exe` to find `.llvm_stackmaps` on disk and apply relocations.
-  #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "llvm_stackmaps_linker"))]
+  #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   pub fn parse_from_linker_symbols() -> Result<Self, StackMapError> {
     Self::parse(llvm_stackmaps_section_bytes())
   }
 }
-#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "llvm_stackmaps_linker"))]
+#[cfg(all(
+  target_os = "linux",
+  target_arch = "x86_64",
+  feature = "llvm_stackmaps_linker"
+))]
 fn llvm_stackmaps_section_bytes() -> &'static [u8] {
   extern "C" {
-    static __start_llvm_stackmaps: u8;
-    static __stop_llvm_stackmaps: u8;
+    static __fastr_stackmaps_start: u8;
+    static __fastr_stackmaps_end: u8;
   }
 
   unsafe {
-    let start = std::ptr::addr_of!(__start_llvm_stackmaps);
-    let end = std::ptr::addr_of!(__stop_llvm_stackmaps);
+    let start = std::ptr::addr_of!(__fastr_stackmaps_start);
+    let end = std::ptr::addr_of!(__fastr_stackmaps_end);
     let len = end.offset_from(start);
     if len <= 0 {
       return &[];
@@ -901,7 +935,8 @@ entry:
     }
 
     let obj = fs::read(&obj_path).unwrap();
-    let section = read_elf64_le_section(&obj, ".llvm_stackmaps").expect("missing .llvm_stackmaps section");
+    let section =
+      read_elf64_le_section(&obj, ".llvm_stackmaps").expect("missing .llvm_stackmaps section");
 
     let sm = StackMap::parse(section).unwrap();
     assert_eq!(sm.version, 3);
