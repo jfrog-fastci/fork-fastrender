@@ -88,11 +88,7 @@ fn resolve_import_def(program: &Program, file: FileId, span: TextRange) -> Optio
   program.symbol_info(sym)?.def
 }
 
-fn collect_module_info(
-  program: &Program,
-  host: &dyn Host,
-  file: FileId,
-) -> Result<ModuleInfo, NativeJsError> {
+fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, NativeJsError> {
   let lowered = program.hir_lowered(file).ok_or_else(|| NativeJsError::MissingHirLowering {
     file: file_label(program, file),
   })?;
@@ -112,14 +108,9 @@ fn collect_module_info(
       continue;
     }
 
-    let resolved = host
-      .resolve(&from_key, &es.specifier.value)
+    let resolved_id = program
+      .resolve_module(file, &es.specifier.value)
       .ok_or_else(|| NativeJsError::UnresolvedImport {
-        from: from_key.to_string(),
-        specifier: es.specifier.value.clone(),
-      })?;
-
-    let resolved_id = program.file_id(&resolved).ok_or_else(|| NativeJsError::UnresolvedImport {
       from: from_key.to_string(),
       specifier: es.specifier.value.clone(),
     })?;
@@ -456,7 +447,7 @@ pub fn compile_project_to_llvm_ir(
   let mut modules: BTreeMap<FileId, ModuleInfo> = BTreeMap::new();
   for file in all_files.iter().copied() {
     let _ = program.file_body(file);
-    let info = collect_module_info(program, host, file)?;
+    let info = collect_module_info(program, file)?;
     modules.insert(file, info);
   }
 

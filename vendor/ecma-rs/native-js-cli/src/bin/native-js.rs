@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use tempfile::tempdir;
+use typecheck_ts::lib_support::{LibName, ScriptTarget};
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::Program;
 
@@ -359,6 +360,36 @@ fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, FileId), String> {
     .as_ref()
     .map(|cfg| cfg.compiler_options.clone())
     .unwrap_or_default();
+
+  // TypeScript defaults to loading `dom` + an ES lib when `compilerOptions.lib` is not provided.
+  // For native-js, the DOM lib is unnecessary (we're targeting native executables / Node-like
+  // environments) and adds significant startup cost during typechecking.
+  //
+  // When the user did not specify `lib` and did not opt out via `no_default_lib`, default to the
+  // target ES lib only.
+  if compiler_options.libs.is_empty() && !compiler_options.no_default_lib {
+    let es_lib = match compiler_options.target {
+      ScriptTarget::Es3 | ScriptTarget::Es5 => "es5",
+      ScriptTarget::Es2015 => "es2015",
+      ScriptTarget::Es2016 => "es2016",
+      ScriptTarget::Es2017 => "es2017",
+      ScriptTarget::Es2018 => "es2018",
+      ScriptTarget::Es2019 => "es2019",
+      ScriptTarget::Es2020 => "es2020",
+      ScriptTarget::Es2021 => "es2021",
+      ScriptTarget::Es2022 => "es2022",
+      ScriptTarget::EsNext => "esnext",
+    };
+    compiler_options.libs.push(
+      LibName::parse(es_lib).expect("built-in ES lib name should parse as a LibName"),
+    );
+    if matches!(compiler_options.target, ScriptTarget::EsNext) {
+      compiler_options.libs.push(
+        LibName::parse("esnext.disposable")
+          .expect("built-in ES lib name should parse as a LibName"),
+      );
+    }
+  }
   let (type_roots, extra_libs) = match project.as_ref() {
     Some(cfg) => {
       let type_roots = cfg

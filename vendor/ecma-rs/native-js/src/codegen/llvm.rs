@@ -1196,6 +1196,28 @@ pub(super) fn emit_llvm_module(
   ast: &Node<TopLevel>,
   opts: CompileOptions,
 ) -> Result<String, CodegenError> {
+  // The minimal parse-js-driven emitter is intended for single-module programs. Module-level
+  // `import`/`export` syntax requires project compilation so we can build a module graph, resolve
+  // bindings, and order initializers deterministically.
+  //
+  // Scan upfront so we return `UnsupportedStmt` consistently (instead of e.g. failing with
+  // "call to unknown function" while compiling a function body that references an imported
+  // binding). `native-js-cli` relies on this error to decide when to fall back to the project
+  // pipeline.
+  for stmt in &ast.stx.body {
+    match stmt.stx.as_ref() {
+      Stmt::Import(_)
+      | Stmt::ExportList(_)
+      | Stmt::ExportDefaultExpr(_)
+      | Stmt::ExportAssignmentDecl(_)
+      | Stmt::ExportAsNamespaceDecl(_)
+      | Stmt::ExportTypeDecl(_)
+      | Stmt::ImportTypeDecl(_)
+      | Stmt::ImportEqualsDecl(_) => return Err(CodegenError::UnsupportedStmt),
+      _ => {}
+    }
+  }
+
   let mut cg = Codegen::new(opts);
 
   if ast

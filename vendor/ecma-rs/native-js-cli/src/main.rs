@@ -5,7 +5,7 @@ use diagnostics::paths::normalize_fs_path;
 use native_js::compiler::compile_llvm_ir_to_artifact;
 use native_js::{
   compile_program, compile_project_to_llvm_ir, compile_typescript_to_llvm_ir, CompileOptions,
-  EmitKind, NativeJsError,
+  EmitKind, NativeJsError, OptLevel,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -150,6 +150,10 @@ fn main() {
 
         let mut opts = CompileOptions::default();
         opts.builtins = !cli.no_builtins;
+        // The `project` pipeline is intended for quick iteration and can emit LLVM IR that fails
+        // strict validation (it keeps compiling even with type errors). Keep compilation fast by
+        // disabling LLVM optimizations.
+        opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
 
         if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
@@ -166,9 +170,13 @@ fn main() {
             .map_err(|()| exit(1));
         }
 
-        let _ =
-          compile_file_checked(&cli, entry, EmitKind::Executable, Some(output.to_path_buf()))
-            .map_err(|()| exit(1));
+        let _ = compile_file_checked(
+          &cli,
+          entry,
+          EmitKind::Executable,
+          Some(output.to_path_buf()),
+        )
+        .map_err(|()| exit(1));
       }
     },
     Some(Commands::Run { entry, args }) => match cli.pipeline {
@@ -178,6 +186,7 @@ fn main() {
 
         let mut opts = CompileOptions::default();
         opts.builtins = !cli.no_builtins;
+        opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
 
         let code = {
@@ -241,9 +250,8 @@ fn main() {
           let ll_path = tmpdir.path().join("out.ll");
           let _keep_tmpdir = tmpdir;
 
-          let artifact =
-            compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(ll_path.clone()))
-              .unwrap_or_else(|()| exit(1));
+          let artifact = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(ll_path.clone()))
+            .unwrap_or_else(|()| exit(1));
           let text = fs::read_to_string(&artifact.path).unwrap_or_else(|err| {
             eprintln!("failed to read {}: {err}", artifact.path.display());
             exit(1);
@@ -267,6 +275,7 @@ fn main() {
 
           let mut opts = CompileOptions::default();
           opts.builtins = !cli.no_builtins;
+          opts.opt_level = OptLevel::O0;
           opts.emit = EmitKind::Executable;
 
           let code = {
