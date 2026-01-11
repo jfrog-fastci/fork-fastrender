@@ -612,6 +612,15 @@ impl JsRuntime {
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`).
+  ///
+  /// ## Host context
+  ///
+  /// This convenience wrapper passes a **dummy host context** (`()`) to native call/construct
+  /// handlers.
+  ///
+  /// Embeddings that need native handlers to observe real host state should use
+  /// [`JsRuntime::exec_script_with_host`] (explicit host; VM-owned microtask queue) or
+  /// [`JsRuntime::exec_script_with_host_and_hooks`] (explicit host + custom hooks).
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
     let mut host = ();
     self.exec_script_with_host(&mut host, source)
@@ -654,6 +663,15 @@ impl JsRuntime {
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`).
+  ///
+  /// ## Host context
+  ///
+  /// This convenience wrapper passes a **dummy host context** (`()`) to native call/construct
+  /// handlers.
+  ///
+  /// Embeddings that need native handlers to observe real host state should use
+  /// [`JsRuntime::exec_script_source_with_host`] (explicit host; VM-owned microtask queue) or
+  /// [`JsRuntime::exec_script_source_with_host_and_hooks`] (explicit host + custom hooks).
   pub fn exec_script_source(&mut self, source: Arc<SourceText>) -> Result<Value, VmError> {
     let mut host = ();
     self.exec_script_source_with_host(&mut host, source)
