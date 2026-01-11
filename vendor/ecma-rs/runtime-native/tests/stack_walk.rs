@@ -24,7 +24,7 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
   // Simulate a small stack region with two frames:
   // [callee_fp] -> saved caller fp
   // [callee_fp+8] -> return address
-  // caller_sp at the callsite is derived from the callee frame pointer (`callee_fp + 16`).
+  // stackmap `SP` base is the caller's callsite SP, recovered directly as `callee_fp + 16`.
   //
   // This intentionally does *not* use the stackmap function record's `stack_size`: LLVM's fixed
   // stack_size does not include per-callsite outgoing argument pushes/adjustments, so it is not a
@@ -50,9 +50,6 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
 
     // Simulate two pointer slots in the caller frame at offsets 0 and 8 from the caller's SP at
     // the safepoint callsite.
-    //
-    // When walking via frame pointers, `StackWalker` reconstructs the caller SP (CFA) from the
-    // *callee* frame pointer as `callee_fp + 16`.
     let caller_sp = callee_fp + 16;
     let base_slot_addr = caller_sp as *mut usize;
     let derived_slot_addr = (caller_sp + 8) as *mut usize;

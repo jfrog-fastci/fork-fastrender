@@ -397,6 +397,8 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 /// - The `stack_size`-based reconstruction (`caller_sp_from_stack_size`) is kept only as a fallback
 ///   for cases where we don't have a callsite SP override (e.g. some synthetic tests).
 ///
+/// This is validated by `runtime-native/tests/stackmap_sp_post_call_llvm_x86_64.rs`.
+///
 /// For patchable statepoints (`gc.statepoint` with `patch_bytes > 0`), LLVM 18
 /// records the return address as the byte *after the reserved patchable region*.
 /// Any runtime patcher must ensure the actual call return address matches that

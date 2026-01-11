@@ -1,16 +1,15 @@
 //! Integration test for StackMap SP-relative location resolution.
 //!
 //! LLVM StackMap `Indirect [SP + off]` locations for statepoints are based on the
-//! *function's* SP at the stackmap record PC (the callsite return address).
+//! caller's *callsite* `SP` at the stackmap record PC (the callsite return address).
 //!
-//! In general, a function may adjust `SP` around a particular callsite (e.g. for
-//! outgoing stack arguments), so the StackMap function record's fixed `stack_size`
-//! is **not** sufficient to reconstruct the exact callsite `SP` in all cases.
+//! In general, a function may adjust `SP` around a particular callsite (e.g. for outgoing stack
+//! arguments / alignment shims), so the StackMap function record's fixed `stack_size` is **not**
+//! sufficient to reconstruct the exact callsite `SP` in all cases.
 //!
-//! This test uses a minimal IR shape where the callsite `SP` matches the fixed
-//! frame size, and validates that `stack_size`-based normalization of
-//! `Indirect [SP + off]` locations to FP-relative offsets matches the machine
-//! code produced by LLVM.
+//! This test uses a minimal IR shape where the callsite `SP` matches the fixed frame size, and
+//! validates that `stack_size`-based normalization of `Indirect [SP + off]` locations to
+//! FP-relative offsets matches the machine code produced by LLVM.
 
 #![cfg(target_os = "linux")]
 

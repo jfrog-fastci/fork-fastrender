@@ -7,16 +7,18 @@ use crate::stackwalk::StackBounds;
 pub struct FrameView {
   /// The caller's frame pointer (saved at `[callee_fp + 0]`).
   pub caller_fp: usize,
-  /// The caller's stack pointer at the callsite return address (the DWARF call-frame address / CFA).
+  /// The caller's stack pointer value at the callsite return address.
   ///
-  /// This is computed as `callee_fp + 16` on both x86_64 SysV and AArch64 when walking via frame
-  /// pointers.
+  /// LLVM StackMaps encode stack slots as `Indirect [SP + off]`, where `SP` is the *caller's* stack
+  /// pointer at the stackmap record PC (the instruction after the call returns, before any
+  /// post-call cleanup). When walking via frame pointers, we can recover this value directly from
+  /// the callee frame pointer:
   ///
-  /// LLVM StackMaps `Indirect [SP + off]` locations are based on the caller's stack pointer at the
-  /// callsite return address. Under the forced-frame-pointer ABI contract this matches `caller_cfa`
-  /// and is recoverable without consulting stackmap `stack_size` (which may not include per-call
-  /// stack adjustments like outgoing argument pushes).
-  pub caller_cfa: usize,
+  /// `caller_sp = callee_fp + 16`
+  ///
+  /// This is validated by the LLVM-backed regression test
+  /// `runtime-native/tests/stackmap_sp_post_call_llvm_x86_64.rs`.
+  pub caller_sp: usize,
   /// The return address into the caller (saved at `[callee_fp + 8]`).
   pub return_address: usize,
 }
@@ -52,7 +54,7 @@ pub enum FpWalkError {
   CallerSpOutOfBounds { caller_sp: usize, hi: u64 },
 }
 
-/// Frame-pointer stack walker for x86_64 SysV.
+/// Frame-pointer stack walker (x86_64 SysV + AArch64).
 ///
 /// Assumes the program is compiled with frame pointers enabled for all code we want to walk.
 /// Layout:
@@ -71,7 +73,7 @@ impl StackWalker {
   pub const DEFAULT_MAX_DEPTH: usize = 1024;
   const FP_RECORD_SIZE: u64 = 16;
   const FP_ALIGN: usize = 16;
-  const CALLER_CFA_OFFSET: usize = 16;
+  const CALLER_SP_OFFSET: usize = 16;
 
   /// # Safety
   /// `top_callee_fp` must be a valid frame pointer for the current thread.
@@ -175,13 +177,13 @@ impl StackWalker {
       });
     }
 
-    let caller_cfa = callee_fp
-      .checked_add(Self::CALLER_CFA_OFFSET)
+    let caller_sp = callee_fp
+      .checked_add(Self::CALLER_SP_OFFSET)
       .ok_or(FpWalkError::CallerSpOverflow { fp: callee_fp })?;
     if let Some(bounds) = self.bounds {
-      if caller_cfa as u64 > bounds.hi {
+      if caller_sp as u64 > bounds.hi {
         return Err(FpWalkError::CallerSpOutOfBounds {
-          caller_sp: caller_cfa,
+          caller_sp,
           hi: bounds.hi,
         });
       }
@@ -193,7 +195,7 @@ impl StackWalker {
 
     Ok(Some(FrameView {
       caller_fp,
-      caller_cfa,
+      caller_sp,
       return_address,
     }))
   }

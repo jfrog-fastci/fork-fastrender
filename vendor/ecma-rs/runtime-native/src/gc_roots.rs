@@ -350,17 +350,18 @@ fn visit_callsite_reloc_pairs(
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
   // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller's stack pointer at the
-  // callsite return address (the DWARF call-frame address / CFA). Under our forced-frame-pointer
-  // ABI contract this value is recoverable from the callee frame pointer as `callee_fp + 16`
-  // (exposed by [`FrameView::caller_cfa`]).
+  // stackmap record PC (return address after the call, before any cleanup).
+  //
+  // Under our forced-frame-pointer ABI contract this callsite SP is recoverable from the callee
+  // frame pointer as `callee_fp + 16` (exposed by `FrameView::caller_sp`).
   //
   // Do *not* try to reconstruct callsite `SP` from the stackmap function record's `stack_size`:
   // `stack_size` is a fixed frame size and does not reliably account for per-call outgoing argument
-  // pushes/stack adjustments, while `caller_cfa` does.
+  // pushes/stack adjustments, while `caller_sp` does.
   let Ok(caller_fp) = u64::try_from(frame.caller_fp) else {
     return false;
   };
-  let Ok(caller_sp) = u64::try_from(frame.caller_cfa) else {
+  let Ok(caller_sp) = u64::try_from(frame.caller_sp) else {
     return false;
   };
 

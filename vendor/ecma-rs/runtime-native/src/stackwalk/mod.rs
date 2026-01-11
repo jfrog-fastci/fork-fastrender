@@ -38,25 +38,35 @@ pub const DWARF_FP_REG: u16 = arch::DWARF_FP_REG;
 
 /// Offset from the frame pointer to the stack pointer at function entry.
 ///
-/// This constant is used by [`compute_sp`] when reconstructing the stack pointer value used as the
-/// base for SP-relative stackmap locations.
+/// This is used to reconstruct a *fixed* SP value from `FP` + stackmap `stack_size` (see
+/// [`compute_sp`]). It does **not** account for per-call call-frame adjustments (outgoing stack
+/// arguments, alignment shims, etc), so it must not be used to recover the *callsite* SP for an
+/// arbitrary statepoint.
 ///
-/// Note: SP reconstruction via stackmap `stack_size` is inherently limited: `stack_size` is a fixed
-/// per-function frame size and does **not** account for per-callsite SP adjustments (e.g. outgoing
-/// stack arguments). Prefer deriving callsite SP from the callee frame pointer (`callee_fp + 16`)
-/// when walking a full frame-pointer chain (see `stackwalk_fp`).
+/// When walking a full frame-pointer chain, derive the callsite SP from the callee frame pointer
+/// (`callee_fp + 16` on x86_64 and aarch64; see `stackwalk_fp`).
 pub const FP_TO_ENTRY_SP_OFFSET: u64 = arch::FP_TO_ENTRY_SP_OFFSET;
 
-/// Compute the stack pointer value used as the base for SP-relative stackmap locations inside a
-/// frame, given the frame pointer and LLVM stackmap `stack_size`.
+/// Compute a fixed stack pointer value derived from the stackmap function record's `stack_size`.
 ///
 /// Architectures differ in whether the return address is pushed onto the stack and in how the FP
 /// record is saved, so the exact reconstruction is per-arch.
 ///
-/// # Caveat
-/// This reconstruction assumes the callsite SP matches the function's fixed frame size. If the
-/// callsite adjusts SP (e.g. to pass outgoing stack arguments), `stack_size` is not sufficient to
-/// recover the exact stackmap SP base.
+/// This relates the frame pointer to the stack pointer as if the frame's stack pointer matched the
+/// function's fixed `stack_size` (i.e. at points where there is no extra per-call call-frame
+/// adjustment).
+///
+/// ## Important
+/// LLVM StackMaps `Indirect [SP + off]` locations are based on the *caller's* stack pointer at the
+/// stackmap record PC. That SP can differ from this fixed value when the call sequence adjusts the
+/// stack (outgoing stack arguments, alignment shims, etc). Runtime stack walking must therefore use
+/// the callsite SP recovered from the callee frame pointer chain (see [`FrameCursor::sp`] and
+/// `stackwalk_fp`), not this helper.
+///
+/// This behavior is validated by the LLVM-backed regression test
+/// `runtime-native/tests/stackmap_sp_post_call_llvm_x86_64.rs`, which forces outgoing stack
+/// arguments at a statepoint callsite and checks that evaluating `Indirect [SP + off]` with the
+/// callsite SP lands on the expected spill slot.
 #[inline]
 pub fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
   arch::compute_sp(fp, stack_size)
