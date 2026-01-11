@@ -1,33 +1,72 @@
 - name: Array.prototype.map
   semantics: Map
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: ALLOCATES
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Allocating
+      args: [0]
 
 - name: Array.prototype.filter
   semantics: Filter
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: ALLOCATES
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Allocating
+      args: [0]
 
 - name: Array.prototype.reduce
   semantics: Reduce
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
 - name: Array.prototype.forEach
   semantics: ForEach
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity: Impure
 
 - name: Array.prototype.every
   semantics: Every
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
 
 - name: Array.prototype.some
   semantics: Some
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
 
 - name: Array.prototype.find
   semantics: Find
-  effects: DependsOnCallback
-  purity: DependsOnCallback
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
+use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -46,7 +46,7 @@ pub struct ApiSemantics {
   ///
   /// This preserves author-provided base effect flags (allocates/io/etc) even
   /// when `effects` is a callback-dependent template.
-  pub effect_summary: EffectSummary,
+  pub effect_summary: EffectSet,
 
   #[serde(default)]
   pub purity: PurityTemplate,
@@ -106,7 +106,7 @@ struct ApiSemanticsDeserialize {
   effects: EffectTemplate,
 
   #[serde(default)]
-  effect_summary: Option<EffectSummary>,
+  effect_summary: Option<EffectSet>,
 
   #[serde(default)]
   purity: PurityTemplate,
@@ -174,22 +174,23 @@ impl<'de> Deserialize<'de> for ApiSemantics {
   }
 }
 
-fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
+fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
   match template {
-    EffectTemplate::Pure => EffectSummary::PURE,
-    EffectTemplate::Io => EffectSummary {
-      flags: EffectFlags::IO,
-      throws: ThrowBehavior::Maybe,
-    },
-    EffectTemplate::DependsOnCallback => EffectSummary {
-      flags: EffectFlags::empty(),
-      throws: ThrowBehavior::Maybe,
-    },
-    EffectTemplate::Custom(summary) => *summary,
-    EffectTemplate::Unknown => EffectSummary {
-      flags: EffectFlags::all(),
-      throws: ThrowBehavior::Maybe,
-    },
+    EffectTemplate::Pure => EffectSet::empty(),
+    EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
+    EffectTemplate::Custom(base) => *base,
+    EffectTemplate::DependsOnArgs { base, .. } => *base,
+    EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+  }
+}
+
+impl ApiSemantics {
+  pub fn effects_for_call(&self, arg_effects: &[EffectSet]) -> EffectSet {
+    self.effects.apply(arg_effects)
+  }
+
+  pub fn purity_for_call(&self, arg_purity: &[Purity]) -> Purity {
+    self.purity.apply(arg_purity)
   }
 }
 
@@ -601,14 +602,17 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
     "pure" => PurityTemplate::Pure,
     "readonly" | "read_only" => PurityTemplate::ReadOnly,
     "allocating" => PurityTemplate::Allocating,
-    "depends_on_callback" => PurityTemplate::DependsOnCallback,
+    "depends_on_callback" => PurityTemplate::DependsOnArgs {
+      base: Purity::Pure,
+      args: vec![0],
+    },
     "impure" => PurityTemplate::Impure,
     "unknown" => PurityTemplate::Unknown,
     _ => PurityTemplate::Unknown,
   }
 }
 
-fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSummary) {
+fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSet) {
   match raw {
     EffectsRaw::Template(t) => {
       let summary = effect_template_to_summary(&t);
@@ -624,51 +628,51 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
       let unknown_default = template == "unknown";
       let io_default = template == "io";
 
-      let mut flags = EffectFlags::empty();
+      let mut flags = EffectSet::empty();
       if details.allocates.unwrap_or(unknown_default) {
-        flags |= EffectFlags::ALLOCATES;
+        flags |= EffectSet::ALLOCATES;
       }
       if details.io.unwrap_or(io_default || unknown_default) {
-        flags |= EffectFlags::IO;
+        flags |= EffectSet::IO;
       }
       if details.network.unwrap_or(unknown_default) {
-        flags |= EffectFlags::NETWORK;
+        flags |= EffectSet::NETWORK;
       }
       if details.nondeterministic.unwrap_or(unknown_default) {
-        flags |= EffectFlags::NONDETERMINISTIC;
+        flags |= EffectSet::NONDETERMINISTIC;
       }
 
-      let throws = match details.may_throw {
-        Some(true) => ThrowBehavior::Maybe,
-        Some(false) => ThrowBehavior::Never,
+      if unknown_default {
+        flags |= EffectSet::UNKNOWN;
+      }
+
+      let may_throw = match details.may_throw {
+        Some(v) => v,
         None => throws
           .and_then(parse_throw_behavior)
-          .unwrap_or_else(|| {
-            if template == "pure" {
-              ThrowBehavior::Never
-            } else {
-              ThrowBehavior::Maybe
-            }
-          }),
+          .map(|b| !matches!(b, ThrowBehavior::Never))
+          .unwrap_or_else(|| template != "pure"),
+      };
+      if may_throw {
+        flags |= EffectSet::MAY_THROW;
+      }
+
+      let effect_template = if template == "depends_on_callback" {
+        EffectTemplate::DependsOnArgs {
+          base: flags,
+          args: vec![0],
+        }
+      } else if flags.is_empty() {
+        EffectTemplate::Pure
+      } else if flags == (EffectSet::IO | EffectSet::MAY_THROW) {
+        EffectTemplate::Io
+      } else if flags == (EffectSet::UNKNOWN | EffectSet::MAY_THROW) {
+        EffectTemplate::Unknown
+      } else {
+        EffectTemplate::Custom(flags)
       };
 
-      let summary = EffectSummary { flags, throws };
-
-      if template == "depends_on_callback" {
-        return (EffectTemplate::DependsOnCallback, summary);
-      }
-
-      if summary.is_pure() {
-        return (EffectTemplate::Pure, summary);
-      }
-      if summary.flags == EffectFlags::IO && summary.throws == ThrowBehavior::Maybe {
-        return (EffectTemplate::Io, summary);
-      }
-      if summary.flags == EffectFlags::all() && summary.throws == ThrowBehavior::Maybe {
-        return (EffectTemplate::Unknown, summary);
-      }
-
-      (EffectTemplate::Custom(summary), summary)
+      (effect_template, flags)
     }
   }
 }
@@ -919,7 +923,7 @@ mod tests {
   };
 
   use super::*;
-  use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+  use effect_model::EffectSet;
   use serde_json::Value as JsonValue;
 
   #[test]
@@ -927,7 +931,10 @@ mod tests {
     let one = r#"
 name: Array.prototype.map
 effects: Pure
-purity: DependsOnCallback
+purity:
+  depends_on_args:
+    base: Allocating
+    args: [0]
 "#;
     let parsed = parse_api_semantics_yaml_str(one).unwrap();
     assert_eq!(parsed.len(), 1);
@@ -953,10 +960,7 @@ purity: DependsOnCallback
 
     assert_eq!(
       parsed[1].effects,
-      EffectTemplate::Custom(EffectSummary {
-        flags: EffectFlags::ALLOCATES,
-        throws: ThrowBehavior::Maybe,
-      })
+      EffectTemplate::Custom(EffectSet::ALLOCATES | EffectSet::MAY_THROW)
     );
     assert_eq!(parsed[1].kind, ApiKind::Getter);
   }
@@ -968,7 +972,7 @@ purity: DependsOnCallback
       name: "x".to_string(),
       aliases: vec![],
       effects: EffectTemplate::Pure,
-      effect_summary: EffectSummary::PURE,
+      effect_summary: EffectSet::empty(),
       purity: PurityTemplate::Pure,
       async_: None,
       idempotent: None,
@@ -1239,7 +1243,7 @@ properties:
     let api = kb
       .get("node:fs.existsSync")
       .expect("node:fs.existsSync exists in bundled knowledge base");
-    assert!(api.effect_summary.flags.contains(EffectFlags::IO));
-    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
+    assert!(api.effect_summary.contains(EffectSet::IO));
+    assert!(!api.effect_summary.contains(EffectSet::MAY_THROW));
   }
 }

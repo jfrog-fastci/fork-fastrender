@@ -1,5 +1,4 @@
-use effect_js::{effect_template_to_summary, ApiDatabase};
-use effect_model::EffectFlags;
+use effect_js::{ApiDatabase, EffectSet};
 
 #[test]
 fn embedded_knowledge_base_contains_node_and_web_entries() {
@@ -32,27 +31,27 @@ fn embedded_knowledge_base_contains_node_and_web_entries() {
 
   // Spot-check a few conservative effect tags.
   let read_file = db.get("node:fs.readFile").unwrap();
-  let read_file_effects = effect_template_to_summary(&read_file.effects);
+  let read_file_effects = read_file.effects_for_call(&[]);
   assert!(
-    read_file_effects.flags.contains(EffectFlags::IO),
+    read_file_effects.contains(EffectSet::IO),
     "expected node:fs.readFile to have io effect, got {read_file_effects:?}",
   );
 
   let fetch = db.get("fetch").unwrap();
-  let fetch_effects = effect_template_to_summary(&fetch.effects);
+  let fetch_effects = fetch.effects_for_call(&[]);
   assert!(
-    fetch_effects.flags.contains(EffectFlags::IO),
+    fetch_effects.contains(EffectSet::IO),
     "expected fetch to have io effect, got {fetch_effects:?}",
   );
   assert!(
-    fetch_effects.flags.contains(EffectFlags::NETWORK),
+    fetch_effects.contains(EffectSet::NETWORK),
     "expected fetch to have network effect, got {fetch_effects:?}",
   );
 
   let join = db.get("node:path.join").unwrap();
-  let join_effects = effect_template_to_summary(&join.effects);
+  let join_effects = join.effects_for_call(&[]);
   assert!(
-    join_effects.is_pure(),
+    join_effects.is_empty(),
     "expected node:path.join to be pure, got {join_effects:?}",
   );
 }

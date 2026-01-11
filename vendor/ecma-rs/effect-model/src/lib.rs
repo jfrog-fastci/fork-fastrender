@@ -53,9 +53,6 @@ pub enum Purity {
   /// Performs some observable effect (writes/IO/throws/etc).
   #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
-  /// Unknown / could not be analyzed.
-  #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
-  Unknown,
 }
 
 impl Purity {
@@ -63,9 +60,7 @@ impl Purity {
   pub const fn join(a: Self, b: Self) -> Self {
     use Purity::*;
     match (a, b) {
-      (Unknown, _) | (_, Unknown) => Unknown,
       (Impure, _) | (_, Impure) => Impure,
-      (Allocating, ReadOnly) | (ReadOnly, Allocating) => Impure,
       (Allocating, _) | (_, Allocating) => Allocating,
       (ReadOnly, _) | (_, ReadOnly) => ReadOnly,
       (Pure, Pure) => Pure,
@@ -75,12 +70,185 @@ impl Purity {
 
 bitflags! {
   #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-  #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-  pub struct EffectFlags: u32 {
+  pub struct EffectSet: u32 {
     const ALLOCATES = 1 << 0;
     const IO = 1 << 1;
     const NETWORK = 1 << 2;
     const NONDETERMINISTIC = 1 << 3;
+    const READS_GLOBAL = 1 << 4;
+    const WRITES_GLOBAL = 1 << 5;
+    const MAY_THROW = 1 << 6;
+    const UNKNOWN = 1 << 7;
+  }
+}
+
+/// Backwards-compatible alias (older code used `EffectFlags`).
+pub type EffectFlags = EffectSet;
+
+impl EffectSet {
+  /// Infer a coarse purity classification from effect flags.
+  ///
+  /// This is intentionally conservative and ignores `MAY_THROW`, which is
+  /// tracked separately from purity in this model.
+  pub fn inferred_purity(self) -> Purity {
+    let flags = EffectSet::from_bits_truncate(self.bits() & !EffectSet::MAY_THROW.bits());
+    if flags.is_empty() {
+      return Purity::Pure;
+    }
+    if flags.contains(EffectSet::UNKNOWN) || flags.contains(EffectSet::WRITES_GLOBAL) {
+      return Purity::Impure;
+    }
+    if flags.contains(EffectSet::IO) || flags.contains(EffectSet::NETWORK) {
+      return Purity::Impure;
+    }
+    if flags.contains(EffectSet::ALLOCATES) {
+      return Purity::Allocating;
+    }
+    if flags.contains(EffectSet::READS_GLOBAL) || flags.contains(EffectSet::NONDETERMINISTIC) {
+      return Purity::ReadOnly;
+    }
+    Purity::Impure
+  }
+}
+
+#[cfg(feature = "serde")]
+mod effect_set_serde {
+  use super::{EffectSet, ThrowBehavior};
+  use core::fmt;
+  use serde::de::{MapAccess, SeqAccess, Visitor};
+  use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+  fn normalize_token(raw: &str) -> String {
+    raw
+      .trim()
+      .to_ascii_uppercase()
+      .replace([' ', '-'], "_")
+  }
+
+  fn parse_token<E: serde::de::Error>(raw: &str) -> Result<EffectSet, E> {
+    match normalize_token(raw).as_str() {
+      "" | "0" | "EMPTY" | "NONE" => Ok(EffectSet::empty()),
+      "ALLOCATES" => Ok(EffectSet::ALLOCATES),
+      "MAY_THROW" | "MAYTHROW" => Ok(EffectSet::MAY_THROW),
+      "IO" => Ok(EffectSet::IO),
+      "NETWORK" => Ok(EffectSet::NETWORK),
+      "NONDETERMINISTIC" | "NON_DETERMINISTIC" => Ok(EffectSet::NONDETERMINISTIC),
+      "READS_GLOBAL" | "READ_GLOBAL" => Ok(EffectSet::READS_GLOBAL),
+      "WRITES_GLOBAL" | "WRITE_GLOBAL" => Ok(EffectSet::WRITES_GLOBAL),
+      "UNKNOWN" => Ok(EffectSet::UNKNOWN),
+      other => Err(E::custom(format!("unknown effect flag `{other}`"))),
+    }
+  }
+
+  fn parse_expr<E: serde::de::Error>(raw: &str) -> Result<EffectSet, E> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+      return Ok(EffectSet::empty());
+    }
+
+    let mut out = EffectSet::empty();
+    for part in raw.split('|') {
+      let part = part.trim();
+      if part.is_empty() {
+        continue;
+      }
+      out |= parse_token::<E>(part)?;
+    }
+    Ok(out)
+  }
+
+  impl Serialize for EffectSet {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+      if self.is_empty() {
+        return serializer.serialize_str("0");
+      }
+
+      // Stable ordering: sort by bit position.
+      let mut parts = Vec::new();
+      let ordered = [
+        (EffectSet::ALLOCATES, "ALLOCATES"),
+        (EffectSet::IO, "IO"),
+        (EffectSet::NETWORK, "NETWORK"),
+        (EffectSet::NONDETERMINISTIC, "NONDETERMINISTIC"),
+        (EffectSet::READS_GLOBAL, "READS_GLOBAL"),
+        (EffectSet::WRITES_GLOBAL, "WRITES_GLOBAL"),
+        (EffectSet::MAY_THROW, "MAY_THROW"),
+        (EffectSet::UNKNOWN, "UNKNOWN"),
+      ];
+      for (flag, name) in ordered {
+        if self.contains(flag) {
+          parts.push(name);
+        }
+      }
+      serializer.serialize_str(&parts.join(" | "))
+    }
+  }
+
+  impl<'de> Deserialize<'de> for EffectSet {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+      struct EffectSetVisitor;
+
+      impl<'de> Visitor<'de> for EffectSetVisitor {
+        type Value = EffectSet;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+          f.write_str("an effect flag expression (e.g. `IO | NETWORK`), a list of flags, or `{flags, throws}`")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+          parse_expr(v)
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+          self.visit_str(&v)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+          let mut out = EffectSet::empty();
+          while let Some(item) = seq.next_element::<String>()? {
+            out |= parse_token::<A::Error>(&item)?;
+          }
+          Ok(out)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+          let mut flags: Option<EffectSet> = None;
+          let mut throws: Option<ThrowBehavior> = None;
+
+          while let Some(key) = map.next_key::<String>()? {
+            match normalize_token(&key).as_str() {
+              "FLAGS" => {
+                flags = Some(map.next_value::<EffectSet>()?);
+              }
+              "THROWS" => {
+                throws = Some(map.next_value::<ThrowBehavior>()?);
+              }
+              _ => {
+                let _: serde::de::IgnoredAny = map.next_value()?;
+              }
+            }
+          }
+
+          let mut out = flags.unwrap_or_default();
+          if let Some(throws) = throws {
+            if !matches!(throws, ThrowBehavior::Never) {
+              out |= EffectSet::MAY_THROW;
+            }
+          }
+          Ok(out)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+          Ok(EffectSet::from_bits_truncate(v as u32))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+          Ok(EffectSet::from_bits_truncate(v as u32))
+        }
+      }
+
+      deserializer.deserialize_any(EffectSetVisitor)
+    }
   }
 }
 
@@ -107,14 +275,23 @@ impl EffectSummary {
 
   #[inline]
   pub const fn inferred_purity(&self) -> Purity {
-    if self.is_pure() {
+    // Note: this is intentionally coarse. Throw behavior is tracked separately
+    // (see `EffectSet::MAY_THROW` in the API semantics layer), so we do not
+    // force `Impure` purely because something may throw.
+    if self.flags.is_empty() {
       return Purity::Pure;
     }
-    if !matches!(self.throws, ThrowBehavior::Never) {
+    if self.flags.contains(EffectFlags::UNKNOWN) || self.flags.contains(EffectFlags::WRITES_GLOBAL) {
       return Purity::Impure;
     }
-    if self.flags.bits() == EffectFlags::ALLOCATES.bits() {
+    if self.flags.contains(EffectFlags::IO) || self.flags.contains(EffectFlags::NETWORK) {
+      return Purity::Impure;
+    }
+    if self.flags.contains(EffectFlags::ALLOCATES) {
       return Purity::Allocating;
+    }
+    if self.flags.contains(EffectFlags::READS_GLOBAL) || self.flags.contains(EffectFlags::NONDETERMINISTIC) {
+      return Purity::ReadOnly;
     }
     Purity::Impure
   }
@@ -137,10 +314,10 @@ pub enum EffectTemplate {
   Pure,
   #[cfg_attr(feature = "serde", serde(alias = "Io"))]
   Io,
-  #[cfg_attr(feature = "serde", serde(alias = "DependsOnCallback"))]
-  DependsOnCallback,
   #[cfg_attr(feature = "serde", serde(alias = "Custom"))]
-  Custom(EffectSummary),
+  Custom(EffectSet),
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
+  DependsOnArgs { base: EffectSet, args: Vec<usize> },
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
 }
@@ -148,6 +325,33 @@ pub enum EffectTemplate {
 impl Default for EffectTemplate {
   fn default() -> Self {
     Self::Unknown
+  }
+}
+
+impl EffectTemplate {
+  pub fn apply(&self, arg_effects: &[EffectSet]) -> EffectSet {
+    match self {
+      Self::Pure => EffectSet::empty(),
+      Self::Io => EffectSet::IO | EffectSet::MAY_THROW,
+      Self::Custom(base) => *base,
+      Self::DependsOnArgs { base, args } => {
+        let mut effects = *base;
+        for &idx in args {
+          if let Some(arg) = arg_effects.get(idx) {
+            effects |= *arg;
+          } else {
+            debug_assert!(
+              idx < arg_effects.len(),
+              "EffectTemplate::apply arg index {idx} out of range (len={})",
+              arg_effects.len()
+            );
+            effects |= EffectSet::UNKNOWN;
+          }
+        }
+        effects
+      }
+      Self::Unknown => EffectSet::UNKNOWN,
+    }
   }
 }
 
@@ -163,10 +367,10 @@ pub enum PurityTemplate {
   ReadOnly,
   #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
   Allocating,
-  #[cfg_attr(feature = "serde", serde(alias = "DependsOnCallback"))]
-  DependsOnCallback,
   #[cfg_attr(feature = "serde", serde(alias = "Impure"))]
   Impure,
+  #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
+  DependsOnArgs { base: Purity, args: Vec<usize> },
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
 }
@@ -174,6 +378,48 @@ pub enum PurityTemplate {
 impl Default for PurityTemplate {
   fn default() -> Self {
     Self::Unknown
+  }
+}
+
+impl PurityTemplate {
+  pub fn apply(&self, arg_purity: &[Purity]) -> Purity {
+    match self {
+      Self::Pure => Purity::Pure,
+      Self::ReadOnly => Purity::ReadOnly,
+      Self::Allocating => Purity::Allocating,
+      Self::Impure => Purity::Impure,
+      Self::DependsOnArgs { base, args } => {
+        if matches!(base, Purity::Impure) {
+          return Purity::Impure;
+        }
+        let mut saw_readonly = matches!(base, Purity::ReadOnly);
+        let mut saw_allocating = matches!(base, Purity::Allocating);
+        for &idx in args {
+          let Some(p) = arg_purity.get(idx).copied() else {
+            debug_assert!(
+              idx < arg_purity.len(),
+              "PurityTemplate::apply arg index {idx} out of range (len={})",
+              arg_purity.len()
+            );
+            return Purity::Impure;
+          };
+          match p {
+            Purity::Impure => return Purity::Impure,
+            Purity::Allocating => saw_allocating = true,
+            Purity::ReadOnly => saw_readonly = true,
+            Purity::Pure => {}
+          }
+        }
+        if saw_allocating {
+          Purity::Allocating
+        } else if saw_readonly {
+          Purity::ReadOnly
+        } else {
+          Purity::Pure
+        }
+      }
+      Self::Unknown => Purity::Impure,
+    }
   }
 }
 
@@ -214,6 +460,8 @@ mod tests {
       flags: EffectFlags::empty(),
       throws: ThrowBehavior::Maybe,
     };
-    assert_eq!(throwing.inferred_purity(), Purity::Impure);
+    // Throwing does not automatically imply impurity at this coarse layer; we
+    // track throws separately via `EffectSet::MAY_THROW`.
+    assert_eq!(throwing.inferred_purity(), Purity::Pure);
   }
 }

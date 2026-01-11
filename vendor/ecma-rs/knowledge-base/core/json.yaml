@@ -7,7 +7,7 @@ symbols:
     semantics: JsonParse
     since: "baseline"
     purity:
-      template: pure
+      template: allocating
     effects:
       template: pure
       may_throw: true

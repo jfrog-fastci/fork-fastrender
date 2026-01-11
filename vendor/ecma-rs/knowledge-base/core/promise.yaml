@@ -7,7 +7,7 @@ symbols:
     semantics: PromiseAll
     since: "baseline"
     purity:
-      template: pure
+      template: allocating
     effects:
       template: unknown
       may_throw: true

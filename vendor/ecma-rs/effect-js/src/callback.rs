@@ -1,4 +1,4 @@
-use effect_model::{EffectFlags, EffectSummary, Purity, ThrowBehavior};
+use effect_model::{EffectSet, Purity};
 use hir_js::{
   ArrayElement, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId, ObjectKey,
   ObjectProperty, PatId, PatKind, StmtId, StmtKind, VarDecl,
@@ -9,7 +9,7 @@ use crate::template_eval::eval_call_expr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallbackInfo {
-  pub effects: EffectSummary,
+  pub effects: EffectSet,
   pub purity: Purity,
   pub uses_index: bool,
   pub uses_array: bool,
@@ -86,7 +86,7 @@ pub fn analyze_inline_callback(
     array_param,
     uses_index: false,
     uses_array: false,
-    effects: EffectSummary::PURE,
+    effects: EffectSet::empty(),
     purity: Purity::Pure,
   };
 
@@ -118,13 +118,13 @@ struct CallbackAnalyzer<'a> {
   array_param: Option<NameId>,
   uses_index: bool,
   uses_array: bool,
-  effects: EffectSummary,
+  effects: EffectSet,
   purity: Purity,
 }
 
 impl CallbackAnalyzer<'_> {
-  fn merge_effects(&mut self, other: EffectSummary) {
-    self.effects = EffectSummary::join(self.effects, other);
+  fn merge_effects(&mut self, other: EffectSet) {
+    self.effects |= other;
   }
 
   fn merge_purity(&mut self, other: Purity) {
@@ -133,7 +133,7 @@ impl CallbackAnalyzer<'_> {
 
   fn mark_unknown(&mut self) {
     self.merge_effects(unknown_effects());
-    self.merge_purity(Purity::Unknown);
+    self.merge_purity(Purity::Impure);
   }
 
   fn visit_stmt(&mut self, body: &Body, stmt_id: StmtId) {
@@ -146,7 +146,7 @@ impl CallbackAnalyzer<'_> {
       StmtKind::Decl(_) => {
         // Declaring a function/class creates a runtime value, but the body is
         // not executed here.
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
       }
       StmtKind::Return(expr) => {
         if let Some(expr) = expr {
@@ -229,8 +229,7 @@ impl CallbackAnalyzer<'_> {
         }
       }
       StmtKind::Throw(expr) => {
-        self.effects.throws = ThrowBehavior::join(self.effects.throws, ThrowBehavior::Always);
-        self.merge_purity(Purity::Impure);
+        self.effects |= EffectSet::MAY_THROW;
         self.visit_expr(body, *expr);
       }
       StmtKind::Break(_)
@@ -414,7 +413,7 @@ impl CallbackAnalyzer<'_> {
       }
 
       ExprKind::Array(array) => {
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
         for elem in &array.elements {
           match elem {
             ArrayElement::Expr(expr) | ArrayElement::Spread(expr) => self.visit_expr(body, *expr),
@@ -424,7 +423,7 @@ impl CallbackAnalyzer<'_> {
       }
 
       ExprKind::Object(obj) => {
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
         for prop in &obj.properties {
           match prop {
             ObjectProperty::KeyValue { key, value, .. } => {
@@ -448,11 +447,11 @@ impl CallbackAnalyzer<'_> {
       ExprKind::FunctionExpr { .. } | ExprKind::ClassExpr { .. } => {
         // Creating a function/class value allocates, but its body is not
         // executed here.
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
       }
 
       ExprKind::Template(template) => {
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
         for span in &template.spans {
           self.visit_expr(body, span.expr);
         }
@@ -486,7 +485,7 @@ impl CallbackAnalyzer<'_> {
       }
 
       ExprKind::Jsx(_) => {
-        self.effects.flags |= EffectFlags::ALLOCATES;
+        self.effects |= EffectSet::ALLOCATES;
       }
     }
   }
@@ -501,17 +500,14 @@ impl CallbackAnalyzer<'_> {
   }
 }
 
-fn unknown_effects() -> EffectSummary {
-  EffectSummary {
-    flags: EffectFlags::all(),
-    throws: ThrowBehavior::Maybe,
-  }
+fn unknown_effects() -> EffectSet {
+  EffectSet::UNKNOWN | EffectSet::MAY_THROW
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::{Purity, ThrowBehavior};
+  use effect_model::Purity;
 
   fn first_stmt_expr(lowered: &hir_js::LowerResult) -> (BodyId, ExprId) {
     let root = lowered.root_body();
@@ -589,12 +585,12 @@ mod tests {
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Impure);
-    assert!(cb.effects.flags.contains(EffectFlags::IO));
-    assert!(cb.effects.flags.contains(EffectFlags::NETWORK));
+    assert!(cb.effects.contains(EffectSet::IO));
+    assert!(cb.effects.contains(EffectSet::NETWORK));
   }
 
   #[test]
-  fn callback_throwing_always_throws() {
+  fn callback_throwing_sets_may_throw() {
     let kb = crate::load_default_api_database();
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
@@ -614,7 +610,7 @@ mod tests {
     let cb_expr = call.args[0].expr;
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
-    assert_eq!(cb.effects.throws, ThrowBehavior::Always);
+    assert!(cb.effects.contains(EffectSet::MAY_THROW));
   }
 
   #[test]
@@ -668,7 +664,7 @@ mod tests {
     let cb_expr = call.args[0].expr;
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
-    assert!(cb.effects.flags.contains(EffectFlags::NONDETERMINISTIC));
+    assert!(cb.effects.contains(EffectSet::NONDETERMINISTIC));
   }
 
   #[test]
@@ -689,6 +685,7 @@ mod tests {
     let cb_expr = call.args[0].expr;
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
-    assert_eq!(cb.purity, Purity::Unknown);
+    assert!(cb.effects.contains(EffectSet::UNKNOWN));
+    assert_eq!(cb.purity, Purity::Impure);
   }
 }

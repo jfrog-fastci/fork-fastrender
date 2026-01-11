@@ -1,4 +1,4 @@
-use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
+use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 use knowledge_base::{ApiSemantics, KnowledgeBase};
 
@@ -6,7 +6,7 @@ use crate::callback::analyze_inline_callback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CallEval {
-  pub effects: EffectSummary,
+  pub effects: EffectSet,
   pub purity: Purity,
 }
 
@@ -19,18 +19,18 @@ pub(crate) fn eval_call_expr(
   let Some(body_ref) = lowered.body(body) else {
     return CallEval {
       effects: unknown_effects(),
-      purity: Purity::Unknown,
+      purity: Purity::Impure,
     };
   };
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
     return CallEval {
       effects: unknown_effects(),
-      purity: Purity::Unknown,
+      purity: Purity::Impure,
     };
   };
   let ExprKind::Call(call) = &expr.kind else {
     return CallEval {
-      effects: EffectSummary::PURE,
+      effects: EffectSet::empty(),
       purity: Purity::Pure,
     };
   };
@@ -38,72 +38,73 @@ pub(crate) fn eval_call_expr(
   if call.optional {
     return CallEval {
       effects: unknown_effects(),
-      purity: Purity::Unknown,
+      purity: Purity::Impure,
     };
   }
 
   let api = resolve_api_semantics(kb, lowered, body, call_expr);
 
-  let callback = match api {
-    Some(api)
-      if matches!(api.effects, EffectTemplate::DependsOnCallback)
-        || matches!(api.purity, PurityTemplate::DependsOnCallback) =>
-    {
-      call
-        .args
-        .first()
-        .filter(|arg| !arg.spread)
-        .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb))
+  let callback = api.and_then(|api| {
+    let needs_first_arg = match (&api.effects, &api.purity) {
+      (EffectTemplate::DependsOnArgs { args, .. }, _) if args.contains(&0) => true,
+      (_, PurityTemplate::DependsOnArgs { args, .. }) if args.contains(&0) => true,
+      _ => false,
+    };
+    if !needs_first_arg {
+      return None;
     }
-    _ => None,
-  };
+    call
+      .args
+      .first()
+      .filter(|arg| !arg.spread)
+      .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb))
+  });
+
+  let mut arg_effects = Vec::with_capacity(call.args.len());
+  let mut arg_purity = Vec::with_capacity(call.args.len());
+  for (idx, arg) in call.args.iter().enumerate() {
+    if arg.spread {
+      arg_effects.push(unknown_effects());
+      arg_purity.push(Purity::Impure);
+      continue;
+    }
+    if idx == 0 {
+      if let Some(cb) = callback {
+        arg_effects.push(cb.effects);
+        arg_purity.push(cb.purity);
+        continue;
+      }
+    }
+    arg_effects.push(unknown_effects());
+    arg_purity.push(Purity::Impure);
+  }
 
   let mut effects = match api {
-    Some(api) => match api.effects {
-      EffectTemplate::DependsOnCallback => {
-        let base = crate::effect_template_to_summary(&api.effects);
-        let cb_effects = callback.map(|cb| cb.effects).unwrap_or_else(unknown_effects);
-        EffectSummary::join(base, cb_effects)
-      }
-      _ => crate::effect_template_to_summary(&api.effects),
-    },
-    None => EffectSummary::PURE,
+    Some(api) => api.effects_for_call(&arg_effects),
+    None => unknown_effects(),
   };
-
   if call.is_new {
-    effects.flags |= EffectFlags::ALLOCATES;
+    effects |= EffectSet::ALLOCATES;
   }
 
   let mut purity = match api {
-    Some(api) => match api.purity {
-      PurityTemplate::DependsOnCallback => {
-        callback.map(|cb| cb.purity).unwrap_or(Purity::Unknown)
-      }
-      _ => crate::purity_template_to_purity(&api.purity),
-    },
+    Some(api) => api.purity_for_call(&arg_purity),
     None => {
       if call.is_new {
         Purity::Allocating
       } else {
-        Purity::Unknown
+        Purity::Impure
       }
     }
   };
 
   purity = Purity::join(purity, effects.inferred_purity());
 
-  if api.is_none() && !call.is_new {
-    effects = EffectSummary::join(effects, unknown_effects());
-  }
-
   CallEval { effects, purity }
 }
 
-fn unknown_effects() -> EffectSummary {
-  EffectSummary {
-    flags: EffectFlags::all(),
-    throws: ThrowBehavior::Maybe,
-  }
+fn unknown_effects() -> EffectSet {
+  EffectSet::UNKNOWN | EffectSet::MAY_THROW
 }
 
 fn resolve_api_semantics<'a>(
@@ -129,8 +130,8 @@ fn resolve_api_semantics<'a>(
   // user actually shadowed the name with something pure, this is conservative.
   // Resolving the other way (assuming a pure built-in when the user shadowed it
   // with something impure) would be unsound.
-  let effects = crate::effect_template_to_summary(&api.effects);
-  let purity = crate::purity_template_to_purity(&api.purity);
+  let effects = api.effects_for_call(&[]);
+  let purity = api.purity_for_call(&[]);
   if Purity::join(purity, effects.inferred_purity()) == Purity::Pure {
     return None;
   }
