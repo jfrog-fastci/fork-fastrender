@@ -1,27 +1,27 @@
 default: lint
 
 setup: submodules node-deps lockfile
-  cargo check -p typecheck-ts-harness --locked
-  node typecheck-ts-harness/scripts/typescript_probe.js
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check -p typecheck-ts-harness --locked
+  node "{{justfile_directory}}/typecheck-ts-harness/scripts/typescript_probe.js"
 
 submodules:
-  git submodule update --init --recursive parse-js/tests/TypeScript
-  git submodule update --init test262/data
+  git -C "{{justfile_directory}}" submodule update --init --recursive parse-js/tests/TypeScript
+  git -C "{{justfile_directory}}" submodule update --init test262/data
 
 node-deps:
-  cd typecheck-ts-harness && npm ci
+  cd "{{justfile_directory}}/typecheck-ts-harness" && npm ci
 
 lockfile:
-  cargo generate-lockfile
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" generate-lockfile
 
 fmt:
-  cargo fmt --all --check
+  cd "{{justfile_directory}}" && cargo fmt --all --check
 
 fmt-fix:
-  cargo fmt --all
+  cd "{{justfile_directory}}" && cargo fmt --all
 
 fmt-js:
-  npx --yes prettier@3.4.2 --check
+  cd "{{justfile_directory}}" && npx --yes prettier@3.4.2 --check
     'version'
     '.github/workflows/*.yaml'
     'minify-js-nodejs/**/*.{js,json,ts,d.ts}'
@@ -30,7 +30,7 @@ fmt-js:
     'typecheck-ts-harness/scripts/*.js'
 
 fmt-js-fix:
-  npx --yes prettier@3.4.2 --write
+  cd "{{justfile_directory}}" && npx --yes prettier@3.4.2 --write
     'version'
     '.github/workflows/*.yaml'
     'minify-js-nodejs/**/*.{js,json,ts,d.ts}'
@@ -39,13 +39,15 @@ fmt-js-fix:
     'typecheck-ts-harness/scripts/*.js'
 
 utf8-apis:
-  ./scripts/check_utf8_apis.sh
+  bash "{{justfile_directory}}/scripts/check_utf8_apis.sh"
 
 diagnostic-codes:
-  ./scripts/check_diagnostic_codes.sh
+  bash "{{justfile_directory}}/scripts/check_diagnostic_codes.sh"
 
-clippy:
-  cargo clippy --workspace --all-targets --all-features --
+clippy: clippy-parse clippy-vm clippy-webidl
+
+clippy-parse:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" clippy -p parse-js -p parse-js-cli --
     -A clippy::style
     -A clippy::complexity
     -A clippy::perf
@@ -54,16 +56,79 @@ clippy:
     -D clippy::correctness
     -D clippy::suspicious
 
-check:
-  cargo check --workspace --all-targets
+clippy-vm:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" clippy -p vm-js -p runtime-js --
+    -A clippy::style
+    -A clippy::complexity
+    -A clippy::perf
+    -A clippy::nursery
+    -A clippy::pedantic
+    -D clippy::correctness
+    -D clippy::suspicious
 
-test:
-  cargo test --workspace
+clippy-webidl:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" clippy -p webidl -p webidl-vm-js --
+    -A clippy::style
+    -A clippy::complexity
+    -A clippy::perf
+    -A clippy::nursery
+    -A clippy::pedantic
+    -D clippy::correctness
+    -D clippy::suspicious
+
+check: check-parse check-vm check-webidl
+
+check-parse:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check -p parse-js -p parse-js-cli
+
+check-vm:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check -p vm-js -p runtime-js
+
+check-webidl:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check -p webidl -p webidl-vm-js
+
+check-typecheck:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check
+    -p diagnostics
+    -p hir-js
+    -p semantic-js
+    -p typecheck-ts
+    -p typecheck-ts-cli
+    -p typecheck-ts-harness
+    -p types-ts-interned
+
+check-minify:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" check
+    -p emit-js
+    -p minify-js
+    -p minify-js-cli
+    -p minify-js-nodejs
+    -p optimize-js
+    -p optimize-js-debugger
+
+test: test-parse test-vm test-webidl
+
+test-parse:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" test -p parse-js
+
+test-vm:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" test -p vm-js
+
+test-webidl:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" test -p webidl
+
+test-typecheck:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" test -p typecheck-ts
+
+test-minify:
+  bash "{{justfile_directory}}/scripts/cargo_agent.sh" test -p minify-js
+
+test-all: test test-typecheck test-minify
 
 docs:
-  ./scripts/gen_deps_graph.sh
+  bash "{{justfile_directory}}/scripts/gen_deps_graph.sh"
 
 lint: fmt fmt-js utf8-apis diagnostic-codes clippy
 
-ci: fmt fmt-js utf8-apis diagnostic-codes clippy check test docs
-  git diff --exit-code docs/deps.md
+ci: lint check test docs
+  git -C "{{justfile_directory}}" diff --exit-code docs/deps.md

@@ -16,6 +16,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MONOREPO_ROOT="$(cd "${ECMA_RS_ROOT}/../.." && pwd)"
+
+MONOREPO_WRAPPER="${MONOREPO_ROOT}/scripts/cargo_agent.sh"
+if [[ ! -f "${MONOREPO_WRAPPER}" ]]; then
+  echo "error: expected cargo wrapper at ${MONOREPO_WRAPPER}" >&2
+  exit 1
+fi
 
 cd "${ECMA_RS_ROOT}"
-exec bash "${ECMA_RS_ROOT}/../../scripts/cargo_agent.sh" "$@"
+exec bash "${MONOREPO_WRAPPER}" "$@"

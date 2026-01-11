@@ -8,6 +8,19 @@ Assumptions:
 - The TypeScript compiler codebase (submodule under `parse-js/tests/TypeScript/`) is a **reference oracle**, not a design template.
 - You may **skip/defer** features with poor complexity/value, as long as the resulting checker is **polished, correct, fast**, and covers the **95% case** extremely well.
 
+## Cargo usage (non-negotiable in this monorepo)
+
+This repository is vendored into a multi-agent monorepo. **Never run `cargo` directly** here—always
+use the resource-limited wrappers:
+
+- Standard build/test/check: `bash ./scripts/cargo_agent.sh <subcommand> ...`
+- LLVM-heavy crates (e.g. `native-js`, `runtime-native`): `bash ./scripts/cargo_llvm.sh <subcommand> ...`
+  (higher RAM cap + LLVM env)
+
+Always scope builds/tests to a specific package/target (`-p <crate>`, `--lib`, `--test <name>`, etc.).
+Avoid workspace-wide runs (`--workspace`, `--all-targets`, `--all-features`) unless you have a
+specific reason.
+
 Primary outcome:
 - Downstream Rust code can load a set of TS/JS files, **type-check them**, and **query types** for:
   - every named symbol (values/types/namespaces)
