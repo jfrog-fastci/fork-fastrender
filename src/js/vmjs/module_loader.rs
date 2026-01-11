@@ -192,7 +192,10 @@ impl VmJsModuleLoader {
       };
 
       // Borrow-split: the VM needs `&mut ModuleGraph`, while module loading uses the hooks' maps.
-      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+      // Create a fresh per-turn `VmJsHostContext` so native handlers can downcast embedder state
+      // during module evaluation (matches the classic-script execution path used by `WindowHost`).
+      let mut host_ctx = host.vm_js_host_context();
+      let window_realm = host.window_realm();
       let budget = window_realm.vm_budget_now();
       let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
       let mut vm = vm.push_budget(budget);
@@ -267,7 +270,7 @@ impl VmJsModuleLoader {
 
           // Second: link + evaluate.
           if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
-            match module_graph.evaluate(&mut vm, heap, global_object, realm_id, entry_id, host_ctx, &mut hooks) {
+            match module_graph.evaluate(&mut vm, heap, global_object, realm_id, entry_id, &mut host_ctx, &mut hooks) {
               Ok(promise) => {
                 let mut scope = heap.scope();
                 if let Err(err) = ensure_promise_fulfilled(&mut scope, promise) {

@@ -2,8 +2,8 @@ use fastrender::error::Error;
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
-  install_window_timers_bindings, EventLoop, RunLimits, VirtualClock, VmJsModuleLoader, WindowRealm,
-  WindowRealmConfig, WindowRealmHost,
+  install_window_timers_bindings, EventLoop, RunLimits, VirtualClock, VmJsHostContext, VmJsModuleLoader,
+  WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::resource::{FetchedResource, ResourceFetcher};
 use fastrender::Result as FrResult;
@@ -66,6 +66,7 @@ impl HooksRegressionHost {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       install_window_timers_bindings::<Self>(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
       install_dispatch_global(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
+      install_assert_host_ctx_global(vm, realm, heap).map_err(|err| Error::Other(err.to_string()))?;
     }
     Ok(Self {
       vm_host: VmHostCtx,
@@ -111,6 +112,43 @@ fn install_dispatch_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -
   let name_key = alloc_key(&mut scope, "__dispatch")?;
   let PropertyKey::String(name_str) = name_key else {
     return Err(VmError::InvariantViolation("expected __dispatch key to be a string"));
+  };
+  let func = scope.alloc_native_function(call_id, None, name_str, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+
+  scope.define_property(global, name_key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
+fn install_assert_host_ctx_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::Heap) -> Result<(), VmError> {
+  fn assert_host_ctx_native(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if host.as_any_mut().downcast_mut::<VmJsHostContext>().is_none() {
+      return Err(VmError::TypeError("expected VmJsHostContext"));
+    }
+    Ok(Value::Undefined)
+  }
+
+  let call_id = vm.register_native_call(assert_host_ctx_native)?;
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let name_key = alloc_key(&mut scope, "__assert_host_ctx")?;
+  let PropertyKey::String(name_str) = name_key else {
+    return Err(VmError::InvariantViolation(
+      "expected __assert_host_ctx key to be a string",
+    ));
   };
   let func = scope.alloc_native_function(call_id, None, name_str, 0)?;
   scope
@@ -267,5 +305,41 @@ fn webidl_dispatch_works_during_module_evaluation() -> FrResult<()> {
   let _ = loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
   assert_eq!(host.webidl.calls, 2);
+  Ok(())
+}
+
+#[test]
+fn vmjs_host_context_is_available_during_module_evaluation() -> FrResult<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut host = HooksRegressionHost::new(clock.clone())?;
+  let mut event_loop = EventLoop::<HooksRegressionHost>::with_clock(clock);
+
+  let entry_url = "https://example.com/entry.js";
+  let dep_url = "https://example.com/dep.js";
+
+  let mut fetcher = MapFetcher::default();
+  fetcher.map.insert(
+    entry_url.to_string(),
+    FetchedResource::new(
+      format!(
+        "import {{ value }} from './dep.js';\n\
+         __assert_host_ctx();\n\
+         globalThis.result = value;\n"
+      )
+      .into_bytes(),
+      Some("application/javascript".to_string()),
+    ),
+  );
+  fetcher.map.insert(
+    dep_url.to_string(),
+    FetchedResource::new(
+      "__assert_host_ctx();\nexport const value = 1;\n".as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    ),
+  );
+
+  let mut loader = VmJsModuleLoader::new(Arc::new(fetcher), "https://example.com/", usize::MAX);
+  let _ = loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
   Ok(())
 }
