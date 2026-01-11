@@ -7,6 +7,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 use runtime_native::lookup;
+use runtime_native::test_util::TestRuntimeGuard;
 
 unsafe fn dlopen(path: &std::path::Path) -> *mut libc::c_void {
   let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -43,6 +44,8 @@ unsafe fn dlsym(handle: *mut libc::c_void, sym: &str) -> *mut libc::c_void {
 
 #[test]
 fn dlopen_registers_multiple_stackmap_modules() {
+  let _rt = TestRuntimeGuard::new();
+
   // Skip if dlopen is somehow not available.
   if unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) }.is_null() {
     eprintln!("dlopen unavailable; skipping");
@@ -89,6 +92,8 @@ fn dlopen_registers_multiple_stackmap_modules() {
 
 #[test]
 fn dlopen_then_scan_registers_stackmaps_without_constructors() {
+  let _rt = TestRuntimeGuard::new();
+
   // Skip if dlopen is somehow not available.
   if unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) }.is_null() {
     eprintln!("dlopen unavailable; skipping");
