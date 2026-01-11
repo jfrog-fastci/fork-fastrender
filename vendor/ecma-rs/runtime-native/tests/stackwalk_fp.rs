@@ -476,6 +476,70 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn derived_pointers_are_nulled_when_base_is_cleared() {
+  use std::collections::BTreeSet;
+
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let _stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let caller_fp = align_up(base + 256, 16);
+  let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // Stackmap uses:
+  //   base    = [SP + 0]
+  //   derived = [SP + 8]
+  let base_val = Box::into_raw(Box::new(0u8)) as u64;
+  unsafe {
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, base_val + 8);
+  }
+
+  let mut visited = BTreeSet::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.insert(slot as usize);
+
+      // Simulate a collector clearing the root slot (e.g. dead after marking).
+      let slot_ptr = slot as *mut *mut u8;
+      slot_ptr.write(std::ptr::null_mut());
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
+  assert!(
+    visited.contains(&(caller_sp_callsite + 0)),
+    "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
+    caller_sp_callsite
+  );
+
+  let base_after = unsafe { read_u64(caller_sp_callsite + 0) };
+  let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
+  assert_eq!(base_after, 0);
+  assert_eq!(
+    derived_after, 0,
+    "derived pointer must be nulled when the base is cleared"
+  );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 fn missing_stackmap_uses_conservative_fallback_scan() {
   use runtime_native::gc::ObjHeader;
