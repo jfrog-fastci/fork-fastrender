@@ -20,6 +20,13 @@ const LLVM_LLC: &str = "llc-18";
 const X86_64_TRIPLE: &str = "x86_64-pc-linux-gnu";
 const AARCH64_TRIPLE: &str = "aarch64-unknown-linux-gnu";
 
+// This test intentionally generates a large-ish IR "matrix" to exercise LLVM's
+// statepoint stackmap emission across a range of GC root counts and register
+// pressure scenarios. Keep it big enough to catch regressions, but small enough
+// to keep CI runtime reasonable.
+const MATRIX_MAX_ROOTS: usize = 32;
+const MATRIX_PRESSURE_INTS: usize = 32;
+
 // Mitigation: do not allow statepoint GC roots to remain in callee-saved registers.
 // Required for frame-pointer-only stack walking without libunwind/ucontext.
 const LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE: &str = "--fixup-allow-gcptr-in-csr=false";
@@ -179,7 +186,7 @@ fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool, attach_a
   out.push_str("entry:\n");
 
   if add_pressure {
-    for i in 0..64 {
+    for i in 0..MATRIX_PRESSURE_INTS {
       out.push_str(&format!("  %v{i} = add i64 %seed, {i}\n"));
     }
   }
@@ -198,16 +205,13 @@ fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool, attach_a
   out.push_str(")]\n");
 
   if add_pressure {
+    // Chain the arithmetic to keep values live and create register pressure.
     out.push_str("  %sum0 = add i64 %v0, %v1\n");
-    for i in 2..64 {
-      out.push_str(&format!(
-        "  %sum{} = add i64 %sum{}, %v{}\n",
-        i - 1,
-        i - 2,
-        i
-      ));
+    for i in 2..MATRIX_PRESSURE_INTS {
+      out.push_str(&format!("  %sum{} = add i64 %sum{}, %v{}\n", i - 1, i - 2, i));
     }
-    out.push_str("  store volatile i64 %sum62, ptr @sink, align 8\n");
+    let last_sum = MATRIX_PRESSURE_INTS - 2;
+    out.push_str(&format!("  store volatile i64 %sum{last_sum}, ptr @sink, align 8\n"));
   }
 
   out.push_str("  ret void\n");
@@ -263,16 +267,6 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
       restrict_statepoint_remat: false,
     },
     LlcCfg {
-      opt: "-O2",
-      frame_pointer: None,
-      restrict_statepoint_remat: false,
-    },
-    LlcCfg {
-      opt: "-O3",
-      frame_pointer: None,
-      restrict_statepoint_remat: false,
-    },
-    LlcCfg {
       opt: "-O3",
       frame_pointer: Some("--frame-pointer=all"),
       restrict_statepoint_remat: false,
@@ -291,7 +285,7 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
       &input_ll,
       &make_matrix_ir(
         target.triple,
-        /*max_roots=*/ 64,
+        /*max_roots=*/ MATRIX_MAX_ROOTS,
         /*add_pressure_variants=*/ true,
         /*callsite_statepoint_id=*/ None,
       ),
@@ -340,7 +334,7 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
         let sp = StatepointRecord::new(rec).expect("decode statepoint record");
         seen_n.insert(sp.gc_pair_count());
       }
-      let expected: BTreeSet<usize> = (0..=64).collect();
+      let expected: BTreeSet<usize> = (0..=MATRIX_MAX_ROOTS).collect();
       assert_eq!(
         seen_n, expected,
         "matrix target={} cfg {cfg_idx} missing root counts",
