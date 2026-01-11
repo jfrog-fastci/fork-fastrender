@@ -19,9 +19,6 @@ global_asm!(
   .globl runtime_native_capture_safepoint_context
 runtime_native_capture_safepoint_context:
   // out: rdi
-  mov rax, rsp                // sp_entry
-  lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
-
   // Walk frame pointers to capture the *outer* caller frame:
   // - RBP is the Rust wrapper's frame pointer.
   // - [RBP + 0] is the runtime helper's frame pointer.
@@ -29,9 +26,19 @@ runtime_native_capture_safepoint_context:
   // - [runtime_fp + 8] is the return address into the outer caller after calling
   //   the runtime helper.
   mov rcx, qword ptr [rbp]    // runtime_fp
+  // `sp_entry`/`sp` must match the same outer callsite as `outer_fp`/`outer_ip`.
+  //
+  // With frame pointers enabled:
+  //   caller_sp_callsite = callee_fp + 16
+  //
+  // Here `callee_fp` is `runtime_fp` (the runtime helper frame), and the outer
+  // callsite is the return address in the outer caller after calling the runtime
+  // helper.
+  lea rax, [rcx + 8]          // sp_entry (callee entry: points at return address)
+  lea rdx, [rcx + 16]         // sp (stackmap SP: post-call caller SP)
   mov r8, qword ptr [rcx]     // outer_fp
   mov r9, qword ptr [rcx + 8] // outer_ip
-
+ 
   mov qword ptr [rdi + 0], rax
   mov qword ptr [rdi + 8], rdx
   mov qword ptr [rdi + 16], r8

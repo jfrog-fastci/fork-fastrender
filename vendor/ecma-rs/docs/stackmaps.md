@@ -24,6 +24,19 @@ callee, the callee-entry `RSP` points at the return address and is **8 bytes low
 `SP` base. `runtime-native` therefore publishes a *post-call* SP for stackmap evaluation
 (`sp = sp_entry + 8`).
 
+When unwinding via the frame-pointer chain, the runtime recovers the caller’s stackmap SP base from
+the **callee** frame pointer:
+
+```text
+caller_sp_callsite = callee_fp + 16
+```
+
+This is the same on x86_64 SysV (`RBP`) and AArch64 (`X29`) when frame pointers are enabled.
+
+Important: do **not** try to reconstruct callsite SP from the stackmap function record’s
+`stack_size`. `stack_size` is a fixed per-function frame size and can be wrong at callsites with
+per-call stack adjustments (notably outgoing stack arguments on x86_64).
+
 ## `.llvm_stackmaps` can contain multiple StackMap v3 blobs
 
 LLVM emits a complete StackMap v3 table into each object file’s `.llvm_stackmaps` section.

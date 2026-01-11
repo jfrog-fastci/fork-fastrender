@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::{Location, StackSize};
+  use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -32,37 +32,46 @@ mod x86_64 {
         write_u64(caller_fp + 8, 0);
       }
 
+      // Provide a stackmap-semantics (post-call) SP for the coordinator's top frame.
+      let caller_sp = align_up(base + 2048, 16);
+      let sp_entry = caller_sp - 8;
+
       registry::set_current_thread_safepoint_context(SafepointContext {
+        sp_entry,
+        sp: caller_sp,
         fp: caller_fp,
         ip: callsite_ra as usize,
         ..Default::default()
       });
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
 
-      // Compute caller SP using the same formula as the walker (x86_64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=8 on x86_64.
-      let StackSize::Known(stack_size) = callsite.stack_size else {
-        panic!("fixture callsites should have a known stack_size");
-      };
-      let caller_sp = (caller_fp as u64) - (stack_size - 8);
-
       let mut expected_slots: Vec<usize> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        for loc in [&pair.base, &pair.derived] {
-          match loc {
-            Location::Indirect { dwarf_reg, offset, .. } => {
-              assert_eq!(
-                *dwarf_reg,
-                X86_64_DWARF_REG_SP,
-                "fixture roots must be [SP + off]"
-              );
-              let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
-              expected_slots.push(slot_addr as usize);
-            }
-            other => panic!("unexpected root location kind in fixture: {other:?}"),
-          }
+        let base_loc = &pair.base;
+        let derived_loc = &pair.derived;
+
+        let (Location::Indirect { dwarf_reg: base_reg, offset: base_off, .. }, Location::Indirect { dwarf_reg: derived_reg, offset: derived_off, .. }) =
+          (base_loc, derived_loc)
+        else {
+          panic!("unexpected root location kind in fixture: base={base_loc:?} derived={derived_loc:?}");
+        };
+        assert_eq!(*base_reg, X86_64_DWARF_REG_SP, "fixture roots must be [SP + off]");
+        assert_eq!(
+          *derived_reg,
+          X86_64_DWARF_REG_SP,
+          "fixture roots must be [SP + off]"
+        );
+
+        let base_addr = add_signed_u64(caller_sp as u64, *base_off).expect("slot addr");
+        let derived_addr = add_signed_u64(caller_sp as u64, *derived_off).expect("slot addr");
+
+        // Seed slot values so the walker can compute derived fixups.
+        unsafe {
+          write_u64(base_addr as usize, 0x1111_2222_3333_4444);
+          write_u64(derived_addr as usize, 0x1111_2222_3333_4444);
         }
+
+        expected_slots.push(base_addr as usize);
       }
       expected_slots.sort_unstable();
       expected_slots.dedup();
@@ -110,7 +119,7 @@ mod x86_64 {
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::{Location, StackSize};
+  use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -139,37 +148,48 @@ mod aarch64 {
         write_u64(caller_fp + 8, 0);
       }
 
+      let caller_sp = align_up(base + 2048, 16);
+      let sp_entry = caller_sp;
+
       registry::set_current_thread_safepoint_context(SafepointContext {
+        sp_entry,
+        sp: caller_sp,
         fp: caller_fp,
         ip: callsite_ra as usize,
         ..Default::default()
       });
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
 
-      // Compute caller SP using the same formula as the walker (AArch64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
-      let StackSize::Known(stack_size) = callsite.stack_size else {
-        panic!("fixture callsites should have a known stack_size");
-      };
-      let caller_sp = (caller_fp as u64) - (stack_size - 16);
-
       let mut expected_slots: Vec<usize> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        for loc in [&pair.base, &pair.derived] {
-          match loc {
-            Location::Indirect { dwarf_reg, offset, .. } => {
-              assert_eq!(
-                *dwarf_reg,
-                AARCH64_DWARF_REG_SP,
-                "fixture roots must be [SP + off]"
-              );
-              let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
-              expected_slots.push(slot_addr as usize);
-            }
-            other => panic!("unexpected root location kind in fixture: {other:?}"),
-          }
+        let base_loc = &pair.base;
+        let derived_loc = &pair.derived;
+
+        let (Location::Indirect { dwarf_reg: base_reg, offset: base_off, .. }, Location::Indirect { dwarf_reg: derived_reg, offset: derived_off, .. }) =
+          (base_loc, derived_loc)
+        else {
+          panic!("unexpected root location kind in fixture: base={base_loc:?} derived={derived_loc:?}");
+        };
+        assert_eq!(
+          *base_reg,
+          AARCH64_DWARF_REG_SP,
+          "fixture roots must be [SP + off]"
+        );
+        assert_eq!(
+          *derived_reg,
+          AARCH64_DWARF_REG_SP,
+          "fixture roots must be [SP + off]"
+        );
+
+        let base_addr = add_signed_u64(caller_sp as u64, *base_off).expect("slot addr");
+        let derived_addr = add_signed_u64(caller_sp as u64, *derived_off).expect("slot addr");
+
+        unsafe {
+          write_u64(base_addr as usize, 0x1111_2222_3333_4444);
+          write_u64(derived_addr as usize, 0x1111_2222_3333_4444);
         }
+
+        expected_slots.push(base_addr as usize);
       }
       expected_slots.sort_unstable();
       expected_slots.dedup();

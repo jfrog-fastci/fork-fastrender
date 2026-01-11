@@ -25,8 +25,6 @@ global_asm!(
   .globl runtime_native_capture_safepoint_context
 runtime_native_capture_safepoint_context:
   // out: x0
-  mov x1, sp          // sp_entry
-  mov x2, x1          // sp (stackmap SP)
   // Walk frame pointers to capture the *outer* caller frame:
   // - X29 is the Rust wrapper's frame pointer.
   // - [X29 + 0] is the runtime helper's frame pointer.
@@ -34,9 +32,15 @@ runtime_native_capture_safepoint_context:
   // - [runtime_fp + 8] is the saved LR (return address) into the outer caller
   //   after calling the runtime helper.
   ldr x3, [x29, #0]    // runtime_fp
+  // `sp_entry`/`sp` must match the same outer callsite as `outer_fp`/`outer_ip`.
+  // With frame pointers enabled on AArch64:
+  //   caller_sp_callsite = callee_fp + 16
+  // Here `callee_fp` is `runtime_fp` (the runtime helper frame).
+  add x1, x3, #16      // sp_entry
+  mov x2, x1           // sp (stackmap SP)
   ldr x4, [x3, #0]     // outer_fp
   ldr x5, [x3, #8]     // outer_ip
-
+ 
   str x1, [x0, #0]
   str x2, [x0, #8]
   str x4, [x0, #16]
@@ -273,8 +277,6 @@ global_asm!(
   .globl runtime_native_capture_safepoint_context
 runtime_native_capture_safepoint_context:
   // out: x0
-  mov x1, sp          // sp_entry
-  mov x2, x1          // sp (stackmap SP)
   // Walk frame pointers to capture the *outer* caller frame:
   // - X29 is the Rust wrapper's frame pointer.
   // - [X29 + 0] is the runtime helper's frame pointer.
@@ -282,9 +284,15 @@ runtime_native_capture_safepoint_context:
   // - [runtime_fp + 8] is the saved LR (return address) into the outer caller
   //   after calling the runtime helper.
   ldr x3, [x29, #0]    // runtime_fp
+  // `sp_entry`/`sp` must match the same outer callsite as `outer_fp`/`outer_ip`.
+  // With frame pointers enabled on AArch64:
+  //   caller_sp_callsite = callee_fp + 16
+  // Here `callee_fp` is `runtime_fp` (the runtime helper frame).
+  add x1, x3, #16      // sp_entry
+  mov x2, x1           // sp (stackmap SP)
   ldr x4, [x3, #0]     // outer_fp
   ldr x5, [x3, #8]     // outer_ip
-
+ 
   str x1, [x0, #0]
   str x2, [x0, #8]
   str x4, [x0, #16]

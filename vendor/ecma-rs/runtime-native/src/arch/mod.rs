@@ -85,16 +85,16 @@ extern "C" {
 /// ```text
 /// outer() -> runtime_helper() -> arch::capture_safepoint_context()
 /// ```
-/// we capture:
-/// - `ctx.fp`: the frame pointer for `outer()`
-/// - `ctx.ip`: the return address in `outer()` after the call to `runtime_helper()`
-///
-/// This ensures `SafepointContext` always refers to a **stable** frame that remains
-/// on the stack while the thread is stopped / NativeSafe.
-///
-/// `sp_entry`/`sp` are best-effort and may not correspond to the exact
-/// callsite stack pointer when this function is not invoked as a leaf; current
-/// stackmap-based scanning relies on `fp`/`ip`.
+  /// we capture:
+  /// - `ctx.fp`: the frame pointer for `outer()`
+  /// - `ctx.ip`: the return address in `outer()` after the call to `runtime_helper()`
+  ///
+  /// This ensures `SafepointContext` always refers to a **stable** frame that remains
+  /// on the stack while the thread is stopped / NativeSafe.
+  ///
+  /// `sp_entry`/`sp` are captured for that same outer callsite (not for the transient
+  /// wrapper/helper frames), so stackmap SP-relative root locations can be evaluated without
+  /// consulting stackmap `stack_size`.
 #[inline(never)]
 pub fn capture_safepoint_context() -> SafepointContext {
   let mut out = MaybeUninit::<SafepointContext>::uninit();

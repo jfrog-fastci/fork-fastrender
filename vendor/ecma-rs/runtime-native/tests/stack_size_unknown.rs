@@ -255,8 +255,8 @@ mod stackwalk_unknown_stack_size {
     let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
     let res = unsafe { walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |_| {}) };
     assert!(
-      matches!(res, Err(WalkError::UnknownStackSize { .. })),
-      "expected UnknownStackSize, got {res:?}"
+      matches!(res, Err(WalkError::MissingStackmapSp { .. })),
+      "expected MissingStackmapSp, got {res:?}"
     );
   }
 

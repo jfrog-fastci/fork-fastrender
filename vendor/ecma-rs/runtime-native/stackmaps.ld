@@ -42,9 +42,9 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-/* Keep the insertion outside lld's RELRO range: lld enforces that RELRO sections
- * remain contiguous, and injecting custom `.data.rel.ro.*` output sections
- * inside RELRO can trigger:
- *   "section: .got is not contiguous with other relro sections"
- */
+/* Insert immediately before `.bss` (outside the RELRO range) to avoid lld's
+ * RELRO contiguity errors when injecting custom output sections.
+ *
+ * `.bss` is reliably present even for minimal links (lld may omit `.data` /
+ * `.dynamic` entirely when empty). */
 } INSERT BEFORE .bss;

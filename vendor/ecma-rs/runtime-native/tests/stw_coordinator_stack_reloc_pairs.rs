@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::{Location, StackSize};
+  use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::{RootSlot, StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -32,25 +32,23 @@ mod x86_64 {
         write_u64(caller_fp + 8, 0);
       }
 
+      // Provide a stackmap-semantics (post-call) SP for the coordinator's top frame.
+      let caller_sp = align_up(base + 2048, 16);
+      let sp_entry = caller_sp - 8;
+
       registry::set_current_thread_safepoint_context(SafepointContext {
+        sp_entry,
+        sp: caller_sp,
         fp: caller_fp,
         ip: callsite_ra as usize,
         ..Default::default()
       });
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
 
-      // Compute caller SP using the same formula as the walker (x86_64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=8 on x86_64.
-      let StackSize::Known(stack_size) = callsite.stack_size else {
-        panic!("fixture callsites should have a known stack_size");
-      };
-      let caller_sp = (caller_fp as u64) - (stack_size - 8);
-
       let mut expected_pairs: Vec<(usize, usize)> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        let base_addr = slot_addr(caller_sp, &pair.base);
-        let derived_addr = slot_addr(caller_sp, &pair.derived);
+        let base_addr = slot_addr(caller_sp as u64, &pair.base);
+        let derived_addr = slot_addr(caller_sp as u64, &pair.derived);
         expected_pairs.push((base_addr, derived_addr));
       }
       expected_pairs.sort_unstable();
@@ -131,7 +129,7 @@ mod x86_64 {
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::{Location, StackSize};
+  use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, RootSlot, StatepointRecord};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -160,25 +158,22 @@ mod aarch64 {
         write_u64(caller_fp + 8, 0);
       }
 
+      let caller_sp = align_up(base + 2048, 16);
+      let sp_entry = caller_sp;
+
       registry::set_current_thread_safepoint_context(SafepointContext {
+        sp_entry,
+        sp: caller_sp,
         fp: caller_fp,
         ip: callsite_ra as usize,
         ..Default::default()
       });
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
 
-      // Compute caller SP using the same formula as the walker (AArch64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
-      let StackSize::Known(stack_size) = callsite.stack_size else {
-        panic!("fixture callsites should have a known stack_size");
-      };
-      let caller_sp = (caller_fp as u64) - (stack_size - 16);
-
       let mut expected_pairs: Vec<(usize, usize)> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        let base_addr = slot_addr(caller_sp, &pair.base);
-        let derived_addr = slot_addr(caller_sp, &pair.derived);
+        let base_addr = slot_addr(caller_sp as u64, &pair.base);
+        let derived_addr = slot_addr(caller_sp as u64, &pair.derived);
         expected_pairs.push((base_addr, derived_addr));
       }
       expected_pairs.sort_unstable();

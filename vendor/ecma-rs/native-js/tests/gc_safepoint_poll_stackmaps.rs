@@ -3,7 +3,7 @@ use inkwell::targets::{CodeModel, RelocMode};
 use inkwell::{IntPredicate, OptimizationLevel};
 use native_js::{emit, llvm::gc};
 use object::{Object as _, ObjectSection as _};
-use runtime_native::stackmaps::StackMaps;
+use runtime_native::stackmaps::{Location, StackMaps};
 
 fn assigned_ssa(line: &str) -> Option<String> {
   let (lhs, _rhs) = line.split_once('=')?;
@@ -217,14 +217,20 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
     "expected at least 2 stackmap callsites (entry + backedge poll), got {}",
     stackmaps.callsites().len()
   );
-
+ 
   for (pc, callsite) in stackmaps.iter() {
-    let roots = callsite
-      .gc_root_slots()
-      .unwrap_or_else(|err| panic!("callsite 0x{pc:x} has invalid GC root locations: {err}"));
+    let pairs: Vec<_> = callsite.reloc_pairs().collect();
     assert!(
-      !roots.is_empty(),
-      "expected at least one GC root slot at callsite 0x{pc:x}"
+      !pairs.is_empty(),
+      "expected at least one (base, derived) gc.relocate pair at callsite 0x{pc:x}"
     );
+    for pair in pairs {
+      for loc in [pair.base, pair.derived] {
+        assert!(
+          matches!(loc, Location::Indirect { .. }),
+          "expected statepoint GC locations to be addressable spill slots, got {loc:?} at callsite 0x{pc:x}"
+        );
+      }
+    }
   }
 }

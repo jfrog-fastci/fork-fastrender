@@ -1695,10 +1695,22 @@ mod tests {
     let callsite = sm.lookup(0x1010).unwrap();
     assert_eq!(callsite.stack_size, StackSize::Known(32));
 
-    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    // `gc_root_rbp_offsets_strict` converts `Indirect [SP + off]` to a frame-pointer relative
+    // offset using:
+    //   fp_off = frame_record_size - stack_size + off
+    //
+    // where:
+    // - x86_64: frame_record_size = 8  (saved RBP; return address is outside stack_size)
+    // - aarch64: frame_record_size = 16 (saved FP+LR)
+    #[cfg(target_arch = "x86_64")]
+    let frame_record_size: i32 = 8;
+    #[cfg(target_arch = "aarch64")]
+    let frame_record_size: i32 = 16;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let frame_record_size: i32 = 0;
     assert_eq!(
       callsite.gc_root_rbp_offsets_strict().unwrap(),
-      vec![fp_to_entry_sp - 32 + 16]
+      vec![frame_record_size - 32 + 16]
     );
   }
 
@@ -1802,12 +1814,15 @@ mod tests {
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
-    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    #[cfg(target_arch = "x86_64")]
+    let frame_record_size: i32 = 8;
+    #[cfg(target_arch = "aarch64")]
+    let frame_record_size: i32 = 16;
     // base spill slot is [SP + 0], but derived pointer is in a separate slot. This API returns
     // only the base slot.
     assert_eq!(
       callsite.gc_root_rbp_offsets_strict().unwrap(),
-      vec![fp_to_entry_sp - 40 + 0]
+      vec![frame_record_size - 40 + 0]
     );
   }
 
@@ -2124,11 +2139,16 @@ mod tests {
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
 
-    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
-    // fp_off = fp_to_entry_sp - stack_size(32) + sp_off(8)
+    #[cfg(target_arch = "x86_64")]
+    let frame_record_size: i32 = 8;
+    #[cfg(target_arch = "aarch64")]
+    let frame_record_size: i32 = 16;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let frame_record_size: i32 = 0;
+    // fp_off = frame_record_size - stack_size(32) + sp_off(8)
     assert_eq!(
       callsite.gc_root_rbp_offsets_strict().unwrap(),
-      vec![fp_to_entry_sp - 32 + 8]
+      vec![frame_record_size - 32 + 8]
     );
   }
 
@@ -2138,11 +2158,14 @@ mod tests {
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
 
-    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
-    // fp_off = fp_to_entry_sp - stack_size(32) + base_sp_off(8)
+    #[cfg(target_arch = "x86_64")]
+    let frame_record_size: i32 = 8;
+    #[cfg(target_arch = "aarch64")]
+    let frame_record_size: i32 = 16;
+    // fp_off = frame_record_size - stack_size(32) + base_sp_off(8)
     assert_eq!(
       callsite.gc_root_rbp_offsets_strict().unwrap(),
-      vec![fp_to_entry_sp - 32 + 8]
+      vec![frame_record_size - 32 + 8]
     );
   }
 

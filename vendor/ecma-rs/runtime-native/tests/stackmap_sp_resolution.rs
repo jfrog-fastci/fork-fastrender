@@ -1,15 +1,22 @@
-//! Integration test for StackMap SP-relative location resolution.
+//! Integration test for StackMap SP-relative location normalization.
 //!
 //! LLVM StackMap `Indirect [SP + off]` locations for statepoints are based on the
-//! caller's *callsite* `SP` at the stackmap record PC (the callsite return address).
+//! **caller’s stack pointer value at the stackmap PC** (the return address after the
+//! call/statepoint).
 //!
-//! In general, a function may adjust `SP` around a particular callsite (e.g. for outgoing stack
-//! arguments / alignment shims), so the StackMap function record's fixed `stack_size` is **not**
-//! sufficient to reconstruct the exact callsite `SP` in all cases.
+//! Runtime stack walking must evaluate these locations using the *callsite SP*
+//! derived from the **callee** frame pointer:
+//! `caller_sp_callsite = callee_fp + 16` (x86_64 SysV and AArch64, frame pointers).
+//! It must **not** reconstruct callsite SP from the stackmap function record’s
+//! `stack_size` (which is a fixed frame size and can be wrong when a callsite has
+//! outgoing stack arguments / per-call adjustments).
 //!
-//! This test uses a minimal IR shape where the callsite `SP` matches the fixed frame size, and
-//! validates that `stack_size`-based normalization of `Indirect [SP + off]` locations to
-//! FP-relative offsets matches the machine code produced by LLVM.
+//! This test is intentionally narrower: it validates that our
+//! `CallSite::gc_root_rbp_offsets_strict` helper can normalize SP-relative stackmap
+//! offsets into FP-relative offsets for a minimal function where the callsite has
+//! no per-call stack adjustments. In that restricted case, `stack_size` happens to
+//! be sufficient for normalization, but the runtime does not rely on it for stack
+//! walking.
 
 #![cfg(target_os = "linux")]
 
@@ -329,7 +336,7 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch, opt: &str, llc: &str, obj
 }
 
 #[test]
-fn statepoint_stackmap_sp_locations_resolve_via_stack_size_x86_64() {
+fn statepoint_stackmap_sp_locations_normalize_to_fp_offsets_x86_64() {
   let Some(opt) = find_tool(&["opt-18", "opt"]) else {
     eprintln!("skipping: unable to locate LLVM opt (`opt-18` or `opt`)");
     return;
@@ -346,7 +353,7 @@ fn statepoint_stackmap_sp_locations_resolve_via_stack_size_x86_64() {
 }
 
 #[test]
-fn statepoint_stackmap_sp_locations_resolve_via_stack_size_aarch64() {
+fn statepoint_stackmap_sp_locations_normalize_to_fp_offsets_aarch64() {
   let Some(opt) = find_tool(&["opt-18", "opt"]) else {
     eprintln!("skipping: unable to locate LLVM opt (`opt-18` or `opt`)");
     return;

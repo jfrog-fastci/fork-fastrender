@@ -13,9 +13,7 @@
 //! at the statepoint return address. This means the address of the spill slot is simply
 //! `reg_value + offset`.
 
-use crate::stackmaps::{Location, StackMaps, StackSize};
-#[cfg(target_arch = "x86_64")]
-use crate::stackmaps::{X86_64_DWARF_REG_RBP, X86_64_DWARF_REG_RSP};
+use crate::stackmaps::{Location, StackMaps};
 use crate::statepoints::StatepointRecord;
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
@@ -43,12 +41,6 @@ pub enum ScanError {
     base: u64,
     offset: i32,
   },
-
-  #[error("failed to reconstruct RSP from FP for a non-top frame: fp=0x{fp:x} stack_size={stack_size}")]
-  RspReconstructionFailed { fp: u64, stack_size: u64 },
-
-  #[error("stackmap function stack_size is unknown, cannot evaluate RSP-based location {loc:?} in a non-top frame")]
-  UnknownStackSizeForRspBasedLocation { loc: Location },
 
   #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
   UnsupportedLocation { loc: Location },
@@ -178,83 +170,6 @@ pub fn scan_roots(
   Ok(())
 }
 
-/// Evaluate an `Indirect [base_reg + offset]` location for a single x86_64 frame.
-///
-/// This helper exists for stack walking when we only have a frame pointer (RBP)
-/// for older frames:
-/// - FP-based locations (`[RBP + off]`) can always be evaluated.
-/// - SP-based locations (`[RSP + off]`) require either:
-///   - the *captured* top-frame register context (`top_regs.rsp`), or
-///   - a known fixed frame size (`stack_size`) so we can reconstruct callsite RSP as
-///     `rsp = fp + 8 - stack_size` (LLVM 18 convention).
-///
-/// Note: this `stack_size`-based reconstruction does **not** account for per-callsite SP
-/// adjustments (e.g. outgoing stack arguments). It is only valid when the callsite SP matches the
-/// function's fixed frame size. Runtime stack walking should prefer deriving callsite SP from the
-/// callee frame pointer (`callee_fp + 16`) when walking a full FP chain (see `stackwalk_fp`).
-#[cfg(target_arch = "x86_64")]
-pub fn slot_addr_x86_64(
-  fp: u64,
-  stack_size: StackSize,
-  is_top_frame: bool,
-  top_regs: Option<&ThreadContext>,
-  loc: &Location,
-) -> Result<*mut usize, ScanError> {
-  let Location::Indirect {
-    dwarf_reg, offset, ..
-  } = *loc
-  else {
-    return Err(ScanError::UnsupportedLocation { loc: loc.clone() });
-  };
-
-  let base = match dwarf_reg {
-    X86_64_DWARF_REG_RBP => fp,
-    X86_64_DWARF_REG_RSP => {
-      if is_top_frame {
-        let regs = top_regs.ok_or(ScanError::MissingRegister {
-          dwarf_reg,
-          loc: loc.clone(),
-        })?;
-        regs.get_dwarf_reg_u64(dwarf_reg).ok_or(ScanError::MissingRegister {
-          dwarf_reg,
-          loc: loc.clone(),
-        })?
-      } else {
-        let StackSize::Known(stack_size) = stack_size else {
-          return Err(ScanError::UnknownStackSizeForRspBasedLocation { loc: loc.clone() });
-        };
-        fp.checked_add(8)
-          .and_then(|v| v.checked_sub(stack_size))
-          .ok_or(ScanError::RspReconstructionFailed { fp, stack_size })?
-      }
-    }
-    other => {
-      return Err(ScanError::MissingRegister {
-        dwarf_reg: other,
-        loc: loc.clone(),
-      });
-    }
-  };
-
-  let addr = add_i32(base, offset).ok_or(ScanError::AddressOverflow {
-    kind: "Indirect",
-    base,
-    offset,
-  })?;
-  Ok(addr as usize as *mut usize)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn slot_addr_x86_64(
-  _fp: u64,
-  _stack_size: StackSize,
-  _is_top_frame: bool,
-  _top_regs: Option<&ThreadContext>,
-  loc: &Location,
-) -> Result<*mut usize, ScanError> {
-  Err(ScanError::UnsupportedLocation { loc: loc.clone() })
-}
-
 /// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.
 ///
 /// - `thread_ctx` provides the stopped thread's DWARF register values.
@@ -360,31 +275,4 @@ fn add_i32(base: u64, offset: i32) -> Option<u64> {
   } else {
     base.checked_sub((-offset) as u64)
   }
-}
-
-/// Compute the caller-frame stack pointer value used as the base for LLVM stackmap
-/// `Indirect [SP + off]` locations on AArch64.
-///
-/// Empirically on LLVM 18 with frame pointers enabled (`-frame-pointer=all`), a typical prologue:
-/// - saves `(FP, LR)` as a 16-byte pair and sets `FP` to point at that pair, and
-/// - reports a fixed `stack_size` equal to the full frame size (including that 16-byte record).
-///
-/// When the callsite `SP` matches the function's fixed frame size (i.e. no outgoing-argument pushes
-/// or other per-callsite adjustments), this lets us derive the stackmap `SP` base from `FP` and
-/// `stack_size`:
-///
-/// ```text
-/// sp_callsite = fp + 16 - stack_size
-/// ```
-///
-/// Note: this `stack_size`-based reconstruction is not reliable for arbitrary callsites. Frame-
-/// pointer stack walking in `runtime-native` uses `caller_sp_callsite = callee_fp + 16` instead.
-pub fn compute_sp_aarch64(fp: usize, stack_size: u64) -> usize {
-  let stack_size: usize = stack_size
-    .try_into()
-    .expect("stack_size does not fit in usize");
-  let fp_plus_record = fp.checked_add(16).expect("fp overflow");
-  fp_plus_record
-    .checked_sub(stack_size)
-    .expect("stack_size underflow while computing AArch64 SP from FP")
 }

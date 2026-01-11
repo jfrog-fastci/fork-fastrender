@@ -275,8 +275,9 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   // - unit tests run in parallel by default and may have many registered worker threads at once
   // - debug builds are significantly slower, and the system may be under heavy contention
   //
-  // Keep release builds strict (we want to catch real deadlocks quickly), but give debug builds more
-  // slack to avoid flaky timeouts.
+  // Keep release builds strict (we want to catch real deadlocks quickly), but give debug builds
+  // plenty of slack to avoid flaky timeouts under heavy scheduler contention (Rust unit tests run
+  // in parallel by default).
   let timeout = if cfg!(debug_assertions) {
     // Debug/test builds can be extremely slow and subject to high scheduler contention (e.g. when
     // running many tests in parallel on multi-agent hosts). Keep the stop-the-world watchdog, but

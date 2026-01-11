@@ -45,33 +45,29 @@ For the first milestone we use **frame-pointer walking** on Linux:
 
 This only works if **all code that can run on GC-managed threads keeps frame pointers**.
 
-### Stackmap `stack_size` caveat (`Indirect [SP + off]` locations)
+### Do not reconstruct callsite SP from stackmap `stack_size`
 
-LLVM stackmaps for `gc.statepoint` often describe stack roots as:
+StackMap function records include a `stack_size` field, but it is a **fixed per-function frame
+size**:
 
-```
-Indirect [SP + off]
-```
+- It can be **unknown** (`u64::MAX`) for dynamic stack frames (e.g. variable-size `alloca`).
+- Even when it is known, it does **not** reliably account for per-call adjustments at a particular
+  callsite (notably outgoing stack arguments on x86_64 SysV), so it is not a safe way to recover the
+  callsite stack pointer used by stackmaps.
 
-In LLVM StackMaps, when the base register is `SP`, it is the **caller**'s stack pointer value at the
-stackmap record PC (the callsite return address), not the callee's current `SP`.
+Instead, under the forced-frame-pointer contract we recover the stackmap SP base directly from the
+**callee** frame pointer:
 
-The stackmap function record also includes a fixed `stack_size`, which is sometimes used to
-normalize SP-relative slots into FP-relative offsets when inspecting stackmaps offline. However,
-`stack_size` does **not** account for per-callsite stack adjustments (e.g. outgoing stack argument
-pushes), so it is not reliable for reconstructing the exact callsite `SP` in general.
-
-`runtime-native` avoids this by deriving the callsite `SP` directly from the callee frame pointer
-when walking frames (and for `Indirect [FP + off]` roots, it can use the frame pointer directly):
-
-```
+```text
 caller_sp_callsite = callee_fp + 16
 ```
 
-Frame record layout remains:
+This holds for both x86_64 SysV (`RBP`) and AArch64 (`X29`) and matches the caller’s stack pointer
+value at the stackmap record PC (the return address).
 
-- next FP at `[fp + 0]`
-- return PC at `[fp + 8]`
+Note: `stack_size` can still be useful for **offline inspection** (e.g. normalizing some locations
+into FP-relative offsets), but the runtime stack walker must not depend on it for reconstructing the
+callsite `SP`.
 
 ### Enforcement
 

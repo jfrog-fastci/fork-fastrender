@@ -36,22 +36,29 @@ mod x86_64 {
       // Fake stack memory (on-stack so stack bounds checks succeed).
       let mut stack = [0u8; 4096];
       let base = stack.as_mut_ptr() as usize;
- 
-      // Single managed frame (terminal, caller_fp->0).
-      let caller_fp = align_up(base + 3072, 16);
+
+      // Synthetic runtime frame (lower address) calling into a managed frame (higher address).
+      //
+      // The stackmap record is keyed by the return address back into the managed caller
+      // (`callsite_ra`), and `Indirect [SP + off]` locations are based on the *managed caller's*
+      // stack pointer value at that return address.
+      let runtime_fp = align_up(base + 2048, 16);
+      let managed_fp = align_up(base + 3072, 16);
       unsafe {
-        write_u64(caller_fp + 0, 0);
-        write_u64(caller_fp + 8, 0);
+        // Runtime frame record:
+        //   [FP + 0] = saved FP (managed caller frame pointer)
+        //   [FP + 8] = return address into managed code (stackmap PC)
+        write_u64(runtime_fp + 0, managed_fp as u64);
+        write_u64(runtime_fp + 8, callsite_ra);
+
+        // Managed frame record: terminate the chain.
+        write_u64(managed_fp + 0, 0);
+        write_u64(managed_fp + 8, 0);
       }
- 
-      // Compute caller SP using the same formula as the walker (x86_64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=8 on x86_64.
-      let stack_size = callsite
-        .stack_size
-        .as_u64()
-        .expect("fixture callsite must have a known fixed stack_size");
-      let caller_sp = (caller_fp as u64) - (stack_size - 8);
+
+      // Under the forced-frame-pointer ABI contract on x86_64 SysV:
+      //   caller_sp_callsite = callee_fp + 16
+      let caller_sp = runtime_fp as u64 + 16;
  
       // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
       // in-place by the walker after the base slot has potentially been relocated.
@@ -77,10 +84,16 @@ mod x86_64 {
  
       // Publish the synthetic safepoint context: this thread is NativeSafe, so it may not observe
       // the stop epoch, but the GC should still scan from this context.
+      //
+      // Provide the stackmap-semantics SP base explicitly: the runtime capture path publishes
+      // `sp = runtime_fp + 16` and `sp_entry = sp - 8` for x86_64.
+      let sp_callsite = runtime_fp + 16;
+      let sp_entry = sp_callsite - 8;
       let ctx = SafepointContext {
-        fp: caller_fp,
+        sp_entry,
+        sp: sp_callsite,
+        fp: managed_fp,
         ip: callsite_ra as usize,
-        ..Default::default()
       };
       runtime_native::test_util::set_current_thread_safepoint_context_for_tests(ctx);
  
@@ -178,22 +191,29 @@ mod aarch64 {
       // Fake stack memory (on-stack so stack bounds checks succeed).
       let mut stack = [0u8; 4096];
       let base = stack.as_mut_ptr() as usize;
- 
-      // Single managed frame (terminal, caller_fp->0).
-      let caller_fp = align_up(base + 3072, 16);
+
+      // Synthetic runtime frame (lower address) calling into a managed frame (higher address).
+      //
+      // The stackmap record is keyed by the return address back into the managed caller
+      // (`callsite_ra`), and `Indirect [SP + off]` locations are based on the *managed caller's*
+      // stack pointer value at that return address.
+      let runtime_fp = align_up(base + 2048, 16);
+      let managed_fp = align_up(base + 3072, 16);
       unsafe {
-        write_u64(caller_fp + 0, 0);
-        write_u64(caller_fp + 8, 0);
+        // Runtime frame record:
+        //   [FP + 0] = saved FP (managed caller frame pointer)
+        //   [FP + 8] = saved LR (return address into managed code; stackmap PC)
+        write_u64(runtime_fp + 0, managed_fp as u64);
+        write_u64(runtime_fp + 8, callsite_ra);
+
+        // Managed frame record: terminate the chain.
+        write_u64(managed_fp + 0, 0);
+        write_u64(managed_fp + 8, 0);
       }
- 
-      // Compute caller SP using the same formula as the walker (AArch64):
-      //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
-      // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
-      let stack_size = callsite
-        .stack_size
-        .as_u64()
-        .expect("fixture callsite must have a known fixed stack_size");
-      let caller_sp = (caller_fp as u64) - (stack_size - 16);
+
+      // Under the forced-frame-pointer ABI contract on AArch64:
+      //   caller_sp_callsite = callee_fp + 16
+      let caller_sp = runtime_fp as u64 + 16;
  
       // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
       // in-place by the walker after the base slot has potentially been relocated.
@@ -219,10 +239,15 @@ mod aarch64 {
  
       // Publish the synthetic safepoint context: this thread is NativeSafe, so it may not observe
       // the stop epoch, but the GC should still scan from this context.
+      //
+      // Provide the stackmap-semantics SP base explicitly: AArch64 `bl` does not push a return
+      // address onto the stack, so `sp_entry == sp` at the callsite.
+      let sp_callsite = runtime_fp + 16;
       let ctx = SafepointContext {
-        fp: caller_fp,
+        sp_entry: sp_callsite,
+        sp: sp_callsite,
+        fp: managed_fp,
         ip: callsite_ra as usize,
-        ..Default::default()
       };
       runtime_native::test_util::set_current_thread_safepoint_context_for_tests(ctx);
  

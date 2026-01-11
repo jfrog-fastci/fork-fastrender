@@ -143,6 +143,17 @@ by `runtime-native` (see `runtime-native/README.md`).
 Note: LLVM stackmap `Indirect [SP + off]` locations use the caller's **post-call** stack pointer at
 the stackmap record PC, so the published SP for the managed caller must use the same convention.
 
+When unwinding GC-managed stacks via the frame-pointer chain, `runtime-native` evaluates these
+SP-relative locations using the *callsite SP* recovered from the **callee** frame pointer:
+
+```text
+caller_sp_callsite = callee_fp + 16
+```
+
+Do **not** attempt to reconstruct callsite SP from the stackmap function record’s `stack_size`:
+`stack_size` is a fixed per-function frame size and can be wrong at callsites with per-call stack
+adjustments (notably outgoing stack arguments on x86_64).
+
 `runtime-native` also exports `gc.safepoint_poll(void)` for compatibility with LLVM's
 `place-safepoints` naming convention, but `native-js` lowers away the marker calls and does not rely
 on the symbol in final output.

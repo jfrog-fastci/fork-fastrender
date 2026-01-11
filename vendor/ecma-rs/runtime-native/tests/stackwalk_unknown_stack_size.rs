@@ -140,8 +140,11 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   visited_base_entry_only.dedup();
   assert_eq!(visited_base_entry_only, vec![caller_sp_callsite + 0]);
 
-  // 3) If `ctx.sp == 0`, the walker falls back to `stack_size` for the top frame. A sentinel
-  // `u64::MAX` stack size must surface as an explicit error.
+  // 3) If neither `ctx.sp` nor `ctx.sp_entry` is available, the walker must not try to reconstruct
+  // stackmap-semantics `SP` from the stackmap function record's `stack_size` (it is a fixed frame
+  // size and can be wrong when the callsite performs outgoing-arg stack adjustments).
+  //
+  // Instead, it surfaces an explicit error.
   let ctx_missing_sp = SafepointContext {
     sp_entry: 0,
     sp: 0,
@@ -154,7 +157,7 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   };
   assert!(matches!(
     res,
-    Err(WalkError::UnknownStackSize { return_addr }) if return_addr == callsite_ra
+    Err(WalkError::MissingStackmapSp { return_addr }) if return_addr == callsite_ra
   ));
 
   let res = unsafe {
@@ -162,7 +165,7 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   };
   assert!(matches!(
     res,
-    Err(WalkError::UnknownStackSize { return_addr }) if return_addr == callsite_ra
+    Err(WalkError::MissingStackmapSp { return_addr }) if return_addr == callsite_ra
   ));
 }
 
