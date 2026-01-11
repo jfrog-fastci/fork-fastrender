@@ -111,6 +111,7 @@ mod flex_subpixel_sizes;
 mod flex_wrap_percent_max_width_replaced_intrinsic;
 mod flex_unrounded_layout_preserves_subpixel_sizes;
 mod flex_item_blockification;
+mod flex_item_float_ignored;
 mod flex_nested_wrap_item_cross_size;
 mod flex_leaf_remeasure_after_main_size_flexing;
 mod flex_negative_margin_overlap;

@@ -6299,7 +6299,11 @@ impl BlockFormattingContext {
           child_bfc.layout(child, &child_constraints)?
         } else {
           let fc = factory.get(fc_type);
-          fc.layout(child, &child_constraints)?
+          // Non-block formatting contexts (grid/flex/table) return fragments in physical
+          // coordinates. The block formatting context keeps fragments in logical coordinates
+          // until `convert_fragment_axes` runs at the end of `layout`, so convert the subtree
+          // back into logical space here to avoid double-applying the writing-mode transform.
+          unconvert_fragment_axes_root(fc.layout(child, &child_constraints)?)
         };
 
         let block_sides = block_axis_sides(&child.style);
