@@ -888,13 +888,13 @@ fn enumerate_root_pairs_for_frame_with_caller_sp(
     }
   })?;
 
-  let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(statepoint.gc_pair_count());
+  let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(statepoint.gc_pair_count());
   for pair in statepoint.gc_pairs() {
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
     let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
-    pairs.push((base_slot as usize, derived_slot as usize));
+    pairs.push((base_slot, derived_slot));
   }
   pairs.sort_unstable();
   pairs.dedup();
@@ -902,7 +902,12 @@ fn enumerate_root_pairs_for_frame_with_caller_sp(
   Ok(
     pairs
       .into_iter()
-      .map(|(base_slot, derived_slot)| (base_slot as *mut usize, derived_slot as *mut usize))
+      .map(|(base_slot, derived_slot)| {
+        (
+          base_slot as usize as *mut usize,
+          derived_slot as usize as *mut usize,
+        )
+      })
       .collect(),
   )
 }

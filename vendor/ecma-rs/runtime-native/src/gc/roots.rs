@@ -85,6 +85,10 @@ impl SimpleRememberedSet {
     //
     // SAFETY: `obj` must point to the start of a valid GC-managed object.
     let header = unsafe { &*(obj as *const super::ObjHeader) };
+    debug_assert!(
+      !header.is_forwarded(),
+      "attempted to remember a forwarded (nursery) object"
+    );
     if !header.set_remembered_idempotent() {
       return;
     }

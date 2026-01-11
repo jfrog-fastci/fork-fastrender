@@ -90,6 +90,8 @@ fn write_barrier_uses_updateable_young_range() {
   }
   assert!(young_a.header.is_remembered());
 
-  // IMPORTANT: clear global remset before we drop the fake objects (it contains raw pointers).
+  // IMPORTANT: clear global remset before we drop the fake objects (it contains raw pointers). This
+  // keeps later tests (e.g. `generational_model`) from seeing stale pointers while rebuilding the
+  // remembered set.
   runtime_native::clear_write_barrier_state_for_tests();
 }
