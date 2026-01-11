@@ -12,7 +12,7 @@ The repository includes a minimal working fixture:
 That fixture:
 
 1. Assembles with `llvm-as-18` with full verification.
-2. Compiles with `llc-18 -filetype=obj` to an object containing a
+2. Compiles with `llc-18` to an object containing a
    `.llvm_stackmaps` section.
 3. Uses `"gc-live"` roots and `gc.relocate` indices in a verifier-correct way.
 
