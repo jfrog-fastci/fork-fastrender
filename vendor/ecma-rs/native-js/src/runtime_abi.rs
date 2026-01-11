@@ -391,13 +391,29 @@ pub fn emit_runtime_call<'ctx>(
   args: &[BasicMetadataValueEnum<'ctx>],
   name: &str,
 ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+  // Don't rely solely on the manually-maintained `gc_ptr_args` metadata; also validate against the
+  // actual call argument types. This makes it hard to accidentally construct an unsound MayGC
+  // runtime call by forgetting to update the registry.
+  let actual_gc_ptr_args = args
+    .iter()
+    .filter(|arg| match arg {
+      BasicMetadataValueEnum::PointerValue(ptr) => ptr.get_type().get_address_space() == gc::gc_address_space(),
+      _ => false,
+    })
+    .count();
+  debug_assert_eq!(
+    actual_gc_ptr_args, spec.gc_ptr_args,
+    "runtime fn spec mismatch for `{}`: spec.gc_ptr_args={} but call has {} ptr addrspace(1) arg(s)",
+    spec.name, spec.gc_ptr_args, actual_gc_ptr_args
+  );
+
   if spec.may_gc
-    && spec.gc_ptr_args > 0
+    && actual_gc_ptr_args > 0
     && spec.arg_rooting != ArgRootingPolicy::RuntimeRootsPointers
   {
     return Err(RuntimeCallError::MayGcWithGcPointerArgs {
       name: spec.name,
-      gc_ptr_args: spec.gc_ptr_args,
+      gc_ptr_args: actual_gc_ptr_args,
     });
   }
 
