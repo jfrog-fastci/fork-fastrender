@@ -14,7 +14,8 @@
 //! ## Concurrency
 //! The runtime is process-global (a singleton). Driving it is therefore **single-driver**:
 //!
-//! - Only one thread may be inside `rt_async_poll_legacy` (or other driving entrypoints) at a time.
+//! - Only one thread may be inside `rt_async_poll`/`rt_async_poll_legacy` (or other driving
+//!   entrypoints) at a time.
 //! - If a second thread attempts to drive concurrently, the process aborts (fail-fast).
 //! - Re-entrant drive attempts on the same thread are treated as a no-op and return `false`.
 
