@@ -63,3 +63,36 @@
   parallelizable: false
   idempotent: true
   deterministic: false
+
+- name: node:timers/promises.setTimeout
+  aliases:
+    - timers/promises.setTimeout
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:timers/promises.setImmediate
+  aliases:
+    - timers/promises.setImmediate
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:timers/promises.setInterval
+  aliases:
+    - timers/promises.setInterval
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
