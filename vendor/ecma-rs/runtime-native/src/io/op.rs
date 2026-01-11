@@ -425,6 +425,41 @@ mod tests {
   }
 
   #[test]
+  fn pin_backing_store_range_charges_alloc_len_for_adopted_vec_capacity() {
+    let alloc = GlobalBackingStoreAllocator::default();
+
+    // Construct an ArrayBuffer from a Vec that intentionally has len << capacity. When we can adopt
+    // the Vec allocation without copying, `BackingStore::alloc_len()` should reflect `capacity`, and
+    // I/O accounting must charge that full allocation (even if we only pin a 1-byte range).
+    let (buf, store) = (0..128)
+      .find_map(|_| {
+        let mut bytes = Vec::with_capacity(1024);
+        bytes.push(0u8);
+        let buf = ArrayBuffer::from_bytes_in(&alloc, bytes).ok()?;
+        let store = buf.backing_store_handle()?;
+        (store.alloc_len() > buf.byte_len()).then_some((buf, store))
+      })
+      .expect("failed to construct an adopted Vec-backed store with alloc_len > byte_len");
+
+    let alloc_len = store.alloc_len();
+    let byte_len = buf.byte_len();
+    assert!(alloc_len > byte_len);
+
+    // Global limit large enough for the visible range but smaller than the retained allocation.
+    let limiter = limiter_with_max_bytes(byte_len);
+    assert_eq!(
+      IoOp::pin_backing_store_range(&limiter, store.clone(), 0..1).unwrap_err(),
+      IoLimitError::LimitExceeded("max pinned bytes")
+    );
+
+    let ok_limiter = limiter_with_max_bytes(alloc_len);
+    let op = IoOp::pin_backing_store_range(&ok_limiter, store.clone(), 0..1).unwrap();
+    assert_eq!(ok_limiter.counters().pinned_bytes_current, alloc_len);
+    drop(op);
+    assert_eq!(ok_limiter.counters().pinned_bytes_current, 0);
+  }
+
+  #[test]
   fn pin_vectored_dedupes_backing_store_for_limiter_and_pins_once() {
     let alloc = GlobalBackingStoreAllocator::default();
     let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
