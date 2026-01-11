@@ -18,12 +18,15 @@ fn run_snap_with_targets(targets_x: Vec<f32>, scroll_x: f32) -> fastrender::scro
       behavior: ScrollBehavior::Auto,
       snap_x: true,
       snap_y: false,
+      axis_is_inline_for_x: true,
+      axis_is_inline_for_y: false,
       padding_x: (0.0, 0.0),
       padding_y: (0.0, 0.0),
       scroll_bounds: Rect::from_xywh(0.0, 0.0, 300.0, 100.0),
       targets_x: targets_x
         .into_iter()
         .map(|pos| ScrollSnapTarget {
+          box_id: None,
           position: pos,
           stop: ScrollSnapStop::Normal,
         })
@@ -75,4 +78,3 @@ fn scroll_snap_tie_breaking_is_order_independent() {
     reverse.state.viewport.x
   );
 }
-

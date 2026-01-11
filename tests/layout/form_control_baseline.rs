@@ -1,5 +1,6 @@
 use fastrender::style::display::Display;
 use fastrender::style::types::Appearance;
+use fastrender::text::caret::CaretAffinity;
 use fastrender::text::font_db::FontConfig;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_tree::{
@@ -160,6 +161,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
         size_attr: None,
         kind: TextControlKind::Plain,
         caret: 0,
+        caret_affinity: CaretAffinity::Downstream,
         selection: None,
       },
     ),
@@ -172,6 +174,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
         rows: None,
         cols: None,
         caret: 0,
+        caret_affinity: CaretAffinity::Downstream,
         selection: None,
       },
     ),
@@ -260,6 +263,7 @@ fn inline_baseline_accounts_for_centered_form_control_text() {
         size_attr: None,
         kind: TextControlKind::Plain,
         caret: 0,
+        caret_affinity: CaretAffinity::Downstream,
         selection: None,
       },
     ),
@@ -291,6 +295,7 @@ fn inline_baseline_accounts_for_centered_form_control_text() {
       rows: None,
       cols: None,
       caret: 0,
+      caret_affinity: CaretAffinity::Downstream,
       selection: None,
     },
   )];
