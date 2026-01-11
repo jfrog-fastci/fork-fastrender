@@ -40,6 +40,37 @@ fn bigint_to_f64(value: &BigInt) -> f64 {
   })
 }
 
+fn bigint_from_integral_f64(value: f64) -> BigInt {
+  debug_assert!(value.is_finite());
+  debug_assert!(value.trunc() == value);
+
+  if value == 0.0 {
+    return BigInt::from(0);
+  }
+
+  let bits = value.to_bits();
+  let sign = (bits >> 63) != 0;
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & ((1u64 << 52) - 1);
+
+  // Subnormals are always in (-1, 1), so the only integral subnormal is 0.0 (handled above).
+  debug_assert!(exp_bits != 0);
+
+  let exp = exp_bits - 1023;
+  let mantissa = frac_bits | (1u64 << 52);
+  // `mantissa` is interpreted with 52 fractional bits.
+  let shift = exp - 52;
+
+  let mut result = BigInt::from(mantissa);
+  if shift >= 0 {
+    result <<= shift as usize;
+  } else {
+    result >>= (-shift) as usize;
+  }
+
+  if sign { -result } else { result }
+}
+
 fn parse_int_digits_to_bigint(digits: &str, radix: u32) -> Option<BigInt> {
   if digits.is_empty() || digits.contains('_') {
     return None;
@@ -80,6 +111,47 @@ pub fn parse_bigint(raw: &str) -> Option<BigInt> {
 
 pub fn coerce_bigint_to_num(v: &BigInt) -> f64 {
   bigint_to_f64(v)
+}
+
+fn bigint_number_loose_eq(big: &BigInt, num: f64) -> bool {
+  // https://tc39.es/ecma262/multipage/abstract-operations.html#sec-islooselyequal
+  // BigInt/Number equality uses `BigInt::equal`:
+  // - NaN / ±∞ => false
+  // - Non-integer numbers => false
+  // - Otherwise compare with the *exact* integer value represented by the IEEE-754 double.
+  if !num.is_finite() {
+    return false;
+  }
+  if num.trunc() != num {
+    return false;
+  }
+  big == &bigint_from_integral_f64(num)
+}
+
+fn bigint_number_cmp(big: &BigInt, num: f64) -> Option<Ordering> {
+  if num.is_nan() {
+    return None;
+  }
+  if num.is_infinite() {
+    return Some(if num.is_sign_positive() {
+      Ordering::Less
+    } else {
+      Ordering::Greater
+    });
+  }
+
+  if num.trunc() == num {
+    return Some(big.cmp(&bigint_from_integral_f64(num)));
+  }
+
+  // `num` is finite and non-integral. Since `big` is an integer, `big < num` is equivalent to
+  // `big <= floor(num)`.
+  let floor = bigint_from_integral_f64(num.floor());
+  Some(if big <= &floor {
+    Ordering::Less
+  } else {
+    Ordering::Greater
+  })
 }
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number#number_coercion
@@ -227,6 +299,8 @@ pub fn js_cmp(a: &Const, b: &Const) -> Option<Ordering> {
     (Str(a), BigInt(b)) => parse_bigint(a).map(|a| a.cmp(b)),
     (BigInt(a), Str(b)) => parse_bigint(b).map(|b| a.cmp(&b)),
     (BigInt(a), BigInt(b)) => Some(a.cmp(b)),
+    (BigInt(a), b) => bigint_number_cmp(a, coerce_to_num(b)),
+    (a, BigInt(b)) => bigint_number_cmp(b, coerce_to_num(a)).map(Ordering::reverse),
     (a, b) => {
       // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-lessThan
       let a = coerce_to_num(a);
@@ -266,8 +340,8 @@ pub fn js_loose_eq(a: &Const, b: &Const) -> bool {
     (Str(l), BigInt(r)) => parse_bigint(l).is_some_and(|l| &l == r),
     (Bool(l), r) => js_loose_eq(&Num(JN(*l as u8 as f64)), r),
     (l, Bool(r)) => js_loose_eq(l, &Num(JN(*r as u8 as f64))),
-    (BigInt(l), Num(r)) => r.0.is_finite() && coerce_bigint_to_num(l) == r.0,
-    (Num(l), BigInt(r)) => l.0.is_finite() && l.0 == coerce_bigint_to_num(r),
+    (BigInt(l), Num(r)) => bigint_number_loose_eq(l, r.0),
+    (Num(l), BigInt(r)) => bigint_number_loose_eq(r, l.0),
     _ => false,
   }
 }

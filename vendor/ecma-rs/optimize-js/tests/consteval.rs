@@ -50,6 +50,30 @@ fn bigint_and_string_comparisons_follow_string_to_bigint() {
 }
 
 #[test]
+fn bigint_and_number_comparisons_follow_spec_without_rounding() {
+  // 9007199254740993 is not exactly representable as f64 (it rounds to 2^53).
+  let rounded = 9007199254740993.0_f64;
+  assert_eq!(rounded, 9007199254740992.0);
+
+  let bigint = ConstBigInt(BigInt::from(9007199254740993i64));
+  let num = ConstNum(JN(rounded));
+  assert!(
+    !js_loose_eq(&bigint, &num),
+    "BigInt == Number should compare against the exact numeric value, not a rounded BigInt->f64 conversion"
+  );
+  assert_eq!(js_cmp(&bigint, &num), Some(Ordering::Greater));
+  assert_eq!(js_cmp(&num, &bigint), Some(Ordering::Less));
+
+  let exact_bigint = ConstBigInt(BigInt::from(9007199254740992i64));
+  let exact_num = ConstNum(JN(9007199254740992.0));
+  assert!(js_loose_eq(&exact_bigint, &exact_num));
+
+  assert_eq!(js_cmp(&ConstBigInt(BigInt::from(3)), &ConstNum(JN(3.2))), Some(Ordering::Less));
+  assert_eq!(js_cmp(&ConstNum(JN(3.2)), &ConstBigInt(BigInt::from(3))), Some(Ordering::Greater));
+  assert!(!js_loose_eq(&ConstBigInt(BigInt::from(3)), &ConstNum(JN(3.2))));
+}
+
+#[test]
 fn bigint_truthiness_follows_spec() {
   assert!(!coerce_to_bool(&ConstBigInt(BigInt::from(0))));
   assert!(coerce_to_bool(&ConstBigInt(BigInt::from(1))));
