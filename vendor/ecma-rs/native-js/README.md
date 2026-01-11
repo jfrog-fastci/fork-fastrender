@@ -311,6 +311,16 @@ module. This is a good first step when debugging LLVM environment issues:
 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 ```
 
+### Run the native pipeline smoke tests
+
+The `native-js` workspace also contains `native-js-cli`, which exercises the
+current minimal IR emitter end-to-end (TS → LLVM IR → `clang` → run):
+
+```bash
+# From repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js-cli
+```
+
 ### Emit IR and run the verifier
 
 Once real codegen exists, the fastest debug loop is usually:

@@ -166,3 +166,15 @@ Exit codes:
 
 `native-js-cli` currently takes a single input file and does not load
 `tsconfig.json` or perform module resolution.
+
+## Tests
+
+`native-js-cli` has a small integration test suite that compiles and runs tiny
+programs exercising the builtin lowering.
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js-cli
+```
+
+These tests require a working LLVM 18 toolchain on `PATH` (for `clang`).
