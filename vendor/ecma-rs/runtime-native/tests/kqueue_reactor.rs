@@ -198,12 +198,20 @@ fn wake_interrupts_poll() {
     let _ = tx.send(());
   });
 
-  let deadline = Instant::now() + Duration::from_secs(1);
+  // Wait until the polling thread is actually blocked inside `kevent` (not just briefly entering
+  // and immediately waking due to a pending wake signal).
+  let deadline = Instant::now() + Duration::from_secs(5);
   loop {
     if async_rt::debug_in_epoll_wait() {
-      break;
+      std::thread::sleep(Duration::from_millis(10));
+      if async_rt::debug_in_epoll_wait() {
+        break;
+      }
     }
-    assert!(Instant::now() < deadline, "poll thread did not block in time");
+    assert!(
+      Instant::now() < deadline,
+      "poll thread did not enter reactor wait syscall in time"
+    );
     std::thread::yield_now();
   }
 
