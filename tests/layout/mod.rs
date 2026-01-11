@@ -204,6 +204,7 @@ mod fragmentation_axes;
 mod fragmentation_writing_mode_invariance;
 mod fragmentation_widows_orphans;
 mod grid_abspos_static_position;
+mod grid_abspos_containing_block_percent_width;
 mod grid_abspos_auto_static_position;
 mod grid_abspos_negative_line_counts_from_explicit_grid;
 mod grid_abspos_autorepeat_named_lines;
