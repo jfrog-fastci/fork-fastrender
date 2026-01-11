@@ -958,9 +958,11 @@ struct EffectsDetailsRaw {
   nondeterministic: Option<bool>,
 
   #[serde(default)]
+  #[serde(alias = "read_global")]
   reads_global: Option<bool>,
 
   #[serde(default)]
+  #[serde(alias = "write_global")]
   writes_global: Option<bool>,
 }
 
@@ -1770,6 +1772,24 @@ effects:
   template: pure
   reads_global: true
   writes_global: true
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
+  }
+
+  #[test]
+  fn effects_bool_fields_accept_singular_global_aliases() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  read_global: true
+  write_global: true
 purity: Impure
 "#;
     let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
