@@ -337,21 +337,43 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
       return next;
     };
 
-    // Find the defining instruction for the boolean condition value.
+    // Find the defining instruction for the boolean condition value. We allow a
+    // single `!` indirection so patterns like `if (!(x == null))` still narrow.
+    let mut negate = false;
+    let mut probe_var = *cond_var;
     let mut cmp: Option<(&Arg, BinOp, &Arg)> = None;
-    for inst in pred_block.iter().rev() {
-      if inst.t == InstTyp::CondGoto {
-        continue;
+    for _ in 0..2 {
+      let mut found_def = false;
+      for inst in pred_block.iter().rev() {
+        if inst.t == InstTyp::CondGoto {
+          continue;
+        }
+        if inst.tgts.get(0).copied() != Some(probe_var) {
+          continue;
+        }
+        found_def = true;
+        match inst.t {
+          InstTyp::Bin => {
+            let (_tgt, left, op, right) = inst.as_bin();
+            cmp = Some((left, op, right));
+          }
+          InstTyp::Un => {
+            let (_tgt, un_op, arg) = inst.as_un();
+            if un_op == UnOp::Not {
+              if let Arg::Var(v) = arg {
+                probe_var = *v;
+                negate = !negate;
+                continue;
+              }
+            }
+          }
+          _ => {}
+        }
+        break;
       }
-      if inst.t != InstTyp::Bin {
-        continue;
+      if cmp.is_some() || !found_def {
+        break;
       }
-      if inst.tgts.get(0).copied() != Some(*cond_var) {
-        continue;
-      }
-      let (_tgt, left, op, right) = inst.as_bin();
-      cmp = Some((left, op, right));
-      break;
     }
 
     let Some((left, op, right)) = cmp else {
@@ -388,6 +410,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
       _ => return next,
     };
 
+    let is_true_edge = if negate { !is_true_edge } else { is_true_edge };
     let refine = if is_true_edge { true_refine } else { false_refine };
     let idx = var as usize;
     if let Some(slot) = next.masks.get_mut(idx) {
@@ -524,6 +547,34 @@ mod tests {
     assert_eq!(result.entry_state(1).is_reachable(), false);
     assert_eq!(result.mask_of_var_at_entry(1, 0), NullabilityMask::BOTTOM);
     assert_eq!(result.mask_of_var_at_entry(2, 0), NullabilityMask::NULL);
+  }
+
+  #[test]
+  fn narrows_through_not_of_null_test() {
+    // %0 = unknown; %1 = (%0 == null); %2 = !%1; if %2 goto 1 else 2
+    let cfg = build_cfg(
+      &[(0, 1), (0, 2)],
+      &[
+        (
+          0,
+          vec![
+            Inst::unknown_load(0, "x".to_string()),
+            Inst::bin(1, Arg::Var(0), BinOp::LooseEq, Arg::Const(Const::Null)),
+            Inst::un(2, UnOp::Not, Arg::Var(1)),
+            Inst::cond_goto(Arg::Var(2), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+    );
+
+    let result = calculate_nullability(&cfg);
+    assert_eq!(result.mask_of_var_at_entry(1, 0), NullabilityMask::OTHER);
+    assert_eq!(
+      result.mask_of_var_at_entry(2, 0),
+      NullabilityMask::NULL | NullabilityMask::UNDEF
+    );
   }
 
   #[test]

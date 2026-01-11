@@ -2,7 +2,7 @@ use crate::analysis::dataflow::BlockState;
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
 use crate::cfg::cfg::Cfg;
 use crate::dom::Dom;
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp};
+use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use ahash::{HashMap, HashSet};
 use num_traits::ToPrimitive;
 use parse_js::num::JsNumber;
@@ -606,20 +606,52 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
     let Arg::Var(cond_var) = cond else {
       return state.clone();
     };
- 
-    let Some((x, op, c)) = Self::find_cond_compare(from_block, cond_var) else {
+
+    // Support `if (!(x < c))` by looking through a chain of `!` operators on the
+    // condition variable.
+    let mut probe_var = cond_var;
+    let mut negate = false;
+    let mut resolved: Option<(u32, BinOp, i64)> = None;
+    for _ in 0..4 {
+      if let Some((x, op, c)) = Self::find_cond_compare(from_block, probe_var) {
+        resolved = Some((x, op, c));
+        break;
+      }
+      let Some(def) = from_block
+        .iter()
+        .rev()
+        .find(|inst| inst.tgts.first() == Some(&probe_var))
+      else {
+        break;
+      };
+      if def.t != InstTyp::Un {
+        break;
+      }
+      let (_tgt, op, arg) = def.as_un();
+      if op != UnOp::Not {
+        break;
+      }
+      let Arg::Var(inner) = arg else {
+        break;
+      };
+      probe_var = *inner;
+      negate = !negate;
+    }
+
+    let Some((x, op, c)) = resolved else {
       return state.clone();
     };
- 
+
     let is_true_edge = to == t;
     let is_false_edge = to == f;
     if !is_true_edge && !is_false_edge {
       return state.clone();
     }
- 
+    let is_true_edge = if negate { !is_true_edge } else { is_true_edge };
+
     let mut next = state.clone();
     let cur = next.get_var(x);
- 
+
     let constraint = match op {
       BinOp::Lt => {
         if is_true_edge {
@@ -772,7 +804,47 @@ mod tests {
       })
     );
   }
- 
+
+  #[test]
+  fn narrows_on_lt_branch_edges_through_not() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::bin(
+              1,
+              Arg::Var(0),
+              BinOp::Lt,
+              Arg::Const(Const::Num(JsNumber(10.0))),
+            ),
+            Inst::un(2, crate::il::inst::UnOp::Not, Arg::Var(1)),
+            Inst::cond_goto(Arg::Var(2), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+      &[(0, 1), (0, 2)],
+    );
+
+    let result = analyze_ranges(&cfg);
+    assert_eq!(
+      result.var_at_entry(1, 0),
+      Some(IntRange::Range {
+        lo: Bound::Finite(10),
+        hi: Bound::PosInf
+      })
+    );
+    assert_eq!(
+      result.var_at_entry(2, 0),
+      Some(IntRange::Range {
+        lo: Bound::NegInf,
+        hi: Bound::Finite(9)
+      })
+    );
+  }
+
   #[test]
   fn loop_widening_converges() {
     // i0 = 0
