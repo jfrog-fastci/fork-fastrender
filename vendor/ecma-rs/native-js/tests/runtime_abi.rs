@@ -396,6 +396,14 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     has_gc_leaf_attr(fns.rt_keep_alive_gc_ref_gc),
     "expected rt_keep_alive_gc_ref_gc to be marked as a gc-leaf-function:\n{ir}"
   );
+  assert!(
+    has_gc_leaf_attr(fns.rt_keep_alive_gc_ref_gc),
+    "rt_keep_alive_gc_ref_gc wrapper must be marked gc-leaf-function"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_keep_alive_gc_ref),
+    "rt_keep_alive_gc_ref raw symbol must be marked gc-leaf-function"
+  );
 
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
   assert!(
