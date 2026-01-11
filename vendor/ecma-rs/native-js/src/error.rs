@@ -52,6 +52,11 @@ pub enum NativeJsError {
   #[error("module resolution failed: {from} -> {specifier}")]
   UnresolvedImport { from: String, specifier: String },
 
+  #[error(
+    "unsupported import syntax: {from} -> {specifier} (only `import {{ ... }} from` is supported)"
+  )]
+  UnsupportedImportSyntax { from: String, specifier: String },
+
   #[error("missing export `{export}` in {file}")]
   MissingExport { file: String, export: String },
 

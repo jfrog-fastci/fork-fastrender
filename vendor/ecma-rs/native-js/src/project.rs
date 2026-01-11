@@ -128,7 +128,7 @@ fn collect_module_info(
 
     // Only `import { foo } from "..."` is supported for now.
     if es.default.is_some() || es.namespace.is_some() {
-      return Err(NativeJsError::UnresolvedImport {
+      return Err(NativeJsError::UnsupportedImportSyntax {
         from: from_key.to_string(),
         specifier: es.specifier.value.clone(),
       });
