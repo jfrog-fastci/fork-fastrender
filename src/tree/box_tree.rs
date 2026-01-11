@@ -61,7 +61,7 @@ pub enum CrossOriginAttribute {
 
 /// Parsed `decoding` attribute hint for `<img>` elements.
 ///
-/// https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-decoding
+/// <https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-decoding>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageDecodingAttribute {
   /// `decoding` missing/invalid/`auto`.
@@ -88,7 +88,7 @@ impl ImageDecodingAttribute {
 
 /// Parsed `loading` attribute hint for `<img>` elements.
 ///
-/// https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-loading
+/// <https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-loading>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ImageLoadingAttribute {
   /// `loading` missing/invalid/`auto`.
@@ -260,7 +260,7 @@ pub enum FormControlKind {
     /// Optional selection range in character indices (start, end), where `start < end`.
     selection: Option<(usize, usize)>,
   },
-  /// Multiline control (<textarea>)
+  /// Multiline control (`<textarea>`)
   TextArea {
     /// Raw text content
     value: String,
@@ -281,7 +281,7 @@ pub enum FormControlKind {
   },
   /// Button-like control (`<input type=button|submit|reset>`)
   Button { label: String },
-  /// Selection control (<select>)
+  /// Selection control (`<select>`)
   Select(SelectControl),
   /// Checkbox or radio input
   Checkbox {

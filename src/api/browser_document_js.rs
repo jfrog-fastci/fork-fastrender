@@ -196,7 +196,7 @@ impl BrowserDocumentJs {
   }
 
   /// Mutable access to the underlying event loop, intended for seeding initial tasks (e.g. HTML
-  /// script execution tasks) before calling [`run_until_stable`].
+  /// script execution tasks) before calling [`Self::run_until_stable`].
   ///
   /// Note: inside task callbacks, use the `&mut EventLoop` passed to the callback instead of
   /// attempting to reach into the host's stored event loop.

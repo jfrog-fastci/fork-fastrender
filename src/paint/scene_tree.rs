@@ -16,7 +16,7 @@ pub struct StackingNode {
 /// A child of a stacking context in paint order.
 ///
 /// Primitive runs contain only non-stacking-context items (including other push/pop
-/// effects like clips or opacity), while [`ChildContext`] holds a nested stacking context.
+/// effects like clips or opacity), while [`NodeChild::ChildContext`] holds a nested stacking context.
 #[derive(Debug, Clone)]
 pub enum NodeChild {
   PrimitiveRun(Vec<DisplayItem>),

@@ -5,7 +5,7 @@
 //! not yet wired into CSS animation sampling.
 //!
 //! References:
-//! - Web Animations 1: https://www.w3.org/TR/web-animations-1/
+//! - Web Animations 1: <https://www.w3.org/TR/web-animations-1/>
 //!   - "Document timelines"
 //!   - "Calculating the current time of an animation" (Overview.bs §2.4)
 //!   - "Setting the playback rate"

@@ -693,7 +693,7 @@ pub struct FastRenderConfig {
   /// Note: this does not block cross-origin iframe/embed document navigation.
   pub same_origin_subresources: bool,
 
-  /// Additional origins allowed when [`same_origin_subresources`] is enabled.
+  /// Additional origins allowed when `same_origin_subresources` is enabled.
   pub allowed_subresource_origins: Vec<DocumentOrigin>,
 
   /// Compatibility profile controlling opt-in site-specific behaviors.

@@ -187,9 +187,9 @@ where
 /// plumbing (it is not a production browser pipeline). It wires together:
 /// - the streaming HTML parser (`StreamingHtmlParser`) via [`ClassicScriptPipeline`]
 /// - parse-time base URL timing (`<base href>` resolution at script discovery time)
-/// - the action-based [`ScriptScheduler`] classic-script model (`async` / `defer` / blocking)
+/// - the action-based [`crate::js::script_scheduler::ScriptScheduler`] classic-script model (`async` / `defer` / blocking)
 /// - [`EventLoop`] tasks + microtasks (microtask checkpoint after scripts)
-/// - [`ScriptOrchestrator`] `Document.currentScript` bookkeeping (via [`CurrentScriptHost`])
+/// - [`crate::js::orchestrator::ScriptOrchestrator`] `Document.currentScript` bookkeeping (via [`CurrentScriptHost`])
 pub fn parse_and_run_classic_scripts<F, E>(
   html: &str,
   document_url: Option<&str>,

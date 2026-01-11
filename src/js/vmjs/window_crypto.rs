@@ -11,7 +11,7 @@
 //! are stable. We implement a per-realm deterministic PRNG using **xorshift64\***, seeded from a
 //! stable hash of `WindowRealmConfig.document_url`.
 //!
-//! The PRNG state is stored in [`crate::js::window_realm::WindowRealmUserData`] so each realm has an
+//! The PRNG state is stored in `WindowRealmUserData` so each realm has an
 //! isolated RNG stream.
 
 use crate::js::window_realm::WindowRealmUserData;

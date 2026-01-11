@@ -104,7 +104,7 @@ fn global_data_desc(value: Value) -> PropertyDescriptor {
 /// Installs `Date.now()` and `performance.now()` into a `vm-js` realm.
 ///
 /// ## Determinism
-/// The returned values are derived solely from `clock.now()`. Tests can pass a [`VirtualClock`]
+/// The returned values are derived solely from `clock.now()`. Tests can pass a [`crate::js::VirtualClock`]
 /// (via `Arc<dyn Clock>`) to ensure these APIs do not observe wall-clock time.
 pub fn install_time_bindings(
   vm: &mut Vm,

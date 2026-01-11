@@ -1321,7 +1321,7 @@ impl FragmentNode {
   /// Child fragments remain in their existing local coordinate space; this
   /// preserves relative positioning within the subtree. This returns a new
   /// fragment and clones the full subtree; when shifting an owned fragment,
-  /// prefer [`translate_root_in_place`] to avoid the extra clone.
+  /// prefer [`Self::translate_root_in_place`] to avoid the extra clone.
   ///
   /// # Examples
   ///
@@ -1349,7 +1349,7 @@ impl FragmentNode {
   /// This updates the fragment's own bounds and logical override (if present) without cloning or
   /// touching children, preserving their local coordinate space. When the fragment represents a
   /// running anchor, its snapshot is translated recursively to match the root movement. Starting
-  /// style snapshots are cleared to mirror [`translate`]'s cloning semantics.
+  /// style snapshots are cleared to mirror [`Self::translate`]'s cloning semantics.
   pub fn translate_root_in_place(&mut self, offset: Point) {
     self.bounds = self.bounds.translate(offset);
     if let Some(logical) = self.logical_override {
@@ -1368,7 +1368,7 @@ impl FragmentNode {
   /// Translates this fragment and all descendants by the given offset.
   ///
   /// This applies the offset in absolute space, adjusting every fragment in the
-  /// subtree. Use sparingly; most callers should prefer [`translate`], which
+  /// subtree. Use sparingly; most callers should prefer [`Self::translate`], which
   /// keeps child coordinates relative to their parent.
   pub fn translate_subtree_absolute(&self, offset: Point) -> Self {
     record_fragment_traversal(self.node_count());

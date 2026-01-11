@@ -1,6 +1,6 @@
 //! `requestAnimationFrame` / `cancelAnimationFrame` bindings for a `Window`-like `vm-js` realm.
 //!
-//! These are backed by FastRender's [`EventLoop`] animation-frame queue.
+//! These are backed by FastRender's [`crate::js::EventLoop`] animation-frame queue.
 //!
 //! ## Safety / determinism
 //! Like timers, string handlers are rejected to avoid string-eval and keep behavior deterministic.

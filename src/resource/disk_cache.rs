@@ -72,7 +72,7 @@ pub struct DiskCacheConfig {
   /// partition/normalize.
   ///
   /// When `false` (default), any response that includes `Vary: *` or a header name outside the
-  /// small allowlist in [`super::vary_is_cacheable`] is treated as uncacheable and will not be
+  /// small allowlist in `super::vary_is_cacheable` is treated as uncacheable and will not be
   /// persisted.
   pub allow_unhandled_vary: bool,
   /// Whether to allow persisting disk cache entries while a render deadline with a timeout

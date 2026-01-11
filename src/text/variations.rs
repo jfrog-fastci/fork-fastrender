@@ -384,8 +384,8 @@ pub fn variation_hash(variations: &[Variation]) -> u64 {
 
 /// Normalized variation coordinates for a font face.
 ///
-/// [`ordered`] follows the axis order returned by [`Face::variation_axes`], while
-/// [`by_tag`] allows quick lookups by axis tag.
+/// `ordered` follows the axis order returned by [`Face::variation_axes`], while
+/// `by_tag` allows quick lookups by axis tag.
 #[derive(Debug, Clone, Default)]
 pub struct NormalizedCoords {
   pub ordered: Vec<f32>,

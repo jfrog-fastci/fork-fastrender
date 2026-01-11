@@ -2837,7 +2837,7 @@ pub struct RubyLineSpacing {
   pub gap: f32,
 }
 
-/// A ruby inline item representing a <ruby> container
+/// A ruby inline item representing a `<ruby>` container
 #[derive(Debug, Clone)]
 pub struct RubyItem {
   /// Segments that compose the ruby container

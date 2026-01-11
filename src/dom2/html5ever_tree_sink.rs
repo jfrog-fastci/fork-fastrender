@@ -39,7 +39,7 @@ impl ElemName for Dom2ElemName {
   }
 }
 
-/// html5ever [`TreeSink`] that incrementally builds a live [`dom2::Document`].
+/// html5ever [`TreeSink`] that incrementally builds a live [`Document`].
 ///
 /// Notes:
 /// - Comments, processing instructions, and doctypes are intentionally **not** materialized as

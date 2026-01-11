@@ -9285,7 +9285,7 @@ pub struct CachingFetcherConfig {
   /// partition/normalize.
   ///
   /// When `false` (default), any response that includes `Vary: *` or a header name outside the
-  /// small allowlist in [`vary_is_cacheable`] is treated as uncacheable and will not be stored.
+  /// small allowlist in `vary_is_cacheable` is treated as uncacheable and will not be stored.
   pub allow_unhandled_vary: bool,
   /// Policy controlling whether stale cached entries are served without revalidation when a
   /// render deadline is active.

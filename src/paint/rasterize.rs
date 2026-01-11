@@ -156,7 +156,7 @@ pub struct BoxShadow {
   /// Blur radius as specified by CSS `box-shadow` (in device pixels).
   ///
   /// The rasterizer converts this to a gaussian sigma when applying the blur kernel; see
-  /// [`box_shadow_blur_radius_to_sigma`].
+  /// `box_shadow_blur_radius_to_sigma`.
   pub blur_radius: f32,
   /// Spread radius (expands/contracts shadow)
   pub spread_radius: f32,

@@ -96,7 +96,7 @@ pub trait ClassicScriptPipelineHost: CurrentScriptHost + DomHost + Sized + 'stat
   }
 }
 
-/// Progress result for [`ClassicScriptPipeline::pump_parser`].
+/// Progress result for a single streaming HTML parser pump step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PumpOutcome {
   /// Parsing is blocked on a parser-blocking external script.

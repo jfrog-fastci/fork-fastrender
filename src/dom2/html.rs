@@ -178,7 +178,7 @@ impl Document {
 
   /// DOM `Element.insertAdjacentHTML(position, string)` for a `dom2` element.
   ///
-  /// Spec: https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-insertadjacenthtml
+  /// Spec: <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-insertadjacenthtml>
   pub fn insert_adjacent_html(&mut self, element: NodeId, position: &str, html: &str) -> DomResult<()> {
     validate_element_like(self, element)?;
 
@@ -249,7 +249,7 @@ impl Document {
 
   /// DOM `Element.insertAdjacentElement(where, element)` for a `dom2` element.
   ///
-  /// Spec: https://dom.spec.whatwg.org/#dom-element-insertadjacentelement
+  /// Spec: <https://dom.spec.whatwg.org/#dom-element-insertadjacentelement>
   pub fn insert_adjacent_element(
     &mut self,
     element: NodeId,
@@ -264,7 +264,7 @@ impl Document {
 
   /// DOM `Element.insertAdjacentText(where, data)` for a `dom2` element.
   ///
-  /// Spec: https://dom.spec.whatwg.org/#dom-element-insertadjacenttext
+  /// Spec: <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
   pub fn insert_adjacent_text(&mut self, element: NodeId, where_: &str, data: &str) -> DomResult<()> {
     validate_element_like(self, element)?;
     let pos = parse_adjacent_position(where_)?;
@@ -289,7 +289,7 @@ impl Document {
   /// `context_node` (per the HTML spec). Unlike `innerHTML`/`outerHTML`/`insertAdjacentHTML`,
   /// `<script>` elements inside the returned fragment are *not* marked "already started".
   ///
-  /// Spec: https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-range-createcontextualfragment
+  /// Spec: <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-range-createcontextualfragment>
   pub fn create_contextual_fragment(
     &mut self,
     context_node: NodeId,

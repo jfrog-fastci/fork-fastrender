@@ -3875,18 +3875,18 @@ pub enum ListStyleType {
   DisclosureClosed,
   /// Anonymous counter style defined by the CSS Counter Styles `symbols()` function.
   ///
-  /// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+  /// Reference: <https://www.w3.org/TR/css-counter-styles-3/#symbols-function>
   Symbols(SymbolsCounterStyle),
   /// Custom counter style name (via `@counter-style`).
   Custom(String),
-  /// Custom marker string value from list-style-type: "<string>"
+  /// Custom marker string value from list-style-type: `"<string>"`
   String(String),
   None,
 }
 
 /// Symbol algorithm type accepted by the CSS Counter Styles `symbols()` function.
 ///
-/// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+/// Reference: <https://www.w3.org/TR/css-counter-styles-3/#symbols-function>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolsType {
   Cyclic,
@@ -3900,7 +3900,7 @@ pub enum SymbolsType {
 ///
 /// This is used by `list-style-type: symbols(...)`.
 ///
-/// Reference: https://www.w3.org/TR/css-counter-styles-3/#symbols-function
+/// Reference: <https://www.w3.org/TR/css-counter-styles-3/#symbols-function>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolsCounterStyle {
   pub system: SymbolsType,
@@ -4908,7 +4908,7 @@ pub enum ReferenceBox {
 /// and an offset applied after alignment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BackgroundPositionComponent {
-  /// Alignment fraction in the range [0,1] (e.g., 0 = start, 0.5 = center, 1 = end)
+  /// Alignment fraction in the range `0..=1` (e.g., 0 = start, 0.5 = center, 1 = end)
   pub alignment: f32,
   /// Offset applied after alignment; percentages resolve against the remaining space.
   pub offset: Length,

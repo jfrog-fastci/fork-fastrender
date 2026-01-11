@@ -10890,7 +10890,7 @@ pub struct StyledNode {
   pub meter_even_less_good_value_styles: Option<Arc<ComputedStyle>>,
   /// Slot this light DOM node is assigned to, if any.
   pub assigned_slot: Option<crate::dom::AssignedSlot>,
-  /// Slotted light DOM node ids assigned to this <slot> element.
+  /// Slotted light DOM node ids assigned to this `<slot>` element.
   pub slotted_node_ids: Vec<usize>,
   pub children: Vec<StyledNode>,
 }
@@ -11112,7 +11112,7 @@ pub struct ContainerQueryInfo {
   pub stuck_mask: u8,
   /// Bitmask describing the scroll snap "snapped" state of this query container.
   ///
-  /// The mask uses [`CQ_SNAPPED_*`] bits to represent snapped axes and their logical mapping.
+  /// The mask uses `CQ_SNAPPED_*` bits to represent snapped axes and their logical mapping.
   pub snapped_mask: u8,
   /// The most recent relative scroll delta for this container.
   ///

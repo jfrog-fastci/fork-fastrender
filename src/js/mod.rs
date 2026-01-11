@@ -326,7 +326,7 @@ pub struct ScriptElementSpec {
   /// Raw `integrity` attribute value (Subresource Integrity) when within a bounded size limit.
   ///
   /// When `integrity_attr_present` is true but this field is `None`, the attribute exceeded
-  /// [`sri::MAX_INTEGRITY_ATTRIBUTE_BYTES`] and must be treated as invalid metadata (the script must
+  /// `sri::MAX_INTEGRITY_ATTRIBUTE_BYTES` and must be treated as invalid metadata (the script must
   /// not execute).
   pub integrity: Option<String>,
   /// Parsed `referrerpolicy` attribute value.

@@ -43,7 +43,7 @@ pub fn request_partitioned_resource_key(
 ///
 /// New bundles should prefer [`request_partitioned_resource_key_v3`], which additionally encodes
 /// `FetchCredentialsMode` so manifest keying matches the in-memory/disk cache partitioning used by
-/// [`CachingFetcher`] / [`DiskCachingFetcher`].
+/// [`crate::resource::CachingFetcher`] / [`crate::resource::disk_cache::DiskCachingFetcher`].
 pub fn request_partitioned_resource_key_v2(
   kind: FetchContextKind,
   url: &str,
@@ -68,7 +68,7 @@ pub fn request_partitioned_resource_key_v2(
 /// and request [`FetchCredentialsMode`].
 ///
 /// This is the preferred encoding for new bundles because it matches the cache partitioning logic
-/// used by [`CachingFetcher`] / [`DiskCachingFetcher`].
+/// used by [`crate::resource::CachingFetcher`] / [`crate::resource::disk_cache::DiskCachingFetcher`].
 pub fn request_partitioned_resource_key_v3(
   kind: FetchContextKind,
   url: &str,

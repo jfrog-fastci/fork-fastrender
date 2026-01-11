@@ -171,10 +171,10 @@ pub struct ColumnInfo {
   /// Source column index prior to any filtering (0-based)
   pub source_index: usize,
 
-  /// Author-specified minimum width (from `min-width` on <col>/<colgroup>)
+  /// Author-specified minimum width (from `min-width` on `<col>`/`<colgroup>`)
   pub author_min_width: Option<crate::style::values::Length>,
 
-  /// Author-specified maximum width (from `max-width` on <col>/<colgroup>)
+  /// Author-specified maximum width (from `max-width` on `<col>`/`<colgroup>`)
   pub author_max_width: Option<crate::style::values::Length>,
 
   /// Font size to resolve relative column lengths (em/rem)

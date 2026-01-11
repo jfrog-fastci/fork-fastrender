@@ -200,7 +200,7 @@ pub struct VmJsHostHooksPayload {
 }
 
 impl VmJsHostHooksPayload {
-  /// Stores the active `VmHost` context (for later recovery via [`vm_host_mut`]).
+  /// Stores the active `VmHost` context (for later recovery via [`Self::vm_host_mut`]).
   #[inline]
   pub fn set_vm_host(&mut self, host: &mut dyn VmHost) {
     // `VmHost` is only implemented for `T: Any`, and `Any` requires `'static`, so it is safe to

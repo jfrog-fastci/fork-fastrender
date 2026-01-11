@@ -1,7 +1,7 @@
 //! Fetch a single page and render it to an image.
 //!
 //! Examples:
-//!   fetch_and_render --timeout 120 --viewport 1200x800 --dpr 2.0 https://www.example.com output.png
+//!   fetch_and_render --timeout 120 --viewport 1200x800 --dpr 2.0 <https://www.example.com> output.png
 
 #![allow(clippy::io_other_error)]
 #![allow(clippy::redundant_closure)]
@@ -111,7 +111,7 @@ struct Args {
   /// URL to fetch and render
   url: String,
 
-  /// Output file path (defaults to <url>.<format>); parent directories are created automatically
+  /// Output file path (defaults to `<url>.<format>`); parent directories are created automatically
   output: Option<String>,
 
   /// Viewport width (deprecated, use --viewport)
