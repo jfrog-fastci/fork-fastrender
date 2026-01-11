@@ -3966,10 +3966,13 @@ fn collect_forced_boundaries_with_axes_internal(
   page_progression_is_ltr: bool,
 ) -> Vec<ForcedBoundary> {
   fn is_forced_page_break(between: BreakBetween) -> bool {
+    // Note: `BreakBetween::Always` is intentionally excluded here. `always` represents a forced
+    // break in the *immediately containing* fragmentation context and should not be promoted to a
+    // page/side boundary in nested contexts like paged multicol (where it corresponds to a column
+    // break).
     matches!(
       between,
-      BreakBetween::Always
-        | BreakBetween::Page
+      BreakBetween::Page
         | BreakBetween::Left
         | BreakBetween::Right
         | BreakBetween::Recto
