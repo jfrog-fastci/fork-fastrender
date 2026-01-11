@@ -2,8 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use runtime_native::test_util::TestRuntimeGuard;
-
 fn find_c_compiler() -> Option<String> {
   // Prefer $CC when set (common in CI / cross toolchains).
   if let Ok(cc) = std::env::var("CC") {
@@ -36,8 +34,50 @@ fn workspace_root() -> PathBuf {
     .to_path_buf()
 }
 
-fn cargo_bin() -> String {
-  std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+fn target_dir() -> PathBuf {
+  std::env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| workspace_root().join("target"))
+}
+
+fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
+  let direct = target_dir.join(profile).join("libruntime_native.a");
+  if direct.is_file() {
+    return direct;
+  }
+
+  let deps_dir = target_dir.join(profile).join("deps");
+  let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+  if let Ok(entries) = fs::read_dir(&deps_dir) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        continue;
+      };
+      if !(file_name.starts_with("libruntime_native") && file_name.ends_with(".a")) {
+        continue;
+      }
+
+      let mtime = fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+      match newest {
+        Some((best, _)) if mtime <= best => {}
+        _ => newest = Some((mtime, path)),
+      }
+    }
+  }
+
+  if let Some((_, path)) = newest {
+    return path;
+  }
+
+  panic!(
+    "failed to find runtime-native staticlib at {} (checked {} and {})",
+    target_dir.display(),
+    direct.display(),
+    deps_dir.display()
+  );
 }
 
 #[test]
@@ -52,32 +92,12 @@ fn c_can_link_and_call_runtime_native() {
     return;
   };
 
-  let _rt = TestRuntimeGuard::new();
-
   let tmp = tempfile::tempdir().expect("create temp dir");
-  let build_target_dir = tmp.path().join("cargo-target");
 
-  // Avoid deadlocking on Cargo's target-dir lock: the outer `cargo test` process holds a lock on
-  // its own target directory for the duration of test execution. We build the staticlib into a
-  // separate temp target dir instead.
-  let build = Command::new(cargo_bin())
-    .current_dir(workspace_root())
-    .env("CARGO_TARGET_DIR", &build_target_dir)
-    .arg("build")
-    .arg("-p")
-    .arg("runtime-native")
-    .arg("--release")
-    .status()
-    .expect("build runtime-native staticlib");
-
-  assert!(build.success(), "cargo build failed: {build:?}");
-
-  let staticlib = build_target_dir.join("release").join("libruntime_native.a");
-  assert!(
-    staticlib.exists(),
-    "missing staticlib at {} after build",
-    staticlib.display()
-  );
+  // Use the staticlib produced by the outer `cargo test` build to avoid re-invoking Cargo from
+  // within the test (slow and risks deadlocking on the target-dir lock).
+  let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+  let staticlib = find_staticlib(&target_dir(), profile);
 
   let c_path = tmp.path().join("smoke.c");
   let bin_path = tmp.path().join("smoke");
