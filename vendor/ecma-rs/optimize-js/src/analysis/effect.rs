@@ -306,10 +306,15 @@ mod tests {
   }
 
   #[test]
-  fn return_is_pure() {
-    let cfg = cfg_single_block(vec![Inst::ret(Arg::Const(Const::Undefined))]);
-    let eff = cfg_local_effects(&cfg);
+  fn return_is_pure_and_never_throws() {
+    let inst = Inst::ret(Arg::Const(Const::Undefined));
+    let eff = inst_local_effect(&inst);
     assert!(eff.is_pure());
+    assert_eq!(eff.summary.throws, ThrowBehavior::Never);
+    assert!(eff.reads.is_empty());
+    assert!(eff.writes.is_empty());
+    assert!(!eff.summary.flags.contains(EffectFlags::ALLOCATES));
+    assert!(!eff.unknown);
   }
 
   #[test]
