@@ -153,11 +153,10 @@ pub struct BoxShadow {
   pub offset_x: f32,
   /// Vertical offset (positive = down)
   pub offset_y: f32,
-  /// Gaussian sigma for the blur kernel (in device pixels).
+  /// Blur radius as specified by CSS `box-shadow` (in device pixels).
   ///
-  /// Callers should convert the CSS `box-shadow` blur radius to sigma using
-  /// [`crate::paint::blur::css_shadow_blur_radius_to_sigma`] during display-list construction
-  /// (and then scale to device pixels).
+  /// The rasterizer converts this to a gaussian sigma when applying the blur kernel; see
+  /// [`box_shadow_blur_radius_to_sigma`].
   pub blur_radius: f32,
   /// Spread radius (expands/contracts shadow)
   pub spread_radius: f32,
@@ -169,16 +168,15 @@ pub struct BoxShadow {
 
 /// Returns the gaussian sigma used by the blur implementation.
 ///
-/// FastRender stores `box-shadow` blur radii in sigma space throughout paint (matching
-/// [`crate::paint::blur::css_shadow_blur_radius_to_sigma`]). This helper is retained so call sites
-/// consistently clamp invalid values.
+/// CSS exposes a "blur radius" for `box-shadow`, but the underlying implementation uses a gaussian
+/// blur kernel parameterized by `sigma`. Blink/Skia converts between the two using
+/// `radius * 0.57735 + 0.5` (see [`crate::paint::blur::css_shadow_blur_radius_to_sigma`]).
+///
+/// This helper centralizes that conversion so call sites (paint bounds, display-list renderer,
+/// rasterizer) stay in sync.
 #[inline]
 pub(crate) fn box_shadow_blur_radius_to_sigma(blur_radius: f32) -> f32 {
-  if blur_radius.is_finite() {
-    blur_radius.max(0.0)
-  } else {
-    0.0
-  }
+  crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2436,14 +2434,15 @@ mod tests {
   }
 
   #[test]
-  fn box_shadow_blur_radius_is_sigma() {
+  fn box_shadow_blur_radius_to_sigma_matches_skia() {
     assert_eq!(box_shadow_blur_radius_to_sigma(0.0), 0.0);
     assert_eq!(box_shadow_blur_radius_to_sigma(-1.0), 0.0);
-    assert!((box_shadow_blur_radius_to_sigma(10.0) - 10.0).abs() < 1e-6);
+    let expected = crate::paint::blur::css_shadow_blur_radius_to_sigma(10.0);
+    assert!((box_shadow_blur_radius_to_sigma(10.0) - expected).abs() < 1e-6);
     assert_eq!(
       box_shadow_blur_radius_to_sigma(f32::NAN),
       0.0,
-      "NaN sigma should clamp to 0"
+      "NaN blur radius should clamp to 0"
     );
   }
 
