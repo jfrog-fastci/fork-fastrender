@@ -462,7 +462,7 @@ pub mod window {
       proto_foo,
       "constructor",
       Value::Object(ctor_foo),
-      global_var_attrs,
+      ctor_link_attrs,
     )?;
     Ok(())
   }

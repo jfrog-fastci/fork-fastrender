@@ -2030,7 +2030,7 @@ fn to_uint32_f64(n: f64) -> u32 {
       .unwrap_or(0);
 
     out.push_str(&format!(
-      "  let slots = [Value::Object({proto_var})];\n  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), global_var_attrs)?;\n",
+      "  let slots = [Value::Object({proto_var})];\n  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), ctor_link_attrs)?;\n",
       snake = to_snake_ident(&iface.name),
       ctor_call_fn = ctor_call_fn,
       construct_expr = construct_expr,
