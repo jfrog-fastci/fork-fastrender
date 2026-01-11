@@ -136,6 +136,11 @@ and recover return addresses.
 
 See [`docs/gc_stack_walking.md`](./docs/gc_stack_walking.md) for details.
 
+For the broader runtime ABI + GC/statepoints integration plan, see:
+
+- [`docs/runtime-native.md`](../docs/runtime-native.md)
+- [`runtime-native/README.md`](../runtime-native/README.md)
+
 ## Diagnostics (codes)
 
 When `native-js` reports user-facing diagnostics, they use stable code strings
