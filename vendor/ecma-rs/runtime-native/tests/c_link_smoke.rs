@@ -112,7 +112,6 @@ static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;
 }
-
 static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   (void)data;
   rt_promise_resolve_legacy(promise, (ValueRef)0);

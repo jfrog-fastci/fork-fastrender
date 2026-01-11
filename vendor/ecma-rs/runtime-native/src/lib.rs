@@ -122,8 +122,16 @@ mod trap;
 // Convenience re-exports of the stable runtime ABI types (single source of truth
 // lives in `runtime-native-abi`).
 pub use runtime_native_abi::{
-  Coroutine, InternedId, PromiseRef, RtParallelForBodyFn, RtShapeDescriptor, RtShapeId, RtTaskFn,
-  StringRef, TaskId,
+  Coroutine as AbiCoroutine,
+  InternedId,
+  PromiseRef,
+  PromiseRef as AbiPromiseRef,
+  RtParallelForBodyFn,
+  RtShapeDescriptor,
+  RtShapeId,
+  RtTaskFn,
+  StringRef,
+  TaskId,
 };
 
 pub use exports::*;
