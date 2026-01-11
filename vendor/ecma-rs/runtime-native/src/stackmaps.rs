@@ -202,8 +202,11 @@ impl StackMap {
       // - Some producers align the live-out header to 8 bytes after the locations array.
       // - Others emit the header immediately after the last location entry.
       //
-      // Parse the aligned form first (it matches our synthetic unit tests), and fall back to the
-      // unaligned form when the aligned parse would run off the end of the section.
+      // Parse the aligned form first (it matches the StackMap v3 spec and our synthetic tests),
+      // and fall back to the unaligned form when:
+      // - the aligned parse would run off the end of the section, or
+      // - the aligned parse would desynchronize such that there aren't enough bytes left to decode
+      //   the remaining records (common when the producer omitted the pre-header alignment padding).
       let live_outs = {
         let saved_off = c.off;
         let records_left = num_records - record_idx - 1;

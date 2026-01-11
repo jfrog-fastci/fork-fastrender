@@ -150,3 +150,67 @@ fn parses_unaligned_live_out_header_between_records() {
     .collect();
   assert_eq!(pcs, vec![(16, 1), (32, 2)]);
 }
+
+#[test]
+fn parses_unaligned_live_out_header_with_entries_between_records() {
+  // Like `parses_unaligned_live_out_header_between_records`, but record0 also contains a live-out
+  // entry. This exercises the "aligned parse hits UnexpectedEof" fallback path (since attempting to
+  // interpret the first live-out entry as the aligned header yields an absurd `num_live_outs`).
+  let mut bytes = Vec::new();
+  bytes.push(3); // version
+  bytes.push(0); // reserved0
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+  bytes.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+  bytes.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+  bytes.extend_from_slice(&2u32.to_le_bytes()); // num_records
+
+  // One function record covering both records.
+  bytes.extend_from_slice(&0u64.to_le_bytes()); // function_address
+  bytes.extend_from_slice(&0u64.to_le_bytes()); // stack_size
+  bytes.extend_from_slice(&2u64.to_le_bytes()); // record_count
+
+  // Record 1: 1 location, unaligned live-out header with num_live_outs=1.
+  bytes.extend_from_slice(&1u64.to_le_bytes()); // patchpoint_id
+  bytes.extend_from_slice(&16u32.to_le_bytes()); // instruction_offset (pc=16)
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  bytes.extend_from_slice(&1u16.to_le_bytes()); // num_locations
+  // Location[0] = Constant 7
+  bytes.extend_from_slice(&[4, 0]); // Constant, reserved
+  bytes.extend_from_slice(&8u16.to_le_bytes()); // size
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // dwarf_reg
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  bytes.extend_from_slice(&7i32.to_le_bytes()); // small const
+  // Live-out header immediately after the location (no 8-byte alignment padding).
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // padding
+  bytes.extend_from_slice(&1u16.to_le_bytes()); // num_live_outs
+  // LiveOut[0]: dwarf_reg=7, reserved=0, size=8.
+  bytes.extend_from_slice(&7u16.to_le_bytes());
+  bytes.push(0);
+  bytes.push(8);
+  // Pad to 8-byte record alignment.
+  while bytes.len() % 8 != 0 {
+    bytes.push(0);
+  }
+
+  // Record 2: 0 locations, normal live-out header, ends aligned.
+  bytes.extend_from_slice(&2u64.to_le_bytes()); // patchpoint_id
+  bytes.extend_from_slice(&32u32.to_le_bytes()); // instruction_offset (pc=32)
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // num_locations
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // padding
+  bytes.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+  while bytes.len() % 8 != 0 {
+    bytes.push(0);
+  }
+
+  let stackmaps = StackMaps::parse(&bytes).expect("parse synthetic stackmaps");
+  assert_eq!(stackmaps.raw().records[0].live_outs.len(), 1);
+  assert_eq!(stackmaps.raw().records[0].live_outs[0].dwarf_reg, 7);
+  assert_eq!(stackmaps.raw().records[0].live_outs[0].size, 8);
+
+  let pcs: Vec<(u64, u64)> = stackmaps
+    .iter()
+    .map(|(pc, callsite)| (pc, callsite.record.patchpoint_id))
+    .collect();
+  assert_eq!(pcs, vec![(16, 1), (32, 2)]);
+}
