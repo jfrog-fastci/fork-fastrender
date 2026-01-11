@@ -8,6 +8,7 @@ Start here:
 
 - [`README.md`](../README.md) — repo overview + common commands
 - [`docs/quickstart.md`](./quickstart.md) — local setup for conformance/difftsc
+- [`docs/runtime-native.md`](./runtime-native.md) — ABI + GC/statepoints + scheduler/async design for `native-js`
 - [`AGENTS.md`](../AGENTS.md) — north-star architecture and design principles
 
 ## Data flow at a glance
