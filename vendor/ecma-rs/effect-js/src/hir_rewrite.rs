@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// - It intentionally does **not** rewrite instance-method/prototype calls (e.g. `arr.map(...)`,
 ///   `s.toLowerCase()`) because `ExprKind::KnownApiCall` cannot encode the receiver/`this`
 ///   binding.
-/// - It never rewrites computed-member calls (e.g. `obj[prop](...)` or `obj["x"](...)`).
+/// - It never rewrites computed-member calls unless the key is a literal (e.g. `obj["x"](...)`).
 /// - It never rewrites optional chaining calls (`obj?.method(...)` / `obj.method?.(...)`).
 /// - It requires non-spread arguments (since `ExprKind::KnownApiCall` can't encode spreads).
 /// - It preserves `BodyId`/`ExprId` numbering by rewriting in-place within each body's arenas.
@@ -86,7 +86,7 @@ fn callee_is_supported(body: &Body, expr_id: ExprId) -> bool {
       if mem.optional {
         return false;
       }
-      if !matches!(mem.property, ObjectKey::Ident(_)) {
+      if !static_object_key_is_supported(body, &mem.property) {
         return false;
       }
       callee_is_supported(body, mem.object)
@@ -99,6 +99,24 @@ fn callee_is_supported(body: &Body, expr_id: ExprId) -> bool {
     // and/or may depend on dynamic `this` binding. Since `KnownApiCall` cannot encode the callee
     // expression, we only rewrite identifier/member-path calls.
     _ => false,
+  }
+}
+
+fn static_object_key_is_supported(body: &Body, key: &ObjectKey) -> bool {
+  match key {
+    ObjectKey::Ident(_) | ObjectKey::String(_) | ObjectKey::Number(_) => true,
+    ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let Some(expr) = body.exprs.get(expr.0 as usize) else {
+        return false;
+      };
+      matches!(
+        expr.kind,
+        ExprKind::Literal(hir_js::Literal::String(_)
+          | hir_js::Literal::Number(_)
+          | hir_js::Literal::BigInt(_))
+      )
+    }
   }
 }
 
@@ -183,11 +201,22 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
       if mem.optional {
         return None;
       }
-      let ObjectKey::Ident(prop) = mem.property else {
-        return None;
-      };
       let base = static_callee_path(lower, body, mem.object)?;
-      let prop = lower.names.resolve(prop)?;
+      let prop = match &mem.property {
+        ObjectKey::Ident(prop) => lower.names.resolve(*prop)?.to_string(),
+        ObjectKey::String(s) => s.clone(),
+        ObjectKey::Number(n) => n.clone(),
+        ObjectKey::Computed(expr) => {
+          let expr = strip_transparent_wrappers(body, *expr);
+          let expr = body.exprs.get(expr.0 as usize)?;
+          match &expr.kind {
+            ExprKind::Literal(hir_js::Literal::String(lit)) => lit.lossy.clone(),
+            ExprKind::Literal(hir_js::Literal::Number(n)) => n.clone(),
+            ExprKind::Literal(hir_js::Literal::BigInt(n)) => n.clone(),
+            _ => return None,
+          }
+        }
+      };
       Some(format!("{base}.{prop}"))
     }
     ExprKind::TypeAssertion { expr: inner, .. }

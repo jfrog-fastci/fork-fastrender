@@ -5,6 +5,38 @@ use effect_js::ApiDatabase;
 use hir_js::Expr;
 use hir_js::{ExprId, ExprKind, FileKind, LowerResult};
 
+fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
+fn static_object_key_name(lowered: &LowerResult, body: &hir_js::Body, key: &hir_js::ObjectKey) -> Option<String> {
+  match key {
+    hir_js::ObjectKey::Ident(id) => lowered.names.resolve(*id).map(|s| s.to_string()),
+    hir_js::ObjectKey::String(s) => Some(s.clone()),
+    hir_js::ObjectKey::Number(n) => Some(n.clone()),
+    hir_js::ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(lit)) => Some(lit.lossy.clone()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
+        _ => None,
+      }
+    }
+  }
+}
+
 fn static_callee_path(lowered: &LowerResult, body: &hir_js::Body, expr_id: ExprId) -> Option<String> {
   let expr = body.exprs.get(expr_id.0 as usize)?;
   match &expr.kind {
@@ -13,11 +45,8 @@ fn static_callee_path(lowered: &LowerResult, body: &hir_js::Body, expr_id: ExprI
       if mem.optional {
         return None;
       }
-      let hir_js::ObjectKey::Ident(prop) = mem.property else {
-        return None;
-      };
       let base = static_callee_path(lowered, body, mem.object)?;
-      let prop = lowered.names.resolve(prop)?;
+      let prop = static_object_key_name(lowered, body, &mem.property)?;
       Some(format!("{base}.{prop}"))
     }
     ExprKind::TypeAssertion { expr: inner, .. }
@@ -72,6 +101,71 @@ fn rewrites_known_api_calls() {
     Math.sqrt(x);
     window.fetch(s);
     globalThis.fetch(s);
+  "#;
+
+  let lowered = hir_js::lower_from_source_with_kind(FileKind::Ts, src).unwrap();
+  let body_id = lowered.hir.root_body;
+  let body = lowered.body(body_id).unwrap();
+
+  let (json_call, json_args) = find_call(body, &lowered, "JSON.parse");
+  let (sqrt_call, sqrt_args) = find_call(body, &lowered, "Math.sqrt");
+  let (window_fetch_call, window_fetch_args) = find_call(body, &lowered, "window.fetch");
+  let (global_fetch_call, global_fetch_args) = find_call(body, &lowered, "globalThis.fetch");
+
+  let db = ApiDatabase::from_embedded().unwrap();
+  let rewritten = annotate_known_api_calls(&lowered, &db, None);
+  let rewritten_body = rewritten.body(body_id).unwrap();
+
+  let expected_json = hir_api_id_from_kb_id(db.id_of("JSON.parse").unwrap());
+  let expected_sqrt = hir_api_id_from_kb_id(db.id_of("Math.sqrt").unwrap());
+  let expected_fetch = hir_api_id_from_kb_id(db.id_of("fetch").unwrap());
+
+  match &rewritten_body.exprs[json_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_json);
+      assert_eq!(args, &json_args);
+    }
+    other => panic!("expected KnownApiCall at {json_call:?}, got {other:?}"),
+  }
+
+  match &rewritten_body.exprs[sqrt_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_sqrt);
+      assert_eq!(args, &sqrt_args);
+    }
+    other => panic!("expected KnownApiCall at {sqrt_call:?}, got {other:?}"),
+  }
+
+  match &rewritten_body.exprs[window_fetch_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_fetch);
+      assert_eq!(args, &window_fetch_args);
+    }
+    other => panic!(
+      "expected KnownApiCall at {window_fetch_call:?}, got {other:?}"
+    ),
+  }
+
+  match &rewritten_body.exprs[global_fetch_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_fetch);
+      assert_eq!(args, &global_fetch_args);
+    }
+    other => panic!(
+      "expected KnownApiCall at {global_fetch_call:?}, got {other:?}"
+    ),
+  }
+}
+
+#[test]
+fn rewrites_known_api_calls_via_computed_keys() {
+  let src = r#"
+    const s = '{"x": 1}';
+    const x = 9;
+    JSON["parse"](s);
+    Math["sqrt"](x);
+    window["fetch"](s);
+    globalThis["fetch"](s);
   "#;
 
   let lowered = hir_js::lower_from_source_with_kind(FileKind::Ts, src).unwrap();
