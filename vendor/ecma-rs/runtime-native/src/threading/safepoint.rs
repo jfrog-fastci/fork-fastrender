@@ -375,14 +375,60 @@ pub fn dump_stop_the_world_timeout(stop_epoch: u64, timeout: Duration) {
       "RUNNING (not yet stopped)"
     };
 
-    eprintln!(
-      "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} has_ctx={}",
-      thread.id().get(),
-      thread.os_thread_id(),
-      thread.kind(),
-      thread.safepoint_epoch_observed(),
-      thread.safepoint_context().is_some()
-    );
+    let handle_slots = thread.handle_stack_len();
+    let bounds = thread.stack_bounds();
+    let ctx = thread.safepoint_context();
+
+    match (bounds, ctx) {
+      (Some(bounds), Some(ctx)) => {
+        eprintln!(
+          "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} handle_slots={handle_slots} stack=[{:#x},{:#x}) ctx_ip={:#x} ctx_fp={:#x} ctx_sp={:#x} ctx_sp_entry={:#x}",
+          thread.id().get(),
+          thread.os_thread_id(),
+          thread.kind(),
+          thread.safepoint_epoch_observed(),
+          bounds.lo,
+          bounds.hi,
+          ctx.ip,
+          ctx.fp,
+          ctx.sp,
+          ctx.sp_entry,
+        );
+      }
+      (Some(bounds), None) => {
+        eprintln!(
+          "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} handle_slots={handle_slots} stack=[{:#x},{:#x}) ctx=<none>",
+          thread.id().get(),
+          thread.os_thread_id(),
+          thread.kind(),
+          thread.safepoint_epoch_observed(),
+          bounds.lo,
+          bounds.hi,
+        );
+      }
+      (None, Some(ctx)) => {
+        eprintln!(
+          "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} handle_slots={handle_slots} stack=<unknown> ctx_ip={:#x} ctx_fp={:#x} ctx_sp={:#x} ctx_sp_entry={:#x}",
+          thread.id().get(),
+          thread.os_thread_id(),
+          thread.kind(),
+          thread.safepoint_epoch_observed(),
+          ctx.ip,
+          ctx.fp,
+          ctx.sp,
+          ctx.sp_entry,
+        );
+      }
+      (None, None) => {
+        eprintln!(
+          "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} handle_slots={handle_slots} stack=<unknown> ctx=<none>",
+          thread.id().get(),
+          thread.os_thread_id(),
+          thread.kind(),
+          thread.safepoint_epoch_observed(),
+        );
+      }
+    }
   }
 }
 
