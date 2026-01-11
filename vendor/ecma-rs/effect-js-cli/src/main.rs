@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use diagnostics::FileId;
 use effect_js::{
-  recognize_patterns_best_effort_untyped, resolve_api_call, resolve_api_call_best_effort_untyped,
-  ApiId, RecognizedPattern,
+  detect_signals, recognize_patterns_best_effort_untyped, resolve_api_call,
+  resolve_api_call_best_effort_untyped, ApiId, RecognizedPattern, SemanticSignal,
 };
 use hir_js::{ExprId, ExprKind, FileKind, ObjectKey};
 use knowledge_base::{ApiKind, KnowledgeBase, TargetEnv, WebPlatform};
@@ -74,6 +74,10 @@ enum Command {
     /// Parse as TSX.
     #[arg(long)]
     tsx: bool,
+
+    /// Print semantic signals (`Promise.all`, `async` bodies without await, etc.).
+    #[arg(long)]
+    signals: bool,
   },
 }
 
@@ -100,7 +104,12 @@ fn main() {
 
   match command {
     Command::Kb { command } => run_kb(kb_dir, &target, command),
-    Command::Analyze { file, ts, tsx } => run_analyze(kb_dir, &target, file, ts, tsx),
+    Command::Analyze {
+      file,
+      ts,
+      tsx,
+      signals,
+    } => run_analyze(kb_dir, &target, file, ts, tsx, signals),
   }
 }
 
@@ -180,7 +189,14 @@ fn run_kb(kb_dir: Option<&Path>, target: &TargetEnv, command: KbCommand) {
   }
 }
 
-fn run_analyze(kb_dir: Option<&Path>, target: &TargetEnv, file: PathBuf, ts: bool, tsx: bool) {
+fn run_analyze(
+  kb_dir: Option<&Path>,
+  target: &TargetEnv,
+  file: PathBuf,
+  ts: bool,
+  tsx: bool,
+  signals: bool,
+) {
   let source = fs::read_to_string(&file).unwrap_or_else(|err| {
     eprintln!("failed to read {}: {err}", file.display());
     std::process::exit(2);
@@ -277,6 +293,19 @@ fn run_analyze(kb_dir: Option<&Path>, target: &TargetEnv, file: PathBuf, ts: boo
   } else {
     for pattern in patterns {
       println!("{}", pattern);
+    }
+  }
+
+  if signals {
+    let signals = detect_signals_best_effort(&lowered);
+    println!();
+    println!("== Semantic Signals ==");
+    if signals.is_empty() {
+      println!("(no semantic signals)");
+    } else {
+      for signal in signals {
+        println!("{signal}");
+      }
     }
   }
 }
@@ -562,6 +591,54 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
   out
 }
 
+fn detect_signals_best_effort(lowered: &hir_js::LowerResult) -> Vec<SignalLine> {
+  let mut out = Vec::new();
+
+  for (body_id, _) in lowered.body_index.iter() {
+    let Some(body) = lowered.body(*body_id) else {
+      continue;
+    };
+
+    for signal in detect_signals(&lowered.hir, body, &lowered.names) {
+      let span = semantic_signal_span(&signal, &lowered.hir, body);
+      out.push(SignalLine {
+        span,
+        text: format!("[{}..{}] {signal:?}", span.start, span.end),
+      });
+    }
+  }
+
+  out.sort_by(|a, b| {
+    (a.span.start, a.span.end, a.text.as_str()).cmp(&(b.span.start, b.span.end, b.text.as_str()))
+  });
+  out
+}
+
+fn semantic_signal_span(
+  signal: &SemanticSignal,
+  file: &hir_js::HirFile,
+  body: &hir_js::Body,
+) -> diagnostics::TextRange {
+  match *signal {
+    SemanticSignal::PromiseAll { expr }
+    | SemanticSignal::AsConstAssertion { expr }
+    | SemanticSignal::TypeAssertion { expr }
+    | SemanticSignal::NonNullAssertion { expr }
+    | SemanticSignal::PrivateFieldAccess { expr } => body.exprs[expr.0 as usize].span,
+    SemanticSignal::ConstBinding { stmt, .. } | SemanticSignal::ForAwaitOf { stmt } => {
+      body.stmts[stmt.0 as usize].span
+    }
+    SemanticSignal::AsyncFunctionWithoutAwait { body: body_id, .. } => file
+      .span_map
+      .body_span(body_id)
+      .unwrap_or(body.span),
+    SemanticSignal::ReadonlyTypePosition { type_expr } => file
+      .span_map
+      .type_expr_span(body.owner, type_expr)
+      .unwrap_or(body.span),
+  }
+}
+
 #[derive(Debug, Clone)]
 struct PatternLine {
   span: diagnostics::TextRange,
@@ -569,6 +646,18 @@ struct PatternLine {
 }
 
 impl std::fmt::Display for PatternLine {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.text)
+  }
+}
+
+#[derive(Debug, Clone)]
+struct SignalLine {
+  span: diagnostics::TextRange,
+  text: String,
+}
+
+impl std::fmt::Display for SignalLine {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str(&self.text)
   }
