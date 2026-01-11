@@ -277,7 +277,7 @@ mod linux {
         }
 
         let (reader, mut writer) = UnixStream::pair()?;
-        let read_buf = OwnedIoBuf::new_zeroed(5);
+        let read_buf = OwnedIoBuf::new_zeroed(1);
         let (read_op, timeout_op) = driver.submit_read_with_timeout(
             reader.as_raw_fd(),
             read_buf,
@@ -286,8 +286,8 @@ mod linux {
         )?;
 
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(800));
-            writer.write_all(b"hello").unwrap();
+            thread::sleep(Duration::from_millis(700));
+            writer.write_all(b"x").unwrap();
         });
 
         while !(timeout_op.is_completed() && read_op.is_completed()) {
@@ -299,8 +299,8 @@ mod linux {
             .try_take_completion()
             .expect("timeout completed");
 
-        assert_eq!(read_c.result, 5);
-        assert_eq!(read_c.resource.as_slice(), b"hello");
+        assert_eq!(read_c.result, 1);
+        assert_eq!(read_c.resource.as_slice(), b"x");
         assert_eq!(timeout_c.result, -(libc::ECANCELED as i32));
         assert_eq!(timeout_c.resource, read_c.id);
 
