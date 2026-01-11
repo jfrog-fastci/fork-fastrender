@@ -4675,7 +4675,22 @@ mod tests {
         return Err(Error::Other("expected vm-js WindowRealm to be active".to_string()));
       };
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm_ref)
+      // WindowRealm installs handcrafted URLSearchParams by default; delete it first so the
+      // generated bindings are installed and dispatch through the WebIDL host slot.
+      {
+        let mut scope = heap.scope();
+        let global = realm_ref.global_object();
+        scope.push_root(Value::Object(global)).expect("push root global");
+        let key_s = scope.alloc_string("URLSearchParams").expect("alloc URLSearchParams key");
+        scope
+          .push_root(Value::String(key_s))
+          .expect("push root URLSearchParams key");
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+      crate::js::bindings::install_url_search_params_bindings_vm_js(vm, heap, realm_ref)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 

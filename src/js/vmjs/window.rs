@@ -960,9 +960,9 @@ mod tests {
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
     // WindowRealm installs handcrafted URL bindings by default (`src/js/vmjs/window_url.rs`), which
-    // do not use the WebIDL host slot. The generated URLSearchParams bindings are now idempotent,
-    // so delete the existing global before installing the generated binding to ensure the executed
-    // script hits `webidl_vm_js::host_from_hooks()`.
+    // do not use the WebIDL host slot. The generated bindings are idempotent and intentionally do
+    // not clobber existing globals, so delete the existing constructors first to ensure the
+    // executed script hits `webidl_vm_js::host_from_hooks()`.
     {
       let window = host.host_mut().window_mut();
       let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
@@ -971,21 +971,21 @@ mod tests {
       scope
         .push_root(Value::Object(global))
         .map_err(|err| Error::Other(err.to_string()))?;
-      let key_s = scope
-        .alloc_string("URLSearchParams")
-        .map_err(|err| Error::Other(err.to_string()))?;
-      scope
-        .push_root(Value::String(key_s))
-        .map_err(|err| Error::Other(err.to_string()))?;
-      let key = PropertyKey::from_string(key_s);
-      scope
-        .delete_property_or_throw(global, key)
-        .map_err(|err| Error::Other(err.to_string()))?;
+      for name in ["URL", "URLSearchParams"] {
+        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .push_root(Value::String(key_s))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
     }
     {
       let window = host.host_mut().window_mut();
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      crate::js::bindings::install_url_search_params_bindings_vm_js(vm, heap, realm)
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 
@@ -1059,8 +1059,27 @@ mod tests {
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
     {
       let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      for name in ["queueMicrotask", "setTimeout"] {
+        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .push_root(Value::String(key_s))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+    }
+    {
+      let window = host.host_mut().window_mut();
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)
+      crate::js::bindings::install_window_ops_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 
