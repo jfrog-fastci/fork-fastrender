@@ -769,6 +769,26 @@ mod tests {
   }
 
   #[test]
+  fn resolves_direct_require_call() {
+    let calls = resolved_calls(
+      r#"
+        require('node:fs').readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_direct_require_call_without_node_prefix() {
+    let calls = resolved_calls(
+      r#"
+        require('fs').readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
   fn resolves_destructure_from_require_member_chain() {
     let calls = resolved_calls(
       r#"
@@ -831,6 +851,16 @@ mod tests {
       r#"
         const fs = require('fs/promises');
         fs.readFile('x');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs/promises.readFile"]);
+  }
+
+  #[test]
+  fn resolves_direct_require_subpath_module() {
+    let calls = resolved_calls(
+      r#"
+        require('fs/promises').readFile('x');
       "#,
     );
     assert_eq!(calls, vec!["node:fs/promises.readFile"]);
