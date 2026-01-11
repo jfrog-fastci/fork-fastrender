@@ -12583,9 +12583,13 @@ impl InlineFormattingContext {
       Some(available_block)
     } else {
       // Percentage heights resolve against the containing block's definite used size (CSS2.1 §10.5).
-      // Prefer the explicit percentage base when provided rather than treating the definite
-      // available height as the percentage basis, since IFC roots can be laid out with a definite
-      // available height even when the containing block is `height:auto`.
+      //
+      // Inline layout can run with a definite *available* height inherited from an ancestor (e.g.
+      // the viewport) even when the containing block's used height is `auto`. In that situation,
+      // percentage heights on in-flow boxes must compute to `auto` (CSS2.1 §10.5) rather than
+      // resolving against the available space. Thread the containing block's definite used size
+      // separately via `LayoutConstraints::block_percentage_base` and only resolve percentages when
+      // it is set.
       constraints.block_percentage_base
     };
 

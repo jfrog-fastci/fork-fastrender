@@ -1117,12 +1117,18 @@ impl BlockFormattingContext {
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
     // Create constraints for child layout.
-    let height_auto = block_length.is_none() && block_keyword.is_none();
+    let block_keyword_is_content_based = inline_is_horizontal
+      && matches!(
+        block_keyword,
+        Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
+      );
+    let height_auto =
+      block_length.is_none() && (block_keyword.is_none() || block_keyword_is_content_based);
     let available_block_border_box = containing_height
       .map(|h| (h - margin_top - margin_bottom).max(0.0))
       .unwrap_or(f32::INFINITY);
 
-    let intrinsic_block_sizes = if block_keyword.is_some()
+    let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
       || min_block_keyword.is_some()
       || max_block_keyword.is_some()
     {
@@ -1198,6 +1204,13 @@ impl BlockFormattingContext {
         self.factory.root_font_metrics(),
       )
     });
+    // Track whether the block-size we computed should establish a definite percentage base for
+    // descendants (CSS2.1 §10.5).
+    //
+    // Intrinsic sizing keywords like `min-content` depend on the element's own contents and must
+    // *not* be treated as definite bases for percentage heights, otherwise common patterns like
+    // `height: min-content` + `img { height: 100% }` create circular dependencies.
+    let mut block_size_definite_for_percentages = specified_height.is_some();
     specified_height =
       specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
     if reserved_horizontal_gutter > 0.0
@@ -1207,39 +1220,40 @@ impl BlockFormattingContext {
       specified_height = specified_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
     }
     if let Some(height_keyword) = block_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let used_border_box = match height_keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
-          }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let preferred_border = limit.and_then(|limit| {
-            resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height_for_percentages,
-              self.viewport_size,
-              font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
+      if !block_keyword_is_content_based {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let used_border_box = match height_keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
+          },
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let preferred_border = limit.and_then(|limit| {
+              resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height_for_percentages,
+                self.viewport_size,
+                font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            });
+            crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+              Some(available_block_border_box),
+              preferred_border,
+              intrinsic_min,
+              intrinsic_max,
             )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-          });
-          crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
-            Some(available_block_border_box),
-            preferred_border,
-            intrinsic_min,
-            intrinsic_max,
-          )
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+          },
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
           use crate::style::types::BoxSizing;
           use crate::style::types::CalcSizeBasis;
           let basis_border = match calc.basis {
@@ -1305,9 +1319,14 @@ impl BlockFormattingContext {
               border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
             })
             .unwrap_or(basis_border)
-        }
-      };
-      specified_height = Some((used_border_box - vertical_edges).max(0.0));
+          }
+        };
+        specified_height = Some((used_border_box - vertical_edges).max(0.0));
+        block_size_definite_for_percentages = matches!(
+          height_keyword,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable
+        ) && available_block_border_box.is_finite();
+      }
     }
     // `LayoutConstraints::used_border_box_*` describes the containing block's own used size (as
     // computed by its parent formatting context). It is not a sizing constraint for this in-flow
@@ -1323,6 +1342,7 @@ impl BlockFormattingContext {
       // containing block (mirroring the auto-width behavior for block boxes in horizontal writing
       // modes) instead of collapsing to the content size.
       specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
+      block_size_definite_for_percentages = true;
     }
     // Compute inline size using CSS 2.1 Section 10.3.3 algorithm
     let inline_sides = inline_axis_sides(style);
@@ -1749,7 +1769,9 @@ impl BlockFormattingContext {
     // Definite block-size base used for descendant percentage resolution and containing block
     // percentage offsets. Prefer the explicitly resolved size, but fall back to the ratio-derived
     // size when `block-size:auto` + `aspect-ratio` yields a definite used size.
-    let specified_height_base = specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
+    let specified_height_base = block_size_definite_for_percentages
+      .then(|| specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0)))
+      .flatten();
     let child_block_size_base = specified_height_base.or(aspect_ratio_block_size_hint);
     let child_height_space = specified_height_base
       .map(AvailableSpace::Definite)
@@ -9704,6 +9726,11 @@ impl FormattingContext for BlockFormattingContext {
     } else {
       style.max_width_keyword
     };
+    let block_keyword_is_content_based = inline_is_horizontal
+      && matches!(
+        block_keyword,
+        Some(IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent)
+      );
     let margin_top = style
       .margin_top
       .as_ref()
@@ -9736,7 +9763,7 @@ impl FormattingContext for BlockFormattingContext {
       .map(|h| (h - margin_top - margin_bottom).max(0.0))
       .unwrap_or(f32::INFINITY);
 
-    let intrinsic_block_sizes = if block_keyword.is_some()
+    let intrinsic_block_sizes = if (block_keyword.is_some() && !block_keyword_is_content_based)
       || min_block_keyword.is_some()
       || max_block_keyword.is_some()
     {
@@ -9813,6 +9840,9 @@ impl FormattingContext for BlockFormattingContext {
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+    // Like `layout_block_child`, track whether the block-size should establish a definite
+    // percentage base for in-flow descendants (CSS2.1 §10.5).
+    let mut block_size_definite_for_percentages = resolved_height.is_some();
     if reserved_horizontal_gutter > 0.0
       && block_length.is_some()
       && style.box_sizing == crate::style::types::BoxSizing::ContentBox
@@ -9820,36 +9850,37 @@ impl FormattingContext for BlockFormattingContext {
       resolved_height = resolved_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
     }
     if let Some(height_keyword) = block_keyword {
-      let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
-      let used_border_box = match height_keyword {
-        crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
-        crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
-        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
-          if available_block_border_box.is_finite() {
-            available_block_border_box
-          } else {
-            intrinsic_max
-          }
-        }
-        crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          let basis_border = match limit {
-            Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
-              limit,
-              containing_height,
-              self.viewport_size,
-              style.font_size,
-              style.root_font_size,
-              Some(style),
-              Some(&self.font_context),
-              self.factory.root_font_metrics(),
-            )
-            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
-            .unwrap_or(f32::INFINITY),
-            None => available_block_border_box,
-          };
-          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
-        }
-        crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
+      if !block_keyword_is_content_based {
+        let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
+        let used_border_box = match height_keyword {
+          crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
+          crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+            if available_block_border_box.is_finite() {
+              available_block_border_box
+            } else {
+              intrinsic_max
+            }
+          },
+          crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
+            let basis_border = match limit {
+              Some(limit) => resolve_length_with_percentage_metrics_and_root_font_metrics(
+                limit,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+              .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+              .unwrap_or(f32::INFINITY),
+              None => available_block_border_box,
+            };
+            crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
+          },
+          crate::style::types::IntrinsicSizeKeyword::CalcSize(calc) => {
           use crate::style::types::BoxSizing;
           use crate::style::types::CalcSizeBasis;
           let basis_border = match calc.basis {
@@ -9915,9 +9946,14 @@ impl FormattingContext for BlockFormattingContext {
               border_size_from_box_sizing(resolved_specified, vertical_edges, style.box_sizing).max(0.0)
             })
             .unwrap_or(basis_border)
-        }
-      };
-      resolved_height = Some((used_border_box - vertical_edges).max(0.0));
+          }
+        };
+        resolved_height = Some((used_border_box - vertical_edges).max(0.0));
+        block_size_definite_for_percentages = matches!(
+          height_keyword,
+          crate::style::types::IntrinsicSizeKeyword::FillAvailable
+        ) && available_block_border_box.is_finite();
+      }
     }
     // Like the inline axis override above, honor a parent-resolved used border-box block size even
     // when the authored height is non-auto.
@@ -9928,12 +9964,16 @@ impl FormattingContext for BlockFormattingContext {
     };
     if let Some(used_border_box) = used_border_box {
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
+      block_size_definite_for_percentages = true;
     }
-    let child_height_space = resolved_height
+    let resolved_height_base = block_size_definite_for_percentages
+      .then(|| resolved_height.filter(|h| h.is_finite()).map(|h| h.max(0.0)))
+      .flatten();
+    let child_height_space = resolved_height_base
       .map(|h| AvailableSpace::Definite(h.max(0.0)))
       .unwrap_or(AvailableSpace::Indefinite);
 
-    let block_percentage_base = resolved_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
+    let block_percentage_base = resolved_height_base;
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         AvailableSpace::Definite(computed_width.content_width),

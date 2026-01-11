@@ -3409,6 +3409,24 @@ impl GridFormattingContext {
         Axis::Vertical,
       ),
     };
+    if containing_grid.is_some() {
+      // Like the preferred size above, CSS percentage minimum size constraints on grid items
+      // resolve against the grid *area* size (the track size after layout). Taffy resolves these
+      // percentages against the grid container instead, which can force an item in a narrow track
+      // to be as wide as the entire grid, causing large horizontal overflow.
+      //
+      // Treat percentage min-size constraints as `auto` in Taffy so the measure callback can
+      // resolve them against the definite grid area size that Taffy provides during layout.
+      //
+      // Note: Keep max-size constraints intact here; the grid integration has explicit tests that
+      // rely on `max-width: <percentage>` clamping stretched items.
+      if style.min_width.is_some_and(|len| len.has_percentage()) {
+        taffy_style.min_size.width = Dimension::auto();
+      }
+      if style.min_height.is_some_and(|len| len.has_percentage()) {
+        taffy_style.min_size.height = Dimension::auto();
+      }
+    }
 
     // Percentage sizes on grid items resolve against the *grid area* size, not the grid container.
     // Taffy resolves percentage dimensions relative to the node's parent, so if we pass percentage
@@ -6317,6 +6335,7 @@ impl GridFormattingContext {
     root_id: TaffyNodeId,
     constraints: &LayoutConstraints,
     containing_grid_axis: Option<GridAxisStyle>,
+    containing_grid_area: Option<Rect>,
     root_child_continuation_available: Option<&FxHashMap<TaffyNodeId, f32>>,
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
@@ -6348,6 +6367,56 @@ impl GridFormattingContext {
       node_axis_style
     } else {
       containing_grid_axis
+    };
+
+    let child_grid_areas: Option<Vec<Rect>> = if is_grid_style {
+      node_taffy_style.and_then(|container_style| {
+        if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+          if info.items.len() != children.len() {
+            return None;
+          }
+          let row_offsets = compute_track_offsets(
+            &info.rows,
+            layout.size.height,
+            layout.padding.top,
+            layout.padding.bottom,
+            layout.border.top,
+            layout.border.bottom,
+            container_style
+              .align_content
+              .unwrap_or(TaffyAlignContent::Stretch),
+          );
+          let col_offsets = compute_track_offsets(
+            &info.columns,
+            layout.size.width,
+            layout.padding.left,
+            layout.padding.right,
+            layout.border.left,
+            layout.border.right,
+            container_style
+              .justify_content
+              .unwrap_or(TaffyAlignContent::Stretch),
+          );
+
+          let mut out = Vec::with_capacity(children.len());
+          for placement in info.items.iter() {
+            let (x_start, x_end) =
+              grid_area_for_item(&col_offsets, placement.column_start, placement.column_end)?;
+            let (y_start, y_end) =
+              grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)?;
+            out.push(Rect::from_xywh(
+              x_start,
+              y_start,
+              (x_end - x_start).max(0.0),
+              (y_end - y_start).max(0.0),
+            ));
+          }
+          return Some(out);
+        }
+        None
+      })
+    } else {
+      None
     };
 
     let mut root_child_continuation_available_owned: Option<FxHashMap<TaffyNodeId, f32>> = None;
@@ -6469,14 +6538,19 @@ impl GridFormattingContext {
 
     // Convert children recursively, propagating the effective grid axes to descendants.
     let mut child_fragments = Vec::with_capacity(children.len());
-    for &child_id in children.iter() {
+    for (idx, &child_id) in children.iter().enumerate() {
       check_layout_deadline(deadline_counter)?;
+      let child_area = child_grid_areas
+        .as_ref()
+        .and_then(|areas| areas.get(idx))
+        .copied();
       child_fragments.push(self.convert_to_fragments(
         taffy,
         child_id,
         root_id,
         constraints,
         child_axis_style,
+        child_area,
         root_child_continuation_available,
         auto_unskipped,
         measured_fragments,
@@ -6510,6 +6584,74 @@ impl GridFormattingContext {
           if x.is_finite() && y.is_finite() {
             bounds = Rect::from_xywh(x, y, bounds.width(), bounds.height());
           }
+        }
+      }
+
+      if let Some(grid_area) = containing_grid_area {
+        // CSS percentage min/max sizes on grid items resolve against the grid *area* size (CSS Grid
+        // §11.5). Taffy currently resolves percentage min-sizes against the grid container, so we
+        // treat them as `auto` in `convert_style` and apply the constraint here using the area's
+        // definite size (when provided by the parent grid container).
+        let area_width = if grid_area.width().is_finite() {
+          grid_area.width().max(0.0)
+        } else {
+          0.0
+        };
+        let area_height = if grid_area.height().is_finite() {
+          grid_area.height().max(0.0)
+        } else {
+          0.0
+        };
+
+        if area_width > 0.0
+          && (style.min_width.is_some_and(|len| len.has_percentage())
+            || style.max_width.is_some_and(|len| len.has_percentage()))
+        {
+          let horizontal_edges = self.axis_padding_border_px(style, Axis::Horizontal, area_width);
+          let resolve_border_box = |len: Length| {
+            let specified = self.resolve_length_for_width(len, area_width, style).max(0.0);
+            border_size_from_box_sizing(specified, horizontal_edges, style.box_sizing).max(0.0)
+          };
+          let min_border = style
+            .min_width
+            .filter(|len| len.has_percentage())
+            .map(resolve_border_box)
+            .unwrap_or(0.0);
+          let max_border = style
+            .max_width
+            .filter(|len| len.has_percentage())
+            .map(resolve_border_box)
+            .unwrap_or(f32::INFINITY);
+          let width = clamp_with_order(bounds.width(), min_border, max_border);
+          bounds = Rect::from_xywh(bounds.x(), bounds.y(), width.max(0.0), bounds.height());
+        }
+
+        if area_height > 0.0
+          && (style.min_height.is_some_and(|len| len.has_percentage())
+            || style.max_height.is_some_and(|len| len.has_percentage()))
+        {
+          // Percentage padding/border resolve against the containing block's *width*, even for the
+          // vertical axis (CSS2.1 §10.5).
+          let vertical_edges = self.axis_padding_border_px(style, Axis::Vertical, area_width);
+          let resolve_border_box = |len: Length| {
+            let specified = self
+              .resolve_length_px_with_base(len, Some(area_height), style)
+              .unwrap_or(0.0)
+              .max(0.0);
+            border_size_from_box_sizing(specified, vertical_edges, style.box_sizing).max(0.0)
+          };
+          let min_border = style
+            .min_height
+            .filter(|len| len.has_percentage())
+            .map(resolve_border_box)
+            .unwrap_or(0.0);
+          let max_border = style
+            .max_height
+            .filter(|len| len.has_percentage())
+            .map(resolve_border_box)
+            .unwrap_or(f32::INFINITY);
+          let height = clamp_with_order(bounds.height(), min_border, max_border);
+          bounds = Rect::from_xywh(bounds.x(), bounds.y(), bounds.width(), height.max(0.0));
         }
       }
       let fc_type = box_node
@@ -6812,8 +6954,8 @@ impl GridFormattingContext {
           if let Some(mut reused) = Self::take_matching_measured_fragment(
             measured_fragments,
             keys,
-            taffy.unrounded_layout(node_id).size.width,
-            taffy.unrounded_layout(node_id).size.height,
+            bounds.width(),
+            bounds.height(),
           ) {
             fragment_clone_profile::record_fragment_reuse_without_clone(
               CloneSite::GridMeasureReuse,
@@ -10073,7 +10215,26 @@ impl GridFormattingContext {
     {
       if let taffy::style::AvailableSpace::Definite(w) = available_space.width {
         if w.is_finite() && w > 1.0 {
-          constraints.used_border_box_width = Some(w.max(0.0));
+          // `justify-self: stretch` makes grid items fill their grid area, but the stretched size
+          // is still constrained by `min/max-width` (CSS Grid §11.5, CSS Sizing §10).
+          //
+          // When `min/max-width` use percentages, the basis is the grid *area* width, not the grid
+          // container. Taffy currently resolves percentage min-sizes against the container, so we
+          // treat them as `auto` in `convert_style` and apply the constraint here against the
+          // definite grid-area width that Taffy provides in `available_space`.
+          let base = w.max(0.0);
+          let horizontal_edges = self.axis_padding_border_px(style, Axis::Horizontal, base);
+          let resolve_border_box = |len: Length| {
+            let specified = self.resolve_length_for_width(len, base, style).max(0.0);
+            border_size_from_box_sizing(specified, horizontal_edges, style.box_sizing).max(0.0)
+          };
+          let min_border = style.min_width.map(resolve_border_box).unwrap_or(0.0);
+          let max_border = style
+            .max_width
+            .map(resolve_border_box)
+            .unwrap_or(f32::INFINITY);
+          let forced = clamp_with_order(base, min_border, max_border);
+          constraints.used_border_box_width = Some(forced.max(0.0));
         }
       }
     }
@@ -10085,7 +10246,30 @@ impl GridFormattingContext {
     {
       if let taffy::style::AvailableSpace::Definite(h) = available_space.height {
         if h.is_finite() && h > 1.0 {
-          constraints.used_border_box_height = Some(h.max(0.0));
+          // Mirror the `min/max-height` handling above for the block axis. Note that percentage
+          // padding/border still resolve against the grid area's *width* (CSS2.1 §10.5), so use the
+          // available width as the padding percentage base when converting between content-box and
+          // border-box sizes.
+          let stretched = h.max(0.0);
+          let width_base = match available_space.width {
+            taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 0.0 => w,
+            _ => 0.0,
+          };
+          let vertical_edges = self.axis_padding_border_px(style, Axis::Vertical, width_base);
+          let resolve_border_box = |len: Length| {
+            let specified = self
+              .resolve_length_px_with_base(len, Some(stretched), style)
+              .unwrap_or(0.0)
+              .max(0.0);
+            border_size_from_box_sizing(specified, vertical_edges, style.box_sizing).max(0.0)
+          };
+          let min_border = style.min_height.map(resolve_border_box).unwrap_or(0.0);
+          let max_border = style
+            .max_height
+            .map(resolve_border_box)
+            .unwrap_or(f32::INFINITY);
+          let forced = clamp_with_order(stretched, min_border, max_border);
+          constraints.used_border_box_height = Some(forced.max(0.0));
         }
       }
     }
@@ -13557,6 +13741,7 @@ impl FormattingContext for GridFormattingContext {
           &constraints,
           None,
           None,
+          None,
           auto_unskipped,
           &mut measured_fragments,
           &measured_node_keys,
@@ -13570,6 +13755,7 @@ impl FormattingContext for GridFormattingContext {
         root_id,
         root_id,
         &constraints,
+        None,
         None,
         None,
         auto_unskipped,
@@ -19923,6 +20109,7 @@ mod tests {
             root_id,
             root_id,
             &constraints,
+            None,
             None,
             None,
             None,
