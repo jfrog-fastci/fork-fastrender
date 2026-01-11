@@ -30,6 +30,17 @@
     may_throw: true
   purity: Impure
 
+- name: URL.revokeObjectURL
+  kind: function
+  aliases:
+    - URL.revokeObjectURL
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
 - name: URL.canParse
   aliases:
     - URL.canParse
