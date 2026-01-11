@@ -16,6 +16,7 @@ use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
 use crate::async_rt::promise::PromiseOutcome;
 use crate::gc::ObjHeader;
+use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
@@ -32,6 +33,16 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+// Process-global remembered set used by the exported write barrier + model-based
+// generational GC tests.
+//
+// The current GC implementation is still being iterated on; keep this structure
+// here so:
+// - tests can rebuild/inspect it deterministically, and
+// - we don't accidentally regress into using tail calls in barrier-related
+//   scaffolding (native-js stack walking relies on stable return addresses).
+static REMEMBERED_SET: Lazy<Mutex<SimpleRememberedSet>> = Lazy::new(|| Mutex::new(SimpleRememberedSet::new()));
 
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {

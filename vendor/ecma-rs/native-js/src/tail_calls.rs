@@ -101,6 +101,19 @@ pub fn assert_no_tail_call_jumps(objdump_dr: &str, functions: &[&str]) -> Result
         bail!("tail call jump detected in function {func:?}: {text}", text = instr.text);
       }
     }
+
+    // Indirect tail calls (e.g. `jmpq *%rax`) don't have relocations. Be conservative and flag
+    // any function whose *final* non-NOP instruction is an indirect jump. This catches the common
+    // tail-call lowering pattern while avoiding false positives for jump tables that typically
+    // appear in the middle of the function's layout.
+    if let Some(last) = instrs.iter().rev().find(|i| !i.mnemonic.starts_with("nop")) {
+      if last.mnemonic.starts_with("jmp") && last.text.contains('*') {
+        bail!(
+          "tail call jump detected in function {func:?}: {text}",
+          text = last.text
+        );
+      }
+    }
   }
 
   Ok(())

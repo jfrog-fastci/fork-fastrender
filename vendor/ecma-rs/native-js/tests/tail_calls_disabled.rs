@@ -47,7 +47,14 @@ fn ts_codegen_disables_tail_calls_in_optimized_builds() -> Result<()> {
   let disasm = tc.objdump_disassemble_with_relocs(&obj_path)?;
 
   // General invariant: TS functions must not contain tailcall-style jumps.
-  assert_no_tail_call_jumps(&disasm, &[TAILCALL_TEST_CALLER, TAILCALL_TEST_CALLEE])?;
+  assert_no_tail_call_jumps(
+    &disasm,
+    &[
+      TAILCALL_TEST_CALLER,
+      TAILCALL_TEST_CALLEE,
+      TAILCALL_TEST_INDIRECT_CALLER,
+    ],
+  )?;
 
   // Regression-specific: a tail-position call must remain `call` + `ret` (not `jmp`).
   assert_function_calls_symbol(&disasm, TAILCALL_TEST_CALLER, TAILCALL_TEST_CALLEE)?;
