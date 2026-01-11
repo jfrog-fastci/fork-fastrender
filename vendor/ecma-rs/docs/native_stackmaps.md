@@ -36,13 +36,20 @@ To keep stackmaps while still using `--gc-sections`, pass a linker-script shim
 that uses `KEEP(*(.llvm_stackmaps ...))`:
 
 ```bash
+# Non-PIE executables (default policy in this repo):
+-Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/link/stackmaps_nopie.ld
+
+# PIE/shared objects:
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/link/stackmaps.ld
 ```
 
-This works with both **GNU ld** and **lld**. The default fragment
-(`runtime-native/link/stackmaps.ld`) anchors at `INSERT BEFORE .dynamic;` to keep the writable
-stackmaps output section out of the executable text PT_LOAD (avoiding RWX) and inside the
-RELRO/data region.
+This works with both **GNU ld** and **lld**:
+
+- `runtime-native/link/stackmaps_nopie.ld` anchors at `INSERT AFTER .text;` (which is always present)
+  and keeps stackmaps in a normal read-only section.
+- `runtime-native/link/stackmaps.ld` is the lld-oriented **PIE** fragment; it anchors at
+  `INSERT BEFORE .dynamic;` so writable stackmaps (needed for PIE relocations) land in the RELRO/data
+  region rather than risking an RWX text segment.
 
 For GNU ld **PIE** builds where stackmaps must be writable for relocations,
 `scripts/native_link.sh` selects `runtime-native/link/stackmaps_gnuld.ld` automatically to keep

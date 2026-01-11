@@ -118,10 +118,13 @@ Expected artifacts:
 
 ## Link from C / clang
 
-The stackmaps linker-script fragment you need depends on which linker your C toolchain drives:
+The stackmaps linker-script fragment you need depends on whether you're producing **PIE** output and
+which linker your C toolchain drives:
 
-- lld: `runtime-native/link/stackmaps.ld`
-- GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
+- Non-PIE executables: `runtime-native/link/stackmaps_nopie.ld`
+- PIE executables / DSOs:
+  - lld: `runtime-native/link/stackmaps.ld`
+  - GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
 
 To check which linker `cc` uses:
 
@@ -165,7 +168,8 @@ parser (`runtime_native::stackmaps::StackMaps::parse`) handles this by scanning
 all blobs and building one callsite index.
 
 The `runtime-native/link/stackmaps.ld` (lld) and `runtime-native/link/stackmaps_gnuld.ld` (GNU ld)
-linker script fragments define all of these symbols and also provide legacy aliases:
+linker script fragments (and `runtime-native/link/stackmaps_nopie.ld` for non-PIE) define all of
+these symbols and also provide legacy aliases:
 
 - `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}`
 
