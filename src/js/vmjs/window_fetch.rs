@@ -1583,6 +1583,214 @@ fn encode_form_data_as_multipart(
   Ok(out)
 }
 
+fn unescape_multipart_quoted_string_value(value: &str) -> String {
+  let mut out = String::with_capacity(value.len());
+  let mut chars = value.chars();
+  while let Some(ch) = chars.next() {
+    if ch == '\\' {
+      if let Some(next) = chars.next() {
+        out.push(next);
+      } else {
+        out.push('\\');
+      }
+    } else {
+      out.push(ch);
+    }
+  }
+  out
+}
+
+fn parse_multipart_param_value(value: &str) -> String {
+  let trimmed = value.trim();
+  let Some(stripped) = trimmed
+    .strip_prefix('"')
+    .and_then(|s| s.strip_suffix('"'))
+  else {
+    return trimmed.to_string();
+  };
+  unescape_multipart_quoted_string_value(stripped)
+}
+
+fn extract_multipart_boundary(content_type: &str) -> Option<String> {
+  for part in content_type.split(';').skip(1) {
+    let part = part.trim();
+    let Some(rest) = part.strip_prefix("boundary=").or_else(|| part.strip_prefix("Boundary=")) else {
+      // ASCII case-insensitive match without allocating.
+      if part.len() >= 9 && part.as_bytes()[..9].eq_ignore_ascii_case(b"boundary=") {
+        let value = &part[9..];
+        return Some(parse_multipart_param_value(value));
+      }
+      continue;
+    };
+    return Some(parse_multipart_param_value(rest));
+  }
+  None
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+  if needle.is_empty() {
+    return Some(start.min(haystack.len()));
+  }
+  haystack
+    .get(start..)
+    .and_then(|slice| slice.windows(needle.len()).position(|w| w == needle))
+    .map(|offset| start.saturating_add(offset))
+}
+
+fn parse_content_disposition_form_data(value: &str) -> Result<(String, Option<String>), &'static str> {
+  let mut parts = value.split(';');
+  let disposition = parts.next().unwrap_or("").trim();
+  if !disposition.eq_ignore_ascii_case("form-data") {
+    return Err("multipart/form-data part has invalid Content-Disposition");
+  }
+
+  let mut name: Option<String> = None;
+  let mut filename: Option<String> = None;
+
+  for part in parts {
+    let part = part.trim();
+    if part.is_empty() {
+      continue;
+    }
+    let Some((k, v)) = part.split_once('=') else {
+      continue;
+    };
+    let key = k.trim();
+    let val = parse_multipart_param_value(v);
+    if key.eq_ignore_ascii_case("name") {
+      name = Some(val);
+    } else if key.eq_ignore_ascii_case("filename") {
+      filename = Some(val);
+    }
+  }
+
+  let name = name.ok_or("multipart/form-data part missing name")?;
+  Ok((name, filename))
+}
+
+fn parse_multipart_form_data(
+  bytes: &[u8],
+  boundary: &str,
+) -> Result<Vec<window_form_data::FormDataEntry>, &'static str> {
+  if boundary.is_empty() {
+    return Err("multipart/form-data missing boundary");
+  }
+
+  let mut marker = Vec::<u8>::with_capacity(boundary.len().saturating_add(2));
+  marker.extend_from_slice(b"--");
+  marker.extend_from_slice(boundary.as_bytes());
+
+  if !bytes.starts_with(&marker) {
+    return Err("multipart/form-data body does not start with boundary");
+  }
+
+  let mut delimiter = Vec::<u8>::with_capacity(marker.len().saturating_add(2));
+  delimiter.extend_from_slice(b"\r\n");
+  delimiter.extend_from_slice(&marker);
+
+  let mut pos = marker.len();
+  let mut out: Vec<window_form_data::FormDataEntry> = Vec::new();
+
+  loop {
+    if pos > bytes.len() {
+      return Err("multipart/form-data body is truncated");
+    }
+
+    if bytes.get(pos..pos + 2) == Some(b"--") {
+      // Closing boundary (`--boundary--`). Ignore any epilogue.
+      return Ok(out);
+    }
+
+    if bytes.get(pos..pos + 2) != Some(b"\r\n") {
+      return Err("multipart/form-data boundary missing CRLF");
+    }
+    pos = pos.saturating_add(2);
+
+    let headers_end = find_subslice(bytes, b"\r\n\r\n", pos).ok_or("multipart/form-data headers missing terminator")?;
+    let headers_bytes = &bytes[pos..headers_end];
+    pos = headers_end.saturating_add(4);
+
+    let headers_str = String::from_utf8_lossy(headers_bytes);
+    let mut disposition: Option<String> = None;
+    let mut content_type: Option<String> = None;
+    for line in headers_str.split("\r\n") {
+      if line.is_empty() {
+        continue;
+      }
+      let Some((name, value)) = line.split_once(':') else {
+        continue;
+      };
+      let name = name.trim();
+      let value = value.trim();
+      if name.eq_ignore_ascii_case("content-disposition") {
+        disposition = Some(value.to_string());
+      } else if name.eq_ignore_ascii_case("content-type") {
+        content_type = Some(value.to_string());
+      }
+    }
+
+    let disposition = disposition.ok_or("multipart/form-data part missing Content-Disposition")?;
+    let (field_name, filename) = parse_content_disposition_form_data(&disposition)?;
+
+    let delimiter_pos = find_subslice(bytes, &delimiter, pos).ok_or("multipart/form-data part missing boundary")?;
+    let part_bytes = &bytes[pos..delimiter_pos];
+    pos = delimiter_pos.saturating_add(2); // Skip the leading CRLF.
+
+    if !bytes.get(pos..).is_some_and(|b| b.starts_with(&marker)) {
+      return Err("multipart/form-data boundary mismatch");
+    }
+    pos = pos.saturating_add(marker.len());
+
+    let value = match filename {
+      Some(filename) => {
+        let r#type = content_type
+          .as_deref()
+          .map(normalize_content_type_for_blob)
+          .unwrap_or_default();
+        window_form_data::FormDataValue::Blob {
+          data: window_blob::BlobData {
+            bytes: part_bytes.to_vec(),
+            r#type,
+          },
+          filename,
+        }
+      }
+      None => window_form_data::FormDataValue::String(String::from_utf8_lossy(part_bytes).into_owned()),
+    };
+
+    out.push(window_form_data::FormDataEntry {
+      name: field_name,
+      value,
+    });
+  }
+}
+
+fn parse_urlencoded_form_data(bytes: &[u8]) -> Vec<window_form_data::FormDataEntry> {
+  url::form_urlencoded::parse(bytes)
+    .into_owned()
+    .map(|(name, value)| window_form_data::FormDataEntry {
+      name,
+      value: window_form_data::FormDataValue::String(value),
+    })
+    .collect()
+}
+
+fn parse_form_data_entries_from_body(
+  content_type: Option<&str>,
+  bytes: &[u8],
+) -> Result<Vec<window_form_data::FormDataEntry>, &'static str> {
+  let content_type = content_type.ok_or("Body.formData requires a Content-Type header")?;
+  let essence = normalize_content_type_for_blob(content_type);
+  match essence.as_str() {
+    "application/x-www-form-urlencoded" => Ok(parse_urlencoded_form_data(bytes)),
+    "multipart/form-data" => {
+      let boundary = extract_multipart_boundary(content_type).ok_or("multipart/form-data missing boundary")?;
+      parse_multipart_form_data(bytes, &boundary)
+    }
+    _ => Err("Body.formData unsupported Content-Type"),
+  }
+}
+
 fn apply_request_init(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2296,6 +2504,100 @@ fn request_blob_native(
   Ok(cap.promise)
 }
 
+fn request_form_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, request_id) = request_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  let (bytes_result, content_type_result): (
+    std::result::Result<Vec<u8>, WebFetchError>,
+    std::result::Result<Option<String>, WebFetchError>,
+  ) = with_env_state_mut(env_id, |state| {
+    let req = state
+      .requests
+      .get_mut(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    let bytes_result = match req.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    let content_type_result = req.headers.get("Content-Type");
+    Ok((bytes_result, content_type_result))
+  })?;
+
+  match (bytes_result, content_type_result) {
+    (Ok(bytes), Ok(content_type)) => {
+      let entries = parse_form_data_entries_from_body(content_type.as_deref(), &bytes);
+      match entries {
+        Ok(entries) => {
+          let form_data_result = window_form_data::create_form_data_with_entries(vm, scope, callee, entries);
+          match form_data_result {
+            Ok(fd_obj) => {
+              vm.call_with_host_and_hooks(
+                &mut *host,
+                scope,
+                host_hooks,
+                cap.resolve,
+                Value::Undefined,
+                &[Value::Object(fd_obj)],
+              )?;
+            }
+            Err(err) => {
+              let err_value = match err {
+                VmError::TypeError(msg) => create_type_error(vm, scope, &mut *host, host_hooks, msg)?,
+                other => {
+                  let msg = other.to_string();
+                  create_type_error(vm, scope, &mut *host, host_hooks, &msg)?
+                }
+              };
+              vm.call_with_host_and_hooks(
+                &mut *host,
+                scope,
+                host_hooks,
+                cap.reject,
+                Value::Undefined,
+                &[err_value],
+              )?;
+            }
+          }
+        }
+        Err(msg) => {
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, msg)?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+        }
+      }
+    }
+    (Err(err), _) | (_, Err(err)) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
 fn request_json_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2837,6 +3139,100 @@ fn response_blob_native(
         }
         Err(err) => {
           let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+        }
+      }
+    }
+    (Err(err), _) | (_, Err(err)) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
+fn response_form_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  let (bytes_result, content_type_result): (
+    std::result::Result<Vec<u8>, WebFetchError>,
+    std::result::Result<Option<String>, WebFetchError>,
+  ) = with_env_state_mut(env_id, |state| {
+    let res = state
+      .responses
+      .get_mut(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    let bytes_result = match res.body.as_mut() {
+      Some(body) => body.consume_bytes(),
+      None => Ok(Vec::new()),
+    };
+    let content_type_result = res.headers.get("Content-Type");
+    Ok((bytes_result, content_type_result))
+  })?;
+
+  match (bytes_result, content_type_result) {
+    (Ok(bytes), Ok(content_type)) => {
+      let entries = parse_form_data_entries_from_body(content_type.as_deref(), &bytes);
+      match entries {
+        Ok(entries) => {
+          let form_data_result = window_form_data::create_form_data_with_entries(vm, scope, callee, entries);
+          match form_data_result {
+            Ok(fd_obj) => {
+              vm.call_with_host_and_hooks(
+                &mut *host,
+                scope,
+                host_hooks,
+                cap.resolve,
+                Value::Undefined,
+                &[Value::Object(fd_obj)],
+              )?;
+            }
+            Err(err) => {
+              let err_value = match err {
+                VmError::TypeError(msg) => create_type_error(vm, scope, &mut *host, host_hooks, msg)?,
+                other => {
+                  let msg = other.to_string();
+                  create_type_error(vm, scope, &mut *host, host_hooks, &msg)?
+                }
+              };
+              vm.call_with_host_and_hooks(
+                &mut *host,
+                scope,
+                host_hooks,
+                cap.reject,
+                Value::Undefined,
+                &[err_value],
+              )?;
+            }
+          }
+        }
+        Err(msg) => {
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, msg)?;
           vm.call_with_host_and_hooks(
             &mut *host,
             scope,
@@ -4188,6 +4584,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.heap_mut().object_set_prototype(blob_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "blob", Value::Object(blob_fn), true)?;
 
+    let form_data_id = vm.register_native_call(request_form_data_native)?;
+    let form_data_name = scope.alloc_string("formData")?;
+    scope.push_root(Value::String(form_data_name))?;
+    let form_data_fn = scope.alloc_native_function(form_data_id, None, form_data_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(form_data_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "formData", Value::Object(form_data_fn), true)?;
+
     // bodyUsed accessor (getter only).
     let body_used_get_id = vm.register_native_call(request_body_used_get_native)?;
     let body_used_get_name = scope.alloc_string("get bodyUsed")?;
@@ -4271,6 +4676,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     let blob_fn = scope.alloc_native_function(blob_id, None, blob_name, 0)?;
     scope.heap_mut().object_set_prototype(blob_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "blob", Value::Object(blob_fn), true)?;
+
+    let form_data_id = vm.register_native_call(response_form_data_native)?;
+    let form_data_name = scope.alloc_string("formData")?;
+    scope.push_root(Value::String(form_data_name))?;
+    let form_data_fn = scope.alloc_native_function(form_data_id, None, form_data_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(form_data_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "formData", Value::Object(form_data_fn), true)?;
 
     let clone_id = vm.register_native_call(response_clone_native)?;
     let clone_name = scope.alloc_string("clone")?;
@@ -7162,6 +7576,134 @@ mod tests {
       "------fastrenderformdata1--\r\n"
     );
     assert_eq!(text, expected);
+
+    Ok(())
+  }
+
+  fn clone_form_data_entries_for_test(
+    host: &mut EventLoopHost,
+    fd_obj: GcObject,
+  ) -> Result<Vec<window_form_data::FormDataEntry>, VmError> {
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let vm_guard = vm.execution_context_guard(ExecutionContext {
+      realm: realm.id(),
+      script_or_module: None,
+    });
+    window_form_data::clone_form_data_entries_for_fetch(&vm_guard, heap, Value::Object(fd_obj))?
+      .ok_or(VmError::InvariantViolation("expected FormData object"))
+  }
+
+  #[test]
+  fn request_form_data_parses_url_search_params_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "new Request('https://example.invalid/', { method: 'POST', body: new URLSearchParams('a=1&b=2') }).formData()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Request.formData must return a Promise object",
+      ));
+    };
+
+    let fd_obj = {
+      let heap = host.window.heap();
+      assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+      let Some(result) = heap.promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "Request.formData promise missing result",
+        ));
+      };
+      let Value::Object(fd_obj) = result else {
+        return Err(VmError::InvariantViolation(
+          "Request.formData must resolve to a FormData object",
+        ));
+      };
+      fd_obj
+    };
+
+    let entries = clone_form_data_entries_for_test(&mut host, fd_obj)?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "a");
+    match &entries[0].value {
+      window_form_data::FormDataValue::String(value) => assert_eq!(value, "1"),
+      other => panic!("expected string entry, got {other:?}"),
+    }
+    assert_eq!(entries[1].name, "b");
+    match &entries[1].value {
+      window_form_data::FormDataValue::String(value) => assert_eq!(value, "2"),
+      other => panic!("expected string entry, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_form_data_parses_multipart_body_roundtrip() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      r#"(function(){
+           const fd = new FormData();
+           fd.append('a', 'b');
+           fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');
+           return new Response(fd).formData();
+         })()"#,
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Response.formData must return a Promise object",
+      ));
+    };
+
+    let fd_obj = {
+      let heap = host.window.heap();
+      assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+      let Some(result) = heap.promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "Response.formData promise missing result",
+        ));
+      };
+      let Value::Object(fd_obj) = result else {
+        return Err(VmError::InvariantViolation(
+          "Response.formData must resolve to a FormData object",
+        ));
+      };
+      fd_obj
+    };
+
+    let entries = clone_form_data_entries_for_test(&mut host, fd_obj)?;
+    assert_eq!(entries.len(), 2);
+
+    assert_eq!(entries[0].name, "a");
+    match &entries[0].value {
+      window_form_data::FormDataValue::String(value) => assert_eq!(value, "b"),
+      other => panic!("expected string entry, got {other:?}"),
+    }
+
+    assert_eq!(entries[1].name, "file");
+    match &entries[1].value {
+      window_form_data::FormDataValue::Blob { data, filename } => {
+        assert_eq!(filename, "f.txt");
+        assert_eq!(data.r#type, "text/plain");
+        assert_eq!(data.bytes.as_slice(), b"hi");
+      }
+      other => panic!("expected blob entry, got {other:?}"),
+    }
 
     Ok(())
   }

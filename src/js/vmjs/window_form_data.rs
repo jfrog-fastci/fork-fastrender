@@ -39,6 +39,7 @@ struct FormDataRegistry {
 }
 
 struct FormDataRealmState {
+  form_data_proto: GcObject,
   blob_proto: Option<GcObject>,
   forms: HashMap<WeakGcObject, Vec<FormDataEntry>>,
   iterators: HashMap<WeakGcObject, FormDataIteratorState>,
@@ -1015,6 +1016,7 @@ pub fn install_window_form_data_bindings(
   registry.realms.insert(
     realm_id,
     FormDataRealmState {
+      form_data_proto: proto,
       blob_proto,
       forms: HashMap::new(),
       iterators: HashMap::new(),
@@ -1030,6 +1032,30 @@ pub fn teardown_window_form_data_bindings_for_realm(realm_id: RealmId) {
     .lock()
     .unwrap_or_else(|err| err.into_inner());
   registry.realms.remove(&realm_id);
+}
+
+pub(crate) fn create_form_data_with_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  entries: Vec<FormDataEntry>,
+) -> Result<GcObject, VmError> {
+  if form_data_total_bytes(&entries)? > MAX_FORM_DATA_BYTES {
+    return Err(VmError::TypeError("FormData exceeds maximum length"));
+  }
+
+  let proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.form_data_proto))?;
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  with_realm_state_mut(vm, scope, callee, |state| {
+    state.forms.insert(WeakGcObject::from(obj), entries);
+    Ok(())
+  })?;
+
+  Ok(obj)
 }
 
 pub(crate) fn clone_form_data_entries_for_fetch(
