@@ -1689,6 +1689,22 @@ purity:
   }
 
   #[test]
+  fn effect_summary_accepts_effect_set_shorthand() {
+    let yaml = r#"
+name: x
+effects: Pure
+effect_summary: "IO | MAY_THROW"
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::IO));
+    assert!(!api.effect_summary.flags.contains(EffectSet::MAY_THROW));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
   fn parse_yaml_schema_module_v1() {
     let yaml = include_str!("../core/json.yaml");
     let entries = parse_api_semantics_yaml_str(yaml).expect("parse core/json.yaml");

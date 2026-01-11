@@ -113,7 +113,7 @@ Each API entry supports (at minimum):
 - `aliases`: optional list of alternate spellings.
 - `kind`: `function|constructor|getter|setter|value` (defaults to `function`).
 - `effects`: effect-model `EffectTemplate` (or a structured object, see below).
-- `effect_summary`: optional effect-model `EffectSet` overriding the computed summary.
+- `effect_summary`: optional effect-model `EffectSummary` overriding the computed summary (may also be written as an `EffectSet` expression like `IO | MAY_THROW`).
 - `purity`: effect-model `PurityTemplate` (or a structured object, see below).
 - `semantics`: optional short tag like `Map`, `Fetch`, `JsonParse`.
 - `signature`: optional documentation-only signature hint.

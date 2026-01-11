@@ -283,10 +283,60 @@ mod effect_set_serde {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EffectSummary {
   pub flags: EffectFlags,
   pub throws: ThrowBehavior,
+}
+
+#[cfg(feature = "serde")]
+mod effect_summary_serde {
+  use super::{EffectFlags, EffectSet, EffectSummary, ThrowBehavior};
+  use serde::ser::SerializeStruct;
+  use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+  impl Serialize for EffectSummary {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+      let has_may_throw = self.flags.contains(EffectSet::MAY_THROW);
+      let flags = self.flags & !EffectSet::MAY_THROW;
+      let throws = if has_may_throw {
+        ThrowBehavior::join(self.throws, ThrowBehavior::Maybe)
+      } else {
+        self.throws
+      };
+
+      let mut out = serializer.serialize_struct("EffectSummary", 2)?;
+      out.serialize_field("flags", &flags)?;
+      out.serialize_field("throws", &throws)?;
+      out.end()
+    }
+  }
+
+  impl<'de> Deserialize<'de> for EffectSummary {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+      #[derive(Deserialize)]
+      #[serde(untagged)]
+      enum Repr {
+        Summary { flags: EffectFlags, throws: ThrowBehavior },
+        Flags(EffectSet),
+      }
+
+      let summary = match Repr::deserialize(deserializer)? {
+        Repr::Summary { flags, throws } => {
+          let has_may_throw = flags.contains(EffectSet::MAY_THROW);
+          let flags = flags & !EffectSet::MAY_THROW;
+          let throws = if has_may_throw {
+            ThrowBehavior::join(throws, ThrowBehavior::Maybe)
+          } else {
+            throws
+          };
+          EffectSummary { flags, throws }
+        }
+        Repr::Flags(flags) => flags.to_effect_summary(),
+      };
+
+      Ok(summary)
+    }
+  }
 }
 
 impl EffectSummary {
@@ -408,7 +458,7 @@ impl EffectTemplate {
               "EffectTemplate::apply arg index {idx} out of range (len={})",
               arg_effects.len()
             );
-            effects |= EffectSet::UNKNOWN | EffectSet::MAY_THROW;
+            effects |= EffectSet::UNKNOWN_CALL;
           }
         }
         effects
