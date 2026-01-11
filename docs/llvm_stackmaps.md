@@ -70,6 +70,11 @@ uint64_t Constant;
 struct StkMapRecord {
   uint64_t PatchPointID;        // For statepoints: the i64 "ID" operand
   uint32_t InstructionOffset;   // from function entry
+                               // NOTE (statepoints): this is the "return PC" lookup key. For
+                               // `gc.statepoint` with `patch_bytes=0`, it points at the instruction
+                               // *after* the call. For `patch_bytes>0` (patchable callsites), it
+                               // points at the end of the reserved patch region (x86_64: NOP sled).
+                               // See `docs/llvm_statepoint_stackmap_abi.md`.
   uint16_t Reserved;            // = 0
   uint16_t NumLocations;
 
