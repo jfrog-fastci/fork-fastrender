@@ -1,4 +1,4 @@
-use crate::api::ConsoleMessageLevel;
+use crate::api::{BrowserDocumentDom2, ConsoleMessageLevel};
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
@@ -10,7 +10,8 @@ use crate::js::document_write::{current_document_write_state_mut, DocumentWriteL
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
-use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState};
+use crate::js::{runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, VmJsHostContext, WindowHostState};
+use crate::js::host_document::ActiveEventGuard;
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
@@ -469,8 +470,8 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    let mut dummy_host = ();
-    self.exec_script_source_with_host_and_hooks(&mut dummy_host, hooks, source)
+    let mut host_ctx = VmJsHostContext::default();
+    self.exec_script_source_with_host_and_hooks(&mut host_ctx, hooks, source)
   }
 
   /// Execute a classic script with an explicit source name for stack traces.
@@ -581,14 +582,14 @@ impl WindowRealm {
       // - expose DOM shim exotic hooks to the evaluator, and
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
-      let mut dummy_host = ();
+      let mut host_ctx = VmJsHostContext::default();
       let mut any = VmJsHostHooksPayload::default();
-      any.set_vm_host(&mut dummy_host);
+      any.set_vm_host(&mut host_ctx);
       let mut hooks = WindowRealmDomShimHooks {
         microtasks: &mut guard.queue,
         any,
       };
-      rt.exec_script_source_with_host_and_hooks(&mut dummy_host, &mut hooks, source)
+      rt.exec_script_source_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
     })
   }
 
@@ -1285,8 +1286,6 @@ thread_local! {
     RefCell::new(HashMap::new());
   static DOM_HOST_SOURCES: RefCell<HashMap<u64, NonNull<dyn DomHostVmJs>>> =
     RefCell::new(HashMap::new());
-  static ACTIVE_EVENTS: RefCell<HashMap<u64, NonNull<web_events::Event>>> =
-    RefCell::new(HashMap::new());
 }
 
 fn register_current_script_source(state: CurrentScriptStateHandle) -> u64 {
@@ -1348,13 +1347,40 @@ fn event_active_event_id(scope: &mut Scope<'_>, event_obj: GcObject) -> Result<O
   })
 }
 
-fn with_active_dom_event<R>(
+fn push_active_event_for_host(
+  host: &mut dyn VmHost,
+  event_id: u64,
+  event: &mut web_events::Event,
+) -> Option<ActiveEventGuard> {
+  let any = host.as_any_mut();
+  if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+    return Some(host.push_active_event(event_id, event));
+  }
+  if let Some(host) = any.downcast_mut::<VmJsHostContext>() {
+    return Some(host.push_active_event(event_id, event));
+  }
+  if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+    return Some(host.push_active_event(event_id, event));
+  }
+  None
+}
+
+fn with_active_event_for_host<R>(
+  host: &mut dyn VmHost,
   event_id: u64,
   f: impl FnOnce(&mut web_events::Event) -> R,
 ) -> Option<R> {
-  let ptr = ACTIVE_EVENTS.with(|events| events.borrow().get(&event_id).copied())?;
-  // Safety: the pointer is installed by the dispatch invoker for the duration of a listener call.
-  Some(unsafe { f(&mut *ptr.as_ptr()) })
+  let any = host.as_any_mut();
+  if let Some(host) = any.downcast_mut::<DocumentHostState>() {
+    return host.with_active_event(event_id, f);
+  }
+  if let Some(host) = any.downcast_mut::<VmJsHostContext>() {
+    return host.with_active_event(event_id, f);
+  }
+  if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
+    return host.with_active_event(event_id, f);
+  }
+  None
 }
 
 pub(crate) fn dataset_exotic_get(
@@ -5206,7 +5232,7 @@ fn custom_event_init_custom_event_native(
 fn event_prototype_prevent_default_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -5219,10 +5245,11 @@ fn event_prototype_prevent_default_native(
   };
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
-    if with_active_dom_event(event_id, |event| event.prevent_default()).is_some() {
+    if let Some(default_prevented) = with_active_event_for_host(host, event_id, |event| {
+      event.prevent_default();
+      event.default_prevented
+    }) {
       let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-      let default_prevented =
-        with_active_dom_event(event_id, |event| event.default_prevented).unwrap_or(false);
       scope.define_property(
         event_obj,
         default_prevented_key,
@@ -5254,7 +5281,7 @@ fn event_prototype_prevent_default_native(
 fn event_prototype_stop_propagation_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -5267,7 +5294,7 @@ fn event_prototype_stop_propagation_native(
   };
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
-    if with_active_dom_event(event_id, |event| event.stop_propagation()).is_some() {
+    if with_active_event_for_host(host, event_id, |event| event.stop_propagation()).is_some() {
       let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
       scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
       return Ok(Value::Undefined);
@@ -5282,7 +5309,7 @@ fn event_prototype_stop_propagation_native(
 fn event_prototype_stop_immediate_propagation_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -5295,7 +5322,8 @@ fn event_prototype_stop_immediate_propagation_native(
   };
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
-    if with_active_dom_event(event_id, |event| event.stop_immediate_propagation()).is_some() {
+    if with_active_event_for_host(host, event_id, |event| event.stop_immediate_propagation()).is_some()
+    {
       let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
       scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
       return Ok(Value::Undefined);
@@ -6506,19 +6534,6 @@ fn remove_listener_root_if_unused(
   Ok(())
 }
 
-struct ActiveDomEventGuard {
-  event_id: u64,
-}
-
-impl Drop for ActiveDomEventGuard {
-  fn drop(&mut self) {
-    let event_id = self.event_id;
-    ACTIVE_EVENTS.with(|events| {
-      events.borrow_mut().remove(&event_id);
-    });
-  }
-}
-
 /// [`web_events::EventListenerInvoker`] that calls `addEventListener` callbacks registered inside a
 /// [`WindowRealm`].
 ///
@@ -6754,30 +6769,6 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
     Self::sync_event_object(&mut vm, &mut scope, window_obj, document_obj, event_obj, event)
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
-    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-    ACTIVE_EVENTS.with(|events| {
-      events
-        .borrow_mut()
-        .insert(event_id, NonNull::from(&mut *event));
-    });
-    let _active_guard = ActiveDomEventGuard { event_id };
-    let event_id_key =
-      alloc_key(&mut scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
-    scope
-      .define_property(
-        event_obj,
-        event_id_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Data {
-            value: Value::Number(event_id as f64),
-            writable: true,
-          },
-        },
-      )
-      .map_err(|e| web_events::DomError::new(e.to_string()))?;
-
     let current_target = match event.current_target {
       Some(t) => Self::js_value_for_target(
         &mut vm,
@@ -6798,6 +6789,25 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
     // SAFETY: The embedding stores a stable heap-allocated host context (e.g. `BrowserDocumentDom2`)
     // for the lifetime of the `WindowRealm` and updates the pointer on navigations.
     let host_ctx: &mut dyn VmHost = unsafe { host_ptr.as_mut() };
+
+    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+    let _active_guard = push_active_event_for_host(host_ctx, event_id, event);
+    let event_id_key =
+      alloc_key(&mut scope, EVENT_ID_KEY).map_err(|e| web_events::DomError::new(e.to_string()))?;
+    scope
+      .define_property(
+        event_obj,
+        event_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(event_id as f64),
+            writable: true,
+          },
+        },
+      )
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     // Route Promise jobs (and other hooks) through the host event loop microtask queue.
     let mut host_hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
@@ -7079,12 +7089,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
 
     // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
     let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-    ACTIVE_EVENTS.with(|events| {
-      events
-        .borrow_mut()
-        .insert(event_id, NonNull::from(&mut *event));
-    });
-    let _active_guard = ActiveDomEventGuard { event_id };
+    let _active_guard = push_active_event_for_host(vm_host, event_id, event);
 
     let event_id_key = alloc_key(scope, EVENT_ID_KEY)
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
@@ -7704,12 +7709,7 @@ fn event_target_dispatch_event_native(
 
           // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
           let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-          ACTIVE_EVENTS.with(|events| {
-            events
-              .borrow_mut()
-              .insert(event_id, NonNull::from(&mut rust_event));
-          });
-          let _active_guard = ActiveDomEventGuard { event_id };
+          let _active_guard = push_active_event_for_host(vm_host, event_id, &mut rust_event);
 
           let event_id_key = alloc_key(scope, EVENT_ID_KEY)?;
           scope.define_property(event_obj, event_id_key, data_desc(Value::Number(event_id as f64)))?;
@@ -16460,8 +16460,9 @@ mod tests {
       Value::Object(obj) => obj,
       other => panic!("expected Event object, got {other:?}"),
     };
-    let document_listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-    let mut vm_host = ();
+    let document_listener_roots =
+      super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let mut vm_host = VmJsHostContext::default();
     let mut hooks = NoopHostHooks::default();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,
@@ -16493,6 +16494,79 @@ mod tests {
     )
     .expect("dispatch_event should succeed");
     assert_eq!(default_not_prevented, false);
+    assert_eq!(event.default_prevented, true);
+    Ok(())
+  }
+
+  #[test]
+  fn dom_event_prevent_default_does_not_affect_other_event_objects() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script(
+      "document.addEventListener('x', (_e) => {\n\
+         const other = new Event('x', { cancelable: true });\n\
+         other.preventDefault();\n\
+       });\n\
+       globalThis.__ev = new Event('x', { cancelable: true });",
+    )?;
+
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let global = realm_ref.global_object();
+    let document_obj = match get_prop(&mut vm, &mut scope, global, "document")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected document object, got {other:?}"),
+    };
+    let event_obj = match get_prop(&mut vm, &mut scope, global, "__ev")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected Event object, got {other:?}"),
+    };
+    let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let mut vm_host = VmJsHostContext::default();
+    let mut hooks = NoopHostHooks::default();
+    let mut invoker = super::VmJsDomEventInvoker {
+      vm: &mut *vm,
+      scope: &mut scope,
+      vm_host: &mut vm_host,
+      hooks: &mut hooks,
+      window_obj: global,
+      document_obj,
+      event_obj,
+      document_listener_roots: listener_roots,
+      opaque_target_obj: None,
+      registry: dom.events(),
+    };
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    let default_not_prevented = web_events::dispatch_event(
+      web_events::EventTargetId::Document,
+      &mut event,
+      dom.as_ref(),
+      dom.events(),
+      &mut invoker,
+    )
+    .expect("dispatch_event should succeed");
+    assert_eq!(default_not_prevented, true);
+    assert_eq!(event.default_prevented, false);
     Ok(())
   }
 

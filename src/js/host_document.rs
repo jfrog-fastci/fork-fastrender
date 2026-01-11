@@ -1,8 +1,68 @@
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 use crate::dom2;
 use crate::js::{CurrentScriptHost, CurrentScriptStateHandle, DomHost, ScriptExecutionLog};
 use crate::web::events;
+
+#[derive(Debug, Default)]
+pub(crate) struct ActiveEventStack {
+  stack: Vec<ActiveEventEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveEventEntry {
+  event_id: u64,
+  event: NonNull<events::Event>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ActiveEventGuard {
+  stack: *mut ActiveEventStack,
+  event_id: u64,
+}
+
+impl Drop for ActiveEventGuard {
+  fn drop(&mut self) {
+    // SAFETY: `ActiveEventGuard` is only created by `ActiveEventStack::push`, which stores a raw
+    // pointer to the originating stack. The stack outlives the guard because it is owned by the
+    // `VmHost` passed into JS execution (and the guard is dropped before returning from that call).
+    let stack = unsafe { &mut *self.stack };
+    if let Some(last) = stack.stack.last() {
+      if last.event_id == self.event_id {
+        stack.stack.pop();
+        return;
+      }
+    }
+    // Out-of-order drop should not happen, but avoid leaking active-event state if it does.
+    if let Some(pos) = stack.stack.iter().rposition(|entry| entry.event_id == self.event_id) {
+      stack.stack.remove(pos);
+    }
+  }
+}
+
+impl ActiveEventStack {
+  pub(crate) fn push(&mut self, event_id: u64, event: &mut events::Event) -> ActiveEventGuard {
+    self.stack.push(ActiveEventEntry {
+      event_id,
+      event: NonNull::from(event),
+    });
+    ActiveEventGuard {
+      stack: self as *mut _,
+      event_id,
+    }
+  }
+
+  pub(crate) fn with_event<R>(
+    &mut self,
+    event_id: u64,
+    f: impl FnOnce(&mut events::Event) -> R,
+  ) -> Option<R> {
+    let ptr = self.stack.iter().rfind(|entry| entry.event_id == event_id)?.event;
+    // SAFETY: entries in `ActiveEventStack` are only created for the dynamic extent of dispatch.
+    Some(unsafe { f(&mut *ptr.as_ptr()) })
+  }
+}
 
 /// Host-owned document state that composes:
 /// - the mutable DOM tree (`dom2`),
@@ -21,6 +81,7 @@ pub struct HostDocumentState {
   events: Rc<events::EventListenerRegistry>,
   current_script: CurrentScriptStateHandle,
   script_log: Option<ScriptExecutionLog>,
+  active_events: ActiveEventStack,
 }
 
 /// Backwards-compatible alias retained for older call sites.
@@ -44,6 +105,7 @@ impl HostDocumentState {
       events: Rc::new(events::EventListenerRegistry::new()),
       current_script: CurrentScriptStateHandle::default(),
       script_log: None,
+      active_events: ActiveEventStack::default(),
     }
   }
 
@@ -81,6 +143,22 @@ impl HostDocumentState {
       return events::EventTargetId::Document;
     }
     events::EventTargetId::Node(node)
+  }
+
+  pub(crate) fn push_active_event(
+    &mut self,
+    event_id: u64,
+    event: &mut events::Event,
+  ) -> ActiveEventGuard {
+    self.active_events.push(event_id, event)
+  }
+
+  pub(crate) fn with_active_event<R>(
+    &mut self,
+    event_id: u64,
+    f: impl FnOnce(&mut events::Event) -> R,
+  ) -> Option<R> {
+    self.active_events.with_event(event_id, f)
   }
 }
 

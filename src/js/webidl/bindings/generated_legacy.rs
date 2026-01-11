@@ -1062,7 +1062,6 @@ pub mod window {
       _ => Err(rt.throw_type_error(&format!("No matching overload for Window.alert with {} arguments.\nCandidates:\n  - Window.alert()\n  - Window.alert(DOMString)", args.len()))),
     }
   }
-
   #[allow(dead_code)]
   fn window_clear_interval<Host, R>(
     rt: &mut R,

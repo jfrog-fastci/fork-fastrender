@@ -2,6 +2,7 @@ use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
 use crate::js::clock::{Clock, RealClock};
+use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::{BoxNode, BoxType};
@@ -40,6 +41,7 @@ pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
   dom: Box<crate::dom2::Document>,
   dom_source_id: Option<u64>,
+  active_events: ActiveEventStack,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
@@ -83,6 +85,7 @@ impl BrowserDocumentDom2 {
       renderer,
       dom,
       dom_source_id: None,
+      active_events: ActiveEventStack::default(),
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -100,6 +103,22 @@ impl BrowserDocumentDom2 {
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
     })
+  }
+
+  pub(crate) fn push_active_event(
+    &mut self,
+    event_id: u64,
+    event: &mut crate::web::events::Event,
+  ) -> ActiveEventGuard {
+    self.active_events.push(event_id, event)
+  }
+
+  pub(crate) fn with_active_event<R>(
+    &mut self,
+    event_id: u64,
+    f: impl FnOnce(&mut crate::web::events::Event) -> R,
+  ) -> Option<R> {
+    self.active_events.with_event(event_id, f)
   }
 
   /// Fetches and prepares a URL using the internal renderer, replacing the live `dom2` document

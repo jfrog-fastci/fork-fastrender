@@ -1,5 +1,6 @@
 use crate::dom2;
 use crate::js::CurrentScriptStateHandle;
+use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use std::ptr::NonNull;
 
 /// Embedder-provided host context passed to `vm-js` native call/construct handlers.
@@ -20,6 +21,7 @@ use std::ptr::NonNull;
 pub struct VmJsHostContext {
   dom: Option<NonNull<dom2::Document>>,
   current_script_state: Option<CurrentScriptStateHandle>,
+  active_events: ActiveEventStack,
 }
 
 impl VmJsHostContext {
@@ -30,6 +32,7 @@ impl VmJsHostContext {
     Self {
       dom,
       current_script_state,
+      active_events: ActiveEventStack::default(),
     }
   }
 
@@ -65,5 +68,20 @@ impl VmJsHostContext {
   pub fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
     self.current_script_state.as_ref()
   }
-}
 
+  pub(crate) fn push_active_event(
+    &mut self,
+    event_id: u64,
+    event: &mut crate::web::events::Event,
+  ) -> ActiveEventGuard {
+    self.active_events.push(event_id, event)
+  }
+
+  pub(crate) fn with_active_event<R>(
+    &mut self,
+    event_id: u64,
+    f: impl FnOnce(&mut crate::web::events::Event) -> R,
+  ) -> Option<R> {
+    self.active_events.with_event(event_id, f)
+  }
+}
