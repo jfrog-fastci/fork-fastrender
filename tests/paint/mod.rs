@@ -18,6 +18,7 @@ mod unscaled_image_snapping_preserves_border;
 mod border_image_outset_bounds;
 mod border_triangle;
 mod fieldset_legend_border_gap;
+mod hr_default_style;
 mod rounded_border_solid;
 mod rounded_border_solid_snapping;
 mod box_shadow_outset_transparent_interior;

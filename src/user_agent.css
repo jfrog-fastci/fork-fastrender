@@ -671,10 +671,12 @@ noscript {
 hr {
     display: block;
     box-sizing: content-box;
-    height: 1px;
+    height: 0;
     margin: 0.5em auto;
-    color: gray;
-    border: 1px inset currentColor;
+    overflow: hidden;
+    border-style: inset;
+    border-width: 1px;
+    border-color: #c0c0c0;
 }
 
 /* ==========================================================================
