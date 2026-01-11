@@ -7,9 +7,7 @@ use inkwell::values::FunctionValue;
 
 use crate::llvm::gc::GC_STRATEGY;
 
-pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {
-  func.set_gc(GC_STRATEGY);
-
+pub(crate) fn apply_stack_walking_frame_attrs(context: &Context, func: FunctionValue<'_>) {
   // Required for deterministic GC stack walking:
   //
   // - `frame-pointer="all"`: force a stable frame chain we can walk.
@@ -19,6 +17,11 @@ pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'
 
   func.add_attribute(AttributeLoc::Function, frame_pointer);
   func.add_attribute(AttributeLoc::Function, disable_tail_calls);
+}
+
+pub(crate) fn apply_stack_walking_attrs(context: &Context, func: FunctionValue<'_>) {
+  func.set_gc(GC_STRATEGY);
+  apply_stack_walking_frame_attrs(context, func);
 }
 
 /// LLVM code generator.

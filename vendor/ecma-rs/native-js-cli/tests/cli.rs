@@ -24,6 +24,40 @@ fn run_with_timeout(
 }
 
 #[test]
+fn check_succeeds_on_simple_program() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .success();
+}
+
+#[test]
+fn check_fails_on_any() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "const x: any = 1;\nexport function main(): number { return 0; }\n",
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0010"))
+    .stderr(predicates::str::contains("`any` is not supported"));
+}
+
+#[test]
 fn build_and_run_returns_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
@@ -49,16 +83,12 @@ fn emit_llvm_ir_contains_symbols() {
   let entry = tmp.path().join("entry.ts");
   fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
 
-  let out = tmp.path().join("out-bin");
   let ll = tmp.path().join("out.ll");
   native_js()
     .timeout(Duration::from_secs(60))
-    .arg("build")
+    .arg("emit-ir")
     .arg(&entry)
     .arg("-o")
-    .arg(&out)
-    .arg("--emit=llvm-ir")
-    .arg("--emit-path")
     .arg(&ll)
     .assert()
     .success();
@@ -66,6 +96,23 @@ fn emit_llvm_ir_contains_symbols() {
   let text = fs::read_to_string(&ll).unwrap();
   assert!(text.contains("@ts_main"), "expected IR to mention ts_main");
   assert!(text.contains("define"), "expected IR to contain function definitions");
+}
+
+#[test]
+fn run_prints_exit_code() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 42; }\n").unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("run")
+    .arg(&entry)
+    .arg("--")
+    .arg("--dummy-arg")
+    .assert()
+    .success()
+    .stdout("42\n");
 }
 
 #[test]
