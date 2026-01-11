@@ -17,6 +17,7 @@ members = [
   "emit-js",
   "vm-js",
   "runtime-js",
+  "runtime-native",
   "webidl",
   "webidl-vm-js",
   "types-ts-interned",
@@ -52,6 +53,7 @@ typecheck-ts = { path = "typecheck-ts", version = "0.1.0" }
 types-ts-interned = { path = "types-ts-interned", version = "0.1.0" }
 vm-js = { path = "vm-js", version = "0.1.0" }
 runtime-js = { path = "runtime-js", version = "0.1.0" }
+runtime-native = { path = "runtime-native", version = "0.1.0" }
 webidl = { path = "webidl", version = "0.1.0" }
 webidl-vm-js = { path = "webidl-vm-js", version = "0.1.0" }
 
@@ -76,6 +78,7 @@ indexmap = "=2.5.0"
 itertools = "0.10.5"
 inkwell = { version = "0.5.0", default-features = false, features = ["llvm18-0"] }
 json5 = "0.4"
+libc = "0.2"
 llvm-sys = { version = "180", features = ["prefer-dynamic"] }
 maplit = "1"
 memchr = "2"

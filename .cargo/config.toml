@@ -34,7 +34,11 @@ rustc-workspace-wrapper = ""
 # Use LLVM's lld linker on Linux for much faster links (and to avoid sporadic `rust-lld` SIGBUS
 # incidents observed under heavy concurrency).
 #
-# `clang` is used as the linker driver because it consistently supports `-fuse-ld=...`.
+# We previously tried `-fuse-ld=mold`, but Ubuntu's Clang build doesn't accept `mold` as a valid
+# `-fuse-ld` argument.
+#
+# `clang` is used as the linker driver because it consistently supports `-fuse-ld=...` (including
+# passing an explicit linker path).
 [target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
