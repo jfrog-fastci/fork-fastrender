@@ -157,6 +157,19 @@ fn register_requires_nonblocking() {
 }
 
 #[test]
+fn token_wake_is_reserved() {
+  let (read, _write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  let err = reactor
+    .register(read.as_fd(), Token::WAKE, Interest::READABLE)
+    .expect_err("expected Token::WAKE registration to fail");
+
+  assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "got {err:?}");
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
@@ -320,6 +333,31 @@ fn waker_interrupts_poll() {
   assert!(
     start.elapsed() < Duration::from_secs(1),
     "wake did not interrupt poll promptly: {:?}",
+    start.elapsed()
+  );
+  assert!(
+    events.iter().any(|e| e.token == Token::WAKE),
+    "expected wake event, got {events:?}"
+  );
+}
+
+#[test]
+fn waker_interrupts_poll_none_timeout() {
+  let mut reactor = Reactor::new().unwrap();
+  let waker = reactor.waker();
+
+  std::thread::spawn(move || {
+    std::thread::sleep(Duration::from_millis(50));
+    waker.wake().unwrap();
+  });
+
+  let start = Instant::now();
+  let mut events = Vec::new();
+  reactor.poll(&mut events, None).unwrap();
+
+  assert!(
+    start.elapsed() < Duration::from_secs(1),
+    "wake did not interrupt poll(None) promptly: {:?}",
     start.elapsed()
   );
   assert!(
