@@ -18,6 +18,14 @@ pub mod pool;
 mod legacy;
 mod timeout;
 
+#[cfg(target_os = "linux")]
+mod op_readv_writev;
+#[cfg(target_os = "linux")]
+mod op_sendmsg_recvmsg;
+
+#[cfg(target_os = "linux")]
+pub use op_sendmsg_recvmsg::{RecvMsg, RecvMsgResource, SendMsg};
+
 pub use buf::{GcIoBuf, IoBuf, IoBufMut, OwnedIoBuf};
 pub use driver::{IoOp, IoUringDriver, OpCompletion, OpId};
 pub use gc::{GcHooks, GcPinGuard, GcRoot};
@@ -29,4 +37,3 @@ pub use pool::{LeasedBuf, PoolStats, ProvidedBufPool};
 
 #[cfg(test)]
 mod tests;
-

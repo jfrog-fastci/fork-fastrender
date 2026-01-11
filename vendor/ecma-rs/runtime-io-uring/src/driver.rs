@@ -113,6 +113,50 @@ mod imp {
 
     use io_uring::{opcode, types, IoUring};
 
+    use crate::op_readv_writev::{build_readv_iovecs, build_writev_iovecs};
+    use crate::op_sendmsg_recvmsg::{
+        build_recvmsg_iovecs, build_sendmsg_iovecs, copy_sockaddr_storage, RecvMsg, RecvMsgResource,
+        SendMsg,
+    };
+
+    /// `libc`'s `iovec`/`msghdr` contain raw pointers, so they are not `Send` by default.
+    ///
+    /// We only use these allocations as stable kernel metadata and never dereference the pointers
+    /// while the op is in-flight, so moving the owning boxes across threads is safe.
+    struct SendIovecs(Box<[libc::iovec]>);
+    unsafe impl Send for SendIovecs {}
+
+    impl SendIovecs {
+        fn as_ptr(&self) -> *const libc::iovec {
+            self.0.as_ptr()
+        }
+
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    struct SendMsgHdr(Box<libc::msghdr>);
+    unsafe impl Send for SendMsgHdr {}
+
+    impl SendMsgHdr {
+        fn as_ptr(&self) -> *const libc::msghdr {
+            self.0.as_ref() as *const _
+        }
+
+        fn as_mut_ptr(&mut self) -> *mut libc::msghdr {
+            self.0.as_mut() as *mut _
+        }
+
+        fn as_mut(&mut self) -> &mut libc::msghdr {
+            self.0.as_mut()
+        }
+
+        fn as_ref(&self) -> &libc::msghdr {
+            self.0.as_ref()
+        }
+    }
+
     /// Low-level `io_uring` driver.
     ///
     /// # Drop safety
@@ -243,6 +287,241 @@ mod imp {
                 Box::new(move |result| {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, buf);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        pub fn submit_readv<B: IoBufMut>(
+            &mut self,
+            fd: RawFd,
+            mut bufs: Vec<B>,
+            offset: Option<u64>,
+        ) -> io::Result<IoOp<Vec<B>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&shared);
+
+            let iovecs = SendIovecs(build_readv_iovecs(&mut bufs));
+            let iovecs_len: u32 = iovecs
+                .len()
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
+
+            let off = offset.unwrap_or(u64::MAX);
+            let entry = opcode::Readv::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
+                .offset(off as _)
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    let _iovecs = iovecs;
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        pub fn submit_writev<B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            bufs: Vec<B>,
+            offset: Option<u64>,
+        ) -> io::Result<IoOp<Vec<B>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&shared);
+
+            let iovecs = SendIovecs(build_writev_iovecs(&bufs));
+            let iovecs_len: u32 = iovecs
+                .len()
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
+
+            let off = offset.unwrap_or(u64::MAX);
+            let entry = opcode::Writev::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
+                .offset(off as _)
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    let _iovecs = iovecs;
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        pub fn submit_sendmsg<'a, B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            msg: SendMsg<'a, B>,
+        ) -> io::Result<IoOp<Vec<B>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&shared);
+
+            if msg.bufs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "sendmsg requires at least one buffer",
+                ));
+            }
+
+            let bufs = msg.bufs;
+            let iovecs = SendIovecs(build_sendmsg_iovecs(&bufs));
+            let name = match msg.name {
+                None => None,
+                Some(bytes) => Some(copy_sockaddr_storage(bytes)?),
+            };
+            let control = msg.control.map(|c| c.to_vec().into_boxed_slice());
+
+            let mut hdr: SendMsgHdr = SendMsgHdr(Box::new(unsafe { mem::zeroed() }));
+            hdr.as_mut().msg_iov = iovecs.as_ptr().cast_mut();
+            hdr.as_mut().msg_iovlen = iovecs.len();
+
+            if let Some(ref name) = name {
+                hdr.as_mut().msg_name =
+                    (name.as_ref() as *const libc::sockaddr_storage).cast_mut().cast();
+                hdr.as_mut().msg_namelen = msg.name.unwrap().len() as libc::socklen_t;
+            }
+
+            if let Some(ref control) = control {
+                hdr.as_mut().msg_control = control.as_ptr().cast_mut().cast();
+                hdr.as_mut().msg_controllen = control.len();
+            }
+
+            let entry = opcode::SendMsg::new(types::Fd(fd), hdr.as_ptr())
+                .flags(msg.flags as _)
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    let _keep = (iovecs, hdr, name, control);
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        pub fn submit_recvmsg<B: IoBufMut>(
+            &mut self,
+            fd: RawFd,
+            msg: RecvMsg<B>,
+        ) -> io::Result<IoOp<RecvMsgResource<B>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<RecvMsgResource<B>>> = Arc::downgrade(&shared);
+
+            if msg.bufs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recvmsg requires at least one buffer",
+                ));
+            }
+
+            let mut bufs = msg.bufs;
+            let iovecs = SendIovecs(build_recvmsg_iovecs(&mut bufs));
+
+            let name = if msg.want_name {
+                Some(Box::new(unsafe { mem::zeroed::<libc::sockaddr_storage>() }))
+            } else {
+                None
+            };
+            let control = msg
+                .control_len
+                .map(|len| vec![0u8; len].into_boxed_slice());
+
+            let mut hdr: SendMsgHdr = SendMsgHdr(Box::new(unsafe { mem::zeroed() }));
+            hdr.as_mut().msg_iov = iovecs.as_ptr().cast_mut();
+            hdr.as_mut().msg_iovlen = iovecs.len();
+
+            if let Some(ref name) = name {
+                hdr.as_mut().msg_name =
+                    (name.as_ref() as *const libc::sockaddr_storage).cast_mut().cast();
+                hdr.as_mut().msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            }
+
+            if let Some(ref control) = control {
+                hdr.as_mut().msg_control = control.as_ptr().cast_mut().cast();
+                hdr.as_mut().msg_controllen = control.len();
+            }
+
+            let entry = opcode::RecvMsg::new(types::Fd(fd), hdr.as_mut_ptr())
+                .flags(msg.flags as _)
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    let _iovecs = iovecs;
+                    let hdr_ref = hdr.as_ref();
+                    let msg_flags = if result < 0 { 0 } else { hdr_ref.msg_flags };
+
+                    let (name_len, control_len) = if result < 0 {
+                        (0usize, 0usize)
+                    } else {
+                        (
+                            hdr_ref.msg_namelen as usize,
+                            hdr_ref.msg_controllen as usize,
+                        )
+                    };
+
+                    let name_len = name
+                        .as_ref()
+                        .map(|_| name_len.min(std::mem::size_of::<libc::sockaddr_storage>()))
+                        .unwrap_or(0);
+                    let control_len = control
+                        .as_ref()
+                        .map(|c| control_len.min(c.len()))
+                        .unwrap_or(0);
+
+                    let resource = RecvMsgResource::new(
+                        bufs,
+                        name,
+                        name_len,
+                        control,
+                        control_len,
+                        msg_flags,
+                    );
+
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, resource);
                     }
                 }),
             );
