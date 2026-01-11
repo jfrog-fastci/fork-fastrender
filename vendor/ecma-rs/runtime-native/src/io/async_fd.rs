@@ -270,7 +270,13 @@ impl State {
     crate::rt_ensure_init();
     let key = NEXT_REGISTRY_KEY.fetch_add(1, Ordering::Relaxed);
     REGISTRY.lock().unwrap().insert(key, Arc::clone(arc));
-    let id = match async_rt::global().register_io(self.fd, desired, on_io_ready, key as *mut u8) {
+    let id = match async_rt::global().register_io_with_drop(
+      self.fd,
+      desired,
+      on_io_ready,
+      key as *mut u8,
+      drop_watcher_key,
+    ) {
       Ok(id) => id,
       Err(e) => {
         REGISTRY.lock().unwrap().remove(&key);
@@ -323,6 +329,11 @@ extern "C" fn on_io_ready(events: u32, data: *mut u8) {
   for waker in wake {
     waker.wake();
   }
+}
+
+extern "C" fn drop_watcher_key(data: *mut u8) {
+  let key = data as usize;
+  REGISTRY.lock().unwrap().remove(&key);
 }
 
 impl StateInner {

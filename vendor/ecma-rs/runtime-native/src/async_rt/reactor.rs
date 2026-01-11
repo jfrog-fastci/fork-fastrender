@@ -1,5 +1,5 @@
 use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
-use crate::async_rt::Task;
+use crate::async_rt::{Task, TaskDropFn};
 use bitflags::bitflags;
 use std::collections::HashMap;
 use std::io;
@@ -84,6 +84,7 @@ struct IoWatcher {
   interests: u32,
   cb: extern "C" fn(u32, *mut u8),
   data: *mut u8,
+  drop: Option<TaskDropFn>,
   active: Arc<AtomicBool>,
 }
 
@@ -146,15 +147,18 @@ impl Reactor {
     ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
-    self.watchers.lock().unwrap().insert(
-      id,
-      Watcher {
-        fd,
-        interest,
-        kind: WatcherKind::Task(task),
-      },
-    );
-    self.watchers_count.fetch_add(1, Ordering::Release);
+    {
+      let mut watchers = self.watchers.lock().unwrap();
+      watchers.insert(
+        id,
+        Watcher {
+          fd,
+          interest,
+          kind: WatcherKind::Task(task),
+        },
+      );
+      self.watchers_count.fetch_add(1, Ordering::Release);
+    }
     self.wake();
     Ok(id)
   }
@@ -166,6 +170,17 @@ impl Reactor {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> io::Result<WatcherId> {
+    self.register_io_with_drop(fd, interests, cb, data, None)
+  }
+
+  pub fn register_io_with_drop(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    drop: Option<TaskDropFn>,
+  ) -> io::Result<WatcherId> {
     let interest = rt_interests_to_interest(interests);
     if interest.is_empty() {
       return Err(io::Error::new(
@@ -176,20 +191,24 @@ impl Reactor {
     ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
-    self.watchers.lock().unwrap().insert(
-      id,
-      Watcher {
-        fd,
-        interest,
-        kind: WatcherKind::Io(IoWatcher {
-          interests,
-          cb,
-          data,
-          active: Arc::new(AtomicBool::new(true)),
-        }),
-      },
-    );
-    self.watchers_count.fetch_add(1, Ordering::Release);
+    {
+      let mut watchers = self.watchers.lock().unwrap();
+      watchers.insert(
+        id,
+        Watcher {
+          fd,
+          interest,
+          kind: WatcherKind::Io(IoWatcher {
+            interests,
+            cb,
+            data,
+            drop,
+            active: Arc::new(AtomicBool::new(true)),
+          }),
+        },
+      );
+      self.watchers_count.fetch_add(1, Ordering::Release);
+    }
     self.wake();
     Ok(id)
   }
@@ -224,29 +243,49 @@ impl Reactor {
   }
 
   pub fn deregister(&self, id: WatcherId) -> bool {
-    let watcher = self.watchers.lock().unwrap().remove(&id);
-    let Some(watcher) = watcher else {
-      return false;
+    let watcher = {
+      let mut watchers = self.watchers.lock().unwrap();
+      let watcher = watchers.remove(&id);
+      if watcher.is_some() {
+        self.watchers_count.fetch_sub(1, Ordering::Release);
+      }
+      watcher
     };
+    let Some(watcher) = watcher else { return false };
     if let WatcherKind::Io(io) = watcher.kind {
       io.active.store(false, Ordering::Release);
+      if let Some(drop) = io.drop {
+        drop(io.data);
+      }
     }
     let _ = self.sys.ctl_del(watcher.fd);
-    self.watchers_count.fetch_sub(1, Ordering::Release);
     self.wake();
     true
   }
 
   pub fn clear_watchers(&self) {
-    let mut watchers = self.watchers.lock().unwrap();
-    if watchers.is_empty() {
-      return;
-    }
+    // Don't hold the map lock while invoking watcher drop hooks; those hooks may queue work or call
+    // back into the async runtime.
+    let drained: Vec<(WatcherId, Watcher)> = {
+      let mut watchers = self.watchers.lock().unwrap();
+      if watchers.is_empty() {
+        return;
+      }
+      // Update the count while still holding the lock so we don't race with concurrent
+      // register/unregister calls.
+      self.watchers_count.store(0, Ordering::Release);
+      watchers.drain().collect()
+    };
 
-    for (_id, watcher) in watchers.drain() {
+    for (_id, watcher) in drained {
+      if let WatcherKind::Io(io) = &watcher.kind {
+        io.active.store(false, Ordering::Release);
+        if let Some(drop) = io.drop {
+          drop(io.data);
+        }
+      }
       let _ = self.sys.ctl_del(watcher.fd);
     }
-    self.watchers_count.store(0, Ordering::Release);
     self.wake();
   }
 

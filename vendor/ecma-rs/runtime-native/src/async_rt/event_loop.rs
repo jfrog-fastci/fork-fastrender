@@ -2,6 +2,7 @@ use crate::async_rt::reactor::Reactor;
 use crate::async_rt::timer::Timers;
 use crate::async_rt::Interest;
 use crate::async_rt::Task;
+use crate::async_rt::TaskDropFn;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
 use crate::async_runtime;
@@ -143,6 +144,19 @@ impl EventLoop {
     data: *mut u8,
   ) -> io::Result<WatcherId> {
     self.reactor.register_io(fd, interests, cb, data)
+  }
+
+  pub fn register_io_with_drop(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    drop: TaskDropFn,
+  ) -> io::Result<WatcherId> {
+    self
+      .reactor
+      .register_io_with_drop(fd, interests, cb, data, Some(drop))
   }
 
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
@@ -462,6 +476,11 @@ impl EventLoop {
     self.macrotasks.lock().unwrap().clear();
     self.timers.clear();
     self.reactor.clear_watchers();
+    // Clearing watchers may invoke drop hooks that enqueue additional work (e.g. to release
+    // refcounted watcher userdata). Clear queues again so tests start fully idle.
+    self.microtasks.lock().unwrap().clear();
+    self.macrotasks.lock().unwrap().clear();
+    self.timers.clear();
     let _ = self.reactor.drain_wake();
   }
 }

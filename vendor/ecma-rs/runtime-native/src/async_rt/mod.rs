@@ -224,6 +224,18 @@ impl AsyncRuntime {
     self.loop_.register_io(fd, interests, cb, data)
   }
 
+  pub fn register_io_with_drop(
+    &self,
+    fd: std::os::fd::RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    drop: TaskDropFn,
+  ) -> std::io::Result<WatcherId> {
+    self.loop_
+      .register_io_with_drop(fd, interests, cb, data, drop)
+  }
+
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
     self.loop_.update_io(id, interests)
   }
