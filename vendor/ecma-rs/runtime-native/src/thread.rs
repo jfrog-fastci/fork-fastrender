@@ -1,0 +1,176 @@
+use crate::runtime::Runtime;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
+/// TLS pointer to the currently-attached [`Thread`].
+///
+/// This is exported for both the runtime and generated native code.
+#[thread_local]
+#[no_mangle]
+pub static mut RT_THREAD: *mut Thread = std::ptr::null_mut();
+
+/// Get the raw TLS pointer to the current thread record.
+pub fn current_thread_ptr() -> *mut Thread {
+  // Safe: reading a `static mut` is unsafe in Rust because it can be mutated
+  // concurrently. For TLS `static mut`, the variable is thread-local so there is
+  // no cross-thread mutation, and we only ever write it during attach/detach.
+  unsafe { RT_THREAD }
+}
+
+/// Returns the current thread record if the calling OS thread is attached.
+pub fn current_thread() -> Option<&'static Thread> {
+  unsafe { current_thread_ptr().as_ref() }
+}
+
+/// Returns a mutable reference to the current thread record.
+///
+/// # Safety
+/// This is not safe to expose as a safe API because callers can create multiple
+/// mutable references (or a mutable reference while holding an immutable one)
+/// to the same thread record by calling this function repeatedly and/or
+/// combining it with [`current_thread`].
+pub unsafe fn current_thread_mut() -> Option<&'static mut Thread> {
+  current_thread_ptr().as_mut()
+}
+
+/// Returns the current thread state, or [`ThreadState::Detached`] if not
+/// attached.
+pub fn current_thread_state() -> ThreadState {
+  current_thread()
+    .map(|t| t.state())
+    .unwrap_or(ThreadState::Detached)
+}
+
+/// Install `thread` in TLS.
+///
+/// # Safety
+/// Must only be called by the runtime during attach/detach.
+pub unsafe fn set_current_thread_ptr(thread: *mut Thread) {
+  RT_THREAD = thread;
+}
+
+/// Per-mutator thread record.
+///
+/// This structure is `repr(C)` because native codegen will compute field offsets
+/// directly.
+#[repr(C)]
+pub struct Thread {
+  pub id: u32,
+  pub os_tid: u64,
+  pub stack_lo: usize,
+  pub stack_hi: usize,
+
+  pub state: AtomicU8,
+
+  pub local_epoch: AtomicU64,
+
+  // Published statepoint context. The JIT will update these at safepoints so the
+  // GC can scan stacks using LLVM stackmaps.
+  pub sp: AtomicUsize,
+  pub fp: AtomicUsize,
+  pub ip: AtomicUsize,
+
+  // Owning runtime (opaque to C/native code). This enables a `Thread*`-only
+  // detach API.
+  pub(crate) runtime: *const Runtime,
+}
+
+impl Thread {
+  pub(crate) fn new(runtime: &Runtime, id: u32, os_tid: u64, stack_lo: usize, stack_hi: usize) -> Self {
+    Self {
+      id,
+      os_tid,
+      stack_lo,
+      stack_hi,
+      state: AtomicU8::new(ThreadState::Running as u8),
+      local_epoch: AtomicU64::new(0),
+      sp: AtomicUsize::new(0),
+      fp: AtomicUsize::new(0),
+      ip: AtomicUsize::new(0),
+      runtime: runtime as *const Runtime,
+    }
+  }
+
+  pub fn state(&self) -> ThreadState {
+    ThreadState::from_u8(self.state.load(Ordering::Acquire))
+  }
+
+  pub fn set_state(&self, state: ThreadState) {
+    self.state.store(state as u8, Ordering::Release);
+  }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadState {
+  Running = 0,
+  Parked = 1,
+  NativeSafe = 2,
+  Detached = 3,
+}
+
+impl ThreadState {
+  fn from_u8(v: u8) -> Self {
+    match v {
+      0 => ThreadState::Running,
+      1 => ThreadState::Parked,
+      2 => ThreadState::NativeSafe,
+      3 => ThreadState::Detached,
+      _ => ThreadState::Detached,
+    }
+  }
+}
+
+pub(crate) fn current_os_tid() -> u64 {
+  #[cfg(target_os = "linux")]
+  unsafe {
+    libc::syscall(libc::SYS_gettid) as u64
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    // Best-effort fallback; only used on non-Linux targets.
+    std::thread::current().id().as_u64()
+  }
+}
+
+pub(crate) fn current_stack_bounds() -> (usize, usize) {
+  #[cfg(target_os = "linux")]
+  if let Some(bounds) = stack_bounds_pthread() {
+    return bounds;
+  }
+
+  // Fallback: estimate bounds around the current stack pointer. This is only
+  // used when stack introspection fails.
+  let mut dummy = 0u8;
+  let sp = std::ptr::addr_of_mut!(dummy) as usize;
+  const GUESS: usize = 8 * 1024 * 1024;
+  let lo = sp.saturating_sub(GUESS);
+  let hi = sp.saturating_add(GUESS);
+  (lo.min(hi), lo.max(hi))
+}
+
+#[cfg(target_os = "linux")]
+fn stack_bounds_pthread() -> Option<(usize, usize)> {
+  unsafe {
+    let mut attr: libc::pthread_attr_t = std::mem::zeroed();
+    if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
+      return None;
+    }
+
+    let mut stackaddr: *mut libc::c_void = std::ptr::null_mut();
+    let mut stacksize: usize = 0;
+    let rc = libc::pthread_attr_getstack(&attr, &mut stackaddr, &mut stacksize);
+    libc::pthread_attr_destroy(&mut attr);
+
+    if rc != 0 || stackaddr.is_null() || stacksize == 0 {
+      return None;
+    }
+
+    let lo = stackaddr as usize;
+    let hi = lo.saturating_add(stacksize);
+    Some((lo.min(hi), lo.max(hi)))
+  }
+}

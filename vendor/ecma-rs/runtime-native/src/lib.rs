@@ -1,3 +1,11 @@
+// We use the unstable `#[thread_local]` attribute so the JIT/native codegen can
+// access the current thread record via a single TLS load.
+//
+// `vendor/ecma-rs/.cargo/config.toml` sets `RUSTC_BOOTSTRAP=1` for the workspace
+// (required by `cargo fuzz`), which also allows this crate to use the feature
+// gate until `#[thread_local]` is stabilized for plain-data statics.
+#![feature(thread_local)]
+
 //! Native runtime library for `native-js` AOT output.
 //!
 //! This crate provides:
@@ -32,6 +40,8 @@ pub mod stackmap;
 pub mod parallel;
 pub mod sync;
 pub mod threading;
+pub mod runtime;
+pub mod thread;
 pub mod stackmaps;
 pub mod stackmaps_loader;
 pub mod statepoints;
@@ -65,17 +75,21 @@ pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use string::*;
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
+pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};
+pub use thread::{
+  current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState, RT_THREAD,
+};
 
 use std::sync::OnceLock;
 
-struct Runtime {
+struct GlobalRuntime {
   parallel: parallel::ParallelRuntime,
 }
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static RUNTIME: OnceLock<GlobalRuntime> = OnceLock::new();
 
-fn rt_ensure_init() -> &'static Runtime {
-  RUNTIME.get_or_init(|| Runtime {
+fn rt_ensure_init() -> &'static GlobalRuntime {
+  RUNTIME.get_or_init(|| GlobalRuntime {
     parallel: parallel::ParallelRuntime::new(),
   })
 }
@@ -260,6 +274,8 @@ mod tests {
     const DECLS: &[&str] = &[
       "void rt_thread_init(uint32_t kind);",
       "void rt_thread_deinit(void);",
+      "Thread* rt_thread_attach(Runtime* runtime);",
+      "void rt_thread_detach(Thread* thread);",
       "uint8_t* rt_alloc(size_t size, ShapeId shape);",
       "uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);",
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
@@ -305,6 +321,8 @@ mod tests {
     // Ensure the Rust exports match the declared ABI shape.
     let _thread_init: extern "C" fn(u32) = rt_thread_init;
     let _thread_deinit: extern "C" fn() = rt_thread_deinit;
+    let _thread_attach: unsafe extern "C" fn(*mut Runtime) -> *mut Thread = rt_thread_attach;
+    let _thread_detach: unsafe extern "C" fn(*mut Thread) = rt_thread_detach;
     let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
     let _alloc_pinned: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc_pinned;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
@@ -340,6 +358,8 @@ mod tests {
     let _ = (
       _thread_init,
       _thread_deinit,
+      _thread_attach,
+      _thread_detach,
       _alloc,
       _alloc_pinned,
       _alloc_array,

@@ -67,6 +67,16 @@ void rt_thread_init(uint32_t kind);
 void rt_thread_deinit(void);
 
 // -----------------------------------------------------------------------------
+// Thread attach/detach (per-runtime thread registry)
+// -----------------------------------------------------------------------------
+// Opaque runtime/thread records used by native codegen and embedders.
+typedef struct Runtime Runtime;
+typedef struct Thread Thread;
+
+Thread* rt_thread_attach(Runtime* runtime);
+void rt_thread_detach(Thread* thread);
+
+// -----------------------------------------------------------------------------
 // Memory
 // -----------------------------------------------------------------------------
 // Allocate a GC-managed object.

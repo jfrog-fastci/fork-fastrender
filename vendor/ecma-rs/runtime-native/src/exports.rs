@@ -11,6 +11,8 @@ use crate::gc::ObjHeader;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::threading;
+use crate::Runtime;
+use crate::Thread;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::Ordering;
 
@@ -402,4 +404,51 @@ pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u
 pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
   ensure_event_loop_thread_registered();
   async_rt::coroutine::coro_await(coro, awaited, next_state)
+}
+
+// -----------------------------------------------------------------------------
+// Thread registration (native codegen / embedding)
+// -----------------------------------------------------------------------------
+
+/// Attach the calling OS thread to `runtime`.
+///
+/// Returns a pointer to the per-thread [`Thread`] record, or null on failure.
+///
+/// # Safety
+/// `runtime` must be a valid pointer to a [`Runtime`] created by the embedder.
+#[no_mangle]
+pub unsafe extern "C" fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread {
+  let Some(runtime) = runtime.as_ref() else {
+    return std::ptr::null_mut();
+  };
+
+  match runtime.attach_current_thread_raw() {
+    Ok(thread) => thread,
+    Err(_) => std::ptr::null_mut(),
+  }
+}
+
+/// Detach the calling OS thread from its runtime.
+///
+/// This must be invoked on the *same* OS thread that previously called
+/// [`rt_thread_attach`].
+///
+/// If `thread` is invalid, already detached, or not the current thread, this is
+/// a no-op.
+///
+/// # Safety
+/// `thread` must be a pointer previously returned by [`rt_thread_attach`].
+#[no_mangle]
+pub unsafe extern "C" fn rt_thread_detach(thread: *mut Thread) {
+  let Some(thread_ref) = thread.as_ref() else {
+    return;
+  };
+
+  let runtime = thread_ref.runtime;
+  let Some(runtime) = runtime.as_ref() else {
+    return;
+  };
+
+  // Best-effort: we cannot report errors over this C ABI.
+  let _ = runtime.detach_thread_ptr(thread);
 }
