@@ -4755,6 +4755,19 @@ impl DisplayListRenderer {
     );
 
     if let Some(clip) = self.canvas.clip_bounds() {
+      // Filter kernels sample neighboring pixels. If the current canvas clip is tighter than the
+      // filter's halo region (e.g. an `overflow:hidden` ancestor clips the filtered element), we
+      // still need to allocate enough transparent padding around the clip to avoid edge clamping
+      // artifacts during filtering.
+      //
+      // Intersect against a clip expanded by the maximum filter/backdrop-filter outset so we keep
+      // that halo while still avoiding unbounded layer allocations.
+      let clip = Rect::from_xywh(
+        clip.x() - expand_left,
+        clip.y() - expand_top,
+        clip.width() + expand_left + expand_right,
+        clip.height() + expand_top + expand_bottom,
+      );
       layer_bounds = match layer_bounds.intersection(clip) {
         Some(r) => r,
         None => return None,
@@ -4817,6 +4830,12 @@ impl DisplayListRenderer {
     );
 
     if let Some(clip) = self.canvas.clip_bounds() {
+      let clip = Rect::from_xywh(
+        clip.x() - expand_left,
+        clip.y() - expand_top,
+        clip.width() + expand_left + expand_right,
+        clip.height() + expand_top + expand_bottom,
+      );
       layer_bounds = match layer_bounds.intersection(clip) {
         Some(r) => r,
         None => return None,
@@ -14145,7 +14164,14 @@ impl DisplayListRenderer {
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          if projective_transform.is_some() {
+          // CSS `filter` effects are applied to the stacking context's output before ancestor clips
+          // (e.g. `overflow:hidden`) are applied. If we inherit the ancestor clip while painting
+          // into the offscreen layer, kernel-based filters like blur will treat the clip edge as
+          // transparent and produce incorrect results near the boundary.
+          //
+          // Clear the inherited clip when a filter is present so descendants can paint into the
+          // halo region we allocated in `stacking_layer_bounds`.
+          if projective_transform.is_some() || !scaled_filters.is_empty() {
             self.canvas.clear_clip();
           }
         } else {
