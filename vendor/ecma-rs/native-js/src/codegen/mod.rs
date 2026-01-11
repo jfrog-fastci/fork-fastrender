@@ -5,7 +5,7 @@
 //!   `compile_typescript_to_llvm_ir`; `native-js-cli` uses the related multi-file
 //!   `compile_project_to_llvm_ir` entrypoint).
 //! - [`codegen`]: an experimental HIR-driven backend used by the typechecked
-//!   `native-js` CLI (`native-js-cli --bin native-js`).
+//!   pipeline (`native-js-cli --pipeline checked` and `native-js-cli --bin native-js`).
 //!
 //! ## Diagnostic codes
 //!

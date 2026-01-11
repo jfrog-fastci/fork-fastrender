@@ -1,6 +1,7 @@
 //! Emission of compiler artifacts (LLVM IR, assembly, object files, etc).
 //!
-//! This module hosts the small "emit" surface used by `native-js-cli` and tests:
+//! This module hosts the small "emit" surface used by the CLIs (`native-js-cli`, `native-js`)
+//! and tests:
 //!
 //! - textual LLVM IR (`emit_llvm_ir`)
 //! - LLVM bitcode (`emit_bitcode`)

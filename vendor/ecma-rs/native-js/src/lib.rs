@@ -3,9 +3,10 @@
 //! This crate is still early: most of the real TS/HIR lowering is not implemented yet.
 //!
 //! It currently contains:
-//! - A strict TypeScript subset validator + HIR-driven LLVM codegen used by the `native-js` binary.
-//! - A tiny `parse-js`-driven LLVM IR emitter used by `native-js-cli` integration tests and for
-//!   debugging the native pipeline.
+//! - A strict TypeScript subset validator + HIR-driven LLVM codegen used by the typechecked
+//!   pipeline (`native-js-cli --pipeline checked` and the `native-js` binary).
+//! - A tiny `parse-js`-driven LLVM IR emitter used by `native-js-cli --pipeline project`, tests,
+//!   and debugging the native pipeline.
 //!
 //! ## GC stack walking
 //! The native runtime performs **precise GC** using LLVM statepoints. In addition to stack maps,
@@ -247,7 +248,7 @@ use native_js::compile_program(program, entry, opts) and pass an explicit FileId
 /// Parse and compile a single TypeScript module to LLVM IR.
 ///
 /// This is a lightweight, `parse-js`-driven emitter that does *not* use `typecheck-ts`.
-/// It exists mainly for debugging and for `native-js-cli` integration tests.
+/// It exists mainly for debugging and for in-tree tests/examples.
 pub fn compile_typescript_to_llvm_ir(
   source: &str,
   opts: CompileOptions,

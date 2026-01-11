@@ -14,9 +14,9 @@ construction.
 
 - minimal `parse-js`-driven **textual** LLVM IR emitters:
   - `compile_typescript_to_llvm_ir` (single module string)
-  - `compile_project_to_llvm_ir` (multi-file ES module subset; used by the `native-js-cli` binary)
+  - `compile_project_to_llvm_ir` (multi-file ES module subset; used by `native-js-cli --pipeline project`)
 - an early **HIR-driven** backend used by the typechecked `native-js` binary
-  (`native-js-cli --bin native-js`)
+  (`native-js-cli --pipeline checked` and `native-js-cli --bin native-js`)
 
 This crate is not a general-purpose JavaScript engine and it does not try to
 support the full JavaScript/TypeScript language.
