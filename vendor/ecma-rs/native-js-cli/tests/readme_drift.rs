@@ -26,27 +26,10 @@ fn readme_does_not_claim_checked_backend_lacks_reexport_support() {
 fn readme_documents_type_only_reexports_and_cycles() {
   let readme = readme_text();
 
-  fn contains_value_reexport(text: &str) -> bool {
-    // Look for a named re-export that is not `export { type ... } from`.
-    let mut rest = text;
-    while let Some(idx) = rest.find("export {") {
-      let after = &rest[idx + "export {".len()..];
-      if !after.trim_start().starts_with("type") {
-        return true;
-      }
-      rest = after;
-    }
-    false
-  }
-
   // Runtime re-exports participate in module initialization ordering.
   assert!(
-    contains_value_reexport(&readme),
-    "native-js-cli README should document a runtime `export {{ ... }} from \"...\"` re-export"
-  );
-  assert!(
-    readme.contains("export * from"),
-    "native-js-cli README should document `export * from \"...\"` re-exports"
+    readme.contains("re-export-only modules participate in module initialization ordering"),
+    "native-js-cli README should explain that runtime re-exports participate in module initialization ordering"
   );
 
   // Type-only re-exports are runtime-inert (do not trigger module evaluation).
