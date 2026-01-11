@@ -122,29 +122,33 @@ pub fn lookup_type_descriptor(id: RtShapeId) -> &'static TypeDescriptor {
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_shape_count() -> usize {
-  shape_count()
+  abort_on_panic(shape_count)
 }
 
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_shape_descriptor(id: RtShapeId) -> *const RtShapeDescriptor {
-  if let Some(t) = SHAPE_TABLE.get() {
-    if id.0 != 0 && (id.0 as usize) <= t.len() {
-      return std::ptr::from_ref(t.rt_desc(id));
+  abort_on_panic(|| {
+    if let Some(t) = SHAPE_TABLE.get() {
+      if id.0 != 0 && (id.0 as usize) <= t.len() {
+        return std::ptr::from_ref(t.rt_desc(id));
+      }
     }
-  }
-  std::ptr::null()
+    std::ptr::null()
+  })
 }
 
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_validate_heap() {
-  // The runtime does not yet have a global heap instance wired to the exported ABI. The most
-  // helpful invariant we can validate today is that the shape table is present and internally
-  // consistent (which registration already checks).
-  if SHAPE_TABLE.get().is_none() {
-    panic!("rt_debug_validate_heap: shape table not registered");
-  }
+  abort_on_panic(|| {
+    // The runtime does not yet have a global heap instance wired to the exported ABI. The most
+    // helpful invariant we can validate today is that the shape table is present and internally
+    // consistent (which registration already checks).
+    if SHAPE_TABLE.get().is_none() {
+      panic!("rt_debug_validate_heap: shape table not registered");
+    }
+  })
 }
 
 fn validate_shape_table(table: &[RtShapeDescriptor]) {
