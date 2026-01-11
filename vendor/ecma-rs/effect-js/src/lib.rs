@@ -102,6 +102,8 @@ mod tests {
       "String.prototype.split",
       "Math.sqrt",
       "Math.floor",
+      "Math.ceil",
+      "Math.round",
       "Object.keys",
       "Object.values",
       "Object.entries",
