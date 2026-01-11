@@ -101,8 +101,12 @@ fn read_section(path: &Path, name: &str) -> Vec<u8> {
 }
 
 fn has_register_roots(stackmap: &StackMap) -> bool {
+  has_register_roots_for_patchpoint_id(stackmap, LLVM_STATEPOINT_PATCHPOINT_ID)
+}
+
+fn has_register_roots_for_patchpoint_id(stackmap: &StackMap, patchpoint_id: u64) -> bool {
   for rec in &stackmap.records {
-    if rec.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
+    if rec.patchpoint_id != patchpoint_id {
       continue;
     }
     let Ok(sp) = StatepointRecord::new(rec) else {
@@ -119,7 +123,12 @@ fn has_register_roots(stackmap: &StackMap) -> bool {
   false
 }
 
-fn make_matrix_ir(target_triple: &str, max_roots: usize, add_pressure_variants: bool) -> String {
+fn make_matrix_ir(
+  target_triple: &str,
+  max_roots: usize,
+  add_pressure_variants: bool,
+  callsite_statepoint_id: Option<u64>,
+) -> String {
   // Keep the IR generation explicit and deterministic so failures can be
   // reproduced by re-running the same module through `opt-18` + `llc-18`.
   let mut out = String::new();
@@ -129,11 +138,13 @@ fn make_matrix_ir(target_triple: &str, max_roots: usize, add_pressure_variants: 
   out.push_str("declare void @callee(i64)\n");
   out.push_str("@sink = global i64 0, align 8\n\n");
 
+  let attach_attrs = callsite_statepoint_id.is_some();
   for n_roots in 0..=max_roots {
     out.push_str(&make_one_function_ir(
       &format!("plain_{n_roots}"),
       n_roots,
       false,
+      attach_attrs,
     ));
     out.push('\n');
     if add_pressure_variants {
@@ -141,15 +152,20 @@ fn make_matrix_ir(target_triple: &str, max_roots: usize, add_pressure_variants: 
         &format!("pressure_{n_roots}"),
         n_roots,
         true,
+        attach_attrs,
       ));
       out.push('\n');
     }
   }
 
+  if let Some(id) = callsite_statepoint_id {
+    out.push_str(&format!("attributes #0 = {{ \"statepoint-id\"=\"{id}\" }}\n"));
+  }
+
   out
 }
 
-fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool) -> String {
+fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool, attach_attrs: bool) -> String {
   let mut out = String::new();
 
   out.push_str(&format!("define void @{name}("));
@@ -166,7 +182,11 @@ fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool) -> Strin
     }
   }
 
-  out.push_str("  call void @callee(i64 1) [\"gc-live\"(");
+  out.push_str("  call void @callee(i64 1)");
+  if attach_attrs {
+    out.push_str(" #0");
+  }
+  out.push_str(" [\"gc-live\"(");
   for i in 0..n_roots {
     if i > 0 {
       out.push_str(", ");
@@ -270,6 +290,7 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
         target.triple,
         /*max_roots=*/ 64,
         /*add_pressure_variants=*/ true,
+        /*callsite_statepoint_id=*/ None,
       ),
     );
     rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
@@ -341,6 +362,7 @@ fn fixup_max_csr_statepoints_0_forces_spills() {
       X86_64_TRIPLE,
       /*max_roots=*/ 6,
       /*add_pressure_variants=*/ false,
+      /*callsite_statepoint_id=*/ None,
     ),
   );
   rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
@@ -396,4 +418,54 @@ fn fixup_max_csr_statepoints_0_forces_spills() {
     },
   )
   .unwrap();
+}
+
+#[test]
+fn verifier_does_not_skip_custom_statepoint_ids() {
+  assert_cmd_available(LLVM_OPT);
+  assert_cmd_available(LLVM_LLC);
+
+  let tmp = TempDir::new().expect("create tmpdir");
+  let tmp = tmp.path();
+
+  let input_ll = path_in(tmp, "custom_id.ll");
+  let rewritten_ll = path_in(tmp, "custom_id.rewrite.ll");
+  write_file(
+    &input_ll,
+    &make_matrix_ir(
+      X86_64_TRIPLE,
+      /*max_roots=*/ 6,
+      /*add_pressure_variants=*/ false,
+      /*callsite_statepoint_id=*/ Some(42),
+    ),
+  );
+  rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
+
+  // Unsafe flags: allow keeping some statepoint roots in callee-saved registers.
+  let dangerous_flags = &[
+    "-O3",
+    "--fixup-allow-gcptr-in-csr",
+    "--max-registers-for-gc-values=100",
+  ];
+
+  let obj = path_in(tmp, "custom_id_dangerous.o");
+  llc_to_obj(tmp, &rewritten_ll, &obj, dangerous_flags);
+  let section = read_section(&obj, ".llvm_stackmaps");
+  let sm = StackMap::parse(&section).expect("parse dangerous stackmaps");
+
+  assert!(
+    has_register_roots_for_patchpoint_id(&sm, 42),
+    "expected dangerous flags={dangerous_flags:?} to produce at least one Register root for patchpoint_id=42"
+  );
+  assert!(
+    verify_statepoint_stackmap(
+      &sm,
+      VerifyStatepointOptions {
+        arch: DwarfArch::X86_64,
+        mode: VerifyMode::StatepointsOnly,
+      },
+    )
+    .is_err(),
+    "expected verifier to reject register roots even when statepoint-id is customized"
+  );
 }

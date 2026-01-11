@@ -20,10 +20,14 @@ use std::fmt;
 ///
 /// The StackMap record stores this value in its `patchpoint_id` field.
 ///
-/// Note: this value is **not stable** across all statepoints in general; LLVM
-/// allows overriding it per callsite (and some tests/codegen paths do so). The
-/// verifier must therefore not rely on this as the only way to recognize
-/// statepoint-shaped records.
+/// LLVM uses this constant ID when callsites are not annotated with the
+/// `"statepoint-id"` directive attribute. When directives are used, the StackMap
+/// record's `patchpoint_id` is no longer a reliable discriminator for
+/// identifying statepoints.
+///
+/// The runtime verifier identifies statepoints by attempting to decode the
+/// record layout as a `gc.statepoint` (see
+/// [`crate::statepoints::StatepointRecord`]).
 pub const LLVM_STATEPOINT_PATCHPOINT_ID: u64 = 0xABCDEF00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,11 +311,10 @@ pub fn verify_statepoint_stackmap(
       })?;
       record_index += 1;
 
-      let looks_like_statepoint = rec.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-        && rec.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-          .iter()
-          .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-      if opts.mode == VerifyMode::StatepointsOnly && !looks_like_statepoint {
+      if opts.mode == VerifyMode::StatepointsOnly && StatepointRecord::new(rec).is_err() {
+        // In "statepoints only" mode, ignore any record that doesn't match the
+        // statepoint layout. This includes patchpoints and any other stackmap
+        // users.
         continue;
       }
 
