@@ -991,6 +991,7 @@ mod tests {
       "IoWatcherId rt_io_register(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
       "IoWatcherId rt_io_register_with_drop(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));",
       "IoWatcherId rt_io_register_rooted(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
+      "IoWatcherId rt_io_register_rooted_h(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), GcHandle data);",
       "IoWatcherId rt_io_register_handle(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, GcPtr data), HandleId data);",
       "IoWatcherId rt_io_register_handle_with_drop(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, GcPtr data), HandleId data, void (*drop_data)(GcPtr));",
       "void rt_io_update(IoWatcherId id, uint32_t interests);",
@@ -1168,6 +1169,8 @@ mod tests {
       extern "C" fn(*mut u8),
     ) -> abi::IoWatcherId = rt_io_register_with_drop;
     let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> abi::IoWatcherId = rt_io_register_rooted;
+    let _io_register_rooted_h: unsafe extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), crate::roots::GcHandle) -> abi::IoWatcherId =
+      rt_io_register_rooted_h;
     let _io_register_handle: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), u64) -> abi::IoWatcherId =
       rt_io_register_handle;
     let _io_register_handle_with_drop: extern "C" fn(
