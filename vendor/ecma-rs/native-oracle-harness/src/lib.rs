@@ -607,7 +607,11 @@ mod tests {
     let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&dir)
       .unwrap_or_else(|err| panic!("failed to read fixture dir {dir:?}: {err}"))
       .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-      .filter(|path| path.extension().is_some_and(|ext| ext == "ts"))
+      .filter(|path| {
+        path
+          .extension()
+          .is_some_and(|ext| ext == "ts" || ext == "tsx")
+      })
       .collect();
     fixtures.sort();
 
