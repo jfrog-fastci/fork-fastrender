@@ -2,7 +2,9 @@
 //!
 //! On Linux/ELF we support three strategies:
 //! 1) **Fast path (zero I/O):** use linker-defined start/stop symbols emitted by
-//!    `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat).
+//!    `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat):
+//!    - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (canonical)
+//!    - `__stackmaps_{start,end}` / `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` (aliases)
 //! 2) **Fallback (zero I/O):** scan mapped PT_LOAD segments via `dl_iterate_phdr`
 //!    and look for StackMap v3 blobs.
 //! 3) **Fallback (I/O):** parse `/proc/self/exe` to locate the section in the ELF
