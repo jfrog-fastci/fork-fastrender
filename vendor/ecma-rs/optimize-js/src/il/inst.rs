@@ -1,8 +1,8 @@
 use crate::analysis::purity::Purity;
 use crate::symbol::semantics::SymbolId;
 use crate::types::{TypeId, ValueTypeSummary};
-use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
 use hir_js::ExprId;
+use effect_model::EffectSummary;
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
 use std::collections::BTreeSet;
@@ -47,8 +47,7 @@ impl EffectSet {
 
   pub fn mark_unknown(&mut self) {
     self.unknown = true;
-    self.summary.flags = EffectFlags::all();
-    self.summary.throws = ThrowBehavior::Maybe;
+    self.summary = EffectSummary::UNKNOWN;
   }
 
   pub fn merge(&mut self, other: &Self) {

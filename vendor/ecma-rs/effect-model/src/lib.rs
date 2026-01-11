@@ -305,6 +305,11 @@ impl EffectSummary {
     flags: EffectFlags::empty(),
     throws: ThrowBehavior::Never,
   };
+
+  pub const UNKNOWN: Self = Self {
+    flags: EffectFlags::all(),
+    throws: ThrowBehavior::Maybe,
+  };
 }
 
 /// An effect template used for API semantics where some effects may be
