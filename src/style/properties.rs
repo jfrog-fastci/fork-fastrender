@@ -12931,8 +12931,9 @@ fn apply_declaration_with_base_internal_with_order(
       styles.grid_row_raw = Some(format!("{current_start} / span {span}"));
     }
     "grid-column-start" => {
-      // `grid-column-start` accepts <<grid-line>>. Support both Keyword and Number values since the
-      // CSS parser eagerly parses bare numbers into `PropertyValue::Number`.
+      // `grid-column-start` accepts `<grid-line>`, which can be a bare integer. Our generic value
+      // parser stores CSS integers as `PropertyValue::Number`, so accept both that and keyword
+      // fallbacks.
       let value = match resolved_value {
         PropertyValue::Keyword(kw) => {
           let trimmed = trim_ascii_whitespace(kw);
@@ -12940,7 +12941,8 @@ fn apply_declaration_with_base_internal_with_order(
             return;
           }
           if let Ok(n) = trimmed.parse::<i32>() {
-            if n == 0 {
+            // Taffy stores line numbers as i16; avoid wrapping large values.
+            if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
               return;
             }
             n.to_string()
@@ -12949,10 +12951,14 @@ fn apply_declaration_with_base_internal_with_order(
           }
         }
         PropertyValue::Number(n) => {
-          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+          if !n.is_finite() || *n != n.round() {
             return;
           }
-          (*n as i32).to_string()
+          let n = *n as i32;
+          if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
+            return;
+          }
+          n.to_string()
         }
         _ => return,
       };
@@ -12976,7 +12982,7 @@ fn apply_declaration_with_base_internal_with_order(
             return;
           }
           if let Ok(n) = trimmed.parse::<i32>() {
-            if n == 0 {
+            if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
               return;
             }
             n.to_string()
@@ -12985,10 +12991,14 @@ fn apply_declaration_with_base_internal_with_order(
           }
         }
         PropertyValue::Number(n) => {
-          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+          if !n.is_finite() || *n != n.round() {
             return;
           }
-          (*n as i32).to_string()
+          let n = *n as i32;
+          if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
+            return;
+          }
+          n.to_string()
         }
         _ => return,
       };
@@ -13012,7 +13022,7 @@ fn apply_declaration_with_base_internal_with_order(
             return;
           }
           if let Ok(n) = trimmed.parse::<i32>() {
-            if n == 0 {
+            if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
               return;
             }
             n.to_string()
@@ -13021,10 +13031,14 @@ fn apply_declaration_with_base_internal_with_order(
           }
         }
         PropertyValue::Number(n) => {
-          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+          if !n.is_finite() || *n != n.round() {
             return;
           }
-          (*n as i32).to_string()
+          let n = *n as i32;
+          if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
+            return;
+          }
+          n.to_string()
         }
         _ => return,
       };
@@ -13048,7 +13062,7 @@ fn apply_declaration_with_base_internal_with_order(
             return;
           }
           if let Ok(n) = trimmed.parse::<i32>() {
-            if n == 0 {
+            if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
               return;
             }
             n.to_string()
@@ -13057,10 +13071,14 @@ fn apply_declaration_with_base_internal_with_order(
           }
         }
         PropertyValue::Number(n) => {
-          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+          if !n.is_finite() || *n != n.round() {
             return;
           }
-          (*n as i32).to_string()
+          let n = *n as i32;
+          if n == 0 || n < i32::from(i16::MIN) || n > i32::from(i16::MAX) {
+            return;
+          }
+          n.to_string()
         }
         _ => return,
       };

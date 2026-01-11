@@ -7431,7 +7431,14 @@ impl GridFormattingContext {
       }
     }
 
+    #[derive(Clone, Copy, Default)]
+    struct GridAreaOverride {
+      x: Option<(f32, f32)>,
+      y: Option<(f32, f32)>,
+    }
+
     let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
+    let mut grid_area_overrides: FxHashMap<usize, GridAreaOverride> = FxHashMap::default();
 
     // Taffy resolves named line placement for in-flow grid items, but out-of-flow positioned items
     // are excluded from the Taffy tree so their static positions are resolved here.
@@ -7470,7 +7477,9 @@ impl GridFormattingContext {
 
     for &child_ptr in positioned_children {
       let child = unsafe { &*child_ptr };
+      let child_id = ensure_box_id(child);
       let mut pos = Point::ZERO;
+      let mut override_area = GridAreaOverride::default();
       let (x_start, x_end, x_raw, x_ctx, x_line_count) = if axes_swapped {
         (
           child.style.grid_row_start,
@@ -7511,6 +7520,23 @@ impl GridFormattingContext {
           .as_deref()
           .unwrap_or_else(|| box_node.style.grid_column_line_names.as_slice())
       };
+      // For abspos/fixed children, the grid container's padding box is the default containing block.
+      // Per CSS Grid, if the child specifies a *non-auto* placement on an axis, that axis should
+      // resolve percentages against the grid area instead.
+      //
+      // Treat explicit `grid-*-*: auto` (raw placements) the same as unset/auto.
+      let x_is_auto = if let Some(raw) = x_raw {
+        let parsed = parse_grid_line_placement_raw(raw, Some(x_line_names));
+        matches!(
+          grid_placement_component_from_taffy(&parsed.start),
+          ResolvedGridPlacementComponent::Auto
+        ) && matches!(
+          grid_placement_component_from_taffy(&parsed.end),
+          ResolvedGridPlacementComponent::Auto
+        )
+      } else {
+        x_start == 0 && x_end == 0
+      };
       if let Some((start_line, end_line)) =
         resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count, Some(x_line_names))
       {
@@ -7531,6 +7557,12 @@ impl GridFormattingContext {
               }
             }
             pos.x = start - padding_origin.x;
+            if !x_is_auto {
+              let size = (area_end - area_start).max(0.0);
+              if size.is_finite() && start.is_finite() {
+                override_area.x = Some((start, start + size));
+              }
+            }
           }
         } else if let Some(ctx) = x_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
@@ -7545,6 +7577,12 @@ impl GridFormattingContext {
               start = ctx.span_start + (ctx.span_end - area_end);
             }
             pos.x = start - padding_origin.x;
+            if !x_is_auto {
+              let size = (area_end - area_start).max(0.0);
+              if size.is_finite() && start.is_finite() {
+                override_area.x = Some((start, start + size));
+              }
+            }
           }
         }
       }
@@ -7587,6 +7625,18 @@ impl GridFormattingContext {
           .as_deref()
           .unwrap_or_else(|| box_node.style.grid_row_line_names.as_slice())
       };
+      let y_is_auto = if let Some(raw) = y_raw {
+        let parsed = parse_grid_line_placement_raw(raw, Some(y_line_names));
+        matches!(
+          grid_placement_component_from_taffy(&parsed.start),
+          ResolvedGridPlacementComponent::Auto
+        ) && matches!(
+          grid_placement_component_from_taffy(&parsed.end),
+          ResolvedGridPlacementComponent::Auto
+        )
+      } else {
+        y_start == 0 && y_end == 0
+      };
       if let Some((start_line, end_line)) =
         resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count, Some(y_line_names))
       {
@@ -7607,6 +7657,12 @@ impl GridFormattingContext {
               }
             }
             pos.y = start - padding_origin.y;
+            if !y_is_auto {
+              let size = (area_end - area_start).max(0.0);
+              if size.is_finite() && start.is_finite() {
+                override_area.y = Some((start, start + size));
+              }
+            }
           }
         } else if let Some(ctx) = y_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
@@ -7621,10 +7677,19 @@ impl GridFormattingContext {
               start = ctx.span_start + (ctx.span_end - area_end);
             }
             pos.y = start - padding_origin.y;
+            if !y_is_auto {
+              let size = (area_end - area_start).max(0.0);
+              if size.is_finite() && start.is_finite() {
+                override_area.y = Some((start, start + size));
+              }
+            }
           }
         }
       }
-      static_positions.insert(ensure_box_id(child), pos);
+      static_positions.insert(child_id, pos);
+      if override_area.x.is_some() || override_area.y.is_some() {
+        grid_area_overrides.insert(child_id, override_area);
+      }
     }
 
     let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
@@ -7636,10 +7701,36 @@ impl GridFormattingContext {
       check_layout_deadline(&mut deadline_counter)?;
       let child = unsafe { &*child_ptr };
 
-      let cb = match child.style.position {
+      let child_id = ensure_box_id(child);
+
+      let mut cb = match child.style.position {
         crate::style::position::Position::Fixed => cb_for_fixed,
         _ => cb_for_absolute,
       };
+      let mut cb_origin_delta = Point::ZERO;
+      if cb == padding_cb {
+        if let Some(area) = grid_area_overrides.get(&child_id) {
+          let mut rect = cb.rect;
+          let old_origin = rect.origin;
+          if let Some((x0, x1)) = area.x {
+            rect.origin.x = x0;
+            rect.size.width = (x1 - x0).max(0.0);
+          }
+          if let Some((y0, y1)) = area.y {
+            rect.origin.y = y0;
+            rect.size.height = (y1 - y0).max(0.0);
+          }
+          if rect != cb.rect {
+            cb_origin_delta = Point::new(rect.origin.x - old_origin.x, rect.origin.y - old_origin.y);
+            cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
+              rect,
+              cb.viewport_size(),
+              cb.inline_percentage_base().map(|_| rect.size.width),
+              cb.block_percentage_base().map(|_| rect.size.height),
+            );
+          }
+        }
+      }
 
       let fc_type = child
         .formatting_context()
@@ -7660,10 +7751,13 @@ impl GridFormattingContext {
       );
       // Static position resolves to where the element would be in flow, relative to the containing
       // block origin (padding edge).
-      let static_pos = static_positions
-        .get(&ensure_box_id(child))
+      let mut static_pos = static_positions
+        .get(&child_id)
         .copied()
         .unwrap_or(crate::geometry::Point::ZERO);
+      if cb_origin_delta != Point::ZERO {
+        static_pos = Point::new(static_pos.x - cb_origin_delta.x, static_pos.y - cb_origin_delta.y);
+      }
       let width_keyword = child.style.width_keyword;
       let min_width_keyword = child.style.min_width_keyword;
       let max_width_keyword = child.style.max_width_keyword;
@@ -13673,7 +13767,14 @@ impl FormattingContext for GridFormattingContext {
         }
       }
 
+      #[derive(Clone, Copy, Default)]
+      struct GridAreaOverride {
+        x: Option<(f32, f32)>,
+        y: Option<(f32, f32)>,
+      }
+
       let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
+      let mut grid_area_overrides: FxHashMap<usize, GridAreaOverride> = FxHashMap::default();
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
         if let Ok(container_style) = taffy.style(root_id) {
           let row_offsets = compute_track_offsets(
@@ -13733,35 +13834,37 @@ impl FormattingContext for GridFormattingContext {
                Some((span_start, span_end))
              })
              .flatten();
-
-           let needs_column_effective_names =
-             positioned_children.iter().any(|child| child.style.grid_column_raw.is_some());
-           let needs_row_effective_names =
-             positioned_children.iter().any(|child| child.style.grid_row_raw.is_some());
-
-           let effective_column_line_names = needs_column_effective_names
-             .then(|| {
-               resolve_effective_grid_line_names_for_node_axis(
-                 &taffy,
-                 root_id,
-                 CssGridAxis::Column,
-                 axes_swapped,
-               )
-             })
-             .flatten();
-           let effective_row_line_names = needs_row_effective_names
-             .then(|| {
-               resolve_effective_grid_line_names_for_node_axis(
-                 &taffy,
-                 root_id,
-                 CssGridAxis::Row,
-                 axes_swapped,
-               )
-             })
-             .flatten();
-
-           for child in &positioned_children {
+ 
+            let needs_column_effective_names =
+              positioned_children.iter().any(|child| child.style.grid_column_raw.is_some());
+            let needs_row_effective_names =
+              positioned_children.iter().any(|child| child.style.grid_row_raw.is_some());
+ 
+            let effective_column_line_names = needs_column_effective_names
+              .then(|| {
+                resolve_effective_grid_line_names_for_node_axis(
+                  &taffy,
+                  root_id,
+                  CssGridAxis::Column,
+                  axes_swapped,
+                )
+              })
+              .flatten();
+            let effective_row_line_names = needs_row_effective_names
+              .then(|| {
+                resolve_effective_grid_line_names_for_node_axis(
+                  &taffy,
+                  root_id,
+                  CssGridAxis::Row,
+                  axes_swapped,
+                )
+              })
+              .flatten();
+ 
+            for child in &positioned_children {
              let mut pos = Point::ZERO;
+             let child_id = ensure_box_id(child);
+             let mut override_area = GridAreaOverride::default();
              let (x_start, x_end, x_raw) = if axes_swapped {
                (
                  child.style.grid_row_start,
@@ -13784,6 +13887,18 @@ impl FormattingContext for GridFormattingContext {
                 .as_deref()
                 .unwrap_or_else(|| box_node.style.grid_column_line_names.as_slice())
             };
+            let x_is_auto = if let Some(raw) = x_raw {
+              let parsed = parse_grid_line_placement_raw(raw, Some(x_line_names));
+              matches!(
+                grid_placement_component_from_taffy(&parsed.start),
+                ResolvedGridPlacementComponent::Auto
+              ) && matches!(
+                grid_placement_component_from_taffy(&parsed.end),
+                ResolvedGridPlacementComponent::Auto
+              )
+            } else {
+              x_start == 0 && x_end == 0
+            };
             if let Some((start_line, end_line)) = resolve_grid_line_range_from_style(
               x_start,
               x_end,
@@ -13801,6 +13916,12 @@ impl FormattingContext for GridFormattingContext {
                   }
                 }
                 pos.x = start - padding_origin.x;
+                if !x_is_auto {
+                  let size = (area_end - area_start).max(0.0);
+                  if size.is_finite() && start.is_finite() {
+                    override_area.x = Some((start, start + size));
+                  }
+                }
               }
             }
 
@@ -13826,6 +13947,18 @@ impl FormattingContext for GridFormattingContext {
                 .as_deref()
                 .unwrap_or_else(|| box_node.style.grid_row_line_names.as_slice())
             };
+            let y_is_auto = if let Some(raw) = y_raw {
+              let parsed = parse_grid_line_placement_raw(raw, Some(y_line_names));
+              matches!(
+                grid_placement_component_from_taffy(&parsed.start),
+                ResolvedGridPlacementComponent::Auto
+              ) && matches!(
+                grid_placement_component_from_taffy(&parsed.end),
+                ResolvedGridPlacementComponent::Auto
+              )
+            } else {
+              y_start == 0 && y_end == 0
+            };
             if let Some((start_line, end_line)) = resolve_grid_line_range_from_style(
               y_start,
               y_end,
@@ -13843,9 +13976,18 @@ impl FormattingContext for GridFormattingContext {
                   }
                 }
                 pos.y = start - padding_origin.y;
+                if !y_is_auto {
+                  let size = (area_end - area_start).max(0.0);
+                  if size.is_finite() && start.is_finite() {
+                    override_area.y = Some((start, start + size));
+                  }
+                }
               }
             }
-            static_positions.insert(ensure_box_id(child), pos);
+            static_positions.insert(child_id, pos);
+            if override_area.x.is_some() || override_area.y.is_some() {
+              grid_area_overrides.insert(child_id, override_area);
+            }
           }
         }
       }
@@ -13857,10 +13999,37 @@ impl FormattingContext for GridFormattingContext {
       for child in &positioned_children {
         check_layout_deadline(&mut abs_deadline_counter)?;
 
-        let cb = match child.style.position {
+        let child_id = ensure_box_id(child);
+
+        let mut cb = match child.style.position {
           crate::style::position::Position::Fixed => cb_for_fixed,
           _ => cb_for_absolute,
         };
+        let mut cb_origin_delta = Point::ZERO;
+        if cb == padding_cb {
+          if let Some(area) = grid_area_overrides.get(&child_id) {
+            let mut rect = cb.rect;
+            let old_origin = rect.origin;
+            if let Some((x0, x1)) = area.x {
+              rect.origin.x = x0;
+              rect.size.width = (x1 - x0).max(0.0);
+            }
+            if let Some((y0, y1)) = area.y {
+              rect.origin.y = y0;
+              rect.size.height = (y1 - y0).max(0.0);
+            }
+            if rect != cb.rect {
+              cb_origin_delta =
+                Point::new(rect.origin.x - old_origin.x, rect.origin.y - old_origin.y);
+              cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
+                rect,
+                cb.viewport_size(),
+                cb.inline_percentage_base().map(|_| rect.size.width),
+                cb.block_percentage_base().map(|_| rect.size.height),
+              );
+            }
+          }
+        }
 
         let fc_type = child
           .formatting_context()
@@ -13889,10 +14058,13 @@ impl FormattingContext for GridFormattingContext {
           );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).
-        let static_pos = static_positions
-          .get(&ensure_box_id(child))
+        let mut static_pos = static_positions
+          .get(&child_id)
           .copied()
           .unwrap_or(crate::geometry::Point::ZERO);
+        if cb_origin_delta != Point::ZERO {
+          static_pos = Point::new(static_pos.x - cb_origin_delta.x, static_pos.y - cb_origin_delta.y);
+        }
         let width_keyword = child.style.width_keyword;
         let min_width_keyword = child.style.min_width_keyword;
         let max_width_keyword = child.style.max_width_keyword;
@@ -19891,6 +20063,57 @@ mod tests {
     assert_eq!(abs_fragment.bounds.y(), 37.0);
     assert_eq!(abs_fragment.bounds.width(), 12.0);
     assert_eq!(abs_fragment.bounds.height(), 9.0);
+  }
+
+  #[test]
+  fn abspos_grid_item_percentage_width_resolves_against_grid_area() {
+    // CSS Grid § Absolute positioning: when a grid container establishes the containing block for an
+    // absolutely positioned child, the child's grid placement rectangle becomes its containing
+    // block. Percentage sizes and inset offsets should resolve against that grid area, not the
+    // entire grid container.
+    let fc = GridFormattingContext::new();
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.position = crate::style::position::Position::Relative;
+    grid_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+    ];
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(50.0))];
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = CssDisplay::Block;
+    abs_style.position = crate::style::position::Position::Absolute;
+    abs_style.left = crate::style::types::InsetValue::Auto;
+    abs_style.right = crate::style::types::InsetValue::Auto;
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.width = Some(Length::percent(100.0));
+    abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    // Place the absolute element in the second column only (line 2..3).
+    abs_style.grid_column_start = 2;
+    abs_style.grid_column_end = 3;
+
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = 2;
+    let mut grid = BoxNode::new_block(
+      Arc::new(grid_style),
+      FormattingContextType::Grid,
+      vec![abs_child],
+    );
+    grid.id = 1;
+
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(200.0, 50.0))
+      .expect("grid layout");
+    assert_eq!(fragment.children.len(), 1);
+
+    let abs_fragment = &fragment.children[0];
+    assert!((abs_fragment.bounds.x() - 100.0).abs() < 0.01);
+    assert!((abs_fragment.bounds.width() - 100.0).abs() < 0.01);
   }
 
   #[test]

@@ -14251,7 +14251,11 @@ impl DisplayListRenderer {
   fn maybe_init_non_isolated_group_backdrop(&mut self, item: &DisplayItem) -> Result<()> {
     let needs_backdrop = match item {
       DisplayItem::PushStackingContext(sc) => !matches!(sc.mix_blend_mode, BlendMode::Normal),
-      DisplayItem::PushBlendMode(item) => !matches!(item.mode, BlendMode::Normal),
+      // `PushBlendMode` is currently used to implement CSS `background-blend-mode` while painting a
+      // single element's background layers. Unlike `mix-blend-mode`, background blending is
+      // confined to the element's own background stack and must *not* sample pixels outside the
+      // current compositing group. Seeding the active group surface from the already-painted
+      // backdrop would incorrectly cause background layers to blend against the page contents.
       _ => false,
     };
     if !needs_backdrop {
@@ -27003,6 +27007,41 @@ mod tests {
     assert_eq!(
       report.layer_alloc_bytes, expected_bytes,
       "expected PushBlendMode layers to be allocated at the clip bounds"
+    );
+  }
+
+  #[test]
+  fn push_blend_mode_does_not_seed_opacity_group_backdrop() {
+    // `PushBlendMode` is used for CSS `background-blend-mode` (blending between background layers).
+    // It must not cause the active compositing group to be initialized from the already-painted
+    // backdrop, otherwise background layers would incorrectly blend against page contents.
+    //
+    // This test exercises the renderer's lazy backdrop seeding logic: an opacity group with
+    // `opacity == 1` is a non-isolated group surface, but a background blend must still start from
+    // a transparent backdrop (the element's own background stack), not the underlying canvas.
+    let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+      color: Rgba::from_rgba8(0, 255, 0, 255),
+    }));
+    list.push(DisplayItem::PushOpacity(OpacityItem { opacity: 1.0 }));
+    list.push(DisplayItem::PushBlendMode(BlendModeItem {
+      mode: BlendMode::Multiply,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+      color: Rgba::from_rgba8(0, 0, 255, 255),
+    }));
+    list.push(DisplayItem::PopBlendMode);
+    list.push(DisplayItem::PopOpacity);
+
+    let pixmap = renderer.render(&list).unwrap();
+    assert_eq!(
+      pixel(&pixmap, 2, 2),
+      (0, 0, 255, 255),
+      "expected PushBlendMode subtree to blend over a transparent group backdrop (blue), not the already-painted canvas (would multiply to black)"
     );
   }
 
