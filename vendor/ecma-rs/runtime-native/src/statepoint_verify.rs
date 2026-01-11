@@ -276,7 +276,7 @@ fn verify_statepoint_record(
       callsite,
       rec.patchpoint_id,
       format!(
-        "expected at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} leading Constant(0) locations, but record has {} location(s)",
+        "expected at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} leading constant header locations, but record has {} location(s)",
         rec.locations.len()
       ),
     ));
@@ -284,6 +284,25 @@ fn verify_statepoint_record(
 
   for idx in 0..LLVM18_STATEPOINT_HEADER_CONSTANTS {
     let loc = &rec.locations[idx];
+    // LLVM 18 observed encoding:
+    // - 3 leading "header constants"
+    // - header constant #2 (`locations[1]`) matches the IR `gc.statepoint` `flags` immarg
+    //   (the verifier only accepts a 2-bit mask 0..3).
+    //
+    // This runtime currently assumes `flags=0` for all statepoints.
+    if idx == 1 {
+      if !is_constant_zero(loc) {
+        return Err(VerifyError::new_location(
+          callsite,
+          rec.patchpoint_id,
+          idx,
+          loc,
+          "expected gc.statepoint flags=0 header (header constant #2)".to_string(),
+        ));
+      }
+      continue;
+    }
+
     if !is_constant_zero(loc) {
       return Err(VerifyError::new_location(
         callsite,
@@ -383,4 +402,3 @@ fn verify_indirect_sp_slot(
 
   Ok(())
 }
-

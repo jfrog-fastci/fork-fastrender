@@ -141,7 +141,17 @@ Conceptually, a statepoint call looks like:
 Notes:
 
 * `<id>` becomes the StackMap **Record ID** (`llvm-readobj --stackmap` prints it).
-* `<num_patch_bytes>` and `<flags>` are almost always `0` for our usage.
+* `<flags>` (5th argument) is a bitmask. On LLVM 18.x, the IR verifier only accepts
+  values in the range **0..3** (bits 0 and 1). This project currently uses
+  `flags = 0`.
+* `<num_patch_bytes>` (2nd argument) controls whether LLVM emits a real call or a
+  patchable region at the statepoint site:
+  * `patch_bytes = 0`: emits a normal `call` instruction.
+  * `patch_bytes > 0`: reserves a patchable region (x86_64: a NOP sled) and shifts
+    the stackmap `instruction offset` to the end of that reserved region (the
+    "return address" if/when a call is patched in).
+  This behavior is regression-tested by:
+  * `scripts/test_statepoint_flags_patchbytes.sh`
 * Operand bundles are written as a **single** bracket list with comma-separated
   bundles:
 
@@ -189,8 +199,11 @@ Key observations (x86_64):
 
 * `LLVM StackMap Version: 3`
 * A `Record ID` matches the statepoint `<id>` immediate.
-* `instruction offset` is the **return address** (the offset of the instruction
-  *after* the call) relative to the function start.
+* `instruction offset` is the **return address** relative to the function start.
+  If `patch_bytes = 0`, this is the offset of the instruction *after* the call.
+  If `patch_bytes > 0`, LLVM reserves a patchable region and `instruction offset`
+  points to the byte *after* that region (where execution would resume if a call
+  is patched in).
 * GC roots typically show up as locations like:
 
   ```

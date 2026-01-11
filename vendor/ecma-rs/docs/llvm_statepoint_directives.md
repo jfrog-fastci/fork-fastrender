@@ -28,6 +28,9 @@ These are **string attributes** (not enum attributes):
     IDs instead of LLVM’s default constant.
 - `"statepoint-num-patch-bytes"="<u32>"`
   - Controls the second `i32` argument to `@llvm.experimental.gc.statepoint.*`.
+  - On x86_64 (LLVM 18.1.x), `patch_bytes=0` emits a real `call`, while
+    `patch_bytes>0` reserves a patchable region (NOP sled) and shifts the stackmap
+    `instruction offset` to the end of that reserved region.
 
 ## native-js support
 
