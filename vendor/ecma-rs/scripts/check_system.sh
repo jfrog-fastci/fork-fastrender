@@ -21,7 +21,14 @@ check_cmd() {
   local pkg="${2:-$1}"
   if command -v "$cmd" >/dev/null 2>&1; then
     local ver
-    ver="$("$cmd" --version 2>/dev/null | head -1 || echo "unknown")"
+    # Avoid `cmd --version | head -1` under `set -o pipefail`: when `head` exits early it can
+    # SIGPIPE the producer (flaky across scheduling/buffering), causing the pipeline to fail and
+    # spurious "unknown" output to be appended.
+    ver="$("$cmd" --version 2>/dev/null || true)"
+    ver="${ver%%$'\n'*}"
+    if [[ -z "${ver}" ]]; then
+      ver="unknown"
+    fi
     echo -e "${GREEN}✓${NC} $cmd: $ver"
     return 0
   else
@@ -36,7 +43,12 @@ check_cmd_optional() {
   local pkg="${2:-$1}"
   if command -v "$cmd" >/dev/null 2>&1; then
     local ver
-    ver="$("$cmd" --version 2>/dev/null | head -1 || echo "unknown")"
+    # See `check_cmd`: avoid SIGPIPE/pipefail flakiness from `head -1`.
+    ver="$("$cmd" --version 2>/dev/null || true)"
+    ver="${ver%%$'\n'*}"
+    if [[ -z "${ver}" ]]; then
+      ver="unknown"
+    fi
     echo -e "${GREEN}✓${NC} $cmd: $ver"
     return 0
   else
