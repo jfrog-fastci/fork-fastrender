@@ -105,12 +105,15 @@ pub struct CompilerOptions {
   pub strict_function_types: bool,
   pub exact_optional_property_types: bool,
   pub no_unchecked_indexed_access: bool,
-  /// Enable "strict-native" mode.
+  /// Legacy alias for [`native_strict`](Self::native_strict).
   ///
   /// This is a repo-specific dialect that forbids dynamic JavaScript constructs
   /// (e.g. `eval`, `with`, `Proxy`, prototype mutation) that break
-  /// ahead-of-time optimizations and soundness. When enabled, additional
-  /// diagnostics with the `TN####` prefix may be produced.
+  /// ahead-of-time optimizations and soundness.
+  ///
+  /// Older tooling used the `strict_native` option name. Keep it as a separate
+  /// flag for compatibility, but new integrations should prefer
+  /// [`native_strict`](Self::native_strict).
   #[cfg_attr(feature = "serde", serde(default))]
   pub strict_native: bool,
   /// Whether class fields follow ECMAScript `define` semantics (`Object.defineProperty`)

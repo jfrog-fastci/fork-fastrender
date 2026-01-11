@@ -91,45 +91,6 @@ pub fn implicit_any_message(name: Option<&str>) -> String {
   }
 }
 
-/// TN0001: `any` is not allowed in strict-native mode.
-///
-/// - Primary span: the `any` keyword in a type position.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_ANY: Code = Code::new(
-  "TN0001",
-  "`any` is not allowed in strict-native mode",
-  "the `any` keyword in a type position",
-  &["primary: `any` type"],
-  &[],
-);
-
-/// TN0002: Type assertions are not allowed in strict-native mode.
-///
-/// - Primary span: the type assertion expression (`x as T`, `<T>x`, or `x as const`).
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_TYPE_ASSERTION: Code = Code::new(
-  "TN0002",
-  "type assertions are not allowed in strict-native mode",
-  "type assertion expression",
-  &["primary: type assertion"],
-  &[],
-);
-
-/// TN0003: Non-null assertions are not allowed in strict-native mode.
-///
-/// - Primary span: the non-null assertion expression (`x!`).
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_NON_NULL_ASSERTION: Code = Code::new(
-  "TN0003",
-  "non-null assertions are not allowed in strict-native mode",
-  "non-null assertion expression",
-  &["primary: non-null assertion"],
-  &[],
-);
-
 /// TC0001: No libraries were loaded.
 ///
 /// - Primary span: zero-length span at the start of the checked file if known,
@@ -797,15 +758,15 @@ pub const NATIVE_STRICT_EVAL: Code = Code::new(
   &[],
 );
 
-/// TC4002: `new Function(...)` is forbidden when `native_strict` is enabled.
+/// TC4002: `Function` constructor is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `Function` identifier used as the constructor callee.
+/// - Primary span: the `Function` identifier used as the call/new callee.
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_NEW_FUNCTION: Code = Code::new(
   "TC4002",
-  "new Function is forbidden in native-strict mode",
-  "`Function` identifier in a `new` expression",
+  "Function constructor is forbidden in native-strict mode",
+  "`Function` identifier in a call/new expression",
   &["primary: `Function` identifier"],
   &[],
 );
@@ -877,108 +838,29 @@ pub const NATIVE_STRICT_COMPUTED_PROPERTY_KEY: Code = Code::new(
   &[],
 );
 
-/// TC4008: `new Proxy(...)` is forbidden when `native_strict` is enabled.
+/// TC4008: `Proxy` is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `Proxy` identifier used as the constructor callee.
+/// - Primary span: the `Proxy` identifier used as the constructor call/new callee.
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_PROXY: Code = Code::new(
   "TC4008",
-  "new Proxy is forbidden in native-strict mode",
-  "`Proxy` identifier in a `new` expression",
+  "Proxy is forbidden in native-strict mode",
+  "`Proxy` identifier in a `new` expression (or `Proxy.revocable` callee)",
   &["primary: `Proxy` identifier"],
   &[],
 );
 
-/// TN0100: `eval` is forbidden in `strict_native` mode.
+/// TC4009: Prototype mutation is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `eval(...)` call expression.
+/// - Primary span: the call / assignment that mutates prototype state.
 /// - Labels: primary only.
 /// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_EVAL: Code = Code::new(
-  "TN0100",
-  "forbidden eval",
-  "call expression invoking `eval`",
-  &["primary: eval call expression"],
-  &[],
-);
-
-/// TN0101: `Function` constructor is forbidden in `strict_native` mode.
-///
-/// - Primary span: the `new Function(...)` / `Function(...)` call expression.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_FUNCTION_CONSTRUCTOR: Code = Code::new(
-  "TN0101",
-  "forbidden function constructor",
-  "call/new expression invoking the global `Function` constructor",
-  &["primary: Function constructor call/new expression"],
-  &[],
-);
-
-/// TN0102: `with` statements are forbidden in `strict_native` mode.
-///
-/// - Primary span: the `with (...) { ... }` statement.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_WITH: Code = Code::new(
-  "TN0102",
-  "forbidden with statement",
-  "`with` statement span",
-  &["primary: with statement"],
-  &[],
-);
-
-/// TN0103: `Proxy` usage is forbidden in `strict_native` mode.
-///
-/// - Primary span: the `new Proxy(...)` / `Proxy.revocable(...)` call expression.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_PROXY: Code = Code::new(
-  "TN0103",
-  "forbidden Proxy",
-  "call/new expression invoking `Proxy`",
-  &["primary: Proxy usage"],
-  &[],
-);
-
-/// TN0104: `arguments` object usage is forbidden in `strict_native` mode.
-///
-/// - Primary span: the `arguments` identifier reference.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_ARGUMENTS: Code = Code::new(
-  "TN0104",
-  "forbidden arguments object",
-  "`arguments` identifier reference",
-  &["primary: arguments reference"],
-  &[],
-);
-
-/// TN0105: Prototype mutation is forbidden in `strict_native` mode.
-///
-/// - Primary span: the assignment/call expression mutating prototype state.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_FORBIDDEN_PROTOTYPE_MUTATION: Code = Code::new(
-  "TN0105",
-  "forbidden prototype mutation",
-  "assignment or call expression mutating prototypes",
+pub const NATIVE_STRICT_PROTOTYPE_MUTATION: Code = Code::new(
+  "TC4009",
+  "prototype mutation is forbidden in native-strict mode",
+  "call or assignment expression mutating prototype state",
   &["primary: prototype mutation site"],
-  &[],
-);
-
-/// TN0106: Computed property access requires a constant key in `strict_native`
-/// mode.
-///
-/// - Primary span: the computed key expression inside `obj[key]`.
-/// - Labels: primary only.
-/// - Notes: none.
-pub const STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT: Code = Code::new(
-  "TN0106",
-  "computed property key must be constant",
-  "computed member expression key",
-  &["primary: computed property key expression"],
   &[],
 );
 

@@ -35,7 +35,9 @@ cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts --json
 - `--target`: select target lib set (`es5`, `es2015`, …).
 - `--project` / `-p`: load `tsconfig.json` (compiler options, file discovery, and `baseUrl`/`paths` resolution).
 - `--node-resolve`: enable Node/TS-style resolution (including `node_modules`).
-- `--strict-native`: enable strict-native diagnostics (also available via
+- `--native-strict`: enforce the AOT-friendly TypeScript subset described in
+  `EXEC.plan`.
+- `--strict-native`: legacy alias for `--native-strict` (also available via
   `compilerOptions.strictNative` in `tsconfig.json`).
 - `--trace` / `--profile`: emit tracing spans in JSON (compatible with the
   harness profiling format).

@@ -25,7 +25,7 @@ fn strict_native_reports_explicit_any() {
     .arg(entry.as_os_str())
     .assert()
     .failure()
-    .stdout(contains("TN0001"));
+    .stdout(contains("TC4000"));
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn strict_native_reports_type_and_non_null_assertions() {
   let entry = tmp.path().join("main.ts");
   fs::write(
     &entry,
-    "let x = 1 as number;\nlet y: string | null = null;\nlet z = y!;\n",
+    "let x = 1 as string;\nlet y: string | null = null;\nlet z = y!;\n",
   )
   .expect("write main.ts");
 
@@ -80,12 +80,12 @@ fn strict_native_reports_type_and_non_null_assertions() {
 
   let stdout = String::from_utf8_lossy(&output);
   assert!(
-    stdout.contains("TN0002"),
-    "expected TN0002 for type assertion, got {stdout}"
+    stdout.contains("TC4005"),
+    "expected TC4005 for unsafe type assertion, got {stdout}"
   );
   assert!(
-    stdout.contains("TN0003"),
-    "expected TN0003 for non-null assertion, got {stdout}"
+    stdout.contains("TC4006"),
+    "expected TC4006 for non-null assertion, got {stdout}"
   );
 }
 

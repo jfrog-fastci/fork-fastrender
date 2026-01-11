@@ -106,8 +106,10 @@ struct TypecheckArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   no_unchecked_indexed_access: bool,
 
-  /// Enable strict-native dialect bans (forbid dynamic JS constructs like
-  /// `eval`, `with`, `Proxy`, etc.).
+  /// Legacy alias for `--native-strict`.
+  ///
+  /// Kept for backwards compatibility; enables the same AOT-friendly dialect
+  /// bans as `--native-strict`.
   #[arg(long, action = ArgAction::SetTrue)]
   strict_native: bool,
 

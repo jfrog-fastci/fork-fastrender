@@ -114,7 +114,6 @@ mod merging;
 mod module_exports;
 mod queries;
 mod span_types;
-mod strict_native;
 mod type_ops;
 
 fn sem_file_kind(kind: FileKind) -> sem_ts::FileKind {

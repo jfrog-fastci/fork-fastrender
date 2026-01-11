@@ -1195,7 +1195,7 @@ impl ProgramState {
         }
       }
     }
-    if self.compiler_options.native_strict {
+    if self.compiler_options.native_strict || self.compiler_options.strict_native {
       let expander = RefExpander::new(
         Arc::clone(&store),
         &self.interned_def_types,

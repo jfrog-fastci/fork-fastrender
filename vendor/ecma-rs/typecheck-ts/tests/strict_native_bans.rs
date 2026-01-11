@@ -53,32 +53,32 @@ dict["x"];
   let seen = diagnostics_codes(&diagnostics);
 
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_WITH.as_str()),
-    "expected TN0102 with diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_WITH.as_str()),
+    "expected TC4003 with diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_EVAL.as_str()),
-    "expected TN0100 eval diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_EVAL.as_str()),
+    "expected TC4001 eval diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_FUNCTION_CONSTRUCTOR.as_str()),
-    "expected TN0101 Function constructor diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_NEW_FUNCTION.as_str()),
+    "expected TC4002 Function constructor diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_PROXY.as_str()),
-    "expected TN0103 Proxy diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_PROXY.as_str()),
+    "expected TC4008 Proxy diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_ARGUMENTS.as_str()),
-    "expected TN0104 arguments diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_ARGUMENTS.as_str()),
+    "expected TC4004 arguments diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_FORBIDDEN_PROTOTYPE_MUTATION.as_str()),
-    "expected TN0105 prototype mutation diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()),
+    "expected TC4009 prototype mutation diagnostic, got {seen:?}"
   );
   assert!(
-    seen.contains(&codes::STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT.as_str()),
-    "expected TN0106 computed key diagnostic, got {seen:?}"
+    seen.contains(&codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str()),
+    "expected TC4007 computed key diagnostic, got {seen:?}"
   );
 }
 
@@ -123,13 +123,13 @@ dict["x"];
   let seen = diagnostics_codes(&diagnostics);
 
   for forbidden in [
-    codes::STRICT_NATIVE_FORBIDDEN_WITH.as_str(),
-    codes::STRICT_NATIVE_FORBIDDEN_EVAL.as_str(),
-    codes::STRICT_NATIVE_FORBIDDEN_FUNCTION_CONSTRUCTOR.as_str(),
-    codes::STRICT_NATIVE_FORBIDDEN_PROXY.as_str(),
-    codes::STRICT_NATIVE_FORBIDDEN_ARGUMENTS.as_str(),
-    codes::STRICT_NATIVE_FORBIDDEN_PROTOTYPE_MUTATION.as_str(),
-    codes::STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT.as_str(),
+    codes::NATIVE_STRICT_WITH.as_str(),
+    codes::NATIVE_STRICT_EVAL.as_str(),
+    codes::NATIVE_STRICT_NEW_FUNCTION.as_str(),
+    codes::NATIVE_STRICT_PROXY.as_str(),
+    codes::NATIVE_STRICT_ARGUMENTS.as_str(),
+    codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str(),
+    codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str(),
   ] {
     assert!(
       !seen.contains(&forbidden),

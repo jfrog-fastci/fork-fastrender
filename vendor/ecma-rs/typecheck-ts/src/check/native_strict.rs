@@ -1,7 +1,7 @@
 use crate::codes;
 use crate::BodyCheckResult;
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
-use hir_js::{Body, BodyKind, ExprKind, Literal, NameInterner, ObjectKey, StmtKind};
+use hir_js::{Body, BodyKind, ExprKind, Literal, NameInterner, ObjectKey, PatKind, StmtKind};
 use std::collections::{HashMap, HashSet};
 use types_ts_interned::{RelateCtx, TypeId, TypeKind, TypeStore};
 
@@ -18,9 +18,64 @@ pub fn validate_native_strict_body(
   let mut name_interner = NameInterner::default();
   let eval_name = name_interner.intern("eval");
   let global_this_name = name_interner.intern("globalThis");
+  let object_name = name_interner.intern("Object");
+  let reflect_name = name_interner.intern("Reflect");
   let function_name = name_interner.intern("Function");
   let proxy_name = name_interner.intern("Proxy");
+  let revocable_name = name_interner.intern("revocable");
   let arguments_name = name_interner.intern("arguments");
+  let set_prototype_of_name = name_interner.intern("setPrototypeOf");
+  let prototype_name = name_interner.intern("prototype");
+  let proto_name = name_interner.intern("__proto__");
+
+  fn object_key_is_ident(key: &ObjectKey, name: hir_js::NameId) -> bool {
+    matches!(key, ObjectKey::Ident(id) if *id == name)
+  }
+
+  fn object_key_is_string(key: &ObjectKey, value: &str) -> bool {
+    matches!(key, ObjectKey::String(s) if s == value)
+  }
+
+  fn object_key_is_literal_string(body: &Body, key: &ObjectKey, value: &str) -> bool {
+    match key {
+      ObjectKey::Computed(expr_id) => {
+        let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+          return false;
+        };
+        matches!(&expr.kind, ExprKind::Literal(Literal::String(s)) if s.lossy == value)
+      }
+      _ => false,
+    }
+  }
+
+  fn expr_chain_contains_proto_mutation(
+    body: &Body,
+    mut id: hir_js::ExprId,
+    prototype_name: hir_js::NameId,
+    proto_name: hir_js::NameId,
+  ) -> bool {
+    loop {
+      let Some(expr) = body.exprs.get(id.0 as usize) else {
+        return false;
+      };
+      match &expr.kind {
+        ExprKind::Member(member) => {
+          let key = &member.property;
+          if object_key_is_ident(key, prototype_name)
+            || object_key_is_ident(key, proto_name)
+            || object_key_is_string(key, "prototype")
+            || object_key_is_string(key, "__proto__")
+            || object_key_is_literal_string(body, key, "prototype")
+            || object_key_is_literal_string(body, key, "__proto__")
+          {
+            return true;
+          }
+          id = member.object;
+        }
+        _ => return false,
+      }
+    }
+  }
 
   fn is_effective_any(store: &TypeStore, relate: &RelateCtx, ty: TypeId) -> bool {
     let ty = store.canon(ty);
@@ -189,20 +244,62 @@ pub fn validate_native_strict_body(
             }
           }
 
-          if call.is_new {
-            if matches!(&callee.kind, ExprKind::Ident(name) if *name == function_name) {
-              diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
-                "`new Function` is forbidden when `native_strict` is enabled",
+          if matches!(&callee.kind, ExprKind::Ident(name) if *name == function_name) {
+            diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+              "`Function` constructor is forbidden when `native_strict` is enabled",
+              Span::new(file, callee_span),
+            ));
+          }
+
+          if call.is_new && matches!(&callee.kind, ExprKind::Ident(name) if *name == proxy_name) {
+            diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+              "`Proxy` is forbidden when `native_strict` is enabled",
+              Span::new(file, callee_span),
+            ));
+          }
+
+          if let ExprKind::Member(member) = &callee.kind {
+            let obj_is_ident = body
+              .exprs
+              .get(member.object.0 as usize)
+              .map(|expr| &expr.kind);
+
+            if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == proxy_name)
+              && (object_key_is_ident(&member.property, revocable_name)
+                || object_key_is_string(&member.property, "revocable"))
+            {
+              diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                "`Proxy` is forbidden when `native_strict` is enabled",
                 Span::new(file, callee_span),
               ));
             }
-            if matches!(&callee.kind, ExprKind::Ident(name) if *name == proxy_name) {
-              diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
-                "`new Proxy` is forbidden when `native_strict` is enabled",
-                Span::new(file, callee_span),
+
+            if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name || *name == reflect_name)
+              && (object_key_is_ident(&member.property, set_prototype_of_name)
+                || object_key_is_string(&member.property, "setPrototypeOf"))
+            {
+              let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+              diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                "prototype mutation is forbidden when `native_strict` is enabled",
+                Span::new(file, span),
               ));
             }
           }
+        }
+      }
+      ExprKind::Assignment { target, .. } => {
+        let Some(target_pat) = body.pats.get(target.0 as usize) else {
+          continue;
+        };
+        let PatKind::AssignTarget(target_expr) = &target_pat.kind else {
+          continue;
+        };
+        if expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name) {
+          let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+          diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+            "prototype mutation is forbidden when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
         }
       }
       ExprKind::TypeAssertion {
