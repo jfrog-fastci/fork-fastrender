@@ -77,10 +77,14 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
   // Only the outermost transition needs to publish a safepoint context and mark
   // the thread as NativeSafe.
   if thread.native_safe_depth.load(Ordering::Relaxed) == 0 {
-    // A thread in a GC-safe region is treated as already quiescent by the STW coordinator and its
-    // stack/registers are not scanned. Entering the region while holding temporary shadow-stack
-    // roots is likely a bug: those roots imply the thread has GC pointers in locals that may still
-    // be live in registers.
+    // A NativeSafe thread is treated as *already quiescent* by stop-the-world GC. That is only
+    // correct if there are no live GC pointers in registers/stack at this boundary.
+    //
+    // In Rust runtime code, temporary GC roots are tracked via the per-thread handle stack (see
+    // `roots::RootScope`). If any roots are present, the thread is holding GC pointers in local
+    // variables, which may also still be live in registers. Entering a GC-safe region in that
+    // state would allow a moving GC to proceed without updating those registers, risking
+    // use-after-move corruption when the thread resumes.
     //
     // Keep this a debug assertion: production builds should still attempt to make progress.
     let roots = thread.handle_stack_len();
@@ -88,7 +92,8 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
       roots,
       0,
       "thread {:?} entered GC-safe region while holding {roots} handle-stack roots; \
-       store GC references in persistent handles (RootRegistry/HandleTable) before blocking",
+       NativeSafe threads are treated as quiescent by stop-the-world GC, so raw GC pointers must not be live \
+       across this boundary; store GC references in RootHandles/RootRegistry (stable handles) before blocking",
       thread.id()
     );
 

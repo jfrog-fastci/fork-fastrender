@@ -37,13 +37,14 @@ Concretely:
      ensure they do **not** keep raw GC pointers live across the blocking syscall boundary.
 
 2. Blocking syscalls must be wrapped in an explicit "not-a-mutator" transition.
-   In `runtime-native` today this is represented by entering a
-   `runtime_native::threading::ParkedGuard` (or using `threading::park_while(..)`), which marks the
-   thread as parked immediately before the blocking syscall.
+    In `runtime-native` today this is represented by entering a
+    `runtime_native::threading::ParkedGuard` (or using `threading::park_while(..)`), or by entering a
+    `runtime_native::threading::GcSafeGuard` via `threading::enter_gc_safe_region()`.
 
-   When a thread is parked, the safepoint coordinator treats it as already quiescent; therefore it
-   is a bug for the thread to have any live, untracked GC pointers at this boundary. We enforce this
-   with debug-time assertions (see `threading::set_parked`).
+    When a thread is parked **or** in a GC-safe ("NativeSafe") region, the safepoint coordinator
+    treats it as already quiescent; therefore it is a bug for the thread to have any live, untracked
+    GC pointers at this boundary. We enforce this with debug-time assertions (see
+    `threading::set_parked` and `gc_safe::enter_gc_safe_region`).
 
 3. If a blocking operation must retain references to GC-managed objects while it is in flight, it
    must store them **only as stable handles** in the global handle/root tables (Task 370), e.g.:
