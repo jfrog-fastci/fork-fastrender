@@ -1,7 +1,8 @@
 use effect_model::{EffectSet, Purity};
 use hir_js::{
-  ArrayElement, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId, ObjectKey,
-  ObjectProperty, PatId, PatKind, StmtId, StmtKind, VarDecl,
+  ArrayElement, BinaryOp, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId,
+  ObjectKey, ObjectProperty, PatId, PatKind, StmtId, StmtKind, TypeArenas, TypeExprId, TypeExprKind,
+  VarDecl,
 };
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayChainOp;
@@ -47,12 +48,120 @@ pub fn callsite_info_for_args(
     return crate::db::CallSiteInfo::default();
   };
   let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
+  let associative = callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
   crate::db::CallSiteInfo {
     callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
     callback_uses_index: callback.map(|cb| cb.uses_index),
     callback_uses_array: callback.map(|cb| cb.uses_array),
-    // `CallSiteInfo` does not currently model callback associativity.
+    callback_is_associative: associative,
     ..crate::db::CallSiteInfo::default()
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssocType {
+  Boolean,
+  BigInt,
+  Number,
+  String,
+}
+
+fn infer_associative_inline_callback(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  callback_expr: ExprId,
+) -> Option<bool> {
+  let callsite_body = lowered.body(body)?;
+  let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
+  let ExprKind::FunctionExpr { def, body: cb_body, .. } = cb_expr.kind else {
+    return None;
+  };
+
+  let cb_body_data = lowered.body(cb_body)?;
+  let func = cb_body_data.function.as_ref()?;
+
+  let param_a = func.params.get(0)?;
+  let param_b = func.params.get(1)?;
+  let name_a = match cb_body_data.pats.get(param_a.pat.0 as usize)?.kind {
+    PatKind::Ident(name) => name,
+    _ => return None,
+  };
+  let name_b = match cb_body_data.pats.get(param_b.pat.0 as usize)?.kind {
+    PatKind::Ident(name) => name,
+    _ => return None,
+  };
+
+  let arenas = lowered.type_arenas(def)?;
+  let ty_a = assoc_type_for_param(arenas, param_a.type_annotation?)?;
+  let ty_b = assoc_type_for_param(arenas, param_b.type_annotation?)?;
+  if ty_a != ty_b {
+    return None;
+  }
+
+  let expr = match &func.body {
+    FunctionBody::Expr(expr) => *expr,
+    FunctionBody::Block(stmts) => return_expr_only(cb_body_data, stmts)?,
+  };
+  let expr = strip_value_wrappers(cb_body_data, expr);
+
+  let ExprKind::Binary { op, left, right } = &cb_body_data.exprs.get(expr.0 as usize)?.kind else {
+    return None;
+  };
+  if !matches!(cb_body_data.exprs.get(left.0 as usize)?.kind, ExprKind::Ident(n) if n == name_a) {
+    return None;
+  }
+  if !matches!(cb_body_data.exprs.get(right.0 as usize)?.kind, ExprKind::Ident(n) if n == name_b) {
+    return None;
+  }
+
+  Some(is_associative_op(ty_a, *op))
+}
+
+fn assoc_type_for_param(arenas: &TypeArenas, ty: TypeExprId) -> Option<AssocType> {
+  let node = arenas.type_exprs.get(ty.0 as usize)?;
+  match &node.kind {
+    TypeExprKind::Parenthesized(inner) => assoc_type_for_param(arenas, *inner),
+    TypeExprKind::Boolean => Some(AssocType::Boolean),
+    TypeExprKind::BigInt => Some(AssocType::BigInt),
+    TypeExprKind::Number => Some(AssocType::Number),
+    TypeExprKind::String => Some(AssocType::String),
+    _ => None,
+  }
+}
+
+fn is_associative_op(ty: AssocType, op: BinaryOp) -> bool {
+  match (ty, op) {
+    (AssocType::Boolean, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => true,
+    (AssocType::BigInt, BinaryOp::Add | BinaryOp::Multiply) => true,
+    (AssocType::BigInt, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
+    (AssocType::Number, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
+    (AssocType::String, BinaryOp::Add) => true,
+    _ => false,
+  }
+}
+
+fn return_expr_only(body: &Body, stmts: &[StmtId]) -> Option<ExprId> {
+  if stmts.len() != 1 {
+    return None;
+  }
+  let stmt = body.stmts.get(stmts[0].0 as usize)?;
+  match &stmt.kind {
+    StmtKind::Return(Some(expr)) => Some(*expr),
+    _ => None,
+  }
+}
+
+fn strip_value_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
   }
 }
 
@@ -854,6 +963,21 @@ mod tests {
     assert_eq!(info.callback_is_pure, Some(true));
     assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn infers_associative_reduce_callback_for_bigint_add() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: bigint, b: bigint) => a + b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_is_associative, Some(true));
   }
 
   #[test]
