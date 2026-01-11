@@ -6,8 +6,9 @@ use llvm_sys::core::{
   LLVMCountBasicBlocks, LLVMCountIncoming, LLVMCountParamTypes, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC, LLVMGetIncomingBlock,
-  LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetModuleContext,
-  LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction, LLVMGetNextInstruction,
+  LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
+  LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
+  LLVMGetNextInstruction,
   LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetReturnType, LLVMGetStringAttributeAtIndex,
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
   LLVMInstructionEraseFromParent, LLVMInstructionRemoveFromParent, LLVMInt64TypeInContext, LLVMIsAConstantExpr,
@@ -54,6 +55,8 @@ pub enum PassError {
   UnsupportedCallBrInGcFunction { function: String, instruction: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
+  #[error("LLVM module defines `{name}` with incompatible type (expected `i64`)")]
+  IncompatibleSafepointEpochType { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
   IncompatibleSafepointSlowSignature { name: String },
   #[error(
@@ -258,17 +261,23 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
 // Safepoint poll lowering: `gc.safepoint_poll` -> inline epoch check + slow path.
 // -----------------------------------------------------------------------------
 
-fn ensure_rt_gc_epoch_decl(module: &Module<'_>) -> LLVMValueRef {
+fn ensure_rt_gc_epoch_decl(module: &Module<'_>) -> Result<LLVMValueRef, PassError> {
   let name = CString::new("RT_GC_EPOCH").expect("RT_GC_EPOCH contains NUL");
   unsafe {
     let existing = LLVMGetNamedGlobal(module.as_mut_ptr(), name.as_ptr());
     if !existing.is_null() {
-      return existing;
+      let ty = LLVMGlobalGetValueType(existing);
+      if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
+        return Err(PassError::IncompatibleSafepointEpochType {
+          name: "RT_GC_EPOCH".to_string(),
+        });
+      }
+      return Ok(existing);
     }
 
     let ctx = LLVMGetModuleContext(module.as_mut_ptr());
     let i64_ty = LLVMInt64TypeInContext(ctx);
-    LLVMAddGlobal(module.as_mut_ptr(), i64_ty, name.as_ptr())
+    Ok(LLVMAddGlobal(module.as_mut_ptr(), i64_ty, name.as_ptr()))
   }
 }
 
@@ -317,7 +326,7 @@ fn rewrite_safepoint_polls_to_inline_epoch_checks(module: &Module<'_>) -> Result
       return Ok(());
     }
 
-    let rt_gc_epoch = ensure_rt_gc_epoch_decl(module);
+    let rt_gc_epoch = ensure_rt_gc_epoch_decl(module)?;
     let rt_gc_safepoint_slow = ensure_rt_gc_safepoint_slow_decl(module)?;
 
     let ctx = LLVMGetModuleContext(module.as_mut_ptr());

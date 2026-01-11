@@ -27,6 +27,42 @@ fn host_target_machine() -> TargetMachine {
 }
 
 #[test]
+fn place_safepoints_rejects_incompatible_rt_gc_epoch_type() {
+  let context = Context::create();
+  let module = context.create_module("place_safepoints_bad_epoch");
+  let builder = context.create_builder();
+
+  let epoch = module.add_global(context.i32_type(), None, "RT_GC_EPOCH");
+  epoch.set_initializer(&context.i32_type().const_zero());
+
+  let void_ty = context.void_type();
+  let test_ty = void_ty.fn_type(&[], false);
+  let test_fn = module.add_function("test", test_ty, None);
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+  let entry = context.append_basic_block(test_fn, "entry");
+  builder.position_at_end(entry);
+  builder.build_return(None).expect("ret void");
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "input module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::IncompatibleSafepointEpochType { .. }),
+    "expected IncompatibleSafepointEpochType, got: {err}"
+  );
+}
+
+#[test]
 fn place_safepoints_polls_are_rewritten_into_statepoints() {
   let context = Context::create();
   let module = context.create_module("place_safepoints");
