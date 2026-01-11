@@ -200,8 +200,8 @@ Passing `--no-builtins` makes these calls fail with `builtins disabled` so you
 can test the non-builtin path.
 
 For `--pipeline checked`, this flag disables the `print(...)` intrinsic (it is
-rejected when builtin intrinsics are disabled). Other builtins (`assert` /
-`panic` / `trap`) are currently only supported by `--pipeline project`.
+rejected with `NJS0012` when builtin intrinsics are disabled). Other builtins
+(`assert` / `panic` / `trap`) are currently only supported by `--pipeline project`.
 
 `console.log` / `print` formatting (current):
 
