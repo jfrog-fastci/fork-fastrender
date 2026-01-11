@@ -1,11 +1,15 @@
-//! Unified OS reactor + timer wheel driver for `rt_async_poll()`.
+//! Unified OS reactor + timer wheel driver for a future outer executor loop.
 //!
 //! [`ReactorDriver`] multiplexes:
 //! - OS I/O readiness (epoll on Linux, kqueue on macOS/BSD) via [`crate::reactor`].
 //! - Timer expirations via [`crate::timer_wheel`] (wrapped by [`crate::time::TimerDriver`]).
 //! - Cross-thread wakeups via [`ReactorDriver::notify`].
 //!
-//! # `rt_async_poll()` integration contract
+//! This module is **not** currently used by the runtime-native async C ABI entrypoints:
+//! - `rt_async_poll` is a non-blocking microtask drain for the native async ABI.
+//! - `rt_async_poll_legacy` / `rt_async_wait` drive the existing JS-shaped event loop (`async_rt`).
+//!
+//! # Executor integration contract
 //!
 //! The planned outer executor loop should use the driver like:
 //! - If there are runnable tasks, call [`ReactorDriver::poll`] with
