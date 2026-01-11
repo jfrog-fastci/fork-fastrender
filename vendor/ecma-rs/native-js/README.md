@@ -438,6 +438,8 @@ matching the validator’s checks):
   - `super`, `new.target`
   - JSX
   - `with`, `try`, `throw`
+  - `for await (...)` loops
+  - `using` / `await using` declarations
   - `eval()` and `Function()` / `new Function()`
   - use of the `arguments` identifier/object
 - Unsupported types (`NJS0010`):
