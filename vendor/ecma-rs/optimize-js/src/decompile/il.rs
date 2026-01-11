@@ -1284,7 +1284,7 @@ pub enum LoweredInst {
     value: LoweredArg,
   },
   Return {
-    value: LoweredArg,
+    value: Option<LoweredArg>,
   },
   Throw {
     value: LoweredArg,
@@ -1361,32 +1361,20 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
     },
-    InstTyp::Return => {
-      debug_assert!(
-        inst.args.len() <= 1,
-        "Return inst expects 0 or 1 args, got {}",
-        inst.args.len()
-      );
-      let value = inst
-        .args
-        .get(0)
-        .map(lowered_arg)
-        .unwrap_or(LoweredArg::Const(Const::Undefined));
-      LoweredInst::Return { value }
-    }
-    InstTyp::Throw => {
-      debug_assert_eq!(
-        inst.args.len(),
-        1,
-        "Throw inst expects exactly 1 arg, got {}",
-        inst.args.len()
-      );
-      let value = match inst.args.get(0) {
-        Some(arg) => lowered_arg(arg),
-        None => LoweredArg::Const(Const::Undefined),
-      };
-      LoweredInst::Throw { value }
-    }
+    InstTyp::Return => LoweredInst::Return {
+      value: {
+        assert!(inst.args.len() <= 1, "return expects 0 or 1 args");
+        inst.args.get(0).map(lowered_arg)
+      },
+    },
+    InstTyp::Throw => LoweredInst::Throw {
+      value: {
+        let [value] = inst.args.as_slice() else {
+          panic!("throw expects exactly 1 arg");
+        };
+        lowered_arg(value)
+      },
+    },
     InstTyp::ForeignLoad => LoweredInst::IdentLoad {
       tgt: inst.tgts[0],
       name: bindings
