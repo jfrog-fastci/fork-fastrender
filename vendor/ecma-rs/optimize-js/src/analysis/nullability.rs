@@ -147,6 +147,14 @@ impl NullabilityResult {
     &self.result.block_entry[&label]
   }
 
+  pub fn edge_state(&self, pred: u32, succ: u32) -> Option<&State> {
+    self.result.edge_out.get(&(pred, succ))
+  }
+
+  pub fn edge_is_reachable(&self, pred: u32, succ: u32) -> bool {
+    self.edge_state(pred, succ).is_some_and(|s| s.is_reachable())
+  }
+
   pub fn mask_of_var_at_entry(&self, label: u32, var: u32) -> NullabilityMask {
     self.entry_state(label).mask_of_var(var)
   }
