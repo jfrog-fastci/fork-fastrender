@@ -214,11 +214,14 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
 
-  let shape_desc = shape_table::lookup_rt_descriptor(shape);
-  if size != shape_desc.size as usize {
-    crate::trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
-  }
-  let type_desc = shape_table::lookup_type_descriptor(shape);
+  let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
+  let size = shape_desc.size as usize;
+  debug_assert_eq!(
+    size,
+    type_desc.size,
+    "shape table TypeDescriptor::size must match RtShapeDescriptor.size"
+  );
+
   let shape_align = shape_desc.align as usize;
   if shape_align == 0 || !shape_align.is_power_of_two() {
     crate::trap::rt_trap_invalid_arg("rt_alloc: shape descriptor align must be a non-zero power of two");
@@ -333,14 +336,19 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
   ensure_thread_registered_for_alloc();
   crate::threading::safepoint_poll();
 
-  let shape_desc = shape_table::lookup_rt_descriptor(shape);
-  if size != shape_desc.size as usize {
-    crate::trap::rt_trap_invalid_arg("rt_alloc_pinned: size does not match registered shape descriptor");
-  }
-  let type_desc = shape_table::lookup_type_descriptor(shape);
+  let (shape_desc, type_desc) = shape_table::validate_alloc_request(size, shape);
+  let size = shape_desc.size as usize;
+  debug_assert_eq!(
+    size,
+    type_desc.size,
+    "shape table TypeDescriptor::size must match RtShapeDescriptor.size"
+  );
+
   let shape_align = shape_desc.align as usize;
   if shape_align == 0 || !shape_align.is_power_of_two() {
-    crate::trap::rt_trap_invalid_arg("rt_alloc_pinned: shape descriptor align must be a non-zero power of two");
+    crate::trap::rt_trap_invalid_arg(
+      "rt_alloc_pinned: shape descriptor align must be a non-zero power of two",
+    );
   }
   let align = shape_align.max(OBJ_ALIGN);
   debug_assert_eq!(

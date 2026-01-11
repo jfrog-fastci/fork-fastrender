@@ -1,6 +1,7 @@
 use crate::abi::{RtShapeDescriptor, RtShapeId};
 use crate::gc::{ObjHeader, TypeDescriptor};
 use crate::ffi::abort_on_panic;
+use crate::trap;
 use std::mem;
 use std::sync::OnceLock;
 
@@ -118,6 +119,50 @@ pub fn lookup_type_descriptor(id: RtShapeId) -> &'static TypeDescriptor {
     .get()
     .unwrap_or_else(|| panic!("shape table not registered (call rt_register_shape_table first)"))
     .type_desc(id)
+}
+
+/// Validate an allocation request for `shape` and return the registered descriptors.
+///
+/// The runtime's shape table is the source of truth for object layout and size. If the caller
+/// passes a `size` that does not match the registered descriptor size, we abort to avoid
+/// out-of-bounds tracing and heap corruption.
+///
+/// This helper is intended for use by FFI entrypoints (`rt_alloc*`) and must never unwind.
+#[inline]
+pub(crate) fn validate_alloc_request(
+  size: usize,
+  shape: RtShapeId,
+) -> (&'static RtShapeDescriptor, &'static TypeDescriptor) {
+  if !shape.is_valid() {
+    trap::rt_trap_invalid_arg("shape id 0 is reserved/invalid");
+  }
+
+  let Some(table) = SHAPE_TABLE.get() else {
+    trap::rt_trap_invalid_arg("shape table not registered (call rt_register_shape_table first)");
+  };
+
+  let idx = (shape.0 - 1) as usize;
+  if idx >= table.len() {
+    trap::rt_trap_invalid_arg_fmt(format_args!(
+      "RtShapeId({}) out of bounds: shape table has {} shapes",
+      shape.0,
+      table.len()
+    ));
+  }
+
+  let rt_desc = &table.rt_descs[idx];
+  let expected = rt_desc.size as usize;
+  if size != expected {
+    trap::rt_trap_invalid_arg_fmt(format_args!(
+      "allocation size mismatch for shape {}: requested {} bytes, but descriptor size is {} bytes",
+      shape.0,
+      size,
+      expected
+    ));
+  }
+
+  let type_desc = &table.type_descs[idx];
+  (rt_desc, type_desc)
 }
 
 #[cfg(feature = "gc_debug")]
