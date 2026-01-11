@@ -8,6 +8,9 @@
     depends_on_args:
       base: Allocating
       args: [0]
+  properties:
+    fusable: true
+    output_length: same_as_input
 
 - name: Array.prototype.filter
   semantics: Filter
@@ -19,6 +22,9 @@
     depends_on_args:
       base: Allocating
       args: [0]
+  properties:
+    fusable: true
+    output_length: at_most_input
 
 - name: Array.prototype.reduce
   semantics: Reduce
@@ -30,6 +36,7 @@
     depends_on_args:
       base: Pure
       args: [0]
+
 - name: Array.prototype.forEach
   semantics: ForEach
   effects:

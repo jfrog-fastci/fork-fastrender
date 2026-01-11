@@ -212,7 +212,6 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
         }
       }
     };
-
     if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
       validate_args(args);
     }
