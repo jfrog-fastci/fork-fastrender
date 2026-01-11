@@ -274,6 +274,21 @@ fn infinite_loop_virtual_exit_from_sink_scc() {
 }
 
 #[test]
+fn virtual_exit_label_does_not_collide_with_unconnected_bblock() {
+  let cfg = cfg(&[0, 1, 2], &[(0, 1)]);
+  let backward_result = backward(&cfg, AnalysisBoundary::VirtualExit);
+  match &backward_result.boundary {
+    ResolvedAnalysisBoundary::VirtualExit { label, .. } => {
+      assert!(
+        cfg.bblocks.maybe_get(*label).is_none(),
+        "virtual exit label {label} collides with an existing basic block",
+      );
+    }
+    ResolvedAnalysisBoundary::Entry(label) => panic!("expected virtual exit, got entry {label}"),
+  }
+}
+
+#[test]
 fn unreachable_blocks_start_at_bottom() {
   let cfg = cfg(&[0, 1, 2, 3], &[(0, 1), (1, 2)]);
   let forward_result = forward(&cfg, AnalysisBoundary::Entry(0));

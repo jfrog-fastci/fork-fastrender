@@ -315,7 +315,9 @@ fn calculate_virtual_exit(cfg: &Cfg) -> VirtualExit {
 }
 
 fn next_unused_label(cfg: &Cfg) -> u32 {
-  let used: HashSet<u32> = cfg.graph.labels().collect();
+  let mut used: HashSet<u32> = cfg.graph.labels().collect();
+  used.extend(cfg.bblocks.all().map(|(label, _)| label));
+  used.insert(cfg.entry);
   let candidate = used.iter().copied().max().unwrap_or(0).saturating_add(1);
   if !used.contains(&candidate) {
     return candidate;

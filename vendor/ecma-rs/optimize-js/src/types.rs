@@ -46,8 +46,8 @@ impl ValueTypeSummary {
 
   pub fn excludes_nullish(self) -> bool {
     // `NULLISH` is a union of {null, undefined}. `contains()` checks for a superset, so it would
-    // only return true if *both* bits are set. For our purposes we care about whether the summary
-    // may include *either* nullish value, so we check for any overlap.
+    // only return true if *both* bits are set. Here we need to ensure there is no overlap with
+    // either nullish bit.
     !self.is_unknown() && (self.0 & Self::NULLISH.0) == 0
   }
 
@@ -149,6 +149,10 @@ mod tests {
     assert!(!ValueTypeSummary::NULLISH.excludes_nullish());
     assert!(ValueTypeSummary::STRING.excludes_nullish());
     assert!(!(ValueTypeSummary::STRING | ValueTypeSummary::NULL).excludes_nullish());
+    assert!(ValueTypeSummary::BOOLEAN.excludes_nullish());
+    assert!(!(ValueTypeSummary::BOOLEAN | ValueTypeSummary::NULL).excludes_nullish());
+    assert!(!(ValueTypeSummary::BOOLEAN | ValueTypeSummary::UNDEFINED).excludes_nullish());
+    assert!((ValueTypeSummary::BOOLEAN | ValueTypeSummary::NUMBER).excludes_nullish());
   }
 }
 
