@@ -64,6 +64,10 @@ collect -n --no-heading --with-filename -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' em
 # constructors), so scan its sources for code-shaped string literals.
 collect -n --no-heading --with-filename -g'*.rs' -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' ts-erase/src --replace '$1'
 
+# native-js stores many of its codes in `const CODE_*: &str = "NJS0001"` style
+# definitions, so scan its sources for NJS code-shaped string literals.
+collect -n --no-heading --with-filename -g'*.rs' -o '"(NJS[0-9]{4})"' native-js/src --replace '$1'
+
 sort -u "$tmp" >"$sorted_tmp"
 
 python3 - "$sorted_tmp" <<'PY'
