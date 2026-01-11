@@ -370,6 +370,7 @@ This repo supports two common ways to get that byte range:
   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
   - `__llvm_stackmaps_start`
   - `__llvm_stackmaps_end`
+  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (compatibility aliases)
 
 When linking a final ELF binary, apply it (example):
 

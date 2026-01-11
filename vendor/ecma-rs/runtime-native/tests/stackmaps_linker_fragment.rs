@@ -83,6 +83,11 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   // `__fastr_stackmaps_*` naming.
   const LEGACY_START_SYM: &str = "__llvm_stackmaps_start";
   const LEGACY_END_SYM: &str = "__llvm_stackmaps_end";
+  // Conventional GNU ld/lld section boundary symbols (not always provided
+  // automatically for `.llvm_stackmaps`, but `stackmaps.ld` defines them via
+  // `PROVIDE` for compatibility).
+  const START_STOP_START_SYM: &str = "__start_llvm_stackmaps";
+  const START_STOP_END_SYM: &str = "__stop_llvm_stackmaps";
 
   let td = tempfile::tempdir().unwrap();
   let obj = compile_obj(td.path());
@@ -124,6 +129,10 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     find_symbol(&file, LEGACY_START_SYM).expect("missing __llvm_stackmaps_start");
   let (legacy_end, legacy_end_scope) =
     find_symbol(&file, LEGACY_END_SYM).expect("missing __llvm_stackmaps_end");
+  let (start_stop_start, start_stop_start_scope) =
+    find_symbol(&file, START_STOP_START_SYM).expect("missing __start_llvm_stackmaps");
+  let (start_stop_end, start_stop_end_scope) =
+    find_symbol(&file, START_STOP_END_SYM).expect("missing __stop_llvm_stackmaps");
 
   assert_ne!(
     start_scope,
@@ -145,6 +154,16 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     SymbolScope::Compilation,
     "{LEGACY_END_SYM} must be globally linkable (not a local symbol)"
   );
+  assert_ne!(
+    start_stop_start_scope,
+    SymbolScope::Compilation,
+    "{START_STOP_START_SYM} must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    start_stop_end_scope,
+    SymbolScope::Compilation,
+    "{START_STOP_END_SYM} must be globally linkable (not a local symbol)"
+  );
 
   assert_eq!(
     start, section_addr,
@@ -158,6 +177,8 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
 
   assert_eq!(legacy_start, start, "legacy start symbol must match");
   assert_eq!(legacy_end, end, "legacy end symbol must match");
+  assert_eq!(start_stop_start, start, "start/stop start symbol must match");
+  assert_eq!(start_stop_end, end, "start/stop end symbol must match");
 
   // Ensure the section is backed by a readable load segment so the runtime can
   // read the bytes directly from memory.

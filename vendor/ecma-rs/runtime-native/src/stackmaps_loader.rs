@@ -130,3 +130,36 @@ pub fn stackmaps_section() -> &'static [u8] {
 pub fn load_stackmaps_from_self() -> &'static [u8] {
   stackmaps_section()
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+  use super::stackmaps_section;
+  use crate::StackMaps;
+
+  #[repr(align(8))]
+  struct Aligned<const N: usize>([u8; N]);
+
+  // Minimal StackMap v3 header with zero functions/constants/records.
+  #[used]
+  #[link_section = "__LLVM_STACKMAPS,__llvm_stackmaps"]
+  static TEST_STACKMAP_BLOB: Aligned<16> = Aligned([
+    3, 0, 0, 0, // version + reserved
+    0, 0, 0, 0, // num_functions
+    0, 0, 0, 0, // num_constants
+    0, 0, 0, 0, // num_records
+  ]);
+
+  #[test]
+  fn discovers_macho_stackmaps_section_and_parses() {
+    let section = stackmaps_section();
+    assert!(
+      section.len() >= TEST_STACKMAP_BLOB.0.len(),
+      "expected .llvm_stackmaps section to be present"
+    );
+    assert_eq!(&section[..16], &TEST_STACKMAP_BLOB.0);
+
+    let parsed = StackMaps::parse(section).expect("stackmaps should parse");
+    assert_eq!(parsed.raw().version, 3);
+    assert_eq!(parsed.raw().records.len(), 0);
+  }
+}

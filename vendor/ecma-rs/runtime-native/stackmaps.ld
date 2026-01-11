@@ -31,6 +31,8 @@ SECTIONS
     /* Backwards compatible aliases (older runtime-native prototypes / generic tooling). */
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
+    __start_llvm_stackmaps = .;
+    /* Conventional GNU ld/lld section boundary symbol names. */
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
@@ -39,6 +41,7 @@ SECTIONS
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
+    __stop_llvm_stackmaps = .;
   }
 }
 
