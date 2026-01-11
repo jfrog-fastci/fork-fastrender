@@ -38,6 +38,15 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
             bblock.remove(i);
           } else {
             bblock[i].tgts.clear();
+            // The call still executes for side effects, but it no longer produces an SSA value, so
+            // clear any result-only metadata (type/ownership/etc).
+            bblock[i].meta.result_type = Default::default();
+            bblock[i].meta.clear_type_id();
+            bblock[i].meta.hir_expr = None;
+            bblock[i].meta.type_summary = None;
+            bblock[i].meta.excludes_nullish = false;
+            bblock[i].meta.ownership = Default::default();
+            bblock[i].meta.result_escape = None;
           }
         } else {
           bblock.remove(i);

@@ -254,6 +254,7 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
     // Any rewrite here must keep the RHS in canonical form and only use values that dominate this
     // instruction. The state we thread through the dominator tree only contains mappings from the
     // current dominator path, so any canonical Arg we read is available on every path to this block.
+    let preserved_meta = new_inst.meta.clone();
     if let Some(value) = consteval {
       let tgt = new_inst.tgts[0];
       let canonical_value = state.canon_arg(&value);
@@ -261,9 +262,8 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         .tgt_to_coc
         .insert(tgt, canonical_value.clone())
         .is_none());
-      let meta = new_inst.meta.clone();
       new_inst = Inst::var_assign(tgt, canonical_value);
-      new_inst.meta = meta;
+      new_inst.meta = preserved_meta;
     } else {
       let pure_val = match new_inst.t {
         InstTyp::Bin => {
@@ -296,9 +296,8 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         let (row, existing) = state.upsert_val(val, tgt);
         assert!(state.tgt_to_coc.insert(tgt, row).is_none());
         if let Some(value) = existing {
-          let meta = new_inst.meta.clone();
           new_inst = Inst::var_assign(tgt, value);
-          new_inst.meta = meta;
+          new_inst.meta = preserved_meta;
         };
       };
     };

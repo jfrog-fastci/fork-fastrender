@@ -16,6 +16,8 @@ serde = [
   "effect-model/serde",
   "num-bigint/serde",
   "parse-js/serde",
+  "typecheck-ts?/serde",
+  "types-ts-interned?/serde",
 ]
 
 [dependencies]

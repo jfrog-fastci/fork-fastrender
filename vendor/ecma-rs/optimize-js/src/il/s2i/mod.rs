@@ -120,6 +120,10 @@ impl<'p> HirSourceToInst<'p> {
     self.program.types.bool_literal_expr(self.body_id, expr)
   }
 
+  pub fn expr_type_id(&self, expr: ExprId) -> Option<crate::types::TypeId> {
+    self.program.types.expr_type(self.body_id, expr)
+  }
+
   pub fn expr_truthiness(&self, expr: ExprId) -> Option<crate::types::Truthiness> {
     self.program.types.expr_truthiness(self.body_id, expr)
   }
@@ -134,10 +138,6 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn expr_is_boolean(&self, expr: ExprId) -> bool {
     self.program.types.expr_is_boolean(self.body_id, expr)
-  }
-
-  pub fn expr_type_id(&self, expr: ExprId) -> Option<crate::types::TypeId> {
-    self.program.types.expr_type(self.body_id, expr)
   }
 
   pub fn push_value_inst(&mut self, expr: ExprId, mut inst: Inst) {
