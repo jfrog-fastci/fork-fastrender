@@ -229,6 +229,57 @@ pub struct Reactor {
   waker: Waker,
 }
 
+/// Platform-selected reactor backend.
+///
+/// This is an alias for [`Reactor`]. The separate name exists for code that wants to be explicit
+/// about layering (OS reactor backend vs higher-level drivers).
+pub type SysReactor = Reactor;
+
+/// Cross-platform reactor event returned by [`OsReactor::poll`].
+pub type OsEvent = Event;
+
+/// Minimal trait interface for OS reactor backends.
+pub trait OsReactor {
+  fn register(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()>;
+  fn reregister(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()>;
+  fn deregister(&self, fd: BorrowedFd<'_>) -> io::Result<()>;
+
+  fn poll(&self, events: &mut Vec<OsEvent>, timeout: Option<Duration>) -> io::Result<usize>;
+
+  fn waker(&self) -> Waker;
+
+  fn notify(&self) -> io::Result<()> {
+    self.waker().wake()
+  }
+}
+
+impl OsReactor for Reactor {
+  #[inline]
+  fn register(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()> {
+    Reactor::register(self, fd, token, interest)
+  }
+
+  #[inline]
+  fn reregister(&self, fd: BorrowedFd<'_>, token: Token, interest: Interest) -> io::Result<()> {
+    Reactor::reregister(self, fd, token, interest)
+  }
+
+  #[inline]
+  fn deregister(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
+    Reactor::deregister(self, fd)
+  }
+
+  #[inline]
+  fn poll(&self, events: &mut Vec<OsEvent>, timeout: Option<Duration>) -> io::Result<usize> {
+    Reactor::poll(self, events, timeout)
+  }
+
+  #[inline]
+  fn waker(&self) -> Waker {
+    Reactor::waker(self)
+  }
+}
+
 impl Reactor {
   pub fn new() -> io::Result<Reactor> {
     let (sys, waker) = sys::ReactorSys::new_with_waker()?;
