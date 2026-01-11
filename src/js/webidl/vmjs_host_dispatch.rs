@@ -1,8 +1,9 @@
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_timers::{
   vm_error_to_event_loop_error, VmJsEventLoopHooks, QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
-  QUEUE_MICROTASK_STRING_HANDLER_ERROR, SET_INTERVAL_NOT_CALLABLE_ERROR, SET_INTERVAL_STRING_HANDLER_ERROR,
-  SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
+  QUEUE_MICROTASK_STRING_HANDLER_ERROR, SET_INTERVAL_NOT_CALLABLE_ERROR,
+  SET_INTERVAL_STRING_HANDLER_ERROR, SET_TIMEOUT_NOT_CALLABLE_ERROR,
+  SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use std::cell::{Cell, RefCell};
@@ -11,8 +12,8 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 use vm_js::{
-  GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value,
+  Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_vm_js::bindings_runtime::BindingValue;
 use webidl_vm_js::{IterableKind, WebIdlBindingsHost};
@@ -136,7 +137,11 @@ fn urlsp_iterator_next_native(
   scope.push_root(Value::Object(result_obj))?;
   let value_key = key_from_str(scope, "value")?;
   let done_key = key_from_str(scope, "done")?;
-  scope.define_property(result_obj, value_key, data_property(value, true, true, true))?;
+  scope.define_property(
+    result_obj,
+    value_key,
+    data_property(value, true, true, true),
+  )?;
   scope.define_property(
     result_obj,
     done_key,
@@ -157,7 +162,12 @@ fn iterator_return_self_native(
   Ok(this)
 }
 
-fn data_property(value: Value, writable: bool, enumerable: bool, configurable: bool) -> PropertyDescriptor {
+fn data_property(
+  value: Value,
+  writable: bool,
+  enumerable: bool,
+  configurable: bool,
+) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable,
     configurable,
@@ -416,13 +426,27 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     let delay_ms = normalize_delay_ms(args.get(1).copied().unwrap_or(Value::Number(0.0)));
 
     let Some(event_loop) = current_event_loop_mut::<Host>() else {
-      return Err(VmError::TypeError("setTimeout called without an active EventLoop"));
+      return Err(VmError::TypeError(
+        "setTimeout called without an active EventLoop",
+      ));
     };
 
+    // Keep the callback + extra args alive until the timer fires (or is cleared). Ensure roots are
+    // cleaned up on any early-return error so we don't leak persistent roots when the EventLoop
+    // rejects new timers.
     let callback_root = scope.heap_mut().add_root(handler)?;
     let mut arg_roots: Vec<RootId> = Vec::new();
     for arg in args.iter().copied().skip(2) {
-      arg_roots.push(scope.heap_mut().add_root(arg)?);
+      match scope.heap_mut().add_root(arg) {
+        Ok(root) => arg_roots.push(root),
+        Err(err) => {
+          scope.heap_mut().remove_root(callback_root);
+          for root in arg_roots {
+            scope.heap_mut().remove_root(root);
+          }
+          return Err(err);
+        }
+      }
     }
 
     let entry = TimerEntry {
@@ -446,7 +470,10 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
           return Ok(());
         };
 
-        let RootedCallback { value: callback, root: cb_root } = entry.callback;
+        let RootedCallback {
+          value: callback,
+          root: cb_root,
+        } = entry.callback;
         let arg_roots = entry.args;
 
         let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
@@ -502,7 +529,14 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         }
         result
       })
-      .map_err(|_| VmError::TypeError("setTimeout failed to schedule timer"))?;
+      .map_err(|_| {
+        // If queueing fails, ensure we don't leak persistent roots.
+        scope.heap_mut().remove_root(entry.callback.root);
+        for root in &entry.args {
+          scope.heap_mut().remove_root(*root);
+        }
+        VmError::TypeError("setTimeout failed to schedule timer")
+      })?;
 
     id_cell.set(id);
     self.timer_registry.borrow_mut().insert(id, entry);
@@ -520,13 +554,24 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     let interval_ms = normalize_delay_ms(args.get(1).copied().unwrap_or(Value::Number(0.0)));
 
     let Some(event_loop) = current_event_loop_mut::<Host>() else {
-      return Err(VmError::TypeError("setInterval called without an active EventLoop"));
+      return Err(VmError::TypeError(
+        "setInterval called without an active EventLoop",
+      ));
     };
 
     let callback_root = scope.heap_mut().add_root(handler)?;
     let mut arg_roots: Vec<RootId> = Vec::new();
     for arg in args.iter().copied().skip(2) {
-      arg_roots.push(scope.heap_mut().add_root(arg)?);
+      match scope.heap_mut().add_root(arg) {
+        Ok(root) => arg_roots.push(root),
+        Err(err) => {
+          scope.heap_mut().remove_root(callback_root);
+          for root in arg_roots {
+            scope.heap_mut().remove_root(root);
+          }
+          return Err(err);
+        }
+      }
     }
 
     let entry = TimerEntry {
@@ -542,92 +587,106 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     let id_cell_for_cb = Rc::clone(&id_cell);
 
     let id = event_loop
-      .set_interval(Duration::from_millis(interval_ms), move |host, event_loop| {
-        let id = id_cell_for_cb.get();
+      .set_interval(
+        Duration::from_millis(interval_ms),
+        move |host, event_loop| {
+          let id = id_cell_for_cb.get();
 
-        let (callback, arg_roots) = {
-          let map = registry.borrow();
-          let Some(entry) = map.get(&id) else {
-            return Ok(());
+          let (callback, arg_roots) = {
+            let map = registry.borrow();
+            let Some(entry) = map.get(&id) else {
+              return Ok(());
+            };
+            (entry.callback.value, entry.args.clone())
           };
-          (entry.callback.value, entry.args.clone())
-        };
 
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (vm_host, window_realm) = host.vm_host_and_window_realm();
-        window_realm.reset_interrupt();
-        let budget = window_realm.vm_budget_now();
-        let global = window_realm.global_object();
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          window_realm.reset_interrupt();
+          let budget = window_realm.vm_budget_now();
+          let global = window_realm.global_object();
 
-        let (vm, heap) = window_realm.vm_and_heap_mut();
-        let mut args: Vec<Value> = Vec::new();
-        args.try_reserve(arg_roots.len()).map_err(|_| {
-          crate::error::Error::Other("timer callback args allocation failed".to_string())
-        })?;
-        for root in &arg_roots {
-          if let Some(v) = heap.get_root(*root) {
-            args.push(v);
-          } else {
-            args.push(Value::Undefined);
+          let (vm, heap) = window_realm.vm_and_heap_mut();
+          let mut args: Vec<Value> = Vec::new();
+          args.try_reserve(arg_roots.len()).map_err(|_| {
+            crate::error::Error::Other("timer callback args allocation failed".to_string())
+          })?;
+          for root in &arg_roots {
+            if let Some(v) = heap.get_root(*root) {
+              args.push(v);
+            } else {
+              args.push(Value::Undefined);
+            }
           }
-        }
 
-        let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-          let mut vm = vm.push_budget(budget);
-          let tick_result = vm.tick();
+          let result: crate::error::Result<()> = with_event_loop(event_loop, || {
+            let mut vm = vm.push_budget(budget);
+            let tick_result = vm.tick();
 
-          let call_result = tick_result.and_then(|_| {
-            let mut scope = heap.scope();
-            vm.call_with_host_and_hooks(
-              vm_host,
-              &mut scope,
-              &mut hooks,
-              callback,
-              Value::Object(global),
-              &args,
-            )
-            .map(|_| ())
+            let call_result = tick_result.and_then(|_| {
+              let mut scope = heap.scope();
+              vm.call_with_host_and_hooks(
+                vm_host,
+                &mut scope,
+                &mut hooks,
+                callback,
+                Value::Object(global),
+                &args,
+              )
+              .map(|_| ())
+            });
+            call_result
+              .map_err(|err| vm_error_to_event_loop_error(heap, err))
+              .map(|_| ())
           });
-          call_result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
-        });
 
-        let finish_err = hooks.finish(&mut *heap);
-        if let Some(err) = finish_err {
-          // Cancel on hook failure and release roots.
-          event_loop.clear_interval(id);
-          if let Some(entry) = registry.borrow_mut().remove(&id) {
-            heap.remove_root(entry.callback.root);
-            for root in entry.args {
-              heap.remove_root(root);
+          let finish_err = hooks.finish(&mut *heap);
+          if let Some(err) = finish_err {
+            // Cancel on hook failure and release roots.
+            event_loop.clear_interval(id);
+            if let Some(entry) = registry.borrow_mut().remove(&id) {
+              heap.remove_root(entry.callback.root);
+              for root in entry.args {
+                heap.remove_root(root);
+              }
             }
+            return Err(err);
           }
-          return Err(err);
-        }
 
-        if let Err(err) = result {
-          // Cancel the interval on error for determinism and to avoid repeated failures.
-          event_loop.clear_interval(id);
-          if let Some(entry) = registry.borrow_mut().remove(&id) {
-            heap.remove_root(entry.callback.root);
-            for root in entry.args {
-              heap.remove_root(root);
+          if let Err(err) = result {
+            // Cancel the interval on error for determinism and to avoid repeated failures.
+            event_loop.clear_interval(id);
+            if let Some(entry) = registry.borrow_mut().remove(&id) {
+              heap.remove_root(entry.callback.root);
+              for root in entry.args {
+                heap.remove_root(root);
+              }
             }
+            return Err(err);
           }
-          return Err(err);
-        }
 
-        Ok(())
-      })
-      .map_err(|_| VmError::TypeError("setInterval failed to schedule timer"))?;
+          Ok(())
+        },
+      )
+      .map_err(|_| {
+        scope.heap_mut().remove_root(entry.callback.root);
+        for root in &entry.args {
+          scope.heap_mut().remove_root(*root);
+        }
+        VmError::TypeError("setInterval failed to schedule timer")
+      })?;
 
     id_cell.set(id);
     self.timer_registry.borrow_mut().insert(id, entry);
     Ok(Value::Number(id as f64))
   }
 
-  fn clear_timer_impl(&mut self, scope: &mut Scope<'_>, id: TimerId, is_interval: bool) -> Result<Value, VmError> {
+  fn clear_timer_impl(
+    &mut self,
+    scope: &mut Scope<'_>,
+    id: TimerId,
+    is_interval: bool,
+  ) -> Result<Value, VmError> {
     let Some(event_loop) = current_event_loop_mut::<Host>() else {
       return Err(VmError::TypeError(if is_interval {
         "clearInterval called without an active EventLoop"
@@ -652,7 +711,11 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(Value::Undefined)
   }
 
-  fn queue_microtask_impl(&mut self, scope: &mut Scope<'_>, callback: Value) -> Result<Value, VmError> {
+  fn queue_microtask_impl(
+    &mut self,
+    scope: &mut Scope<'_>,
+    callback: Value,
+  ) -> Result<Value, VmError> {
     if matches!(callback, Value::String(_)) {
       return Err(VmError::TypeError(QUEUE_MICROTASK_STRING_HANDLER_ERROR));
     }
@@ -673,7 +736,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         let (vm_host, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
         let budget = window_realm.vm_budget_now();
-        let global = window_realm.global_object();
 
         let (vm, heap) = window_realm.vm_and_heap_mut();
         let value = heap.get_root(root).unwrap_or(Value::Undefined);
@@ -688,7 +750,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
               &mut scope,
               &mut hooks,
               value,
-              Value::Object(global),
+              Value::Undefined,
               &[],
             )
             .map(|_| ())
@@ -706,7 +768,11 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         }
         result
       })
-      .map_err(|_| VmError::TypeError("queueMicrotask failed to enqueue microtask"))?;
+      .map_err(|_| {
+        // If queueing fails, ensure we don't leak the persistent root.
+        scope.heap_mut().remove_root(root);
+        VmError::TypeError("queueMicrotask failed to enqueue microtask")
+      })?;
 
     Ok(Value::Undefined)
   }
@@ -728,13 +794,18 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     match (interface, operation, overload) {
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
-        self.event_targets.entry(WeakGcObject::from(obj)).or_default();
+        self
+          .event_targets
+          .entry(WeakGcObject::from(obj))
+          .or_default();
         Ok(Value::Undefined)
       }
       ("EventTarget", "addEventListener", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
         let Some(Value::String(_)) = args.get(0).copied() else {
-          return Err(VmError::TypeError("EventTarget.addEventListener: missing type"));
+          return Err(VmError::TypeError(
+            "EventTarget.addEventListener: missing type",
+          ));
         };
         let event_type = js_string_to_rust_string(scope, args[0])?;
 
@@ -748,7 +819,10 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 
         let capture = get_capture_option(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
-        let state = self.event_targets.entry(WeakGcObject::from(obj)).or_default();
+        let state = self
+          .event_targets
+          .entry(WeakGcObject::from(obj))
+          .or_default();
         if state.listeners.iter().any(|l| {
           l.event_type == event_type && l.callback.value == callback && l.capture == capture
         }) {
@@ -758,7 +832,10 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         let root = scope.heap_mut().add_root(callback)?;
         state.listeners.push(EventListenerEntry {
           event_type,
-          callback: RootedCallback { value: callback, root },
+          callback: RootedCallback {
+            value: callback,
+            root,
+          },
           capture,
         });
         Ok(Value::Undefined)
@@ -786,7 +863,10 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 
         let heap = scope.heap_mut();
         state.listeners.retain(|listener| {
-          if listener.event_type == event_type && listener.callback.value == callback && listener.capture == capture {
+          if listener.event_type == event_type
+            && listener.callback.value == callback
+            && listener.capture == capture
+          {
             heap.remove_root(listener.callback.root);
             false
           } else {
@@ -828,10 +908,16 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
             if let Value::String(_) = value {
               js_string_to_rust_string(scope, value)?
             } else {
-              return Err(VmError::TypeError("EventTarget.dispatchEvent: event.type is not a string"));
+              return Err(VmError::TypeError(
+                "EventTarget.dispatchEvent: event.type is not a string",
+              ));
             }
           }
-          _ => return Err(VmError::TypeError("EventTarget.dispatchEvent: expected event object")),
+          _ => {
+            return Err(VmError::TypeError(
+              "EventTarget.dispatchEvent: expected event object",
+            ))
+          }
         };
 
         // Invoke listeners synchronously in registration order.
@@ -842,7 +928,12 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           if listener.event_type != event_type {
             continue;
           }
-          let _ = vm.call_without_host(scope, listener.callback.value, Value::Object(obj), &[event_val])?;
+          let _ = vm.call_without_host(
+            scope,
+            listener.callback.value,
+            Value::Object(obj),
+            &[event_val],
+          )?;
         }
 
         Ok(Value::Bool(true))
@@ -850,7 +941,8 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 
       ("URL", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
-        let input = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let input =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let base = match args.get(1).copied() {
           None | Some(Value::Undefined) => None,
           Some(v) => Some(js_string_to_rust_string(scope, v)?),
@@ -889,15 +981,21 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::String(s))
       }
       ("URL", "canParse", 0) => {
-        let input = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let input =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let base = match args.get(1).copied() {
           None | Some(Value::Undefined) => None,
           Some(v) => Some(js_string_to_rust_string(scope, v)?),
         };
-        Ok(Value::Bool(Url::can_parse(&input, base.as_deref(), &self.limits)))
+        Ok(Value::Bool(Url::can_parse(
+          &input,
+          base.as_deref(),
+          &self.limits,
+        )))
       }
       ("URL", "parse", 0) => {
-        let input = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let input =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let base = match args.get(1).copied() {
           None | Some(Value::Undefined) => None,
           Some(v) => Some(js_string_to_rust_string(scope, v)?),
@@ -987,7 +1085,8 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
             // objects still require a proper binding-side conversion.
             let s = scope.heap_mut().to_string(other)?;
             let init = scope.heap().get_string(s)?.to_utf8_lossy();
-            UrlSearchParams::parse(&init, &self.limits).map_err(url_search_params_error_to_vm_error)?
+            UrlSearchParams::parse(&init, &self.limits)
+              .map_err(url_search_params_error_to_vm_error)?
           }
         };
         self.params.insert(WeakGcObject::from(obj), params);
@@ -1022,7 +1121,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       ("URLSearchParams", "get", 0) => {
         let params = self.require_params(receiver)?;
         let name = js_string_to_rust_string(scope, args[0])?;
-        let result = params.get(&name).map_err(url_search_params_error_to_vm_error)?;
+        let result = params
+          .get(&name)
+          .map_err(url_search_params_error_to_vm_error)?;
         match result {
           Some(s) => {
             let js = scope.alloc_string(&s)?;
@@ -1053,12 +1154,18 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           let idx_key = key_from_str(scope, &idx.to_string())?;
           let s = scope.alloc_string(item)?;
           scope.push_root(Value::String(s))?;
-          scope.define_property(arr, idx_key, data_property(Value::String(s), true, true, true))?;
+          scope.define_property(
+            arr,
+            idx_key,
+            data_property(Value::String(s), true, true, true),
+          )?;
         }
 
         Ok(Value::Object(arr))
       }
-      ("URLSearchParams", "entries", 0) | ("URLSearchParams", "keys", 0) | ("URLSearchParams", "values", 0) => {
+      ("URLSearchParams", "entries", 0)
+      | ("URLSearchParams", "keys", 0)
+      | ("URLSearchParams", "values", 0) => {
         let params_obj = Self::require_receiver_object(receiver)?;
         let params = self
           .params
@@ -1225,7 +1332,11 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
             scope,
             callback,
             this_arg,
-            &[Value::String(value_s), Value::String(name_s), Value::Object(params_obj)],
+            &[
+              Value::String(value_s),
+              Value::String(name_s),
+              Value::Object(params_obj),
+            ],
           )?;
         }
 
@@ -1269,7 +1380,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         self.clear_timer_impl(scope, id, true)
       }
 
-      _ => Err(VmError::Unimplemented("WebIDL binding dispatch not implemented for operation")),
+      _ => Err(VmError::Unimplemented(
+        "WebIDL binding dispatch not implemented for operation",
+      )),
     }
   }
 
@@ -1300,7 +1413,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     match interface {
       "URLSearchParams" => {
         let params = self.require_params(receiver)?;
-        let pairs = params.pairs().map_err(url_search_params_error_to_vm_error)?;
+        let pairs = params
+          .pairs()
+          .map_err(url_search_params_error_to_vm_error)?;
         let mut out: Vec<BindingValue> = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
           match kind {
