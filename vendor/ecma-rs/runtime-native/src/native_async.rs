@@ -1,5 +1,5 @@
 use core::ptr::null_mut;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::async_abi::{
   Coroutine, CoroutineRef, CoroutineStepTag, CoroutineVTable, PromiseHeader, PromiseState, CORO_FLAG_RUNTIME_OWNS_FRAME,
@@ -80,9 +80,15 @@ pub(crate) unsafe fn promise_init(p: AbiPromiseRef) {
     return;
   }
   // Initialize to a clean pending state.
-  (*header).state.store(PromiseHeader::PENDING, Ordering::Relaxed);
-  (*header).waiters.store(0, Ordering::Relaxed);
-  (*header).flags.store(0, Ordering::Relaxed);
+  //
+  // SAFETY: callers may pass freshly-allocated (uninitialized) memory for the promise header. Use
+  // `addr_of_mut(...).write(...)` to initialize atomic fields without creating references to
+  // uninitialized `Atomic*` values.
+  unsafe {
+    core::ptr::addr_of_mut!((*header).state).write(AtomicU8::new(PromiseHeader::PENDING));
+    core::ptr::addr_of_mut!((*header).waiters).write(AtomicUsize::new(0));
+    core::ptr::addr_of_mut!((*header).flags).write(AtomicU8::new(0));
+  }
 }
 
 fn push_reaction(promise: *mut PromiseHeader, node: *mut PromiseReactionNode) {

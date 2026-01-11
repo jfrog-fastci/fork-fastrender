@@ -328,15 +328,19 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseR
 
 /// Drive the async scheduler/executor.
 ///
-/// Returns `true` if there is still pending work after this turn (queued
-/// microtasks/macrotasks, timers, or I/O watchers).
+/// This is a **non-blocking** poll: it only drains currently queued microtasks (including promise
+/// reaction jobs that resume native async-ABI coroutines).
 ///
-/// Returns `false` when the runtime is fully idle.
+/// Returns `true` if it executed at least one microtask; returns `false` if there was no runnable
+/// work.
 #[no_mangle]
 pub extern "C" fn rt_async_poll() -> bool {
-  // Reuse the existing JS-shaped event loop for now so timers and I/O driven by
-  // `async_rt` make progress from Rust tests and generated code.
-  crate::ffi::abort_on_panic(|| crate::exports::rt_async_poll_legacy())
+  crate::ffi::abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    // The native async ABI is typically driven by the main thread/event loop.
+    crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+    crate::async_runtime::rt_drain_microtasks()
+  })
 }
 
 /// Initialize a newly allocated promise header to the pending state.
