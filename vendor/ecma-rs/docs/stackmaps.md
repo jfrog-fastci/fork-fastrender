@@ -138,6 +138,8 @@ safely even when base slots repeat.
 Null convention:
 
 - If `base_old == 0` or `derived_old == 0`, the derived value stays null (`derived_new = 0`).
+- If the GC relocator returns `base_new == 0` for a non-null base (should not happen for live
+  objects), the derived value is forced to `0` to keep the pair consistent.
 
 `runtime-native` implements this during stack walking:
 
