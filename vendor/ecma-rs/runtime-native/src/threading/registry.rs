@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::Weak;
 
 #[derive(Debug, Default, Clone)]
 struct HandleStack(Vec<*mut *mut u8>);
@@ -140,6 +141,26 @@ impl ThreadState {
     self.os_thread_id
   }
 
+  /// Upgrade this thread's kind if `desired` is "higher priority" than the current kind.
+  ///
+  /// Returns `true` if the kind was changed.
+  fn maybe_upgrade_kind(&self, desired: ThreadKind) -> bool {
+    let desired_prio = thread_kind_priority(desired);
+    let desired_raw = desired as u8;
+
+    let mut cur = self.kind.load(Ordering::Acquire);
+    loop {
+      let cur_kind = ThreadKind::from_u8(cur);
+      if thread_kind_priority(cur_kind) >= desired_prio {
+        return false;
+      }
+      match self.kind.compare_exchange(cur, desired_raw, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => return true,
+        Err(actual) => cur = actual,
+      }
+    }
+  }
+
   pub fn is_parked(&self) -> bool {
     self.parked.load(Ordering::Acquire)
   }
@@ -236,7 +257,14 @@ pub struct ThreadCounts {
 
 struct ThreadRegistry {
   next_id: AtomicU64,
-  threads: Mutex<HashMap<ThreadId, Arc<ThreadState>>>,
+  // Store `Weak` to avoid keeping dead threads alive forever:
+  //
+  // - Each thread holds the only strong `Arc<ThreadState>` in TLS while it is registered.
+  // - If a thread exits without calling `unregister_current_thread()`, its TLS `Arc` is dropped,
+  //   the `Weak` can no longer be upgraded, and we prune the stale entry when iterating.
+  //
+  // This prevents stop-the-world GC waits from deadlocking on terminated threads.
+  threads: Mutex<HashMap<ThreadId, Weak<ThreadState>>>,
 }
 
 impl ThreadRegistry {
@@ -248,13 +276,10 @@ impl ThreadRegistry {
   }
 
   fn register_current_thread(&self, kind: ThreadKind) -> Arc<ThreadState> {
-    // Idempotent: allow callers to "ensure registered" without double-registering.
     if let Some(existing) = current_thread_state() {
-      // Allow callers to upgrade an "unknown/external" thread into a more
-      // specific kind (e.g. main thread first observed via a parallel call, then
-      // later via `rt_async_poll`).
-      if existing.kind() == ThreadKind::External && kind != ThreadKind::External {
-        existing.kind.store(kind as u8, Ordering::Release);
+      // Idempotent, but allow "upgrades" to a higher-priority role (e.g. a thread that first
+      // entered via `rt_parallel_spawn` as `External` later becomes the event-loop `Main`).
+      if existing.maybe_upgrade_kind(kind) {
         safepoint::notify_state_change();
       }
       return existing;
@@ -292,7 +317,7 @@ impl ThreadRegistry {
 
     {
       let mut threads = self.threads.lock().unwrap();
-      threads.insert(id, state.clone());
+      threads.insert(id, Arc::downgrade(&state));
     }
 
     set_tls_thread_registration(ThreadRegistration { state: state.clone() });
@@ -317,22 +342,36 @@ impl ThreadRegistry {
   }
 
   fn all_threads(&self) -> Vec<Arc<ThreadState>> {
-    let threads = self.threads.lock().unwrap();
-    threads.values().cloned().collect()
+    let mut threads = self.threads.lock().unwrap();
+    let mut out = Vec::with_capacity(threads.len());
+    threads.retain(|_, weak| {
+      if let Some(state) = weak.upgrade() {
+        out.push(state);
+        true
+      } else {
+        false
+      }
+    });
+    out
   }
 
   fn counts(&self) -> ThreadCounts {
-    let threads = self.threads.lock().unwrap();
     let mut out = ThreadCounts::default();
-    out.total = threads.len();
-    for t in threads.values() {
-      match t.kind() {
+    let mut threads = self.threads.lock().unwrap();
+    threads.retain(|_, weak| {
+      let Some(state) = weak.upgrade() else {
+        return false;
+      };
+
+      out.total += 1;
+      match state.kind() {
         ThreadKind::Main => out.main += 1,
         ThreadKind::Worker => out.worker += 1,
         ThreadKind::Io => out.io += 1,
         ThreadKind::External => out.external += 1,
       }
-    }
+      true
+    });
     out
   }
 }
@@ -437,19 +476,33 @@ pub fn all_threads() -> Vec<Arc<ThreadState>> {
 /// The callback is invoked while holding the thread registry lock; it must not call
 /// [`register_current_thread`] / [`unregister_current_thread`].
 pub fn for_each_thread(mut f: impl FnMut(&Arc<ThreadState>)) {
-  let threads = registry().threads.lock().unwrap();
-  for thread in threads.values() {
-    f(thread);
-  }
+  let mut threads = registry().threads.lock().unwrap();
+  threads.retain(|_, weak| {
+    let Some(state) = weak.upgrade() else {
+      return false;
+    };
+    f(&state);
+    true
+  });
 }
 
 /// Like [`for_each_thread`], but allows fallible iteration.
 pub fn try_for_each_thread<E>(mut f: impl FnMut(&Arc<ThreadState>) -> Result<(), E>) -> Result<(), E> {
-  let threads = registry().threads.lock().unwrap();
-  for thread in threads.values() {
-    f(thread)?;
-  }
-  Ok(())
+  let mut threads = registry().threads.lock().unwrap();
+  let mut err: Option<E> = None;
+  threads.retain(|_, weak| {
+    let Some(state) = weak.upgrade() else {
+      return false;
+    };
+    if err.is_some() {
+      return true;
+    }
+    if let Err(e) = f(&state) {
+      err = Some(e);
+    }
+    true
+  });
+  err.map_or(Ok(()), Err)
 }
 
 /// Snapshot thread counts by kind.
@@ -547,4 +600,18 @@ fn current_stack_bounds() -> Option<StackBounds> {
     lo: bounds.low,
     hi: bounds.high,
   })
+}
+
+#[inline]
+fn thread_kind_priority(kind: ThreadKind) -> u8 {
+  // Higher value means "more specific / more privileged" from the runtime's point of view.
+  //
+  // We treat `External` as the lowest-priority kind, since it is used as a best-effort default for
+  // threads that enter the runtime via FFI or the parallel runtime.
+  match kind {
+    ThreadKind::External => 0,
+    ThreadKind::Worker => 1,
+    ThreadKind::Io => 2,
+    ThreadKind::Main => 3,
+  }
 }
