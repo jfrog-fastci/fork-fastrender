@@ -297,6 +297,11 @@ mod tests {
   use super::*;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::{Arc, Barrier};
+  use crate::threading;
+  use crate::threading::ThreadKind;
+  use std::sync::mpsc;
+  use std::time::Duration;
+  use std::time::Instant;
 
   #[test]
   fn handle_api_alloc_load_store_free() {
@@ -416,5 +421,128 @@ mod tests {
     registry.unregister(handle);
     assert_eq!(registry.get(handle), None);
     assert!(!registry.set(handle, std::ptr::null_mut()));
+  }
+
+  #[test]
+  fn global_root_registry_lock_is_gc_aware() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+    global_root_registry().clear_for_tests();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+
+    std::thread::scope(|scope| {
+      // Thread A holds the registry lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to register a root while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<u32>();
+      let (c_finish_tx, c_finish_rx) = mpsc::channel::<()>();
+
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let reg = global_root_registry();
+        let guard = reg.inner.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+
+        // Cooperatively stop at the safepoint request.
+        crate::rt_gc_safepoint();
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the registry lock");
+
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        c_start_rx.recv().unwrap();
+
+        let mut slot = core::ptr::null_mut::<u8>();
+        let handle = global_root_registry().register_root_slot(&mut slot as *mut *mut u8);
+        c_done_tx.send(handle).unwrap();
+
+        c_finish_rx.recv().unwrap();
+        global_root_registry().unregister(handle);
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Ensure thread C is actively contending on the registry lock before starting STW.
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the root registry lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
+      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
+        .expect("stop-the-world should not already be active");
+      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+      struct ResumeOnDrop;
+      impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+          crate::threading::safepoint::rt_gc_resume_world();
+        }
+      }
+      let _resume = ResumeOnDrop;
+
+      // Let thread A release the lock and reach the safepoint.
+      a_release_tx.send(()).unwrap();
+
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+        "world failed to stop within timeout; root registry lock contention must not block STW"
+      );
+
+      // Root enumeration must be able to lock the global registry while the world is stopped.
+      //
+      // This is the specific integration point used by `for_each_root_slot_world_stopped`. Wrap it
+      // in a watchdog so a regression fails by timeout rather than hanging the test runner.
+      let (enum_done_tx, enum_done_rx) = mpsc::channel::<()>();
+      let watchdog = scope.spawn(move || {
+        if enum_done_rx.recv_timeout(TIMEOUT).is_err() {
+          crate::threading::safepoint::rt_gc_resume_world();
+          panic!("global root enumeration deadlocked on the registry lock");
+        }
+      });
+      global_root_registry().for_each_root_slot(|_| {});
+      let _ = enum_done_tx.send(());
+      watchdog.join().unwrap();
+
+      // Resume the world so the contending registration can complete.
+      crate::threading::safepoint::rt_gc_resume_world();
+
+      let handle = c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("root registration should complete after world is resumed");
+      assert_ne!(handle, 0);
+
+      c_finish_tx.send(()).unwrap();
+    });
   }
 }
