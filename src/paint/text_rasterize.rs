@@ -1496,7 +1496,13 @@ impl TextRasterizer {
       .unwrap_or(0.0);
     let draw_stroke = stroke_alpha > 0.0;
 
-    if glyphs.is_empty() || (!draw_fill && !draw_stroke) {
+    // `font-size: 0` is valid CSS and should simply suppress glyph painting (and yield
+    // zero-sized glyph transforms). Avoid treating it as a paint-time failure.
+    if glyphs.is_empty()
+      || (!draw_fill && !draw_stroke)
+      || !font_size.is_finite()
+      || font_size <= 0.0
+    {
       let mut cursor_x = x;
       let mut cursor_y = 0.0_f32;
       for glyph in glyphs {
@@ -1548,12 +1554,20 @@ impl TextRasterizer {
     // thin for typical font sizes (notably netflix.com's Top 10 ranking numbers).
     let scale = font_size / units_per_em;
     if !scale.is_finite() || scale == 0.0 {
-      return Err(
-        RenderError::RasterizationFailed {
-          reason: format!("Font {} produced invalid scale for size {}", font.family, font_size),
-        }
-        .into(),
-      );
+      // `scale == 0` can happen with `font-size: 0` (handled above) or extreme underflow. Treat it
+      // like a no-op paint instead of crashing the entire render.
+      let mut cursor_x = x;
+      let mut cursor_y = 0.0_f32;
+      for glyph in glyphs {
+        cursor_x += glyph.x_advance;
+        cursor_y += glyph.y_advance;
+      }
+      let advance = if cursor_y.abs() > (cursor_x - x).abs() {
+        cursor_y
+      } else {
+        cursor_x - x
+      };
+      return Ok(advance);
     }
     let inv_scale = 1.0 / scale.abs();
 
@@ -2413,6 +2427,64 @@ mod tests {
     assert!(result.is_ok());
     let advance = result.unwrap();
     assert!(advance > 0.0);
+  }
+
+  #[test]
+  fn text_rasterizer_font_size_zero_is_noop() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return, // Skip if no fonts available
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let glyph_id = face.glyph_index('A').map(|g| g.0 as u32).unwrap_or(0);
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 10.0,
+      y_advance: 0.0,
+    }];
+
+    let mut pixmap = new_pixmap(64, 64).unwrap();
+    pixmap.fill(tiny_skia::Color::WHITE);
+    let before = pixmap.data().to_vec();
+
+    let mut rasterizer = TextRasterizer::new();
+    let advance =
+      rasterizer.render_glyphs(&glyphs, &font, 0.0, 0.0, 32.0, Rgba::BLACK, &mut pixmap);
+
+    assert!(advance.is_ok());
+    assert!((advance.unwrap() - 10.0).abs() < f32::EPSILON);
+    assert_eq!(pixmap.data(), &before[..]);
+
+    // Repeat with a stroke to cover `-webkit-text-stroke` paths.
+    let before = pixmap.data().to_vec();
+    let advance = rasterizer.render_glyph_run_with_stroke(
+      &glyphs,
+      &font,
+      0.0,
+      0.0,
+      0.0,
+      0,
+      &[],
+      0,
+      &[],
+      None,
+      0.0,
+      32.0,
+      Rgba::BLACK,
+      Some(TextStroke {
+        width: 1.0,
+        color: Rgba::BLACK,
+      }),
+      TextRenderState::default(),
+      &mut pixmap,
+    );
+    assert!(advance.is_ok());
+    assert!((advance.unwrap() - 10.0).abs() < f32::EPSILON);
+    assert_eq!(pixmap.data(), &before[..]);
   }
 
   #[test]
