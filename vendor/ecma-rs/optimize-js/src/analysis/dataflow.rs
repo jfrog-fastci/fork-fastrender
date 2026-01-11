@@ -293,25 +293,16 @@ impl<'cfg> FlowGraph<'cfg> {
 }
 
 fn calculate_virtual_exit(cfg: &Cfg) -> VirtualExit {
-  // Connect the virtual exit to every natural exit, or to every node in a sink
-  // SCC if the graph has no terminal nodes (e.g. infinite loops).
+  // Connect the virtual exit to every node in a sink SCC of the CFG (including
+  // natural exits).
   //
-  // We only consider nodes reachable from `cfg.entry`. Unreachable terminal
-  // blocks (e.g. skipped over by a `goto`) must not suppress sink-SCC seeding
-  // for the reachable portion of the CFG.
-  let predecessors = {
-    let reachable = reachable_labels_sorted(cfg);
-    let terminals = reachable
-      .iter()
-      .copied()
-      .filter(|&l| cfg.graph.children(l).next().is_none())
-      .collect_vec();
-    if !terminals.is_empty() {
-      terminals
-    } else {
-      sink_scc_nodes(cfg, &reachable)
-    }
-  };
+  // This ensures backward analyses still cover infinite loops even when other
+  // parts of the function can return/throw.
+  //
+  // We only consider nodes reachable from `cfg.entry`. Unreachable disconnected
+  // blocks must not influence virtual-exit selection.
+  let reachable = reachable_labels_sorted(cfg);
+  let predecessors = sink_scc_nodes(cfg, &reachable);
   VirtualExit {
     label: next_unused_label(cfg),
     predecessors,

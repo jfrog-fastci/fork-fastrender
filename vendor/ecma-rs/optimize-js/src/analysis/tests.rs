@@ -303,6 +303,26 @@ fn infinite_loop_virtual_exit_ignores_unreachable_terminal_block() {
 }
 
 #[test]
+fn virtual_exit_includes_sink_sccs_even_with_terminals() {
+  // Entry can either return (block 1) or enter an infinite loop (block 2). The
+  // virtual exit must include both the terminal block and the sink SCC so that
+  // backward analyses cover the infinite loop path.
+  let cfg = cfg(&[0, 1, 2], &[(0, 1), (0, 2), (2, 2)]);
+
+  let backward_result = backward(&cfg, AnalysisBoundary::VirtualExit);
+  let exit_label = match &backward_result.boundary {
+    ResolvedAnalysisBoundary::VirtualExit { label, predecessors } => {
+      assert_eq!(predecessors, &vec![1, 2]);
+      *label
+    }
+    ResolvedAnalysisBoundary::Entry(label) => panic!("expected virtual exit, got entry {label}"),
+  };
+
+  assert_entry(&backward_result.blocks, 2, &[exit_label, 2]);
+  assert_entry(&backward_result.blocks, 0, &[exit_label, 0, 1, 2]);
+}
+
+#[test]
 fn virtual_exit_label_does_not_collide_with_unconnected_bblock() {
   let cfg = cfg(&[0, 1, 2], &[(0, 1)]);
   let backward_result = backward(&cfg, AnalysisBoundary::VirtualExit);
