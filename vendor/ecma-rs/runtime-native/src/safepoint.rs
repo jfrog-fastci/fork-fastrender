@@ -1,26 +1,7 @@
 use crate::arch;
-use crate::stackmaps::StackMaps;
 use crate::threading;
 use crate::WalkError;
-use std::sync::OnceLock;
 use std::time::Duration;
-
-/// Lazily parse the in-memory `.llvm_stackmaps` section, if available.
-///
-/// Many unit/integration tests do not link a real stackmap section, so this
-/// returns `None` when the section is missing.
-fn global_stackmaps() -> Option<&'static StackMaps> {
-  static STACKMAPS: OnceLock<Option<StackMaps>> = OnceLock::new();
-  STACKMAPS
-    .get_or_init(|| {
-      let bytes = crate::stackmaps_loader::stackmaps_section();
-      if bytes.is_empty() {
-        return None;
-      }
-      Some(StackMaps::parse(bytes).expect("failed to parse .llvm_stackmaps section"))
-    })
-    .as_ref()
-}
 
 /// Visit `(slot, value)` relocation pairs for GC roots reachable from a safepoint.
 ///
@@ -30,7 +11,7 @@ pub fn visit_reloc_pairs(
   top_callee_fp: u64,
   visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
 ) -> Result<(), WalkError> {
-  let Some(stackmaps) = global_stackmaps() else {
+  let Some(stackmaps) = crate::stackmap::try_stackmaps() else {
     return Ok(());
   };
 

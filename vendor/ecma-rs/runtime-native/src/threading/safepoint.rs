@@ -356,16 +356,7 @@ pub fn with_world_stopped<T>(f: impl FnOnce(u64) -> T) -> T {
 }
 
 fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
-  static STACKMAPS: OnceLock<Option<crate::StackMaps>> = OnceLock::new();
-  STACKMAPS
-    .get_or_init(|| {
-      let bytes = crate::stackmaps_loader::load_stackmaps_from_self();
-      if bytes.is_empty() {
-        return None;
-      }
-      Some(crate::StackMaps::parse(bytes).expect("failed to parse .llvm_stackmaps"))
-    })
-    .as_ref()
+  crate::stackmap::try_stackmaps()
 }
 
 /// Enumerate all GC root slots while the world is stopped.
