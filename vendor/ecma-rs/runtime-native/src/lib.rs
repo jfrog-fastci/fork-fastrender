@@ -2,7 +2,11 @@
 //!
 //! This crate provides:
 //! - A stable C ABI surface that LLVM-generated code can link against.
-//! - A precise, generational GC implementation for managed allocations.
+//! - A stop-the-world generational GC implementation (`gc::GcHeap`) used by tests and future ABI wiring.
+//!
+//! Note: the current exported allocation/collection entrypoints (`rt_alloc`, `rt_gc_collect`) are
+//! still backed by `malloc` / stubs; the exported write barrier is implemented and performs
+//! young-range checks + sets the per-object remembered bit (see `docs/write_barrier.md`).
 //!
 //! ## Pinned allocations
 //!

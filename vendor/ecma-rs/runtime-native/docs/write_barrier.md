@@ -1,19 +1,23 @@
 # Runtime-native generational write barrier
 
-This document specifies the **compiler/runtime ABI contract** for the generational GC write barrier used by runtime-native codegen.
+This document specifies the **compiler/runtime ABI contract** for the generational GC write barrier (`rt_write_barrier`) used by `runtime-native` codegen.
 
-It also records the current policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation).
+- For the overall `runtime-native` ABI surface (exported symbols, call classifications, etc.), see `vendor/ecma-rs/docs/runtime-native.md`.
+- For the authoritative stable C ABI declarations, see `include/runtime_native.h`.
+- This document is the source of truth for the *write barrier itself* (arguments, required ordering, young-range mechanism).
 
-For the authoritative stable C ABI declarations, see `include/runtime_native.h`.
+It also records proposed policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation); card tables are not yet wired up in the exported runtime.
 
 ---
 
 ## Implementation status (runtime-native today)
 
-`runtime-native` contains a prototype generational GC under `src/gc/*`, and the exported barrier is implemented.
+`runtime-native` contains a prototype generational GC under `src/gc/*` (exercised by Rust tests), and the exported barrier is implemented.
 
-- The exported symbol **`rt_write_barrier`** exists and performs the young-range checks described in this document.
-- On an old→young store, `rt_write_barrier` currently only sets a `REMEMBERED` bit in the object header. It does **not** yet enqueue objects into an exported remembered set / card table.
+- The exported symbol **`rt_write_barrier`** exists (see `src/exports.rs`).
+  - It loads the pointer value from `slot` and performs the young-range fast-path checks described in this document.
+  - On an old→young store it currently only sets the `REMEMBERED` bit in the object header. It does **not** yet enqueue objects into an exported remembered set / card table.
+- The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
 - The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
 
 ---
@@ -44,7 +48,7 @@ The runtime’s fast `is_young(ptr)` predicate is implemented as a simple addres
 is_young(ptr) = (ptr >= young_start) && (ptr < young_end)
 ```
 
-This range is stored in a pair of global atomics (see `src/gc/young.rs`) and is used by the exported write barrier (`rt_write_barrier`).
+This range is stored in a pair of global atomics (see `src/gc/young.rs`) and is used by the exported write barrier (`rt_write_barrier`). The barrier uses the same range check both for the **stored value** and to classify the **base object** (`obj`) as young/old.
 
 ### ABI: `rt_gc_set_young_range`
 
@@ -89,7 +93,7 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8);
 
 `rt_write_barrier` is called **after** the store.
 
-* `obj` is the base pointer of the GC-managed object containing the field being written.
+* `obj` is the **object base pointer**: a `uint8_t*` that points at the start of the object header (`ObjHeader`).
 * `slot` is the **address of the field location** that now contains the new pointer (i.e. a pointer to the slot).
 * The barrier **reads the stored value** from `slot` (it is *not* passed as an argument).
 
@@ -109,7 +113,7 @@ The barrier treats `slot` as a pointer slot and will load a pointer-sized value 
 
 Callers must guarantee:
 
-1. `obj` points to the start of a GC-managed heap object (including GC-managed arrays).
+1. `obj` points to the start of a GC-managed heap object (the `ObjHeader` address).
 2. `slot` points **within** the object described by `obj` (field area / inline element storage).
 3. `slot` is aligned for a pointer-sized load (natural alignment).
 4. The memory at `slot` contains either:
@@ -134,61 +138,65 @@ Only when `obj` is old *and* the stored value is young does the barrier perform 
 
 ## Remembered-set semantics (non-array objects)
 
-For ordinary objects (a fixed set of pointer fields), the runtime maintains a remembered set of **old objects that may contain young pointers**.
+The minor collector traces nursery objects starting from roots plus a **remembered set** of old objects that may contain pointers into the nursery.
 
-* Each object has a header bit `REMEMBERED`.
+In Rust, this is modeled by the [`RememberedSet`](../src/gc/roots.rs) trait; tests typically use [`SimpleRememberedSet`](../src/gc/roots.rs).
+
+### Header bit
+
+* Each object has a header bit `REMEMBERED` (`ObjHeader::is_remembered()`).
 * On an old→young store, the barrier sets `REMEMBERED`.
-  * If the bit was previously clear, the object is appended to the remembered set.
-  * This ensures each object is added **at most once** per remembered-set rebuild cycle.
+  * A remembered-set implementation may use this bit to ensure each object is added **at most once** (e.g. `SimpleRememberedSet`).
 
-During minor GC:
+### Exported barrier status (important)
 
-* The collector scans the remembered set and traces any young pointers from each remembered object.
-* Scanning **rebuilds** the remembered set for the next minor GC:
-  * objects that no longer contain young pointers have their `REMEMBERED` bit cleared and are omitted
-  * objects that still contain young pointers remain remembered
+The exported `rt_write_barrier` currently only sets the header bit; it does **not** enqueue `obj` into any heap-level remembered set. Full remembered-set/card-table integration for the exported runtime is still TODO.
 
-The remembered set is therefore a property of the heap (“contains a young pointer”), **not** merely a log of writes.
+### Minor GC behavior (current `GcHeap`)
+
+`GcHeap::collect_minor` evacuates the entire nursery into old-gen and then resets the nursery. After a minor GC there are no remaining young objects, so the remembered set can be cleared (and `REMEMBERED` bits cleared) without scanning for “still-young” edges.
 
 ---
 
-## Per-object card table semantics (pointer arrays)
+## (Future) Per-object card table semantics (pointer arrays)
 
-Large arrays whose elements are GC pointers use per-object **card marking** to avoid rescanning the entire array on every minor GC.
+`runtime-native` does not currently implement card marking in the exported write barrier. This section records the intended design and benchmark-driven defaults.
+
+Large arrays whose elements are GC pointers would use per-object **card marking** to avoid rescanning the entire array on every minor GC.
 
 * The array’s element storage is subdivided into fixed-size **cards** (implementation-defined).
 * A marked card means: **this card may currently contain one or more young pointers**.
   * It does **not** mean “this card has been written since the last GC”.
 
-Barrier behavior:
+Planned barrier behavior:
 
-* On an old→young store into a pointer array, the barrier marks the corresponding card.
+* On an old→young store into a pointer array, the barrier would mark the corresponding card.
 
-Minor GC behavior:
+Planned minor GC behavior:
 
-* Card marks are **rebuilt at each minor GC**:
-  * marked cards are scanned
-  * the runtime recomputes which cards still contain young pointers
-  * cards with no remaining young pointers are cleared
+* Card marks would be **rebuilt at each minor GC**:
+   * marked cards are scanned
+   * the runtime recomputes which cards still contain young pointers
+   * cards with no remaining young pointers are cleared
 
 This keeps scanning proportional to the number of old-array regions that actually reference the nursery.
 
-### Policy defaults
+### Proposed policy defaults
 
 #### Card size
 
-**Default:** `CARD_SIZE = 512 B`
+**Proposed default:** `CARD_SIZE = 512 B`
 
 We benchmarked 128 B (Immix line-sized), 512 B (common generational choice), and 1 KiB cards. In the `runtime-native/benches/card_table.rs` microbench, 512 B cards were consistently faster than 128 B for both marking and scanning due to:
 
 - fewer card indices to compute and iterate
 - less card-table metadata to walk per object
 
-1 KiB was sometimes faster still, but it increases over-scanning when writes are sparse (each dirty mark forces scanning a larger region), so 512 B is the default compromise.
+1 KiB was sometimes faster still, but it increases over-scanning when writes are sparse (each dirty mark forces scanning a larger region), so 512 B is the proposed default compromise.
 
 #### Representation
 
-**Default:** **bitset** (1 bit per card)
+**Proposed default:** **bitset** (1 bit per card)
 
 We benchmarked:
 
@@ -200,7 +208,7 @@ The microbench showed:
 - **Marking:** byte-per-card is cheaper (single store) than bitset (read/OR/write). In the benchmark (1 MiB buffer, 16k random slot marks), bitset was ~1.7× slower.
 - **Scanning / rebuilding:** bitset is significantly faster at low dirty rates because it scans far less metadata and can skip all-zero words quickly. At 1% dirty, bitset was ~6× faster than byte-per-card for 512 B cards.
 
-Minor GC performance is dominated by scanning, and large old objects typically have low dirty rates between minor collections, so the default is bitset.
+Minor GC performance is dominated by scanning, and large old objects typically have low dirty rates between minor collections, so the proposed default is bitset.
 
 ### When to enable per-object card tables
 
@@ -225,14 +233,15 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --bench card_
 
 ---
 
-## Promotion
+## Promotion / tenuring
 
-The write barrier does **not** observe **young→young** stores. If a nursery object is later promoted to old while it still contains pointers to young objects, those existing references become **old→young** edges *without any write barrier firing*.
+`rt_write_barrier` observes pointer **stores** performed by the mutator. It does not retroactively notice edges that become old→young due to a generation change.
 
-Promotion must therefore explicitly register promoted objects that still have young references:
+If the GC can promote/tenure an object from young to old while still leaving some objects in the young generation, then the promoted object may already contain pointers into the nursery without any barrier firing. In that case promotion must explicitly register the object with the remembered-set policy:
 
 * call `RememberedSet::on_promoted_object(obj, has_young_refs)` after scanning the promoted object.
-* for card-table objects, promotion scan must also mark any cards that contain young references (in addition to adding the object to the remembered set).
+
+Note: the current `GcHeap::collect_minor` implementation evacuates the entire nursery into old-gen and resets the nursery, so promoted objects cannot retain pointers into the (now empty) young space. The promotion hook exists for future policies and is exercised by `tests/promotion.rs`.
 
 ---
 
