@@ -107,6 +107,9 @@ This mapping ensures that a consumer waiting for readability will be woken up to
 - `timeout == Some(d)`: wait for at most `d`, using **monotonic time** to compute the remaining
   timeout across retries.
 - If the underlying syscall returns `EINTR`, the reactor retries, recomputing the remaining timeout.
+- Extremely large timeouts may be **internally clamped/chunked** to fit OS syscall limits (e.g.
+  `epoll_wait` takes an `i32` millisecond timeout, `kevent` takes a `time_t` second timeout). This
+  is an implementation detail: the reactor still guarantees it will not block longer than `d`.
 
 ## Wake semantics
 

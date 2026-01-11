@@ -3,7 +3,7 @@
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Token associated with a registered I/O source.
 ///
@@ -278,11 +278,7 @@ impl Reactor {
   pub fn poll(&mut self, events: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<usize> {
     events.clear();
 
-    // To guarantee monotonic timeouts in the face of EINTR, we compute an absolute deadline and
-    // retry as needed with a recomputed relative timeout.
-    let deadline = timeout.map(|d| Instant::now() + d);
-
-    let mut scratch = self.sys.poll_raw(deadline)?;
+    let mut scratch = self.sys.poll_raw(timeout)?;
 
     // Drain wake events before returning to keep edge-triggered semantics (eventfd counter/kevent
     // user event).
@@ -326,12 +322,12 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   Ok(())
 }
 
-#[cfg(target_os = "linux")]
-mod sys {
+  #[cfg(target_os = "linux")]
+  mod sys {
   use super::{Event, Interest, Token};
   use std::io;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-  use std::time::Instant;
+  use std::time::{Duration, Instant};
 
   pub(super) struct ReactorSys {
     epoll: OwnedFd,
@@ -408,20 +404,21 @@ mod sys {
       Ok(())
     }
 
-    pub(super) fn poll_raw(&mut self, deadline: Option<Instant>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       let mut out = Vec::with_capacity(64);
       let mut buf = [libc::epoll_event { events: 0, u64: 0 }; 64];
 
+      let start = timeout.map(|_| Instant::now());
+
       loop {
-        let timeout_ms = match deadline {
-          None => -1,
-          Some(d) => {
-            let now = Instant::now();
-            if now >= d {
+        let timeout_ms = match (timeout, start) {
+          (None, _) => -1,
+          (Some(total), Some(start)) => {
+            let remaining = total.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
               0
             } else {
-              let remaining = d - now;
-              // Round up to avoid spuriously timing out before the deadline.
+              // Round up to avoid spuriously timing out before the requested duration.
               let mut ms = remaining.as_millis();
               if ms == 0 {
                 ms = 1;
@@ -429,6 +426,8 @@ mod sys {
               (ms.min(i32::MAX as u128)) as i32
             }
           }
+          // `start` is always `Some` when `timeout` is `Some`.
+          (Some(_), None) => unreachable!(),
         };
 
         let n = unsafe { libc::epoll_wait(self.epoll.as_raw_fd(), buf.as_mut_ptr(), buf.len() as i32, timeout_ms) };
@@ -445,7 +444,21 @@ mod sys {
           out.push(epoll_to_event(token, kev.events));
         }
 
-        return Ok(out);
+        if n != 0 {
+          return Ok(out);
+        }
+
+        // Timed out. If this was a clamped per-wait chunk, keep waiting until the full timeout
+        // has elapsed.
+        match (timeout, start) {
+          (None, _) => unreachable!("epoll_wait returned 0 with infinite timeout"),
+          (Some(total), Some(start)) => {
+            if start.elapsed() >= total {
+              return Ok(out);
+            }
+          }
+          (Some(_), None) => unreachable!(),
+        }
       }
     }
 
@@ -498,19 +511,19 @@ mod sys {
   }
 }
 
-#[cfg(any(
+  #[cfg(any(
   target_os = "macos",
   target_os = "freebsd",
   target_os = "netbsd",
   target_os = "openbsd",
   target_os = "dragonfly"
 ))]
-mod sys {
+  mod sys {
   use super::{Event, Interest, Token};
   use std::collections::HashMap;
   use std::io;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-  use std::time::Instant;
+  use std::time::{Duration, Instant};
 
   pub(super) struct ReactorSys {
     kqueue: OwnedFd,
@@ -624,7 +637,7 @@ mod sys {
       Ok(())
     }
 
-    pub(super) fn poll_raw(&mut self, deadline: Option<Instant>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       let mut out = Vec::with_capacity(64);
       let mut buf = [libc::kevent {
         ident: 0,
@@ -635,22 +648,33 @@ mod sys {
         udata: std::ptr::null_mut(),
       }; 64];
 
+      let start = timeout.map(|_| Instant::now());
+
       loop {
         let mut ts_storage = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        let ts_ptr = match deadline {
-          None => std::ptr::null(),
-          Some(d) => {
-            let now = Instant::now();
-            if now >= d {
+        let ts_ptr = match (timeout, start) {
+          (None, _) => std::ptr::null(),
+          (Some(total), Some(start)) => {
+            let remaining = total.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
               ts_storage.tv_sec = 0;
               ts_storage.tv_nsec = 0;
             } else {
-              let remaining = d - now;
-              ts_storage.tv_sec = remaining.as_secs() as libc::time_t;
-              ts_storage.tv_nsec = remaining.subsec_nanos() as libc::c_long;
+              // `timespec.tv_sec` is `time_t` (signed) and may be smaller than `u64`.
+              let max_secs = libc::time_t::MAX as u64;
+              let secs = remaining.as_secs();
+              if secs >= max_secs {
+                ts_storage.tv_sec = libc::time_t::MAX;
+                ts_storage.tv_nsec = 0;
+              } else {
+                ts_storage.tv_sec = secs as libc::time_t;
+                ts_storage.tv_nsec = remaining.subsec_nanos() as libc::c_long;
+              }
             }
             &ts_storage as *const libc::timespec
           }
+          // `start` is always `Some` when `timeout` is `Some`.
+          (Some(_), None) => unreachable!(),
         };
 
         let n = unsafe {
@@ -676,7 +700,21 @@ mod sys {
           out.push(kevent_to_event(token, kev));
         }
 
-        return Ok(out);
+        if n != 0 {
+          return Ok(out);
+        }
+
+        // Timed out. If this was a clamped per-wait chunk, keep waiting until the full timeout
+        // has elapsed.
+        match (timeout, start) {
+          (None, _) => unreachable!("kevent returned 0 with infinite timeout"),
+          (Some(total), Some(start)) => {
+            if start.elapsed() >= total {
+              return Ok(out);
+            }
+          }
+          (Some(_), None) => unreachable!(),
+        }
       }
     }
 
@@ -1022,7 +1060,7 @@ mod sys {
   }
 }
 
-#[cfg(not(any(
+  #[cfg(not(any(
   target_os = "linux",
   target_os = "macos",
   target_os = "freebsd",
@@ -1030,11 +1068,11 @@ mod sys {
   target_os = "openbsd",
   target_os = "dragonfly"
 )))]
-mod sys {
+  mod sys {
   use super::{Event, Interest, Token};
   use std::io;
   use std::os::fd::RawFd;
-  use std::time::Instant;
+  use std::time::Duration;
 
   pub(super) struct ReactorSys;
 
@@ -1058,7 +1096,7 @@ mod sys {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 
-    pub(super) fn poll_raw(&mut self, _deadline: Option<Instant>) -> io::Result<Vec<Event>> {
+    pub(super) fn poll_raw(&mut self, _timeout: Option<Duration>) -> io::Result<Vec<Event>> {
       Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
     }
 

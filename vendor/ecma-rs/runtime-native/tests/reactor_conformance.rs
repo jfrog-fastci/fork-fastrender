@@ -445,6 +445,33 @@ fn waker_interrupts_poll_none_timeout() {
 }
 
 #[test]
+fn poll_large_timeout_does_not_panic_and_wake_works() {
+  let mut reactor = Reactor::new().unwrap();
+  let waker = reactor.waker();
+
+  std::thread::spawn(move || {
+    std::thread::sleep(Duration::from_millis(50));
+    waker.wake().unwrap();
+  });
+
+  let start = Instant::now();
+  let mut events = Vec::new();
+  reactor
+    .poll(&mut events, Some(Duration::from_secs(u64::MAX)))
+    .unwrap();
+
+  assert!(
+    start.elapsed() < Duration::from_secs(1),
+    "wake did not interrupt poll(very_large_timeout) promptly: {:?}",
+    start.elapsed()
+  );
+  assert!(
+    events.iter().any(|e| e.token == Token::WAKE),
+    "expected wake event, got {events:?}"
+  );
+}
+
+#[test]
 fn waker_no_loss_stress() {
   let mut reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
