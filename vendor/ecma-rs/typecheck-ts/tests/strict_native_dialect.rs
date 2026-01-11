@@ -28,7 +28,7 @@ fn rejects_explicit_any_type_annotation() {
     diagnostics
       .iter()
       .any(|diag| diag.code.as_str() == codes::FORBIDDEN_ANY.as_str()),
-    "expected TN0001, got {diagnostics:?}",
+    "expected TC4000, got {diagnostics:?}",
   );
 }
 
@@ -50,7 +50,7 @@ fn rejects_inferred_any_from_ambient_declaration() {
     diagnostics
       .iter()
       .any(|diag| diag.code.as_str() == codes::FORBIDDEN_ANY.as_str()),
-    "expected TN0001, got {diagnostics:?}",
+    "expected TC4000, got {diagnostics:?}",
   );
 }
 
@@ -66,7 +66,7 @@ fn rejects_unsafe_type_assertions() {
     diagnostics
       .iter()
       .any(|diag| diag.code.as_str() == codes::UNSAFE_TYPE_ASSERTION.as_str()),
-    "expected TN0002, got {diagnostics:?}",
+    "expected TC4005, got {diagnostics:?}",
   );
 }
 
@@ -82,7 +82,7 @@ fn rejects_non_null_assertions_that_discard_nullability() {
     diagnostics
       .iter()
       .any(|diag| diag.code.as_str() == codes::INVALID_NON_NULL_ASSERTION.as_str()),
-    "expected TN0003, got {diagnostics:?}",
+    "expected TC4006, got {diagnostics:?}",
   );
 }
 

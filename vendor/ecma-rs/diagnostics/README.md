@@ -32,7 +32,6 @@ repo-wide policy and registry):
 - `LOWER####`: `hir-js` lowering
 - `VMJS####`: `vm-js` VM/runtime
 - `TC####`: `typecheck-ts` type checker (including strict-native `TC40xx` diagnostics)
-- `TN####`: `typecheck-ts` strict-native dialect diagnostics (legacy prefix; e.g. `TN0001`–`TN0003`)
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)
 - `OPT####`: `optimize-js`
 - `MINIFYTS####`: `ts-erase` TypeScript erasure/lowering
