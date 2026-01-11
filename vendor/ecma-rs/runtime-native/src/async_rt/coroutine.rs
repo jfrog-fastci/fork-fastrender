@@ -15,7 +15,19 @@ fn schedule_resume_macrotask(coro: *mut RtCoroutineHeader) {
   queue_macrotask(coro_resume_task as TaskFn, coro as *mut u8);
 }
 
+#[inline]
+fn validate_coro_ptr(coro: *mut RtCoroutineHeader) -> *mut RtCoroutineHeader {
+  if coro.is_null() {
+    return coro;
+  }
+  if (coro as usize) % core::mem::align_of::<RtCoroutineHeader>() != 0 {
+    std::process::abort();
+  }
+  coro
+}
+
 fn run_coroutine(coro: *mut RtCoroutineHeader) {
+  let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return;
   }
@@ -63,6 +75,7 @@ extern "C" fn await_on_settle(data: *mut u8) {
 }
 
 pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return PromiseRef::null();
   }
@@ -79,6 +92,7 @@ pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
 }
 
 pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+  let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return;
   }

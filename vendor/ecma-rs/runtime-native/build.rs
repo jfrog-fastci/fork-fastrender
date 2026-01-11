@@ -20,6 +20,13 @@ fn main() {
     return;
   }
 
+  // Only require linker-script integration when explicitly enabled: consumers
+  // embedding `libruntime_native.a` from non-Rust linkers (e.g. C) should be
+  // able to link without having to provide stackmap boundary symbols.
+  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_none() {
+    return;
+  }
+
   let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
   let script = manifest_dir.join("stackmaps.ld");
 

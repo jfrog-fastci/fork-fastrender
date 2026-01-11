@@ -43,6 +43,22 @@ impl RtPromise {
   }
 }
 
+#[inline]
+fn promise_ptr(p: PromiseRef) -> *mut RtPromise {
+  if p.is_null() {
+    return core::ptr::null_mut();
+  }
+
+  // PromiseRef is an opaque pointer handle over the ABI, but all of our promise
+  // operations dereference it. Abort on misalignment to avoid UB if the ABI is
+  // misused.
+  let ptr = p.0 as *mut RtPromise;
+  if (ptr as usize) % core::mem::align_of::<RtPromise>() != 0 {
+    std::process::abort();
+  }
+  ptr
+}
+
 pub(crate) enum PromiseOutcome {
   Pending,
   Fulfilled(ValueRef),
@@ -50,10 +66,11 @@ pub(crate) enum PromiseOutcome {
 }
 
 pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
-  if p.is_null() {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
     return PromiseOutcome::Pending;
   }
-  let guard = unsafe { &*(p.0 as *mut RtPromise) }
+  let guard = unsafe { &*ptr }
     .inner
     .lock()
     .expect("promise mutex poisoned");
@@ -69,14 +86,15 @@ pub(crate) fn promise_new() -> PromiseRef {
 }
 
 pub(crate) fn promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
-  if p.is_null() {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
     // Treat null as "never settles": keep it pending.
     return;
   }
 
   let mut schedule_now = false;
   {
-    let mut guard = unsafe { &*(p.0 as *mut RtPromise) }
+    let mut guard = unsafe { &*ptr }
       .inner
       .lock()
       .expect("promise mutex poisoned");
@@ -99,12 +117,13 @@ pub(crate) fn promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), dat
 }
 
 pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
-  if p.is_null() {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
     return;
   }
 
   let continuations = {
-    let mut guard = unsafe { &*(p.0 as *mut RtPromise) }
+    let mut guard = unsafe { &*ptr }
       .inner
       .lock()
       .expect("promise mutex poisoned");
@@ -123,12 +142,13 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
 }
 
 pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
-  if p.is_null() {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
     return;
   }
 
   let continuations = {
-    let mut guard = unsafe { &*(p.0 as *mut RtPromise) }
+    let mut guard = unsafe { &*ptr }
       .inner
       .lock()
       .expect("promise mutex poisoned");
