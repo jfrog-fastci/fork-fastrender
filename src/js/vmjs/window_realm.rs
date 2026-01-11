@@ -42,7 +42,8 @@ use vm_js::{
   ModuleGraph, ModuleId, PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm,
   VmError, VmHost, VmHostHooks, VmOptions,
 };
-use webidl_vm_js::{VmJsHostHooksPayload, WebIdlBindingsHost};
+use webidl_vm_js::WebIdlBindingsHost;
+use webidl_vm_js::VmJsHostHooksPayload;
 
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -165,7 +166,6 @@ pub struct WindowRealm {
   /// back to leaking the job (only possible during teardown) once the heap is gone.
   heap_alive: Arc<AtomicBool>,
   js_execution_options: JsExecutionOptions,
-  vm_host: (),
 }
 
 pub(crate) struct WindowRealmModuleLoaderState {
@@ -328,7 +328,6 @@ impl WindowRealm {
       interrupt_flag,
       heap_alive,
       js_execution_options,
-      vm_host: (),
     })
   }
 
@@ -484,6 +483,7 @@ impl WindowRealm {
   }
 
   /// Execute a classic script in this window realm.
+  #[cfg(test)]
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
     self.exec_script_with_name("<inline>", source)
   }
@@ -511,6 +511,7 @@ impl WindowRealm {
   /// This routes Promise jobs through `VmHostHooks::host_enqueue_promise_job` instead of the
   /// VM-owned microtask queue used by [`WindowRealm::exec_script`]. Embeddings can use this to
   /// integrate ECMAScript jobs into an HTML-shaped microtask queue.
+  #[cfg(test)]
   pub fn exec_script_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
@@ -530,6 +531,7 @@ impl WindowRealm {
     self.with_vm_budget(|rt| rt.exec_script_source_with_host_and_hooks(host, hooks, source))
   }
 
+  #[cfg(test)]
   pub(crate) fn exec_script_source_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
@@ -540,6 +542,7 @@ impl WindowRealm {
   }
 
   /// Execute a classic script with an explicit source name for stack traces.
+  #[cfg(test)]
   pub fn exec_script_with_name(
     &mut self,
     source_name: impl Into<Arc<str>>,
@@ -673,6 +676,7 @@ impl WindowRealm {
     result
   }
 
+  #[cfg(test)]
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
     self.with_vm_budget(|rt| rt.vm.perform_microtask_checkpoint(&mut rt.heap))
   }
@@ -708,52 +712,6 @@ impl Drop for WindowRealm {
   }
 }
 
-impl vm_js::VmJobContext for WindowRealm {
-  fn call(
-    &mut self,
-    host: &mut dyn VmHostHooks,
-    callee: Value,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError> {
-    let realm_id = self.realm_id;
-    let (vm_host, runtime) = (&mut self.vm_host, &mut self.runtime);
-    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
-    let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
-    vm.call_with_host_and_hooks(vm_host, &mut scope, host, callee, this, args)
-  }
-
-  fn construct(
-    &mut self,
-    host: &mut dyn VmHostHooks,
-    callee: Value,
-    args: &[Value],
-    new_target: Value,
-  ) -> Result<Value, VmError> {
-    let realm_id = self.realm_id;
-    let (vm_host, runtime) = (&mut self.vm_host, &mut self.runtime);
-    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
-    let mut scope = heap.scope();
-    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
-      realm: realm_id,
-      script_or_module: None,
-    });
-    vm.construct_with_host_and_hooks(vm_host, &mut scope, host, callee, args, new_target)
-  }
-
-  fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
-    self.runtime.heap.add_root(value)
-  }
-
-  fn remove_root(&mut self, id: vm_js::RootId) {
-    self.runtime.heap.remove_root(id);
-  }
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -779,13 +737,15 @@ fn read_only_data_desc(value: Value) -> PropertyDescriptor {
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   ctor: GcObject,
   message: &str,
 ) -> Result<Value, VmError> {
   let msg = scope.alloc_string(message)?;
   scope.push_root(Value::String(msg))?;
-  vm.construct_with_host(
+  vm.construct_with_host_and_hooks(
+    host,
     scope,
     hooks,
     Value::Object(ctor),
@@ -794,12 +754,30 @@ fn create_error(
   )
 }
 
-fn throw_type_error(vm: &mut Vm, scope: &mut Scope<'_>, hooks: &mut dyn VmHostHooks, message: &str) -> VmError {
+#[cfg(test)]
+pub(crate) fn test_only_create_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  ctor: GcObject,
+  message: &str,
+) -> Result<Value, VmError> {
+  create_error(vm, scope, host, hooks, ctor, message)
+}
+
+fn throw_type_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  message: &str,
+) -> VmError {
   let intr = match vm.intrinsics() {
     Some(intr) => intr,
     None => return VmError::TypeError("TypeError requires intrinsics (create a Realm first)"),
   };
-  match create_error(vm, scope, hooks, intr.type_error(), message) {
+  match create_error(vm, scope, host, hooks, intr.type_error(), message) {
     Ok(err) => VmError::Throw(err),
     Err(_) => VmError::Throw(Value::Undefined),
   }
@@ -814,13 +792,13 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
 fn illegal_dom_constructor_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, hooks, "Illegal constructor"))
+  Err(throw_type_error(vm, scope, host, hooks, "Illegal constructor"))
 }
 
 fn illegal_dom_constructor_construct_native(
@@ -2007,6 +1985,7 @@ fn window_location_get_native(
 fn request_location_navigation(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   location_obj: Option<GcObject>,
   url_value: Value,
@@ -2029,16 +2008,17 @@ fn request_location_navigation(
   let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
 
   let resolved = crate::js::url_resolve::resolve_url(&url_input, base_url.as_deref())
-    .map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+    .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
 
   let parsed =
-    Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+    Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
   match parsed.scheme() {
     "http" | "https" | "file" | "data" | "about" => {}
     other => {
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         hooks,
         &format!("Navigation to {other}: URLs is not supported"),
       ));
@@ -2075,7 +2055,7 @@ fn request_location_navigation(
 fn window_location_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -2089,13 +2069,13 @@ fn window_location_set_native(
     Some(obj)
   });
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  request_location_navigation(vm, scope, hooks, location_obj, url_value, false)
+  request_location_navigation(vm, scope, host, hooks, location_obj, url_value, false)
 }
 
 fn location_href_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2105,13 +2085,13 @@ fn location_href_set_native(
     return Ok(Value::Undefined);
   };
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, false)
+  request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, false)
 }
 
 fn location_assign_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2121,13 +2101,13 @@ fn location_assign_native(
     return Ok(Value::Undefined);
   };
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, false)
+  request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, false)
 }
 
 fn location_replace_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2137,7 +2117,7 @@ fn location_replace_native(
     return Ok(Value::Undefined);
   };
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  request_location_navigation(vm, scope, hooks, Some(location_obj), url_value, true)
+  request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, true)
 }
 
 fn location_set_unimplemented_native(
@@ -2157,7 +2137,7 @@ fn location_set_unimplemented_native(
 fn history_state_change_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -2213,9 +2193,9 @@ fn history_state_change_native(
     let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
 
     let resolved = crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url))
-      .map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
     let parsed =
-      Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+      Url::parse(&resolved).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
 
     match parsed.scheme() {
       "http" | "https" | "file" | "data" | "about" => {}
@@ -2223,6 +2203,7 @@ fn history_state_change_native(
         return Err(throw_type_error(
           vm,
           scope,
+          host,
           hooks,
           &format!("history state updates to {other}: URLs is not supported"),
         ));
@@ -2235,7 +2216,7 @@ fn history_state_change_native(
     // For opaque origins (serialized as "null") we also require the scheme to remain stable since
     // multiple schemes share the same serialized origin.
     let current =
-      Url::parse(&current_document_url).map_err(|err| throw_type_error(vm, scope, hooks, &err.to_string()))?;
+      Url::parse(&current_document_url).map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
     let current_origin = match current.scheme() {
       "http" | "https" => current.origin().ascii_serialization(),
       _ => "null".to_string(),
@@ -2248,6 +2229,7 @@ fn history_state_change_native(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         hooks,
         "history state updates may not change origin",
       ));
@@ -3751,6 +3733,7 @@ fn document_window_from_document(
 fn queue_mutation_observer_microtask(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   document_obj: GcObject,
 ) -> Result<(), VmError> {
@@ -3796,19 +3779,27 @@ fn queue_mutation_observer_microtask(
 
   // This is an internal scheduling primitive; don't let failures (missing queueMicrotask binding,
   // full microtask queue, etc) perturb DOM mutations.
-  let _ = vm.call_with_host(scope, hooks, queue_microtask, Value::Undefined, &[notify]);
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    queue_microtask,
+    Value::Undefined,
+    &[notify],
+  );
   Ok(())
 }
 
 fn maybe_queue_mutation_observer_microtask(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   document_obj: GcObject,
   dom: &mut dom2::Document,
 ) -> Result<(), VmError> {
   if dom.take_mutation_observer_microtask_needed() {
-    queue_mutation_observer_microtask(vm, scope, hooks, document_obj)?;
+    queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj)?;
   }
   Ok(())
 }
@@ -7952,7 +7943,7 @@ fn node_append_child_native(
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
 
-    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -8156,7 +8147,7 @@ fn node_insert_before_native(
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
 
-    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
   }
 
   Ok(new_child_value)
@@ -8277,7 +8268,7 @@ fn node_remove_child_native(
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
 
-    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -8472,7 +8463,7 @@ fn node_replace_child_native(
       prepare_dynamic_script(dom, parent_node_id, &base_url)?;
     }
 
-    maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
   }
 
   Ok(old_child_value)
@@ -9051,7 +9042,7 @@ fn node_remove_native(
 
   // Keep cached `childNodes` live NodeLists updated.
   sync_cached_child_nodes_for_node_id(vm, scope, source_id, document_obj, parent)?;
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9581,7 +9572,7 @@ fn element_class_name_set_native(
     .set_element_class_name(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.className"))?;
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9696,7 +9687,7 @@ fn element_id_set_native(
     .set_element_id(node_id, &new_value)
     .map_err(|_| VmError::TypeError("failed to set Element.id"))?;
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9818,7 +9809,7 @@ fn element_reflected_string_set_native(
     let base_url = current_base_url_for_dynamic_scripts(vm);
     prepare_dynamic_script(dom, node_id, &base_url)?;
   }
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -9907,7 +9898,7 @@ fn element_reflected_bool_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -10368,7 +10359,7 @@ fn css_style_set_property_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -10435,7 +10426,7 @@ fn css_style_remove_property_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::String(scope.alloc_string(&prev)?))
 }
@@ -10528,7 +10519,7 @@ fn css_style_named_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -10635,7 +10626,7 @@ fn element_class_list_add_native(
 
   match dom.class_list_add(node_id, &token_refs) {
     Ok(_) => {
-      maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+      maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
       Ok(Value::Undefined)
     }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
@@ -10744,7 +10735,7 @@ fn element_class_list_remove_native(
 
   match dom.class_list_remove(node_id, &token_refs) {
     Ok(_) => {
-      maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+      maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
       Ok(Value::Undefined)
     }
     Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
@@ -10920,7 +10911,7 @@ fn element_class_list_toggle_native(
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Bool(result))
 }
@@ -11030,7 +11021,7 @@ fn element_class_list_replace_native(
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Bool(result))
 }
@@ -11193,7 +11184,7 @@ fn element_set_attribute_native(
     let base_url = current_base_url_for_dynamic_scripts(vm);
     prepare_dynamic_script(dom, node_id, &base_url)?;
   }
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -11408,7 +11399,7 @@ fn element_inner_html_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -11550,7 +11541,7 @@ fn element_outer_html_set_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -11641,7 +11632,7 @@ fn element_insert_adjacent_html_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }
@@ -11765,7 +11756,7 @@ fn element_insert_adjacent_element_native(
     Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
   };
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(result)
 }
@@ -11856,7 +11847,7 @@ fn element_insert_adjacent_text_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, hooks, document_obj, dom)?;
+  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
 
   Ok(Value::Undefined)
 }

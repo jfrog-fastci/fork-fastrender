@@ -288,20 +288,30 @@ impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
     // `vm-js` Promise built-ins require a host hook implementation to enqueue jobs. We use a small
     // adapter that forwards to `EcmaVmRuntime` while keeping the VM/heap borrowable.
     let mut hooks = RuntimeHostHooks::new(self);
+
+    // `vm-js` native functions can downcast the explicit `VmHost` context passed through
+    // `call_with_host_and_hooks` / `construct_with_host_and_hooks`. For this legacy runtime, pass a
+    // lightweight host context that points at the embedder `state` (instead of running with the
+    // default dummy host).
+    let mut host_ctx = EcmaVmHostContext::new(&mut self.state);
+
+    let (vm, env, heap, pending_host_error) =
+      (&mut self.vm, &mut self.env, &mut self.heap, &mut self.pending_host_error);
     let mut evaluator = Evaluator {
-      vm: &mut self.vm,
-      env: &mut self.env,
+      vm,
+      env,
+      host: &mut host_ctx,
       hooks: &mut hooks,
       global_this,
       intrinsics,
     };
 
     for stmt in &top.stx.body {
-      let mut scope = self.heap.scope();
+      let mut scope = heap.scope();
       evaluator
         .eval_stmt(&mut scope, stmt)
         .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
-      if let Some(err) = self.pending_host_error.take() {
+      if let Some(err) = pending_host_error.take() {
         return Err(err);
       }
     }
@@ -344,6 +354,7 @@ impl<State: WebIdlBindingsHost + 'static> WebIdlBindingsHost for EcmaVmRuntime<S
 struct Evaluator<'a> {
   vm: &'a mut Vm,
   env: &'a mut Env,
+  host: &'a mut dyn VmHost,
   hooks: &'a mut dyn VmHostHooks,
   global_this: Value,
   intrinsics: vm_js::Intrinsics,
@@ -426,10 +437,17 @@ impl Evaluator<'_> {
           return Err(VmError::Unimplemented("unbound identifier"));
         }
 
-        // Use `ordinary_get_with_host` so accessor getters run via `Vm::call_with_host` and can
-        // enqueue Promise jobs through the FastRender host hooks (instead of `vm-js`'s internal
-        // microtask queue used by `Vm::call`).
-        child.ordinary_get_with_host(self.vm, self.hooks, global_obj, key, self.global_this)
+        // Use `ordinary_get_with_host_and_hooks` so accessor getters run via
+        // `Vm::call_with_host_and_hooks` and can enqueue Promise jobs through the FastRender host
+        // hooks (instead of `vm-js`'s internal microtask queue used by `Vm::call`).
+        child.ordinary_get_with_host_and_hooks(
+          self.vm,
+          self.host,
+          self.hooks,
+          global_obj,
+          key,
+          self.global_this,
+        )
       }
       Expr::This(_) => Ok(self.global_this),
       Expr::Member(node) => self.eval_member_expr(scope, &node.stx),
@@ -507,7 +525,7 @@ impl Evaluator<'_> {
     let key_s = child.alloc_string(&expr.right)?;
     child.push_root(Value::String(key_s))?;
     let key = vm_js::PropertyKey::String(key_s);
-    child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)
+    child.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, obj, key, obj_value)
   }
 
   fn eval_call_expr(
@@ -532,7 +550,8 @@ impl Evaluator<'_> {
         let key_s = child.alloc_string(&member.stx.right)?;
         child.push_root(Value::String(key_s))?;
         let key = vm_js::PropertyKey::String(key_s);
-        let func = child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)?;
+        let func =
+          child.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, obj, key, obj_value)?;
         (func, obj_value)
       }
       _ => {
@@ -557,7 +576,7 @@ impl Evaluator<'_> {
 
     self
       .vm
-      .call_with_host(&mut call_scope, self.hooks, callee, this, &args)
+      .call_with_host_and_hooks(self.host, &mut call_scope, self.hooks, callee, this, &args)
   }
 }
 
@@ -624,6 +643,27 @@ impl Drop for ExecCtxGuard {
   fn drop(&mut self) {
     let previous = self.previous;
     EXEC_CTX.with(|cell| cell.set(previous));
+  }
+}
+
+/// A lightweight `VmHost` context for this legacy runtime.
+///
+/// Host-aware `vm-js` entrypoints accept an explicit `&mut dyn VmHost` so native calls/constructs
+/// can downcast to embedder state. The canonical WindowRealm pipeline passes
+/// [`crate::js::VmJsHostContext`]; this legacy runtime passes a small wrapper around a raw pointer
+/// to its `state` field.
+struct EcmaVmHostContext<State: WebIdlBindingsHost + 'static> {
+  state: *mut State,
+}
+
+impl<State: WebIdlBindingsHost + 'static> EcmaVmHostContext<State> {
+  fn new(state: &mut State) -> Self {
+    Self { state }
+  }
+
+  #[allow(dead_code)]
+  unsafe fn state_mut(&mut self) -> &mut State {
+    &mut *self.state
   }
 }
 
@@ -736,24 +776,26 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
   }
 }
 
-struct FastRenderJobContext {
+struct FastRenderJobContext<State: WebIdlBindingsHost + 'static> {
   vm: *mut Vm,
   heap: *mut Heap,
+  state: *mut State,
 }
 
-impl FastRenderJobContext {
-  fn new<State: WebIdlBindingsHost + 'static>(host: &mut EcmaVmRuntime<State>) -> Self {
+impl<State: WebIdlBindingsHost + 'static> FastRenderJobContext<State> {
+  fn new(host: &mut EcmaVmRuntime<State>) -> Self {
     Self {
       vm: &mut host.vm as *mut Vm,
       heap: &mut host.heap as *mut Heap,
+      state: &mut host.state as *mut State,
     }
   }
 }
 
-impl VmJobContext for FastRenderJobContext {
+impl<State: WebIdlBindingsHost + 'static> VmJobContext for FastRenderJobContext<State> {
   fn call(
     &mut self,
-    host: &mut dyn VmHostHooks,
+    host_hooks: &mut dyn VmHostHooks,
     callee: Value,
     this: Value,
     args: &[Value],
@@ -761,19 +803,19 @@ impl VmJobContext for FastRenderJobContext {
     // SAFETY: `FastRenderJobContext` is only used while `EcmaVmRuntime` is alive. This uses raw
     // pointers to split-borrow `EcmaVmRuntime` so it can be passed to `Job::run` as both a
     // `VmJobContext` (backed by the VM/heap) and a `VmHostHooks` implementation (Promise job
-    // scheduling) via `Vm::{call_with_host,construct_with_host}` without violating Rust's aliasing
-    // rules.
+    // scheduling) without violating Rust's aliasing rules.
     unsafe {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;
       let mut scope = heap.scope();
-      vm.call_with_host(&mut scope, host, callee, this, args)
+      let mut host = EcmaVmHostContext::<State> { state: self.state };
+      vm.call_with_host_and_hooks(&mut host, &mut scope, host_hooks, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
-    host: &mut dyn VmHostHooks,
+    host_hooks: &mut dyn VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
@@ -782,7 +824,8 @@ impl VmJobContext for FastRenderJobContext {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;
       let mut scope = heap.scope();
-      vm.construct_with_host(&mut scope, host, callee, args, new_target)
+      let mut host = EcmaVmHostContext::<State> { state: self.state };
+      vm.construct_with_host_and_hooks(&mut host, &mut scope, host_hooks, callee, args, new_target)
     }
   }
 

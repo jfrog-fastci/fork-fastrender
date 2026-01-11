@@ -1037,73 +1037,13 @@ mod tests {
       stream.write_all(body).expect("write body");
     });
 
-    fn record_host_native(
-      _vm: &mut Vm,
-      _scope: &mut Scope<'_>,
-      host: &mut dyn VmHost,
-      _hooks: &mut dyn VmHostHooks,
-      _callee: GcObject,
-      _this: Value,
-      _args: &[Value],
-    ) -> std::result::Result<Value, VmError> {
-      if host.as_any_mut().downcast_mut::<DocumentHostState>().is_some() {
-        Ok(Value::Bool(true))
-      } else {
-        Err(VmError::TypeError(
-          "recordHost called without the embedder DocumentHostState VmHost context",
-        ))
-      }
-    }
-
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let fetcher = Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
     let mut host = WindowHost::new_with_fetcher(dom, url, fetcher)?;
 
     // Install the `recordHost` native into the global object so JS can assert a real VmHost is
     // threaded through thenable assimilation.
-    {
-      let window = host.host_mut().window_mut();
-      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      let mut scope = heap.scope();
-      let global = realm.global_object();
-
-      scope.push_root(Value::Object(global)).expect("push root global");
-
-      let id = vm
-        .register_native_call(record_host_native)
-        .expect("register recordHost native");
-      let name_s = scope.alloc_string("recordHost").expect("alloc recordHost name");
-      scope
-        .push_root(Value::String(name_s))
-        .expect("push root recordHost name");
-
-      let func = scope
-        .alloc_native_function(id, None, name_s, 0)
-        .expect("alloc recordHost function");
-      scope
-        .heap_mut()
-        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
-        .expect("set recordHost prototype");
-      scope
-        .push_root(Value::Object(func))
-        .expect("push root recordHost function");
-
-      let key = PropertyKey::from_string(name_s);
-      scope
-        .define_property(
-          global,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: Value::Object(func),
-              writable: true,
-            },
-          },
-        )
-        .expect("define recordHost global");
-    }
+    install_record_host(&mut host);
 
     host.exec_script(
       r#"
@@ -1215,7 +1155,10 @@ mod tests {
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
     Ok(Value::Bool(
-      host.as_any_mut().is::<DocumentHostState>(),
+      host
+        .as_any_mut()
+        .downcast_mut::<DocumentHostState>()
+        .is_some(),
     ))
   }
 
@@ -1238,7 +1181,10 @@ mod tests {
   }
 
   fn install_record_host(host: &mut WindowHost) {
-    let window = host.host_mut().window_mut();
+    install_record_host_in_window(host.host_mut().window_mut());
+  }
+
+  fn install_record_host_in_window(window: &mut WindowRealm) {
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     let global = realm.global_object();
@@ -1327,7 +1273,7 @@ mod tests {
           },
         )
         .expect("define global native function");
-    }
+  }
 
     host.exec_script(
       r#"
@@ -1351,6 +1297,81 @@ mod tests {
 
     assert!(matches!(
       get_global_prop(&mut host, "__microtask"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn create_error_construction_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      globalThis.__err = "";
+      globalThis.__ctor = function(msg) {
+        try { globalThis.__host_ok = recordHost(); }
+        catch (e) { globalThis.__err = String(e && e.message || e); }
+      };
+      "#,
+    )?;
+
+    let create_error_result: Result<()> = {
+      use crate::js::window_timers::VmJsEventLoopHooks;
+
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      with_event_loop(event_loop, || {
+        let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
+        let (vm_host, window) = host_state.vm_host_and_window_realm();
+        let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+        let mut scope = heap.scope();
+        let global = realm.global_object();
+        scope
+          .push_root(Value::Object(global))
+          .expect("push root global");
+        let key_s = scope.alloc_string("__ctor").expect("alloc __ctor");
+        scope
+          .push_root(Value::String(key_s))
+          .expect("push root __ctor");
+        let key = PropertyKey::from_string(key_s);
+        let ctor_val = scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)
+          .expect("get __ctor")
+          .unwrap_or(Value::Undefined);
+        let Value::Object(ctor_obj) = ctor_val else {
+          return Err(Error::Other("missing __ctor".to_string()));
+        };
+        scope
+          .push_root(Value::Object(ctor_obj))
+          .expect("push root __ctor function");
+        let create_result = crate::js::window_realm::test_only_create_error(
+          vm,
+          &mut scope,
+          vm_host,
+          &mut hooks,
+          ctor_obj,
+          "boom",
+        );
+        drop(scope);
+        let create_result = match create_result {
+          Ok(_) => Ok(()),
+          Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+        };
+        if let Some(err) = hooks.finish(window.heap_mut()) {
+          return Err(err);
+        }
+        create_result
+      })
+    };
+    create_error_result?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
     ));
     Ok(())
@@ -1602,6 +1623,157 @@ mod tests {
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
     ));
+    Ok(())
+  }
+
+  #[test]
+  fn mutation_observer_queue_microtask_scheduling_runs_with_real_vm_host() -> Result<()> {
+    // `WindowHost` always installs `install_window_timers_bindings`, which defines the internal
+    // `__fastrender_queue_microtask` as a non-writable/non-configurable property. That prevents
+    // tests from monkey-patching the scheduling primitive directly.
+    //
+    // Instead, construct a minimal `WindowRealm` with DOM shims but *without* timer bindings and
+    // define a userland `queueMicrotask` implementation that calls `recordHost()`.
+    // `queue_mutation_observer_microtask` should fall back to this when the internal key is absent.
+
+    struct NoTimersHostState {
+      dom_source_id: Option<u64>,
+      document: Box<DocumentHostState>,
+      window: WindowRealm,
+    }
+
+    impl Drop for NoTimersHostState {
+      fn drop(&mut self) {
+        if let Some(id) = self.dom_source_id.take() {
+          unregister_dom_source(id);
+        }
+      }
+    }
+
+    impl WindowRealmHost for NoTimersHostState {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+        (&mut *self.document, &mut self.window)
+      }
+    }
+
+    impl NoTimersHostState {
+      fn new(dom: dom2::Document, document_url: &str) -> Result<Self> {
+        let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
+        let mut document = Box::new(DocumentHostState::new(dom));
+        let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
+        register_dom_host_source(
+          dom_source_id,
+          NonNull::from(document.as_mut() as &mut dyn crate::js::DomHostVmJs),
+        );
+
+        let window = WindowRealm::new(
+          WindowRealmConfig::new(document_url)
+            .with_dom_source_id(dom_source_id)
+            .with_clock(clock),
+        )
+        .map_err(|err| {
+          unregister_dom_source(dom_source_id);
+          Error::Other(err.to_string())
+        })?;
+
+        Ok(Self {
+          dom_source_id: Some(dom_source_id),
+          document,
+          window,
+        })
+      }
+
+      fn exec_script(&mut self, event_loop: &mut EventLoop<Self>, source: &str) -> Result<Value> {
+        use crate::js::window_timers::VmJsEventLoopHooks;
+
+        with_event_loop(event_loop, || {
+          let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self);
+          let (vm_host, window) = self.vm_host_and_window_realm();
+          let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+
+          if let Some(err) = hooks.finish(window.heap_mut()) {
+            return Err(err);
+          }
+
+          match result {
+            Ok(value) => Ok(value),
+            Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+          }
+        })
+      }
+
+      fn get_global_prop(&mut self, name: &str) -> Value {
+        let (_vm, realm, heap) = self.window.vm_realm_and_heap_mut();
+        let mut scope = heap.scope();
+        let global = realm.global_object();
+        scope
+          .push_root(Value::Object(global))
+          .expect("push root global");
+        let key_s = scope.alloc_string(name).expect("alloc prop name");
+        scope
+          .push_root(Value::String(key_s))
+          .expect("push root prop name");
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)
+          .expect("get global prop")
+          .unwrap_or(Value::Undefined)
+      }
+
+      fn get_global_prop_utf8(&mut self, name: &str) -> Option<String> {
+        let (_vm, realm, heap) = self.window.vm_realm_and_heap_mut();
+        let mut scope = heap.scope();
+        let global = realm.global_object();
+        scope
+          .push_root(Value::Object(global))
+          .expect("push root global");
+        let key_s = scope.alloc_string(name).expect("alloc prop name");
+        scope
+          .push_root(Value::String(key_s))
+          .expect("push root prop name");
+        let key = PropertyKey::from_string(key_s);
+        let v = scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)
+          .expect("get global prop")
+          .unwrap_or(Value::Undefined);
+        let s = match v {
+          Value::String(s) => s,
+          _ => return None,
+        };
+        Some(scope.heap().get_string(s).ok()?.to_utf8_lossy())
+      }
+    }
+
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+    let mut host = NoTimersHostState::new(dom, "https://example.invalid/")?;
+
+    install_record_host_in_window(&mut host.window);
+    let mut event_loop = EventLoop::<NoTimersHostState>::new();
+
+    host.exec_script(
+      &mut event_loop,
+      r#"
+      globalThis.__host_ok = false;
+      globalThis.__err = "";
+
+      // `queue_mutation_observer_microtask` should fall back to this userland implementation.
+      globalThis.queueMicrotask = function () {
+        try { globalThis.__host_ok = recordHost(); }
+        catch (e) { globalThis.__err = String(e && e.message || e); }
+      };
+
+      const target = document.getElementById('target');
+      new MutationObserver(() => {}).observe(target, { childList: true });
+      target.appendChild(document.createElement('span'));
+      "#,
+    )?;
+
+    assert_eq!(host.get_global_prop_utf8("__err").unwrap_or_default(), "");
+    assert!(matches!(host.get_global_prop("__host_ok"), Value::Bool(true)));
     Ok(())
   }
 
