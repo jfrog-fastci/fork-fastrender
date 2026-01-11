@@ -5,10 +5,16 @@
 
 mod error;
 mod idl;
+mod numeric;
 mod to_js;
 
 pub use error::{WebIdlError, WebIdlLimit};
 pub use idl::{ByteString, DomString, FrozenArray, IdlRecord, IdlString, IdlUndefined, UsvString};
+pub use numeric::{
+  convert_to_double, convert_to_float, convert_to_int, convert_to_unrestricted_double,
+  convert_to_unrestricted_float, IntegerConversionAttrs, NumericConversionError,
+  NumericConversionErrorKind,
+};
 pub use to_js::{
   dictionary_to_js, index_to_property_key, record_to_js_object, sequence_to_js_array, union_to_js,
   ToJsPropertyKey, ToJsValue,

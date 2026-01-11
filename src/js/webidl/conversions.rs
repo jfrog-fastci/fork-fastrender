@@ -9,10 +9,16 @@ use std::collections::BTreeMap;
 use crate::js::bindings::BindingValue;
 use super::WebIdlBindingsRuntime;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct IntegerConversionAttrs {
-  pub clamp: bool,
-  pub enforce_range: bool,
+pub use webidl::IntegerConversionAttrs;
+
+fn numeric_conversion_error_to_js<Host, R: WebIdlBindingsRuntime<Host>>(
+  rt: &mut R,
+  err: webidl::NumericConversionError,
+) -> R::Error {
+  match err.kind() {
+    webidl::NumericConversionErrorKind::TypeError => rt.throw_type_error(err.message()),
+    webidl::NumericConversionErrorKind::RangeError => rt.throw_range_error(err.message()),
+  }
 }
 
 /// Convert an ECMAScript value to a WebIDL enum value.
@@ -123,7 +129,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 8, true, attrs)?;
+  let v = webidl::convert_to_int(n, 8, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i8)
 }
 
@@ -140,7 +146,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 8, false, attrs)?;
+  let v = webidl::convert_to_int(n, 8, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u8)
 }
 
@@ -157,7 +163,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 16, true, attrs)?;
+  let v = webidl::convert_to_int(n, 16, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i16)
 }
 
@@ -174,7 +180,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 16, false, attrs)?;
+  let v = webidl::convert_to_int(n, 16, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u16)
 }
 
@@ -191,7 +197,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 32, true, attrs)?;
+  let v = webidl::convert_to_int(n, 32, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i32)
 }
 
@@ -208,7 +214,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 32, false, attrs)?;
+  let v = webidl::convert_to_int(n, 32, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u32)
 }
 
@@ -225,7 +231,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 64, true, attrs)?;
+  let v = webidl::convert_to_int(n, 64, true, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as i64)
 }
 
@@ -242,7 +248,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let n = rt.to_number(host, value)?;
-  let v = convert_to_int(rt, n, 64, false, attrs)?;
+  let v = webidl::convert_to_int(n, 64, false, attrs).map_err(|e| numeric_conversion_error_to_js(rt, e))?;
   Ok(v as u64)
 }
 
@@ -254,17 +260,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let x = rt.to_number(host, value)?;
-  if x.is_nan() || x.is_infinite() {
-    return Err(rt.throw_type_error("float must be a finite number"));
-  }
-  let mut y = x as f32;
-  if y.is_infinite() {
-    return Err(rt.throw_type_error("float is out of range"));
-  }
-  if y == 0.0 && x.is_sign_negative() {
-    y = -0.0;
-  }
-  Ok(y)
+  webidl::convert_to_float(x).map_err(|e| numeric_conversion_error_to_js(rt, e))
 }
 
 /// Convert an ECMAScript value to an IDL `unrestricted float`.
@@ -279,14 +275,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let x = rt.to_number(host, value)?;
-  if x.is_nan() {
-    return Ok(f32::from_bits(0x7fc0_0000));
-  }
-  let mut y = x as f32;
-  if y == 0.0 && x.is_sign_negative() {
-    y = -0.0;
-  }
-  Ok(y)
+  Ok(webidl::convert_to_unrestricted_float(x))
 }
 
 /// Convert an ECMAScript value to an IDL `double`.
@@ -297,10 +286,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let x = rt.to_number(host, value)?;
-  if x.is_nan() || x.is_infinite() {
-    return Err(rt.throw_type_error("double must be a finite number"));
-  }
-  Ok(x)
+  webidl::convert_to_double(x).map_err(|e| numeric_conversion_error_to_js(rt, e))
 }
 
 /// Convert an ECMAScript value to an IDL `unrestricted double`.
@@ -315,165 +301,7 @@ where
   R: WebIdlBindingsRuntime<Host>,
 {
   let x = rt.to_number(host, value)?;
-  if x.is_nan() {
-    return Ok(f64::from_bits(0x7ff8_0000_0000_0000));
-  }
-  Ok(x)
-}
-
-fn convert_to_int<Host, R: WebIdlBindingsRuntime<Host>>(
-  rt: &mut R,
-  n: f64,
-  bit_length: u32,
-  signed: bool,
-  attrs: IntegerConversionAttrs,
-) -> Result<i128, R::Error> {
-  if attrs.clamp && attrs.enforce_range {
-    return Err(rt.throw_type_error(
-      "[Clamp] and [EnforceRange] cannot both apply to the same type",
-    ));
-  }
-
-  let (lower_bound, upper_bound): (i128, i128) = if signed {
-    let lower_bound = -(1i128 << (bit_length - 1));
-    let upper_bound = (1i128 << (bit_length - 1)) - 1;
-    (lower_bound, upper_bound)
-  } else {
-    let upper_bound = (1i128 << bit_length) - 1;
-    (0, upper_bound)
-  };
-
-  // `ToNumber(V)` is done by the caller; normalize -0 to +0.
-  let mut x = n;
-  if x == 0.0 && x.is_sign_negative() {
-    x = 0.0;
-  }
-
-  if attrs.enforce_range {
-    if x.is_nan() || x.is_infinite() {
-      return Err(rt.throw_range_error(
-        "EnforceRange integer conversion cannot be NaN/Infinity",
-      ));
-    }
-    let x_int = integer_part(x) as i128;
-    if x_int < lower_bound || x_int > upper_bound {
-      return Err(rt.throw_range_error(
-        "integer value is outside EnforceRange bounds",
-      ));
-    }
-    return Ok(x_int);
-  }
-
-  if attrs.clamp {
-    if x.is_nan() {
-      return Ok(0);
-    }
-    if x.is_infinite() {
-      return Ok(if x.is_sign_negative() {
-        lower_bound
-      } else {
-        upper_bound
-      });
-    }
-    let mut y = round_ties_even(x);
-    if y == 0.0 && y.is_sign_negative() {
-      y = 0.0;
-    }
-    let y = y as i128;
-    return Ok(y.clamp(lower_bound, upper_bound));
-  }
-
-  // Default conversion (wrap).
-  if x.is_nan() || x == 0.0 || x.is_infinite() {
-    return Ok(0);
-  }
-
-  let modulo = 1u128 << bit_length;
-  let threshold = 1u128 << (bit_length - 1);
-  let r = integer_part_modulo_pow2(x, bit_length);
-
-  if signed && r >= threshold {
-    Ok(r as i128 - modulo as i128)
-  } else {
-    Ok(r as i128)
-  }
-}
-
-fn integer_part(n: f64) -> f64 {
-  let r = n.abs().floor();
-  if n < 0.0 {
-    -r
-  } else {
-    r
-  }
-}
-
-fn round_ties_even(n: f64) -> f64 {
-  let floor = n.floor();
-  let frac = n - floor;
-  if frac < 0.5 {
-    return floor;
-  }
-  if frac > 0.5 {
-    return floor + 1.0;
-  }
-  let floor_int = floor as i64;
-  if floor_int % 2 == 0 {
-    floor
-  } else {
-    floor + 1.0
-  }
-}
-
-fn integer_part_modulo_pow2(n: f64, bit_length: u32) -> u128 {
-  debug_assert!((1..=64).contains(&bit_length));
-
-  if n == 0.0 {
-    // Covers `-0.0` too.
-    return 0;
-  }
-
-  let bits = n.to_bits();
-  let sign = (bits >> 63) != 0;
-  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
-  let frac_bits = bits & 0x000f_ffff_ffff_ffff;
-
-  // Subnormals (exp_bits == 0) and values with |n| < 1 (exp_unbiased < 0) truncate to 0.
-  // The wrap conversion handles NaN/Infinity before calling into this helper.
-  if exp_bits == 0 || exp_bits == 0x7ff {
-    return 0;
-  }
-
-  let exp_unbiased = exp_bits - 1023;
-  if exp_unbiased < 0 {
-    return 0;
-  }
-
-  // 53-bit significand with implicit leading 1.
-  let sig = ((1u64 << 52) | frac_bits) as u128;
-  let mask = (1u128 << bit_length) - 1;
-
-  // |n| = sig * 2^(exp_unbiased - 52)
-  let shift = exp_unbiased - 52;
-  let abs_rem = if shift >= 0 {
-    let shift = shift as u32;
-    if shift >= bit_length {
-      0
-    } else {
-      (sig << shift) & mask
-    }
-  } else {
-    let rshift = (-shift) as u32;
-    (sig >> rshift) & mask
-  };
-
-  if !sign {
-    return abs_rem;
-  }
-  if abs_rem == 0 {
-    return 0;
-  }
-  (1u128 << bit_length) - abs_rem
+  Ok(webidl::convert_to_unrestricted_double(x))
 }
 
 /// Convert an ECMAScript value to a WebIDL callback function value.
