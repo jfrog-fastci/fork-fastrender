@@ -8,7 +8,9 @@
 
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind};
-use typecheck_ts::{BodyId, DefId, FileId, Program, TypeKindSummary};
+use std::collections::{HashMap, HashSet};
+use typecheck_ts::{BodyId, DefId, FileId, Program, TypeId};
+use types_ts_interned as tti;
 
 const CODE_ANY: &str = "NJS0001";
 const CODE_TYPE_ASSERTION: &str = "NJS0002";
@@ -26,6 +28,7 @@ const CODE_ARGUMENTS: &str = "NJS0008";
 /// safely).
 pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
   let mut diagnostics = Vec::new();
+  let mut any_checker = AnyChecker::new(program);
 
   for &file in files {
     let Some(lowered) = program.hir_lowered(file) else {
@@ -36,14 +39,138 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
 
     // `Program::bodies_in_file` is deterministic and includes nested bodies.
     for body in program.bodies_in_file(file) {
-      check_any_in_body(program, file, body, &lowered, &mut diagnostics);
+      check_any_in_body(program, file, body, &lowered, &mut any_checker, &mut diagnostics);
       check_hir_body(file, body, &lowered, &mut diagnostics);
     }
 
-    check_any_in_exported_defs(program, file, &lowered, &mut diagnostics);
+    check_any_in_exported_defs(program, file, &lowered, &mut any_checker, &mut diagnostics);
   }
 
   diagnostics
+}
+
+struct AnyChecker<'a> {
+  program: &'a Program,
+  cache: HashMap<TypeId, bool>,
+  visiting: HashSet<TypeId>,
+}
+
+impl<'a> AnyChecker<'a> {
+  fn new(program: &'a Program) -> Self {
+    Self {
+      program,
+      cache: HashMap::new(),
+      visiting: HashSet::new(),
+    }
+  }
+
+  fn contains_any(&mut self, ty: TypeId) -> bool {
+    if let Some(&cached) = self.cache.get(&ty) {
+      return cached;
+    }
+    if !self.visiting.insert(ty) {
+      // Break recursive cycles (e.g. self-referential types).
+      return false;
+    }
+
+    let found = match self.program.interned_type_kind(ty) {
+      tti::TypeKind::Any => true,
+      tti::TypeKind::Infer { constraint, .. } => constraint.is_some_and(|ty| self.contains_any(ty)),
+      tti::TypeKind::Tuple(elems) => elems.iter().any(|elem| self.contains_any(elem.ty)),
+      tti::TypeKind::Array { ty, .. } => self.contains_any(ty),
+      tti::TypeKind::Union(members) | tti::TypeKind::Intersection(members) => {
+        members.iter().any(|member| self.contains_any(*member))
+      }
+      tti::TypeKind::Callable { .. } => self
+        .program
+        .call_signatures(ty)
+        .iter()
+        .any(|sig| self.signature_contains_any(&sig.signature)),
+      tti::TypeKind::Object(_) => {
+        if self
+          .program
+          .properties_of(ty)
+          .iter()
+          .any(|prop| self.contains_any(prop.ty))
+        {
+          true
+        } else if self
+          .program
+          .indexers(ty)
+          .iter()
+          .any(|idx| self.contains_any(idx.key_type) || self.contains_any(idx.value_type))
+        {
+          true
+        } else if self
+          .program
+          .call_signatures(ty)
+          .iter()
+          .any(|sig| self.signature_contains_any(&sig.signature))
+        {
+          true
+        } else {
+          self
+            .program
+            .construct_signatures(ty)
+            .iter()
+            .any(|sig| self.signature_contains_any(&sig.signature))
+        }
+      }
+      tti::TypeKind::Ref { def, args } => {
+        if args.iter().any(|arg| self.contains_any(*arg)) {
+          true
+        } else {
+          let declared = self.program.declared_type_of_def_interned(def);
+          self.contains_any(declared)
+        }
+      }
+      tti::TypeKind::Predicate { asserted, .. } => asserted.is_some_and(|ty| self.contains_any(ty)),
+      tti::TypeKind::Conditional {
+        check,
+        extends,
+        true_ty,
+        false_ty,
+        ..
+      } => {
+        self.contains_any(check)
+          || self.contains_any(extends)
+          || self.contains_any(true_ty)
+          || self.contains_any(false_ty)
+      }
+      tti::TypeKind::Mapped(mapped) => {
+        self.contains_any(mapped.source)
+          || self.contains_any(mapped.value)
+          || mapped.name_type.is_some_and(|ty| self.contains_any(ty))
+          || mapped.as_type.is_some_and(|ty| self.contains_any(ty))
+      }
+      tti::TypeKind::Intrinsic { ty, .. } => self.contains_any(ty),
+      tti::TypeKind::IndexedAccess { obj, index } => self.contains_any(obj) || self.contains_any(index),
+      tti::TypeKind::KeyOf(ty) => self.contains_any(ty),
+      _ => false,
+    };
+
+    self.visiting.remove(&ty);
+    self.cache.insert(ty, found);
+    found
+  }
+
+  fn signature_contains_any(&mut self, sig: &tti::Signature) -> bool {
+    if self.contains_any(sig.ret) {
+      return true;
+    }
+    if sig.this_param.is_some_and(|ty| self.contains_any(ty)) {
+      return true;
+    }
+    if sig.params.iter().any(|param| self.contains_any(param.ty)) {
+      return true;
+    }
+    sig.type_params.iter().any(|param| {
+      param
+        .constraint
+        .is_some_and(|ty| self.contains_any(ty))
+        || param.default.is_some_and(|ty| self.contains_any(ty))
+    })
+  }
 }
 
 fn check_any_in_type_exprs(file: FileId, lowered: &hir_js::LowerResult, out: &mut Vec<Diagnostic>) {
@@ -65,12 +192,13 @@ fn check_any_in_body(
   file: FileId,
   body: BodyId,
   lowered: &hir_js::LowerResult,
+  any_checker: &mut AnyChecker<'_>,
   out: &mut Vec<Diagnostic>,
 ) {
   let result = program.check_body(body);
 
   for (idx, ty) in result.expr_types().iter().copied().enumerate() {
-    if !matches!(program.type_kind(ty), TypeKindSummary::Any) {
+    if !any_checker.contains_any(ty) {
       continue;
     }
     let expr = ExprId(idx as u32);
@@ -89,7 +217,7 @@ fn check_any_in_body(
   }
 
   for (idx, ty) in result.pat_types().iter().copied().enumerate() {
-    if !matches!(program.type_kind(ty), TypeKindSummary::Any) {
+    if !any_checker.contains_any(ty) {
       continue;
     }
     let pat = PatId(idx as u32);
@@ -218,6 +346,7 @@ fn check_any_in_exported_defs(
   program: &Program,
   file: FileId,
   lowered: &hir_js::LowerResult,
+  any_checker: &mut AnyChecker<'_>,
   out: &mut Vec<Diagnostic>,
 ) {
   let exported: Vec<DefId> = lowered
@@ -246,64 +375,15 @@ fn check_any_in_exported_defs(
       .unwrap_or_else(|| Span::new(file, TextRange::new(0, 0)));
     let ty = program.type_of_def_interned(def);
 
-    if matches!(program.type_kind(ty), TypeKindSummary::Any) {
+    if any_checker.contains_any(ty) {
       out.push(
         Diagnostic::error(
           CODE_ANY,
-          "exported definition has type `any`, which is not allowed in native-js strict mode",
+          "exported definition uses `any`, which is not allowed in native-js strict mode",
           def_span,
         )
         .with_note("add a precise exported type to keep native codegen sound"),
       );
-      continue;
-    }
-
-    // For callable exports, also forbid `any` in signature positions (e.g. `(): any`).
-    for sig in program.call_signatures(ty) {
-      if matches!(program.type_kind(sig.signature.ret), TypeKindSummary::Any) {
-        out.push(Diagnostic::error(
-          CODE_ANY,
-          "exported function has return type `any`, which is not allowed in native-js strict mode",
-          def_span,
-        ));
-        break;
-      }
-      if sig
-        .signature
-        .params
-        .iter()
-        .any(|param| matches!(program.type_kind(param.ty), TypeKindSummary::Any))
-      {
-        out.push(Diagnostic::error(
-          CODE_ANY,
-          "exported function has an `any` parameter type, which is not allowed in native-js strict mode",
-          def_span,
-        ));
-        break;
-      }
-      if sig
-        .signature
-        .this_param
-        .is_some_and(|this_ty| matches!(program.type_kind(this_ty), TypeKindSummary::Any))
-      {
-        out.push(Diagnostic::error(
-          CODE_ANY,
-          "exported function has `this: any`, which is not allowed in native-js strict mode",
-          def_span,
-        ));
-        break;
-      }
-    }
-
-    for sig in program.construct_signatures(ty) {
-      if matches!(program.type_kind(sig.signature.ret), TypeKindSummary::Any) {
-        out.push(Diagnostic::error(
-          CODE_ANY,
-          "exported constructor has return type `any`, which is not allowed in native-js strict mode",
-          def_span,
-        ));
-        break;
-      }
     }
   }
 }

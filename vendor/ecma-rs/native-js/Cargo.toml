@@ -16,6 +16,7 @@ parse-js = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }
 typecheck-ts = { workspace = true }
+types-ts-interned = { workspace = true }
 
 [dev-dependencies]
 object = { workspace = true }
