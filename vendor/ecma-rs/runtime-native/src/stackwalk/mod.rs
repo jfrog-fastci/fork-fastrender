@@ -51,6 +51,111 @@ pub fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
   arch::compute_sp(fp, stack_size)
 }
 
+/// A cursor into the nearest managed frame.
+///
+/// When the current thread is executing inside runtime-native Rust code (e.g. an allocator slow
+/// path calls `rt_gc_collect`), the current return address is *not* a managed callsite and will not
+/// appear in the LLVM stackmaps index. The nearest managed frame is suspended at the callsite into
+/// the outermost runtime frame, and *that* return address is present in stackmaps.
+///
+/// This cursor records that managed callsite as `(fp, pc, sp)` so root enumeration can start from
+/// the correct frame even when GC is triggered from within runtime code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameCursor {
+  /// Managed caller frame pointer (saved at `[runtime_fp + 0]`).
+  pub fp: u64,
+  /// Return address into the managed caller (saved at `[runtime_fp + 8]`).
+  pub pc: u64,
+  /// Managed caller stack pointer at the callsite into the runtime frame.
+  ///
+  /// Under the forced-frame-pointer ABI contract this is `runtime_fp + 16` on both x86_64 and
+  /// aarch64.
+  pub sp: Option<u64>,
+}
+
+/// Return the current function's frame pointer (`rbp` on x86_64, `x29` on aarch64).
+#[inline(always)]
+pub fn current_frame_pointer() -> u64 {
+  #[cfg(target_arch = "x86_64")]
+  unsafe {
+    let fp: u64;
+    core::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack));
+    fp
+  }
+
+  #[cfg(target_arch = "aarch64")]
+  unsafe {
+    let fp: u64;
+    core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack));
+    fp
+  }
+
+  #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+  {
+    0
+  }
+}
+
+const MAX_CURSOR_DEPTH: usize = 1024;
+
+fn find_nearest_managed_cursor_with(
+  start_fp: u64,
+  mut has_stackmap: impl FnMut(u64) -> bool,
+) -> Option<FrameCursor> {
+  if start_fp == 0 {
+    return None;
+  }
+
+  // Skip frames until we find a return address that belongs to managed code (has a stackmap entry).
+  let mut fp_cur = start_fp;
+  for _ in 0..MAX_CURSOR_DEPTH {
+    if fp_cur == 0 {
+      return None;
+    }
+
+    // Basic sanity: frame pointers must obey alignment.
+    if fp_cur % arch::FRAME_POINTER_ALIGNMENT != 0 {
+      return None;
+    }
+
+    // SAFETY: Caller supplies a valid frame pointer chain.
+    let fp_caller = unsafe { (fp_cur as *const u64).read() };
+    let pc_return = unsafe { ((fp_cur + arch::RETURN_ADDRESS_OFFSET) as *const u64).read() };
+
+    if fp_caller == 0 || pc_return == 0 {
+      return None;
+    }
+
+    if fp_caller <= fp_cur {
+      return None;
+    }
+
+    if has_stackmap(pc_return) {
+      let sp_callsite = fp_cur + arch::CALLER_SP_OFFSET;
+      return Some(FrameCursor {
+        fp: fp_caller,
+        pc: pc_return,
+        sp: Some(sp_callsite),
+      });
+    }
+
+    fp_cur = fp_caller;
+  }
+
+  None
+}
+
+/// Walk the frame-pointer chain starting at `start_fp` and return the nearest managed callsite
+/// cursor.
+pub fn find_nearest_managed_cursor(start_fp: u64, stackmaps: &crate::StackMaps) -> Option<FrameCursor> {
+  find_nearest_managed_cursor_with(start_fp, |pc| stackmaps.lookup(pc).is_some())
+}
+
+/// Convenience wrapper over [`find_nearest_managed_cursor`] for the current thread.
+pub fn find_nearest_managed_cursor_from_here(stackmaps: &crate::StackMaps) -> Option<FrameCursor> {
+  find_nearest_managed_cursor(current_frame_pointer(), stackmaps)
+}
+
 /// Captured CPU context for a stopped thread.
 ///
 /// This is intentionally minimal: stack walking via frame pointers only needs the current stack
@@ -478,5 +583,48 @@ mod tests {
       StackWalkError::NonMonotonicFramePointer { .. }
     ));
     assert!(walker.next().is_none());
+  }
+
+  #[test]
+  #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+  fn find_nearest_managed_cursor_skips_runtime_frames() {
+    let mut mem = AlignedStack([0u8; 256]);
+    let base = mem.0.as_mut_ptr() as u64;
+    let hi = base + mem.0.len() as u64;
+
+    let fp_managed = base + 0x80;
+    let fp_rt_alloc = base + 0x60;
+    let fp_rt_collect = base + 0x40;
+    assert_eq!(fp_managed % 16, 0);
+    assert_eq!(fp_rt_alloc % 16, 0);
+    assert_eq!(fp_rt_collect % 16, 0);
+
+    unsafe {
+      // rt_gc_collect frame -> rt_alloc (return address is runtime, no stackmap)
+      (fp_rt_collect as *mut u64).write(fp_rt_alloc);
+      ((fp_rt_collect + 8) as *mut u64).write(0x1111);
+
+      // rt_alloc frame -> managed (return address has stackmap)
+      (fp_rt_alloc as *mut u64).write(fp_managed);
+      ((fp_rt_alloc + 8) as *mut u64).write(0x2222);
+
+      // managed frame -> end
+      (fp_managed as *mut u64).write(0);
+      ((fp_managed + 8) as *mut u64).write(0x3333);
+    }
+
+    let cursor =
+      find_nearest_managed_cursor_with(fp_rt_collect, |pc| pc == 0x2222).expect("cursor");
+    assert_eq!(
+      cursor,
+      FrameCursor {
+        fp: fp_managed,
+        pc: 0x2222,
+        sp: Some(fp_rt_alloc + 16),
+      }
+    );
+
+    // Sanity: our synthetic memory bounds are large enough for the fp+16 computation.
+    assert!(StackBounds::new(base, hi).unwrap().contains_range(fp_rt_alloc + 16, 0));
   }
 }

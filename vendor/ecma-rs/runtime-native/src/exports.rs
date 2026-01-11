@@ -619,7 +619,27 @@ pub extern "C" fn rt_gc_collect() {
     // the initiator's stack eligible for stackmap-based root enumeration while
     // the world is stopped.
     if registry::current_thread_id().is_some() {
-      let ctx = crate::arch::capture_safepoint_context();
+      // If GC is triggered while executing inside runtime code (e.g. `rt_alloc`
+      // decides to collect), the nearest managed frame is suspended at the
+      // callsite into the *outermost* runtime frame (which has a stackmap
+      // record). Recover that managed callsite cursor by walking the FP chain.
+      let ctx = crate::stackmap::try_stackmaps()
+        .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
+        .map(|cursor| {
+          let sp_callsite = cursor.sp.unwrap_or(0);
+          #[cfg(target_arch = "x86_64")]
+          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+          #[cfg(not(target_arch = "x86_64"))]
+          let sp_entry = sp_callsite;
+
+          crate::arch::SafepointContext {
+            sp_entry: sp_entry as usize,
+            sp: sp_callsite as usize,
+            fp: cursor.fp as usize,
+            ip: cursor.pc as usize,
+          }
+        })
+        .unwrap_or_else(crate::arch::capture_safepoint_context);
       registry::set_current_thread_safepoint_context(ctx);
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
       crate::threading::safepoint::notify_state_change();

@@ -47,7 +47,27 @@ pub fn visit_reloc_pairs_with_bounds(
 /// collection is already in progress: it must still publish a safepoint context
 /// and block until the world is resumed.
 pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
-  let ctx = arch::capture_safepoint_context();
+  // If we're inside runtime code (e.g. the allocator slow path called
+  // `rt_gc_collect`) we may be several runtime frames away from the nearest
+  // managed callsite that has a stackmap record. Recover that callsite cursor by
+  // walking the FP chain.
+  let ctx = crate::stackmap::try_stackmaps()
+    .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
+    .map(|cursor| {
+      let sp_callsite = cursor.sp.unwrap_or(0);
+      #[cfg(target_arch = "x86_64")]
+      let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+      #[cfg(not(target_arch = "x86_64"))]
+      let sp_entry = sp_callsite;
+
+      crate::arch::SafepointContext {
+        sp_entry: sp_entry as usize,
+        sp: sp_callsite as usize,
+        fp: cursor.fp as usize,
+        ip: cursor.pc as usize,
+      }
+    })
+    .unwrap_or_else(arch::capture_safepoint_context);
   threading::registry::set_current_thread_safepoint_context(ctx);
   threading::registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
   threading::safepoint::notify_state_change();
