@@ -207,7 +207,7 @@ unsafe fn lint_function(
           lint_return_raw_pointer(func_name, inst, &tainted_values, violations);
         }
       }
-      LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke => {
+      LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke | LLVMOpcode::LLVMCallBr => {
         lint_call_args(func_name, inst, &tainted_values, violations)
       }
       _ => {}

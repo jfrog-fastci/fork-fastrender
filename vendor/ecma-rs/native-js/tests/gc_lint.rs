@@ -1,4 +1,5 @@
 use inkwell::context::Context;
+use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::AddressSpace;
 use native_js::llvm::{gc, lint_module_gc_pointer_discipline, LintRule};
 use native_js::runtime_abi::{RuntimeAbi, RuntimeFn};
@@ -213,6 +214,40 @@ fn rejects_call_with_raw_pointer_derived_from_gc_pointer() {
 
   builder.build_call(sink, &[raw.into()], "").unwrap();
   builder.build_return(None).unwrap();
+
+  let err = lint_module_gc_pointer_discipline(&module).unwrap_err();
+  assert!(
+    err.has_rule(LintRule::CallAddrSpace0PointerDerivedFromGcPointer),
+    "{err}"
+  );
+  assert!(
+    err.has_rule(LintRule::AddrSpace0PointerDerivedFromGcPointer),
+    "{err}"
+  );
+}
+
+#[test]
+fn rejects_callbr_with_raw_pointer_derived_from_gc_pointer() {
+  let context = Context::create();
+
+  let llvm_ir = r#"
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
+entry:
+  %slot = alloca ptr addrspace(1)
+  store ptr addrspace(1) %obj, ptr %slot
+  %raw = load ptr, ptr %slot
+  callbr void asm sideeffect "", "r,!i"(ptr %raw) to label %cont [label %l1]
+cont:
+  ret void
+l1:
+  br label %cont
+}
+"#;
+
+  let buffer = MemoryBuffer::create_from_memory_range_copy(llvm_ir.as_bytes(), "test.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{llvm_ir}"));
 
   let err = lint_module_gc_pointer_discipline(&module).unwrap_err();
   assert!(
