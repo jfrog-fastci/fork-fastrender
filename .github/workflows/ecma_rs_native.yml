@@ -96,6 +96,12 @@ jobs:
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: UTF-8 source-text API policy (ecma-rs)
+        run: bash vendor/ecma-rs/scripts/check_utf8_apis.sh
+
+      - name: Cargo hygiene (ecma-rs tooling)
+        run: bash vendor/ecma-rs/scripts/check_no_raw_cargo.sh
+
       - name: Cache cargo registry (ecma-rs native)
         uses: actions/cache@v4
         with:
