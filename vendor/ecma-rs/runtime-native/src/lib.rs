@@ -4,6 +4,14 @@
 //! - A stable C ABI surface that LLVM-generated code can link against.
 //! - A precise, generational GC implementation for managed allocations.
 //!
+//! ## Pinned allocations
+//!
+//! Some consumers (FFI / host embeddings) require stable object addresses. The GC supports
+//! **pinned objects** allocated in a non-moving space (the Large Object Space / LOS):
+//!
+//! - They are never moved by minor GC, major GC, or optional compaction.
+//! - They are still traced and reclaimed when unreachable.
+//!
 //! See:
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
 //! - `include/runtime_native.h` for the stable C ABI surface.
@@ -194,3 +202,4 @@ mod tests {
     );
   }
 }
+

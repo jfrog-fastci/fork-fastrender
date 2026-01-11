@@ -341,6 +341,27 @@ impl GcHeap {
     obj
   }
 
+  /// Allocate a pinned object in the large-object space (LOS), regardless of size.
+  ///
+  /// Pinned objects have a stable address across minor GC, major GC, and (future) compaction.
+  /// They are still traced and reclaimed when unreachable.
+  pub fn alloc_pinned(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    let obj = self.los.alloc(desc.size, OBJ_ALIGN);
+    self.stats.bytes_allocated_old += desc.size;
+
+    // SAFETY: The allocation is valid for `desc.size` bytes.
+    unsafe {
+      ptr::write_bytes(obj, 0, desc.size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = desc as *const TypeDescriptor;
+      header.meta = 0;
+      header.set_mark_epoch(self.mark_epoch);
+      header.set_pinned(true);
+    }
+
+    obj
+  }
+
   pub(crate) fn alloc_old_raw(&mut self, size: usize, align: usize) -> *mut u8 {
     debug_assert!(align.is_power_of_two());
     let obj = if size > IMMIX_MAX_OBJECT_SIZE {

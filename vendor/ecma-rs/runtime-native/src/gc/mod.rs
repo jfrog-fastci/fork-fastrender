@@ -25,16 +25,22 @@ pub(crate) use young::YOUNG_SPACE;
 /// [`TypeDescriptor`].
 #[repr(C)]
 pub struct ObjHeader {
-  type_desc: *const TypeDescriptor,
-  meta: usize,
+  pub(crate) type_desc: *const TypeDescriptor,
+  pub(crate) meta: usize,
 }
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
 
+// `meta` layout:
+// - bit 0: forwarded bit (nursery only)
+// - bit 1: mark epoch (0/1)
+// - bit 2: remembered bit (old object has an old->young pointer)
+// - bit 3: pinned bit (object must not be moved by compaction/evacuation)
 const META_FORWARDED: usize = 1;
 const META_MARK_SHIFT: usize = 1;
 const META_MARK_MASK: usize = 1 << META_MARK_SHIFT;
 const META_REMEMBERED: usize = 1 << 2;
+const META_PINNED: usize = 1 << 3;
 
 impl ObjHeader {
   #[inline]
@@ -57,6 +63,10 @@ impl ObjHeader {
   #[inline]
   pub(crate) fn set_forwarding_ptr(&mut self, new_location: *mut u8) {
     debug_assert!((new_location as usize & META_FORWARDED) == 0);
+    debug_assert!(
+      !self.is_pinned(),
+      "attempted to evacuate/forward a pinned object"
+    );
     self.meta = (new_location as usize) | META_FORWARDED;
   }
 
@@ -94,6 +104,29 @@ impl ObjHeader {
       return;
     }
     self.meta = (self.meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
+  }
+
+  #[inline]
+  pub(crate) fn is_pinned(&self) -> bool {
+    // Forwarded objects encode a forwarding pointer in `meta`, so the pinned bit
+    // would be meaningless. Pinned objects are never expected in the nursery.
+    if self.is_forwarded() {
+      return false;
+    }
+    (self.meta & META_PINNED) != 0
+  }
+
+  #[inline]
+  pub(crate) fn set_pinned(&mut self, pinned: bool) {
+    debug_assert!(
+      !self.is_forwarded(),
+      "pinned objects must not be forwarded"
+    );
+    if pinned {
+      self.meta |= META_PINNED;
+    } else {
+      self.meta &= !META_PINNED;
+    }
   }
 }
 

@@ -14,6 +14,16 @@ pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
   alloc::malloc_bytes(size, "rt_alloc")
 }
 
+/// Allocate a pinned (non-moving) object.
+///
+/// NOTE: The milestone runtime does not yet wire allocations into the GC. This entrypoint exists so
+/// codegen/FFI can request a stable address today and so future GC-backed allocation can route
+/// pinned objects to a non-moving space.
+#[no_mangle]
+pub extern "C" fn rt_alloc_pinned(size: usize, _shape: ShapeId) -> *mut u8 {
+  alloc::malloc_bytes(size, "rt_alloc_pinned")
+}
+
 #[no_mangle]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   alloc::calloc_array(len, elem_size, "rt_alloc_array")
