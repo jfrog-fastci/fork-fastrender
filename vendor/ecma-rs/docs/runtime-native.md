@@ -169,9 +169,12 @@ pub struct RtShapeId(pub u32);
 /// FFI-stable shape descriptor (registered at startup).
 #[repr(C)]
 pub struct RtShapeDescriptor {
+  /// Total object size in bytes (including `ObjHeader`).
   pub size: u32,
+  /// Object alignment in bytes (power of two).
   pub align: u16,
   pub flags: u16,
+  /// Pointer-slot byte offsets from the object base pointer (start of `ObjHeader`).
   pub ptr_offsets: *const u32,
   pub ptr_offsets_len: u32,
   pub reserved: u32,
@@ -362,13 +365,15 @@ This matches the object layout described in `EXEC.plan.md`, e.g.:
 first field in memory.
 
 ### 4.2 Alignment guarantees
-Milestone 1 only requires that `rt_alloc(size, shape)` returns a pointer aligned
-at least to the platform allocator’s minimum (on Linux x86_64 this is typically
-≥ 16 bytes for `malloc`).
+`rt_alloc(size, shape)` returns a pointer aligned to at least the registered
+shape descriptor’s `align` value (`RtShapeDescriptor.align`).
 
-Planned: later milestones may strengthen this by using shape metadata
-(e.g. `rt_shape_align(shape)` or a registered shape table) so the runtime can
-guarantee `max(16, shape_align)` alignment for every allocation.
+The runtime validates that `align` is:
+- a non-zero power of two, and
+- at least the alignment required by `ObjHeader`.
+
+Codegen must set `align` to match the alignment of the compiled object layout so
+LLVM loads/stores can use correct `align` metadata.
 
 ### 4.3 Ownership and lifetime
 - Objects allocated via `rt_alloc` are owned by the **GC**.

@@ -182,6 +182,9 @@ void rt_thread_detach(Thread* thread);
 // Contract: returns the **object base pointer** (points to the start of the
 // runtime GC header / ObjHeader). `size` is the total allocation size in bytes
 // including the header and payload.
+//
+// Alignment: the returned pointer is aligned to at least the registered shape
+// descriptor's `align` value (`RtShapeDescriptor.align`).
 uint8_t* rt_alloc(size_t size, RtShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.

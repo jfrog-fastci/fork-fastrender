@@ -356,7 +356,9 @@ mod tests {
     }
 
     // `gc.safepoint_poll` calls into `rt_gc_safepoint`, which expects the current
-    // thread to be registered with `rt_thread_init`.
+    // thread to be registered with `rt_thread_init` (and asserts in debug builds
+    // if it isn't). Ensure this test thread is registered without clobbering an
+    // existing registration that may be shared across tests.
     let was_registered = crate::threading::registry::current_thread_id().is_some();
     if !was_registered {
       rt_thread_init(0);
@@ -373,8 +375,8 @@ mod tests {
     }
     let _deinit = Deinit { was_registered };
 
-    // Safety: the symbol is exported by this crate and is safe to call. When no
-    // stop-the-world GC is requested, the fast path returns immediately.
+    // Safety: the symbol is exported by this crate. When no stop-the-world GC is
+    // requested, the fast path returns immediately.
     unsafe {
       gc_safepoint_poll();
     }
