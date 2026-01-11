@@ -966,6 +966,28 @@ fn checked_pipeline_boolean_entrypoint_exit_code() {
 }
 
 #[test]
+fn checked_pipeline_run_supports_reexported_main() {
+  let tmp = TempDir::new().unwrap();
+
+  let impl_file = tmp.path().join("impl.ts");
+  fs::write(&impl_file, "export function main(): number { return 7; }\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export { main } from \"./impl\";\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(7)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn checked_pipeline_void_entrypoint_exits_zero_without_stdout() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
