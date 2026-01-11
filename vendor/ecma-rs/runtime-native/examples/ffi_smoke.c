@@ -228,7 +228,9 @@ int main(void) {
   rt_drain_microtasks();
   if (check(microtask_ran == 1)) { rc = 13; goto done; }
   if (check(drop_ctx.ran == 1)) { rc = 16; goto done; }
-  if (check(drop_ctx.dropped == 1)) { rc = 17; goto done; }
+  // The microtask drop hook should only run if the microtask is discarded without executing
+  // (e.g. `rt_async_cancel_all`), not after a normal run.
+  if (check(drop_ctx.dropped == 0)) { rc = 17; goto done; }
   if (check(rooted_microtask_ran == 1)) { rc = 19; goto done; }
 
   // Cross-thread enqueue should wake an event loop thread blocked in `rt_async_wait`.
@@ -256,6 +258,15 @@ int main(void) {
   for (size_t i = 0; i < N; i++) {
     if (check(out[i] == (uint32_t)(i * 3u + 1u))) { rc = 5; goto done; }
   }
+
+  // Microtask drop hook should run when the embedding cancels queued work.
+  MicrotaskDropCtx cancel_ctx = {0, 0};
+  rt_queue_microtask_with_drop(microtask_mark_ran, (uint8_t*)&cancel_ctx, microtask_mark_dropped);
+  if (check(cancel_ctx.ran == 0)) { rc = 30; goto done; }
+  if (check(cancel_ctx.dropped == 0)) { rc = 31; goto done; }
+  rt_async_cancel_all();
+  if (check(cancel_ctx.ran == 0)) { rc = 32; goto done; }
+  if (check(cancel_ctx.dropped == 1)) { rc = 33; goto done; }
 
 done:
   if (wake_thread_started) {
