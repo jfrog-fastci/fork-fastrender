@@ -367,7 +367,7 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseR
   crate::ffi::abort_on_panic(|| crate::native_async::async_spawn_deferred(coro))
 }
 
-/// Drive the async scheduler/executor.
+/// Drive the async scheduler/event loop.
 ///
 /// This is a **non-blocking** poll: it only drains currently queued microtasks (including promise
 /// reaction jobs that resume native async-ABI coroutines).

@@ -46,17 +46,29 @@ fn lld_flag() -> Option<&'static str> {
 fn compile_obj(out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` so the linker script fragment can't
   // rely on it existing.
+  //
+  // We *do* emit a tiny `.data` symbol and reference it from `_start` so the default linker script
+  // creates a `.data` output section even under `--gc-sections`. The stackmaps linker fragment uses
+  // `INSERT BEFORE .data;` as its anchor, and lld errors if the anchor output section does not
+  // exist.
   let asm = r#"
-.text
-.globl _start
-_start:
-  mov $60, %rax
-  xor %rdi, %rdi
-  syscall
-
-.section .llvm_stackmaps,"a",@progbits
-  .byte 1,2,3,4
-"#;
+ .text
+ .globl _start
+ _start:
+  // Keep `.data` alive under `--gc-sections` so the `INSERT BEFORE .data` anchor exists.
+  lea dummy_data(%rip), %rax
+   mov $60, %rax
+   xor %rdi, %rdi
+   syscall
+ 
+ .data
+ .globl dummy_data
+ dummy_data:
+   .byte 0
+ 
+ .section .llvm_stackmaps,"a",@progbits
+   .byte 1,2,3,4
+ "#;
 
   let asm_path = out_dir.join("stackmaps.S");
   write_file(&asm_path, asm);

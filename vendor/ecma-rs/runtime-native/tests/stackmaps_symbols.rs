@@ -35,7 +35,11 @@ const FIXTURE: &[u8] = &[
 #[test]
 fn stackmaps_discovered_via_exported_symbols() {
   let bytes = runtime_native::stackmaps_symbols::stackmaps_bytes_from_exe();
-  assert!(!bytes.is_empty());
+  assert!(
+    !bytes.is_empty(),
+    "expected __fastr_stackmaps_start/end to cover a non-empty .llvm_stackmaps range"
+  );
+
   // Linkers may insert alignment padding before the first blob. The runtime helper should tolerate
   // that, so check the first non-zero byte is the stackmap version.
   let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
@@ -51,6 +55,12 @@ fn stackmaps_discovered_via_exported_symbols() {
     "expected .llvm_stackmaps bytes to contain the test fixture (len={})",
     bytes.len()
   );
+
+  // The general stackmaps loader should observe the same in-memory range when linker-defined
+  // boundary symbols are available.
+  let via_loader = runtime_native::try_load_via_linker_symbols()
+    .expect("expected runtime-native tests to be linked with stackmaps.ld");
+  assert_eq!(bytes, via_loader);
 
   let sm = runtime_native::stackmaps_symbols::stackmaps_from_exe().expect("parse stackmaps");
   assert_eq!(sm.raw().version, runtime_native::stackmaps::STACKMAP_VERSION);
