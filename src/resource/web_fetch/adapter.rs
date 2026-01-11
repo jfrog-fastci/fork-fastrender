@@ -2694,6 +2694,191 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_cache_defaults_max_age_to_5_seconds_for_invalid_header() {
+    if skip_if_curl_backend_missing("cors_preflight_cache_defaults_max_age_to_5_seconds_for_invalid_header")
+    {
+      return;
+    }
+    let Some(listener) = try_bind_localhost(
+      "cors_preflight_cache_defaults_max_age_to_5_seconds_for_invalid_header",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      for idx in 0..3 {
+        let mut stream = accept_http_stream(
+          &listener,
+          "cors_preflight_cache_defaults_max_age_to_5_seconds_for_invalid_header",
+        );
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        captured_req.lock().unwrap().push(headers.clone());
+        let req_lower = headers.to_ascii_lowercase();
+        match idx {
+          0 => {
+            assert!(
+              req_lower.starts_with("options /invalid"),
+              "expected OPTIONS request, got:\n{headers}"
+            );
+            // Invalid `Access-Control-Max-Age` header should default to 5 seconds (Fetch) and still
+            // populate the CORS-preflight cache.
+            let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: PUT\r\nAccess-Control-Allow-Headers: X-Test\r\nAccess-Control-Max-Age: invalid\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream.write_all(response.as_bytes()).unwrap();
+          }
+          1 | 2 => {
+            assert!(
+              req_lower.starts_with("put /invalid"),
+              "expected PUT request, got:\n{headers}"
+            );
+            let body = b"ok";
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+          }
+          _ => unreachable!(),
+        }
+      }
+
+      // Ensure no extra preflight is attempted.
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected extra request (expected preflight to be cached)"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after requests: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/invalid");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    for _ in 0..2 {
+      let mut request = Request::new("PUT", &url);
+      request.headers.append("X-Test", "hello").unwrap();
+      let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+      assert_eq!(response.status, 200);
+      assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    }
+
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+      captured.len(),
+      3,
+      "expected OPTIONS + PUT + PUT requests, got:\n{captured:#?}"
+    );
+    let lines: Vec<String> = captured
+      .iter()
+      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
+      .collect();
+    assert!(lines[0].starts_with("options /invalid"), "request[0]: {}", lines[0]);
+    assert!(lines[1].starts_with("put /invalid"), "request[1]: {}", lines[1]);
+    assert!(lines[2].starts_with("put /invalid"), "request[2]: {}", lines[2]);
+  }
+
+  #[test]
+  fn cors_preflight_cache_does_not_cache_with_max_age_zero() {
+    if skip_if_curl_backend_missing("cors_preflight_cache_does_not_cache_with_max_age_zero") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_cache_does_not_cache_with_max_age_zero")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      for idx in 0..4 {
+        let mut stream =
+          accept_http_stream(&listener, "cors_preflight_cache_does_not_cache_with_max_age_zero");
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        captured_req.lock().unwrap().push(headers.clone());
+        let req_lower = headers.to_ascii_lowercase();
+        match idx {
+          0 | 2 => {
+            assert!(
+              req_lower.starts_with("options /cache"),
+              "expected OPTIONS request, got:\n{headers}"
+            );
+            let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: PUT\r\nAccess-Control-Allow-Headers: X-Test\r\nAccess-Control-Max-Age: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream.write_all(response.as_bytes()).unwrap();
+          }
+          1 | 3 => {
+            assert!(
+              req_lower.starts_with("put /cache"),
+              "expected PUT request, got:\n{headers}"
+            );
+            let body = b"ok";
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+          }
+          _ => unreachable!(),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/cache");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    for _ in 0..2 {
+      let mut request = Request::new("PUT", &url);
+      request.headers.append("X-Test", "hello").unwrap();
+      let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+      assert_eq!(response.status, 200);
+      assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    }
+
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+      captured.len(),
+      4,
+      "expected OPTIONS + PUT + OPTIONS + PUT requests, got:\n{captured:#?}"
+    );
+    let lines: Vec<String> = captured
+      .iter()
+      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
+      .collect();
+    assert!(lines[0].starts_with("options /cache"), "request[0]: {}", lines[0]);
+    assert!(lines[1].starts_with("put /cache"), "request[1]: {}", lines[1]);
+    assert!(lines[2].starts_with("options /cache"), "request[2]: {}", lines[2]);
+    assert!(lines[3].starts_with("put /cache"), "request[3]: {}", lines[3]);
+  }
+
+  #[test]
   fn cors_preflight_cache_partitions_by_credentials() {
     if skip_if_curl_backend_missing("cors_preflight_cache_partitions_by_credentials") {
       return;

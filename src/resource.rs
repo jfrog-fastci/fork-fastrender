@@ -3922,6 +3922,8 @@ struct HttpCacheValidators<'a> {
 ///
 /// Fetch specifies a default of 5 seconds so that successful preflights still populate the cache
 /// even when a server omits the header.
+///
+/// https://fetch.spec.whatwg.org/#cors-preflight-fetch
 const CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS: u64 = 5;
 
 /// Max cap applied to `Access-Control-Max-Age`.
@@ -3988,6 +3990,7 @@ fn cors_preflight_cache_entry_match(
   if entry.url != url {
     return false;
   }
+  // https://fetch.spec.whatwg.org/#concept-cache-match
   // Fetch "cache entry match" rules for the credentials flag:
   // - A credentialed cache entry MAY match a non-credentialed request.
   // - A non-credentialed cache entry MUST NOT match a credentialed request.
