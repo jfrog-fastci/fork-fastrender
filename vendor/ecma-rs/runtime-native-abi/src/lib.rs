@@ -1282,6 +1282,7 @@ mod tests {
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
     let c_path = tmp_dir.join("header_smoke.c");
+    let cpp_path = tmp_dir.join("header_smoke.cpp");
 
     std::fs::write(
       &c_path,
@@ -1289,6 +1290,15 @@ mod tests {
 #include "runtime_native_abi.h"
 
 int main(void) { return 0; }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+      &cpp_path,
+      br#"
+#include "runtime_native_abi.h"
+
+int main() { return 0; }
 "#,
     )
     .unwrap();
@@ -1327,6 +1337,33 @@ int main(void) { return 0; }
       if !output.status.success() {
         panic!(
           "runtime_native_abi.h smoke compile failed ({suffix}):\nstdout:\n{}\nstderr:\n{}",
+          String::from_utf8_lossy(&output.stdout),
+          String::from_utf8_lossy(&output.stderr),
+        );
+      }
+    }
+
+    for (suffix, defines) in variants {
+      let obj_path = tmp_dir.join(std::format!("header_smoke{suffix}.cpp.o"));
+      let mut cmd = Command::new(program);
+      cmd.args(&cc_args);
+      cmd.arg("-std=c++17")
+        .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Werror");
+      for define in *defines {
+        cmd.arg(std::format!("-D{define}"));
+      }
+      cmd.arg("-c")
+        .arg(&cpp_path)
+        .arg(std::format!("-I{}", out_dir.display()))
+        .arg("-o")
+        .arg(&obj_path);
+
+      let output = cmd.output().unwrap_or_else(|e| panic!("failed to spawn C++ compiler: {e}"));
+      if !output.status.success() {
+        panic!(
+          "runtime_native_abi.h smoke compile failed as C++ ({suffix}):\nstdout:\n{}\nstderr:\n{}",
           String::from_utf8_lossy(&output.stdout),
           String::from_utf8_lossy(&output.stderr),
         );
