@@ -42,9 +42,7 @@ pub(crate) fn spawn_promise(
   let wrapper_ptr = Box::into_raw(wrapper) as *mut u8;
 
   // Run the wrapper on the work-stealing pool without requiring a `TaskId` join.
-  let rt = crate::rt_ensure_init();
-  rt.parallel.spawn_detached(promise_task_trampoline, wrapper_ptr);
+  crate::rt_parallel().spawn_detached(promise_task_trampoline, wrapper_ptr);
 
   promise
 }
-
