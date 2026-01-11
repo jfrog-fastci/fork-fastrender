@@ -5,6 +5,7 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 
 use crate::abi::InternedId;
+#[cfg(test)]
 use crate::abi::StringRef;
 use crate::trap;
 
@@ -53,6 +54,7 @@ pub(crate) fn intern(bytes: &[u8]) -> InternedId {
 }
 
 /// Lookup interned bytes by ID.
+#[cfg(test)]
 pub(crate) fn lookup(id: InternedId) -> StringRef {
   let interner = INTERNER.read();
   let idx = usize::try_from(id.0)
