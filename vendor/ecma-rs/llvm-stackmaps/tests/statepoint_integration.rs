@@ -26,12 +26,20 @@ fn have_tool(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn find_tool<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+    candidates.iter().copied().find(|c| have_tool(c))
+}
+
 #[test]
 fn integration_statepoint_stackmap_lookup() {
-    if !have_tool("opt") || !have_tool("llc") {
+    let Some(opt) = find_tool(&["opt-18", "opt"]) else {
         eprintln!("skipping: LLVM tools (opt/llc) not found in PATH");
         return;
-    }
+    };
+    let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+        eprintln!("skipping: LLVM tools (opt/llc) not found in PATH");
+        return;
+    };
 
     let dir = tempfile::tempdir().unwrap();
     let input_ll = dir.path().join("input.ll");
@@ -40,7 +48,7 @@ fn integration_statepoint_stackmap_lookup() {
 
     fs::write(&input_ll, INPUT_IR).unwrap();
 
-    let status = Command::new("opt")
+    let status = Command::new(opt)
         .args(["-passes=rewrite-statepoints-for-gc", "-S"])
         .arg(&input_ll)
         .arg("-o")
@@ -49,7 +57,7 @@ fn integration_statepoint_stackmap_lookup() {
         .unwrap();
     assert!(status.success(), "opt failed");
 
-    let status = Command::new("llc")
+    let status = Command::new(llc)
         .args([
             "-O0",
             "--fixup-allow-gcptr-in-csr=false",
