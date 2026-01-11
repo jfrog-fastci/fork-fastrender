@@ -971,6 +971,7 @@ impl Document {
     }
 
     let root_src = self.nodes.get(root_id.index())?;
+    let fragment_root = matches!(root_src.kind, NodeKind::DocumentFragment);
     let root_type = node_kind_to_dom_node_type(&root_src.kind, scripting_enabled)?;
     let mut root = DomNode {
       node_type: root_type,
@@ -1027,6 +1028,22 @@ impl Document {
           children: Vec::new(),
         });
       }
+    }
+
+    if fragment_root {
+      // `DocumentFragment` querySelector(All) uses a "virtual scoping root" for selector matching
+      // (Selectors 4). In the renderer snapshot we represent that scoping root as a synthetic
+      // element so `:scope` can be anchored, but we do not map it back to a `NodeId` (see
+      // `build_selector_preorder_mapping_from`).
+      let children = std::mem::take(&mut root.children);
+      return Some(DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "#document-fragment".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children,
+      });
     }
 
     Some(root)
@@ -1113,8 +1130,15 @@ impl Document {
       return None;
     }
 
+    // DocumentFragment.querySelector(All) uses a synthetic scoping root element in the renderer
+    // snapshot (see `to_renderer_dom_subtree`). Adjust the mapping so preorder ids stay aligned:
+    // - preorder id 1 corresponds to the synthetic root (maps to None)
+    // - the real DocumentFragment node is omitted (cannot be returned from selectors)
+    let fragment_root = matches!(self.node(root).kind, NodeKind::DocumentFragment);
+
     // Preorder ids are 1-based (index 0 unused), matching `crate::dom::enumerate_dom_ids`.
-    let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
+    let mut preorder_to_node_id: Vec<Option<NodeId>> =
+      Vec::with_capacity(self.nodes.len() + 1 + usize::from(fragment_root));
     preorder_to_node_id.push(None);
     let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
 
@@ -1134,7 +1158,21 @@ impl Document {
       )
     }
 
-    let mut stack: Vec<StackItem> = vec![StackItem::Real(root)];
+    let mut stack: Vec<StackItem> = Vec::new();
+    if fragment_root {
+      preorder_to_node_id.push(None);
+      let node = self.node(root);
+      for &child in node.children.iter().rev() {
+        let Some(child_node) = self.nodes.get(child.index()) else {
+          continue;
+        };
+        if child_node.parent == Some(root) {
+          stack.push(StackItem::Real(child));
+        }
+      }
+    } else {
+      stack.push(StackItem::Real(root));
+    }
     while let Some(item) = stack.pop() {
       match item {
         StackItem::Real(id) => {
