@@ -32,7 +32,7 @@ Promise<T> := PromiseHeader + payload(T)
 ├──────────────────────────────────────────────┤
 │ PromiseHeader                                │  <── PromiseRef points here
 │  - state     : AtomicU8                      │
-│  - reactions : AtomicUsize                   │  (0 / ptr(head of PromiseReactionNode list))
+│  - waiters   : AtomicUsize                   │  (0 / ptr(head of PromiseReactionNode list))
 │  - flags     : AtomicU8                      │
 ├──────────────────────────────────────────────┤
 │ payload(T)                                   │  (written before fulfill/reject)
