@@ -157,10 +157,16 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 
 ### Emit IR and run the verifier
 
-When debugging codegen, the fastest loop is:
+Once real codegen exists, the fastest debug loop is usually:
 
-1. Emit textual IR (`.ll`) from the compiler (via emit helpers or
-   `native-js-cli --emit=llvm-ir`).
+1. Emit textual IR (`.ll`) from the compiler.
+   - In-process, you can always use `inkwell` directly:
+
+     ```rust
+     // Given an inkwell::module::Module
+     let ir = module.print_to_string().to_string();
+     std::fs::write("out.ll", ir)?;
+     ```
 2. Run LLVM’s verifier:
 
 ```bash

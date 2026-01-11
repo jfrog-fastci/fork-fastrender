@@ -30,7 +30,7 @@ It is intended as a developer tool:
 
 ### Build
 
-Compile an entry file:
+Once implemented, compile an entry file:
 
 ```bash
 # Emit textual LLVM IR
@@ -42,7 +42,7 @@ cargo run -p native-js-cli -- build path/to/main.ts --emit=obj -o out.o
 
 ### Run
 
-`run` compiles the program (typically via an object file) and executes it.
+Once implemented, `run` compiles the program (typically via an object file) and executes it.
 Arguments after `--` are forwarded to the compiled program:
 
 ```bash
