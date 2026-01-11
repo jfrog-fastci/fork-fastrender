@@ -36,6 +36,33 @@ fn backing_store_pointer_is_stable_across_header_relocation() {
 }
 
 #[test]
+fn pinned_backing_store_can_outlive_header_finalization() {
+  let alloc = GlobalBackingStoreAllocator::default();
+
+  let mut buf = Box::new(ArrayBuffer::new_zeroed_in(&alloc, 16).expect("alloc"));
+  assert_eq!(alloc.external_bytes(), 16);
+
+  let mut pinned = buf.pin().expect("pin should succeed");
+
+  // Simulate a GC finalizer dropping the `ArrayBuffer` header while the OS still holds a pointer to
+  // the backing store. The backing store must remain alive until the last pin is dropped.
+  buf.finalize_in(&alloc);
+  assert!(buf.is_detached());
+  assert_eq!(alloc.external_bytes(), 16);
+
+  // Release the header allocation entirely; the pinned view must still be usable.
+  drop(buf);
+
+  unsafe {
+    assert_eq!(pinned.as_slice(), &[0u8; 16]);
+    pinned.as_mut_slice()[0] = 1;
+  }
+
+  drop(pinned);
+  assert_eq!(alloc.external_bytes(), 0);
+}
+
+#[test]
 fn uint8array_view_is_bounds_checked() {
   let alloc = GlobalBackingStoreAllocator::default();
   let mut buf = ArrayBuffer::new_zeroed_in(&alloc, 8).expect("alloc");

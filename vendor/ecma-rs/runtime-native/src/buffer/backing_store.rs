@@ -48,12 +48,14 @@ struct BackingStoreInner {
 
   /// Tracks externally allocated bytes.
   ///
-  /// This is incremented once on allocation and decremented on actual free (when the last strong
+  /// This is incremented once on allocation and decremented on actual free (when the last
   /// `BackingStore` reference is dropped).
   external_bytes: Arc<AtomicUsize>,
 
   /// Number of active pin guards.
   pin_count: AtomicU32,
+  /// Number of live `BackingStore` handles (including any in-flight pin guards).
+  ref_count: AtomicUsize,
 }
 
 // Safety: a `BackingStore` points to a fixed, non-moving byte allocation that lives outside the GC
@@ -73,23 +75,29 @@ impl Drop for BackingStoreInner {
       "backing store dropped while pinned"
     );
 
-    if self.alloc_len == 0 {
-      return;
+    if self.alloc_len != 0 {
+      debug_assert!(self.alloc_align == 1 || self.alloc_align == BACKING_STORE_MIN_ALIGN);
+      let layout = Layout::from_size_align(self.alloc_len, self.alloc_align)
+        .expect("valid layout for backing store dealloc");
+      unsafe {
+        dealloc(self.ptr.as_ptr(), layout);
+      }
     }
 
-    let layout = Layout::from_size_align(self.alloc_len, self.alloc_align)
-      .expect("valid layout for backing store dealloc");
-    unsafe {
-      dealloc(self.ptr.as_ptr(), layout);
+    if self.alloc_len != 0 {
+      let prev = self.external_bytes.fetch_sub(self.alloc_len, Ordering::Relaxed);
+      debug_assert!(
+        prev >= self.alloc_len,
+        "external_bytes underflow (prev={prev}, sub={})",
+        self.alloc_len
+      );
     }
-
-    let prev = self.external_bytes.fetch_sub(self.alloc_len, Ordering::Relaxed);
-    debug_assert!(
-      prev >= self.alloc_len,
-      "external_bytes underflow (prev={prev}, sub={})",
-      self.alloc_len
-    );
   }
+}
+
+unsafe fn finalize_inner(inner: NonNull<BackingStoreInner>) {
+  core::ptr::drop_in_place(inner.as_ptr());
+  dealloc(inner.as_ptr().cast::<u8>(), Layout::new::<BackingStoreInner>());
 }
 
 /// A stable, non-moving byte buffer used as the backing store for `ArrayBuffer`/`TypedArray`.
@@ -100,30 +108,81 @@ impl Drop for BackingStoreInner {
 ///
 /// The allocation is freed and external-bytes accounting is decremented only when the last
 /// [`BackingStore`] handle is dropped.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BackingStore {
-  inner: Arc<BackingStoreInner>,
+  inner: *mut BackingStoreInner,
+}
+
+impl Clone for BackingStore {
+  fn clone(&self) -> Self {
+    let Some(inner) = NonNull::new(self.inner) else {
+      return Self::empty();
+    };
+
+    // SAFETY: `inner` is valid while ref_count > 0; cloning requires an existing live handle.
+    let prev = unsafe { inner.as_ref() }.ref_count.fetch_add(1, Ordering::AcqRel);
+    debug_assert!(prev > 0, "backing store ref_count was 0 while cloned");
+    Self {
+      inner: inner.as_ptr(),
+    }
+  }
+}
+
+impl Drop for BackingStore {
+  fn drop(&mut self) {
+    let Some(inner) = NonNull::new(self.inner) else {
+      return;
+    };
+
+    // SAFETY: `inner` must remain valid until we observe we are the last reference and free it.
+    let inner_ref = unsafe { inner.as_ref() };
+    let prev = inner_ref.ref_count.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev > 0, "backing store ref_count underflow");
+    if prev != 1 {
+      return;
+    }
+
+    debug_assert_eq!(
+      inner_ref.pin_count.load(Ordering::Acquire),
+      0,
+      "backing store dropped while pinned"
+    );
+    unsafe { finalize_inner(inner) };
+  }
 }
 
 impl BackingStore {
   #[inline]
+  fn inner_nn(&self) -> Option<NonNull<BackingStoreInner>> {
+    NonNull::new(self.inner)
+  }
+
+  #[inline]
   pub fn byte_len(&self) -> usize {
-    self.inner.byte_len
+    self
+      .inner_nn()
+      .map_or(0, |inner| unsafe { inner.as_ref().byte_len })
   }
 
   #[inline]
   pub fn alloc_len(&self) -> usize {
-    self.inner.alloc_len
+    self
+      .inner_nn()
+      .map_or(0, |inner| unsafe { inner.as_ref().alloc_len })
   }
 
   #[inline]
   pub fn as_ptr(&self) -> *mut u8 {
-    self.inner.ptr.as_ptr()
+    self.inner_nn().map_or(NonNull::<u8>::dangling().as_ptr(), |inner| unsafe {
+      inner.as_ref().ptr.as_ptr()
+    })
   }
 
   #[inline]
   pub fn pin_count(&self) -> u32 {
-    self.inner.pin_count.load(Ordering::Acquire)
+    self.inner_nn().map_or(0, |inner| unsafe {
+      inner.as_ref().pin_count.load(Ordering::Acquire)
+    })
   }
 
   #[inline]
@@ -132,7 +191,9 @@ impl BackingStore {
   }
 
   pub fn pin_guard(&self) -> PinnedBackingStore {
-    self.inner.pin_count.fetch_add(1, Ordering::AcqRel);
+    if let Some(inner) = self.inner_nn() {
+      unsafe { inner.as_ref() }.pin_count.fetch_add(1, Ordering::AcqRel);
+    }
     PinnedBackingStore { store: self.clone() }
   }
 
@@ -160,9 +221,10 @@ impl BackingStore {
   }
 
   #[inline]
-  fn empty(external_bytes: Arc<AtomicUsize>) -> Self {
-    // SAFETY: `alloc_len == 0` implies `ptr` is never dereferenced.
-    unsafe { Self::from_raw_parts(core::ptr::null_mut(), 0, 0, BACKING_STORE_MIN_ALIGN, external_bytes) }
+  fn empty() -> Self {
+    Self {
+      inner: core::ptr::null_mut(),
+    }
   }
 
   /// Creates a `BackingStore` from an existing allocation.
@@ -176,7 +238,7 @@ impl BackingStore {
     alloc_len: usize,
     alloc_align: usize,
     external_bytes: Arc<AtomicUsize>,
-  ) -> Self {
+  ) -> Result<Self, BackingStoreAllocError> {
     debug_assert!(byte_len <= alloc_len);
     debug_assert!(
       alloc_len == 0 || ptr != core::ptr::null_mut(),
@@ -191,24 +253,33 @@ impl BackingStore {
       "BackingStore pointer must be at least {BACKING_STORE_MIN_ALIGN}-byte aligned"
     );
 
-    if alloc_len != 0 {
-      external_bytes.fetch_add(alloc_len, Ordering::Relaxed);
+    if alloc_len == 0 {
+      debug_assert_eq!(byte_len, 0, "empty BackingStore must have byte_len == 0");
+      return Ok(Self::empty());
     }
 
-    Self {
-      inner: Arc::new(BackingStoreInner {
-        ptr: NonNull::new_unchecked(if alloc_len == 0 {
-          NonNull::dangling().as_ptr()
-        } else {
-          ptr
-        }),
-        byte_len,
-        alloc_len,
-        alloc_align,
-        external_bytes,
-        pin_count: AtomicU32::new(0),
-      }),
-    }
+    // Allocate stable metadata for this backing store allocation.
+    let layout = Layout::new::<BackingStoreInner>();
+    let inner_ptr = alloc(layout) as *mut BackingStoreInner;
+    let Some(inner_ptr) = NonNull::new(inner_ptr) else {
+      return Err(BackingStoreAllocError::OutOfMemory);
+    };
+
+    external_bytes.fetch_add(alloc_len, Ordering::Relaxed);
+
+    inner_ptr.as_ptr().write(BackingStoreInner {
+      ptr: NonNull::new_unchecked(ptr),
+      byte_len,
+      alloc_len,
+      alloc_align,
+      external_bytes,
+      pin_count: AtomicU32::new(0),
+      ref_count: AtomicUsize::new(1),
+    });
+
+    Ok(Self {
+      inner: inner_ptr.as_ptr(),
+    })
   }
 }
 
@@ -235,7 +306,10 @@ impl PinnedBackingStore {
 
 impl Drop for PinnedBackingStore {
   fn drop(&mut self) {
-    let prev = self.store.inner.pin_count.fetch_sub(1, Ordering::AcqRel);
+    let Some(inner) = self.store.inner_nn() else {
+      return;
+    };
+    let prev = unsafe { inner.as_ref() }.pin_count.fetch_sub(1, Ordering::AcqRel);
     debug_assert!(prev > 0, "backing store pin_count underflow");
   }
 }
@@ -244,6 +318,11 @@ impl Drop for PinnedBackingStore {
 ///
 /// This exists because kernel I/O often requires a stable address under a moving GC. The backing
 /// store is therefore allocated *outside* the GC heap using a non-moving allocator.
+///
+/// # Accounting
+/// Implementations must ensure external-bytes accounting stays correct even if the owning
+/// `ArrayBuffer` header is finalized while the backing store is still pinned (the final free may
+/// happen later, potentially on another thread).
 pub trait BackingStoreAllocator {
   fn alloc_zeroed(&self, len: usize) -> Result<BackingStore, BackingStoreAllocError>;
 
@@ -284,7 +363,7 @@ impl Default for GlobalBackingStoreAllocator {
 impl GlobalBackingStoreAllocator {
   fn alloc_raw(&self, len: usize, zeroed: bool) -> Result<BackingStore, BackingStoreAllocError> {
     if len == 0 {
-      return Ok(BackingStore::empty(Arc::clone(&self.external_bytes)));
+      return Ok(BackingStore::empty());
     }
 
     let layout = Layout::from_size_align(len, BACKING_STORE_MIN_ALIGN)
@@ -301,7 +380,7 @@ impl GlobalBackingStoreAllocator {
     };
 
     debug_assert!(BackingStore::is_ptr_min_aligned(ptr.as_ptr()));
-    Ok(unsafe {
+    let store = unsafe {
       BackingStore::from_raw_parts(
         ptr.as_ptr(),
         len,
@@ -309,7 +388,15 @@ impl GlobalBackingStoreAllocator {
         BACKING_STORE_MIN_ALIGN,
         Arc::clone(&self.external_bytes),
       )
-    })
+    };
+
+    match store {
+      Ok(store) => Ok(store),
+      Err(err) => {
+        self.free_raw_allocation(ptr.as_ptr(), len, BACKING_STORE_MIN_ALIGN);
+        Err(err)
+      }
+    }
   }
 
   fn adopt_or_copy(
@@ -322,21 +409,15 @@ impl GlobalBackingStoreAllocator {
 
     if byte_len == 0 {
       // Nothing to keep; caller should have already freed any allocation.
-      return Ok(BackingStore::empty(Arc::clone(&self.external_bytes)));
+      return Ok(BackingStore::empty());
     }
 
     if BackingStore::is_ptr_min_aligned(ptr) {
       // SAFETY: caller guarantees `ptr` points to `alloc_len` bytes with alignment 1, and we've
       // checked the address meets our min alignment requirement.
-      return Ok(unsafe {
-        BackingStore::from_raw_parts(
-          ptr,
-          byte_len,
-          alloc_len,
-          1,
-          Arc::clone(&self.external_bytes),
-        )
-      });
+      return unsafe {
+        BackingStore::from_raw_parts(ptr, byte_len, alloc_len, 1, Arc::clone(&self.external_bytes))
+      };
     }
 
     // Misaligned: allocate an aligned buffer and copy.
@@ -376,13 +457,13 @@ impl BackingStoreAllocator for GlobalBackingStoreAllocator {
     let byte_len = bytes.len();
     let alloc_len = bytes.capacity();
     if alloc_len == 0 {
-      return Ok(BackingStore::empty(Arc::clone(&self.external_bytes)));
+      return Ok(BackingStore::empty());
     }
     if byte_len == 0 {
       // The caller provided an empty Vec that still owns an allocation. Since an empty `ArrayBuffer`
       // has no bytes to adopt, immediately release it.
       self.free_raw_allocation(ptr, alloc_len, 1);
-      return Ok(BackingStore::empty(Arc::clone(&self.external_bytes)));
+      return Ok(BackingStore::empty());
     }
 
     let store = self.adopt_or_copy(ptr, byte_len, alloc_len);
@@ -395,7 +476,7 @@ impl BackingStoreAllocator for GlobalBackingStoreAllocator {
   fn adopt_boxed_slice(&self, bytes: Box<[u8]>) -> Result<BackingStore, BackingStoreAllocError> {
     let byte_len = bytes.len();
     if byte_len == 0 {
-      return Ok(BackingStore::empty(Arc::clone(&self.external_bytes)));
+      return Ok(BackingStore::empty());
     }
 
     let ptr = Box::into_raw(bytes) as *mut u8;
