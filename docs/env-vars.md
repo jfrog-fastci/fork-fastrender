@@ -232,6 +232,9 @@ High eviction counts typically imply cache pressure (raise `FASTR_TEXT_FALLBACK_
 - `FASTR_GLYPH_CACHE_BYTES=<bytes>` – shared glyph-outline cache size limit in bytes (default 32 MiB). `0` disables caching.
 - `FASTR_COLOR_GLYPH_CACHE_ITEMS=<N>` – shared color glyph cache capacity (default 2048). `0` disables caching.
 - `FASTR_COLOR_GLYPH_CACHE_BYTES=<bytes>` – shared color glyph cache size limit in bytes (default 16 MiB). `0` disables caching.
+- `FASTR_PAINT_IMAGE_PIXMAP_CACHE_ITEMS=<N>` – cap full-resolution image→pixmap conversion cache entries during display-list paint (default 128; set to 0 to disable caching).
+- `FASTR_PAINT_IMAGE_PIXMAP_CACHE_BYTES=<bytes>` – cap full-resolution image→pixmap conversion cache size (default 128 MiB; uses `Pixmap::data().len()` as a minimum weight; set to 0 to disable caching).
+- `FASTR_PAINT_SHARED_IMAGE_PIXMAP_CACHE_ITEMS=<N>` – cap shared image→pixmap conversion cache entries during parallel tiled paint (default 256; set to 0 to disable cross-tile sharing).
 
 ## Parallelism tuning
 

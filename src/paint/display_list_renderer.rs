@@ -3666,31 +3666,114 @@ struct ImageScaledKey {
 
 type SharedImagePixmapCell = OnceLock<RenderResult<Option<Arc<Pixmap>>>>;
 
-#[derive(Default)]
+struct CachedImagePixmap {
+  pixmap: Arc<Pixmap>,
+  weight: usize,
+}
+
+struct ImagePixmapCache {
+  lru: LruCache<ImageKey, CachedImagePixmap>,
+  current_bytes: usize,
+  max_items: usize,
+  max_bytes: usize,
+  evictions: u64,
+}
+
+impl ImagePixmapCache {
+  fn new(max_items: usize, max_bytes: usize) -> Self {
+    Self {
+      lru: LruCache::unbounded(),
+      current_bytes: 0,
+      max_items,
+      max_bytes,
+      evictions: 0,
+    }
+  }
+
+  fn get(&mut self, key: &ImageKey) -> Option<Arc<Pixmap>> {
+    self.lru.get(key).map(|entry| entry.pixmap.clone())
+  }
+
+  fn insert(&mut self, key: ImageKey, pixmap: Arc<Pixmap>) {
+    if self.max_items == 0 || self.max_bytes == 0 {
+      return;
+    }
+    let weight = pixmap.data().len();
+    if weight == 0 || weight > self.max_bytes {
+      return;
+    }
+
+    if let Some(existing) = self.lru.peek(&key) {
+      self.current_bytes = self.current_bytes.saturating_sub(existing.weight);
+    }
+    self.current_bytes = self.current_bytes.saturating_add(weight);
+    self.lru.put(key, CachedImagePixmap { pixmap, weight });
+    self.evict();
+  }
+
+  fn evict(&mut self) {
+    while (self.max_items > 0 && self.lru.len() > self.max_items)
+      || (self.max_bytes > 0 && self.current_bytes > self.max_bytes)
+    {
+      if let Some((_key, entry)) = self.lru.pop_lru() {
+        self.current_bytes = self.current_bytes.saturating_sub(entry.weight);
+        self.evictions = self.evictions.saturating_add(1);
+      } else {
+        break;
+      }
+    }
+  }
+
+  #[cfg(test)]
+  fn len(&self) -> usize {
+    self.lru.len()
+  }
+
+  #[cfg(test)]
+  fn bytes(&self) -> usize {
+    self.current_bytes
+  }
+
+  #[cfg(test)]
+  fn evictions(&self) -> u64 {
+    self.evictions
+  }
+}
+
 struct SharedImagePixmaps {
-  image_cache: Mutex<HashMap<ImageKey, Arc<SharedImagePixmapCell>>>,
+  image_cache: Mutex<LruCache<ImageKey, Arc<SharedImagePixmapCell>>>,
   scaled_image_cache: Mutex<HashMap<ImageScaledKey, Arc<SharedImagePixmapCell>>>,
+  max_image_entries: usize,
   max_scaled_entries: usize,
 }
 
 impl SharedImagePixmaps {
-  fn new(max_scaled_entries: usize) -> Self {
+  fn new(max_image_entries: usize, max_scaled_entries: usize) -> Self {
     Self {
-      image_cache: Mutex::new(HashMap::new()),
+      image_cache: Mutex::new(LruCache::unbounded()),
       scaled_image_cache: Mutex::new(HashMap::new()),
+      max_image_entries,
       max_scaled_entries,
     }
   }
 
   fn image_cell(&self, key: ImageKey) -> Arc<SharedImagePixmapCell> {
+    if self.max_image_entries == 0 {
+      return Arc::new(OnceLock::new());
+    }
     let mut guard = self
       .image_cache
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard
-      .entry(key)
-      .or_insert_with(|| Arc::new(OnceLock::new()))
-      .clone()
+    if let Some(found) = guard.get(&key) {
+      return found.clone();
+    }
+    let cell = Arc::new(OnceLock::new());
+    guard.put(key, cell.clone());
+    while guard.len() > self.max_image_entries {
+      let _ = guard.pop_lru();
+    }
+    cell
   }
 
   fn scaled_cell(&self, key: ImageScaledKey) -> Option<Arc<SharedImagePixmapCell>> {
@@ -3738,6 +3821,12 @@ const WARP_CACHE_CAPACITY: usize = 8;
 const CROPPED_IMAGE_CACHE_CAPACITY: usize = 128;
 const SCALED_IMAGE_CACHE_CAPACITY: usize = 256;
 const BACKDROP_COMPOSITE_CACHE_CAPACITY: usize = 8;
+const DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS: usize = 128;
+const DEFAULT_IMAGE_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_SHARED_IMAGE_PIXMAP_CACHE_ITEMS: usize = 256;
+const ENV_IMAGE_PIXMAP_CACHE_ITEMS: &str = "FASTR_PAINT_IMAGE_PIXMAP_CACHE_ITEMS";
+const ENV_IMAGE_PIXMAP_CACHE_BYTES: &str = "FASTR_PAINT_IMAGE_PIXMAP_CACHE_BYTES";
+const ENV_SHARED_IMAGE_PIXMAP_CACHE_ITEMS: &str = "FASTR_PAINT_SHARED_IMAGE_PIXMAP_CACHE_ITEMS";
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct BackdropCompositeCacheKey {
@@ -3772,7 +3861,7 @@ pub struct DisplayListRenderer {
   preserve_3d_debug: bool,
   background: Rgba,
   paint_parallelism: PaintParallelism,
-  image_cache: HashMap<ImageKey, Arc<Pixmap>>,
+  image_cache: ImagePixmapCache,
   cropped_image_cache: LruCache<ImageCropKey, Arc<Pixmap>>,
   scaled_image_cache: LruCache<ImageScaledKey, Arc<Pixmap>>,
   shared_image_pixmaps: Option<Arc<SharedImagePixmaps>>,
@@ -5133,6 +5222,11 @@ impl DisplayListRenderer {
     } else {
       1.0
     };
+    let toggles = crate::debug::runtime::runtime_toggles();
+    let image_cache_items =
+      toggles.usize_with_default(ENV_IMAGE_PIXMAP_CACHE_ITEMS, DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS);
+    let image_cache_bytes =
+      toggles.usize_with_default(ENV_IMAGE_PIXMAP_CACHE_BYTES, DEFAULT_IMAGE_PIXMAP_CACHE_BYTES);
     let text_rasterizer = TextRasterizer::with_caches(
       glyph_cache.clone(),
       color_renderer.clone(),
@@ -5164,7 +5258,7 @@ impl DisplayListRenderer {
       preserve_3d_debug: runtime_flag("FASTR_PRESERVE3D_DEBUG"),
       background,
       paint_parallelism: PaintParallelism::default(),
-      image_cache: HashMap::new(),
+      image_cache: ImagePixmapCache::new(image_cache_items, image_cache_bytes),
       cropped_image_cache: LruCache::new(
         NonZeroUsize::new(CROPPED_IMAGE_CACHE_CAPACITY)
           .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
@@ -11036,7 +11130,14 @@ impl DisplayListRenderer {
     let stage = active_stage();
 
     let task_capacity = self.parallel_thread_budget(tile_count);
-    let shared_image_pixmaps = Arc::new(SharedImagePixmaps::new(SCALED_IMAGE_CACHE_CAPACITY));
+    let shared_image_cache_items = crate::debug::runtime::runtime_toggles().usize_with_default(
+      ENV_SHARED_IMAGE_PIXMAP_CACHE_ITEMS,
+      DEFAULT_SHARED_IMAGE_PIXMAP_CACHE_ITEMS,
+    );
+    let shared_image_pixmaps = Arc::new(SharedImagePixmaps::new(
+      shared_image_cache_items,
+      SCALED_IMAGE_CACHE_CAPACITY,
+    ));
     let chunk_size = tile_count
       .checked_add(task_capacity.saturating_sub(1))
       .unwrap_or(tile_count)
@@ -17118,7 +17219,7 @@ impl DisplayListRenderer {
       if let Some(diag) = self.image_pixmap_diagnostics.as_ref() {
         diag.record_hit();
       }
-      return Ok(Some(cached.clone()));
+      return Ok(Some(cached));
     }
 
     if let Some(shared) = self.shared_image_pixmaps.as_ref() {
@@ -24225,6 +24326,71 @@ mod tests {
       1,
       "expected pixmap conversion to be cached across repeated draws"
     );
+  }
+
+  #[test]
+  fn image_pixmap_cache_enforces_item_cap() {
+    let toggles = RuntimeToggles::from_map(HashMap::from([
+      (ENV_IMAGE_PIXMAP_CACHE_ITEMS.to_string(), "8".to_string()),
+      (ENV_IMAGE_PIXMAP_CACHE_BYTES.to_string(), "1024".to_string()),
+    ]));
+
+    with_runtime_toggles(Arc::new(toggles), || {
+      let mut renderer =
+        DisplayListRenderer::new(1, 1, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+      let images: Vec<_> = (0..32u8)
+        .map(|i| ImageData::new_pixels(1, 1, vec![i, 0, 0, 255]))
+        .collect();
+      for image in &images {
+        let pixmap = renderer.image_data_to_pixmap(image).unwrap().unwrap();
+        assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
+      }
+
+      assert!(renderer.image_cache.len() <= 8);
+      assert!(renderer.image_cache.evictions() > 0);
+    });
+  }
+
+  #[test]
+  fn image_pixmap_cache_enforces_byte_cap() {
+    let toggles = RuntimeToggles::from_map(HashMap::from([
+      (ENV_IMAGE_PIXMAP_CACHE_ITEMS.to_string(), "64".to_string()),
+      // A 1x1 pixmap stores 4 bytes. With an 8 byte cap we should never retain more than 2 entries.
+      (ENV_IMAGE_PIXMAP_CACHE_BYTES.to_string(), "8".to_string()),
+    ]));
+
+    with_runtime_toggles(Arc::new(toggles), || {
+      let mut renderer =
+        DisplayListRenderer::new(1, 1, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+      let images: Vec<_> = (0..16u8)
+        .map(|i| ImageData::new_pixels(1, 1, vec![i, 0, 0, 255]))
+        .collect();
+      for image in &images {
+        let _ = renderer.image_data_to_pixmap(image).unwrap().unwrap();
+      }
+
+      assert!(renderer.image_cache.bytes() <= 8);
+      assert!(renderer.image_cache.len() <= 2);
+      assert!(renderer.image_cache.evictions() > 0);
+    });
+  }
+
+  #[test]
+  fn shared_image_pixmap_cache_enforces_item_cap() {
+    let shared = SharedImagePixmaps::new(4, 0);
+    let images: Vec<_> = (0..16u8)
+      .map(|i| ImageData::new_pixels(1, 1, vec![i, 0, 0, 255]))
+      .collect();
+    for image in &images {
+      let key = ImageKey::new(image);
+      let _ = shared.image_cell(key);
+    }
+
+    let guard = shared
+      .image_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(guard.len() <= 4);
   }
 
   #[test]
