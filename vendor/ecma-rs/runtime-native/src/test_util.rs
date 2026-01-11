@@ -77,9 +77,12 @@ static GC_TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// A per-test guard that serializes access to global GC state used by the write barrier.
 ///
-/// Today this includes the process-global young-generation range (`YOUNG_SPACE`) set via
-/// `rt_gc_set_young_range`. Integration tests that mutate the range must acquire this guard to stay
-/// deterministic under parallel test execution.
+/// Today this includes:
+/// - the process-global young-generation range (`YOUNG_SPACE`) set via `rt_gc_set_young_range`, and
+/// - the process-global remembered set maintained by the exported write barrier.
+///
+/// Integration tests that mutate this global state must acquire this guard to stay deterministic
+/// under parallel test execution.
 pub struct TestGcGuard {
   _lock: parking_lot::MutexGuard<'static, ()>,
   prev_young_start: usize,
