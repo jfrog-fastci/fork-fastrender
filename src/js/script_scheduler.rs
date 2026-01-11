@@ -2943,6 +2943,42 @@ mod state_machine_tests {
   }
 
   #[test]
+  fn module_scripts_with_invalid_src_do_not_execute_inline_fallback_even_when_module_scripts_not_supported(
+  ) -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover(ScriptElementSpec {
+      base_url: None,
+      // `src` attribute present, but no fetchable URL (e.g. empty string or a rejected scheme).
+      src: None,
+      src_attr_present: true,
+      inline_text: "INLINE".to_string(),
+      async_attr: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      force_async: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: ScriptType::Module,
+    })?;
+    assert!(
+      h.started_module_graph_fetches.is_empty(),
+      "expected invalid-src module scripts to not start module graph fetch"
+    );
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["event:error".to_string()],
+      "expected module scripts to queue an error event task and suppress inline fallback when src is invalid"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn module_scripts_with_empty_src_queue_error_and_do_not_break_defer_queue() -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
