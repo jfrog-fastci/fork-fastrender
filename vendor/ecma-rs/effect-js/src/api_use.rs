@@ -616,7 +616,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
 }
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
   use effect_model::{EffectSet, EffectTemplate, PurityTemplate};
   use hir_js::ExprKind;
