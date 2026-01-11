@@ -150,4 +150,8 @@ pub fn section_bytes<'a>(file: &'a [u8], section_name: &str) -> Result<&'a [u8],
 pub fn stackmaps_section_bytes<'a>(file: &'a [u8]) -> Result<&'a [u8], ElfError> {
     section_bytes(file, ".data.rel.ro.llvm_stackmaps")
         .or_else(|_| section_bytes(file, ".llvm_stackmaps"))
+        // Some link pipelines may rename the output section to drop the leading dot so GNU ld/lld
+        // can auto-synthesize `__start_`/`__stop_` symbols. This repo's default uses explicit symbol
+        // definitions in `stackmaps.ld`, but accept this name for tooling compatibility.
+        .or_else(|_| section_bytes(file, "llvm_stackmaps"))
 }
