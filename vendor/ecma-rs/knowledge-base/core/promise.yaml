@@ -32,6 +32,36 @@ symbols:
       network: false
       nondeterministic: true
 
+  - name: Promise.allSettled
+    aliases: []
+    semantics: PromiseAllSettled
+    signature: "(iterable) => Promise"
+    since: "baseline"
+    purity:
+      template: allocating
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+
+  - name: Promise.any
+    aliases: []
+    semantics: PromiseAny
+    signature: "(iterable) => Promise"
+    since: "baseline"
+    purity:
+      template: allocating
+    effects:
+      template: unknown
+      may_throw: true
+      allocates: true
+      io: false
+      network: false
+      nondeterministic: true
+
   - name: Promise.resolve
     aliases: []
     semantics: PromiseResolve
@@ -75,3 +105,31 @@ symbols:
       depends_on_args:
         base: ALLOCATES | NONDETERMINISTIC | MAY_THROW
         args: [0, 1]
+
+  - name: Promise.prototype.catch
+    aliases: []
+    semantics: PromiseCatch
+    signature: "(onrejected) => Promise"
+    since: "baseline"
+    purity:
+      depends_on_args:
+        base: Allocating
+        args: [0]
+    effects:
+      depends_on_args:
+        base: ALLOCATES | NONDETERMINISTIC | MAY_THROW
+        args: [0]
+
+  - name: Promise.prototype.finally
+    aliases: []
+    semantics: PromiseFinally
+    signature: "(onfinally) => Promise"
+    since: "baseline"
+    purity:
+      depends_on_args:
+        base: Allocating
+        args: [0]
+    effects:
+      depends_on_args:
+        base: ALLOCATES | NONDETERMINISTIC | MAY_THROW
+        args: [0]
