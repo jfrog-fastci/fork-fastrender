@@ -821,17 +821,30 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
   }
 
   fn fd_identity(fd: RawFd) -> io::Result<FdIdentity> {
-    let mut st = MaybeUninit::<libc::stat>::uninit();
-    let rc = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
-    if rc == -1 {
-      return Err(io::Error::last_os_error());
-    }
-    let st = unsafe { st.assume_init() };
+    let st = loop {
+      let mut st = MaybeUninit::<libc::stat>::uninit();
+      let rc = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
+      if rc != -1 {
+        break unsafe { st.assume_init() };
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
 
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 {
-      return Err(io::Error::last_os_error());
-    }
+    let flags = loop {
+      let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+      if flags != -1 {
+        break flags;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
 
     Ok(FdIdentity {
       dev: st.st_dev,
