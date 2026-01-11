@@ -7,9 +7,6 @@ repository.workspace = true
 publish = false
 build = "build.rs"
 
-[lib]
-crate-type = ["rlib", "staticlib"]
-
 [features]
 # Always-on statepoint verification can be enabled by consumers that want a hard failure in
 # release builds too. In debug builds we verify unconditionally.
@@ -24,6 +21,9 @@ gc_stats = []
 # Enables expensive GC verification helpers (heap integrity checks, forwarding verification,
 # nursery poisoning) intended for tests and debugging.
 gc_debug = []
+
+[lib]
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 ahash = { workspace = true }

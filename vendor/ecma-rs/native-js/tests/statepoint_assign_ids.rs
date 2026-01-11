@@ -42,7 +42,7 @@ fn assign_statepoint_ids_emits_sequential_ids() {
 
   let test_ty = void_ty.fn_type(&[], false);
   let test_fn = module.add_function("test", test_ty, None);
-  gc::set_statepoint_example_gc(&test_fn).expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);
@@ -71,4 +71,3 @@ fn assign_statepoint_ids_emits_sequential_ids() {
     "expected statepoint-id=100 callsite to appear before statepoint-id=101 in IR, got:\n{ir}"
   );
 }
-

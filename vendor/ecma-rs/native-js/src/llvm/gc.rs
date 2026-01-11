@@ -50,10 +50,3 @@ pub fn set_gc_strategy(function: &FunctionValue<'_>, strategy: &str) -> Result<(
 pub fn set_default_gc_strategy(function: &FunctionValue<'_>) -> Result<(), std::ffi::NulError> {
   set_gc_strategy(function, GC_STRATEGY)
 }
-
-/// Backwards-compatibility alias for older tests/examples.
-#[deprecated(note = "native-js no longer uses `gc \\\"statepoint-example\\\"`; use `set_default_gc_strategy` instead")]
-#[inline]
-pub fn set_statepoint_example_gc(function: &FunctionValue<'_>) -> Result<(), std::ffi::NulError> {
-  set_default_gc_strategy(function)
-}

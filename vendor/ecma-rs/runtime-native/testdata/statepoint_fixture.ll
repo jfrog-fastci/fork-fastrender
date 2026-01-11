@@ -13,7 +13,7 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 
 declare void @callee()
 
-define ptr addrspace(1) @test(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "statepoint-example" {
+define ptr addrspace(1) @test(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
 entry:
   %statepoint_token = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 2882400000,

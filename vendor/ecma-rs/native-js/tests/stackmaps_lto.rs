@@ -118,10 +118,10 @@ fn stackmaps_survive_lto_with_and_without_gc_sections() {
   builder.position_at_end(callee_entry);
   builder.build_return(None).unwrap();
 
-  // define ptr addrspace(1) @test(ptr addrspace(1)) gc "statepoint-example"
+  // define ptr addrspace(1) @test(ptr addrspace(1)) gc "coreclr"
   let test_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
   let test_fn = module.add_function("test", test_ty, None);
-  gc::set_statepoint_example_gc(&test_fn).expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(test_fn, "entry");
   builder.position_at_end(entry);
