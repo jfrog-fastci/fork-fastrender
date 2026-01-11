@@ -2892,10 +2892,27 @@ impl DisplayListBuilder {
             Point::new(inset_x, inset_y)
           })
           .unwrap_or(Point::ZERO);
-        let target_w = canvas.0.max(context_bounds.width());
-        let target_h = canvas.1.max(context_bounds.height());
+        // The document canvas size (used for HTML canvas background propagation) should follow the
+        // scrollable overflow area, *not* conservative paint bounds for the root stacking context.
+        //
+        // `context_bounds` includes paint overflow from descendants (e.g. outlines/filters, or
+        // positioned elements far offscreen). Using it here can dramatically skew
+        // background-size/background-position for propagated `<html>`/`<body>` backgrounds (notably
+        // `background-size: cover` and gradients), because the background positioning area becomes
+        // dominated by out-of-band paint bounds that do not contribute to the document canvas.
+        //
+        // Instead, derive the canvas extent from the root fragment's scroll overflow, clamping away
+        // negative overflow (content cannot extend the scroll origin left/up of (0,0)).
+        let scroll_canvas = fragment
+          .scroll_overflow
+          .union(Rect::new(Point::ZERO, fragment.bounds.size));
+        let scroll_max_x = scroll_canvas.max_x().max(0.0);
+        let scroll_max_y = scroll_canvas.max_y().max(0.0);
+
+        let target_w = canvas.0.max(scroll_max_x);
+        let target_h = canvas.1.max(scroll_max_y);
         let default_target_rect =
-          Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h);
+          Rect::from_xywh(root_border_bounds.x(), root_border_bounds.y(), target_w, target_h);
         // CSS Page 3 draws the document canvas background as the page box background, which is
         // confined to the page area (inside the page margins).
         //

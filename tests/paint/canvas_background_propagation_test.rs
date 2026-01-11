@@ -130,3 +130,54 @@ fn canvas_background_propagates_body_gradient_background_when_root_is_transparen
     outside.alpha()
   );
 }
+
+#[test]
+fn canvas_background_propagation_ignores_negative_paint_bounds_for_background_positioning() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // The propagated canvas background's positioning area should be based on the document canvas
+  // (viewport/scrollable overflow), not conservative paint bounds for the root stacking context.
+  //
+  // Positioned descendants can extend far into negative coordinates (e.g. decorative offscreen
+  // elements). Those should not skew `background-position` / gradient interpolation for the canvas
+  // background.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      body {
+        background: linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255));
+        height: 50px;
+      }
+      .offscreen {
+        position: absolute;
+        left: -1000px;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        background: rgb(0, 255, 0);
+      }
+    </style>
+    <div class="offscreen"></div>
+    <div style="height: 50px"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 200, 100)
+    .expect("render should succeed");
+
+  // Sample below the body border box: the left edge should still be near the gradient start (red).
+  let outside_left = pixmap.pixel(1, 75).expect("outside-left pixel");
+  assert!(
+    outside_left.red() > 200 && outside_left.green() < 80 && outside_left.blue() < 80,
+    "expected propagated canvas background to start at red despite negative paint bounds, got rgba({}, {}, {}, {})",
+    outside_left.red(),
+    outside_left.green(),
+    outside_left.blue(),
+    outside_left.alpha()
+  );
+}
