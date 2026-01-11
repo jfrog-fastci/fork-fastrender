@@ -365,7 +365,7 @@ mod imp {
                     ptr as *const u8,
                 );
             });
-            let read_entry = opcode::Read::new(types::Fd(fd), ptr, len as _)
+            let read_entry = opcode::Read::new(types::Fd(fd), ptr, len)
                 .offset(offset as _)
                 .build()
                 .flags(squeue::Flags::IO_LINK)
@@ -374,6 +374,12 @@ mod imp {
             // `IORING_OP_LINK_TIMEOUT` takes a pointer to a `__kernel_timespec`. That memory must
             // stay valid until the timeout request completes, so it cannot live on the stack here.
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -399,6 +405,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, read_id);
@@ -452,13 +464,19 @@ mod imp {
                     ptr as *const u8,
                 );
             });
-            let write_entry = opcode::Write::new(types::Fd(fd), ptr, len as _)
+            let write_entry = opcode::Write::new(types::Fd(fd), ptr, len)
                 .offset(offset as _)
                 .build()
                 .flags(squeue::Flags::IO_LINK)
                 .user_data(write_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -484,6 +502,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, write_id);
