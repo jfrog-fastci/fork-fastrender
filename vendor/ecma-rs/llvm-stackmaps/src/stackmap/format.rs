@@ -137,6 +137,10 @@ impl StackMapRecord {
 }
 
 /// An index entry mapping callsite PC to a record.
+///
+/// This also carries per-function metadata required by stack walkers:
+/// - `function_address`: base address used to compute `pc`
+/// - `stack_size`: frame size (used to translate SP-relative stack slots to absolute addresses)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Callsite {
     pub pc: u64,
