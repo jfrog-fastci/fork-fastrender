@@ -292,11 +292,37 @@ mod tests {
       )],
       &[],
     );
- 
+
     let ownership = ownership::analyze_cfg_ownership(&cfg);
     annotate_cfg_consumption(&mut cfg, &ownership);
- 
+
     let ret = &cfg.bblocks.get(0)[1];
     assert_eq!(mode_at(ret, 0), ArgUseMode::Consume);
+  }
+
+  #[test]
+  fn throw_consumes_owned_value() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::throw(Arg::Var(0)),
+        ],
+      )],
+      &[],
+    );
+
+    let ownership = ownership::analyze_cfg_ownership(&cfg);
+    annotate_cfg_consumption(&mut cfg, &ownership);
+
+    let thr = &cfg.bblocks.get(0)[1];
+    assert_eq!(mode_at(thr, 0), ArgUseMode::Consume);
   }
 }
