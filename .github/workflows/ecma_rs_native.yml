@@ -91,13 +91,13 @@ jobs:
           # Keep cargo_agent locks within the ecma-rs workspace target dir (avoids polluting the
           # root target/ cache used by MSRV-focused workflows).
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
-        run: bash ../../scripts/cargo_agent.sh test -p typecheck-ts
+        run: bash scripts/cargo_agent.sh test -p typecheck-ts
 
       - name: emit-js (TS erasure groundwork)
         working-directory: vendor/ecma-rs
         env:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
-        run: bash ../../scripts/cargo_agent.sh test -p emit-js
+        run: bash scripts/cargo_agent.sh test -p emit-js
 
       - name: ts-erase (if present)
         working-directory: vendor/ecma-rs
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           if cargo metadata --no-deps --format-version 1 | rg -q '"name":"ts-erase"'; then
-            bash ../../scripts/cargo_agent.sh test -p ts-erase
+            bash scripts/cargo_agent.sh test -p ts-erase
           else
             echo "ts-erase package not present in this checkout; skipping."
           fi
@@ -118,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           if cargo metadata --no-deps --format-version 1 | rg -q '"name":"native-oracle-harness"'; then
-            bash ../../scripts/cargo_agent.sh test -p native-oracle-harness
+            bash scripts/cargo_agent.sh test -p native-oracle-harness
           else
             echo "native-oracle-harness package not present in this checkout; skipping."
           fi
