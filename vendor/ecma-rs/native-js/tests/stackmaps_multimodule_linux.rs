@@ -7,7 +7,7 @@ use inkwell::OptimizationLevel;
 use native_js::llvm::gc;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection};
-use runtime_native::stackmaps::StackMap;
+use runtime_native::stackmaps::StackMaps;
 use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
 };
@@ -439,15 +439,17 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
   // Ensure LTO codegen does not emit register-held statepoint roots.
   #[cfg(target_arch = "x86_64")]
   {
-    let stackmap = StackMap::parse(&stackmaps).expect("parse .llvm_stackmaps");
-    verify_statepoint_stackmap(
-      &stackmap,
-      VerifyStatepointOptions {
-        arch: DwarfArch::X86_64,
-        mode: VerifyMode::StatepointsOnly,
-      },
-    )
-    .expect("statepoint stackmap verification failed");
+    let stackmaps_parsed = StackMaps::parse(&stackmaps).expect("parse .llvm_stackmaps");
+    for raw in stackmaps_parsed.raws() {
+      verify_statepoint_stackmap(
+        raw,
+        VerifyStatepointOptions {
+          arch: DwarfArch::X86_64,
+          mode: VerifyMode::StatepointsOnly,
+        },
+      )
+      .expect("statepoint stackmap verification failed");
+    }
   }
 
   let blobs = parse_stackmap_blobs(&stackmaps);
