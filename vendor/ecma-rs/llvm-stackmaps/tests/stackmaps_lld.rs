@@ -85,6 +85,7 @@ fn main() {
     let status = Command::new("bash")
         .arg(cargo_agent)
         .arg("build")
+        .arg("--offline")
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(project_dir.join("Cargo.toml"))
