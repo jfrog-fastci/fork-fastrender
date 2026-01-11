@@ -116,6 +116,23 @@
       throws: Never
   purity: Pure
 
+- name: URLSearchParams.prototype.has
+  aliases:
+    - URLSearchParams.prototype.has
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: URLSearchParams.prototype.delete
+  aliases:
+    - URLSearchParams.prototype.delete
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Impure
+
 - name: URLSearchParams.prototype.set
   aliases:
     - URLSearchParams.prototype.set
@@ -135,6 +152,16 @@
       flags: ALLOCATES
       throws: Never
   purity: Impure
+
+- name: URLSearchParams.prototype.entries
+  aliases:
+    - URLSearchParams.prototype.entries
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
 
 - name: URLSearchParams.prototype.toString
   aliases:
