@@ -119,6 +119,19 @@ fn background_position_vertical_first_pair_resolves_axes() {
 }
 
 #[test]
+fn background_position_vertical_keyword_then_center_assigns_axes() {
+  let dom = dom::parse_html(r#"<div style="background-position: top center"></div>"#).unwrap();
+  let stylesheet = parse_stylesheet("").unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let node = all_divs(&styled)[0];
+  // top (y) center (x)
+  let (x, y) = bg_pos(node);
+  assert_component(&x, 0.5, 0.0, LengthUnit::Percent);
+  assert_component(&y, 0.0, 0.0, LengthUnit::Percent);
+}
+
+#[test]
 fn background_position_offsets_follow_keywords() {
   let dom =
     dom::parse_html(r#"<div style="background-position: right 10% top 20%"></div>"#).unwrap();

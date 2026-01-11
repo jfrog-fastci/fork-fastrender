@@ -21495,6 +21495,10 @@ fn parse_background_position(value: &PropertyValue) -> Option<BackgroundPosition
       {
         x = Some(component_from_keyword(0.5, None));
         y = component_from_single(second, AxisKind::Vertical);
+      // vertical keyword + center => treat first as vertical, second as horizontal center (top center)
+      } else if first_is_vertical && matches!(second, Part::Keyword(AxisKind::Either, _)) {
+        y = component_from_single(first, AxisKind::Vertical);
+        x = Some(component_from_keyword(0.5, None));
       } else if first_is_vertical && second_is_horizontal {
         y = component_from_single(first, AxisKind::Vertical);
         x = component_from_single(second, AxisKind::Horizontal);
