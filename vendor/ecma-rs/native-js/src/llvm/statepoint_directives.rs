@@ -41,6 +41,8 @@ fn add_callsite_string_attr(call: LLVMValueRef, key: &CStr, value: &CStr) {
 ///
 /// This must be set on the *original* callsite before running LLVM's
 /// `RewriteStatepointsForGC` / `rewrite-statepoints-for-gc` pass.
+///
+/// The ID becomes the StackMap record's patchpoint ID.
 pub fn set_callsite_statepoint_id(call: LLVMValueRef, id: u64) {
   let key = CString::new("statepoint-id").expect("statepoint-id must not contain NULs");
   let value = CString::new(id.to_string()).expect("statepoint-id must not contain NULs");
@@ -52,6 +54,11 @@ pub fn set_callsite_statepoint_id(call: LLVMValueRef, id: u64) {
 ///
 /// This must be set on the *original* callsite before running LLVM's
 /// `RewriteStatepointsForGC` / `rewrite-statepoints-for-gc` pass.
+///
+/// - `bytes = 0`: LLVM emits a normal `call` instruction.
+/// - `bytes > 0`: LLVM reserves a patchable region at the callsite (x86_64: a NOP sled) and emits
+///   a stackmap record keyed by the *end* of that reserved region (the return address if/when a
+///   call is patched in).
 pub fn set_callsite_statepoint_num_patch_bytes(call: LLVMValueRef, bytes: u32) {
   let key = CString::new("statepoint-num-patch-bytes")
     .expect("statepoint-num-patch-bytes key must not contain NULs");
