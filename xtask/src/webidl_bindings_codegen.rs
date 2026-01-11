@@ -1545,11 +1545,9 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("use std::sync::OnceLock;\n\n");
   out.push_str("use super::{binding_value_to_js, BindingValue, WebHostBindings};\n");
   out.push_str("use crate::js::webidl::DataPropertyAttributes;\n");
-  out.push_str("#[allow(unused_imports)]\n");
   out.push_str(
     "#[allow(unused_imports)]\nuse webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
   );
-  out.push_str("#[allow(unused_imports)]\n");
   out.push_str(
     "#[allow(unused_imports)]\nuse webidl_ir::{DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext};\n\n",
   );
