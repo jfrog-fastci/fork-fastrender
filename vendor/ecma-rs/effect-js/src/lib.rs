@@ -116,6 +116,7 @@ mod tests {
       "Math.floor",
       "Math.ceil",
       "Math.round",
+      "Math.random",
       "Object.keys",
       "Object.values",
       "Object.entries",

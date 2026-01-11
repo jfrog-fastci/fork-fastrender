@@ -92,3 +92,19 @@
     network: false
     nondeterministic: false
   purity: Pure
+
+- name: Math.random
+  semantics: Random
+  signature: "() => number"
+  async: false
+  idempotent: false
+  deterministic: false
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: false
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: true
+  purity: ReadOnly

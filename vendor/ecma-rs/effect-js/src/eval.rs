@@ -333,4 +333,13 @@ mod tests {
     assert_eq!(sem.purity, Purity::Allocating);
     assert!(sem.effects.contains(EffectSet::ALLOCATES));
   }
+
+  #[test]
+  fn math_random_is_nondeterministic() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Math.random").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::ReadOnly);
+    assert!(sem.effects.contains(EffectSet::NONDETERMINISTIC));
+  }
 }
