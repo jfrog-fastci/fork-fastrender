@@ -7197,6 +7197,7 @@ impl DisplayListRenderer {
         // adjacent pixels (notably on cdc.gov's outline buttons).
         let mut ring_rect = rect;
         let mut ring_transform = transform;
+        let mut snapped_ring_rect = false;
         if blend_mode == tiny_skia::BlendMode::SourceOver
           && Self::is_translation_only_transform(transform)
           && Self::is_near_integer(transform.tx)
@@ -7230,6 +7231,7 @@ impl DisplayListRenderer {
             if snapped.width() > 0.0 && snapped.height() > 0.0 {
               ring_rect = snapped;
               ring_transform = Transform::identity();
+              snapped_ring_rect = true;
             } else {
               ring_rect = rect;
               ring_transform = Transform::identity();
@@ -7237,13 +7239,27 @@ impl DisplayListRenderer {
           }
         }
 
+        // tiny-skia's anti-aliased path fill tends to treat both sides of an axis-aligned edge as
+        // "inside", causing snapped 1px borders to still bleed by one sample row/column into the
+        // border interior (e.g. Chrome shows a crisp `#ccc` 1px border, while tiny-skia produces a
+        // slightly washed-out edge and a faint inner halo).
+        //
+        // Nudge the inner contour outward (toward the outer edge) by a tiny epsilon (by shrinking
+        // the inset) so those
+        // boundary samples land definitively inside the hole rather than on the edge.
+        let ring_inset = if snapped_ring_rect && Self::is_near_integer(border_width) && border_width >= 1.0 {
+          (border_width - 1e-3).max(0.0)
+        } else {
+          border_width
+        };
+
         if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
           ring_rect.x(),
           ring_rect.y(),
           ring_rect.width(),
           ring_rect.height(),
           &radii,
-          border_width,
+          ring_inset,
         ) {
           let mut paint = tiny_skia::Paint::default();
           set_paint_color(&mut paint, &top.color, opacity);
