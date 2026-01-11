@@ -169,7 +169,7 @@ impl StackMap {
       return Err(StackMapError::UnexpectedEof);
     }
     let mut records = Vec::with_capacity(num_records);
-    for _ in 0..num_records {
+    for record_idx in 0..num_records {
       let patchpoint_id = c.read_u64()?;
       let instruction_offset = c.read_u32()?;
       let _reserved = c.read_u16()?;
@@ -206,8 +206,21 @@ impl StackMap {
       // unaligned form when the aligned parse would run off the end of the section.
       let live_outs = {
         let saved_off = c.off;
+        let records_left = num_records - record_idx - 1;
         match parse_live_outs(&mut c, LiveOutHeaderMode::AlignedTo8) {
-          Ok(v) => v,
+          Ok(v) => {
+            // If the aligned parse consumed so many bytes that we no longer have enough buffer left
+            // to decode the remaining records, it almost certainly desynchronized by skipping a
+            // live-out header that was emitted without the required pre-header alignment padding.
+            //
+            // Prefer the unaligned form in that case.
+            if records_left > 0 && records_left > c.remaining() / MIN_RECORD_SIZE {
+              c.off = saved_off;
+              parse_live_outs(&mut c, LiveOutHeaderMode::Unaligned)?
+            } else {
+              v
+            }
+          }
           Err(StackMapError::UnexpectedEof) => {
             c.off = saved_off;
             parse_live_outs(&mut c, LiveOutHeaderMode::Unaligned)?
