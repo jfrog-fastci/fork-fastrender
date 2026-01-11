@@ -1066,8 +1066,14 @@ fn rasterize_linear_gradient_with_phase(
   let dx = end.x - start.x;
   let dy = end.y - start.y;
   let denom = dx * dx + dy * dy;
-  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
-    return Ok(None);
+  let mut pixmap = match new_pixmap_uninitialized(width, height) {
+    Ok(pixmap) => pixmap,
+    Err(err) => {
+      if matches!(err, RenderError::StageAllocationBudgetExceeded { .. }) {
+        return Err(err);
+      }
+      return Ok(None);
+    }
   };
   let pixels_len = width as usize * height as usize;
   if denom.abs() <= f32::EPSILON {
@@ -1614,8 +1620,14 @@ pub fn rasterize_conic_gradient(
   let period = gradient_period(stops);
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
-  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
-    return Ok(None);
+  let mut pixmap = match new_pixmap_uninitialized(width, height) {
+    Ok(pixmap) => pixmap,
+    Err(err) => {
+      if matches!(err, RenderError::StageAllocationBudgetExceeded { .. }) {
+        return Err(err);
+      }
+      return Ok(None);
+    }
   };
 
   let start_angle = start_angle.rem_euclid(std::f32::consts::PI * 2.0);
@@ -1768,8 +1780,14 @@ pub fn rasterize_conic_gradient_scaled(
   let period = gradient_period(stops);
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
-  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
-    return Ok(None);
+  let mut pixmap = match new_pixmap_uninitialized(width, height) {
+    Ok(pixmap) => pixmap,
+    Err(err) => {
+      if matches!(err, RenderError::StageAllocationBudgetExceeded { .. }) {
+        return Err(err);
+      }
+      return Ok(None);
+    }
   };
 
   let start_angle = start_angle.rem_euclid(std::f32::consts::PI * 2.0);
@@ -1870,8 +1888,14 @@ pub fn rasterize_radial_gradient(
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
 
-  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
-    return Ok(None);
+  let mut pixmap = match new_pixmap_uninitialized(width, height) {
+    Ok(pixmap) => pixmap,
+    Err(err) => {
+      if matches!(err, RenderError::StageAllocationBudgetExceeded { .. }) {
+        return Err(err);
+      }
+      return Ok(None);
+    }
   };
 
   let inv_rx = 1.0 / radii.x;

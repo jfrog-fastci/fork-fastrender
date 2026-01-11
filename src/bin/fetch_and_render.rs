@@ -486,6 +486,19 @@ fn try_main(args: Args) -> Result<()> {
       })?;
     options.stage_mem_budget_bytes = Some(bytes);
   }
+  if args.memory.stage_alloc_budget_mb > 0 {
+    let bytes = args
+      .memory
+      .stage_alloc_budget_mb
+      .checked_mul(1024 * 1024)
+      .ok_or_else(|| {
+        fastrender::Error::Other(format!(
+          "--stage-alloc-budget-mb is too large: {} MiB",
+          args.memory.stage_alloc_budget_mb
+        ))
+      })?;
+    options.stage_alloc_budget_bytes = Some(bytes);
+  }
   if let Some(ms) = soft_timeout_ms {
     if ms > 0 {
       options.timeout = Some(Duration::from_millis(ms));

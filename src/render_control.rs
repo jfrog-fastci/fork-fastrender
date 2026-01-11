@@ -1,6 +1,6 @@
 use crate::error::{RenderError, RenderStage};
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -10,6 +10,10 @@ thread_local! {
 
 thread_local! {
   static ACTIVE_STAGE: Cell<Option<RenderStage>> = const { Cell::new(None) };
+}
+
+thread_local! {
+  static ACTIVE_HEARTBEAT: Cell<Option<StageHeartbeat>> = const { Cell::new(None) };
 }
 
 thread_local! {
@@ -26,9 +30,6 @@ thread_local! {
   /// remains set until the next render installs a new outermost deadline scope.
   static INTERRUPT_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
-
-#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
-use std::sync::atomic::AtomicU64;
 
 // -----------------------------------------------------------------------------
 // Test-only render throttling
@@ -161,6 +162,11 @@ pub struct StageGuard {
   previous: Option<RenderStage>,
 }
 
+/// Guard that installs an active stage heartbeat marker for budget attribution.
+pub(crate) struct StageHeartbeatGuard {
+  previous: Option<StageHeartbeat>,
+}
+
 /// Guard that installs an active stage listener for the current thread.
 pub struct StageListenerGuard {
   previous_len: usize,
@@ -189,6 +195,25 @@ pub enum StageHeartbeat {
 }
 
 impl StageHeartbeat {
+  const VARIANT_COUNT: usize = 12;
+
+  fn as_index(self) -> usize {
+    match self {
+      StageHeartbeat::ReadCache => 0,
+      StageHeartbeat::FollowRedirects => 1,
+      StageHeartbeat::CssInline => 2,
+      StageHeartbeat::DomParse => 3,
+      StageHeartbeat::Script => 4,
+      StageHeartbeat::CssParse => 5,
+      StageHeartbeat::Cascade => 6,
+      StageHeartbeat::BoxTree => 7,
+      StageHeartbeat::Layout => 8,
+      StageHeartbeat::PaintBuild => 9,
+      StageHeartbeat::PaintRasterize => 10,
+      StageHeartbeat::Done => 11,
+    }
+  }
+
   fn render_stage(self) -> Option<RenderStage> {
     match self {
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
@@ -253,6 +278,24 @@ impl StageHeartbeat {
       StageHeartbeat::Done => "unknown",
     }
   }
+
+  pub fn from_render_stage(stage: RenderStage) -> Self {
+    match stage {
+      RenderStage::DomParse => StageHeartbeat::DomParse,
+      RenderStage::Script => StageHeartbeat::Script,
+      RenderStage::Css => StageHeartbeat::CssParse,
+      RenderStage::Cascade => StageHeartbeat::Cascade,
+      RenderStage::BoxTree => StageHeartbeat::BoxTree,
+      RenderStage::Layout => StageHeartbeat::Layout,
+      RenderStage::Paint => StageHeartbeat::PaintRasterize,
+    }
+  }
+}
+
+impl std::fmt::Display for StageHeartbeat {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
 }
 
 /// Stage listener callback used by [`record_stage`].
@@ -310,6 +353,7 @@ pub fn with_stage_listener<T>(listener: Option<StageListener>, f: impl FnOnce() 
 
 pub fn record_stage(stage: StageHeartbeat) {
   ACTIVE_STAGE.with(|active| active.set(stage.render_stage()));
+  ACTIVE_HEARTBEAT.with(|active| active.set(Some(stage)));
   let maybe_thread_listener =
     STAGE_LISTENER_STACK.with(|stack| stack.borrow().last().cloned().flatten());
   if let Some(listener) = maybe_thread_listener {
@@ -553,6 +597,17 @@ impl StageGuard {
   }
 }
 
+impl StageHeartbeatGuard {
+  pub(crate) fn install(heartbeat: Option<StageHeartbeat>) -> Self {
+    let previous = ACTIVE_HEARTBEAT.with(|active| {
+      let previous = active.get();
+      active.set(heartbeat);
+      previous
+    });
+    Self { previous }
+  }
+}
+
 impl Drop for DeadlineGuard {
   fn drop(&mut self) {
     let previous_len = self.previous_len;
@@ -595,9 +650,129 @@ impl Drop for StageGuard {
   }
 }
 
+impl Drop for StageHeartbeatGuard {
+  fn drop(&mut self) {
+    ACTIVE_HEARTBEAT.with(|active| active.set(self.previous));
+  }
+}
+
 /// Returns the currently installed stage hint for this thread, if any.
 pub fn active_stage() -> Option<RenderStage> {
   ACTIVE_STAGE.with(|active| active.get())
+}
+
+/// Returns the currently installed stage heartbeat marker for this thread, if any.
+pub fn active_stage_heartbeat() -> Option<StageHeartbeat> {
+  ACTIVE_HEARTBEAT.with(|active| active.get())
+}
+
+// -----------------------------------------------------------------------------
+// Per-stage allocation budgets (best-effort)
+// -----------------------------------------------------------------------------
+
+pub(crate) struct StageAllocationBudget {
+  budget_bytes: u64,
+  allocated: [AtomicU64; StageHeartbeat::VARIANT_COUNT],
+}
+
+impl StageAllocationBudget {
+  pub(crate) fn new(budget_bytes: u64) -> Self {
+    Self {
+      budget_bytes,
+      allocated: std::array::from_fn(|_| AtomicU64::new(0)),
+    }
+  }
+
+  pub(crate) fn budget_bytes(&self) -> u64 {
+    self.budget_bytes
+  }
+
+  pub(crate) fn allocated_bytes(&self, heartbeat: StageHeartbeat) -> u64 {
+    self.allocated[heartbeat.as_index()].load(Ordering::Relaxed)
+  }
+
+  pub(crate) fn reserve(&self, heartbeat: StageHeartbeat, bytes: u64) -> u64 {
+    if bytes == 0 {
+      return self.allocated_bytes(heartbeat);
+    }
+    let prev = self.allocated[heartbeat.as_index()].fetch_add(bytes, Ordering::Relaxed);
+    prev.saturating_add(bytes)
+  }
+}
+
+thread_local! {
+  static ACTIVE_ALLOCATION_BUDGET: RefCell<Option<Arc<StageAllocationBudget>>> = RefCell::new(None);
+}
+
+pub(crate) struct StageAllocationBudgetGuard {
+  previous: Option<Arc<StageAllocationBudget>>,
+}
+
+impl StageAllocationBudgetGuard {
+  pub(crate) fn install(budget: Option<&Arc<StageAllocationBudget>>) -> Self {
+    let next = budget.cloned();
+    let previous =
+      ACTIVE_ALLOCATION_BUDGET.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), next));
+    Self { previous }
+  }
+}
+
+impl Drop for StageAllocationBudgetGuard {
+  fn drop(&mut self) {
+    let previous = self.previous.take();
+    ACTIVE_ALLOCATION_BUDGET.with(|cell| {
+      *cell.borrow_mut() = previous;
+    });
+  }
+}
+
+pub(crate) fn active_allocation_budget() -> Option<Arc<StageAllocationBudget>> {
+  ACTIVE_ALLOCATION_BUDGET.with(|cell| cell.borrow().clone())
+}
+
+pub(crate) fn with_allocation_budget<T>(
+  budget: Option<&Arc<StageAllocationBudget>>,
+  f: impl FnOnce() -> T,
+) -> T {
+  let _guard = StageAllocationBudgetGuard::install(budget);
+  f()
+}
+
+pub(crate) fn reserve_allocation(bytes: u64, context: &str) -> Result<(), RenderError> {
+  if bytes == 0 {
+    return Ok(());
+  }
+  ACTIVE_ALLOCATION_BUDGET.with(|cell| {
+    let guard = cell.borrow();
+    let Some(budget) = guard.as_ref() else {
+      return Ok(());
+    };
+
+    let stage_opt = active_stage();
+    let heartbeat_opt = active_stage_heartbeat();
+    let stage = stage_opt
+      .or_else(|| heartbeat_opt.and_then(|hb| hb.render_stage()))
+      .unwrap_or(RenderStage::Paint);
+    let heartbeat = match (stage_opt, heartbeat_opt) {
+      (Some(stage), Some(heartbeat)) if heartbeat.render_stage() == Some(stage) => heartbeat,
+      (Some(stage), _) => StageHeartbeat::from_render_stage(stage),
+      (None, Some(heartbeat)) => heartbeat,
+      (None, None) => StageHeartbeat::Done,
+    };
+
+    let allocated_bytes = budget.reserve(heartbeat, bytes);
+    let budget_bytes = budget.budget_bytes();
+    if allocated_bytes > budget_bytes {
+      return Err(RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        allocated_bytes,
+        budget_bytes,
+        context: context.to_string(),
+      });
+    }
+    Ok(())
+  })
 }
 
 /// Check against any active deadline stored for the current thread.

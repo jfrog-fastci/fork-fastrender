@@ -97,7 +97,8 @@ use crate::paint::text_rasterize::{
 use crate::paint::text_shadow::PathBounds;
 use crate::paint::transform3d::backface_is_hidden;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_allocation_budget, active_deadline, active_stage, active_stage_heartbeat, check_active,
+  check_active_periodic, with_allocation_budget, with_deadline, StageGuard, StageHeartbeatGuard,
 };
 use crate::style::color::Rgba;
 use crate::style::PhysicalSide;
@@ -11128,6 +11129,8 @@ impl DisplayListRenderer {
 
     let deadline = active_deadline();
     let stage = active_stage();
+    let stage_heartbeat = active_stage_heartbeat();
+    let allocation_budget = active_allocation_budget();
 
     let task_capacity = self.parallel_thread_budget(tile_count);
     let shared_image_cache_items = crate::debug::runtime::runtime_toggles().usize_with_default(
@@ -11155,50 +11158,53 @@ impl DisplayListRenderer {
         .into_par_iter()
         .map(|chunk| {
           let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
-          with_deadline(deadline.as_ref(), || {
-            let _stage_guard = StageGuard::install(stage);
-            let mut out = Vec::with_capacity(chunk.len());
-            for work in chunk {
-              check_active(RenderStage::Paint).map_err(Error::Render)?;
-              let mut renderer = DisplayListRenderer::new_with_text_state(
-                work.render_w,
-                work.render_h,
-                background,
-                font_ctx.clone(),
-                scale,
-                color_renderer.clone(),
-                color_cache.clone(),
-                glyph_cache.clone(),
-              )?;
-              renderer.preserve_3d_disabled = preserve_3d_disabled;
-              renderer.preserve_3d_scene_depth = preserve_3d_scene_depth;
-              renderer.paint_parallelism = PaintParallelism::disabled();
-              renderer.gradient_cache = gradient_cache.clone();
-              renderer.gradient_pixmap_cache = gradient_pixmap_cache.clone();
-              renderer.shared_blur_cache = shared_blur_cache.clone();
-              renderer.shared_backdrop_filter_cache = Some(shared_backdrop_filter_cache.clone());
-              renderer.diagnostics_enabled = diagnostics_enabled;
-              renderer.image_pixmap_diagnostics = image_pixmap_diagnostics.clone();
-              renderer.background_paint_diagnostics = background_paint_diagnostics.clone();
-              renderer.clip_mask_diagnostics = clip_mask_diagnostics.clone();
-              renderer.layer_alloc_diagnostics = layer_alloc_diagnostics.clone();
-              renderer.backdrop_composite_diagnostics = backdrop_composite_diagnostics.clone();
-              renderer.shared_image_pixmaps = Some(shared_image_pixmaps.clone());
-              if work.render_x > 0 || work.render_y > 0 {
-                renderer
-                  .canvas
-                  .translate(-(work.render_x as f32), -(work.render_y as f32));
+          with_allocation_budget(allocation_budget.as_ref(), || {
+            let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
+            with_deadline(deadline.as_ref(), || {
+              let _stage_guard = StageGuard::install(stage);
+              let mut out = Vec::with_capacity(chunk.len());
+              for work in chunk {
+                check_active(RenderStage::Paint).map_err(Error::Render)?;
+                let mut renderer = DisplayListRenderer::new_with_text_state(
+                  work.render_w,
+                  work.render_h,
+                  background,
+                  font_ctx.clone(),
+                  scale,
+                  color_renderer.clone(),
+                  color_cache.clone(),
+                  glyph_cache.clone(),
+                )?;
+                renderer.preserve_3d_disabled = preserve_3d_disabled;
+                renderer.preserve_3d_scene_depth = preserve_3d_scene_depth;
+                renderer.paint_parallelism = PaintParallelism::disabled();
+                renderer.gradient_cache = gradient_cache.clone();
+                renderer.gradient_pixmap_cache = gradient_pixmap_cache.clone();
+                renderer.shared_blur_cache = shared_blur_cache.clone();
+                renderer.shared_backdrop_filter_cache = Some(shared_backdrop_filter_cache.clone());
+                renderer.diagnostics_enabled = diagnostics_enabled;
+                renderer.image_pixmap_diagnostics = image_pixmap_diagnostics.clone();
+                renderer.background_paint_diagnostics = background_paint_diagnostics.clone();
+                renderer.clip_mask_diagnostics = clip_mask_diagnostics.clone();
+                renderer.layer_alloc_diagnostics = layer_alloc_diagnostics.clone();
+                renderer.backdrop_composite_diagnostics = backdrop_composite_diagnostics.clone();
+                renderer.shared_image_pixmaps = Some(shared_image_pixmaps.clone());
+                if work.render_x > 0 || work.render_y > 0 {
+                  renderer
+                    .canvas
+                    .translate(-(work.render_x as f32), -(work.render_y as f32));
+                }
+                renderer.render_slice(&work.list)?;
+                let stats = renderer.gradient_stats;
+                out.push((
+                  work,
+                  renderer.canvas.into_pixmap(),
+                  stats,
+                  std::thread::current().id(),
+                ));
               }
-              renderer.render_slice(&work.list)?;
-              let stats = renderer.gradient_stats;
-              out.push((
-                work,
-                renderer.canvas.into_pixmap(),
-                stats,
-                std::thread::current().id(),
-              ));
-            }
-            Ok(out)
+              Ok(out)
+            })
           })
         })
         .collect()
@@ -11356,6 +11362,8 @@ impl DisplayListRenderer {
     let raster_config = self.preserve_3d_scene_raster_config();
     let deadline = active_deadline();
     let stage = active_stage();
+    let stage_heartbeat = active_stage_heartbeat();
+    let allocation_budget = active_allocation_budget();
     let diagnostics_session = paint_diagnostics_session_id();
 
     let chunk_size = plane_count
@@ -11374,16 +11382,19 @@ impl DisplayListRenderer {
         .into_par_iter()
         .map(|chunk| {
           let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
-          with_deadline(deadline.as_ref(), || {
-            let _stage_guard = StageGuard::install(stage);
-            let _plane_guard = Preserve3dPlaneParallelGuard::enter();
-            let mut out = Vec::with_capacity(chunk.len());
-            for idx in chunk {
-              check_active(RenderStage::Paint).map_err(Error::Render)?;
-              let (pixmap, stats) = raster_config.rasterize(&scene_items[idx])?;
-              out.push((idx, pixmap, stats));
-            }
-            Ok(out)
+          with_allocation_budget(allocation_budget.as_ref(), || {
+            let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
+            with_deadline(deadline.as_ref(), || {
+              let _stage_guard = StageGuard::install(stage);
+              let _plane_guard = Preserve3dPlaneParallelGuard::enter();
+              let mut out = Vec::with_capacity(chunk.len());
+              for idx in chunk {
+                check_active(RenderStage::Paint).map_err(Error::Render)?;
+                let (pixmap, stats) = raster_config.rasterize(&scene_items[idx])?;
+                out.push((idx, pixmap, stats));
+              }
+              Ok(out)
+            })
           })
         })
         .collect()

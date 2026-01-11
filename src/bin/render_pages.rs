@@ -912,6 +912,16 @@ fn build_render_shared(
     };
     options.stage_mem_budget_bytes = Some(bytes);
   }
+  if args.memory.stage_alloc_budget_mb > 0 {
+    let Some(bytes) = args.memory.stage_alloc_budget_mb.checked_mul(1024 * 1024) else {
+      eprintln!(
+        "--stage-alloc-budget-mb is too large: {} MiB",
+        args.memory.stage_alloc_budget_mb
+      );
+      std::process::exit(2);
+    };
+    options.stage_alloc_budget_bytes = Some(bytes);
+  }
 
   if args.diagnostics_json || args.dump_intermediate != DumpMode::None {
     options.diagnostics_level = fastrender::DiagnosticsLevel::Basic;

@@ -1091,6 +1091,12 @@ pub struct RenderOptions {
   /// and aborts the render with [`RenderError::StageMemoryBudgetExceeded`] when the observed RSS
   /// exceeds this budget.
   pub stage_mem_budget_bytes: Option<u64>,
+  /// Optional best-effort per-stage allocation budget in bytes.
+  ///
+  /// When set, known large allocation sites (currently pixmap/buffer allocations in paint) are
+  /// accounted against the active stage heartbeat and the render aborts with
+  /// [`RenderError::StageAllocationBudgetExceeded`] when the counter exceeds this budget.
+  pub stage_alloc_budget_bytes: Option<u64>,
   /// Optional cooperative cancellation callback.
   pub cancel_callback: Option<Arc<CancelCallback>>,
   /// Optional path to write a Chrome trace of this render.
@@ -1123,6 +1129,7 @@ impl Default for RenderOptions {
       fit_canvas_to_content: None,
       timeout: None,
       stage_mem_budget_bytes: None,
+      stage_alloc_budget_bytes: None,
       cancel_callback: None,
       trace_output: None,
       runtime_toggles: None,
@@ -1155,6 +1162,7 @@ impl std::fmt::Debug for RenderOptions {
       .field("fit_canvas_to_content", &self.fit_canvas_to_content)
       .field("timeout", &self.timeout)
       .field("stage_mem_budget_bytes", &self.stage_mem_budget_bytes)
+      .field("stage_alloc_budget_bytes", &self.stage_alloc_budget_bytes)
       .field(
         "cancel_callback",
         &self.cancel_callback.as_ref().map(|_| "<callback>"),
@@ -1288,6 +1296,17 @@ impl RenderOptions {
   /// [`RenderError::StageMemoryBudgetExceeded`] if the sampled RSS exceeds the configured budget.
   pub fn with_stage_mem_budget_bytes(mut self, budget_bytes: Option<u64>) -> Self {
     self.stage_mem_budget_bytes = budget_bytes;
+    self
+  }
+
+  /// Set a best-effort per-stage allocation budget for the render pipeline.
+  ///
+  /// Pass `None` to disable. When set, allocations through known large hot paths (currently
+  /// pixmap/buffer allocations during paint) will abort with
+  /// [`RenderError::StageAllocationBudgetExceeded`] when the stage-local counter exceeds the
+  /// configured budget.
+  pub fn with_stage_alloc_budget_bytes(mut self, budget_bytes: Option<u64>) -> Self {
+    self.stage_alloc_budget_bytes = budget_bytes;
     self
   }
 
@@ -6115,6 +6134,7 @@ impl FastRender {
       options.capture_accessibility,
       deadline,
       options.stage_mem_budget_bytes,
+      options.stage_alloc_budget_bytes,
       artifacts,
       stats,
       paint_parallelism,
@@ -6592,6 +6612,7 @@ impl FastRender {
     capture_accessibility: bool,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
+    stage_alloc_budget_bytes: Option<u64>,
     mut artifacts: Option<&mut RenderArtifacts>,
     mut stats: Option<&mut RenderStatsRecorder>,
     paint_parallelism: PaintParallelism,
@@ -6606,6 +6627,11 @@ impl FastRender {
     }
 
     let _deadline_guard = DeadlineGuard::install(deadline);
+    let stage_alloc_budget = stage_alloc_budget_bytes
+      .filter(|bytes| *bytes > 0)
+      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
+    let _stage_alloc_budget_guard =
+      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
 
     let toggles = runtime::runtime_toggles();
     let timings_enabled = toggles.truthy("FASTR_RENDER_TIMINGS");
@@ -11001,6 +11027,8 @@ impl FastRender {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
       let stage = crate::render_control::active_stage();
+      let stage_heartbeat = crate::render_control::active_stage_heartbeat();
+      let allocation_budget = crate::render_control::active_allocation_budget();
       let parallel_debug_collector =
         crate::layout::engine::current_layout_parallel_debug_collector();
       return std::thread::scope(|scope| {
@@ -11013,6 +11041,11 @@ impl FastRender {
             let _stage_listener_stack_guard =
               crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
             let _stage_guard = StageGuard::install(stage);
+            let _stage_heartbeat_guard =
+              crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
+            let _stage_alloc_budget_guard = crate::render_control::StageAllocationBudgetGuard::install(
+              allocation_budget.as_ref(),
+            );
             let _stack_guard = LayoutStackThreadGuard::install();
             let _parallel_debug_guard =
               crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
@@ -19706,6 +19739,7 @@ pub(crate) fn render_html_with_shared_resources(
       false,
       false,
       deadline.as_ref(),
+      None,
       None,
       None,
       None,

@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
+use crate::render_control::StageHeartbeat;
+
 /// Result type alias for FastRender operations
 ///
 /// This is a convenience type that uses our Error type as the error variant.
@@ -559,6 +561,18 @@ pub enum RenderError {
     stage: RenderStage,
     rss_bytes: u64,
     budget_bytes: u64,
+  },
+
+  /// Rendering aborted because a best-effort per-stage allocation budget was exceeded.
+  #[error(
+    "allocation budget exceeded during {heartbeat}: allocated={allocated_bytes}, budget={budget_bytes} (context: {context})"
+  )]
+  StageAllocationBudgetExceeded {
+    stage: RenderStage,
+    heartbeat: StageHeartbeat,
+    allocated_bytes: u64,
+    budget_bytes: u64,
+    context: String,
   },
 }
 

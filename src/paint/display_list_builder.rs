@@ -117,7 +117,8 @@ use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
 use crate::paint::text_shadow::resolve_text_shadows_with_viewport;
 use crate::paint::transform_resolver::ResolvedTransforms;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_allocation_budget, active_deadline, active_stage, active_stage_heartbeat, check_active,
+  check_active_periodic, with_allocation_budget, with_deadline, StageGuard, StageHeartbeatGuard,
 };
 use crate::scroll::ScrollState;
 use crate::style::block_axis_is_horizontal;
@@ -5619,6 +5620,8 @@ impl DisplayListBuilder {
         let deadline = active_deadline();
         let root_deadline = crate::render_control::root_deadline();
         let stage = active_stage();
+        let stage_heartbeat = active_stage_heartbeat();
+        let allocation_budget = active_allocation_budget();
         let diagnostics_session = paint_diagnostics_session_id();
         let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
           fragments
@@ -5629,18 +5632,21 @@ impl DisplayListBuilder {
               let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
               let deadline = deadline.clone();
               let root_deadline = root_deadline.clone();
-              with_deadline(root_deadline.as_ref(), || {
-                with_deadline(deadline.as_ref(), || {
-                  let _stage_guard = StageGuard::install(stage);
-                  let mut builder = self.fork();
-                  let mut counter = 0usize;
-                  for fragment in chunk {
-                    if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-                      break;
+              with_allocation_budget(allocation_budget.as_ref(), || {
+                let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
+                with_deadline(root_deadline.as_ref(), || {
+                  with_deadline(deadline.as_ref(), || {
+                    let _stage_guard = StageGuard::install(stage);
+                    let mut builder = self.fork();
+                    let mut counter = 0usize;
+                    for fragment in chunk {
+                      if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+                        break;
+                      }
+                      builder.build_fragment(fragment, offset, visibility);
                     }
-                    builder.build_fragment(fragment, offset, visibility);
-                  }
-                  (chunk_offset, builder.list, std::thread::current().id())
+                    (chunk_offset, builder.list, std::thread::current().id())
+                  })
                 })
               })
             })
@@ -5701,6 +5707,8 @@ impl DisplayListBuilder {
         let deadline = active_deadline();
         let root_deadline = crate::render_control::root_deadline();
         let stage = active_stage();
+        let stage_heartbeat = active_stage_heartbeat();
+        let allocation_budget = active_allocation_budget();
         let diagnostics_session = paint_diagnostics_session_id();
         let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
           fragments
@@ -5711,22 +5719,25 @@ impl DisplayListBuilder {
               let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
               let deadline = deadline.clone();
               let root_deadline = root_deadline.clone();
-              with_deadline(root_deadline.as_ref(), || {
-                with_deadline(deadline.as_ref(), || {
-                  let _stage_guard = StageGuard::install(stage);
-                  let mut builder = self.fork();
-                  let mut counter = 0usize;
-                  for fragment in chunk {
-                    if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-                      break;
+              with_allocation_budget(allocation_budget.as_ref(), || {
+                let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
+                with_deadline(root_deadline.as_ref(), || {
+                  with_deadline(deadline.as_ref(), || {
+                    let _stage_guard = StageGuard::install(stage);
+                    let mut builder = self.fork();
+                    let mut counter = 0usize;
+                    for fragment in chunk {
+                      if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+                        break;
+                      }
+                      if suppress_opacity {
+                        builder.build_fragment_internal(fragment, offset, false, true, visibility);
+                      } else {
+                        builder.build_fragment_shallow(fragment, offset, visibility);
+                      }
                     }
-                    if suppress_opacity {
-                      builder.build_fragment_internal(fragment, offset, false, true, visibility);
-                    } else {
-                      builder.build_fragment_shallow(fragment, offset, visibility);
-                    }
-                  }
-                  (chunk_offset, builder.list, std::thread::current().id())
+                    (chunk_offset, builder.list, std::thread::current().id())
+                  })
                 })
               })
             })

@@ -65,6 +65,7 @@ pub(crate) fn guard_allocation_bytes(bytes: u64, context: &str) -> Result<usize,
 
 pub(crate) fn reserve_buffer(bytes: u64, context: &str) -> Result<Vec<u8>, RenderError> {
   let capacity = guard_allocation_bytes(bytes, context)?;
+  crate::render_control::reserve_allocation(bytes, context)?;
   let mut buffer = Vec::new();
   buffer
     .try_reserve_exact(capacity)
@@ -139,6 +140,7 @@ pub(crate) fn new_pixmap_with_context(
   let caller = std::panic::Location::caller();
   let context = format!("{context} (at {}:{})", caller.file(), caller.line());
   let bytes = guard_dimensions(width, height, &context)?;
+  crate::render_control::reserve_allocation(bytes as u64, &context)?;
   let buffer = allocate_pixmap_bytes(bytes)?;
   let size = IntSize::from_wh(width, height).ok_or(RenderError::InvalidParameters {
     message: format!(
@@ -174,7 +176,7 @@ pub(crate) fn new_pixmap(width: u32, height: u32) -> Option<Pixmap> {
 }
 
 #[track_caller]
-pub(crate) fn new_pixmap_uninitialized(width: u32, height: u32) -> Option<Pixmap> {
+pub(crate) fn new_pixmap_uninitialized(width: u32, height: u32) -> Result<Pixmap, RenderError> {
   #[cfg(test)]
   {
     if RECORD_NEW_PIXMAP.with(|flag| flag.get()) {
@@ -192,15 +194,30 @@ pub(crate) fn new_pixmap_uninitialized(width: u32, height: u32) -> Option<Pixmap
 
   let caller = std::panic::Location::caller();
   let context = format!("pixmap (at {}:{})", caller.file(), caller.line());
-  let bytes = guard_dimensions(width, height, &context).ok()?;
-  let buffer = allocate_pixmap_bytes_uninitialized(bytes).ok()?;
-  let size = IntSize::from_wh(width, height)?;
-  Pixmap::from_vec(buffer, size)
+  let bytes = guard_dimensions(width, height, &context)?;
+  crate::render_control::reserve_allocation(bytes as u64, &context)?;
+  let buffer = allocate_pixmap_bytes_uninitialized(bytes)?;
+  let size = IntSize::from_wh(width, height).ok_or(RenderError::InvalidParameters {
+    message: format!(
+      "{context}: pixmap dimensions out of range ({}x{})",
+      width, height
+    ),
+  })?;
+  Pixmap::from_vec(buffer, size).ok_or(RenderError::InvalidParameters {
+    message: format!(
+      "{context}: pixmap creation failed for {}x{} ({} bytes)",
+      width, height, bytes
+    ),
+  })
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::error::RenderStage;
+  use crate::render_control::{StageAllocationBudget, StageAllocationBudgetGuard};
+  use crate::render_control::{StageGuard, StageHeartbeat, StageHeartbeatGuard};
+  use std::sync::Arc;
 
   #[test]
   fn rejects_zero_dimensions() {
@@ -239,5 +256,35 @@ mod tests {
   #[test]
   fn rejects_oversized_buffer_allocation() {
     assert!(reserve_buffer(MAX_PIXMAP_BYTES + 1, "buffer").is_err());
+  }
+
+  #[test]
+  fn stage_allocation_budget_exceeded_returns_structured_error() {
+    let budget = Arc::new(StageAllocationBudget::new(16));
+    let _budget_guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let _stage_guard = StageGuard::install(crate::render_control::active_stage());
+    let _heartbeat_guard =
+      StageHeartbeatGuard::install(crate::render_control::active_stage_heartbeat());
+    crate::render_control::record_stage(StageHeartbeat::PaintRasterize);
+
+    let err = new_pixmap_with_context(4, 4, "budget").expect_err("expected budget error");
+    let display = err.to_string();
+    assert!(display.contains("allocation budget exceeded during paint_rasterize"));
+
+    match err {
+      RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        allocated_bytes,
+        budget_bytes,
+        context,
+      } => {
+        assert_eq!(stage, RenderStage::Paint);
+        assert_eq!(heartbeat, StageHeartbeat::PaintRasterize);
+        assert!(allocated_bytes > budget_bytes);
+        assert!(!context.is_empty());
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
   }
 }

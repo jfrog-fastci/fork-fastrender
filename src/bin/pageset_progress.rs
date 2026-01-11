@@ -2172,8 +2172,7 @@ impl ProgressSelectionArgs {
 }
 
 fn url_hint_from_cache_path(cache_path: &Path) -> String {
-  cached_url_from_cache_meta(cache_path)
-    .unwrap_or_else(|| file_url_for_path(cache_path))
+  cached_url_from_cache_meta(cache_path).unwrap_or_else(|| file_url_for_path(cache_path))
 }
 
 fn file_url_for_path(path: &Path) -> String {
@@ -3221,6 +3220,18 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       ));
     };
     options.stage_mem_budget_bytes = Some(bytes);
+  }
+  if args.memory.stage_alloc_budget_mb > 0 {
+    let Some(bytes) = args.memory.stage_alloc_budget_mb.checked_mul(1024 * 1024) else {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "--stage-alloc-budget-mb is too large: {} MiB",
+          args.memory.stage_alloc_budget_mb
+        ),
+      ));
+    };
+    options.stage_alloc_budget_bytes = Some(bytes);
   }
   if let Some(ms) = args.soft_timeout_ms {
     if ms > 0 {
@@ -8061,6 +8072,11 @@ fn push_worker_args(
     cmd
       .arg("--stage-mem-budget-mb")
       .arg(args.memory.stage_mem_budget_mb.to_string());
+  }
+  if args.memory.stage_alloc_budget_mb > 0 {
+    cmd
+      .arg("--stage-alloc-budget-mb")
+      .arg(args.memory.stage_alloc_budget_mb.to_string());
   }
   cmd.arg("--cache-dir").arg(&args.cache_dir);
   push_disk_cache_args(cmd, &args.disk_cache);

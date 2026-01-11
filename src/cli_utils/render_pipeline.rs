@@ -1262,6 +1262,11 @@ pub fn apply_worker_common_args(cmd: &mut Command, args: &WorkerCommonArgs<'_>) 
       .arg("--stage-mem-budget-mb")
       .arg(args.memory.stage_mem_budget_mb.to_string());
   }
+  if args.memory.stage_alloc_budget_mb > 0 {
+    cmd
+      .arg("--stage-alloc-budget-mb")
+      .arg(args.memory.stage_alloc_budget_mb.to_string());
+  }
 
   if let Some((scroll_x, scroll_y)) = args.scroll {
     cmd

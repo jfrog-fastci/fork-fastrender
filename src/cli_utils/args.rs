@@ -506,6 +506,14 @@ pub struct MemoryGuardArgs {
   /// error if the observed RSS exceeds this value.
   #[arg(long, value_name = "MB", default_value_t = 0)]
   pub stage_mem_budget_mb: u64,
+
+  /// Best-effort per-stage allocation budget in MiB (0 disables)
+  ///
+  /// When enabled, known allocation hot paths (currently pixmap/buffer allocations during paint)
+  /// are accounted against the active stage heartbeat and the render aborts with a structured
+  /// error if the counter exceeds this value.
+  #[arg(long, value_name = "MB", default_value_t = 0)]
+  pub stage_alloc_budget_mb: u64,
 }
 
 #[derive(Debug, Clone, Args)]

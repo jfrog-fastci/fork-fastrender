@@ -37,8 +37,9 @@ use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation;
 use crate::layout::fragmentation::FragmentationOptions;
 use crate::render_control::{
-  active_stage, check_active, deadline_stack_snapshot, DeadlineGuard, DeadlineStackGuard,
-  RenderDeadline, StageGuard,
+  active_allocation_budget, active_stage, active_stage_heartbeat, check_active, deadline_stack_snapshot,
+  DeadlineGuard, DeadlineStackGuard, RenderDeadline, StageAllocationBudgetGuard, StageGuard,
+  StageHeartbeatGuard,
 };
 use crate::style::display::FormattingContextType;
 use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal};
@@ -1158,10 +1159,15 @@ impl LayoutEngine {
     if let Some(pool) = pool {
       let deadline_stack = deadline_stack_snapshot();
       let stage = active_stage();
+      let stage_heartbeat = active_stage_heartbeat();
+      let allocation_budget = active_allocation_budget();
       let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_thread_enabled();
       pool.install(move || {
         let _guard = DeadlineStackGuard::install(deadline_stack);
         let _stage_guard = StageGuard::install(stage);
+        let _stage_heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
+        let _stage_alloc_budget_guard =
+          StageAllocationBudgetGuard::install(allocation_budget.as_ref());
         let _taffy_perf_guard =
           crate::layout::taffy_integration::TaffyPerfThreadGuard::enter(taffy_perf_enabled);
         f()

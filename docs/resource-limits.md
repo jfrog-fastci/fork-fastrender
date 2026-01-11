@@ -112,15 +112,22 @@ The render-driving CLIs (`pageset_progress`, `render_pages`, `fetch_and_render`)
   - RSS is sampled at the start/end of each pipeline stage (DomParse/Css/Cascade/BoxTree/Layout/Paint).
   - When the sampled RSS exceeds the configured budget, the render aborts with a structured
     `RenderError::StageMemoryBudgetExceeded { stage, rss_bytes, budget_bytes }`.
+- `--stage-alloc-budget-mb <N>`: **best-effort per-stage allocation budget** in MiB (`0` disables).
+  - This is a best-effort counter for known allocation hotspots (currently pixmap/buffer allocations
+    in paint).
+  - When the allocation counter exceeds the configured budget, the render aborts with a structured
+    `RenderError::StageAllocationBudgetExceeded { stage, heartbeat, allocated_bytes, budget_bytes, context }`.
 
 Examples:
 
 ```bash
-# 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS
+# 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS,
+# and abort if any single stage allocates > 512 MiB through guarded pixmap/buffer paths.
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
   --mem-limit-mb 65536 \
-  --stage-mem-budget-mb 8192
+  --stage-mem-budget-mb 8192 \
+  --stage-alloc-budget-mb 512
 ```
 
 ### Diagnostics
@@ -134,8 +141,9 @@ When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics b
 
 ### What to implement next (repo plan)
 
-- **Add per-stage “allocation budget” counters** for known hotspots (images, CSS parse, display list build).
-  - Goal: fail with a diagnostic like “paint rasterize exceeded 512MB budget” instead of OOM.
+- **Expand per-stage “allocation budget” counters** beyond pixmap/buffer allocations (images, CSS parse, display list build).
+  - Goal: fail with a diagnostic like “paint rasterize exceeded 512MB budget” instead of OOM across
+    more allocation hotspots.
 - **Make every unbounded cache bounded** (items and/or bytes) with explicit configuration knobs.
 - **Bench safety**: benches must never allocate unboundedly by default (see below).
 
