@@ -104,12 +104,14 @@ impl PromiseHeader {
   /// This is intentionally written in the shape used by the runtime:
   /// - Treiber stack push using CAS.
   /// - Re-check `state` after push; if already settled, call `wake_all()`.
-  pub fn register_waiter(&self, waiter_ptr: *mut Coroutine) {
+  ///
+  /// # Safety
+  /// `waiter_ptr` must be a valid, live, uniquely-owned waiter node for the
+  /// duration of registration (until it is removed by `wake_all()`).
+  pub unsafe fn register_waiter(&self, waiter_ptr: *mut Coroutine) {
     let mut head = self.waiters.load(Ordering::Acquire);
     loop {
-      unsafe {
-        (*waiter_ptr).next_waiter.store(head, Ordering::Relaxed);
-      }
+      (*waiter_ptr).next_waiter.store(head, Ordering::Relaxed);
 
       match self
         .waiters

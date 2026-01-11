@@ -65,7 +65,7 @@ fn loom_double_settle_no_double_wake() {
     let waiter_ptr = Box::into_raw(waiter);
 
     // Ensure there is something to wake.
-    promise.register_waiter(waiter_ptr);
+    unsafe { promise.register_waiter(waiter_ptr) };
 
     let t1 = thread::spawn(move || {
       unsafe { (&*promise_ptr).settle() };
