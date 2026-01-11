@@ -80,7 +80,7 @@ impl StackBounds {
     end <= self.hi
   }
 
-  /// Returns the stack bounds for the current pthread (Linux only).
+  /// Returns the stack bounds for the current pthread.
   #[cfg(target_os = "linux")]
   pub fn current_thread() -> Result<Self, StackBoundsError> {
     // SAFETY: `pthread_getattr_np` fills the attr struct; we destroy it afterwards.
@@ -106,8 +106,31 @@ impl StackBounds {
     }
   }
 
+  /// Returns the stack bounds for the current pthread.
+  #[cfg(target_os = "macos")]
+  pub fn current_thread() -> Result<Self, StackBoundsError> {
+    // SAFETY: `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` return the (high) stack
+    // address and the stack size for the calling thread.
+    unsafe {
+      let thread = libc::pthread_self();
+      let stack_addr = libc::pthread_get_stackaddr_np(thread);
+      if stack_addr.is_null() {
+        return Err(StackBoundsError::InvalidRange);
+      }
+      let hi = stack_addr as usize as u64;
+      let stack_size = libc::pthread_get_stacksize_np(thread) as u64;
+      if stack_size == 0 {
+        return Err(StackBoundsError::InvalidRange);
+      }
+      let lo = hi
+        .checked_sub(stack_size)
+        .ok_or(StackBoundsError::InvalidRange)?;
+      StackBounds::new(lo, hi)
+    }
+  }
+
   /// Returns the stack bounds for the current thread (unsupported on this platform).
-  #[cfg(not(target_os = "linux"))]
+  #[cfg(not(any(target_os = "linux", target_os = "macos")))]
   pub fn current_thread() -> Result<Self, StackBoundsError> {
     Err(StackBoundsError::UnsupportedPlatform)
   }

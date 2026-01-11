@@ -419,7 +419,28 @@ fn current_stack_bounds() -> Option<StackBounds> {
     Some(StackBounds { lo, hi })
   }
 
-  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  #[cfg(target_os = "macos")]
+  unsafe {
+    let thread = libc::pthread_self();
+    let stack_addr = libc::pthread_get_stackaddr_np(thread);
+    if stack_addr.is_null() {
+      return None;
+    }
+
+    let hi = stack_addr as usize;
+    let stack_size = libc::pthread_get_stacksize_np(thread) as usize;
+    if stack_size == 0 {
+      return None;
+    }
+    let lo = hi.checked_sub(stack_size)?;
+    if lo >= hi {
+      return None;
+    }
+
+    Some(StackBounds { lo, hi })
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
   {
     None
   }

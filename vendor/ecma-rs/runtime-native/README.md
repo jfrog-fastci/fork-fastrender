@@ -121,6 +121,18 @@ PIE note: current LLVM 18 experiments may emit `TEXTREL` warnings due to relocat
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
 
+## Stack walking + stack bounds
+
+`runtime-native` interprets LLVM stackmaps by **walking frame pointers** to recover caller frame
+state (return addresses + caller stack pointers). When available, each registered thread also
+captures its stack bounds (`[lo, hi)`) so stack walking and conservative scanning can validate frame
+and slot addresses stay within the stack mapping.
+
+Stack bounds capture is supported on:
+
+- Linux: `pthread_getattr_np` / `pthread_attr_getstack`
+- macOS: `pthread_get_stackaddr_np` / `pthread_get_stacksize_np`
+
 ## Pinned allocations
 
 Some embeddings require stable object addresses (FFI / host references). The runtime exposes
