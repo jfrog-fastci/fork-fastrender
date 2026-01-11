@@ -16072,6 +16072,31 @@ impl DisplayListRenderer {
           .map(|_| Instant::now())
       })
       .flatten();
+
+    if let Some((pixmap, x, y)) = self.maybe_rasterize_linear_image_to_device_pixels(item, dest_rect)?
+    {
+      let paint = tiny_skia::PixmapPaint {
+        opacity: self.canvas.opacity(),
+        blend_mode: self.canvas.blend_mode(),
+        // The pixmap has already been sampled onto the final device-pixel grid, so we only need a
+        // nearest-neighbour blit here.
+        quality: FilterQuality::Nearest,
+      };
+      let clip_mask = self.canvas.clip_mask().cloned();
+      let pixmap_ref = pixmap.as_ref();
+      self.canvas.with_mirrored_pixmap_mut(|dest| {
+        dest.draw_pixmap(
+          x,
+          y,
+          pixmap_ref.as_ref(),
+          &paint,
+          Transform::identity(),
+          clip_mask.as_ref(),
+        );
+      });
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
     let Some(pixmap) = self.image_to_pixmap(item)? else {
       return Ok(());
     };
@@ -16174,6 +16199,121 @@ impl DisplayListRenderer {
 
     self.record_background_paint(background_timer);
     Ok(())
+  }
+
+  fn maybe_rasterize_linear_image_to_device_pixels(
+    &mut self,
+    item: &ImageItem,
+    dest_rect_device: Rect,
+  ) -> RenderResult<Option<(Arc<Pixmap>, i32, i32)>> {
+    // tiny-skia's draw-time bilinear filtering can diverge from Chrome/Skia when the destination
+    // rect has a fractional origin or size. That shows up as large page-loop diffs on thumbnail
+    // grids (e.g. `arstechnica.com`).
+    //
+    // For significant downscales, sample directly from `ImageData` into a pixmap whose pixels
+    // correspond to the destination device-pixel grid (including subpixel translation/size). We
+    // then blit that pixmap with a nearest-neighbour transform so no further sampling happens.
+    if item.filter_quality != ImageFilterQuality::Linear {
+      return Ok(None);
+    }
+    if item.src_rect.is_some() {
+      return Ok(None);
+    }
+
+    let transform = self.canvas.transform();
+    if !Self::is_translation_only_transform(transform) {
+      return Ok(None);
+    }
+
+    if dest_rect_device.width() <= 0.0
+      || dest_rect_device.height() <= 0.0
+      || !dest_rect_device.x().is_finite()
+      || !dest_rect_device.y().is_finite()
+      || !dest_rect_device.width().is_finite()
+      || !dest_rect_device.height().is_finite()
+    {
+      return Ok(None);
+    }
+
+    let (src_w, src_h) = (item.image.width, item.image.height);
+    if src_w == 0 || src_h == 0 {
+      return Ok(None);
+    }
+
+    // Compute the destination rect in device space after applying the current translation-only
+    // transform (e.g. tiling offsets).
+    let dx0 = dest_rect_device.min_x() + transform.tx;
+    let dx1 = dest_rect_device.max_x() + transform.tx;
+    let dy0 = dest_rect_device.min_y() + transform.ty;
+    let dy1 = dest_rect_device.max_y() + transform.ty;
+    if !dx0.is_finite() || !dx1.is_finite() || !dy0.is_finite() || !dy1.is_finite() {
+      return Ok(None);
+    }
+
+    let min_x = dx0.min(dx1);
+    let max_x = dx0.max(dx1);
+    let min_y = dy0.min(dy1);
+    let max_y = dy0.max(dy1);
+    let dest_w = max_x - min_x;
+    let dest_h = max_y - min_y;
+    if dest_w <= 0.0 || dest_h <= 0.0 || !dest_w.is_finite() || !dest_h.is_finite() {
+      return Ok(None);
+    }
+
+    // Convert float edges into integer device pixels using the same pixel-center rule as clip mask
+    // rasterization.
+    let mut x0 = (min_x - 0.5).ceil() as i64;
+    let mut y0 = (min_y - 0.5).ceil() as i64;
+    let mut x1 = (max_x - 0.5).ceil() as i64;
+    let mut y1 = (max_y - 0.5).ceil() as i64;
+
+    let w_i64 = self.canvas.width() as i64;
+    let h_i64 = self.canvas.height() as i64;
+    x0 = x0.clamp(0, w_i64);
+    y0 = y0.clamp(0, h_i64);
+    x1 = x1.clamp(0, w_i64);
+    y1 = y1.clamp(0, h_i64);
+    if x1 <= x0 || y1 <= y0 {
+      return Ok(None);
+    }
+
+    let out_w = (x1 - x0) as u32;
+    let out_h = (y1 - y0) as u32;
+
+    let phase_x = x0 as f32 - min_x;
+    let phase_y = y0 as f32 - min_y;
+    let needs_bake =
+      !Self::is_near_integer(phase_x) || !Self::is_near_integer(phase_y) || !Self::is_near_integer(dest_w)
+        || !Self::is_near_integer(dest_h);
+
+    let src_pixels = u64::from(src_w).saturating_mul(u64::from(src_h));
+    let target_pixels = u64::from(out_w).saturating_mul(u64::from(out_h));
+    let should_bake_downscale = Self::should_use_scaled_image_pixmap(item.filter_quality, src_w, src_h, out_w, out_h);
+    let should_bake_upscale = target_pixels > src_pixels && src_pixels <= 64 && target_pixels <= 4096;
+    if should_bake_downscale {
+      // Keep integer-aligned downscales on the existing cached pixmap path; only bake when subpixel
+      // translation/size would diverge.
+      if !needs_bake {
+        return Ok(None);
+      }
+    } else if !should_bake_upscale {
+      return Ok(None);
+    }
+
+    let dest_device = Rect::from_xywh(min_x, min_y, dest_w, dest_h);
+    let Some(pixmap) = image_data_to_scaled_pixmap_with_phase_inner(
+      &item.image,
+      dest_device,
+      out_w,
+      out_h,
+      x0 as f32,
+      y0 as f32,
+    )?
+    else {
+      return Ok(None);
+    };
+
+    Ok(Some((Arc::new(pixmap), x0 as i32, y0 as i32)))
   }
 
   fn render_image_pattern(&mut self, item: &ImagePatternItem) -> Result<()> {
