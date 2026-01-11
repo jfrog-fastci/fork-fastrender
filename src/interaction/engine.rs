@@ -1990,6 +1990,22 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
+fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option<Arc<ComputedStyle>> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(styled_node_id) && node.generated_pseudo.is_none() {
+      return Some(node.style.clone());
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
 fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;
