@@ -133,6 +133,30 @@ fn loom_two_waiters_no_loss() {
   });
 }
 
+#[test]
+fn loom_register_after_settle_wakes_immediately() {
+  loom::model::Builder::new().check(|| {
+    let ready = Box::new(new_ready_queue());
+    let promise = PromiseHeader::new();
+
+    // Settle before the waiter registers. Correct protocols must still avoid
+    // losing the wakeup (the waiter-side post-push state recheck handles this).
+    promise.settle();
+
+    let waiter = Box::new(Coroutine::new(1, &*ready));
+    let waiter_ptr = Box::into_raw(waiter);
+    unsafe { promise.register_waiter(waiter_ptr) };
+
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
+    assert!(promise.is_settled());
+    assert!(promise.waiters_is_empty());
+
+    unsafe {
+      drop(Box::from_raw(waiter_ptr));
+    }
+  });
+}
+
 /// Sanity check: prove the test suite can actually catch the classic lost-wakeup bug.
 ///
 /// If a waiter registers with a lock-free stack but **does not** re-check the promise
