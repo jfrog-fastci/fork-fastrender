@@ -102,6 +102,13 @@ fn resolves_typed_map_and_promise_instance_methods() {
 const m: Map<string, number> = new Map();
 m.has("a");
 m.get("a");
+m.set("a", 1);
+
+const s: string = "ABC";
+s.trim();
+
+const xs: number[] = [1];
+xs.find(x => x === 1);
 
 const p: Promise<number> = Promise.resolve(1);
 p.then(x => x + 1);
@@ -137,6 +144,27 @@ p.then(x => x + 1);
     resolve_call(lower, body_id, body, map_get, &db, Some(&types)).expect("resolve Map.get");
   assert_eq!(resolved.api, "Map.prototype.get");
   assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeGet));
+
+  let map_set_span = range_of(source, "m.set(\"a\", 1)");
+  let map_set = find_call_expr(body, map_set_span);
+  let resolved =
+    resolve_call(lower, body_id, body, map_set, &db, Some(&types)).expect("resolve Map.set");
+  assert_eq!(resolved.api, "Map.prototype.set");
+  assert_eq!(resolved.api_id, None);
+
+  let string_trim_span = range_of(source, "s.trim()");
+  let string_trim = find_call_expr(body, string_trim_span);
+  let resolved =
+    resolve_call(lower, body_id, body, string_trim, &db, Some(&types)).expect("resolve String.trim");
+  assert_eq!(resolved.api, "String.prototype.trim");
+  assert_eq!(resolved.api_id, None);
+
+  let array_find_span = range_of(source, "xs.find(x => x === 1)");
+  let array_find = find_call_expr(body, array_find_span);
+  let resolved =
+    resolve_call(lower, body_id, body, array_find, &db, Some(&types)).expect("resolve Array.find");
+  assert_eq!(resolved.api, "Array.prototype.find");
+  assert_eq!(resolved.api_id, None);
 
   let promise_then_span = range_of(source, "p.then(x => x + 1)");
   let promise_then = find_call_expr(body, promise_then_span);

@@ -393,76 +393,66 @@ pub fn resolve_call(
 
         let prop = static_object_key_name(lower, &member.property)?;
 
-        if types.expr_is_array(body_id, member.object) {
-          if let Some(api_id) = match prop {
-            "map" => Some(ApiId::ArrayPrototypeMap),
-            "filter" => Some(ApiId::ArrayPrototypeFilter),
-            "reduce" => Some(ApiId::ArrayPrototypeReduce),
-            "forEach" => Some(ApiId::ArrayPrototypeForEach),
-            _ => None,
-          } {
-            if let Some(api) = db.get(api_id.as_str()) {
-              return Some(ResolvedCall {
-                call: call_expr,
-                api: api.name.clone(),
-                api_id: Some(api_id),
-                receiver: Some(member.object),
-                args: call.args.iter().map(|arg| arg.expr).collect(),
-              });
+        // Rule B: receiver-type-based prototype method calls. Once the receiver
+        // is proven, resolve any known prototype method name present in the KB.
+        //
+        // Note: Filter out non-function entries (e.g. `Array.prototype.length`)
+        // since we're resolving call expressions here.
+        let resolve_prototype_call =
+          |prefix: &str| -> Option<(String, Option<ApiId>)> {
+            let candidate = format!("{prefix}.prototype.{prop}");
+            let api = db.get(&candidate)?;
+            if !matches!(api.kind, knowledge_base::ApiKind::Function) {
+              return None;
             }
+            Some((api.name.clone(), ApiId::from_kb_name(&api.name)))
+          };
+
+        if types.expr_is_array(body_id, member.object) {
+          if let Some((api, api_id)) = resolve_prototype_call("Array") {
+            return Some(ResolvedCall {
+              call: call_expr,
+              api,
+              api_id,
+              receiver: Some(member.object),
+              args: call.args.iter().map(|arg| arg.expr).collect(),
+            });
           }
         }
 
         if types.expr_is_string(body_id, member.object) {
-          if let Some(api_id) = match prop {
-            "toLowerCase" => Some(ApiId::StringPrototypeToLowerCase),
-            "split" => Some(ApiId::StringPrototypeSplit),
-            _ => None,
-          } {
-            if let Some(api) = db.get(api_id.as_str()) {
-              return Some(ResolvedCall {
-                call: call_expr,
-                api: api.name.clone(),
-                api_id: Some(api_id),
-                receiver: Some(member.object),
-                args: call.args.iter().map(|arg| arg.expr).collect(),
-              });
-            }
+          if let Some((api, api_id)) = resolve_prototype_call("String") {
+            return Some(ResolvedCall {
+              call: call_expr,
+              api,
+              api_id,
+              receiver: Some(member.object),
+              args: call.args.iter().map(|arg| arg.expr).collect(),
+            });
           }
         }
 
         if types.expr_is_named_ref(body_id, member.object, "Map") {
-          if let Some(api_id) = match prop {
-            "get" => Some(ApiId::MapPrototypeGet),
-            "has" => Some(ApiId::MapPrototypeHas),
-            _ => None,
-          } {
-            if let Some(api) = db.get(api_id.as_str()) {
-              return Some(ResolvedCall {
-                call: call_expr,
-                api: api.name.clone(),
-                api_id: Some(api_id),
-                receiver: Some(member.object),
-                args: call.args.iter().map(|arg| arg.expr).collect(),
-              });
-            }
+          if let Some((api, api_id)) = resolve_prototype_call("Map") {
+            return Some(ResolvedCall {
+              call: call_expr,
+              api,
+              api_id,
+              receiver: Some(member.object),
+              args: call.args.iter().map(|arg| arg.expr).collect(),
+            });
           }
         }
 
         if types.expr_is_named_ref(body_id, member.object, "Promise") {
-          if let Some(api_id) = match prop {
-            "then" => Some(ApiId::PromisePrototypeThen),
-            _ => None,
-          } {
-            if let Some(api) = db.get(api_id.as_str()) {
-              return Some(ResolvedCall {
-                call: call_expr,
-                api: api.name.clone(),
-                api_id: Some(api_id),
-                receiver: Some(member.object),
-                args: call.args.iter().map(|arg| arg.expr).collect(),
-              });
-            }
+          if let Some((api, api_id)) = resolve_prototype_call("Promise") {
+            return Some(ResolvedCall {
+              call: call_expr,
+              api,
+              api_id,
+              receiver: Some(member.object),
+              args: call.args.iter().map(|arg| arg.expr).collect(),
+            });
           }
         }
 
