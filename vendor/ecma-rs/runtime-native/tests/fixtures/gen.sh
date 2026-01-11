@@ -57,6 +57,24 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_register_x86_64.bin" \
   "${TMP}/stackmap_register_x86_64.o"
 
+# stackmaps_v3 (x86_64) - a multi-record fixture exercising all location kinds.
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/stackmaps_v3.ll" \
+  -o "${TMP}/stackmaps_v3.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmaps_v3.bin" \
+  "${TMP}/stackmaps_v3.o"
+
+# patchpoint_liveouts (x86_64) - emits a non-empty live-out list.
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/patchpoint_liveouts.ll" \
+  -o "${TMP}/patchpoint_liveouts.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/patchpoint_liveouts.bin" \
+  "${TMP}/patchpoint_liveouts.o"
+
 # statepoint_gcroot2 (rewrite-statepoints-for-gc + stackmaps)
 opt-18 -mtriple=x86_64-unknown-linux-gnu -passes=rewrite-statepoints-for-gc -S \
   "${IR_DIR}/statepoint_gcroot2.ll" \
