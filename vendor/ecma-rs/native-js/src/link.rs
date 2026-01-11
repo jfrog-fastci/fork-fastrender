@@ -106,10 +106,15 @@ impl Default for LinkOpts {
 ///
 /// Keep this in sync with `runtime-native/link/stackmaps*.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
+const LLVM_STACKMAPS_LD_NOPIE_FRAGMENT: &str =
+  include_str!("../../runtime-native/link/stackmaps_nopie.ld");
 const LLVM_STACKMAPS_LD_GNULD_FRAGMENT: &str =
   include_str!("../../runtime-native/link/stackmaps_gnuld.ld");
 
 fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
+  if cfg!(target_os = "linux") && !opts.pie {
+    return LLVM_STACKMAPS_LD_NOPIE_FRAGMENT;
+  }
   // GNU ld + PIE: stackmaps often need to be writable for dynamic relocations.
   // Inserting a writable `.data.rel.ro.*` section immediately after `.text` can
   // result in an RWX segment on GNU ld. Prefer a `.dynamic`-anchored fragment in
