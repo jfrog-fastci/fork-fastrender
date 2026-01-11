@@ -54,7 +54,21 @@ impl<T> GcAwareMutex<T> {
 
   pub fn lock(&self) -> MutexGuard<'_, T> {
     if let Some(g) = self.inner.try_lock() {
-      return g;
+      // Even if the mutex is uncontended, do not allow a registered mutator to continue executing
+      // while a stop-the-world (STW) epoch is active: the GC coordinator may need to acquire
+      // runtime locks under STW, and mutators must not run while the epoch is odd.
+      //
+      // Unregistered threads (not part of STW coordination) and the coordinator itself are allowed
+      // to acquire locks during STW.
+      if threading::registry::current_thread_state().is_some()
+        && !threading::safepoint::in_stop_the_world()
+        && threading::safepoint::current_epoch() & 1 == 1
+      {
+        drop(g);
+        threading::safepoint_poll();
+      } else {
+        return g;
+      }
     }
 
     // Unregistered threads are not part of the mutator registry and therefore
