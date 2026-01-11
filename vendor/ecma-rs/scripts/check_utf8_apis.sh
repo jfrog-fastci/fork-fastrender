@@ -45,7 +45,15 @@ scoped_globs=(
 )
 
 pattern_bytes='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)[^(]+\([^)]*&\[u8\]'
-pattern_vec='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)[^(]+\((?![^)]*&mut\s*Vec<u8>)[^)]*Vec<u8>'
+# We allow byte output buffers like `&mut Vec<u8>`, but we still want to catch
+# any *other* `Vec<u8>` occurrences in the same signature (e.g.
+# `fn f(input: Vec<u8>, out: &mut Vec<u8>)` should be rejected). Use a negative
+# lookbehind anchored on the `Vec<u8>` token rather than skipping any signature
+# that contains `&mut Vec<u8>` at all.
+#
+# Note: ripgrep's PCRE2 integration requires fixed-length lookbehinds, and
+# rustfmt normalizes `&mut Vec<u8>` to contain exactly one whitespace character.
+pattern_vec='pub(?:\s*\([^)]*\))?(?:\s+(?:async|const|unsafe))*\s+fn\s+(?!fuzz_)[^(]+\([^)]*(?<!&mut\s)Vec<u8>'
 
 if rg --pcre2 --multiline -n "${scoped_globs[@]}" "$pattern_bytes" "${scoped_paths[@]}"; then
   echo "error: UTF-8 source-text API policy violation: public API taking \`&[u8]\` found" >&2
