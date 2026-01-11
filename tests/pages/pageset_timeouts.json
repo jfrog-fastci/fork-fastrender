@@ -319,7 +319,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 7100.0
+      "budget_ms": 6900.0
     },
     {
       "name": "cnn.com",
@@ -330,7 +330,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 5200.0
+      "budget_ms": 5000.0
     },
     {
       "name": "techmeme.com",
@@ -451,7 +451,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 5800.0
+      "budget_ms": 5400.0
     },
     {
       "name": "engadget.com",
