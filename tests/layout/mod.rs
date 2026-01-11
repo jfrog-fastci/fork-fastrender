@@ -299,6 +299,7 @@ mod multicol_writing_modes;
 mod bundled_serif_default_line_metrics;
 mod vertical_align_baseline_relative_sign;
 mod vertical_align_middle_inline_replaced;
+mod vertical_align_middle_inline_replaced_margin_bottom;
 mod vertical_align_middle_inline_replaced_in_inline_box;
 mod vertical_align_middle_inline_box_uses_line_height_box;
 mod nested_absolute;

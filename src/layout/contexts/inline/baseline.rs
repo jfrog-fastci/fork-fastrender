@@ -343,7 +343,12 @@ impl LineBaselineAccumulator {
           .and_then(|m| m.x_height.map(|xh| xh.round() * 0.5))
           .or_else(|| parent_metrics.map(|m| m.ascent * 0.5))
           .unwrap_or(0.0);
-        metrics.baseline_offset - (metrics.height * 0.5) - x_height_half
+        // `vertical-align` aligns the inline box itself, not its margins. `BaselineMetrics.height`
+        // includes vertical margins for atomic inline boxes so they participate in line box
+        // sizing, but the midpoint for `middle` should be computed from the border-box height.
+        // Use `line_height` as the border-box proxy (see callers that preserve legacy
+        // `vertical-align:<percentage>` semantics by setting it to the border-box height).
+        metrics.baseline_offset - (metrics.line_height * 0.5) - x_height_half
       }
 
       VerticalAlign::Sub => {
