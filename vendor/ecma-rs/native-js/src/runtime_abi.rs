@@ -99,6 +99,20 @@ fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
       codegen_ret: AbiTy::GcPtr,
       codegen_params: &[AbiTy::I64, AbiTy::I64],
     },
+    RuntimeFn::GlobalRootRegister => RuntimeFnMeta {
+      symbol: "rt_global_root_register",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::RawPtr],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::RawPtr],
+    },
+    RuntimeFn::GlobalRootUnregister => RuntimeFnMeta {
+      symbol: "rt_global_root_unregister",
+      runtime_ret: AbiTy::Void,
+      runtime_params: &[AbiTy::RawPtr],
+      codegen_ret: AbiTy::Void,
+      codegen_params: &[AbiTy::RawPtr],
+    },
     RuntimeFn::GcSafepoint => RuntimeFnMeta {
       symbol: "rt_gc_safepoint",
       runtime_ret: AbiTy::Void,

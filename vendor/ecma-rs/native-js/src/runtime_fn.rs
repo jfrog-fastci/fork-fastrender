@@ -22,6 +22,21 @@ pub enum RuntimeFn {
   /// Arrays have a dynamic size derived from their header, so they use a shared
   /// `TypeDescriptor` and are special-cased by the GC for tracing/sizing.
   AllocArray,
+  /// Register a global/static root slot (`usize*`) with the runtime.
+  ///
+  /// This is used for GC-managed pointers stored in global/static memory (e.g. TypeScript module
+  /// globals, runtime singletons).
+  ///
+  /// Marked as `may_gc` even though it does not allocate in the GC heap: it can contend on a
+  /// GC-aware mutex and enter a GC-safe region while waiting, during which a stop-the-world GC may
+  /// run. Compiled code must therefore treat the callsite as a potential safepoint and ensure stack
+  /// maps exist at the return address.
+  GlobalRootRegister,
+  /// Unregister a global/static root slot previously registered via [`RuntimeFn::GlobalRootRegister`].
+  ///
+  /// Like registration, this can block on GC-aware locks and must be treated as `may_gc` for
+  /// stackmap correctness.
+  GlobalRootUnregister,
   /// Convenience GC safepoint poll (`rt_gc_safepoint()`).
   ///
   /// Compiled code should prefer `GcSafepointSlow` + `RT_GC_EPOCH` polling so the runtime can
@@ -129,6 +144,20 @@ impl RuntimeFn {
       },
       RuntimeFn::AllocArray => RuntimeFnSpec {
         name: "rt_alloc_array",
+        may_gc: true,
+        gc_ptr_args: 0,
+        gc_handle_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GlobalRootRegister => RuntimeFnSpec {
+        name: "rt_global_root_register",
+        may_gc: true,
+        gc_ptr_args: 0,
+        gc_handle_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GlobalRootUnregister => RuntimeFnSpec {
+        name: "rt_global_root_unregister",
         may_gc: true,
         gc_ptr_args: 0,
         gc_handle_args: 0,

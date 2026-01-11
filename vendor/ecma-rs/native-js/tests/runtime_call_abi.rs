@@ -11,6 +11,8 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     RuntimeFn::Alloc,
     RuntimeFn::AllocPinned,
     RuntimeFn::AllocArray,
+    RuntimeFn::GlobalRootRegister,
+    RuntimeFn::GlobalRootUnregister,
     RuntimeFn::GcSafepoint,
     RuntimeFn::GcSafepointSlow,
     RuntimeFn::GcCollect,
