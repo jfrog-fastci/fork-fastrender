@@ -651,7 +651,7 @@ fn classify_array_call(
   if member.optional {
     return None;
   }
-  let ObjectKey::Ident(prop) = member.property else {
+  let hir_js::ObjectKey::Ident(prop) = member.property else {
     return None;
   };
   let prop = lowered.names.resolve(prop)?;

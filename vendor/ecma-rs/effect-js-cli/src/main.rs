@@ -346,6 +346,19 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             ),
           });
         }
+        RecognizedPattern::ArrayChain { base, ops, terminal } => {
+          let span = body.exprs[base.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] ArrayChain: base={} ops={} terminal={terminal:?}",
+              span.start,
+              span.end,
+              base.0,
+              ops.len(),
+            ),
+          });
+        }
         RecognizedPattern::PromiseAllFetch {
           promise_all_call,
           fetch_call_count,

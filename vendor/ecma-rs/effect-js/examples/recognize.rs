@@ -77,6 +77,11 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       "MapFilterReduce(base={}, map_call={}, filter_call={}, reduce_call={})",
       base.0, map_call.0, filter_call.0, reduce_call.0
     ),
+    RecognizedPattern::ArrayChain { base, ops, terminal } => format!(
+      "ArrayChain(base={}, ops={}, terminal={terminal:?})",
+      base.0,
+      ops.len()
+    ),
     RecognizedPattern::PromiseAllFetch {
       promise_all_call,
       fetch_call_count,
@@ -171,6 +176,7 @@ fn run(
         match pat {
           RecognizedPattern::CanonicalCall { .. } => seen.insert("CanonicalCall"),
           RecognizedPattern::MapFilterReduce { .. } => seen.insert("MapFilterReduce"),
+          RecognizedPattern::ArrayChain { .. } => seen.insert("ArrayChain"),
           RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
