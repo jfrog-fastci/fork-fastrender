@@ -152,6 +152,104 @@ fn timeout_rooted_keeps_gc_object_alive_across_gc() {
   }
 }
 
+#[test]
+fn timeout_rooted_releases_gc_object_when_cleared_before_fire() {
+  let mut heap = GcHeap::new();
+  let _rt = TestRuntimeGuard::new();
+  let obj = unsafe { init_test_obj(&mut heap) };
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  // Use a long delay so the timer will still be pending when we clear it.
+  let id = runtime_native::rt_set_timeout_rooted(record_magic, obj, 60_000);
+  assert_ne!(id, 0);
+
+  // Move/collect while the timer is still pending.
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert!(!heap.is_in_nursery(after_gc));
+
+  runtime_native::rt_clear_timer(id);
+
+  // Once cleared, the rooted context must be released.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted timeout was cleared (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+}
+
+#[test]
+fn interval_rooted_keeps_gc_object_alive_until_cleared() {
+  static FIRE_COUNT: AtomicUsize = AtomicUsize::new(0);
+  FIRE_COUNT.store(0, Ordering::Release);
+
+  extern "C" fn interval_record_magic(data: *mut u8) {
+    record_magic(data);
+    FIRE_COUNT.fetch_add(1, Ordering::AcqRel);
+  }
+
+  let mut heap = GcHeap::new();
+  let _rt = TestRuntimeGuard::new();
+  let obj = unsafe { init_test_obj(&mut heap) };
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  // Use a 0ms interval so the callback is due immediately once the event loop is polled.
+  let id = runtime_native::rt_set_interval_rooted(interval_record_magic, obj, 0);
+  assert_ne!(id, 0);
+
+  // Move/collect while the interval is still pending.
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert!(!heap.is_in_nursery(after_gc));
+
+  // Wait for at least one interval callback to run.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    runtime_native::rt_async_poll_legacy();
+    let fired = FIRE_COUNT.load(Ordering::Acquire);
+    let ptr = runtime_native::rt_weak_get(weak);
+    assert!(!ptr.is_null());
+    if fired > 0 {
+      let seen = unsafe { seen_magic_slot(ptr) }.load(Ordering::Acquire);
+      assert_eq!(seen, MAGIC);
+      break;
+    }
+    assert!(Instant::now() < deadline, "interval did not fire in time");
+    std::thread::yield_now();
+  }
+
+  // The interval is still registered, so the object should remain alive.
+  collect_major(&mut heap);
+  assert!(!runtime_native::rt_weak_get(weak).is_null());
+
+  runtime_native::rt_clear_timer(id);
+
+  // After clearing, the root is released and the object can be collected.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted interval was cleared (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+}
+
 #[repr(C)]
 struct BlockCtx {
   started: AtomicUsize,
