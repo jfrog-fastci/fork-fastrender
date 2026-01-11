@@ -67,10 +67,10 @@ fn find_symbol<'data>(file: &object::File<'data>, name: &str) -> Option<(u64, Sy
   None
 }
 
-fn segment_is_readable(flags: object::SegmentFlags) -> bool {
-  // PF_R on ELF is bit 2 (value 4).
+fn segment_is_read_only(flags: object::SegmentFlags) -> bool {
+  // PF_W/PF_R on ELF are bits 1/2 (values 2/4).
   match flags {
-    object::SegmentFlags::Elf { p_flags } => (p_flags & 4) != 0,
+    object::SegmentFlags::Elf { p_flags } => (p_flags & 4) != 0 && (p_flags & 2) == 0,
     _ => true,
   }
 }
@@ -141,11 +141,10 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     let seg_addr = seg.address();
     let seg_end = seg_addr + seg.size();
     let flags = seg.flags();
-    if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+    if seg_addr <= section_addr && section_end <= seg_end && segment_is_read_only(flags) {
       in_readable_segment = true;
       break;
     }
   }
   assert!(in_readable_segment, ".llvm_stackmaps not in a readable segment");
 }
-
