@@ -10681,13 +10681,10 @@ impl DisplayListBuilder {
     }
 
     match replaced_type {
-      // Chrome renders a broken-image icon inside a 1px border, leaving the content area itself
-      // transparent. Filling the entire box creates huge mismatches on pages that purposefully
-      // style the background behind the `<img>` (including dark themes).
+      // Chrome renders a broken-image icon inside a small 1px-bordered square and leaves the
+      // image box itself transparent. Drawing a full-frame placeholder border creates large
+      // mismatches on real pages (including dark themes) and does not match Chrome's behavior.
       ReplacedType::Image { .. } => {
-        let stroke_color = Rgba::rgb(192, 192, 192);
-        emit_inside_border(&mut self.list, content_rect, stroke_color);
-
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
         let icon_inset = 2.0;
@@ -15345,8 +15342,10 @@ mod tests {
         _ => None,
       })
       .expect("expected image display item");
-    assert_eq!(img.image.width, 1);
-    assert_eq!(img.image.height, 1);
+    // Replaced SVGs are rasterized at their used size so `preserveAspectRatio` is applied in the
+    // correct viewport.
+    assert_eq!(img.image.width, 10);
+    assert_eq!(img.image.height, 10);
   }
 
   #[test]
@@ -17186,11 +17185,15 @@ mod tests {
         _ => None,
       })
       .expect("Expected image item");
-    assert_eq!(img.image.width, 1);
-    assert_eq!(img.image.height, 1);
+    // Replaced SVGs are rasterized at their used size so `preserveAspectRatio` is applied in the
+    // correct viewport.
+    assert_eq!(img.image.width, 10);
+    assert_eq!(img.image.height, 10);
     let pixels = img.image.pixels.as_ref();
-    assert_eq!(pixels.len(), 4);
-    assert_eq!(pixels, &[255, 0, 0, 255]);
+    assert_eq!(pixels.len(), 10 * 10 * 4);
+    assert!(pixels
+      .chunks_exact(4)
+      .all(|px| px == [255, 0, 0, 255]));
   }
 
   #[test]
@@ -17375,8 +17378,10 @@ mod tests {
         _ => None,
       })
       .expect("expected image item for embed");
-    assert_eq!(embed_img.image.width, 2);
-    assert_eq!(embed_img.image.height, 2);
+    // Replaced SVGs are rasterized at their used size so `preserveAspectRatio` is applied in the
+    // correct viewport.
+    assert_eq!(embed_img.image.width, 10);
+    assert_eq!(embed_img.image.height, 10);
 
     let object_fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -17394,8 +17399,10 @@ mod tests {
         _ => None,
       })
       .expect("expected image item for object");
-    assert_eq!(object_img.image.width, 2);
-    assert_eq!(object_img.image.height, 2);
+    // Replaced SVGs are rasterized at their used size so `preserveAspectRatio` is applied in the
+    // correct viewport.
+    assert_eq!(object_img.image.width, 10);
+    assert_eq!(object_img.image.height, 10);
   }
 
   #[test]
@@ -18212,13 +18219,13 @@ mod tests {
     assert!(text.advance_width > 0.0);
     assert!(
       list.items().iter().any(|item| {
-        matches!(
-          item,
-          DisplayItem::FillRect(fill)
-            if fill.rect == Rect::from_xywh(0.0, 0.0, 50.0, 1.0)
-        )
+        matches!(item, DisplayItem::FillRect(_))
       }),
-      "Expected placeholder border for missing image"
+      "Expected placeholder items for missing image"
+    );
+    assert!(
+      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 50.0, 1.0))),
+      "Missing images should not draw a full-frame border (Chrome only borders the icon)"
     );
   }
 
@@ -18322,7 +18329,7 @@ mod tests {
   }
 
   #[test]
-  fn missing_image_without_alt_emits_placeholder() {
+  fn missing_image_without_alt_emits_no_placeholder_when_too_small() {
     let fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 40.0, 10.0),
       ReplacedType::Image {
@@ -18340,14 +18347,9 @@ mod tests {
     let builder = DisplayListBuilder::new();
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 4, "expected 1px border placeholder items");
-    assert!(list
-      .items()
-      .iter()
-      .all(|item| matches!(item, DisplayItem::FillRect(_))));
     assert!(
-      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 10.0))),
-      "missing images should not fill the entire content rect"
+      list.is_empty(),
+      "Chrome suppresses the broken-image icon for very small boxes; we should not emit a placeholder"
     );
   }
 
@@ -18375,18 +18377,21 @@ mod tests {
         matches!(
           item,
           DisplayItem::FillRect(fill)
-            if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0)
+            if fill.rect == Rect::from_xywh(2.0, 2.0, 16.0, 1.0)
         )
       }),
-      "expected broken-image border placeholder"
+      "expected broken-image icon border placeholder"
     );
     assert!(
-      list.len() > 4,
+      list.len() >= 8,
       "expected broken-image icon items"
     );
     assert!(
-      !list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 40.0))),
-      "missing images should not fill the entire content rect"
+      !list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.rect == Rect::from_xywh(0.0, 0.0, 40.0, 1.0))),
+      "missing images should not draw a full-frame border"
     );
   }
 
