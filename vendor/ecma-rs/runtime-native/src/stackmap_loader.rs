@@ -840,6 +840,7 @@ fn find_stackmap_section_vaddr_and_size(
   Ok(None)
 }
 
+#[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 fn find_symbol_addr_and_optional_section(
   obj: &object::File<'_>,
   name: &str,
