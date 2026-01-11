@@ -1,7 +1,8 @@
 use crate::thread;
 use crate::Thread;
-use parking_lot::Mutex;
-use parking_lot::RwLock;
+use crate::sync::GcAwareMutex;
+use crate::sync::GcAwareRwLock;
+use crate::threading::safepoint::StopReason;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
@@ -10,12 +11,17 @@ use std::sync::atomic::Ordering;
 /// At the moment this only manages thread attachment and provides a registry of
 /// all threads that are currently attached to the runtime.
 pub struct Runtime {
-  // Read-locked during normal execution. Future GC will take the write-lock to
-  // establish a stop-the-world phase where the thread registry can be iterated
-  // without concurrent attach/detach.
-  world_lock: RwLock<()>,
+  // Read-locked during normal execution. Used to establish stop-the-world phases where the thread
+  // registry can be iterated without concurrent attach/detach.
+  //
+  // This is a GC-aware lock: contended acquisition temporarily enters a GC-safe ("native") region
+  // while blocked so global stop-the-world safepoints don't deadlock on threads waiting for this
+  // lock.
+  world_lock: GcAwareRwLock<()>,
 
-  registry: Mutex<Registry>,
+  // Likewise, the registry mutex is GC-aware so contended attach/detach can be treated as
+  // quiescent for STW coordination.
+  registry: GcAwareMutex<Registry>,
 
   next_thread_id: AtomicU32,
 }
@@ -35,8 +41,8 @@ unsafe impl Send for Registry {}
 impl Runtime {
   pub fn new() -> Self {
     Self {
-      world_lock: RwLock::new(()),
-      registry: Mutex::new(Registry::default()),
+      world_lock: GcAwareRwLock::new(()),
+      registry: GcAwareMutex::new(Registry::default()),
       // Start IDs at 1 so 0 can be used as a sentinel in native code if needed.
       next_thread_id: AtomicU32::new(1),
     }
@@ -151,12 +157,23 @@ impl Runtime {
   ///
   /// While the returned guard is alive, thread attach/detach is blocked.
   ///
-  /// This is only a placeholder; future work will also coordinate safepoints so
-  /// that all threads are parked before GC scans stacks.
-  pub fn stop_the_world(&self) -> StopTheWorldGuard<'_> {
+  /// This only blocks attach/detach to this [`Runtime`]; use [`Self::stop_the_world`] to also
+  /// coordinate global GC safepoints.
+  pub fn stop_the_world_guard(&self) -> StopTheWorldGuard<'_> {
     StopTheWorldGuard {
       _guard: self.world_lock.write(),
     }
+  }
+
+  /// Run `f` under a global stop-the-world GC safepoint, while also blocking thread attach/detach
+  /// for this [`Runtime`].
+  pub fn stop_the_world<F, R>(&self, reason: StopReason, f: F) -> R
+  where
+    F: FnOnce() -> R,
+  {
+    // Block attach/detach while the world is stopped.
+    let _world = self.world_lock.write();
+    crate::threading::safepoint::stop_the_world(reason, f)
   }
 
   /// Iterate all attached threads while in a stop-the-world phase.

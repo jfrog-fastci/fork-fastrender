@@ -69,7 +69,7 @@ fn stop_the_world_blocks_attach() {
   let main_id = guard.thread().id;
 
   // Hold an STW guard while another thread tries to attach.
-  let stw = runtime.stop_the_world();
+  let stw = runtime.stop_the_world_guard();
 
   let (tx_started, rx_started) = mpsc::channel();
   let (tx_attached, rx_attached) = mpsc::channel();
