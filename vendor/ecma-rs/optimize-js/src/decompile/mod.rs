@@ -840,7 +840,7 @@ mod tests {
   #[test]
   fn lower_return_undefined_emits_return_void_0() {
     let mut bblocks = CfgBBlocks::default();
-    bblocks.add(0, vec![Inst::ret(Arg::Const(Const::Undefined))]);
+    bblocks.add(0, vec![Inst::ret(Some(Arg::Const(Const::Undefined)))]);
     let func = ProgramFunction {
       debug: None,
       body: Cfg {
@@ -859,7 +859,7 @@ mod tests {
     let mut decompiler =
       FunctionDecompiler::new(&func, &bindings, &options, TempDeclScope::Function, labeled);
 
-    let inst = Inst::ret(Arg::Const(Const::Undefined));
+    let inst = Inst::ret(Some(Arg::Const(Const::Undefined)));
     let stmt = decompiler
       .lower_inst(&inst)
       .expect("lower inst")

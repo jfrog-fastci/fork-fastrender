@@ -69,7 +69,7 @@ fn manual_function_with_unreachable_block(inst: Inst) -> ProgramFunction {
 #[test]
 fn decompile_stops_after_return() {
   let func =
-    manual_function_with_unreachable_block(Inst::ret(Arg::Const(Const::Num(JsNumber(1.0)))));
+    manual_function_with_unreachable_block(Inst::ret(Some(Arg::Const(Const::Num(JsNumber(1.0))))));
   let stmts = decompile_function(&func).expect("decompile");
   assert!(
     stmts.iter().any(|stmt| matches!(stmt.stx.as_ref(), Stmt::Return(_))),

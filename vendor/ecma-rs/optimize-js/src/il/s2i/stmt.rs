@@ -882,8 +882,8 @@ impl<'p> HirSourceToInst<'p> {
           ));
         }
         let value = match value {
-          Some(expr) => self.compile_expr(*expr)?,
-          None => Arg::Const(Const::Undefined),
+          Some(expr) => Some(self.compile_expr(*expr)?),
+          None => None,
         };
         self.out.push(Inst::ret(value));
         Ok(())
@@ -966,7 +966,7 @@ pub fn translate_body(
     // Reaching the end of a function body in JS implicitly returns `undefined`.
     // We append this unconditionally; if the function already returns/throws on
     // all paths, CFG pruning will drop the unreachable trailing block.
-    compiler.out.push(Inst::ret(Arg::Const(Const::Undefined)));
+    compiler.out.push(Inst::ret(None));
   }
   Ok((compiler.out, compiler.c_label, compiler.c_temp, params))
 }

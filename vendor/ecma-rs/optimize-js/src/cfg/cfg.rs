@@ -422,7 +422,7 @@ mod tests {
   fn from_bblocks_does_not_fallthrough_after_return() {
     let insts = vec![
       Inst::var_assign(0, Arg::Const(Const::Num(JsNumber(1.0)))),
-      Inst::ret(Arg::Var(0)),
+      Inst::ret(Some(Arg::Var(0))),
       Inst::var_assign(1, Arg::Const(Const::Num(JsNumber(2.0)))),
     ];
     let mut c_label = Counter::new(1);

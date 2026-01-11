@@ -38,7 +38,9 @@ fn function_return_is_lowered_to_return_inst_with_value() {
       continue;
     }
     saw_return = true;
-    let value = inst.as_return();
+    let Some(value) = inst.as_return() else {
+      continue;
+    };
     match value {
       Arg::Const(Const::Num(n)) if *n == JsNumber(1.0) => {
         saw_return_1 = true;

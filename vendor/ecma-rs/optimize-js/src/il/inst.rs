@@ -492,8 +492,10 @@ pub enum InstTyp {
   VarAssign,  // tgts[0] = args[0]
   PropAssign, // args[0][args[1]] = args[2]
   CondGoto,   // goto labels[0] if args[0] else labels[1]
-  /// Return from the current body (function). `args[0]` is the returned value.
-  /// (Use `undefined` for implicit `return;` / falling off the end.)
+  /// Return from the current body (function).
+  ///
+  /// If `args` is empty, the return value is implicitly `undefined`; otherwise `args[0]` is the
+  /// returned value.
   Return,
   /// Throw from the current body (function or top-level). `args[0]` is the thrown value.
   Throw,
@@ -700,10 +702,10 @@ impl Inst {
     }
   }
 
-  pub fn ret(value: Arg) -> Self {
+  pub fn ret(value: Option<Arg>) -> Self {
     Self {
       t: InstTyp::Return,
-      args: vec![value],
+      args: value.into_iter().collect(),
       ..Default::default()
     }
   }
@@ -815,9 +817,9 @@ impl Inst {
     (&self.args[0], self.labels[0], self.labels[1])
   }
 
-  pub fn as_return(&self) -> &Arg {
+  pub fn as_return(&self) -> Option<&Arg> {
     assert_eq!(self.t, InstTyp::Return);
-    &self.args[0]
+    self.args.get(0)
   }
 
   pub fn as_throw(&self) -> &Arg {

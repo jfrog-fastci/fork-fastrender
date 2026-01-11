@@ -241,7 +241,7 @@ fn return_statement_emits_return_inst_with_value() {
     for (_, block) in func.body.bblocks.all() {
       for inst in block {
         if inst.t == InstTyp::Return
-          && inst.as_return() == &Arg::Const(Const::Num(JsNumber(1.0)))
+          && inst.as_return() == Some(&Arg::Const(Const::Num(JsNumber(1.0))))
         {
           found = true;
         }
