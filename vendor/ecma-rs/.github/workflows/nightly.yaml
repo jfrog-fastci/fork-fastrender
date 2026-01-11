@@ -13,6 +13,8 @@ env:
 jobs:
   full:
     runs-on: ubuntu-24.04
+    env:
+      LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
     steps:
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
@@ -27,7 +29,19 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: |
+          set -euo pipefail
+
+          # `native-js` depends on LLVM (via `llvm-sys`) so nightly must provide a
+          # sufficiently new toolchain when it becomes a workspace member.
+          sudo apt-get update
+          sudo apt-get install -y ripgrep wget gpg
+
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-snapshot.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm18.list
+
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev clang-18 lld-18
 
       # The workspace ignores Cargo.lock; generate it per-run so --locked is
       # usable for reproducible resolution in CI.
