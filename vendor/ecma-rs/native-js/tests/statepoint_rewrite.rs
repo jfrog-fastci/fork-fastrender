@@ -538,6 +538,61 @@ fn gc_pointer_select_is_relocated_across_safepoint() {
 }
 
 #[test]
+fn gc_pointer_phi_is_relocated_across_safepoint() {
+  // Similar to the `select` case, but exercising a control-flow `phi` value
+  // (common in SSA-form lowered from branching JS code).
+  let before = r#"
+  declare void @bar()
+
+  define ptr addrspace(1) @test(i1 %cond, ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
+  entry:
+    br i1 %cond, label %t, label %f
+
+  t:
+    br label %join
+
+  f:
+    br label %join
+
+  join:
+    %p = phi ptr addrspace(1) [ %a, %t ], [ %b, %f ]
+    call void @bar()
+    ret ptr addrspace(1) %p
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let gc_live = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live,
+    vec!["%p".to_string()],
+    "expected statepoint gc-live to contain only %p, got {gc_live:?}\n\n{func}"
+  );
+
+  let reloc_line = expect_relocate_line(&func, "%p", "%p");
+  let relocated_p =
+    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %p relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("ret ptr addrspace(1) {relocated_p}")),
+    "expected function to return relocated %p value {relocated_p}:\n{func}"
+  );
+}
+
+#[test]
 fn multiple_gc_roots_are_relocated_with_correct_indices() {
   // Common JS runtime scenario: multiple GC pointers are simultaneously live
   // across a safepoint (e.g. multiple locals/temps across a runtime call).
