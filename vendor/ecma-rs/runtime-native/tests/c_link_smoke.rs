@@ -103,7 +103,6 @@ int main(void) {
   .expect("write smoke.c");
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-
   // On Linux, `runtime-native` uses a linker-script based mechanism to expose the
   // in-memory `.llvm_stackmaps` section via `__llvm_stackmaps_start/end` symbols.
   // When linking from C directly (bypassing Cargo/rustc), we must pass the same
@@ -114,19 +113,13 @@ int main(void) {
     None
   };
 
-  let mut compile = Command::new(cc);
-  compile
+  let compile = Command::new(cc)
     .arg("-std=c99")
     .arg("-I")
     .arg(&include_dir)
     .arg(&c_path)
-    .arg(&staticlib);
-
-  if let Some(stackmaps_ld) = &stackmaps_ld {
-    compile.arg(format!("-Wl,-T,{}", stackmaps_ld.display()));
-  }
-
-  let compile = compile
+    .arg(&staticlib)
+    .args(stackmaps_ld.as_ref().map(|p| format!("-Wl,-T,{}", p.display())))
     .arg("-o")
     .arg(&bin_path)
     .status()

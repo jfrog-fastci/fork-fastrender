@@ -92,6 +92,7 @@ clang-18 \
   -std=c11 \
   -Wall -Wextra -Werror \
   -I "${ECMA_RS_ROOT}/runtime-native/include" \
+  -Wl,-T,"${ECMA_RS_ROOT}/runtime-native/stackmaps.ld" \
   "${ECMA_RS_ROOT}/runtime-native/examples/ffi_smoke.c" \
   "${staticlib}" \
   -o "${out_bin}" \
