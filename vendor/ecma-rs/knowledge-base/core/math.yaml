@@ -78,6 +78,70 @@
     nondeterministic: false
   purity: Pure
 
+- name: Math.trunc
+  semantics: Trunc
+  signature: "(x: number) => number"
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.sign
+  semantics: Sign
+  signature: "(x: number) => number"
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.imul
+  semantics: Imul
+  signature: "(a: number, b: number) => number"
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Math.clz32
+  semantics: Clz32
+  signature: "(x: number) => number"
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
 - name: Math.PI
   kind: value
   async: false

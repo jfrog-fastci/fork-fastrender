@@ -351,4 +351,13 @@ mod tests {
     assert_eq!(sem.purity, Purity::Pure);
     assert_eq!(sem.effects, EffectSet::MAY_THROW);
   }
+
+  #[test]
+  fn math_trunc_is_pure() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Math.trunc").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Pure);
+    assert_eq!(sem.effects, EffectSet::MAY_THROW);
+  }
 }
