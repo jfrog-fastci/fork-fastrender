@@ -88,6 +88,7 @@ fn preserve_3d_root_mask_applies_to_composed_scene_output() {
       mode: layer_style.mode,
       composite: layer_style.composite,
     }],
+    text_clip: None,
     color: Rgba::BLACK,
     used_dark_color_scheme: false,
     forced_colors: false,

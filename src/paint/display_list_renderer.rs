@@ -137,6 +137,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
+use std::rc::Rc;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8583,7 +8584,57 @@ impl DisplayListRenderer {
       (bounds_css, clip_css)
     };
 
+    let wants_text_clip = mask
+      .layers
+      .iter()
+      .any(|layer| matches!(layer.clip, MaskClip::Text));
+    let text_clip_runs = mask.text_clip.as_deref();
+    let has_text_clip_runs = text_clip_runs.is_some_and(|runs| !runs.is_empty());
+    let text_clip_bounds_css = text_clip_runs.map(crate::paint::display_list::text_runs_bounds);
+    let text_clip_mask: Option<Rc<Mask>> = if wants_text_clip && has_text_clip_runs {
+      let scaled: Vec<TextItem> = text_clip_runs
+        .unwrap_or(&[])
+        .iter()
+        .map(|run| self.scale_text_item(run))
+        .collect();
+
+      // Rasterize a text alpha mask once per `render_mask` call and re-use it for any layers that
+      // specify `mask-clip: text`. Use `Canvas::set_clip_text` to keep serial vs tiled output
+      // byte-identical (it includes padding/cropping logic to avoid seams at tile boundaries).
+      self.canvas.save();
+      self.canvas.clear_clip();
+      let clip_result = self.canvas.set_clip_text(&scaled);
+      let clip_mask = self.canvas.clip_mask_rc();
+      self.canvas.restore();
+
+      clip_result.map_err(|err| match err {
+        Error::Render(render_err) => render_err,
+        other => RenderError::PaintFailed {
+          operation: other.to_string(),
+        },
+      })?;
+
+      clip_mask
+    } else {
+      None
+    };
+
     for layer in mask.layers.iter().rev() {
+      // When `mask-clip:text` is specified but no text runs were captured for the masked subtree,
+      // treat the layer as fully transparent (matching typical browser behavior).
+      if matches!(layer.clip, MaskClip::Text) && !has_text_clip_runs {
+        combined = Some(match combined.take() {
+          Some(existing) => {
+            match apply_mask_composite(existing, CompositeMask::Transparent, layer.composite)? {
+              Some(mask) => mask,
+              None => return Ok(None),
+            }
+          }
+          None => CompositeMask::Transparent,
+        });
+        continue;
+      }
+
       let origin_rect_css = match layer.origin {
         MaskOrigin::BorderBox => rects.border,
         MaskOrigin::PaddingBox => rects.padding,
@@ -8592,7 +8643,8 @@ impl DisplayListRenderer {
       let clip_rect_css = match layer.clip {
         MaskClip::BorderBox => rects.border,
         MaskClip::PaddingBox => rects.padding,
-        MaskClip::ContentBox | MaskClip::Text => rects.content,
+        MaskClip::ContentBox => rects.content,
+        MaskClip::Text => text_clip_bounds_css.unwrap_or(rects.content),
         MaskClip::NoClip => canvas_bounds_css,
       };
       if origin_rect_css.width() <= 0.0
@@ -8920,6 +8972,9 @@ impl DisplayListRenderer {
         mask
       };
 
+      let apply_text_clip = matches!(layer.clip, MaskClip::Text);
+      let text_clip_mask_ref = text_clip_mask.as_deref();
+
       let rendered_layer = MASK_LAYER_PIXMAP_SCRATCH.with(|cell| -> RenderResult<Option<()>> {
         let mut scratch = cell.borrow_mut();
         let replace = match scratch.pixmap.as_ref() {
@@ -8975,13 +9030,11 @@ impl DisplayListRenderer {
                 self.scale,
                 dest_origin_device,
               );
-            }
+          }
           }
         }
 
-        let mut alpha_deadline_counter = 0usize;
         let expected_len = (region_w as usize).saturating_mul(region_h as usize);
-        let mut src_idx = 3usize;
         let src = mask_pixmap.data();
         debug_assert_eq!(
           layer_mask.data().len(),
@@ -8993,18 +9046,57 @@ impl DisplayListRenderer {
           expected_len.saturating_mul(4),
           "expected scratch mask pixmap to be tightly packed RGBA"
         );
-        for dst_chunk in layer_mask.data_mut().chunks_mut(CLIP_MASK_DEADLINE_STRIDE) {
-          check_active_periodic(&mut alpha_deadline_counter, 1, RenderStage::Paint)?;
-          for dst in dst_chunk.iter_mut() {
-            *dst = src[src_idx];
-            src_idx += 4;
+
+        if !apply_text_clip {
+          let mut alpha_deadline_counter = 0usize;
+          let mut src_idx = 3usize;
+          for dst_chunk in layer_mask.data_mut().chunks_mut(CLIP_MASK_DEADLINE_STRIDE) {
+            check_active_periodic(&mut alpha_deadline_counter, 1, RenderStage::Paint)?;
+            for dst in dst_chunk.iter_mut() {
+              *dst = src[src_idx];
+              src_idx += 4;
+            }
           }
+          debug_assert_eq!(
+            src_idx,
+            expected_len.saturating_mul(4).saturating_add(3),
+            "expected to copy exactly one alpha byte per RGBA pixel"
+          );
+        } else if let Some(text_mask) = text_clip_mask_ref {
+          debug_assert_eq!(
+            text_mask.width(),
+            self.canvas.width(),
+            "expected text clip mask width to match canvas width"
+          );
+          debug_assert_eq!(
+            text_mask.height(),
+            self.canvas.height(),
+            "expected text clip mask height to match canvas height"
+          );
+
+          let text_stride = text_mask.width() as usize;
+          let text_data = text_mask.data();
+          let row_len = region_w as usize;
+          let dst = layer_mask.data_mut();
+          let mut alpha_deadline_counter = 0usize;
+          for row in 0..region_h as usize {
+            let dst_row_idx = row * row_len;
+            let src_row_idx = row * row_len * 4;
+            let text_row_idx = (pix_y0 as usize + row) * text_stride + pix_x0 as usize;
+            for x0 in (0..row_len).step_by(CLIP_MASK_DEADLINE_STRIDE) {
+              check_active_periodic(&mut alpha_deadline_counter, 1, RenderStage::Paint)?;
+              let x1 = (x0 + CLIP_MASK_DEADLINE_STRIDE).min(row_len);
+              for x in x0..x1 {
+                let alpha = src[src_row_idx + x * 4 + 3] as u16;
+                let clip = text_data[text_row_idx + x] as u16;
+                dst[dst_row_idx + x] = div_255(alpha * clip) as u8;
+              }
+            }
+          }
+        } else {
+          // If no text clip mask is available, treat the layer as fully transparent.
+          layer_mask.data_mut().fill(0);
         }
-        debug_assert_eq!(
-          src_idx,
-          expected_len.saturating_mul(4).saturating_add(3),
-          "expected to copy exactly one alpha byte per RGBA pixel"
-        );
         Ok(Some(()))
       });
       let rendered_layer = rendered_layer?;
@@ -27563,6 +27655,7 @@ mod tests {
     };
     let mask = ResolvedMask {
       layers: vec![resolved_layer],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -27694,6 +27787,7 @@ mod tests {
     ];
     let mask = ResolvedMask {
       layers: resolved_layers,
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -27778,6 +27872,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -27849,6 +27944,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -27917,6 +28013,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -27980,6 +28077,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28027,6 +28125,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28094,6 +28193,7 @@ mod tests {
         mode: layer_style.mode,
         composite: layer_style.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28163,6 +28263,7 @@ mod tests {
 
     let mask = ResolvedMask {
       layers: vec![layer.clone(), layer],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28224,6 +28325,7 @@ mod tests {
 
     let mask = ResolvedMask {
       layers: vec![layer],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28302,6 +28404,7 @@ mod tests {
           composite: outer.composite,
         },
       ],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28373,6 +28476,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28434,6 +28538,7 @@ mod tests {
           composite: MaskComposite::Add,
         },
       ],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,
@@ -28490,6 +28595,7 @@ mod tests {
         mode: layer.mode,
         composite: layer.composite,
       }],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,

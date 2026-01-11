@@ -1727,6 +1727,14 @@ pub struct ResolvedMask {
   /// Individual mask layers (ordered from closest to the element outward).
   pub layers: Vec<ResolvedMaskLayer>,
 
+  /// Optional text runs used by `mask-clip: text`.
+  ///
+  /// When any mask layer specifies [`MaskClip::Text`], the display list builder records the union
+  /// of painted text runs for the element subtree (same semantics as `background-clip: text`).
+  /// The renderer can then rasterize these glyph outlines into an alpha mask and intersect it with
+  /// the mask layer before compositing.
+  pub text_clip: Option<Arc<[TextItem]>>,
+
   /// Current color for resolving `currentColor` stops.
   pub color: Rgba,
 

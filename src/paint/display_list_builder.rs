@@ -146,6 +146,7 @@ use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::Isolation;
+use crate::style::types::MaskClip;
 use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
@@ -2873,7 +2874,15 @@ impl DisplayListBuilder {
     let root_fragment_rect =
       root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
-    let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
+    let mut mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
+    if mask
+      .as_ref()
+      .is_some_and(|mask| mask.layers.iter().any(|layer| matches!(layer.clip, MaskClip::Text)))
+    {
+      if let (Some(mask), Some(fragment)) = (mask.as_mut(), root_fragment) {
+        mask.text_clip = self.build_text_clip_runs(fragment, root_fragment_offset, visibility);
+      }
+    }
     let style_has_mask_border = root_style.is_some_and(|style| style.mask_border.is_active());
     let mask_border =
       root_style.and_then(|style| self.resolve_mask_border(style, root_border_bounds));
@@ -4491,6 +4500,7 @@ impl DisplayListBuilder {
 
     Some(ResolvedMask {
       layers,
+      text_clip: None,
       color: style.color,
       used_dark_color_scheme: style.used_dark_color_scheme,
       forced_colors: style.forced_colors,

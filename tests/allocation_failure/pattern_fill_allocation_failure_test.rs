@@ -54,6 +54,7 @@ fn simple_mask(image: ResolvedMaskImage, mode: MaskMode, bounds: Rect) -> Resolv
       mode,
       composite: MaskComposite::Add,
     }],
+    text_clip: None,
     color: Rgba::BLACK,
     used_dark_color_scheme: false,
     forced_colors: false,

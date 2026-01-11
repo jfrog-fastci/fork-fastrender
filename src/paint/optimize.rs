@@ -2071,6 +2071,7 @@ mod tests {
     };
     let mask = ResolvedMask {
       layers: vec![layer],
+      text_clip: None,
       color: Rgba::BLACK,
       used_dark_color_scheme: false,
       forced_colors: false,

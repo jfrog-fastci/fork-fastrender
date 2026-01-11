@@ -164,6 +164,7 @@ fn patterned_mask(bounds: Rect) -> ResolvedMask {
       mode: MaskMode::Alpha,
       composite: MaskComposite::Add,
     }],
+    text_clip: None,
     color: Rgba::BLACK,
     used_dark_color_scheme: false,
     forced_colors: false,
