@@ -220,6 +220,7 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
     Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, CORO_FLAG_RUNTIME_OWNS_FRAME,
     RT_ASYNC_ABI_VERSION,
   };
+  use runtime_native::CoroutineId;
   use std::sync::atomic::{AtomicU8, AtomicUsize};
 
   #[repr(C)]
@@ -302,7 +303,7 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
   });
   let coro_ref = Box::into_raw(coro) as *mut Coroutine;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
-  let _ = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
+  let _ = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
 
   while runtime_native::rt_async_poll() {}
   assert_eq!(

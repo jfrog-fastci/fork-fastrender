@@ -17,8 +17,8 @@
 
 use crate::abi::PromiseRef;
 use crate::async_abi::PromiseHeader;
+use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ struct Tracker {
   events: Vec<PromiseRejectionEvent>,
 }
 
-static TRACKER: Lazy<Mutex<Tracker>> = Lazy::new(|| Mutex::new(Tracker::default()));
+static TRACKER: Lazy<GcAwareMutex<Tracker>> = Lazy::new(|| GcAwareMutex::new(Tracker::default()));
 
 #[inline]
 fn promise_header_ptr(p: PromiseRef) -> *mut PromiseHeader {

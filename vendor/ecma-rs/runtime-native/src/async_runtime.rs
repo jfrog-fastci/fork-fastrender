@@ -9,7 +9,6 @@
 //!    (heap-owned vs stack-owned frames, and destroy-once semantics).
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,6 +17,7 @@ use crate::async_abi::{
   Coroutine, CoroutineRef, CORO_FLAG_DESTROYED, CORO_FLAG_RUNTIME_OWNS_FRAME,
 };
 use crate::CoroutineId;
+use crate::sync::GcAwareMutex;
 
 // -----------------------------------------------------------------------------
 // Microtask checkpoint helpers
@@ -25,8 +25,8 @@ use crate::CoroutineId;
 
 pub(crate) type MicrotaskCheckpointEndHook = Box<dyn FnMut() + Send + 'static>;
 
-static MICROTASK_CHECKPOINT_END_HOOK: Lazy<Mutex<Option<MicrotaskCheckpointEndHook>>> =
-  Lazy::new(|| Mutex::new(None));
+static MICROTASK_CHECKPOINT_END_HOOK: Lazy<GcAwareMutex<Option<MicrotaskCheckpointEndHook>>> =
+  Lazy::new(|| GcAwareMutex::new(None));
 
 thread_local! {
   static PERFORMING_MICROTASK_CHECKPOINT: Cell<bool> = const { Cell::new(false) };
@@ -57,7 +57,7 @@ const DEFAULT_MAX_READY_QUEUE_LEN: usize = 100_000;
 static MAX_READY_STEPS_PER_POLL: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_READY_STEPS_PER_POLL);
 static MAX_READY_QUEUE_LEN: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_READY_QUEUE_LEN);
 
-static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static LAST_ERROR: Lazy<GcAwareMutex<Option<String>>> = Lazy::new(|| GcAwareMutex::new(None));
 
 pub(crate) fn reset_for_tests() {
   PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
@@ -164,7 +164,7 @@ struct AsyncCoroState {
   live_owned: HashSet<CoroutineId>,
 }
 
-static CORO_STATE: Lazy<Mutex<AsyncCoroState>> = Lazy::new(|| Mutex::new(AsyncCoroState {
+static CORO_STATE: Lazy<GcAwareMutex<AsyncCoroState>> = Lazy::new(|| GcAwareMutex::new(AsyncCoroState {
   queued: VecDeque::new(),
   live_owned: HashSet::new(),
 }));
