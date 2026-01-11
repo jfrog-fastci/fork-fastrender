@@ -39,29 +39,35 @@ pub fn patch_html_bytes(
   font-weight: 100 1000;
   font-style: normal;
 }
+ @font-face {
+   font-family: "DejaVu Sans";
+   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+   font-weight: 100 1000;
+   font-style: normal;
+ }
+ @font-face {
+   font-family: Verdana;
+   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+   font-weight: 100 1000;
+   font-style: normal;
+ }
+ @font-face {
+   font-family: Geneva;
+   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+   font-weight: 100 1000;
+   font-style: normal;
+ }
 @font-face {
-  font-family: "DejaVu Sans";
+  font-family: Tahoma;
   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
   font-weight: 100 1000;
   font-style: normal;
 }
-@font-face {
-  font-family: Verdana;
-  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
-  font-weight: 100 1000;
-  font-style: normal;
-}
-@font-face {
-  font-family: Geneva;
-  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
-  font-weight: 100 1000;
-  font-style: normal;
-}
-@font-face {
-  font-family: Arial;
-  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
-  font-weight: 100 1000;
-  font-style: normal;
+ @font-face {
+   font-family: Arial;
+   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+   font-weight: 100 1000;
+   font-style: normal;
 }
 @font-face {
   font-family: Helvetica;
@@ -93,12 +99,12 @@ pub fn patch_html_bytes(
   font-weight: 100 1000;
   font-style: normal;
 }
-@font-face {
-  font-family: Cantarell;
-  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
-  font-weight: 100 1000;
-  font-style: normal;
-}
+ @font-face {
+   font-family: Cantarell;
+   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+   font-weight: 100 1000;
+   font-style: normal;
+ }
 @font-face {
   font-family: "DejaVu Serif";
   src: url("../../../fixtures/fonts/STIXTwoMath-Regular.otf") format("opentype");
@@ -351,6 +357,10 @@ mod tests {
     assert!(
       output_str.contains("Geneva"),
       "patched HTML should alias common legacy sans-serif fonts to bundled fonts"
+    );
+    assert!(
+      output_str.contains("Tahoma"),
+      "patched HTML should alias common Windows system fonts to bundled fonts"
     );
     assert!(
       output_str.contains("NotoSansMono-subset.ttf"),

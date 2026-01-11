@@ -1825,41 +1825,35 @@ impl Canvas {
 
     // Snap in *device* space so the resulting fill is stable under translated canvases
     // (e.g. tile-based rendering).
+    //
+    // We intentionally do *not* require that the rect edges are already near integer pixels. Chrome
+    // / Skia fill axis-aligned opaque rectangles without anti-aliasing, so pixels are covered based
+    // on their centers (inclusive on the min edge, exclusive on the max edge). Using the same
+    // pixel-center rule avoids blended seams/border "bleed" when layout produces fractional edges
+    // like `left: 2.8px` or `height: 51.6px`.
     let x0 = rect.min_x();
     let x1 = rect.max_x();
     let y0 = rect.min_y();
     let y1 = rect.max_y();
 
-    let dx0 = x0 * transform.sx + transform.tx;
-    let dx1 = x1 * transform.sx + transform.tx;
-    let dy0 = y0 * transform.sy + transform.ty;
-    let dy1 = y1 * transform.sy + transform.ty;
+    // Use the rounded translation when snapping. This keeps tile-based rendering stable even when
+    // the translation carries small floating-point error (we already ensured the error is tiny).
+    let dx0 = x0 + tx_round;
+    let dx1 = x1 + tx_round;
+    let dy0 = y0 + ty_round;
+    let dy1 = y1 + ty_round;
     if !dx0.is_finite() || !dx1.is_finite() || !dy0.is_finite() || !dy1.is_finite() {
       return None;
     }
 
-    let dx0s = dx0.round();
-    let dx1s = dx1.round();
-    let dy0s = dy0.round();
-    let dy1s = dy1.round();
+    // A pixel at integer coordinate `i` is filled if its center `i + 0.5` is inside the rect:
+    // `dx0 <= i + 0.5 < dx1`. Solve this for `i` to obtain an integer device-space bounding box.
+    let start_x = (dx0.min(dx1) - 0.5).ceil();
+    let end_x = (dx0.max(dx1) - 0.5).ceil();
+    let start_y = (dy0.min(dy1) - 0.5).ceil();
+    let end_y = (dy0.max(dy1) - 0.5).ceil();
 
-    // Only snap when the rect edges already land very close to integer device pixels. This keeps
-    // the snapping path effective at fixing float noise / seam issues, without quantizing real
-    // subpixel translations (e.g. during transforms/animations) and changing the visual output.
-    if (dx0 - dx0s).abs() > NEAR_INTEGER_EPSILON_PX
-      || (dx1 - dx1s).abs() > NEAR_INTEGER_EPSILON_PX
-      || (dy0 - dy0s).abs() > NEAR_INTEGER_EPSILON_PX
-      || (dy1 - dy1s).abs() > NEAR_INTEGER_EPSILON_PX
-    {
-      return None;
-    }
-
-    let min_x = dx0s.min(dx1s);
-    let max_x = dx0s.max(dx1s);
-    let min_y = dy0s.min(dy1s);
-    let max_y = dy0s.max(dy1s);
-
-    Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
+    Some(Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y))
   }
 
   /// Fast path for axis-aligned `source-over` rectangle fills.
