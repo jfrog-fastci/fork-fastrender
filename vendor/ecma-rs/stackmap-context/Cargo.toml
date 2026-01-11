@@ -13,3 +13,8 @@ default = []
 # Optional runtime test that validates AArch64 SP/PC extraction using `getcontext` in a signal
 # handler. This is intended for running on real AArch64 hardware/CI.
 aarch64-signal-test = []
+
+[[test]]
+name = "signal_ucontext_aarch64"
+path = "tests/signal_ucontext_aarch64.rs"
+required-features = ["aarch64-signal-test"]
