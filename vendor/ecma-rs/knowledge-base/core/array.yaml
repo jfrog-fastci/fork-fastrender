@@ -139,3 +139,10 @@
   purity: ReadOnly
   properties:
     returns: number
+
+- name: Array.isArray
+  semantics: IsArray
+  signature: "(value) => boolean"
+  since: "baseline"
+  effects: Pure
+  purity: Pure

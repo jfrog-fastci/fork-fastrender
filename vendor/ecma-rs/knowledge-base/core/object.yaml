@@ -66,3 +66,23 @@
     nondeterministic: false
   purity:
     template: allocating
+
+- name: Object.is
+  semantics: ObjectIs
+  signature: "(value1, value2) => boolean"
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: Object.hasOwn
+  semantics: ObjectHasOwn
+  signature: "(object, propertyKey) => boolean"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
