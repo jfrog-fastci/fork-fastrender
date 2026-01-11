@@ -899,7 +899,9 @@
     operator_type: aggregation
 
 - name: rxjs.Observable.prototype.subscribe
-  aliases: []
+  aliases:
+    - rxjs.Subject.prototype.subscribe
+    - rxjs.BehaviorSubject.prototype.subscribe
   semantics: Subscribe
   since: "v0.1.0"
   purity:
@@ -1138,7 +1140,9 @@
     operator_type: flattening
 
 - name: rxjs.Observable.prototype.pipe
-  aliases: []
+  aliases:
+    - rxjs.Subject.prototype.pipe
+    - rxjs.BehaviorSubject.prototype.pipe
   semantics: Pipe
   since: "v0.1.0"
   purity:
@@ -1173,7 +1177,7 @@
     kind: subscription_method
 
 - name: rxjs.Subject.prototype.next
-  aliases: []
+  aliases: [rxjs.BehaviorSubject.prototype.next]
   semantics: Next
   since: "v0.1.0"
   purity:
@@ -1191,7 +1195,7 @@
     calls_observers: true
 
 - name: rxjs.Subject.prototype.error
-  aliases: []
+  aliases: [rxjs.BehaviorSubject.prototype.error]
   semantics: Error
   since: "v0.1.0"
   purity:
@@ -1209,7 +1213,7 @@
     calls_observers: true
 
 - name: rxjs.Subject.prototype.complete
-  aliases: []
+  aliases: [rxjs.BehaviorSubject.prototype.complete]
   semantics: Complete
   since: "v0.1.0"
   purity:
@@ -1227,7 +1231,7 @@
     calls_observers: true
 
 - name: rxjs.Subject.prototype.asObservable
-  aliases: []
+  aliases: [rxjs.BehaviorSubject.prototype.asObservable]
   semantics: AsObservable
   since: "v0.1.0"
   purity:
