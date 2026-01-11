@@ -71,7 +71,19 @@ cargo run -p native-js-cli -- build --project ./tsconfig.json src/main.ts --emit
 
 ## Diagnostics
 
-Diagnostics are printed to stderr with file/line context. On compilation errors:
+Diagnostics are printed to stderr with file/line context using the shared
+`diagnostics` renderer (same style as `typecheck-ts-cli`):
+
+```text
+error[NJS0001]: `any` is not allowed in native-js strict mode
+ --> main.ts:1:1
+  |
+1 | function f(): any { return 1; }
+  |               ^^^
+  = note: add a precise type annotation or refactor to avoid `any`
+```
+
+On compilation errors:
 
 - the CLI exits with a non-zero exit code
 - emitted outputs (IR/object) are not written (or are removed if partially written)
