@@ -16,55 +16,61 @@ impl RegFile for FakeRegs {
 
 fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
   let sm = StackMap::parse(bytes).unwrap();
-  assert_eq!(sm.records.len(), 1);
-  let rec = &sm.records[0];
-
   assert!(
-    rec.locations.len() >= LLVM18_STATEPOINT_HEADER_CONSTANTS,
-    "need at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} locations, got {}",
-    rec.locations.len()
+    !sm.records.is_empty(),
+    "expected fixture to contain at least one stackmap record"
   );
 
-  // 3 leading constants.
-  for i in 0..LLVM18_STATEPOINT_HEADER_CONSTANTS {
+  for (rec_idx, rec) in sm.records.iter().enumerate() {
     assert!(
-      matches!(rec.locations[i], Location::Constant { .. } | Location::ConstIndex { .. }),
-      "expected locations[{i}] to be a constant header, got {:?}",
-      rec.locations[i]
+      rec.locations.len() >= LLVM18_STATEPOINT_HEADER_CONSTANTS,
+      "need at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} locations, got {} (record #{rec_idx})",
+      rec.locations.len()
+    );
+
+    // 3 leading constants.
+    for i in 0..LLVM18_STATEPOINT_HEADER_CONSTANTS {
+      assert!(
+        matches!(rec.locations[i], Location::Constant { .. } | Location::ConstIndex { .. }),
+        "expected locations[{i}] to be a constant header, got {:?} (record #{rec_idx})",
+        rec.locations[i]
+      );
+    }
+
+    // Remaining entries: SP-relative Indirect locations (LLVM 18 observed output).
+    for (i, loc) in rec.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..].iter().enumerate() {
+      match *loc {
+        Location::Indirect {
+          size,
+          dwarf_reg,
+          offset: _,
+        } => {
+          assert_eq!(
+            size, 8,
+            "expected 8-byte pointer slots, got size={size} at remaining index {i} (record #{rec_idx})"
+          );
+          assert_eq!(
+            dwarf_reg, sp_reg,
+            "expected SP dwarf_reg={sp_reg}, got dwarf_reg={dwarf_reg} at remaining index {i} (record #{rec_idx})"
+          );
+        }
+        _ => panic!(
+          "expected remaining locations to be Indirect (SP-based), got {loc:?} at remaining index {i} (record #{rec_idx})"
+        ),
+      }
+    }
+
+    // Decode statepoint base/derived pairs.
+    let sp = StatepointRecord::new(rec).unwrap();
+    assert_eq!(
+      sp.gc_pairs().len(),
+      (rec.locations.len() - LLVM18_STATEPOINT_HEADER_CONSTANTS) / 2
     );
   }
 
-  // Remaining entries: SP-relative Indirect locations (LLVM 18 observed output).
-  for (i, loc) in rec.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..].iter().enumerate() {
-    match *loc {
-      Location::Indirect {
-        size,
-        dwarf_reg,
-        offset: _,
-      } => {
-        assert_eq!(
-          size, 8,
-          "expected 8-byte pointer slots, got size={size} at remaining index {i}"
-        );
-        assert_eq!(
-          dwarf_reg, sp_reg,
-          "expected SP dwarf_reg={sp_reg}, got dwarf_reg={dwarf_reg} at remaining index {i}"
-        );
-      }
-      _ => panic!(
-        "expected remaining locations to be Indirect (SP-based), got {loc:?} at remaining index {i}"
-      ),
-    }
-  }
-
-  // Decode statepoint base/derived pairs.
-  let sp = StatepointRecord::new(rec).unwrap();
-  assert_eq!(
-    sp.gc_pairs().len(),
-    (rec.locations.len() - LLVM18_STATEPOINT_HEADER_CONSTANTS) / 2
-  );
-
   // Evaluate one location with a fake regfile (SP=0x1000).
+  let rec = &sm.records[0];
+  let sp = StatepointRecord::new(rec).unwrap();
   let first_base = sp.gc_pairs()[0].base;
   let offset = match *first_base {
     Location::Indirect { offset, .. } => offset,
