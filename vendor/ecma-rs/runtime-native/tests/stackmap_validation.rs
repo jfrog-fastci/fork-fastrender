@@ -15,6 +15,10 @@ fn has_cmd(cmd: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_cmd<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+  candidates.iter().copied().find(|c| has_cmd(c))
+}
+
 fn run(cmd: &mut Command) {
   let out = cmd.output().expect("failed to spawn command");
   if !out.status.success() {
@@ -187,14 +191,13 @@ fn stackmap_conformance_matrix() {
     return;
   }
 
+  let Some(ld_lld) = find_cmd(&["ld.lld-18", "ld.lld"]) else {
+    eprintln!("skipping stackmap_conformance_matrix: lld not found in PATH (need ld.lld-18 or ld.lld)");
+    return;
+  };
+
   // Keep this test optional in minimal environments (mirrors other runtime-native LLVM tests).
-  let required = [
-    "llvm-as-18",
-    "opt-18",
-    "llc-18",
-    "llvm-objcopy-18",
-    "ld.lld-18",
-  ];
+  let required = ["llvm-as-18", "opt-18", "llc-18", "llvm-objcopy-18"];
   if !required.iter().all(|c| has_cmd(c)) {
     eprintln!("skipping stackmap_conformance_matrix: LLVM 18 tools not found in PATH");
     return;
@@ -244,7 +247,7 @@ fn stackmap_conformance_matrix() {
 
   let merged_obj = dir.path().join("merged.o");
   run(
-    Command::new("ld.lld-18")
+    Command::new(ld_lld)
       .arg("-r")
       .arg("-o")
       .arg(&merged_obj)
