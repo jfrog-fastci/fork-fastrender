@@ -64,6 +64,7 @@ fn run_main(source: &str) -> i32 {
     "expected sample to pass strict validation, got: {strict_diags:#?}"
   );
   let entrypoint = strict::entrypoint(&program, file).expect("valid entrypoint");
+  let ts_main_sym = native_js::llvm_symbol_for_def(&program, entrypoint.main_def);
 
   let context = Context::create();
   let module = codegen::codegen(
@@ -121,7 +122,10 @@ fn run_main(source: &str) -> i32 {
 
   unsafe {
     let main = engine
-      .get_function::<unsafe extern "C" fn() -> i32>("main")
+      // native-js codegen emits a C `main` wrapper that prints the TS return value and returns an
+      // exit code. For these JIT-level statement tests we want the raw TS result value, so call the
+      // TS `main` function directly.
+      .get_function::<unsafe extern "C" fn() -> i32>(&ts_main_sym)
       .expect("get main");
     main.call()
   }
