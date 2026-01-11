@@ -42,6 +42,12 @@ pub use patterns::{
   recognize_patterns, ExprPatternTables, RecognizePatternsResult, RecognizedPatternId,
   StmtPatternTables,
 };
+pub use semantic_patterns::{
+  recognize_pattern_tables as recognize_semantic_pattern_tables,
+  recognize_patterns as recognize_semantic_patterns, ArrayOp as SemanticArrayOp,
+  PatternTables as SemanticPatternTables, RecognizedPattern as SemanticPattern,
+  RecognizedPatternId as SemanticPatternId,
+};
 pub use recognize::{
   recognize_patterns_best_effort_untyped, recognize_patterns_untyped, ArrayChainOp, ArrayTerminal,
   GuardKind, RecognizedPattern,
@@ -126,6 +132,7 @@ mod tests {
 
 pub mod patterns;
 pub mod properties;
+pub mod semantic_patterns;
 
 pub fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
   template.base_effects()

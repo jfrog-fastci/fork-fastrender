@@ -177,6 +177,33 @@ fn receiver_is_array(types: &dyn crate::types::TypeProvider, body: BodyId, recv:
 }
 
 #[cfg(feature = "typed")]
+fn receiver_is_array_method_receiver(
+  lowered: &LowerResult,
+  body: BodyId,
+  recv: ExprId,
+  types: &dyn crate::types::TypeProvider,
+) -> bool {
+  if receiver_is_array(types, body, recv) {
+    return true;
+  }
+
+  // `typecheck-ts` can leave intermediate chain results as `unknown`, so allow
+  // `arr.map(...).filter(...)` to be treated as an array receiver when the
+  // receiver is itself a proven array-returning array method call.
+  let Some(expr) = expr(lowered, body, recv) else {
+    return false;
+  };
+  if !matches!(expr.kind, ExprKind::Call(_)) {
+    return false;
+  }
+
+  matches!(
+    resolve_api_call_typed(lowered, body, recv, types),
+    Some(ApiId::ArrayPrototypeMap | ApiId::ArrayPrototypeFilter)
+  )
+}
+
+#[cfg(feature = "typed")]
 fn receiver_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
   types.expr_is_string(body, recv)
 }
@@ -196,7 +223,7 @@ pub fn resolve_api_call_typed(
   lowered: &LowerResult,
   body: BodyId,
   call_expr: ExprId,
-  types: &impl crate::types::TypeProvider,
+  types: &dyn crate::types::TypeProvider,
 ) -> Option<ApiId> {
   // Always allow resolution for HIR-only safe APIs first.
   if let Some(api) = resolve_api_call_untyped(lowered, body, call_expr) {
@@ -226,14 +253,18 @@ pub fn resolve_api_call_typed(
   let prop = ident_name(lowered, prop)?;
 
   match prop {
-    "map" if receiver_is_array(types, body, member.object) => Some(ApiId::ArrayPrototypeMap),
-    "filter" if receiver_is_array(types, body, member.object) => {
+    "map" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
+      Some(ApiId::ArrayPrototypeMap)
+    }
+    "filter" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
       Some(ApiId::ArrayPrototypeFilter)
     }
-    "reduce" if receiver_is_array(types, body, member.object) => {
+    "reduce" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
       Some(ApiId::ArrayPrototypeReduce)
     }
-    "forEach" if receiver_is_array(types, body, member.object) => Some(ApiId::ArrayPrototypeForEach),
+    "forEach" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
+      Some(ApiId::ArrayPrototypeForEach)
+    }
     "toLowerCase" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeToLowerCase),
     "split" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeSplit),
     "get" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
@@ -456,17 +487,16 @@ pub fn resolve_call(
         //
         // Note: Filter out non-function entries (e.g. `Array.prototype.length`)
         // since we're resolving call expressions here.
-        let resolve_prototype_call =
-          |prefix: &str| -> Option<(String, Option<ApiId>)> {
-            let candidate = format!("{prefix}.prototype.{prop}");
-            let api = db.get(&candidate)?;
-            if !matches!(api.kind, knowledge_base::ApiKind::Function) {
-              return None;
-            }
-            Some((api.name.clone(), ApiId::from_kb_name(&api.name)))
-          };
+        let resolve_prototype_call = |prefix: &str| -> Option<(String, Option<ApiId>)> {
+          let candidate = format!("{prefix}.prototype.{prop}");
+          let api = db.get(&candidate)?;
+          if !matches!(api.kind, knowledge_base::ApiKind::Function) {
+            return None;
+          }
+          Some((api.name.clone(), ApiId::from_kb_name(&api.name)))
+        };
 
-        if types.expr_is_array(body_id, member.object) {
+        if receiver_is_array_method_receiver(lower, body_id, member.object, types) {
           if let Some((api, api_id)) = resolve_prototype_call("Array") {
             return Some(ResolvedCall {
               call: call_expr,
@@ -840,7 +870,9 @@ pub fn resolve_member(
   let prop = ident_name(lowered, prop)?;
 
   let api = match prop {
-    "length" if receiver_is_array(types, body, member.object) => ApiId::ArrayPrototypeLength,
+    "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
+      ApiId::ArrayPrototypeLength
+    }
     "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
     "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
     _ => return None,
