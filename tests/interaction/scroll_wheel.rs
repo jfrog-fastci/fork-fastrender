@@ -447,7 +447,7 @@ fn wheel_scroll_bounds_ignore_viewport_fixed_descendants() {
 }
 
 #[test]
-fn wheel_scroll_clamps_to_negative_scroll_bounds() {
+fn wheel_scroll_ignores_negative_scrollable_overflow() {
   let scroll_container = block_with_id(
     1,
     Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
@@ -483,7 +483,7 @@ fn wheel_scroll_clamps_to_negative_scroll_bounds() {
 
   assert_eq!(
     next.element_offset(1),
-    Point::new(0.0, -50.0),
-    "wheel scroll should clamp to the true min scroll bound"
+    Point::ZERO,
+    "negative overflow should not allow negative scroll offsets"
   );
 }

@@ -125,7 +125,7 @@ fn anchor_scroll_clamps_to_max_scroll_y() {
 }
 
 #[test]
-fn anchor_scroll_allows_negative_scroll_bounds() {
+fn anchor_scroll_clamps_negative_targets_to_zero() {
   let dom = document_with_child(element("div", vec![("id", "target")], vec![]));
   let target_ptr = &dom.children[0] as *const DomNode;
   let id_map = dom::enumerate_dom_ids(&dom);
@@ -162,8 +162,8 @@ fn anchor_scroll_allows_negative_scroll_bounds() {
     scroll_offset_for_fragment_target(&dom, &box_tree, &fragment_tree, "target", viewport)
       .expect("should find #target");
   assert_eq!(
-    offset.y, -50.0,
-    "anchor scrolling should clamp using true scroll bounds (which can be negative)"
+    offset.y, 0.0,
+    "anchor scrolling should clamp to the minimum scroll offset (0)"
   );
 }
 

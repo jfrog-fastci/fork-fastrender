@@ -182,7 +182,8 @@ pub fn scroll_offset_for_fragment_target(
   // Note: `FragmentTree::content_size()` includes additional fragment roots (e.g. viewport-fixed
   // layers). For scrolling we want the scroll bounds of the root scroll container, which:
   // - ignores viewport-fixed descendants, and
-  // - can have a negative min when content extends into negative coordinates.
+  // - matches browser scroll range semantics (negative overflow does not allow negative scroll
+  //   offsets).
   let bounds = build_scroll_chain(&fragment_tree.root, viewport, &[])
     .first()
     .map(|state| state.bounds);

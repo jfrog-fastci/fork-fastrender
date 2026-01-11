@@ -351,3 +351,70 @@ fn viewport_scroll_bounds_respect_left_scrollbar_reservation() {
     chain[0].bounds
   );
 }
+
+#[test]
+fn viewport_scroll_bounds_ignore_negative_descendant_overflow() {
+  // Wikipedia's search button uses `text-indent:-9999px` to visually hide the label. That creates a
+  // descendant fragment far to the left of the viewport, but browsers do not expand the document's
+  // horizontal scroll range for negative overflow.
+  let hidden_label = FragmentNode::new_block(Rect::from_xywh(-9999.0, 0.0, 10.0, 10.0), vec![]);
+  let icon = FragmentNode::new_block(Rect::from_xywh(250.0, 0.0, 10.0, 10.0), vec![hidden_label]);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![icon]);
+
+  let mut tree = FragmentTree::with_viewport(root, Size::new(800.0, 600.0));
+  tree.ensure_scroll_metadata();
+
+  assert!(
+    tree.root.scroll_overflow.min_x() < 0.0,
+    "test requires negative scrollable overflow; got {:#?}",
+    tree.root.scroll_overflow
+  );
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[]);
+  assert_eq!(chain.len(), 1);
+  assert!(
+    chain[0].bounds.min_x.abs() < 1e-3 && chain[0].bounds.max_x.abs() < 1e-3,
+    "viewport scroll bounds should ignore negative overflow; got {:#?}",
+    chain[0].bounds
+  );
+}
+
+#[test]
+fn element_scroll_bounds_ignore_negative_overflow_origin() {
+  // The scrollable range should be determined by the bottom/right-most edge of the content. Any
+  // content overflowing to the left/top should be clipped but not reachable via negative scroll
+  // offsets.
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.overflow_x = Overflow::Scroll;
+  let scroller_style = Arc::new(scroller_style);
+
+  // Content extends 50px past the right edge ([-50,150] inside a 100px viewport).
+  let child = FragmentNode::new_block(Rect::from_xywh(-50.0, 0.0, 200.0, 10.0), vec![]);
+  let scroller = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 10.0),
+    vec![child],
+    scroller_style,
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![scroller]);
+
+  let mut tree = FragmentTree::with_viewport(root, Size::new(100.0, 10.0));
+  tree.ensure_scroll_metadata();
+
+  let overflow = tree.root.children_ref()[0].scroll_overflow;
+  assert!(
+    overflow.min_x() < 0.0,
+    "test requires negative scrollable overflow; got {:#?}",
+    overflow
+  );
+
+  let chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
+  assert!(
+    chain.len() >= 1,
+    "expected scroll chain to include the element scroller"
+  );
+  assert!(
+    chain[0].bounds.min_x.abs() < 1e-3 && (chain[0].bounds.max_x - 50.0).abs() < 1e-3,
+    "element scroll bounds should ignore negative overflow while preserving positive range; got {:#?}",
+    chain[0].bounds
+  );
+}

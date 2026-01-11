@@ -1646,8 +1646,12 @@ pub(crate) fn scroll_bounds_for_fragment(
     );
   }
 
-  let min_x = bounds.min_x.min(0.0);
-  let min_y = bounds.min_y.min(0.0);
+  // Scroll offsets are expressed relative to the scrollport start edge (the padding edge after
+  // accounting for borders/gutters). Browsers clamp scroll offsets to non-negative values; content
+  // that overflows to the left/top (e.g. `text-indent:-9999px` visually-hidden labels) does not
+  // expand the scrollable range.
+  let min_x = 0.0;
+  let min_y = 0.0;
   let max_x = (bounds.max_x - viewport.width).max(min_x);
   let max_y = (bounds.max_y - viewport.height).max(min_y);
 
