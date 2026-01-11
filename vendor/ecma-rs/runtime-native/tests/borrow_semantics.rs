@@ -20,6 +20,18 @@ fn in_flight_borrow_blocks_slice_access() {
     ArrayBufferError::Borrow(BorrowError::Borrowed)
   );
   assert_eq!(
+    buf.detach().unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
+    buf.transfer().unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
+    buf.resize(16).unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
     buf.try_with_slice(|_| ()).unwrap_err(),
     ArrayBufferError::Borrow(BorrowError::Borrowed)
   );
@@ -59,10 +71,22 @@ fn io_op_holds_borrow_until_drop() {
 
 #[test]
 fn write_borrow_exclusive_across_io_ops() {
-  let buf = ArrayBuffer::new_zeroed(1).unwrap();
+  let mut buf = ArrayBuffer::new_zeroed(1).unwrap();
 
   let _read1 = buf.try_borrow_io_read().unwrap();
   let _read2 = buf.try_borrow_io_read().unwrap();
+  assert_eq!(
+    buf.detach().unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
+    buf.transfer().unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
+    buf.resize(16).unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
   assert_eq!(
     buf.try_borrow_io_write().err().unwrap(),
     ArrayBufferError::Borrow(BorrowError::Borrowed)

@@ -285,6 +285,9 @@ impl ArrayBuffer {
     if store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
+    if store.is_io_borrowed() {
+      return Err(ArrayBufferError::Borrow(BorrowError::Borrowed));
+    }
 
     drop(self.backing_store.take());
     self.byte_len = 0;
@@ -312,6 +315,9 @@ impl ArrayBuffer {
     if store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
+    if store.is_io_borrowed() {
+      return Err(ArrayBufferError::Borrow(BorrowError::Borrowed));
+    }
 
     let byte_len = self.byte_len;
     let backing_store = self.backing_store.take();
@@ -333,6 +339,9 @@ impl ArrayBuffer {
   pub fn resize(&mut self, _new_len: usize) -> Result<(), ArrayBufferError> {
     if self.pin_count() != 0 {
       return Err(ArrayBufferError::Pinned);
+    }
+    if self.is_io_borrowed() {
+      return Err(ArrayBufferError::Borrow(BorrowError::Borrowed));
     }
     Err(ArrayBufferError::Unimplemented)
   }

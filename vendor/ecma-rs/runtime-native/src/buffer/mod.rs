@@ -11,6 +11,9 @@
 //! > Any operation that would change a buffer's backing store identity or size (detach, transfer,
 //! > resize) must fail while the backing store is pinned (`pin_count > 0`).
 //!
+//! The async I/O layer also borrows backing stores to enforce a sound aliasing model. While a backing
+//! store is I/O-borrowed, detach/transfer/resize are rejected with `BorrowError::Borrowed`.
+//!
 //! Detach/transfer are implemented with a simple state machine:
 //! `Alive -> Detached` (`ArrayBuffer::is_detached`).
 //!

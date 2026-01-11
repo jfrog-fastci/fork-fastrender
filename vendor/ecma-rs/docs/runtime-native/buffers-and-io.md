@@ -91,6 +91,8 @@ async I/O:
 
 - Submitting an I/O operation borrows the backing store until completion/cancel.
 - While borrowed, host-safe access to backing bytes is rejected.
+- While borrowed, backing-store invalidation operations (`detach`, `transfer`, `resize`) are also
+  rejected.
 
 #### Deviation from Node/Web APIs
 

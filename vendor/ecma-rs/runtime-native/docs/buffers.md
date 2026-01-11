@@ -56,6 +56,9 @@ Any operation that would change backing store identity or size must check `pin_c
 In MVP:
 
 - `detach` and `transfer` return deterministic `*Error::Pinned` failures while pinned.
+- `detach`, `transfer`, and `resize` are also rejected while the backing store is I/O-borrowed
+  (`BorrowError::Borrowed`). (In the async I/O layer, borrows and pins are both held for the
+  duration of the op; pinned takes precedence in error reporting.)
 - resizable ArrayBuffers are **not supported yet**, but `ArrayBuffer::resize(..)` exists as a
   placeholder and still enforces the same pin-count check before returning `ArrayBufferError::Unimplemented`.
 

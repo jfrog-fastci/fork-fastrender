@@ -84,6 +84,9 @@ flight. `runtime-native`'s async I/O layer also borrows backing stores (`BorrowG
 `BorrowGuardWrite`) to enforce a sound aliasing model; see the canonical contract in
 `docs/runtime-native/buffers-and-io.md`.
 
+While a backing store is I/O-borrowed, backing-store invalidation operations (`detach`, `transfer`,
+`resize`) are also rejected.
+
 The byte pointer itself comes from the non-moving backing store, so it is stable
 for as long as the backing store remains alive and is not detached/transferred/resized;
 pinning is what makes that lifetime explicit for async I/O.
