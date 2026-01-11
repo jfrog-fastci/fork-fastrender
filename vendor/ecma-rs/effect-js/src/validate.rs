@@ -370,15 +370,15 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 
     // Catch obvious semantic contradictions.
     if matches!(api.purity, PurityTemplate::Pure) {
-      if api
-        .effect_summary
-        .flags
-        .intersects(EffectSet::IO | EffectSet::NETWORK)
-      {
+      // `effect_summary` is meant to reflect the base effects of `effects` (even
+      // for callback-dependent templates), but some external callers may
+      // construct entries with only one of them. Be conservative and check both.
+      let combined = api.effects.base_effects() | api.effect_summary.to_effect_set();
+      if combined.intersects(EffectSet::IO | EffectSet::NETWORK) {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
           purity: api.purity.clone(),
-          effects: api.effect_summary,
+          effects: combined.to_effect_summary(),
         });
       }
     }
