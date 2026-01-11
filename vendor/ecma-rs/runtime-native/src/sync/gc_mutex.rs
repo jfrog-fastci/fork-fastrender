@@ -2,6 +2,12 @@ use crate::threading;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 
+impl<T> std::fmt::Debug for GcAwareMutex<T> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("GcAwareMutex").finish_non_exhaustive()
+  }
+}
+
 /// A `parking_lot::Mutex` wrapper that is aware of the runtime's stop-the-world
 /// safepoint mechanism.
 ///
@@ -59,4 +65,3 @@ impl<T: Default> Default for GcAwareMutex<T> {
     Self::new(T::default())
   }
 }
-
