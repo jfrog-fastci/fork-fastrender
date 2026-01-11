@@ -556,6 +556,13 @@ fn direct_eval_executes_string_source() {
 }
 
 #[test]
+fn direct_eval_inside_with_resolves_identifiers_from_with_object() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var o = { x: 1 }; with (o) { eval("x") }"#).unwrap();
+  assert_eq!(value, Value::Number(1.0));
+}
+
+#[test]
 fn template_literal_with_substitution_concatenates() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"`a${1}b`"#).unwrap();
