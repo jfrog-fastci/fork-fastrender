@@ -112,6 +112,92 @@ fn generated_vmjs_webidl_bindings_include_attributes_and_constants() {
 }
 
 #[test]
+fn generated_vmjs_webidl_bindings_emits_symbol_iterator_for_iterables() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      iterable<DOMString, DOMString>;
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+  assert!(
+    compact.contains("PropertyKey::from_symbol(realm.well_known_symbols().iterator)"),
+    "expected vm-js bindings to define @@iterator for iterable interfaces"
+  );
+  assert!(
+    compact.contains(
+      "define_data_property(proto_foo,iterator_key,Value::Object(func),DataPropertyAttributes::METHOD"
+    ),
+    "expected @@iterator to alias the iterable's default iterator method"
+  );
+}
+
+#[test]
+fn generated_vmjs_webidl_bindings_emits_symbol_async_iterator_for_async_iterables() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      async iterable<DOMString, DOMString>;
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+  assert!(
+    compact.contains("PropertyKey::from_symbol(realm.well_known_symbols().async_iterator)"),
+    "expected vm-js bindings to define @@asyncIterator for async iterable interfaces"
+  );
+  assert!(
+    compact.contains(
+      "define_data_property(proto_foo,iterator_key,Value::Object(func),DataPropertyAttributes::METHOD"
+    ),
+    "expected @@asyncIterator to alias the iterable's default iterator method"
+  );
+}
+
+#[test]
 fn generated_vmjs_webidl_bindings_uses_min_required_arg_count_for_overload_length() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()

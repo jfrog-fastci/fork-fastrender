@@ -2025,7 +2025,6 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         proto_var = proto_var,
         length = length,
       ));
-
       if iterable_iterator_alias.is_some_and(|target| target == op_name.as_str()) {
         if iface.iterable.as_ref().is_some_and(|it| it.async_) {
           out.push_str(&format!(
