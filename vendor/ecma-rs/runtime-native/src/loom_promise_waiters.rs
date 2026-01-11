@@ -41,7 +41,7 @@ pub fn new_ready_queue() -> ReadyQueue {
 }
 
 pub fn ready_queue_snapshot(queue: &ReadyQueue) -> Vec<usize> {
-  queue.lock().expect("ready queue mutex poisoned").clone()
+  queue.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// A minimal coroutine header used for modeling the waiter algorithm.
@@ -69,7 +69,7 @@ impl Coroutine {
     unsafe {
       (&*self.ready_queue)
         .lock()
-        .expect("ready queue mutex poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .push(self.id);
     }
   }

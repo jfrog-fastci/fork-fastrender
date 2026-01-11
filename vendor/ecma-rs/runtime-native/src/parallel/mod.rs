@@ -40,11 +40,11 @@ fn default_cost_model(work: WorkEstimate) -> bool {
 static COST_MODEL: RwLock<CostModelFn> = RwLock::new(default_cost_model);
 
 pub fn set_cost_model(f: CostModelFn) {
-  *COST_MODEL.write().unwrap() = f;
+  *COST_MODEL.write().unwrap_or_else(|e| e.into_inner()) = f;
 }
 
 pub fn should_parallelize(work: WorkEstimate) -> bool {
-  let f = *COST_MODEL.read().unwrap();
+  let f = *COST_MODEL.read().unwrap_or_else(|e| e.into_inner());
   f(work)
 }
 
