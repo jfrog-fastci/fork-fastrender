@@ -93,6 +93,12 @@ pub fn build_render_fixtures_command(
 ) -> Command {
   let render_fixtures_exe = render_fixtures_executable(repo_root, debug);
   let mut cmd = cmd::run_limited_command_default(repo_root);
+  if std::env::var_os("FASTR_LAYOUT_PARALLEL").is_none() {
+    // `FastRenderConfig` defaults to serial layout. Page-loop runners typically render large
+    // real-world pages where parallel layout yields major wall-clock improvements, while the
+    // `auto` mode keeps smaller fixtures from regressing due to fan-out overhead.
+    cmd.env("FASTR_LAYOUT_PARALLEL", "auto");
+  }
   cmd.arg(render_fixtures_exe);
   cmd.arg("--fixtures-dir").arg(fixtures_dir);
   cmd.arg("--out-dir").arg(out_dir);
@@ -152,6 +158,9 @@ pub fn build_inspect_frag_command(
 ) -> Command {
   let inspect_frag_exe = inspect_frag_executable(repo_root, debug);
   let mut cmd = cmd::run_limited_command_default(repo_root);
+  if std::env::var_os("FASTR_LAYOUT_PARALLEL").is_none() {
+    cmd.env("FASTR_LAYOUT_PARALLEL", "auto");
+  }
   if std::env::var_os("FASTR_DETERMINISTIC_PAINT").is_none() {
     cmd.env("FASTR_DETERMINISTIC_PAINT", "1");
   }

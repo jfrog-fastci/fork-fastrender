@@ -11785,8 +11785,49 @@ impl FastRender {
       )?;
       (prepared, styled_tree)
     };
-    if let Some(starting_tree) = starting_tree {
-      attach_starting_styles(&mut styled_tree, &starting_tree);
+    if let Some(starting_tree) = starting_tree.as_ref() {
+      attach_starting_styles(&mut styled_tree, starting_tree);
+    }
+
+    // Container queries (`@container`) depend on container sizes, which are traditionally resolved
+    // during layout. For common cases (notably `container-type: inline-size` on normal-flow blocks),
+    // we can approximate the container inline size from the containing block *before* layout and
+    // apply container query rules up-front. This avoids a full "wasted" initial layout pass that
+    // would otherwise be thrown away once container queries are evaluated.
+    //
+    // We still run the post-layout fixpoint loop below to guarantee convergence when container
+    // sizes depend on query-dependent styles.
+    if has_container_queries && !has_container_scroll_state_queries {
+      if let Some(pre_container_ctx) = build_pre_layout_container_query_context(
+        &styled_tree,
+        &media_ctx,
+        layout_viewport_size,
+        has_container_style_queries,
+      ) {
+        let (container_scope, reuse_map) = if pre_container_ctx.containers.is_empty() {
+          (None, None)
+        } else {
+          let scope = build_container_scope(&styled_tree, &pre_container_ctx);
+          let mut reuse_map: HashMap<usize, *const StyledNode> = HashMap::new();
+          build_styled_lookup(&styled_tree, &mut reuse_map);
+          (Some(scope), Some(reuse_map))
+        };
+
+        let previous_styled_tree = styled_tree;
+        styled_tree = prepared_cascade.apply(
+          target_fragment.as_deref(),
+          interaction_state,
+          Some(&pre_container_ctx),
+          container_scope.as_ref(),
+          reuse_map.as_ref(),
+          deadline,
+        )?;
+        drop((container_scope, reuse_map));
+        if let Some(starting_tree) = starting_tree.as_ref() {
+          attach_starting_styles(&mut styled_tree, starting_tree);
+        }
+        drop(previous_styled_tree);
+      }
     }
     check_deadline(deadline, RenderStage::Cascade)?;
     if let Some(start) = style_apply_start {
@@ -12579,7 +12620,7 @@ impl FastRender {
         record_stage(StageHeartbeat::Cascade);
 
         let previous_styled_tree = styled_tree;
-        let new_styled_tree = prepared_cascade.apply(
+        let mut new_styled_tree = prepared_cascade.apply(
           target_fragment.as_deref(),
           interaction_state,
           Some(&container_ctx),
@@ -12587,6 +12628,9 @@ impl FastRender {
           reuse_map.as_ref(),
           deadline,
         )?;
+        if let Some(starting_tree) = starting_tree.as_ref() {
+          attach_starting_styles(&mut new_styled_tree, starting_tree);
+        }
         drop((container_scope, reuse_map));
         svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&new_styled_tree);
         svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&new_styled_tree);
@@ -19006,6 +19050,265 @@ fn refresh_fragment_tree_styles(
   for root in &mut tree.additional_fragments {
     refresh_fragment_styles(root, boxes, styles, None, false);
   }
+}
+
+fn build_pre_layout_container_query_context(
+  styled_tree: &StyledNode,
+  media_ctx: &MediaContext,
+  layout_viewport: Size,
+  include_style_containers: bool,
+) -> Option<ContainerQueryContext> {
+  let viewport = Size::new(media_ctx.viewport_width, media_ctx.viewport_height);
+
+  fn safe_font_size(style: &ComputedStyle) -> (f32, f32) {
+    let font_size = style
+      .font_size
+      .is_finite()
+      .then_some(style.font_size)
+      .filter(|v| *v >= 0.0)
+      .unwrap_or(16.0);
+    let root_font_size = style
+      .root_font_size
+      .is_finite()
+      .then_some(style.root_font_size)
+      .filter(|v| *v >= 0.0)
+      .unwrap_or(font_size);
+    (font_size, root_font_size)
+  }
+
+  fn resolve_length(
+    length: Length,
+    percentage_base: Option<f32>,
+    style: &ComputedStyle,
+    viewport: Size,
+  ) -> Option<f32> {
+    let (font_size, root_font_size) = safe_font_size(style);
+    length.resolve_with_context(
+      percentage_base,
+      viewport.width,
+      viewport.height,
+      font_size,
+      root_font_size,
+    )
+  }
+
+  fn resolve_non_negative_length(
+    length: Length,
+    percentage_base: Option<f32>,
+    style: &ComputedStyle,
+    viewport: Size,
+  ) -> f32 {
+    resolve_length(length, percentage_base, style, viewport)
+      .unwrap_or(0.0)
+      .max(0.0)
+  }
+
+  fn resolve_optional_length(
+    length: Option<Length>,
+    percentage_base: Option<f32>,
+    style: &ComputedStyle,
+    viewport: Size,
+  ) -> f32 {
+    let Some(length) = length else {
+      return 0.0;
+    };
+    resolve_length(length, percentage_base, style, viewport).unwrap_or(0.0)
+  }
+
+  fn resolve_used_border_width(len: Length, style: &ComputedStyle, viewport: Size) -> f32 {
+    let (font_size, root_font_size) = safe_font_size(style);
+    len
+      .resolve_with_context(
+        None,
+        viewport.width,
+        viewport.height,
+        font_size,
+        root_font_size,
+      )
+      .unwrap_or(0.0)
+      .max(0.0)
+  }
+
+  fn resolve_content_width(
+    style: &ComputedStyle,
+    parent_content_width: f32,
+    viewport: Size,
+  ) -> Option<f32> {
+    if style.display == crate::style::display::Display::None {
+      return Some(0.0);
+    }
+
+    // This pre-layout approximation is intentionally conservative: it only handles cases where the
+    // used inline size is independent of descendant layout (e.g. fixed/percentage widths, or
+    // normal-flow block-level `width:auto`).
+    if style.writing_mode != WritingMode::HorizontalTb {
+      return None;
+    }
+
+    let percentage_base = parent_content_width
+      .is_finite()
+      .then_some(parent_content_width.max(0.0))
+      .or_else(|| viewport.width.is_finite().then_some(viewport.width.max(0.0)));
+
+    let padding_left = resolve_non_negative_length(style.padding_left, percentage_base, style, viewport);
+    let padding_right = resolve_non_negative_length(style.padding_right, percentage_base, style, viewport);
+
+    let border_left =
+      resolve_used_border_width(style.used_border_left_width(), style, viewport);
+    let border_right =
+      resolve_used_border_width(style.used_border_right_width(), style, viewport);
+
+    let horiz_edges = padding_left + padding_right + border_left + border_right;
+
+    let mut content_width = if style.width_keyword.is_some() || style.width_anchor_size.is_some() {
+      None
+    } else if let Some(width) = style.width {
+      let width = resolve_length(width, percentage_base, style, viewport)?;
+      let mut width = width.max(0.0);
+      if style.box_sizing == crate::style::types::BoxSizing::BorderBox && horiz_edges.is_finite() {
+        width = (width - horiz_edges).max(0.0);
+      }
+      Some(width)
+    } else {
+      None
+    };
+
+    if content_width.is_none() {
+      let can_assume_stretch = style.display.is_block_level()
+        && style.position.is_in_flow()
+        && !style.float.is_floating()
+        && !style.shrink_to_fit_inline_size;
+      if can_assume_stretch && parent_content_width.is_finite() {
+        let margin_left = resolve_optional_length(style.margin_left, percentage_base, style, viewport);
+        let margin_right = resolve_optional_length(style.margin_right, percentage_base, style, viewport);
+        let mut width = parent_content_width;
+        if margin_left.is_finite() {
+          width -= margin_left;
+        }
+        if margin_right.is_finite() {
+          width -= margin_right;
+        }
+        if horiz_edges.is_finite() {
+          width -= horiz_edges;
+        }
+        content_width = Some(width.max(0.0));
+      }
+    }
+
+    let mut content_width = content_width?;
+
+    if style.min_width_keyword.is_none() && style.min_width_anchor_size.is_none() {
+      if let Some(min_width) = style.min_width {
+        if let Some(min_width) = resolve_length(min_width, percentage_base, style, viewport) {
+          if min_width.is_finite() {
+            content_width = content_width.max(min_width.max(0.0));
+          }
+        }
+      }
+    }
+
+    if style.max_width_keyword.is_none() && style.max_width_anchor_size.is_none() {
+      if let Some(max_width) = style.max_width {
+        if let Some(max_width) = resolve_length(max_width, percentage_base, style, viewport) {
+          if max_width.is_finite() {
+            content_width = content_width.min(max_width.max(0.0));
+          }
+        }
+      }
+    }
+
+    Some(content_width)
+  }
+
+  fn walk(
+    node: &StyledNode,
+    parent_content_width: f32,
+    viewport: Size,
+    include_style_containers: bool,
+    containers: &mut HashMap<usize, ContainerQueryInfo>,
+  ) -> f32 {
+    let style = node.styles.as_ref();
+    let content_width = resolve_content_width(style, parent_content_width, viewport)
+      .filter(|v| v.is_finite())
+      .unwrap_or(parent_content_width);
+
+    if include_style_containers || matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize)
+    {
+      if include_style_containers {
+        containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
+          box_id: None,
+          width: 0.0,
+          height: 0.0,
+          inline_size: 0.0,
+          block_size: 0.0,
+          container_type: style.container_type,
+          names: style.container_name.clone(),
+          font_size: style.font_size,
+          styles: Arc::clone(&node.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
+          stuck_mask: 0,
+        });
+      }
+
+      if matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize) {
+        if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
+          let entry = containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
+            box_id: None,
+            width: 0.0,
+            height: 0.0,
+            inline_size: 0.0,
+            block_size: 0.0,
+            container_type: style.container_type,
+            names: style.container_name.clone(),
+            font_size: style.font_size,
+            styles: Arc::clone(&node.styles),
+            scroll_offset: Point::ZERO,
+            scroll_bounds: None,
+            stuck_mask: 0,
+          });
+          entry.width = content_width;
+          entry.inline_size = content_width;
+          entry.container_type = style.container_type;
+          entry.names = style.container_name.clone();
+          entry.font_size = style.font_size;
+          entry.styles = Arc::clone(&node.styles);
+        }
+      }
+    }
+
+    for child in node.children.iter() {
+      walk(
+        child,
+        content_width,
+        viewport,
+        include_style_containers,
+        containers,
+      );
+    }
+
+    content_width
+  }
+
+  let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
+  // Start from the layout viewport width, which corresponds to the root element's containing block
+  // for percentage resolution. This matches the `layout_viewport_size` used by layout itself.
+  walk(
+    styled_tree,
+    layout_viewport.width,
+    viewport,
+    include_style_containers,
+    &mut containers,
+  );
+
+  if containers.is_empty() {
+    return None;
+  }
+
+  Some(ContainerQueryContext {
+    base_media: media_ctx.clone(),
+    containers,
+  })
 }
 
 fn build_container_query_context(

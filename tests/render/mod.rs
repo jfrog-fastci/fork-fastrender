@@ -1,6 +1,7 @@
 //! Render tests consolidated from tests/render_*.rs
 
 mod diagnostics_test;
+mod container_query_prepass_test;
 mod partial_test;
 mod stage_timings_serde_test;
 mod stats_timing_semantics_test;
