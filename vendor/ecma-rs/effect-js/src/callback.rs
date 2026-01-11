@@ -5,8 +5,10 @@ use hir_js::{
 };
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayChainOp;
-use knowledge_base::KnowledgeBase;
+use knowledge_base::{ApiKind, KnowledgeBase};
 
+use crate::api_use::{resolve_api_use, ApiUseKind};
+use crate::eval::eval_api_call;
 use crate::template_eval::eval_call_expr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +66,7 @@ pub fn analyze_inline_callback(
   let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
 
   let ExprKind::FunctionExpr { body: cb_body, .. } = cb_expr.kind else {
-    return None;
+    return analyze_known_callback_reference(lowered, callsite_body, callback_expr, kb);
   };
 
   let cb_body_data = lowered.body(cb_body)?;
@@ -115,6 +117,37 @@ pub fn analyze_inline_callback(
     purity,
     uses_index: analyzer.uses_index,
     uses_array: analyzer.uses_array,
+  })
+}
+
+fn analyze_known_callback_reference(
+  lowered: &hir_js::LowerResult,
+  body: &Body,
+  callback_expr: ExprId,
+  kb: &KnowledgeBase,
+) -> Option<CallbackInfo> {
+  let resolved = resolve_api_use(
+    lowered.hir.as_ref(),
+    body,
+    callback_expr,
+    lowered.names.as_ref(),
+    kb,
+  )?;
+  if resolved.kind != ApiUseKind::Value {
+    return None;
+  }
+
+  let api = kb.get_by_id(resolved.api)?;
+  if !matches!(api.kind, ApiKind::Function | ApiKind::Constructor) {
+    return None;
+  }
+
+  let sem = eval_api_call(api, &crate::eval::CallSiteInfo::default());
+  Some(CallbackInfo {
+    effects: sem.effects,
+    purity: sem.purity,
+    uses_index: true,
+    uses_array: true,
   })
 }
 
@@ -636,6 +669,28 @@ mod tests {
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
+  }
+
+  #[test]
+  fn callback_reference_to_known_api_is_modeled() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(Math.sqrt);").unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Pure);
+    assert!(cb.effects.contains(EffectSet::MAY_THROW));
   }
 
   #[test]
