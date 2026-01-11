@@ -279,7 +279,70 @@ pub fn generate_bindings_module_from_idl_with_config(
   };
   let formatted = crate::webidl::generate::rustfmt(&raw, rustfmt_config_path)?;
   crate::webidl::generate::ensure_no_forbidden_tokens(&formatted)?;
+  ensure_no_duplicate_rust_fns_in_bindings_modules(&formatted)?;
   Ok(formatted)
+}
+
+fn ensure_no_duplicate_rust_fns_in_bindings_modules(src: &str) -> Result<()> {
+  // These bindings are generated as a single Rust file with `pub mod window { ... }` and
+  // `pub mod worker { ... }` inline modules. Duplicate `fn` definitions within a module are a hard
+  // compilation error (E0428), so detect them during codegen to make failures actionable.
+  let mut modules: Vec<(&str, usize)> = Vec::new();
+  for name in ["window", "worker"] {
+    if let Some(idx) = src.find(&format!("pub mod {name} {{")) {
+      modules.push((name, idx));
+    }
+  }
+  if modules.is_empty() {
+    return Ok(());
+  }
+  modules.sort_by_key(|(_, idx)| *idx);
+
+  for (idx, (name, start)) in modules.iter().copied().enumerate() {
+    let end = modules
+      .get(idx + 1)
+      .map(|(_, next_start)| *next_start)
+      .unwrap_or(src.len());
+    ensure_no_duplicate_rust_fns_in_single_module(name, &src[start..end])?;
+  }
+
+  Ok(())
+}
+
+fn ensure_no_duplicate_rust_fns_in_single_module(module_name: &str, src: &str) -> Result<()> {
+  let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+
+  for line in src.lines() {
+    let trimmed = line.trim_start();
+    let rest = trimmed
+      .strip_prefix("pub fn ")
+      .or_else(|| trimmed.strip_prefix("fn "));
+    let Some(rest) = rest else {
+      continue;
+    };
+    let name = rest
+      .chars()
+      .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+      .collect::<String>();
+    if name.is_empty() {
+      continue;
+    }
+    *counts.entry(name).or_insert(0) += 1;
+  }
+
+  let duplicates: Vec<String> = counts
+    .into_iter()
+    .filter_map(|(name, count)| (count > 1).then(|| format!("{name} ({count}x)")))
+    .collect();
+
+  if duplicates.is_empty() {
+    return Ok(());
+  }
+
+  bail!(
+    "generated WebIDL bindings contain duplicate `fn` definitions in module `{module_name}`: {}",
+    duplicates.join(", ")
+  );
 }
 
 fn absolutize(repo_root: PathBuf, path: PathBuf) -> PathBuf {

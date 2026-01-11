@@ -317,7 +317,19 @@ pub fn resolve_webidl_world(parsed: &ParsedWebIdlWorld) -> ResolvedWebIdlWorld {
     let Some(target) = interfaces.get_mut(&inc.target) else {
       continue;
     };
-    target.members.extend(mixin.members.iter().cloned());
+    // The upstream specs occasionally reintroduce identical members through overlapping partial
+    // interface and mixin includes. Deduplicate exact duplicates while preserving the first
+    // appearance order to keep codegen stable.
+    for member in &mixin.members {
+      if target.members.iter().any(|existing| {
+        existing.name == member.name
+          && existing.raw == member.raw
+          && existing.ext_attrs == member.ext_attrs
+      }) {
+        continue;
+      }
+      target.members.push(member.clone());
+    }
   }
 
   // After includes, compute member exposures based on (member || interface) Exposed=.
@@ -399,6 +411,7 @@ fn resolve_mixins(
         members.extend(p.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
       }
     }
+    dedupe_resolved_interface_members(&mut members);
 
     out.insert(
       name.clone(),
@@ -444,6 +457,7 @@ fn resolve_interfaces(
         members.extend(p.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
       }
     }
+    dedupe_resolved_interface_members(&mut members);
 
     let exposure = exposure_from_ext_attrs(&ext_attrs);
     // Patch members with effective exposure after we know interface exposure.
@@ -517,6 +531,21 @@ fn to_resolved_iface_member(m: &ParsedMember, parent_exposure: &Exposure) -> Res
     exposure: effective_member_exposure(&m.ext_attrs, parent_exposure),
     raw: m.raw.clone(),
   }
+}
+
+fn dedupe_resolved_interface_members(members: &mut Vec<ResolvedInterfaceMember>) {
+  let mut out: Vec<ResolvedInterfaceMember> = Vec::with_capacity(members.len());
+  for member in members.drain(..) {
+    if out.iter().any(|existing| {
+      existing.name == member.name
+        && existing.raw == member.raw
+        && existing.ext_attrs == member.ext_attrs
+    }) {
+      continue;
+    }
+    out.push(member);
+  }
+  *members = out;
 }
 
 fn to_resolved_dict_member(m: &ParsedMember) -> ResolvedDictionaryMember {
