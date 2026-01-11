@@ -1,16 +1,22 @@
 # `runtime-native` — Architecture + ABI spec (for `native-js`)
-This document is the **single source of truth** for how `native-js` output links to
-and interacts with the upcoming `runtime-native` library (GC + statepoints +
-scheduler + async).
+This document describes how `native-js` output links to and interacts with
+`runtime-native` (GC + statepoints + scheduler + async).
+
+For the **Milestone 1 (POC) ABI**, `vendor/ecma-rs/EXEC.plan.md` is the
+authoritative source of truth. The “Milestone 1 (POC) ABI — CURRENT” section in
+this document is intended to mirror the plan exactly; update the plan first if
+they ever diverge.
 
 The intent is that a new contributor can implement:
 1) **The runtime ABI surface**, and
 2) **Stackmap discovery + decoding** for LLVM statepoints,
 without having to reverse-engineer assumptions from codegen.
 
-> Target platform for the initial implementation: **Linux x86_64, ELF, PIE**.
-> The statepoint/stackmap strategy is LLVM-specific but architecture-agnostic
-> (AArch64 is expected to work with the same approach).
+> Target platform for the initial implementation: **Linux x86_64, ELF**.
+> PIE is the eventual goal, but current LLVM 18 experiments show PIE linking may
+> emit `TEXTREL` warnings due to relocations in `.llvm_stackmaps`; using
+> `-no-pie` avoids this in a minimal setup. Treat this as an implementation
+> consideration while stackmap/relocation handling stabilizes.
 
 ## ABI header + external smoke test
 
@@ -85,17 +91,17 @@ fully AOT-compiled language where types/layouts are known ahead of time.
     exported function in `catch_unwind` and abort on panic.
   - compiled code must not expect to catch Rust panics or C++ exceptions.
 - The runtime ABI is **process-local** (no stable cross-version guarantee yet),
-  but we still version it explicitly to prevent silent mismatch (see
-  `rt_abi_version` below).
+  but we plan to version it explicitly in later milestones to prevent silent
+  mismatch (see “Planned ABI” below).
 
 ### 2.2 GC and safepoint classification
 Every exported runtime function must be classified by codegen as one of:
 
 - **NoGC**: does not allocate and does not initiate a safepoint/collection.
-  - Example: `rt_shape_load_ptr_map` (pure metadata access).
+  - Example (Milestone 1): `rt_write_barrier`.
 - **MayGC**: may allocate, may safepoint, and therefore may trigger GC and move
   objects.
-  - Example: `rt_alloc`, `rt_safepoint_poll`, `rt_promise_then`.
+  - Example (Milestone 1): `rt_alloc`, `rt_gc_safepoint`, `rt_string_concat`.
 
 This classification matters because **compiled code must use LLVM statepoints**
 around *MayGC* calls so live references are relocated correctly if the GC moves
@@ -109,148 +115,142 @@ For the first implementation we intentionally keep the ABI simple:
   handler and aborts the process.
 - **Programmer-visible errors** (JS exceptions, failed IO, etc.) are represented
   in higher-level runtime APIs; they do **not** use C++/Rust unwinding.
-  - If an operation must be recoverable, expose a `RtStatus`/out-parameter style
-    API (see `RtStatus` below) rather than panicking.
+  - If an operation must be recoverable, expose a status/out-parameter style
+    API rather than panicking.
 
 This makes codegen straightforward (no implicit `NULL` checks) and avoids
 cross-language unwinding hazards.
 
 ---
 
-## 3. ABI surface (exported symbols)
+## 3. ABI surface
 
-The ABI surface is intentionally small. This section lists the symbols that
-`native-js` is expected to import from `runtime-native`.
+### 3.1 Milestone 1 (POC) ABI — CURRENT
 
-> **Current vs planned:** today, `runtime-native` is not yet implemented in this
-> repo. Everything below is the **planned stable surface** that upcoming work
-> should implement. When the crate exists, keep this table updated.
+This section documents the **current** ABI surface expected by `native-js`
+Milestone 1, and must match the runtime-native API sketch in
+`vendor/ecma-rs/EXEC.plan.md`.
 
-### 3.1 Common types (`runtime_native_abi.h` sketch)
-The runtime uses a mix of **opaque references** (pointers to GC-managed objects)
-and **small value IDs** (integers indexing tables).
+#### 3.1.1 Types (FFI-safe)
 
-```c
-// All IDs are stable integers. 0 is reserved for "invalid".
-typedef uint32_t ShapeId;
-typedef uint32_t InternedId;
-typedef uint64_t TaskId;
+```rust
+/// Shape identifier used by the AOT compiler (`types-ts-interned::ShapeId`).
+///
+/// Milestone 1 uses a raw `u128` passed through to the runtime (often unused by
+/// the POC allocator). A future milestone may compress this to a smaller ID in
+/// compiler-emitted module metadata, but that requires an explicit mapping
+/// design and is **not** the current contract.
+pub type ShapeId = u128;
 
-// Opaque GC-managed object references.
-typedef struct RtString  RtString;
-typedef struct RtPromise RtPromise;
-typedef struct RtTask    RtTask;     // scheduler-owned task object (optional)
+/// Stable identifier for an interned UTF-8 string.
+#[repr(transparent)]
+pub struct InternedId(pub u32);
 
-typedef RtString*  StringRef;
-typedef RtPromise* PromiseRef;
+/// Identifier for a parallel task.
+#[repr(transparent)]
+pub struct TaskId(pub u64);
 
-// Byte slice for passing utf-8 / raw bytes across the ABI.
-typedef struct {
-  const uint8_t* ptr;
-  size_t len;
-} RtBytes;
+/// An FFI-friendly UTF-8 byte string reference.
+///
+/// Milestone 1 representation is a `{ptr,len}` pair (used by the current
+/// `runtime-native` crate). A future milestone may instead make strings opaque
+/// GC-managed handles, but that would be a separate ABI decision.
+#[repr(C)]
+pub struct StringRef {
+  pub ptr: *const u8,
+  pub len: usize,
+}
 
-typedef enum {
-  RT_OK = 0,
-  RT_ERR = 1,
-} RtStatus;
+/// Opaque handle returned by `rt_async_spawn`.
+#[repr(transparent)]
+pub struct PromiseRef(pub *mut core::ffi::c_void);
 ```
 
-#### Rationale
-- **Opaque pointers** (`StringRef`, `PromiseRef`):
-  - compiled code must treat these as **GC references** (values that can move).
-  - their internal layout is runtime-private and can evolve.
-- **Integer IDs** (`ShapeId`, `InternedId`, `TaskId`):
-  - compact, trivially ABI-stable, easy to store in read-only metadata.
-  - avoids leaking pointers to runtime-internal tables across the boundary.
+#### 3.1.2 Exported symbols (names + signatures)
 
-### 3.2 Versioning + initialization
-| Symbol | Signature | Notes |
-|---|---|---|
-| `rt_abi_version` | `uint32_t rt_abi_version(void)` | Bumps on ABI breaking changes. `native-js` should embed and assert at startup. |
-| `rt_init` | `void rt_init(void)` | Initializes global runtime state (GC, scheduler, async). Infallible (aborts on failure). |
-| `rt_shutdown` (planned) | `void rt_shutdown(void)` | Optional; for tests/bench harnesses. |
+All functions are exported as `#[no_mangle] extern "C"` from `runtime-native`.
+The signatures below intentionally mirror the sketch in `EXEC.plan.md`:
 
-### 3.3 Allocation + GC control
-| Symbol | Signature | GC class |
-|---|---|---|
-| `rt_alloc` | `void* rt_alloc(ShapeId shape, size_t payload_bytes)` | MayGC |
-| `rt_safepoint_poll` | `void rt_safepoint_poll(void)` | MayGC |
-| `rt_gc_collect` (debug) | `void rt_gc_collect(void)` | MayGC |
-| `rt_thread_register` | `void rt_thread_register(void)` | NoGC |
-| `rt_thread_unregister` | `void rt_thread_unregister(void)` | NoGC |
+```rust
+// Memory
+pub fn rt_alloc(size: usize, shape: ShapeId) -> *mut u8;
+pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
-Notes:
-- `rt_safepoint_poll` is the **explicit** safepoint used for long-running loops
-  that might otherwise starve GC. Codegen inserts it at loop backedges and other
-  “poll points” (see GC section below).
-- `rt_thread_register`/`unregister` are required for *any* OS thread that runs
-  compiled code (scheduler worker threads and any externally created threads).
+// GC
+pub fn rt_gc_safepoint();
+pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
+pub fn rt_gc_collect();
 
-### 3.4 Shape + metadata plumbing
-`native-js` needs a way to describe object layouts to the runtime.
+// Strings
+pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
+pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
 
-| Symbol | Signature | Notes |
-|---|---|---|
-| `rt_register_module` | `void rt_register_module(const struct RtModule* m)` | Called once at startup to register shape tables and other metadata produced by the compiler. |
-| `rt_shape_ptr_map` | `const uint32_t* rt_shape_ptr_map(ShapeId shape, size_t* out_len)` | Returns pointer-field offsets (in bytes) for a shape. Returned slice is read-only and immortal. |
-| `rt_shape_size` | `size_t rt_shape_size(ShapeId shape)` | Payload size (not including header). |
-| `rt_shape_align` | `size_t rt_shape_align(ShapeId shape)` | Payload alignment guarantee. |
+// Parallel
+pub fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId;
+pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
 
-`RtModule` is a compiler-emitted read-only structure placed in `.rodata`:
-
-```c
-typedef struct RtModule {
-  uint32_t abi_version;
-
-  const void* shape_table;      // runtime-defined format
-  size_t shape_table_len;
-
-  const void* ptr_map_table;    // runtime-defined format
-  size_t ptr_map_table_len;
-
-  // Optional future metadata:
-  // - function name table (debug)
-  // - source maps
-  // - constants pool, etc.
-} RtModule;
+// Async
+pub fn rt_async_spawn(coro: *mut core::ffi::c_void) -> PromiseRef; // opaque for now
+pub fn rt_async_poll() -> bool;
 ```
 
-This indirection allows multiple compilation units to register metadata without
-relying on ELF symbol names.
+#### 3.1.3 GC classification for codegen (Milestone 1)
 
-### 3.5 String interning (property keys, identifiers)
-| Symbol | Signature | Notes |
+Even if the Milestone 1 runtime stubs GC, `native-js` codegen must classify
+calls up-front so we can later swap in a moving collector without changing IR
+generation strategy.
+
+| Symbol | GC class | Notes |
 |---|---|---|
-| `rt_intern_utf8` | `InternedId rt_intern_utf8(RtBytes utf8)` | Interns a UTF-8 string and returns an ID stable for the life of the process. |
-| `rt_interned_debug_utf8` (debug) | `RtBytes rt_interned_debug_utf8(InternedId id)` | Returns a debug-only view (may allocate/copy); do not use on hot paths. |
+| `rt_alloc` | MayGC | Allocation slow-path may safepoint/collect in later milestones. |
+| `rt_alloc_array` | MayGC | Ditto. |
+| `rt_gc_safepoint` | MayGC | Explicit polling safepoint inserted at loop backedges. |
+| `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
+| `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
+| `rt_string_concat` | MayGC | Allocates a new string buffer. |
+| `rt_string_intern` | MayGC | May allocate/update interner tables. |
+| `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
+| `rt_parallel_join` | MayGC | May block/safepoint while waiting. |
+| `rt_async_spawn` | MayGC | May allocate promise/async bookkeeping. |
+| `rt_async_poll` | MayGC | Drives async runtime; may allocate/safepoint. |
 
-### 3.6 Scheduler + tasks
-| Symbol | Signature | Notes |
-|---|---|---|
-| `rt_task_spawn` | `TaskId rt_task_spawn(void (*entry)(void*), void* ctx)` | Enqueue a task (work-stealing). `entry` is compiled code. |
-| `rt_task_yield` | `void rt_task_yield(void)` | Cooperative yield. May run other tasks. |
-| `rt_task_join` (planned) | `void rt_task_join(TaskId id)` | Wait for task completion (used for structured parallelism). |
+### 3.2 Planned ABI (Milestone 3+)
 
-All task functions use `extern "C"` / C ABI:
+Everything in this section is **future / non-Milestone-1**. It is included here
+to capture the longer-term direction, but it must not be treated as the current
+compiler/runtime contract.
 
-```c
-typedef void (*RtTaskEntry)(void* ctx);
-```
+#### Versioning + initialization (planned)
+- `rt_abi_version() -> u32`
+- `rt_init()`
+- `rt_shutdown()` (optional; tests/bench harnesses)
 
-`ctx` is an opaque pointer owned by the caller. If `ctx` points into the GC
-heap, it must remain reachable (rooted) until the task runs.
+#### Thread registration (planned)
+- `rt_thread_register()` / `rt_thread_unregister()` for any OS thread that may
+  run compiled code (scheduler workers, externally-created threads, etc.).
 
-### 3.7 Async runtime (Promises + event loop)
-| Symbol | Signature | Notes |
-|---|---|---|
-| `rt_async_poll` | `uint32_t rt_async_poll(uint64_t max_wait_ns)` | Drives IO/timers. Returns number of woken tasks/continuations. Integrates with scheduler idle loop. |
-| `rt_promise_new` | `PromiseRef rt_promise_new(void)` | Allocate a new promise object. |
-| `rt_promise_then` | `void rt_promise_then(PromiseRef p, void (*cont)(void*), void* cont_ctx)` | Register a continuation task when the promise resolves. |
-| `rt_promise_resolve` | `void rt_promise_resolve(PromiseRef p, void* value)` | Resolve. `value` representation is compiler-defined (often a GC pointer). |
+#### Module + shape metadata plumbing (planned)
+To support precise tracing/moving GC, `native-js` will eventually need to
+register compiler-emitted shape tables (pointer maps, sizes, alignments, etc.)
+with the runtime. One possible direction is a module registration API like:
+- `rt_register_module(m: *const RtModule)`
+- `rt_shape_ptr_map(shape: ShapeId, out_len: *mut usize) -> *const u32`
+- `rt_shape_size(shape: ShapeId) -> usize`
+- `rt_shape_align(shape: ShapeId) -> usize`
 
-The minimal async contract is: promises schedule continuations into the
-scheduler; the event loop drives external readiness and resolves promises.
+#### Strings (planned extensions)
+- Debug-only lookup of interned strings (e.g. `InternedId -> StringRef`).
+- Optional future shift from `StringRef { ptr, len }` to an opaque GC string
+  handle, if/when strings become fully GC-managed objects.
+
+#### Scheduler/async ABI (planned extensions)
+Milestone 1 exposes only `rt_parallel_spawn/join` and `rt_async_spawn/poll`. A
+more complete scheduler/async surface may add:
+- Cooperative yielding (e.g. `rt_parallel_yield()`).
+- Promise/continuation primitives (e.g. `rt_promise_then`, `rt_promise_resolve`,
+  etc.) if the compiler lowers async/await in terms of explicit promise ops.
+- A blocking/timeout-aware async poll API (as a **new symbol**, not by changing
+  the `rt_async_poll() -> bool` signature).
 
 ---
 
@@ -279,12 +279,13 @@ Rationale: returning the payload pointer keeps field offsets stable and avoids
 leaking runtime header layout into codegen.
 
 ### 4.2 Alignment guarantees
-`rt_alloc(shape, payload_bytes)` guarantees:
-- The returned pointer is aligned to at least **`max(16, rt_shape_align(shape))`**
-  bytes on x86_64.
-- `rt_shape_align` is a power of two.
+Milestone 1 only requires that `rt_alloc(size, shape)` returns a pointer aligned
+at least to the platform allocator’s minimum (on Linux x86_64 this is typically
+≥ 16 bytes for `malloc`).
 
-The runtime may over-align to simplify allocator implementation.
+Planned: later milestones may strengthen this by using shape metadata
+(e.g. `rt_shape_align(shape)` or a registered shape table) so the runtime can
+guarantee `max(16, shape_align)` alignment for every allocation.
 
 ### 4.3 Ownership and lifetime
 - Objects allocated via `rt_alloc` are owned by the **GC**.
@@ -305,7 +306,7 @@ The runtime may over-align to simplify allocator implementation.
 1) Every runtime call that can safepoint/allocate (`MayGC`) is emitted as an LLVM
    **statepoint** so stackmaps record the exact live GC roots.
 2) Loop backedges (and similar long-running regions) include explicit polling
-   safepoints via `rt_safepoint_poll`.
+   safepoints via `rt_gc_safepoint`.
 3) The `"gc-live"` operand bundle passed to each statepoint includes **only**
    GC references (pointers) and is in a stable, documented order.
 
@@ -346,6 +347,10 @@ We intentionally use the *in-memory* section contents because it reflects any
 relocations applied by the dynamic loader; reading raw bytes from
 `/proc/self/exe` would require manually applying relocations to the stackmap’s
 embedded addresses.
+
+Note: some toolchains will warn about `TEXTREL` when producing PIE binaries if
+`.llvm_stackmaps` ends up requiring runtime relocations; using `-no-pie` avoids
+this in a minimal LLVM 18 experiment.
 
 #### Pseudocode (C)
 ```c
@@ -547,7 +552,7 @@ Each registered mutator thread is in exactly one of:
 2) The runtime sets a global “GC requested” flag and signals other mutator
    threads (condition variable/futex) to reach a safepoint.
 3) Mutator threads reach safepoints via:
-   - explicit `rt_safepoint_poll` calls inserted by codegen, and/or
+   - explicit `rt_gc_safepoint` calls inserted by codegen, and/or
    - calls that are already statepoints (`rt_alloc`, etc.)
 4) When a mutator hits a safepoint, it transitions to **AtSafepoint** and parks.
 5) The GC enumerates roots for all parked threads using stackmaps, performs the
@@ -580,7 +585,7 @@ Scheduler threads execute compiled code, so they are **mutators**:
 
 - Worker threads must call `rt_thread_register` on start and unregister on exit.
 - At GC safepoints, workers must park quickly. The scheduler must therefore:
-  - insert `rt_safepoint_poll` in idle loops as well (not just compiled code),
+  - insert `rt_gc_safepoint` in idle loops as well (not just compiled code),
   - keep runtime “steal” loops either `NoGC` or statepointed.
 
 Tasks queued but not currently running are still GC roots:
@@ -616,16 +621,16 @@ The compiler is responsible for:
 The async runtime is driven by a polling entrypoint:
 
 ```c
-// Poll IO/timers for up to max_wait_ns and enqueue ready continuations.
-// Returns number of tasks made runnable.
-uint32_t rt_async_poll(uint64_t max_wait_ns);
+// Drive the async runtime for one turn.
+// Returns true if there is still pending work afterwards (i.e. the runtime is non-idle).
+bool rt_async_poll(void);
 ```
 
 Integration with scheduler:
 - When workers are busy, async polling is opportunistic (e.g. worker 0 polls
   periodically or the runtime has a dedicated IO thread).
 - When the scheduler becomes idle (no runnable tasks), a worker calls
-  `rt_async_poll(max_wait_ns)` to block until external events make progress.
+  `rt_async_poll()` to block until external events make progress.
 
 ### 7.3 Promises and continuations
 Promises are the minimal cross-cutting primitive:
@@ -655,7 +660,7 @@ Goal: verify that “GC roots at safepoints” works in a real linked executable
 Approach:
 - In tests, generate tiny LLVM IR modules that:
   - define one or two functions with `gc.statepoint` + `"gc-live"` bundles
-  - call `rt_safepoint_poll` and/or `rt_alloc`
+  - call `rt_gc_safepoint` and/or `rt_alloc`
 - Compile them with LLVM to an object file and link into a test binary together
   with `runtime-native`.
 - At runtime, trigger a GC and assert the runtime enumerates the expected number
