@@ -43,6 +43,41 @@ pub fn visit_reloc_pairs_with_bounds(
   }
 }
 
+/// Visit `(slot, value)` relocation pairs for a safepoint described by a captured [`arch::SafepointContext`].
+///
+/// This is the variant used when we don't have the runtime callee's frame pointer (e.g. the current
+/// thread is the GC coordinator and is not stopped inside `rt_gc_safepoint`), but we *do* have a
+/// previously published call-site snapshot (`fp` + return address) for the nearest managed frame.
+pub fn visit_reloc_pairs_from_safepoint_context(
+  ctx: &arch::SafepointContext,
+  visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
+) -> Result<(), WalkError> {
+  visit_reloc_pairs_from_safepoint_context_with_bounds(ctx, None, visit)
+}
+
+/// Like [`visit_reloc_pairs_from_safepoint_context`], but allows passing stack bounds for additional safety checks.
+pub fn visit_reloc_pairs_from_safepoint_context_with_bounds(
+  ctx: &arch::SafepointContext,
+  bounds: Option<StackBounds>,
+  visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
+) -> Result<(), WalkError> {
+  let Some(stackmaps) = crate::stackmap::try_stackmaps() else {
+    return Ok(());
+  };
+
+  let bounds = bounds.or_else(|| crate::stackwalk::StackBounds::current_thread().ok());
+
+  // Safety: stackmap-driven root enumeration inherently walks raw pointers into thread stacks.
+  unsafe {
+    crate::stackwalk_fp::walk_gc_roots_from_safepoint_context(ctx, bounds, stackmaps, |slot_addr| {
+      let slot = slot_addr as *mut *mut u8;
+      // Read the current pointer value in the slot so GC can relocate it.
+      let value = slot.read();
+      visit(slot, value);
+    })
+  }
+}
+
 /// Cooperatively enter a safepoint at the current callsite while a stop-the-world
 /// request is active.
 ///
@@ -101,6 +136,18 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   // - stackmap lookup / stack walking does not crash when available
   let mut roots = 0usize;
   let _ = threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |_| roots += 1);
+
+  // Also include stack roots for the coordinator thread (if it's a registered mutator). These are
+  // not covered by `for_each_root_slot_world_stopped` since the coordinator is not stopped.
+  if let Some(thread) = threading::registry::current_thread_state() {
+    if let Some(ctx) = thread.safepoint_context() {
+      let bounds = thread
+        .stack_bounds()
+        .and_then(|b| StackBounds::new(b.lo as u64, b.hi as u64).ok());
+      let _ =
+        visit_reloc_pairs_from_safepoint_context_with_bounds(&ctx, bounds, &mut |_, _| roots += 1);
+    }
+  }
   let _ = roots;
 
   f();
