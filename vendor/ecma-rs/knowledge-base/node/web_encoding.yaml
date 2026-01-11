@@ -1,0 +1,58 @@
+# Web-standard encoding + base64 helpers that are available as Node.js globals.
+#
+# These entries are duplicated from `web/encoding.yaml` so that `TargetEnv::Node` lookups can
+# resolve them without incorrectly matching DOM-only web APIs.
+
+- name: atob
+  kind: function
+  since: "v16.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+  properties:
+    # `atob` returns a "binary string" (byte string) with code points 0..255.
+    encoding.output: latin1
+
+- name: btoa
+  kind: function
+  since: "v16.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+  properties:
+    # Base64 output uses ASCII characters.
+    encoding.output: ascii
+
+- name: TextEncoder
+  kind: constructor
+  since: "v11.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: TextEncoder.prototype.encode
+  kind: function
+  since: "v11.0.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: TextDecoder
+  kind: constructor
+  since: "v11.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: TextDecoder.prototype.decode
+  kind: function
+  since: "v11.0.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure

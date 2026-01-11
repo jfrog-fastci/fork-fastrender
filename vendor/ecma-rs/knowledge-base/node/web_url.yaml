@@ -1,0 +1,242 @@
+# Web-standard URL APIs that are available as Node.js globals.
+#
+# These entries are duplicated from `web/url.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without incorrectly matching DOM-only web APIs.
+#
+# Note: Node's WHATWG URL implementation has been available for a long time. We treat these as
+# available from `v0.1.0` to avoid overfitting to exact historical release lines.
+
+- name: URL
+  kind: constructor
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: URLSearchParams
+  kind: constructor
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: URL.prototype.toString
+  kind: function
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.toJSON
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+# Treat getters as pure reads.
+- name: URL.prototype.href
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.pathname
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.origin
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.protocol
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.host
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.hostname
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.port
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.search
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.hash
+  kind: property_get
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    returns: string
+    encoding.output: ascii
+
+- name: URL.prototype.searchParams
+  kind: getter
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.get
+  kind: function
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.getAll
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.has
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: URLSearchParams.prototype.delete
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Impure
+
+- name: URLSearchParams.prototype.set
+  kind: function
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Impure
+
+- name: URLSearchParams.prototype.append
+  kind: function
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Impure
+
+- name: URLSearchParams.prototype.sort
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Impure
+
+- name: URLSearchParams.prototype.entries
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.keys
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.values
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: URLSearchParams.prototype.forEach
+  since: "v0.1.0"
+  effects:
+    depends_on_args:
+      base: MAY_THROW
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
+
+- name: URLSearchParams.prototype.toString
+  kind: function
+  since: "v0.1.0"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    encoding.output: ascii

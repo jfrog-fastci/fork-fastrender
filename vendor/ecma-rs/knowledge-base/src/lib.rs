@@ -2414,6 +2414,37 @@ properties:
   }
 
   #[test]
+  fn api_for_target_selects_node_url_and_encoding_globals() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let node_20 = TargetEnv::Node {
+      version: Version::parse("20.0.0").unwrap(),
+    };
+ 
+    let url = kb
+      .api_for_target("URL", &node_20)
+      .expect("URL should resolve for Node targets");
+    assert_eq!(url.name, "URL");
+    assert_eq!(
+      kb.source_for_target("URL", &node_20),
+      Some("node/web_url.yaml")
+    );
+ 
+    let pathname = kb
+      .api_for_target("URL.prototype.pathname", &node_20)
+      .expect("URL.prototype.pathname should resolve for Node targets");
+    assert_eq!(pathname.name, "URL.prototype.pathname");
+ 
+    let encoder = kb
+      .api_for_target("TextEncoder", &node_20)
+      .expect("TextEncoder should resolve for Node targets");
+    assert_eq!(encoder.name, "TextEncoder");
+    assert_eq!(
+      kb.source_for_target("TextEncoder", &node_20),
+      Some("node/web_encoding.yaml")
+    );
+  }
+
+  #[test]
   fn env_and_platform_parses_web_subdirectories() {
     assert_eq!(
       env_and_platform_for_path("web/chrome/foo.yaml"),
