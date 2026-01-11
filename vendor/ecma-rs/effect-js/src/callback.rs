@@ -251,21 +251,52 @@ pub fn analyze_inline_callback(
       .iter()
       .any(|param| pat_binds_text(cb_body_data, lowered.names.as_ref(), param.pat, "arguments"));
 
-  let index_param = func.params.get(1).and_then(|param| {
-    let pat = cb_body_data.pats.get(param.pat.0 as usize)?;
-    match pat.kind {
-      PatKind::Ident(name) => Some(name),
-      _ => None,
-    }
-  });
+  // Track whether the callback uses the index/array arguments. In addition to
+  // explicit identifier references, destructuring/rest parameters also "use"
+  // their argument values during binding.
+  let mut uses_index = false;
+  let mut uses_array = false;
+  let mut index_param: Option<NameId> = None;
+  let mut array_param: Option<NameId> = None;
 
-  let array_param = func.params.get(2).and_then(|param| {
-    let pat = cb_body_data.pats.get(param.pat.0 as usize)?;
+  // Special-case rest parameter in position 0/1: it captures multiple callback
+  // arguments, including `index` and `array`.
+  if let Some(rest_param) = func.params.get(0).filter(|param| param.rest) {
+    let pat = cb_body_data.pats.get(rest_param.pat.0 as usize)?;
     match pat.kind {
-      PatKind::Ident(name) => Some(name),
-      _ => None,
+      PatKind::Ident(name) => {
+        index_param = Some(name);
+        array_param = Some(name);
+      }
+      _ => {
+        uses_index = true;
+        uses_array = true;
+      }
     }
-  });
+  } else if let Some(index_param_raw) = func.params.get(1) {
+    let pat = cb_body_data.pats.get(index_param_raw.pat.0 as usize)?;
+    match pat.kind {
+      PatKind::Ident(name) => {
+        index_param = Some(name);
+        if index_param_raw.rest {
+          array_param = Some(name);
+        }
+      }
+      _ => {
+        uses_index = true;
+        if index_param_raw.rest {
+          uses_array = true;
+        }
+      }
+    }
+  }
+  if let Some(array_param_raw) = func.params.get(2) {
+    let pat = cb_body_data.pats.get(array_param_raw.pat.0 as usize)?;
+    match pat.kind {
+      PatKind::Ident(name) => array_param = Some(name),
+      _ => uses_array = true,
+    }
+  }
 
   let mut analyzer = CallbackAnalyzer {
     lowered,
@@ -274,8 +305,8 @@ pub fn analyze_inline_callback(
     arguments_object_available,
     index_param,
     array_param,
-    uses_index: false,
-    uses_array: false,
+    uses_index,
+    uses_array,
     shadow_stack: vec![ShadowScope::default()],
     effects: EffectSet::empty(),
     purity: Purity::Pure,
@@ -1195,6 +1226,48 @@ mod tests {
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
+  }
+
+  #[test]
+  fn callback_destructuring_index_param_counts_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, [i]) => x);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+  }
+
+  #[test]
+  fn callback_rest_index_param_counts_as_index_and_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, ...rest) => rest);")
+        .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_destructuring_array_param_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i, { length }) => length);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
   }
 
   #[test]
