@@ -234,6 +234,63 @@ fn spread_call_indices_include_callee_and_this() {
   }
 }
 
+#[test]
+fn update_expr_on_captured_var_uses_foreign_store() {
+  let program = compile(
+    r#"
+      let x = 0;
+      const f = () => { x++; };
+      f();
+    "#,
+  );
+
+  assert!(
+    program.functions.iter().any(|func| {
+      inst_types(func)
+        .iter()
+        .any(|t| matches!(t, InstTyp::ForeignStore))
+    }),
+    "expected x++ on captured variable to emit a ForeignStore"
+  );
+}
+
+#[test]
+fn update_expr_on_unknown_var_uses_unknown_store() {
+  let program = compile("x++;");
+  let insts = inst_types(&program.top_level);
+  assert!(
+    insts.iter().any(|t| matches!(t, InstTyp::UnknownStore)),
+    "expected x++ on unknown variable to emit UnknownStore, got {insts:?}"
+  );
+}
+
+#[test]
+fn update_expr_on_member_emits_prop_assign() {
+  let program = compile(
+    r#"
+      let obj = { x: 0 };
+      obj.x++;
+    "#,
+  );
+  let insts = inst_types(&program.top_level);
+  assert!(
+    insts.iter().any(|t| matches!(t, InstTyp::PropAssign)),
+    "expected obj.x++ to emit PropAssign, got {insts:?}"
+  );
+}
+
+#[test]
+fn update_expr_on_builtin_is_rejected() {
+  let err = compile_source("undefined++;", TopLevelMode::Module, false)
+    .expect_err("expected update of builtin to be rejected");
+  assert!(
+    err.iter().any(|diag| {
+      diag.code == "OPT0002" && diag.message.contains("assignment to builtin")
+    }),
+    "expected OPT0002 assignment-to-builtin diagnostic, got {err:?}"
+  );
+}
+
 #[cfg(feature = "typed")]
 #[test]
 fn typed_postfix_update_updates_original_local_symbol() {

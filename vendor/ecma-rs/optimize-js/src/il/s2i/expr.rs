@@ -841,58 +841,124 @@ impl<'p> HirSourceToInst<'p> {
   pub fn compile_update_expr(
     &mut self,
     expr_id: ExprId,
-    _span: Loc,
+    span: Loc,
     operator: UpdateOp,
     argument: ExprId,
     prefix: bool,
   ) -> OptimizeResult<Arg> {
-    let arg = self.compile_expr(argument)?;
-    // In typed builds, identifier reads materialize as a `VarAssign` copy so we can attach
-    // per-expression type metadata. For update expressions (e.g. `x++`) the operand is also the
-    // assignment target, so we must ensure we mutate the original variable rather than the typed
-    // identifier-read temporary.
-    //
-    // NB: This only redirects the update target for local identifiers. Foreign/unknown updates are
-    // still modelled via the operand temp (existing behaviour).
-    let update_tgt = match self.body.exprs[argument.0 as usize].kind {
-      ExprKind::Ident(name) => match self.classify_ident(argument, name) {
-        VarType::Local(local) => self.symbol_to_temp(local),
-        _ => arg.to_var(),
-      },
-      _ => arg.to_var(),
+    let rhs = match operator {
+      UpdateOp::Decrement => BinOp::Sub,
+      UpdateOp::Increment => BinOp::Add,
     };
-    match operator {
-      UpdateOp::Decrement | UpdateOp::Increment => {
-        let rhs = match operator {
-          UpdateOp::Decrement => BinOp::Sub,
-          UpdateOp::Increment => BinOp::Add,
-        };
+    let rhs_one = Arg::Const(Const::Num(JsNumber(1.0)));
+
+    match &self.body.exprs[argument.0 as usize].kind {
+      ExprKind::Ident(name) => {
+        let var_type = self.classify_ident(argument, *name);
+        match var_type {
+          VarType::Builtin(builtin) => Err(unsupported_syntax(
+            self.program.lower.hir.file,
+            span,
+            format!("assignment to builtin {builtin}"),
+          )),
+          VarType::Local(local) => {
+            let arg = self.compile_expr(argument)?;
+            // In typed builds, local identifier reads materialize as a `VarAssign` copy so we can
+            // attach per-expression type metadata. For update expressions (e.g. `x++`) the operand
+            // is also the assignment target, so we must ensure we mutate the original variable
+            // rather than the typed identifier-read temporary.
+            let update_tgt = self.symbol_to_temp(local);
+            if prefix {
+              self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one.clone()));
+              Ok(Arg::Var(update_tgt))
+            } else {
+              let tmp_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+              self.push_value_inst(expr_id, Inst::bin(update_tgt, arg, rhs, rhs_one.clone()));
+              Ok(Arg::Var(tmp_var))
+            }
+          }
+          VarType::Foreign(foreign) => {
+            let arg = self.compile_expr(argument)?;
+            if prefix {
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
+              self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
+              Ok(Arg::Var(new_var))
+            } else {
+              let tmp_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
+              self.out.push(Inst::foreign_store(foreign, Arg::Var(new_var)));
+              Ok(Arg::Var(tmp_var))
+            }
+          }
+          VarType::Unknown(name) => {
+            let arg = self.compile_expr(argument)?;
+            if prefix {
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
+              self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
+              Ok(Arg::Var(new_var))
+            } else {
+              let tmp_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+              let new_var = self.c_temp.bump();
+              self.push_value_inst(expr_id, Inst::bin(new_var, arg, rhs, rhs_one.clone()));
+              self.out.push(Inst::unknown_store(name, Arg::Var(new_var)));
+              Ok(Arg::Var(tmp_var))
+            }
+          }
+        }
+      }
+      ExprKind::Member(member) => {
+        if member.optional {
+          return Err(unsupported_syntax(
+            self.program.lower.hir.file,
+            span,
+            "optional chaining in update operand",
+          ));
+        }
+        let obj_arg = self.compile_expr(member.object)?;
+        let prop_arg = key_arg(self, &member.property)?;
+
+        // Load the existing property value once.
+        let old_var = self.c_temp.bump();
+        self.push_value_inst(
+          argument,
+          Inst::bin(old_var, obj_arg.clone(), BinOp::GetProp, prop_arg.clone()),
+        );
+
         if prefix {
+          let new_var = self.c_temp.bump();
           self.push_value_inst(
             expr_id,
-            Inst::bin(
-              update_tgt,
-              arg.clone(),
-              rhs,
-              Arg::Const(Const::Num(JsNumber(1.0))),
-            ),
+            Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one.clone()),
           );
-          Ok(Arg::Var(update_tgt))
+          self
+            .out
+            .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
+          Ok(Arg::Var(new_var))
         } else {
           let tmp_var = self.c_temp.bump();
-          self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
+          self.push_value_inst(expr_id, Inst::var_assign(tmp_var, Arg::Var(old_var)));
+          let new_var = self.c_temp.bump();
           self.push_value_inst(
             expr_id,
-            Inst::bin(
-              update_tgt,
-            arg,
-            rhs,
-            Arg::Const(Const::Num(JsNumber(1.0))),
-            ),
+            Inst::bin(new_var, Arg::Var(old_var), rhs, rhs_one.clone()),
           );
+          self
+            .out
+            .push(Inst::prop_assign(obj_arg, prop_arg, Arg::Var(new_var)));
           Ok(Arg::Var(tmp_var))
         }
       }
+      _ => Err(unsupported_syntax(
+        self.program.lower.hir.file,
+        span,
+        "unsupported update operand",
+      )),
     }
   }
 
