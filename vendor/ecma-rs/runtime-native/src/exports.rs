@@ -479,6 +479,7 @@ pub extern "C" fn rt_gc_poll() -> bool {
 // assembly (`arch/x86_64.rs`, `arch/aarch64.rs`). It must capture the *managed*
 // caller's frame pointer and return address at the poll callsite so the GC can
 // locate the correct stackmap record for root enumeration.
+// (This symbol is defined in assembly, not here.)
 
 /// Update the active young-space address range used by the write barrier.
 ///

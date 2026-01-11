@@ -134,7 +134,6 @@ mod x86_64 {
 #[cfg(all(target_arch = "x86_64", not(miri)))]
 #[test]
 fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
-  use std::path::PathBuf;
   use std::process::Command;
 
   fn cmd_exists(cmd: &str) -> bool {
@@ -159,178 +158,23 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
   let shim_rs = tempdir.path().join("safepoint_shim.rs");
   let obj_path = tempdir.path().join("safepoint_shim.o");
 
-  let safepoint_rs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+  let safepoint_asm = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     .join("src")
-    .join("safepoint.rs");
-  let safepoint_rs = safepoint_rs.to_string_lossy();
+    .join("arch")
+    .join("aarch64")
+    .join("rt_gc_safepoint.S");
+  let safepoint_asm = safepoint_asm.to_string_lossy();
 
-  // Compile the real `runtime-native/src/safepoint.rs` in isolation. We stub the
-  // `crate::threading` APIs it depends on so this remains a cheap disassembly
-  // sanity check without pulling in runtime-native's full dependency graph.
+  // Compile the real AArch64 `rt_gc_safepoint` assembly stub in isolation. This
+  // is a cheap disassembly sanity check (it does not link the full runtime).
   std::fs::write(
     &shim_rs,
     format!(
       r#"
-      #![allow(dead_code)]
-      // Minimal stubs for `runtime-native/src/safepoint.rs`.
-       pub mod arch {{
-          pub const WORD_SIZE: usize = 8;
-          #[derive(Clone, Copy, Debug, Default)]
-          #[repr(C)]
-         pub struct SafepointContext {{
-           pub sp_entry: usize,
-           pub sp: usize,
-           pub fp: usize,
-           pub ip: usize,
-         }}
-         pub fn capture_safepoint_context() -> SafepointContext {{
-           SafepointContext::default()
-         }}
-       }}
+      use core::arch::global_asm;
 
-       pub mod thread_stack {{
-         #[derive(Clone, Copy, Debug)]
-         pub struct StackBounds {{
-           pub low: usize,
-           pub high: usize,
-         }}
-         pub fn current_thread_stack_bounds() -> Result<StackBounds, ()> {{
-           Err(())
-         }}
-       }}
-
-       pub mod stackwalk {{
-         #[derive(Clone, Copy, Debug)]
-         pub struct StackBounds {{
-           pub lo: u64,
-           pub hi: u64,
-         }}
-         impl StackBounds {{
-           pub fn new(lo: u64, hi: u64) -> Result<Self, ()> {{
-             let _ = (lo, hi);
-             Ok(Self {{ lo, hi }})
-           }}
-
-           pub fn current_thread() -> Result<Self, ()> {{
-             Err(())
-           }}
-         }}
-
-         #[derive(Clone, Copy, Debug)]
-         pub struct ManagedCursor {{
-           pub sp: Option<u64>,
-           pub fp: u64,
-           pub pc: u64,
-         }}
-
-         pub fn find_nearest_managed_cursor_from_here(
-           _stackmaps: &crate::stackmap::StackMaps,
-         ) -> Option<ManagedCursor> {{
-           None
-         }}
-       }}
-
-       #[derive(Debug)]
-       pub struct WalkError;
-
-       pub mod stackmap {{
-         pub struct StackMaps;
-         pub fn try_stackmaps() -> Option<&'static StackMaps> {{
-           None
-         }}
-       }}
-
-       pub unsafe fn walk_gc_roots_from_fp(
-         _start_fp: u64,
-         _bounds: Option<crate::stackwalk::StackBounds>,
-         _stackmaps: &crate::stackmap::StackMaps,
-         _visit: impl FnMut(*mut u8),
-       ) -> Result<(), crate::WalkError> {{
-         Ok(())
-       }}
-
-       pub mod stackwalk_fp {{
-         pub unsafe fn walk_gc_roots_from_safepoint_context(
-           _ctx: &crate::arch::SafepointContext,
-           _bounds: Option<crate::stackwalk::StackBounds>,
-           _stackmaps: &crate::stackmap::StackMaps,
-           _visit: impl FnMut(*mut u8),
-         ) -> Result<(), crate::WalkError> {{
-           Ok(())
-         }}
-       }}
-
-       pub fn rt_gc_request_stop_the_world() -> u64 {{
-         0
-       }}
-       pub fn rt_gc_wait_for_world_stopped_timeout(_timeout: std::time::Duration) -> bool {{
-         true
-       }}
-       pub fn rt_gc_wait_for_world_resumed_timeout(_timeout: std::time::Duration) -> bool {{
-         true
-       }}
-       pub fn rt_gc_resume_world() -> u64 {{
-         0
-       }}
-
-       pub mod threading {{
-        pub mod registry {{
-          use std::sync::Arc;
-          use crate::arch::SafepointContext;
-
-          #[derive(Clone, Copy, Debug)]
-          pub struct ThreadId(u64);
-
-          #[derive(Clone, Copy, Debug)]
-          pub struct StackBounds {{
-            pub lo: usize,
-            pub hi: usize,
-          }}
-
-          pub struct ThreadState;
-          impl ThreadState {{
-            pub fn safepoint_cursor(&self) -> Option<crate::safepoint::FrameCursor> {{
-              None
-            }}
-
-            pub fn safepoint_context(&self) -> Option<SafepointContext> {{
-              None
-            }}
-
-            pub fn stack_bounds(&self) -> Option<StackBounds> {{
-              None
-            }}
-          }}
-          pub fn current_thread_state() -> Option<Arc<ThreadState>> {{
-            None
-          }}
-          pub fn current_thread_id() -> Option<ThreadId> {{
-            None
-          }}
-          pub(crate) fn set_current_thread_safepoint_cursor(_cursor: crate::safepoint::FrameCursor) {{}}
-          pub(crate) fn set_current_thread_safepoint_context(_ctx: SafepointContext) {{}}
-          pub(crate) fn set_current_thread_safepoint_epoch_observed(_epoch: u64) {{}}
-        }}
-         pub mod safepoint {{
-           pub(crate) fn current_epoch() -> u64 {{
-             0
-           }}
-           pub(crate) fn notify_state_change() {{}}
-           pub(crate) fn wait_while_stop_the_world() {{}}
-           pub(crate) fn wait_while_epoch_is(_expected: u64) {{}}
-           pub(crate) fn dump_stop_the_world_timeout(_stop_epoch: u64, _timeout: std::time::Duration) {{}}
-           pub(crate) fn for_each_root_slot_world_stopped(
-             _stop_epoch: u64,
-             _f: impl FnMut(*mut *mut u8),
-           ) -> Result<(), crate::WalkError> {{
-             Ok(())
-          }}
-        }}
-      }}
-
-      #[path = "{safepoint_rs}"]
-       pub mod safepoint;
-       "#
+      global_asm!(include_str!({safepoint_asm:?}));
+      "#
     ),
   )
   .expect("write shim");

@@ -144,22 +144,19 @@ pub extern "C" fn rt_gc_safepoint() {
   );
 }
 
+// On AArch64 `rt_gc_safepoint` is provided by an assembly stub
+// (`arch/aarch64/rt_gc_safepoint.S`) so we can spill the register file before
+// running any Rust code.
 #[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-#[no_mangle]
-pub extern "C" fn rt_gc_safepoint() {
-  core::arch::naked_asm!(
-    // Capture the mutator caller cursor before any compiler-generated prologue
-    // touches the stack/frame pointer:
-    //   - `x29` is the caller FP (with frame pointers enabled)
-    //   - `x30` is the return address into the caller
-    //   - `sp` is the callee-entry stack pointer
-    "mov x0, x29",
-    "mov x1, x30",
-    "mov x2, sp",
-    "b {impl_fn}",
-    impl_fn = sym rt_gc_safepoint_slow_impl,
-  );
+#[inline(always)]
+pub fn rt_gc_safepoint() {
+  extern "C" {
+    #[link_name = "rt_gc_safepoint"]
+    fn rt_gc_safepoint_asm();
+  }
+
+  // SAFETY: `rt_gc_safepoint_asm` is a runtime entrypoint that follows the C ABI.
+  unsafe { rt_gc_safepoint_asm() }
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]

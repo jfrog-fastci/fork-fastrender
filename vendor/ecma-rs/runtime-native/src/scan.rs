@@ -1,8 +1,8 @@
 //! StackMap-driven root scanning helpers.
 //!
-//! This module provides a small, architecture-independent helper that:
-//! - looks up the [`crate::stackmaps::CallSite`] for a stopped thread's current PC, and
-//! - enumerates the `(base, derived)` relocation pairs corresponding to LLVM `gc.relocate` uses.
+//! This module provides small helpers that:
+//! - look up the [`crate::stackmaps::CallSite`] for a stopped thread's current PC, and
+//! - enumerate the `(base, derived)` relocation pairs corresponding to LLVM `gc.relocate` uses.
 //!
 //! Moving GCs must not treat the derived pointer as an independent root. Instead, relocate the
 //! base pointer and recompute the derived pointer relative to it (see
@@ -311,9 +311,10 @@ fn slot_addr(ctx: &ThreadContext, loc: &Location) -> Result<*mut usize, ScanErro
     // `scan_reloc_pairs` currently only supports addressable stack slots (i.e. `Indirect` spill
     // slots). If we ever need to support `Direct` and `Register` roots, this API likely needs to
     // return a richer "root slot" abstraction (stack slot vs register) instead of raw pointers.
-    Location::Direct { .. } | Location::Register { .. } | Location::Constant { .. } | Location::ConstIndex { .. } => {
-      Err(ScanError::UnsupportedLocation { loc: loc.clone() })
-    }
+    Location::Direct { .. }
+    | Location::Register { .. }
+    | Location::Constant { .. }
+    | Location::ConstIndex { .. } => Err(ScanError::UnsupportedLocation { loc: loc.clone() }),
   }
 }
 
@@ -323,4 +324,31 @@ fn add_i32(base: u64, offset: i32) -> Option<u64> {
   } else {
     base.checked_sub((-offset) as u64)
   }
+}
+
+/// Compute the caller-frame stack pointer value used as the base for LLVM stackmap
+/// `Indirect [SP + off]` locations on AArch64.
+///
+/// Empirically on LLVM 18 with frame pointers enabled (`-frame-pointer=all`):
+/// - The function prologue saves `(FP, LR)` as a 16-byte pair and sets `FP` to
+///   point at that pair.
+/// - `stack_size` in the stackmap function record matches the amount of stack
+///   space reserved by the prologue (including that 16-byte frame record).
+///
+/// That means at a statepoint callsite, the caller's `SP` value is:
+///
+/// ```text
+/// sp_at_call = fp + 16 - stack_size
+/// ```
+///
+/// because `fp + 16` points just above the saved `(FP, LR)` pair and `stack_size`
+/// accounts for the full frame size below that point.
+pub fn compute_sp_aarch64(fp: usize, stack_size: u64) -> usize {
+  let stack_size: usize = stack_size
+    .try_into()
+    .expect("stack_size does not fit in usize");
+  let fp_plus_record = fp.checked_add(16).expect("fp overflow");
+  fp_plus_record
+    .checked_sub(stack_size)
+    .expect("stack_size underflow while computing AArch64 SP from FP")
 }

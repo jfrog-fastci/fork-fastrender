@@ -10,6 +10,9 @@ use crate::gc::YOUNG_SPACE;
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use std::sync::atomic::Ordering;
 
+#[cfg(target_arch = "aarch64")]
+use crate::scan::compute_sp_aarch64;
+
 #[cfg(target_arch = "x86_64")]
 mod arch {
   pub const WORD: u64 = 8;
@@ -328,16 +331,16 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 /// ### Callsite SP derivation (critical correctness note)
 ///
 /// Stackmap locations are typically `Indirect [SP + off]`, where `SP` is the *caller* frame's stack
-/// pointer at the callsite return address.
+/// pointer value at the callsite return address.
 ///
-/// The stackmap function record `stack_size` is a fixed frame size and does **not** include per-call
-/// outgoing argument pushes/adjustments, so it is not sufficient to reconstruct the caller's
-/// callsite `SP` for arbitrary callsites.
+/// For correctness we must interpret the `SP` used by the stackmap record, not the callee-entry
+/// stack pointer.
 ///
-/// With frame pointers enforced (our ABI contract), we derive the caller callsite `SP` from the
-/// **callee's frame pointer**:
-///
-/// `caller_sp = callee_fp + 16`
+/// - For frames with a stackmap entry, we reconstruct the caller's stackmap-semantics `SP` from the
+///   caller's frame pointer (`FP`) and the stackmap function record's `stack_size` (see
+///   `caller_sp_from_stack_size` for the x86_64/AArch64-specific details).
+/// - When no stackmap record exists (debug-only conservative scanning), we fall back to deriving the
+///   callsite `SP` from the callee frame pointer: `caller_sp = callee_fp + 16`.
 ///
 /// For patchable statepoints (`gc.statepoint` with `patch_bytes > 0`), LLVM 18
 /// records the return address as the byte *after the reserved patchable region*.
@@ -391,14 +394,7 @@ pub unsafe fn walk_gc_roots_from_fp(
     let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
     match stackmaps.lookup(caller_ra) {
       Some(callsite) => {
-        enumerate_roots_for_frame(
-          caller_fp,
-          caller_ra,
-          callsite,
-          bounds,
-          Some(caller_sp),
-          &mut visit,
-        )?;
+        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, Some(caller_sp), &mut visit)?;
       }
       None => {
         #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -779,7 +775,11 @@ fn caller_sp_from_stack_size(
     sp
   };
   #[cfg(target_arch = "aarch64")]
-  let caller_sp = caller_sp_checked;
+  let caller_sp = {
+    let sp = compute_sp_aarch64(caller_fp as usize, stack_size) as u64;
+    debug_assert_eq!(sp, caller_sp_checked);
+    sp
+  };
 
   Ok(caller_sp)
 }

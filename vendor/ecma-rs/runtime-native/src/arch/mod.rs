@@ -80,8 +80,10 @@ pub fn capture_safepoint_context() -> SafepointContext {
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
+// AArch64 helpers are compiled on all targets so x86_64 tests can exercise the
+// DWARF register mapping and stack-pointer reconstruction logic. Any
+// architecture-specific assembly is gated inside the module.
+pub mod aarch64;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("runtime-native safepoint context capture is only supported on x86_64 and aarch64");

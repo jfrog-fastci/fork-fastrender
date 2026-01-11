@@ -11,6 +11,9 @@ use std::time::Duration;
 use std::time::Instant;
 use std::cell::Cell;
 
+#[cfg(target_arch = "aarch64")]
+use crate::arch::aarch64::RegContext;
+
 extern "C" {
   fn rt_gc_safepoint_slow(requested_epoch: u64);
 }
@@ -199,6 +202,7 @@ pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
 ///
 /// - Fast path: one atomic load + branch.
 /// - Slow path: publish the current epoch as "observed", then block until resumed.
+#[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 pub fn rt_gc_safepoint() {
   let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
@@ -210,6 +214,25 @@ pub fn rt_gc_safepoint() {
   // platform C ABI.
   unsafe {
     rt_gc_safepoint_slow(epoch);
+  }
+}
+
+/// AArch64 safepoint poll.
+///
+/// On AArch64 the exported `rt_gc_safepoint` entrypoint is implemented in
+/// assembly (`arch/aarch64/rt_gc_safepoint.S`) so we can capture the caller
+/// FP/LR and spill the register file before any Rust code runs.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn rt_gc_safepoint() {
+  extern "C" {
+    #[link_name = "rt_gc_safepoint"]
+    fn rt_gc_safepoint_asm();
+  }
+
+  // Safety: `rt_gc_safepoint_asm` is a runtime entrypoint that follows the C ABI.
+  unsafe {
+    rt_gc_safepoint_asm();
   }
 }
 
@@ -454,6 +477,65 @@ where
     Ok(v) => v,
     Err(p) => std::panic::resume_unwind(p),
   }
+}
+
+/// Rust implementation of the AArch64 assembly safepoint stub.
+///
+/// This is called from `arch/aarch64/rt_gc_safepoint.S` after the stub:
+/// - detects a stop-the-world request,
+/// - spills registers into a [`RegContext`] on its stack,
+/// - captures the caller's frame pointer and return address at the safepoint
+///   callsite.
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+#[cold]
+extern "C" fn rt_gc_safepoint_impl(caller_fp: u64, caller_pc: u64, regs: *mut RegContext) {
+  // A spurious slow-path entry can happen if the GC request was resumed between
+  // the assembly fast-path check and this call. Re-check the epoch and return.
+  let requested_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
+  if requested_epoch & 1 == 0 {
+    return;
+  }
+
+  // Safety: the assembly wrapper passes a valid pointer to an initialized
+  // `RegContext` living on its stack for the duration of this call.
+  let sp_entry = unsafe { (*regs).sp } as usize;
+
+  // Publish the callsite state (FP + return PC) so the coordinator can match
+  // `.llvm_stackmaps` records and enumerate stack roots for this thread.
+  let ctx = SafepointContext {
+    sp_entry,
+    sp: sp_entry,
+    fp: caller_fp as usize,
+    ip: caller_pc as usize,
+  };
+
+  registry::set_current_thread_safepoint_context(ctx);
+  registry::set_current_thread_safepoint_epoch_observed(requested_epoch);
+  notify_state_change();
+
+  let coord = coordinator();
+  coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
+  let mut guard = coord.cv_mutex.lock().unwrap();
+  loop {
+    let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
+    if epoch & 1 == 0 {
+      registry::set_current_thread_safepoint_epoch_observed(epoch);
+      break;
+    }
+    guard = coord.cv.wait(guard).unwrap();
+  }
+  // Notify after releasing the mutex to avoid self-deadlocking with
+  // `notify_state_change`'s synchronization.
+  drop(guard);
+  notify_state_change();
+  coord.threads_waiting.fetch_sub(1, Ordering::SeqCst);
+
+  // Note: `regs` lives on the assembly stub's stack. If/when we support
+  // register-located roots, the GC can update it in-place while the thread is
+  // blocked here, and the assembly epilogue will restore the updated registers
+  // before returning to managed code.
+  let _ = regs;
 }
 
 /// Request a global stop-the-world safepoint.
