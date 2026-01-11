@@ -639,6 +639,12 @@ fn strip_vendor_prefix(property: &str) -> Option<&str> {
     return Some(unprefixed);
   }
   if let Some(unprefixed) = property.strip_prefix("-moz-") {
+    // `-moz-line-clamp` appears in real-world stylesheets (often emitted by tooling), but is not a
+    // supported alias in any major engine. Browsers treat it as an unknown property and ignore it;
+    // aliasing it to the standardized `line-clamp` would therefore be a compat break.
+    if unprefixed == "line-clamp" {
+      return None;
+    }
     return Some(unprefixed);
   }
   if let Some(unprefixed) = property.strip_prefix("-o-") {
