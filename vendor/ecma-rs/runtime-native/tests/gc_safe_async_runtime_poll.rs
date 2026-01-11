@@ -1,4 +1,11 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(
+  target_os = "linux",
+  target_os = "macos",
+  target_os = "freebsd",
+  target_os = "netbsd",
+  target_os = "openbsd",
+  target_os = "dragonfly"
+))]
 
 use runtime_native::async_rt::AsyncRuntime;
 use runtime_native::async_rt::Task;
@@ -19,7 +26,7 @@ fn stop_the_world_completes_while_thread_waits_on_async_runtime_poll_lock() {
 
   let rt = Arc::new(AsyncRuntime::new().expect("AsyncRuntime::new failed"));
 
-  // Keep the event loop non-idle so `poll()` blocks in `epoll_wait`.
+  // Keep the event loop non-idle so `poll()` blocks in the platform reactor wait syscall.
   let timer = rt.schedule_timer(
     Instant::now() + Duration::from_secs(60),
     Task::new(noop, std::ptr::null_mut()),
@@ -37,7 +44,7 @@ fn stop_the_world_completes_while_thread_waits_on_async_runtime_poll_lock() {
   });
   let poller_id = rx_poller.recv().unwrap();
 
-  // Wait until the poller thread has parked itself while blocked in epoll_wait.
+  // Wait until the poller thread has parked itself while blocked in the reactor wait syscall.
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     let parked = threading::all_threads()

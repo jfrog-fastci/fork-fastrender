@@ -1,4 +1,11 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(
+  target_os = "linux",
+  target_os = "macos",
+  target_os = "freebsd",
+  target_os = "netbsd",
+  target_os = "openbsd",
+  target_os = "dragonfly"
+))]
 
 use runtime_native::async_rt::AsyncRuntime;
 use runtime_native::async_rt::Task;
@@ -17,7 +24,7 @@ fn stw_completes_while_event_loop_blocked_in_epoll_wait() {
 
   let rt = Arc::new(AsyncRuntime::new().expect("AsyncRuntime::new failed"));
 
-  // Keep the event loop non-idle so `poll()` will block in `epoll_wait`.
+  // Keep the event loop non-idle so `poll()` will block in the platform reactor wait syscall.
   let timer = rt.schedule_timer(
     Instant::now() + Duration::from_secs(5),
     Task::new(noop_task, std::ptr::null_mut()),
@@ -31,7 +38,8 @@ fn stw_completes_while_event_loop_blocked_in_epoll_wait() {
       let id = threading::register_current_thread(ThreadKind::Worker);
       tx_id.send(id.get()).unwrap();
 
-      // With only a far-future timer scheduled, this call blocks in epoll_wait.
+      // With only a far-future timer scheduled, this call blocks in the platform reactor wait
+      // syscall.
       let _pending = rt.poll();
 
       threading::unregister_current_thread();
@@ -40,7 +48,7 @@ fn stw_completes_while_event_loop_blocked_in_epoll_wait() {
 
   let worker_id = rx_id.recv().unwrap();
 
-  // Wait until the event-loop thread is GC-quiescent while blocked in `epoll_wait`.
+  // Wait until the event-loop thread is GC-quiescent while blocked in the reactor wait syscall.
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     let quiescent = threading::all_threads()
@@ -57,7 +65,10 @@ fn stw_completes_while_event_loop_blocked_in_epoll_wait() {
   runtime_native::rt_gc_request_stop_the_world();
   let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_secs(2));
   runtime_native::rt_gc_resume_world();
-  assert!(stopped, "world did not stop while event loop was blocked in epoll_wait");
+  assert!(
+    stopped,
+    "world did not stop while event loop was blocked in the reactor wait syscall"
+  );
 
   // Wake the event loop and let it exit cleanly.
   assert!(rt.cancel_timer(timer), "expected timer to exist");
