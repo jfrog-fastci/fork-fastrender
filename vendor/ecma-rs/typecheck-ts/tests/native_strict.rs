@@ -17,10 +17,9 @@ interface String {}
 declare const arguments: IArguments;
 
 declare function eval(x: string): unknown;
-declare const globalThis: { eval: (x: string) => unknown };
 
 interface Function {}
-declare const Function: { new (...args: string[]): Function };
+declare const Function: { new (...args: string[]): Function; (...args: string[]): Function };
 
 declare const Object: {
   setPrototypeOf: (o: object, p: object) => void;
@@ -29,9 +28,22 @@ declare const Object: {
   assign: (...args: object[]) => void;
 };
 
+declare const Reflect: {
+  setPrototypeOf: (o: object, p: object) => void;
+  defineProperty: (o: object, key: string, desc: object) => void;
+};
+
 declare const Proxy: {
   new <T extends object>(target: T, handler: object): T;
   revocable: (target: object, handler: object) => { proxy: object };
+};
+
+declare const globalThis: {
+  eval: typeof eval;
+  Function: typeof Function;
+  Object: typeof Object;
+  Reflect: typeof Reflect;
+  Proxy: typeof Proxy;
 };
 "#;
 
@@ -379,20 +391,92 @@ fn native_strict_bans_define_property_on_template_literal_prototype() {
 }
 
 #[test]
+fn native_strict_bans_global_function_computed_property() {
+  let source = "globalThis[\"Function\"](\"return 1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis[\"Function\"]";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_global_new_proxy() {
+  let source = "new globalThis.Proxy({}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis.Proxy";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_global_proxy_revocable() {
+  let source = "globalThis.Proxy.revocable({}, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis.Proxy.revocable";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROXY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Proxy diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_global_object_set_prototype_of() {
+  let source = "const value: object = {};\nglobalThis.Object.setPrototypeOf(value, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis.Object.setPrototypeOf(value, {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_is_opt_in() {
   let source = r#"
   const obj: { [key: string]: number } = { a: 1 };
   const k = 'a';
 obj[k];
 
-function f() { return arguments; }
-eval("1");
-new Function("return 1");
-new Proxy({}, {});
-const x = 1 as any;
-const y = {} as { a: number };
-const z: string | null = null;
-z!.length;
+ function f() { return arguments; }
+ eval("1");
+ globalThis["Function"]("return 1");
+ new Function("return 1");
+ new globalThis.Proxy({}, {});
+ new Proxy({}, {});
+ const value: object = {};
+ globalThis.Object.setPrototypeOf(value, {});
+ const x = 1 as any;
+ const y = {} as { a: number };
+ const z: string | null = null;
+ z!.length;
 with ({}) { }
 "#;
   let (diagnostics, _) = check(source, false);

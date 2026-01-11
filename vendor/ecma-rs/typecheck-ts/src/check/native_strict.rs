@@ -57,6 +57,32 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn expr_is_ident_or_global_this_member(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    global_this_name: hir_js::NameId,
+    target_name: hir_js::NameId,
+    target_str: &str,
+  ) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    match &expr.kind {
+      ExprKind::Ident(name) => *name == target_name,
+      ExprKind::Member(mem) => {
+        let obj_is_global_this = matches!(
+          body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
+          Some(ExprKind::Ident(name)) if *name == global_this_name
+        );
+        obj_is_global_this
+          && (object_key_is_ident(&mem.property, target_name)
+            || object_key_is_string(&mem.property, target_str)
+            || object_key_is_literal_string(body, &mem.property, target_str))
+      }
+      _ => false,
+    }
+  }
+
   fn expr_chain_contains_proto_mutation(
     body: &Body,
     mut id: hir_js::ExprId,
@@ -250,14 +276,28 @@ pub fn validate_native_strict_body(
             }
           }
 
-          if matches!(&callee.kind, ExprKind::Ident(name) if *name == function_name) {
+          if expr_is_ident_or_global_this_member(
+            body,
+            call.callee,
+            global_this_name,
+            function_name,
+            "Function",
+          ) {
             diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
               "`Function` constructor is forbidden when `native_strict` is enabled",
               Span::new(file, callee_span),
             ));
           }
 
-          if call.is_new && matches!(&callee.kind, ExprKind::Ident(name) if *name == proxy_name) {
+          if call.is_new
+            && expr_is_ident_or_global_this_member(
+              body,
+              call.callee,
+              global_this_name,
+              proxy_name,
+              "Proxy",
+            )
+          {
             diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
               "`Proxy` is forbidden when `native_strict` is enabled",
               Span::new(file, callee_span),
@@ -265,12 +305,29 @@ pub fn validate_native_strict_body(
           }
 
           if let ExprKind::Member(member) = &callee.kind {
-            let obj_is_ident = body
-              .exprs
-              .get(member.object.0 as usize)
-              .map(|expr| &expr.kind);
+            let obj_is_proxy = expr_is_ident_or_global_this_member(
+              body,
+              member.object,
+              global_this_name,
+              proxy_name,
+              "Proxy",
+            );
+            let obj_is_object = expr_is_ident_or_global_this_member(
+              body,
+              member.object,
+              global_this_name,
+              object_name,
+              "Object",
+            );
+            let obj_is_reflect = expr_is_ident_or_global_this_member(
+              body,
+              member.object,
+              global_this_name,
+              reflect_name,
+              "Reflect",
+            );
 
-            if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == proxy_name)
+            if obj_is_proxy
               && (object_key_is_ident(&member.property, revocable_name)
                 || object_key_is_string(&member.property, "revocable")
                 || object_key_is_literal_string(body, &member.property, "revocable"))
@@ -281,7 +338,7 @@ pub fn validate_native_strict_body(
               ));
             }
 
-            if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name || *name == reflect_name)
+            if (obj_is_object || obj_is_reflect)
               && (object_key_is_ident(&member.property, set_prototype_of_name)
                 || object_key_is_string(&member.property, "setPrototypeOf")
                 || object_key_is_literal_string(body, &member.property, "setPrototypeOf"))
@@ -294,7 +351,7 @@ pub fn validate_native_strict_body(
             }
 
             if let Some(first_arg) = call.args.first().map(|arg| arg.expr) {
-              let is_object_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name)
+              let is_object_define = obj_is_object
                 && (object_key_is_ident(&member.property, define_property_name)
                   || object_key_is_string(&member.property, "defineProperty")
                   || object_key_is_literal_string(body, &member.property, "defineProperty")
@@ -304,7 +361,7 @@ pub fn validate_native_strict_body(
                   || object_key_is_ident(&member.property, assign_name)
                   || object_key_is_string(&member.property, "assign")
                   || object_key_is_literal_string(body, &member.property, "assign"));
-              let is_reflect_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == reflect_name)
+              let is_reflect_define = obj_is_reflect
                 && (object_key_is_ident(&member.property, define_property_name)
                   || object_key_is_string(&member.property, "defineProperty")
                   || object_key_is_literal_string(body, &member.property, "defineProperty"));
