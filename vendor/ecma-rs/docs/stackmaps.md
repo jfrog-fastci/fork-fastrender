@@ -37,6 +37,15 @@ To force spills, ensure codegen uses:
 
 This keeps statepoint GC roots out of registers even if other GC register options are enabled.
 
+### `clang -flto` note
+
+If machine code generation happens inside `clang-18` (e.g. `clang-18 -flto`), pass the equivalent
+backend flag:
+
+- `clang-18 -mllvm --fixup-max-csr-statepoints=0`
+
+`native-js`'s LTO linking helpers do this automatically.
+
 Additionally, stack walking requires frame pointers:
 
 - `frame-pointer="all"` (LLVM function attribute), or `llc-18 --frame-pointer=all`

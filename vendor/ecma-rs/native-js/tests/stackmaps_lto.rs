@@ -6,6 +6,10 @@ use inkwell::OptimizationLevel;
 use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM, LinkOpts};
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
+use runtime_native::stackmaps::StackMap;
+use runtime_native::statepoint_verify::{
+  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
+};
 use std::process::Command;
 
 fn has_clang_18() -> bool {
@@ -49,6 +53,21 @@ fn assert_stackmaps_present(exe: &[u8]) {
   let section_addr = section.address();
   let section_size = section.size();
   assert!(section_size > 0, "expected non-empty stackmaps section");
+
+  // Ensure statepoint roots are spilled to stack slots, not registers. LTO code
+  // generation happens inside `clang-18`, so this guards against it accidentally
+  // emitting `Register` root locations that our frame-pointer-only stack walker
+  // can't reconstruct.
+  let stackmaps_bytes = section.data().expect("read .llvm_stackmaps");
+  let stackmap = StackMap::parse(stackmaps_bytes).expect("parse .llvm_stackmaps");
+  verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .expect("statepoint stackmap verification failed");
 
   let (start, start_scope) =
     find_symbol(&file, LLVM_STACKMAPS_START_SYM).expect("missing __start_llvm_stackmaps symbol");

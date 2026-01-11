@@ -1,5 +1,5 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::gc::statepoints::{StatepointCallee, StatepointIntrinsics};
 use native_js::llvm::gc;
@@ -9,7 +9,7 @@ use tempfile::tempdir;
 
 #[test]
 fn stackmap_locations_include_gc_pointer_call_args() {
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let context = Context::create();
   let module = context.create_module("statepoints_call_args_stackmap");
@@ -66,7 +66,10 @@ fn stackmap_locations_include_gc_pointer_call_args() {
     .expect("build return");
 
   if let Err(err) = module.verify() {
-    panic!("module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    panic!(
+      "module verification failed: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
   }
 
   let triple = TargetMachine::get_default_triple();
@@ -94,7 +97,8 @@ fn stackmap_locations_include_gc_pointer_call_args() {
   let section = file
     .section_by_name(".llvm_stackmaps")
     .expect("expected .llvm_stackmaps section");
-  let stackmap = StackMap::parse(section.data().expect("read .llvm_stackmaps")).expect("parse stackmap v3");
+  let stackmap =
+    StackMap::parse(section.data().expect("read .llvm_stackmaps")).expect("parse stackmap v3");
 
   assert!(
     stackmap.records.len() >= 2,

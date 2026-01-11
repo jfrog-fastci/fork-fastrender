@@ -1,5 +1,4 @@
 use inkwell::context::Context;
-use inkwell::targets::{InitializationConfig, Target};
 use inkwell::OptimizationLevel;
 use native_js::{codegen, strict};
 use std::collections::HashMap;
@@ -15,7 +14,9 @@ struct TestHost {
 
 impl TestHost {
   fn insert(&mut self, key: FileKey, kind: FileKind, source: &str) {
-    self.files.insert(key.clone(), Arc::from(source.to_string()));
+    self
+      .files
+      .insert(key.clone(), Arc::from(source.to_string()));
     self.kinds.insert(key, kind);
   }
 }
@@ -41,7 +42,7 @@ impl Host for TestHost {
 fn run_main(source: &str) -> i32 {
   static INIT: Once = Once::new();
   INIT.call_once(|| {
-    Target::initialize_native(&InitializationConfig::default()).expect("init native target");
+    native_js::llvm::init_native_target().expect("init native target");
   });
 
   let mut host = TestHost::default();

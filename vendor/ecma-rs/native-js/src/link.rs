@@ -196,8 +196,13 @@ pub fn link_elf_executable_with_options(
     let mut patched = Vec::with_capacity(object_files.len());
     for (idx, src) in object_files.iter().enumerate() {
       let dst = td.path().join(format!("obj{idx}.o"));
-      fs::copy(src, &dst)
-        .with_context(|| format!("failed to copy object {} to {}", src.display(), dst.display()))?;
+      fs::copy(src, &dst).with_context(|| {
+        format!(
+          "failed to copy object {} to {}",
+          src.display(),
+          dst.display()
+        )
+      })?;
 
       // `llvm-objcopy` is a no-op if the section doesn't exist, so we can apply this
       // unconditionally.
@@ -308,6 +313,11 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
+  // Clang performs codegen in a separate process, so it won't see our in-process
+  // `LLVMParseCommandLineOptions` configuration. Pass the equivalent backend
+  // flag to ensure statepoint GC roots are spilled to stack slots (never
+  // stackmap `Register` locations).
+  cmd.arg("-mllvm").arg("--fixup-max-csr-statepoints=0");
 
   if opts.debug {
     cmd.arg("-g");
@@ -373,7 +383,10 @@ pub fn link_bitcode_to_exe(_bitcode: &[u8], _opts: LinkOpts) -> anyhow::Result<V
 ///
 /// The resulting binary will export [`LLVM_STACKMAPS_START_SYM`] and [`LLVM_STACKMAPS_STOP_SYM`]
 /// that delimit the `.llvm_stackmaps` section in memory.
-pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) -> anyhow::Result<()> {
+pub fn link_elf_executable_lto(
+  output_path: &Path,
+  bitcode_files: &[PathBuf],
+) -> anyhow::Result<()> {
   let opts = LinkOpts::default();
   let clang =
     find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
@@ -389,6 +402,9 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto=full");
+  // See `link_bitcode_to_exe`: ensure statepoint roots are forced into stack
+  // slots during link-time codegen.
+  cmd.arg("-mllvm").arg("--fixup-max-csr-statepoints=0");
 
   if cfg!(target_os = "linux") {
     // We don't currently support PIE for this LTO helper (see module docs).
@@ -438,18 +454,20 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
 /// Minimal system linker wrapper used by the early AOT pipeline.
 ///
 /// This is used by the "emit executable" helper for quick smoke tests / debugging. It still wires
-/// in the stackmaps linker fragment so `--gc-sections` doesn't discard stackmaps if the generated
-/// object happens to include them.
-pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(), crate::NativeJsError> {
+/// in the stackmaps linker fragment so `--gc-sections` doesn't discard `.llvm_stackmaps` if the
+/// generated object happens to include them.
+pub fn link_object_to_executable(
+  obj_path: &Path,
+  exe_path: &Path,
+) -> Result<(), crate::NativeJsError> {
   if !cfg!(target_os = "linux") {
     return Err(crate::NativeJsError::UnsupportedPlatform {
       target_os: std::env::consts::OS.to_string(),
     });
   }
 
-  let clang = find_program(&["clang-18", "clang"]).ok_or(crate::NativeJsError::ToolNotFound(
-    "clang-18/clang",
-  ))?;
+  let clang = find_program(&["clang-18", "clang"])
+    .ok_or(crate::NativeJsError::ToolNotFound("clang-18/clang"))?;
 
   let have_lld = find_program(&["ld.lld", "ld.lld-18", "lld-18", "lld"]).is_some();
 
@@ -458,9 +476,11 @@ pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(),
   // - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can't discard it.
   let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
   let script_path = td.path().join("fastr_stackmaps.ld");
-  fs::write(&script_path, LLVM_STACKMAPS_LD_FRAGMENT).map_err(|source| crate::NativeJsError::Io {
-    path: script_path.clone(),
-    source,
+  fs::write(&script_path, LLVM_STACKMAPS_LD_FRAGMENT).map_err(|source| {
+    crate::NativeJsError::Io {
+      path: script_path.clone(),
+      source,
+    }
   })?;
 
   let mut cmd = Command::new(&clang);
@@ -475,7 +495,9 @@ pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(),
   cmd.arg(obj_path).arg("-o").arg(exe_path);
 
   let cmd_dbg = format!("{cmd:?}");
-  let output = cmd.output().map_err(crate::NativeJsError::LinkerSpawnFailed)?;
+  let output = cmd
+    .output()
+    .map_err(crate::NativeJsError::LinkerSpawnFailed)?;
   if !output.status.success() {
     return Err(crate::NativeJsError::LinkerFailed {
       cmd: cmd_dbg,
