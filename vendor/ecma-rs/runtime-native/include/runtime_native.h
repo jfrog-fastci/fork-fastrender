@@ -969,8 +969,8 @@ IoWatcherId rt_io_register_handle_with_drop(
 // - Readiness notifications are edge-triggered; consumers must drain reads/writes
 //   until they return `EAGAIN`/`WouldBlock`.
 // - `rt_io_register*` returns 0 on failure.
-IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
-IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
+IoWatcherId rt_io_register(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
+IoWatcherId rt_io_register_with_drop(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 // Like `rt_io_register`, but `data` is a GC-managed object that the runtime will keep alive until
 // the watcher is unregistered with `rt_io_unregister`.
 //
@@ -978,9 +978,9 @@ IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(
 // - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
 // - The runtime registers a strong GC root for `data` until `rt_io_unregister` is called.
 // - Each callback receives the current relocated pointer.
-IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
+IoWatcherId rt_io_register_rooted(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
 // Like `rt_io_register_rooted`, but takes the GC pointer as a `GcHandle` (pointer-to-slot).
-IoWatcherId rt_io_register_rooted_h(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), GcHandle data);
+IoWatcherId rt_io_register_rooted_h(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), GcHandle data);
 void rt_io_update(IoWatcherId id, uint32_t interests);
 void rt_io_unregister(IoWatcherId id);
 
