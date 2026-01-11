@@ -39,21 +39,32 @@ fn assert_no_register_gc_roots(stackmap: &StackMap) {
 
     for pair in sp.gc_pairs() {
       for loc in [&pair.base, &pair.derived] {
-        // Constants are not addressable roots; ignore for this regression check.
-        if matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }) {
-          continue;
-        }
-
         gc_locs += 1;
-
-        if matches!(loc, Location::Register { .. }) {
-          panic!(
-            "GC root recorded in a register in .llvm_stackmaps (record_id=0x{:x}): {loc:?}\n\
-native-js requires stack-slot-only roots at safepoints; check LLVM CodeGen option \
-`--fixup-allow-gcptr-in-csr=false` (or `--fixup-max-csr-statepoints=0`) is applied \
-in native-js LLVM init.",
-            rec.patchpoint_id
-          );
+        match loc {
+          Location::Indirect { size, dwarf_reg, .. } => {
+            // `runtime-native` expects pointer-sized spill slots addressed off the caller's SP/FP.
+            assert_eq!(
+              *size, 8,
+              "expected GC root spill slot size=8 (record_id=0x{:x}): {loc:?}",
+              rec.patchpoint_id
+            );
+            assert!(
+              matches!(
+                *dwarf_reg,
+                runtime_native::stackmaps::X86_64_DWARF_REG_RSP | runtime_native::stackmaps::X86_64_DWARF_REG_RBP
+              ),
+              "expected GC root base register to be RSP/RBP (record_id=0x{:x}): {loc:?}",
+              rec.patchpoint_id
+            );
+          }
+          other => {
+            panic!(
+              "GC root must be an Indirect stack spill slot, got {other:?} (record_id=0x{:x}).\n\
+native-js requires stack-slot-only roots at safepoints; ensure LLVM CodeGen options \
+`--fixup-allow-gcptr-in-csr=false` / `--fixup-max-csr-statepoints=0` are applied for all codegen paths.",
+              rec.patchpoint_id
+            );
+          }
         }
       }
     }
