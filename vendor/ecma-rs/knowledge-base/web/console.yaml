@@ -7,3 +7,23 @@
       flags: IO
       throws: Maybe
   purity: Impure
+
+- name: console.error
+  aliases:
+    - console.error
+  since: "baseline"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+
+- name: console.warn
+  aliases:
+    - console.warn
+  since: "baseline"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
