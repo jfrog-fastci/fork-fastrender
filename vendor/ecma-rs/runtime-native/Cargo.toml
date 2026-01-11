@@ -53,3 +53,7 @@ object = { workspace = true }
 [[bench]]
 name = "card_table"
 harness = false
+
+[[bench]]
+name = "bump_alloc"
+harness = false
