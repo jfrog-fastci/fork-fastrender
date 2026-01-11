@@ -41,17 +41,23 @@ pub enum EmitError {
 
 /// Runs the native-js LLVM pass pipeline and writes an object file.
 ///
-/// This currently applies `rewrite-statepoints-for-gc` (and in debug builds
-/// `verify<safepoint-ir>`) before invoking LLVM codegen. The rewrite pass is what
-/// causes LLVM to emit `llvm.experimental.gc.statepoint.*` intrinsics and, during
-/// object emission, a `.llvm_stackmaps` section.
+/// This applies:
+/// - `place-safepoints` (poll insertion at function entry + loop backedges), then
+/// - `rewrite-statepoints-for-gc` (turn calls into `gc.statepoint` + `gc.relocate`),
+/// - and in debug builds `verify<safepoint-ir>`.
+///
+/// Safepoint polls are required for GC progress: relying on call-site statepoints
+/// alone can deadlock stop-the-world GC in long-running loops with no calls.
+///
+/// During object emission, LLVM emits a `.llvm_stackmaps` section describing GC
+/// roots at each statepoint.
 pub fn write_object_file(
   module: &Module<'_>,
   target_machine: &TargetMachine,
   path: &Path,
 ) -> Result<(), EmitError> {
   ensure_targets_initialized();
-  passes::rewrite_statepoints_for_gc(module, target_machine)?;
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(module, target_machine)?;
 
   target_machine
     .write_to_file(module, FileType::Object, path)
@@ -157,7 +163,7 @@ pub fn emit_object_with_statepoints(
   module.set_triple(&target.triple);
   module.set_data_layout(&machine.get_target_data().get_data_layout());
 
-  passes::rewrite_statepoints_for_gc(module, &machine)?;
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(module, &machine)?;
 
   Ok(
     machine
@@ -224,7 +230,7 @@ pub fn emit_asm_with_statepoints(
   module.set_triple(&target.triple);
   module.set_data_layout(&machine.get_target_data().get_data_layout());
 
-  passes::rewrite_statepoints_for_gc(module, &machine)?;
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(module, &machine)?;
 
   Ok(
     machine

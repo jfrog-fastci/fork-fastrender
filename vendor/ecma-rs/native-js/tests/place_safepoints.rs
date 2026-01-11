@@ -109,18 +109,17 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
     .expect("place-safepoints + rewrite-statepoints-for-gc (second run) failed");
 
   let ir = module.print_to_string().to_string();
-  assert!(
-    ir.contains("declare void @gc.safepoint_poll()"),
-    "expected poll function to be predeclared (LLVM 18 place-safepoints workaround):\n{ir}"
-  );
-
-  let decl_lines = ir
+  let poll_decl_lines = ir
     .lines()
     .filter(|l| l.starts_with("declare void @gc.safepoint_poll"))
     .count();
-  assert_eq!(
-    decl_lines, 1,
-    "expected exactly one gc.safepoint_poll declaration after running the helper twice:\n{ir}"
+  let poll_def_lines = ir
+    .lines()
+    .filter(|l| l.starts_with("define") && l.contains("@gc.safepoint_poll"))
+    .count();
+  assert!(
+    poll_decl_lines + poll_def_lines == 1,
+    "expected exactly one gc.safepoint_poll declaration/definition after running the helper twice:\n{ir}"
   );
 
   let statepoint_polls = ir

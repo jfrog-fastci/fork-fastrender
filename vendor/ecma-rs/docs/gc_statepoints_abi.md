@@ -82,12 +82,19 @@ Minimum required lowering rules:
      roots at exactly this call site.
 
 2. **Explicit safepoint polls are statepoints**
+   - **Loop backedge polls are required for GC progress.** Relying only on
+     call-site safepoints is insufficient: a tight loop with no calls can block
+     stop-the-world GC indefinitely.
    - Long-running loops must contain explicit poll calls, inserted at:
-     - loop backedges, and/or
-     - function prologues (for leaf functions or long basic blocks).
-   - These polls are emitted as calls to a runtime function (e.g.
-     `rt_gc_safepoint`) and must also be expressed as `gc.statepoint` so a stack
-     map record exists for the TS frame at that PC.
+     - loop backedges (minimum), and/or
+     - function prologues (for very large leaf functions with no loops).
+   - Polls are emitted as calls to a runtime function (e.g. `rt_gc_safepoint` /
+     LLVM’s `gc.safepoint_poll`) and must also be expressed as `gc.statepoint` so
+     a stack map record exists for the TS frame at that PC.
+   - **Relocation contract:** any `ptr addrspace(1)` value that is live across
+     the poll may be moved by the GC. The code generator must therefore ensure
+     those values appear in the statepoint’s `"gc-live"` bundle and that all uses
+     after the poll use the corresponding `gc.relocate` results.
 
 3. (Optional but expected) **Potentially allocating runtime calls are statepoints**
    - Calls from TS code into runtime helpers that may allocate (and therefore may
