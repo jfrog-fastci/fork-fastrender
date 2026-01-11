@@ -193,6 +193,7 @@ mod fragmentation_writing_mode_invariance;
 mod fragmentation_widows_orphans;
 mod grid_abspos_static_position;
 mod grid_abspos_auto_static_position;
+mod grid_abspos_negative_line_counts_from_explicit_grid;
 mod grid_auto_height_does_not_fill_viewport;
 mod grid_auto_placement_dense;
 mod grid_auto_placement_column_dense;

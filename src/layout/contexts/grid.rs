@@ -6971,6 +6971,8 @@ impl GridFormattingContext {
     let mut col_offsets: Option<Vec<f32>> = None;
     let mut row_alignment: Option<TaffyAlignContent> = None;
     let mut col_alignment: Option<TaffyAlignContent> = None;
+    let mut row_explicit_line_count: Option<u16> = None;
+    let mut col_explicit_line_count: Option<u16> = None;
     let mut row_subgrid_ctx: Option<SubgridAxisContext> = None;
     let mut col_subgrid_ctx: Option<SubgridAxisContext> = None;
 
@@ -6984,6 +6986,8 @@ impl GridFormattingContext {
           .unwrap_or(taffy::style::AlignContent::Stretch);
         row_alignment = Some(row_align);
         col_alignment = Some(col_align);
+        row_explicit_line_count = Some(info.rows.explicit_tracks.saturating_add(1));
+        col_explicit_line_count = Some(info.columns.explicit_tracks.saturating_add(1));
         row_offsets = Some(compute_track_offsets(
           &info.rows,
           bounds.height(),
@@ -7211,10 +7215,7 @@ impl GridFormattingContext {
           child.style.grid_row_end,
           child.style.grid_row_raw.as_deref(),
           row_subgrid_ctx.as_ref(),
-          col_offsets
-            .as_ref()
-            .and_then(|offsets| grid_line_count_from_offsets(offsets))
-            .or_else(|| {
+          col_explicit_line_count.or_else(|| {
               // Subgrid fallback: line numbers are local to the subgrid, which inherits the number
               // of tracks it spans in the parent axis.
               let start = box_node.style.grid_row_start;
@@ -7230,10 +7231,7 @@ impl GridFormattingContext {
           child.style.grid_column_end,
           child.style.grid_column_raw.as_deref(),
           col_subgrid_ctx.as_ref(),
-          col_offsets
-            .as_ref()
-            .and_then(|offsets| grid_line_count_from_offsets(offsets))
-            .or_else(|| {
+          col_explicit_line_count.or_else(|| {
               let start = box_node.style.grid_column_start;
               let end = box_node.style.grid_column_end;
               (start > 0 && end > start)
@@ -7298,10 +7296,7 @@ impl GridFormattingContext {
           child.style.grid_column_end,
           child.style.grid_column_raw.as_deref(),
           col_subgrid_ctx.as_ref(),
-          row_offsets
-            .as_ref()
-            .and_then(|offsets| grid_line_count_from_offsets(offsets))
-            .or_else(|| {
+          row_explicit_line_count.or_else(|| {
               let start = box_node.style.grid_column_start;
               let end = box_node.style.grid_column_end;
               (start > 0 && end > start)
@@ -7315,10 +7310,7 @@ impl GridFormattingContext {
           child.style.grid_row_end,
           child.style.grid_row_raw.as_deref(),
           row_subgrid_ctx.as_ref(),
-          row_offsets
-            .as_ref()
-            .and_then(|offsets| grid_line_count_from_offsets(offsets))
-            .or_else(|| {
+          row_explicit_line_count.or_else(|| {
               let start = box_node.style.grid_row_start;
               let end = box_node.style.grid_row_end;
               (start > 0 && end > start)
@@ -11159,15 +11151,6 @@ fn grid_placement_component_from_taffy<'a>(
   }
 }
 
-fn grid_line_count_from_offsets(offsets: &[f32]) -> Option<u16> {
-  // Offsets is (track_count * 2 + 1) entries: [gutter, track, gutter, track, ... gutter].
-  if offsets.len() < 3 || offsets.len() % 2 == 0 {
-    return None;
-  }
-  let track_count = (offsets.len() - 1) / 2;
-  u16::try_from(track_count.saturating_add(1)).ok()
-}
-
 fn resolved_grid_item_range_from_parent_layout(
   taffy: &TaffyTree<*const BoxNode>,
   node_id: TaffyNodeId,
@@ -12952,8 +12935,8 @@ impl FormattingContext for GridFormattingContext {
               .unwrap_or(taffy::style::AlignContent::Stretch),
           );
 
-          let col_line_count = grid_line_count_from_offsets(&col_offsets);
-          let row_line_count = grid_line_count_from_offsets(&row_offsets);
+          let col_line_count = Some(info.columns.explicit_tracks.saturating_add(1));
+          let row_line_count = Some(info.rows.explicit_tracks.saturating_add(1));
           let row_alignment = container_style
             .align_content
             .unwrap_or(taffy::style::AlignContent::Stretch);
