@@ -96,6 +96,9 @@ impl NurserySpace {
       if ptr == libc::MAP_FAILED {
         return Err(io::Error::last_os_error());
       }
+      if ptr.is_null() {
+        return Err(io::Error::new(io::ErrorKind::Other, "mmap returned null"));
+      }
 
       Ok(Self {
         start: ptr.cast::<u8>(),
@@ -229,7 +232,10 @@ impl Drop for NurserySpace {
     unsafe {
       #[cfg(unix)]
       {
-        libc::munmap(self.start.cast::<libc::c_void>(), self.size_bytes);
+        let rc = libc::munmap(self.start.cast::<libc::c_void>(), self.size_bytes);
+        if rc != 0 {
+          panic!("munmap failed: {}", io::Error::last_os_error());
+        }
       }
 
       #[cfg(not(unix))]
