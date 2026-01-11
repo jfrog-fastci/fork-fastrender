@@ -29,6 +29,33 @@ callee may trigger GC. Until effect analysis is wired in, we conservatively assu
 are *may-GC* unless explicitly annotated as a GC leaf via LLVM’s `"gc-leaf-function"` attribute
 (future: `no_gc` / `leaf_no_alloc` derived from effect analysis).
 
+## Statepoint IDs (`StackMapRecord.patchpoint_id`)
+
+LLVM StackMap v3 callsite records include a `patchpoint_id: u64` field (the first field in each
+record). For `llvm.experimental.gc.statepoint`, this is the `i64` **ID argument** passed to the
+intrinsic.
+
+Important: for `native-js` and `runtime-native`, the **callsite return address** is the real
+identifier used for stackmap lookup during stack walking. The patchpoint/statepoint ID is *not*
+used for lookup.
+
+However, the runtime's debug verifier (`runtime_native::statepoint_verify`) uses `patchpoint_id` as
+a *cheap discriminator* to decide which stackmap records follow the **statepoint layout**
+(3 constant header entries + (base,derived) pairs):
+
+- LLVM 18's `rewrite-statepoints-for-gc` uses the fixed default `0xABCDEF00` when a callsite does
+  not specify an explicit `"statepoint-id"` directive.
+- `native-js` adopts the same convention for **all manually emitted** statepoints: every
+  `gc.statepoint` uses `id = 0xABCDEF00` (decimal `2882400000`).
+
+This keeps runtime verification simple and prevents debug builds from silently skipping most
+statepoints due to mismatched IDs.
+
+**Escape hatch:** when using `rewrite-statepoints-for-gc`, `native-js` can assign deterministic
+per-callsite IDs via `"statepoint-id"` directives (see `native-js/src/llvm/statepoint_directives.rs`
+and the `statepoint-directives` feature). When doing so, update verification to treat those records
+as statepoints (e.g. `VerifyMode::AllRecords`) or keep using the canonical ID.
+
 ## Two observed composition modes
 
 When linking multiple compilation units, `.llvm_stackmaps` is **not guaranteed** to be a single

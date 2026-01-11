@@ -63,6 +63,7 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::raw::c_uint;
 
+use crate::gc::LLVM_STATEPOINT_PATCHPOINT_ID;
 use crate::llvm::gc::GC_ADDR_SPACE;
 
 /// Arguments that control how the `gc.statepoint` intrinsic is emitted.
@@ -96,7 +97,7 @@ impl Default for StatepointConfig {
     Self {
       // Match LLVM's `rewrite-statepoints-for-gc` default patchpoint ID so `runtime-native` can
       // recognize and verify statepoint-shaped stackmap records in debug builds.
-      id: 0xABCDEF00,
+      id: LLVM_STATEPOINT_PATCHPOINT_ID,
       num_patch_bytes: 0,
       flags: 0,
     }

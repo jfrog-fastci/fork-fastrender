@@ -59,6 +59,7 @@ use llvm_sys::LLVMCallConv;
 use llvm_sys::LLVMTypeKind;
 
 use crate::llvm::gc::GC_ADDR_SPACE;
+use super::LLVM_STATEPOINT_PATCHPOINT_ID;
 
 /// A (base, derived) GC pointer pair live across a safepoint.
 ///
@@ -269,7 +270,7 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     //
     // `runtime-native` uses this as a convention to cheaply identify statepoint-shaped stackmap
     // records when running in verification mode.
-    let statepoint_id = 0xabcdef00;
+    let statepoint_id = LLVM_STATEPOINT_PATCHPOINT_ID;
 
     let statepoint_decl = self.get_statepoint_decl(callee.ptr.get_type());
     let statepoint_fn_ty = unsafe { LLVMGlobalGetValueType(statepoint_decl) };
