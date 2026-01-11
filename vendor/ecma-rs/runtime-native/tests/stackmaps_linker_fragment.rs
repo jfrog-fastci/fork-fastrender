@@ -10,21 +10,6 @@ fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
 }
 
-fn find_clang() -> &'static str {
-  for cand in ["clang-18", "clang"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok_and(|s| s.success())
-    {
-      return cand;
-    }
-  }
-  panic!("unable to locate clang (expected `clang-18` or `clang`)");
-}
-
 fn have_cmd(cmd: &str) -> bool {
   Command::new(cmd)
     .arg("--version")
@@ -32,6 +17,15 @@ fn have_cmd(cmd: &str) -> bool {
     .stderr(Stdio::null())
     .status()
     .is_ok_and(|s| s.success())
+}
+
+fn find_clang() -> Option<&'static str> {
+  for cand in ["clang-18", "clang"] {
+    if have_cmd(cand) {
+      return Some(cand);
+    }
+  }
+  None
 }
 
 fn lld_flag() -> Option<&'static str> {
@@ -44,7 +38,7 @@ fn lld_flag() -> Option<&'static str> {
   }
 }
 
-fn compile_obj(out_dir: &Path) -> PathBuf {
+fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
   // fragment can't rely on them existing. lld errors if an `INSERT` anchor
   // output section does not exist; the lld-oriented stackmaps linker fragment
@@ -68,7 +62,7 @@ fn compile_obj(out_dir: &Path) -> PathBuf {
   write_file(&asm_path, asm);
 
   let obj_path = out_dir.join("stackmaps.o");
-  let status = Command::new(find_clang())
+  let status = Command::new(clang)
     .args(["-c", "-o"])
     .arg(&obj_path)
     .arg(&asm_path)
@@ -107,6 +101,10 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     eprintln!("skipping: lld not found in PATH (need ld.lld-18 or ld.lld)");
     return;
   };
+  let Some(clang) = find_clang() else {
+    eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
+    return;
+  };
 
   const START_SYM: &str = "__start_llvm_stackmaps";
   const STOP_SYM: &str = "__stop_llvm_stackmaps";
@@ -120,7 +118,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   const LEGACY_FASTR_END_SYM: &str = "__fastr_stackmaps_end";
 
   let td = tempfile::tempdir().unwrap();
-  let obj = compile_obj(td.path());
+  let obj = compile_obj(clang, td.path());
 
   let exe = td.path().join("a.out");
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -129,7 +127,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
 
   // Link a minimal shared object (no stdlib/CRT) using our linker script
   // fragment.
-  let status = Command::new(find_clang())
+  let status = Command::new(clang)
     .arg("-nostdlib")
     .arg(lld_flag)
     .arg("-shared")
