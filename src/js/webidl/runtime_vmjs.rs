@@ -1927,7 +1927,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
       }
     }
 
-    let iterator = self.call(method, iterable, &[])?;
+    let iterator = webidl_js_runtime::JsRuntime::call(self, method, iterable, &[])?;
     if !webidl_js_runtime::JsRuntime::is_object(self, iterator) {
       return Err(self.throw_type_error("Iterator method did not return an object"));
     }
@@ -1998,7 +1998,7 @@ impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Ho
     let iterator = iterator_record.iterator;
     let next_method = iterator_record.next_method;
     webidl_js_runtime::JsRuntime::with_stack_roots(self, &[iterator, next_method], |rt| {
-      let result = rt.call(next_method, iterator, &[])?;
+      let result = webidl_js_runtime::JsRuntime::call(rt, next_method, iterator, &[])?;
       if !webidl_js_runtime::JsRuntime::is_object(rt, result) {
         return Err(rt.throw_type_error("Iterator.next() did not return an object"));
       }
