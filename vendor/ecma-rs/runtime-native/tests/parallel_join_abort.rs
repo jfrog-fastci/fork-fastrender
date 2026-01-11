@@ -83,3 +83,34 @@ fn parallel_join_misaligned_tasks_pointer_child() {
   let ptr = unsafe { bytes.as_ptr().add(1) } as *const TaskId;
   rt_parallel_join(ptr, 1);
 }
+
+#[test]
+fn parallel_join_null_tasks_pointer_aborts() {
+  let exe = std::env::current_exe().expect("current_exe");
+  let status = Command::new(exe)
+    .arg("--exact")
+    .arg("parallel_join_null_tasks_pointer_child")
+    .arg("--nocapture")
+    .env("RT_PARALLEL_JOIN_NULL_PTR_CHILD", "1")
+    .status()
+    .expect("spawn child test process");
+
+  assert!(!status.success(), "expected child to abort");
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(6), "expected SIGABRT");
+  }
+}
+
+#[test]
+fn parallel_join_null_tasks_pointer_child() {
+  if std::env::var_os("RT_PARALLEL_JOIN_NULL_PTR_CHILD").is_none() {
+    return;
+  }
+
+  // Joining with `count > 0` requires a valid pointer to a `TaskId` slice. The
+  // runtime should abort instead of constructing a slice from a null pointer.
+  rt_parallel_join(core::ptr::null(), 1);
+}
