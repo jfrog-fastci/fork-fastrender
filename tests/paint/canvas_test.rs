@@ -237,6 +237,74 @@ fn opaque_axis_aligned_rect_fills_inside_clips_are_pixel_snapped() {
 }
 
 #[test]
+fn source_over_trunc_rect_fill_near_integer_bounds_matches_integer() {
+  let overlay = Rgba::new(0, 0, 0, 0.3);
+
+  // Use a non-white background so we exercise `mul/255` rounding differences between the
+  // truncating fast-path and tiny-skia's default blending.
+  let mut exact = Canvas::new(10, 10, Rgba::rgb(200, 200, 200)).unwrap();
+  exact.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), overlay);
+  let exact = exact.into_pixmap();
+
+  // Chrome/Skia-style truncating `mul/255` compositing (0.3 over 200) yields 139.
+  let expected = exact.pixel(5, 5).unwrap();
+  assert_eq!(
+    (expected.red(), expected.green(), expected.blue(), expected.alpha()),
+    (139, 139, 139, 255)
+  );
+
+  // A "should-be-integer" edge can land slightly below an integer due to float noise.
+  // The renderer should treat it as pixel-aligned and produce identical output.
+  let mut near = Canvas::new(10, 10, Rgba::rgb(200, 200, 200)).unwrap();
+  near.draw_rect(Rect::from_xywh(0.0, 0.0, 9.9996, 9.9996), overlay);
+  let near = near.into_pixmap();
+
+  assert_eq!(
+    near.data(),
+    exact.data(),
+    "near-integer device bounds should use the truncating source-over fast path"
+  );
+}
+
+#[test]
+fn source_over_trunc_rect_fill_near_integer_translation_matches_integer() {
+  let overlay = Rgba::new(0, 0, 0, 0.3);
+
+  let mut exact = Canvas::new(10, 10, Rgba::rgb(200, 200, 200)).unwrap();
+  exact.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), overlay);
+  let exact = exact.into_pixmap();
+
+  // Start at a near-integer translation that comes from float noise (e.g. layout math).
+  let mut near = Canvas::new(10, 10, Rgba::rgb(200, 200, 200)).unwrap();
+  near.translate(0.0004, 0.0004);
+  near.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), overlay);
+  let near = near.into_pixmap();
+
+  assert_eq!(
+    near.data(),
+    exact.data(),
+    "near-integer translation should use the truncating source-over fast path"
+  );
+}
+
+#[test]
+fn source_over_trunc_rounded_rect_fill_near_integer_translation_uses_truncation() {
+  let overlay = Rgba::new(0, 0, 0, 0.3);
+
+  let mut canvas = Canvas::new(10, 10, Rgba::rgb(200, 200, 200)).unwrap();
+  canvas.translate(0.0004, 0.0004);
+  canvas.draw_rounded_rect(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    BorderRadii::uniform(2.0),
+    overlay,
+  );
+
+  // A fully covered pixel should use truncating `mul/255` compositing (0.3 over 200 => 139).
+  let p = canvas.pixmap().pixel(5, 5).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (139, 139, 139, 255));
+}
+
+#[test]
 fn test_draw_multiple_rects() {
   let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
 

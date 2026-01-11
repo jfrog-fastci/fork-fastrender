@@ -104,6 +104,16 @@ thread_local! {
   static FILL_RECT_SCRATCH: RefCell<FillRectScratch> = RefCell::new(FillRectScratch::default());
 }
 
+/// Epsilon for treating device-space coordinates/translations as "integer aligned".
+///
+/// After subpixel layout, values that are conceptually integers frequently land at e.g. `1199.9998`
+/// due to float noise. Snapping those to the nearest integer avoids falling back to tiny-skia
+/// blending paths that differ from Chrome/Skia by ±1 in large translucent overlays.
+///
+/// This must remain small: it should absorb numerical noise, not quantize intentional subpixel
+/// geometry (e.g. `translateX(0.5px)` animations).
+const NEAR_INTEGER_EPSILON_PX: f32 = 1e-3;
+
 // ============================================================================
 // Canvas State
 // ============================================================================
@@ -1800,7 +1810,9 @@ impl Canvas {
     }
     let tx_round = transform.tx.round();
     let ty_round = transform.ty.round();
-    if (transform.tx - tx_round).abs() > 1e-3 || (transform.ty - ty_round).abs() > 1e-3 {
+    if (transform.tx - tx_round).abs() > NEAR_INTEGER_EPSILON_PX
+      || (transform.ty - ty_round).abs() > NEAR_INTEGER_EPSILON_PX
+    {
       return None;
     }
     if !rect.x().is_finite()
@@ -1834,11 +1846,10 @@ impl Canvas {
     // Only snap when the rect edges already land very close to integer device pixels. This keeps
     // the snapping path effective at fixing float noise / seam issues, without quantizing real
     // subpixel translations (e.g. during transforms/animations) and changing the visual output.
-    const SNAP_EPSILON_PX: f32 = 1e-3;
-    if (dx0 - dx0s).abs() > SNAP_EPSILON_PX
-      || (dx1 - dx1s).abs() > SNAP_EPSILON_PX
-      || (dy0 - dy0s).abs() > SNAP_EPSILON_PX
-      || (dy1 - dy1s).abs() > SNAP_EPSILON_PX
+    if (dx0 - dx0s).abs() > NEAR_INTEGER_EPSILON_PX
+      || (dx1 - dx1s).abs() > NEAR_INTEGER_EPSILON_PX
+      || (dy0 - dy0s).abs() > NEAR_INTEGER_EPSILON_PX
+      || (dy1 - dy1s).abs() > NEAR_INTEGER_EPSILON_PX
     {
       return None;
     }
@@ -1889,7 +1900,11 @@ impl Canvas {
 
     let tx = transform.tx.round();
     let ty = transform.ty.round();
-    if (transform.tx - tx).abs() > 1e-6 || (transform.ty - ty).abs() > 1e-6 {
+    // Allow small float noise so "should-be-integer" translations like `1199.9998` still take the
+    // truncating path. Keep the epsilon tight so real subpixel translations remain anti-aliased.
+    if (transform.tx - tx).abs() > NEAR_INTEGER_EPSILON_PX
+      || (transform.ty - ty).abs() > NEAR_INTEGER_EPSILON_PX
+    {
       return false;
     }
 
@@ -1923,15 +1938,16 @@ impl Canvas {
     let x1 = dev_rect.max_x();
     let y1 = dev_rect.max_y();
 
-    // Require integer device bounds; otherwise we'd need anti-aliasing.
+    // Require integer device bounds; otherwise we'd need anti-aliasing. As with translation, allow
+    // a small epsilon for float noise so near-integer edges still take the Chrome-matching path.
     let x0i = x0.round();
     let y0i = y0.round();
     let x1i = x1.round();
     let y1i = y1.round();
-    if (x0 - x0i).abs() > 1e-6
-      || (y0 - y0i).abs() > 1e-6
-      || (x1 - x1i).abs() > 1e-6
-      || (y1 - y1i).abs() > 1e-6
+    if (x0 - x0i).abs() > NEAR_INTEGER_EPSILON_PX
+      || (y0 - y0i).abs() > NEAR_INTEGER_EPSILON_PX
+      || (x1 - x1i).abs() > NEAR_INTEGER_EPSILON_PX
+      || (y1 - y1i).abs() > NEAR_INTEGER_EPSILON_PX
     {
       return false;
     }
@@ -2021,7 +2037,9 @@ impl Canvas {
 
     let tx = transform.tx.round();
     let ty = transform.ty.round();
-    if (transform.tx - tx).abs() > 1e-6 || (transform.ty - ty).abs() > 1e-6 {
+    if (transform.tx - tx).abs() > NEAR_INTEGER_EPSILON_PX
+      || (transform.ty - ty).abs() > NEAR_INTEGER_EPSILON_PX
+    {
       return false;
     }
 
@@ -2059,10 +2077,10 @@ impl Canvas {
         let cy0i = cy0.round();
         let cx1i = cx1.round();
         let cy1i = cy1.round();
-        if (cx0 - cx0i).abs() > 1e-6
-          || (cy0 - cy0i).abs() > 1e-6
-          || (cx1 - cx1i).abs() > 1e-6
-          || (cy1 - cy1i).abs() > 1e-6
+        if (cx0 - cx0i).abs() > NEAR_INTEGER_EPSILON_PX
+          || (cy0 - cy0i).abs() > NEAR_INTEGER_EPSILON_PX
+          || (cx1 - cx1i).abs() > NEAR_INTEGER_EPSILON_PX
+          || (cy1 - cy1i).abs() > NEAR_INTEGER_EPSILON_PX
         {
           return false;
         }
