@@ -543,7 +543,9 @@ fn container_query_matches(
       eval_style_query(style_query, container, container_parent, ctx)
     }
     ContainerQuery::ScrollState(scroll_query) => {
-      if !container.container_type.supports_scroll_state() {
+      if !scroll_state_query_has_known_feature(scroll_query) {
+        QueryResult::Unknown
+      } else if !container.container_type.supports_scroll_state() {
         QueryResult::False
       } else {
         eval_scroll_state_query(scroll_query, container)
@@ -1633,6 +1635,17 @@ fn eval_style_query(
   }
 }
 
+fn scroll_state_query_has_known_feature(query: &ScrollStateQueryExpr) -> bool {
+  match query {
+    ScrollStateQueryExpr::Unknown => false,
+    ScrollStateQueryExpr::Feature(feature) => !matches!(feature, ScrollStateFeature::Unknown { .. }),
+    ScrollStateQueryExpr::Not(inner) => scroll_state_query_has_known_feature(inner),
+    ScrollStateQueryExpr::And(list) | ScrollStateQueryExpr::Or(list) => list
+      .iter()
+      .any(scroll_state_query_has_known_feature),
+  }
+}
+
 fn eval_scroll_state_query(
   query: &ScrollStateQueryExpr,
   container: &ContainerQueryInfo,
@@ -2652,6 +2665,41 @@ fn coerce_unitless_zero_number(
   }
 }
 
+fn style_range_value_is_line_height(value: &StyleRangeValue) -> bool {
+  match value {
+    StyleRangeValue::Property(name) => name.eq_ignore_ascii_case("line-height"),
+    _ => false,
+  }
+}
+
+fn line_height_font_size(container: &ContainerQueryInfo) -> f32 {
+  container
+    .styles
+    .font_size
+    .is_finite()
+    .then_some(container.styles.font_size)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(16.0)
+}
+
+fn coerce_line_height_percentage_to_length(
+  value: NumericValue,
+  font_size: f32,
+) -> Option<NumericValue> {
+  if value.ty != NumericType::Percentage {
+    return Some(value);
+  }
+  let px = font_size * (value.value / 100.0);
+  if px.is_finite() && px >= 0.0 {
+    Some(NumericValue {
+      ty: NumericType::LengthPx,
+      value: px,
+    })
+  } else {
+    None
+  }
+}
+
 fn compare_numeric(op: StyleRangeOp, left: f32, right: f32) -> bool {
   match op {
     StyleRangeOp::Lt => left < right,
@@ -2675,7 +2723,19 @@ fn eval_style_range(
       let Some(rhs) = eval_style_range_value(right, container, ctx) else {
         return QueryResult::Unknown;
       };
-      let (lhs, rhs) = coerce_unitless_zero_number(lhs, rhs);
+      let (mut lhs, mut rhs) = coerce_unitless_zero_number(lhs, rhs);
+      if lhs.ty != rhs.ty && (style_range_value_is_line_height(left) || style_range_value_is_line_height(right))
+      {
+        let font_size = line_height_font_size(container);
+        lhs = match coerce_line_height_percentage_to_length(lhs, font_size) {
+          Some(value) => value,
+          None => return QueryResult::Unknown,
+        };
+        rhs = match coerce_line_height_percentage_to_length(rhs, font_size) {
+          Some(value) => value,
+          None => return QueryResult::Unknown,
+        };
+      }
       if lhs.ty != rhs.ty {
         return QueryResult::False;
       }
@@ -2697,8 +2757,28 @@ fn eval_style_range(
         return QueryResult::Unknown;
       };
 
-      let (a, b) = coerce_unitless_zero_number(a, b);
-      let (b, c) = coerce_unitless_zero_number(b, c);
+      let (mut a, mut b) = coerce_unitless_zero_number(a, b);
+      let (b2, mut c) = coerce_unitless_zero_number(b, c);
+      b = b2;
+      if (a.ty != b.ty || b.ty != c.ty)
+        && (style_range_value_is_line_height(left)
+          || style_range_value_is_line_height(middle)
+          || style_range_value_is_line_height(right))
+      {
+        let font_size = line_height_font_size(container);
+        a = match coerce_line_height_percentage_to_length(a, font_size) {
+          Some(value) => value,
+          None => return QueryResult::Unknown,
+        };
+        b = match coerce_line_height_percentage_to_length(b, font_size) {
+          Some(value) => value,
+          None => return QueryResult::Unknown,
+        };
+        c = match coerce_line_height_percentage_to_length(c, font_size) {
+          Some(value) => value,
+          None => return QueryResult::Unknown,
+        };
+      }
       if a.ty != b.ty || b.ty != c.ty {
         return QueryResult::False;
       }
@@ -4131,7 +4211,11 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
-    ContainerQuery::ScrollState(_) => CQ_SUPPORT_SCROLL_STATE_ANY,
+    ContainerQuery::ScrollState(scroll_query) => {
+      scroll_state_query_has_known_feature(scroll_query)
+        .then_some(CQ_SUPPORT_SCROLL_STATE_ANY)
+        .unwrap_or(CQ_SUPPORT_ALL)
+    }
     // Treat unknown/forward-compatible query terms as potentially referencing any container type.
     // This preserves expected OR short-circuit behavior like `(<size-feature>) or <unknown>`,
     // matching when the known branch is true.
