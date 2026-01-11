@@ -449,6 +449,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps "${tmp}/a_policy_lld_pie"
     must_have_faultmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
+    must_not_have_rwx_segment "${tmp}/a_policy_lld_pie"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
   fi

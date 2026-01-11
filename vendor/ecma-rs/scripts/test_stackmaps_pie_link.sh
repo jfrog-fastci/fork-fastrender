@@ -108,6 +108,13 @@ if readelf -d "${out}" | grep TEXTREL >/dev/null; then
   exit 1
 fi
 
+# Ensure no RWX LOAD segment.
+if readelf -l "${out}" | grep "RWE" >/dev/null; then
+  echo "error: unexpected RWX LOAD segment in linked PIE output" >&2
+  readelf -l "${out}" >&2 || true
+  exit 1
+fi
+
 output="$("${out}")"
 echo "${output}"
 echo "${output}" | grep 'stackmaps: version=3' >/dev/null || {
