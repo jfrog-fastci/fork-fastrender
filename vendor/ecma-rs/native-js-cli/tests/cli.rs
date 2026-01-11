@@ -398,6 +398,38 @@ fn run_exits_with_program_exit_code() {
 }
 
 #[test]
+fn run_exits_with_boolean_exit_code() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): boolean { return true; }\n").unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
+fn run_void_entrypoint_exits_zero_without_stdout() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): void {}\n").unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .code(0)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn relative_imports_are_resolved() {
   let tmp = TempDir::new().unwrap();
 
