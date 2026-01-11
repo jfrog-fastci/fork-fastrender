@@ -11,9 +11,18 @@ use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 
+enum WorkData {
+  Unrooted(*mut u8),
+  Rooted(async_rt::gc::Root),
+}
+
 struct WorkItem {
   task: extern "C" fn(*mut u8, PromiseRef),
-  data: *mut u8,
+  data: WorkData,
+  // `PromiseRef` is currently an opaque pointer to a Rust-allocated `RtPromise` (outside the GC).
+  //
+  // If promises ever become GC-managed in the future, this must be rooted/pinned here: blocking
+  // worker threads are Rust frames and are not stackmap-scanned.
   promise: PromiseRef,
 }
 
@@ -87,7 +96,35 @@ impl BlockingPool {
 
     {
       let mut q = self.shared.queue.lock().unwrap();
-      q.push_back(WorkItem { task, data, promise });
+      q.push_back(WorkItem {
+        task,
+        data: WorkData::Unrooted(data),
+        promise,
+      });
+    }
+    self.shared.cv.notify_one();
+    promise
+  }
+
+  pub(crate) fn spawn_rooted(
+    &self,
+    task: extern "C" fn(*mut u8, PromiseRef),
+    data: *mut u8,
+  ) -> PromiseRef {
+    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
+    let _ = async_rt::global();
+    let promise = async_rt::promise::promise_new();
+
+    // Safety: the rooted ABI contract requires `data` be a valid pointer to a GC-managed object.
+    let root = unsafe { async_rt::gc::Root::new_unchecked(data) };
+
+    {
+      let mut q = self.shared.queue.lock().unwrap();
+      q.push_back(WorkItem {
+        task,
+        data: WorkData::Rooted(root),
+        promise,
+      });
     }
     self.shared.cv.notify_one();
     promise
@@ -123,15 +160,29 @@ fn worker_loop(shared: Arc<Shared>) {
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
 
-    let gc_safe = threading::enter_gc_safe_region();
+    match &work.data {
+      WorkData::Unrooted(ptr) => {
+        let gc_safe = threading::enter_gc_safe_region();
 
-    // The task is responsible for settling the promise. It must not unwind across the FFI boundary;
-    // in practice Rust will abort if it panics.
-    let res = catch_unwind(AssertUnwindSafe(|| (work.task)(work.data, work.promise)));
-    if res.is_err() {
-      std::process::abort();
+        // The task is responsible for settling the promise. It must not unwind across the FFI
+        // boundary; in practice Rust will abort if it panics.
+        let res = catch_unwind(AssertUnwindSafe(|| (work.task)(*ptr, work.promise)));
+        if res.is_err() {
+          std::process::abort();
+        }
+
+        drop(gc_safe);
+      }
+      WorkData::Rooted(root) => {
+        // Rooted work items may access GC-managed data. Do *not* enter a GC-safe region while
+        // executing them; the GC-safe contract forbids touching the GC heap while the world may be
+        // stopped/moving.
+        let data = root.ptr();
+        let res = catch_unwind(AssertUnwindSafe(|| (work.task)(data, work.promise)));
+        if res.is_err() {
+          std::process::abort();
+        }
+      }
     }
-
-    drop(gc_safe);
   }
 }

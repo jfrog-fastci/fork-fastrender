@@ -43,6 +43,11 @@ impl GcHeap {
         evac.visit_slot(slot);
       });
 
+      // Process-global roots/handles registered outside of stackmaps (intern tables, runtime-owned
+      // queues, host handles, ...).
+      crate::roots::global_root_registry().for_each_root_slot(|slot| evac.visit_slot(slot));
+      crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| evac.visit_slot(slot));
+
       let mut root_handles = mem::take(&mut evac.heap.root_handles);
       root_handles.for_each_root_slot(&mut |slot| {
         evac.visit_slot(slot);

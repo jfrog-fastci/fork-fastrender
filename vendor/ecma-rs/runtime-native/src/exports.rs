@@ -1239,6 +1239,20 @@ pub extern "C" fn rt_spawn_blocking(
   })
 }
 
+/// Like [`rt_spawn_blocking`], but `data` is a GC-managed object base pointer that must be kept
+/// alive (and kept up-to-date across moves) until the task finishes.
+#[no_mangle]
+pub extern "C" fn rt_spawn_blocking_rooted(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::blocking_pool::spawn_rooted(task, data)
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
   abort_on_panic(|| {

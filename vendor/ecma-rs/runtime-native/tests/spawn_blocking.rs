@@ -1,4 +1,8 @@
 use runtime_native::abi::PromiseRef;
+use runtime_native::gc::ObjHeader;
+use runtime_native::gc::RootStack;
+use runtime_native::gc::SimpleRememberedSet;
+use runtime_native::gc::TypeDescriptor;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_poll_legacy as rt_async_poll,
@@ -6,6 +10,8 @@ use runtime_native::{
   rt_promise_resolve_legacy as rt_promise_resolve,
   rt_promise_then_legacy as rt_promise_then,
   rt_spawn_blocking,
+  rt_spawn_blocking_rooted,
+  GcHeap,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -41,6 +47,37 @@ extern "C" fn set_bool(data: *mut u8) {
 extern "C" fn inc_usize(data: *mut u8) {
   let counter = unsafe { &*(data as *const AtomicUsize) };
   counter.fetch_add(1, Ordering::SeqCst);
+}
+
+#[repr(C)]
+struct BlockerState {
+  release: AtomicBool,
+  finished: AtomicUsize,
+}
+
+extern "C" fn blocker_wait(data: *mut u8, promise: PromiseRef) {
+  let st = unsafe { &*(data as *const BlockerState) };
+  while !st.release.load(Ordering::Acquire) {
+    std::thread::sleep(Duration::from_millis(1));
+  }
+  st.finished.fetch_add(1, Ordering::SeqCst);
+  rt_promise_resolve(promise, core::ptr::null_mut());
+}
+
+#[repr(C)]
+struct BoxedUsize {
+  header: ObjHeader,
+  value: usize,
+}
+
+static NO_PTR_OFFSETS: [u32; 0] = [];
+static BOXED_USIZE_DESC: TypeDescriptor =
+  TypeDescriptor::new(std::mem::size_of::<BoxedUsize>(), &NO_PTR_OFFSETS);
+
+extern "C" fn rooted_set_value(data: *mut u8, promise: PromiseRef) {
+  let obj = unsafe { &mut *(data as *mut BoxedUsize) };
+  obj.value = 999;
+  rt_promise_resolve(promise, core::ptr::null_mut());
 }
 
 #[test]
@@ -156,5 +193,81 @@ fn spawn_blocking_does_not_block_event_loop() {
     drop(Box::from_raw(counter_ptr));
     drop(Box::from_raw(settled_ptr));
     drop(Box::from_raw(timer_settled_ptr));
+  }
+}
+
+#[test]
+fn spawn_blocking_rooted_keeps_gc_data_alive_across_minor_gc() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Ensure the rooted work item stays queued while we trigger GC: saturate the pool with blocking
+  // tasks that wait on an atomic flag.
+  const BLOCKERS: usize = 64;
+  let blocker_state = Box::new(BlockerState {
+    release: AtomicBool::new(false),
+    finished: AtomicUsize::new(0),
+  });
+  let blocker_ptr = (&*blocker_state as *const BlockerState).cast_mut().cast::<u8>();
+  for _ in 0..BLOCKERS {
+    let _ = rt_spawn_blocking(blocker_wait, blocker_ptr);
+  }
+
+  // Allocate a nursery object that is only kept alive by the rooted blocking work item.
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&BOXED_USIZE_DESC);
+  unsafe {
+    (*(obj as *mut BoxedUsize)).value = 41;
+  }
+  let handle = heap.weak_add(obj);
+
+  let p = rt_spawn_blocking_rooted(rooted_set_value, obj);
+
+  // Trigger a minor GC while the rooted work item is still queued. The runtime root registry must
+  // keep `obj` alive and update the root slot to the evacuated address.
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+  heap
+    .collect_minor(&mut roots, &mut remembered)
+    .expect("minor GC should succeed");
+
+  let moved = heap
+    .weak_get(handle)
+    .expect("rooted spawn_blocking work item should keep data alive across GC");
+  assert_ne!(moved, obj);
+  assert!(!heap.is_in_nursery(moved));
+
+  let value_before = unsafe { (*(moved as *const BoxedUsize)).value };
+  assert_eq!(value_before, 41);
+
+  // Release the pool so it can run the rooted task and settle the promise.
+  let settled = Box::new(AtomicBool::new(false));
+  let settled_ptr = (&*settled as *const AtomicBool).cast_mut().cast::<u8>();
+  rt_promise_then(p, set_bool, settled_ptr);
+
+  blocker_state.release.store(true, Ordering::Release);
+
+  let start = Instant::now();
+  while !settled.load(Ordering::SeqCst) {
+    rt_async_poll();
+    assert!(
+      start.elapsed() < Duration::from_secs(10),
+      "timeout waiting for rooted spawn_blocking promise to settle"
+    );
+  }
+
+  let after = heap
+    .weak_get(handle)
+    .expect("object should remain alive after rooted blocking task completes");
+  let value_after = unsafe { (*(after as *const BoxedUsize)).value };
+  assert_eq!(value_after, 999);
+
+  // Ensure all blocker tasks have finished before dropping the shared state.
+  let start = Instant::now();
+  while blocker_state.finished.load(Ordering::SeqCst) != BLOCKERS {
+    std::thread::yield_now();
+    assert!(
+      start.elapsed() < Duration::from_secs(10),
+      "timeout waiting for blocker tasks to finish"
+    );
   }
 }

@@ -169,8 +169,27 @@ impl RootRegistry {
   /// Test-only helper to reset the process-global registry.
   pub(crate) fn clear_for_tests(&self) {
     let mut inner = self.inner.lock();
-    inner.slots.clear();
+    // Important: do *not* truncate `slots` here.
+    //
+    // Tests frequently clear global runtime state while background worker threads are still
+    // unwinding/dropping old handles. If we were to drop the `slots` vector, handle IDs would be
+    // immediately reusable from index 0 again with generation 0, allowing a stale `unregister` call
+    // from a previous test to accidentally remove a new root registered in the next test.
+    //
+    // Instead, clear entries in-place and bump each slot's generation to invalidate any previously
+    // issued handles.
     inner.free_list.clear();
+    for idx in 0..inner.slots.len() {
+      {
+        let slot = &mut inner.slots[idx];
+        slot.entry = None;
+        slot.generation = slot.generation.wrapping_add(1);
+      }
+      // Reuse the slot on the next allocation.
+      inner
+        .free_list
+        .push(u32::try_from(idx).expect("too many root slots"));
+    }
   }
 }
 

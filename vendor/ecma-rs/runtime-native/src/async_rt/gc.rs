@@ -1,3 +1,9 @@
+//! GC rooting helpers for async runtime tasks.
+//!
+//! The async runtime stores task callbacks (and their `data` pointers) in Rust-owned queues. Those
+//! queues are not visible to stackmap-based GC scanning, so any GC-managed `data` pointers must be
+//! rooted explicitly.
+
 use std::sync::Arc;
 
 use crate::gc::HandleId;

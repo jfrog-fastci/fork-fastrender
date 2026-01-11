@@ -577,6 +577,9 @@ PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t
 // - default: min(available_parallelism, 32)
 // - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
 LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
+// Rooted variant: `data` must be a GC-managed object base pointer. The runtime keeps the object
+// alive (and relocates the pointer across GC moves) until the blocking task finishes.
+LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);
 
 // -----------------------------------------------------------------------------
 // Native promise ABI (PromiseHeader prefix)
