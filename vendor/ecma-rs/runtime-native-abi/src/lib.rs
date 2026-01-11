@@ -620,6 +620,11 @@ extern "C" {
   pub fn rt_promise_resolve_thenable_legacy(p: LegacyPromiseRef, thenable: ThenableRef);
   pub fn rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef);
   pub fn rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_promise_then_rooted_legacy(
+    p: LegacyPromiseRef,
+    on_settle: extern "C" fn(*mut u8),
+    data: GcPtr,
+  );
   pub fn rt_promise_then_with_drop_legacy(
     p: LegacyPromiseRef,
     on_settle: extern "C" fn(*mut u8),
@@ -959,6 +964,7 @@ mod tests {
       "rt_promise_resolve_thenable_legacy(",
       "rt_promise_reject_legacy(",
       "rt_promise_then_legacy(",
+      "rt_promise_then_rooted_legacy(",
       "rt_promise_then_with_drop_legacy(",
       "rt_promise_drop_legacy(",
       "rt_async_spawn_legacy(",
