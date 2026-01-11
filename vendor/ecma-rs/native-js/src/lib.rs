@@ -383,8 +383,16 @@ export function main() {
 
     let ir = out.llvm_ir.expect("llvm_ir");
     assert!(
-      ir.contains("ts_main"),
-      "expected generated IR to mention `ts_main`, got:\n{ir}"
+      ir.contains("__nativejs_def_"),
+      "expected generated IR to contain a __nativejs_def_ symbol, got:\n{ir}"
+    );
+    assert!(
+      ir.contains("__nativejs_file_init_"),
+      "expected generated IR to contain a __nativejs_file_init_ symbol, got:\n{ir}"
+    );
+    assert!(
+      ir.contains("define i32 @main()"),
+      "expected generated IR to define a C ABI main() shim, got:\n{ir}"
     );
   }
 }

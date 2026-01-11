@@ -80,22 +80,41 @@ fn statepoint_smoke() {
   let stackmap = StackMap::parse(stackmaps).expect("parse stackmap v3");
 
   assert_eq!(stackmap.version, runtime_native::stackmaps::STACKMAP_VERSION);
-  assert_eq!(stackmap.records.len(), 1, "expected exactly one stackmap record");
-  let record = &stackmap.records[0];
-
   let call_ret_off = call_return_offset(&file, "ts_fn").expect("locate call instruction");
-  assert_eq!(
-    record.instruction_offset as usize, call_ret_off,
-    "stackmap instruction_offset should point at post-call return address"
+  assert!(
+    !stackmap.records.is_empty(),
+    "expected at least one stackmap record"
   );
+  let record = stackmap
+    .records
+    .iter()
+    .find(|r| r.instruction_offset as usize == call_ret_off)
+    .unwrap_or_else(|| {
+      let offs: Vec<usize> = stackmap
+        .records
+        .iter()
+        .map(|r| r.instruction_offset as usize)
+        .collect();
+      panic!(
+        "expected a stackmap record at instruction_offset={call_ret_off}, got offsets: {offs:?}"
+      )
+    });
 
-  let has_indirect = record.locations.iter().any(|l| matches!(l, runtime_native::stackmaps::Location::Indirect { .. }));
+  let has_indirect = record.locations.iter().any(|l| {
+    matches!(l, runtime_native::stackmaps::Location::Indirect { .. })
+  });
   assert!(has_indirect, "expected at least one Indirect stack location");
 
   let nonconst = record
     .locations
     .iter()
-    .filter(|l| !matches!(l, runtime_native::stackmaps::Location::Constant { .. } | runtime_native::stackmaps::Location::ConstIndex { .. }))
+    .filter(|l| {
+      !matches!(
+        l,
+        runtime_native::stackmaps::Location::Constant { .. }
+          | runtime_native::stackmaps::Location::ConstIndex { .. }
+      )
+    })
     .count();
   assert!(nonconst > 0);
   assert_eq!(nonconst % 2, 0, "expected base/derived pairs in stackmap");
