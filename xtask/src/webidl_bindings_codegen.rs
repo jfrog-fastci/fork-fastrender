@@ -5481,8 +5481,55 @@ fn write_operation_wrapper_vmjs(
     return;
   }
 
+  // WebIDL overload resolution clamps `arguments.length` to the maximum number of arguments in the
+  // overload set (extra arguments are ignored unless an overload is variadic). Without this, calls
+  // like `alert(\"a\", \"b\")` incorrectly fail to match `alert(DOMString)`.
+  //
+  // Note: if any overload is variadic (`max_arg_count == None`), the maximum argument count is
+  // unbounded, so we must not truncate the argument slice.
+  let max_argc = overloads
+    .iter()
+    .map(|sig| max_arg_count(&sig.arguments))
+    .collect::<Vec<_>>();
+  if max_argc.iter().all(|v| v.is_some()) {
+    let max_argc = max_argc
+      .into_iter()
+      .flatten()
+      .max()
+      .unwrap_or(0);
+    out.push_str(&format!(
+      "  let args = if args.len() > {max_argc} {{ &args[..{max_argc}] }} else {{ args }};\n",
+      max_argc = max_argc
+    ));
+  }
+
+  // If each overload's (required..=max) argument-count range is disjoint, argument count alone is
+  // enough to select the overload, so emitting a first-argument type predicate is unnecessary (and
+  // can incorrectly reject valid inputs that are convertible via WebIDL, e.g. `DOMString`).
+  let ranges = overloads
+    .iter()
+    .map(|sig| (required_arg_count(&sig.arguments), max_arg_count(&sig.arguments)))
+    .collect::<Vec<_>>();
+  let ranges_overlap = |a_min: usize, a_max: Option<usize>, b_min: usize, b_max: Option<usize>| {
+    let a_max = a_max.unwrap_or(usize::MAX);
+    let b_max = b_max.unwrap_or(usize::MAX);
+    a_min <= b_max && b_min <= a_max
+  };
+  let use_type_predicate = (0..ranges.len())
+    .map(|idx| {
+      let (min, max) = ranges[idx];
+      (0..ranges.len()).any(|j| {
+        if j == idx {
+          return false;
+        }
+        let (other_min, other_max) = ranges[j];
+        ranges_overlap(min, max, other_min, other_max)
+      })
+    })
+    .collect::<Vec<_>>();
+
   for (idx, sig) in overloads.iter().enumerate() {
-    let cond = emit_overload_condition_vmjs(sig, "args");
+    let cond = emit_overload_condition_vmjs(sig, "args", use_type_predicate[idx]);
     if idx == 0 {
       out.push_str(&format!("  if {cond} {{\n"));
     } else {
@@ -5583,14 +5630,14 @@ fn write_attribute_setter_wrapper_vmjs(
   out.push_str("}\n\n");
 }
 
-fn emit_overload_condition_vmjs(sig: &OperationSig, args_ident: &str) -> String {
+fn emit_overload_condition_vmjs(sig: &OperationSig, args_ident: &str, use_type_predicate: bool) -> String {
   let required = required_arg_count(&sig.arguments);
   let max = max_arg_count(&sig.arguments);
   let len_check = emit_args_len_check(args_ident, required, max);
 
   // If there are multiple overloads, we use the first argument's predicate as a best-effort
   // discriminator (works for the MVP overload shapes we care about).
-  if sig.arguments.is_empty() {
+  if sig.arguments.is_empty() || !use_type_predicate {
     return len_check;
   }
 
@@ -5791,6 +5838,24 @@ fn write_constructor_wrapper_vmjs(
     ));
     out.push_str("}\n\n");
     return;
+  }
+
+  // Like operations, constructor overload resolution clamps `arguments.length` to the maximum
+  // argument count in the overload set (unless the set includes a variadic overload).
+  let max_argc = overloads
+    .iter()
+    .map(|sig| max_arg_count(&sig.arguments))
+    .collect::<Vec<_>>();
+  if max_argc.iter().all(|v| v.is_some()) {
+    let max_argc = max_argc
+      .into_iter()
+      .flatten()
+      .max()
+      .unwrap_or(0);
+    out.push_str(&format!(
+      "  let args = if args.len() > {max_argc} {{ &args[..{max_argc}] }} else {{ args }};\n",
+      max_argc = max_argc
+    ));
   }
 
   for (idx, sig) in overloads.iter().enumerate() {

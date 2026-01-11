@@ -782,6 +782,147 @@ mod tests {
     Ok(())
   }
 
+  #[derive(Default)]
+  struct VmjsAlertHost {
+    calls: Vec<usize>,
+    messages: Vec<Option<String>>,
+  }
+
+  impl WebIdlBindingsHost for VmjsAlertHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      interface: &'static str,
+      operation: &'static str,
+      overload: usize,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      match (interface, operation) {
+        ("Window", "alert") => {
+          self.calls.push(overload);
+          if args.is_empty() {
+            self.messages.push(None);
+          } else {
+            let Value::String(s) = args[0] else {
+              return Err(VmError::TypeError("expected alert message to be a string"));
+            };
+            self
+              .messages
+              .push(Some(scope.heap().get_string(s)?.to_utf8_lossy()));
+          }
+          Ok(Value::Undefined)
+        }
+        _ => Err(VmError::TypeError("unimplemented host operation")),
+      }
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("unimplemented host constructor"))
+    }
+  }
+
+  #[test]
+  fn vmjs_bindings_dispatch_window_alert_overloads() -> Result<(), VmError> {
+    let limits = HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), VmError> {
+      let mut host = VmjsAlertHost::default();
+      install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+      let mut hooks = HostHooksWithBindingsHost::new(&mut host);
+      let mut dummy_host = ();
+      let mut scope = heap.scope();
+
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+      let alert_key = alloc_key(&mut scope, "alert")?;
+      let alert = scope
+        .heap()
+        .object_get_own_data_property_value(global, &alert_key)?
+        .expect("globalThis.alert should be defined");
+
+      // alert()
+      vm.call_with_host_and_hooks(
+        &mut dummy_host,
+        &mut scope,
+        &mut hooks,
+        alert,
+        Value::Undefined,
+        &[],
+      )?;
+
+      // alert("hi")
+      let hi_str = scope.alloc_string("hi")?;
+      scope.push_root(Value::String(hi_str))?;
+      let hi = Value::String(hi_str);
+      vm.call_with_host_and_hooks(
+        &mut dummy_host,
+        &mut scope,
+        &mut hooks,
+        alert,
+        Value::Undefined,
+        &[hi],
+      )?;
+
+      // alert("a", "b") -> overload resolution ignores extra arguments.
+      let a_str = scope.alloc_string("a")?;
+      scope.push_root(Value::String(a_str))?;
+      let b_str = scope.alloc_string("b")?;
+      scope.push_root(Value::String(b_str))?;
+      let a = Value::String(a_str);
+      let b = Value::String(b_str);
+      vm.call_with_host_and_hooks(
+        &mut dummy_host,
+        &mut scope,
+        &mut hooks,
+        alert,
+        Value::Undefined,
+        &[a, b],
+      )?;
+
+      // alert(123) -> dispatch selects the 1-arg overload and converts via WebIDL.
+      vm.call_with_host_and_hooks(
+        &mut dummy_host,
+        &mut scope,
+        &mut hooks,
+        alert,
+        Value::Undefined,
+        &[Value::Number(123.0)],
+      )?;
+
+      assert_eq!(host.calls, vec![0, 1, 1, 1]);
+      assert_eq!(
+        host.messages,
+        vec![
+          None,
+          Some("hi".to_string()),
+          Some("a".to_string()),
+          Some("123".to_string()),
+        ]
+      );
+      Ok(())
+    }));
+
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
   struct NoHooks;
 
   impl WebIdlHooks<Value> for NoHooks {
