@@ -8586,7 +8586,7 @@ impl ResourceFetcher for HttpFetcher {
 
 fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   let mut policy = HttpCachePolicy::default();
-  if let Some(value) = headers.get("cache-control").and_then(|h| h.to_str().ok()) {
+  if let Some(value) = header_values_joined(headers, "cache-control") {
     for directive in value.split(',') {
       let directive = trim_http_whitespace(directive);
       if directive.is_empty() {
@@ -8617,6 +8617,25 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
         "no-store" => policy.no_store = true,
         "must-revalidate" => policy.must_revalidate = true,
         _ => {}
+      }
+    }
+  } else {
+    // Legacy fallback for HTTP/1.0 caches. RFC 9111 says recipients MUST ignore `Pragma` when
+    // `Cache-Control` is present, so we only honor this when no Cache-Control header is present.
+    for value in headers
+      .get_all("pragma")
+      .iter()
+      .filter_map(|h| h.to_str().ok())
+      .map(trim_http_whitespace)
+    {
+      for token in value.split(',') {
+        if trim_http_whitespace(token).eq_ignore_ascii_case("no-cache") {
+          policy.no_cache = true;
+          break;
+        }
+      }
+      if policy.no_cache {
+        break;
       }
     }
   }
@@ -22002,6 +22021,38 @@ mod tests {
       1,
       "fresh cached entries should not be revalidated"
     );
+  }
+
+  #[test]
+  fn parse_http_cache_policy_multiple_headers() {
+    let mut headers = HeaderMap::new();
+    headers.append(
+      "cache-control",
+      http::HeaderValue::from_static("max-age=60"),
+    );
+    headers.append("cache-control", http::HeaderValue::from_static("no-store"));
+
+    let policy = parse_http_cache_policy(&headers).expect("expected cache policy");
+    assert_eq!(policy.max_age, Some(60));
+    assert!(policy.no_store);
+  }
+
+  #[test]
+  fn pragma_no_cache_fallback() {
+    let mut headers = HeaderMap::new();
+    headers.append("pragma", http::HeaderValue::from_static("no-cache"));
+    let policy = parse_http_cache_policy(&headers).expect("expected cache policy");
+    assert!(policy.no_cache);
+
+    let mut headers = HeaderMap::new();
+    headers.append(
+      "cache-control",
+      http::HeaderValue::from_static("max-age=60"),
+    );
+    headers.append("pragma", http::HeaderValue::from_static("no-cache"));
+    let policy = parse_http_cache_policy(&headers).expect("expected cache policy");
+    assert_eq!(policy.max_age, Some(60));
+    assert!(!policy.no_cache);
   }
 
   #[test]
