@@ -7,6 +7,11 @@
 //! - parse stackmap v3 records
 //! - look up a record by return address (absolute PC)
 //!
+//! ## Return address lookup key
+//! LLVM stackmap records are keyed by the *callsite return address*. For patchable statepoints
+//! (non-zero `patch_bytes`), LLVM records the return address as the byte *after the reserved
+//! patchable region*, not necessarily the byte after a literal `call` instruction.
+//!
 //! # Platform assumptions
 //! - Linux (ELF) or macOS (Mach-O)
 //! - On Linux, the final link step applies a linker script that defines

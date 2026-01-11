@@ -116,6 +116,11 @@ pub struct StackMapRecord {
     /// Byte offset from function start.
     pub instruction_offset: u32,
     /// Absolute callsite address (return address) = `function_address + instruction_offset`.
+    ///
+    /// Note: for patchable statepoints/patchpoints (non-zero `patch_bytes`), LLVM records the
+    /// return address as the byte *after the reserved patchable region* (not necessarily the byte
+    /// after a literal `call` instruction). Any runtime patcher must preserve that return address
+    /// so stackmap lookup by PC continues to work.
     pub callsite_pc: u64,
     pub locations: Vec<Location>,
     pub live_outs: Vec<LiveOut>,
