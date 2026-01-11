@@ -35,6 +35,70 @@ fn assert_approx(actual: f32, expected: f32, msg: &str) {
 }
 
 #[test]
+fn grid_column_longhand_inherit_preserves_other_side() {
+  // Regression: `grid-column-start/end: inherit` must copy only that longhand from the parent,
+  // leaving the other side untouched.
+  let base = ComputedStyle::default();
+
+  let mut parent = ComputedStyle::default();
+  apply_declaration(&mut parent, &decl("grid-column-start", "2"), &base, 16.0, 16.0);
+  apply_declaration(&mut parent, &decl("grid-column-end", "4"), &base, 16.0, 16.0);
+
+  let mut child = ComputedStyle::default();
+  apply_declaration(&mut child, &decl("grid-column-end", "3"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut child,
+    &decl("grid-column-start", "inherit"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(child.grid_column_raw.as_deref(), Some("2 / 3"));
+
+  let mut child2 = ComputedStyle::default();
+  apply_declaration(&mut child2, &decl("grid-column-start", "1"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut child2,
+    &decl("grid-column-end", "inherit"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(child2.grid_column_raw.as_deref(), Some("1 / 4"));
+}
+
+#[test]
+fn grid_row_longhand_inherit_preserves_other_side() {
+  let base = ComputedStyle::default();
+
+  let mut parent = ComputedStyle::default();
+  apply_declaration(&mut parent, &decl("grid-row-start", "2"), &base, 16.0, 16.0);
+  apply_declaration(&mut parent, &decl("grid-row-end", "4"), &base, 16.0, 16.0);
+
+  let mut child = ComputedStyle::default();
+  apply_declaration(&mut child, &decl("grid-row-end", "3"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut child,
+    &decl("grid-row-start", "inherit"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(child.grid_row_raw.as_deref(), Some("2 / 3"));
+
+  let mut child2 = ComputedStyle::default();
+  apply_declaration(&mut child2, &decl("grid-row-start", "1"), &base, 16.0, 16.0);
+  apply_declaration(
+    &mut child2,
+    &decl("grid-row-end", "inherit"),
+    &parent,
+    16.0,
+    16.0,
+  );
+  assert_eq!(child2.grid_row_raw.as_deref(), Some("1 / 4"));
+}
+
+#[test]
 fn grid_area_auto_is_auto_placement() {
   // Regression test: `grid-area: auto` is the initial value and must not be treated as a named
   // area ("auto-start"/"auto-end").

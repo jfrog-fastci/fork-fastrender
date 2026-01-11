@@ -6630,10 +6630,66 @@ pub(crate) fn apply_property_from_source(
       styles.grid_row_end = source.grid_row_end;
       styles.grid_row_raw = source.grid_row_raw.clone();
     }
-    "grid-column-start" => styles.grid_column_start = source.grid_column_start,
-    "grid-column-end" => styles.grid_column_end = source.grid_column_end,
-    "grid-row-start" => styles.grid_row_start = source.grid_row_start,
-    "grid-row-end" => styles.grid_row_end = source.grid_row_end,
+    "grid-column-start" => {
+      let (source_start, _source_end) = split_grid_axis_start_end(
+        source.grid_column_raw.as_deref(),
+        source.grid_column_start,
+        source.grid_column_end,
+      );
+      let (_current_start, current_end) = split_grid_axis_start_end(
+        styles.grid_column_raw.as_deref(),
+        styles.grid_column_start,
+        styles.grid_column_end,
+      );
+      styles.grid_column_raw = Some(format!("{source_start} / {current_end}"));
+      styles.grid_column_start = 0;
+      styles.grid_column_end = 0;
+    }
+    "grid-column-end" => {
+      let (_source_start, source_end) = split_grid_axis_start_end(
+        source.grid_column_raw.as_deref(),
+        source.grid_column_start,
+        source.grid_column_end,
+      );
+      let (current_start, _current_end) = split_grid_axis_start_end(
+        styles.grid_column_raw.as_deref(),
+        styles.grid_column_start,
+        styles.grid_column_end,
+      );
+      styles.grid_column_raw = Some(format!("{current_start} / {source_end}"));
+      styles.grid_column_start = 0;
+      styles.grid_column_end = 0;
+    }
+    "grid-row-start" => {
+      let (source_start, _source_end) = split_grid_axis_start_end(
+        source.grid_row_raw.as_deref(),
+        source.grid_row_start,
+        source.grid_row_end,
+      );
+      let (_current_start, current_end) = split_grid_axis_start_end(
+        styles.grid_row_raw.as_deref(),
+        styles.grid_row_start,
+        styles.grid_row_end,
+      );
+      styles.grid_row_raw = Some(format!("{source_start} / {current_end}"));
+      styles.grid_row_start = 0;
+      styles.grid_row_end = 0;
+    }
+    "grid-row-end" => {
+      let (_source_start, source_end) = split_grid_axis_start_end(
+        source.grid_row_raw.as_deref(),
+        source.grid_row_start,
+        source.grid_row_end,
+      );
+      let (current_start, _current_end) = split_grid_axis_start_end(
+        styles.grid_row_raw.as_deref(),
+        styles.grid_row_start,
+        styles.grid_row_end,
+      );
+      styles.grid_row_raw = Some(format!("{current_start} / {source_end}"));
+      styles.grid_row_start = 0;
+      styles.grid_row_end = 0;
+    }
     "grid-area" => {
       styles.grid_row_start = source.grid_row_start;
       styles.grid_row_end = source.grid_row_end;
