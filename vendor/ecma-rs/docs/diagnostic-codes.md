@@ -47,8 +47,8 @@ prefixes for planned crates) and where they come from.
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
 | `EFFECT####` | `effect-js` | Effect inference diagnostics (analysis + semantic knowledge). |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
-| `NATIVE####` | `native-js` | Native codegen diagnostics (LLVM IR generation + lowering). |
-| `NJS####` | `native-js` | Native compilation / LLVM backend diagnostics (short form; avoid mixing with `NATIVE####` in one crate). |
+| `NATIVE####` | `native-js` | Reserved for native codegen diagnostics (LLVM IR generation + lowering). Prefer `NJS####` for new codes unless/until this prefix is needed. |
+| `NJS####` | `native-js` | Native compiler diagnostics (currently used by `native_js::strict` and other native pipeline checks). |
 | `RTNATIVE####` | `runtime-native` | Native runtime library diagnostics (GC/runtime integration). |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
 | `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
