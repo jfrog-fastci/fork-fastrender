@@ -180,3 +180,100 @@ fn native_promise_mark_handled_after_unhandled_reports_rejectionhandled() {
     vec![PromiseRejectionEvent::RejectionHandled { promise: p }]
   );
 }
+
+#[test]
+fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_later() {
+  use runtime_native::abi::RtShapeId;
+  use runtime_native::async_abi::{
+    Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, CORO_FLAG_RUNTIME_OWNS_FRAME,
+    RT_ASYNC_ABI_VERSION,
+  };
+  use std::sync::atomic::{AtomicU8, AtomicUsize};
+
+  #[repr(C)]
+  struct AwaitOnceCoro {
+    header: Coroutine,
+    state: u32,
+    awaited: *mut PromiseHeader,
+  }
+
+  #[inline]
+  fn abi_promise_from_header(p: *mut PromiseHeader) -> PromiseRef {
+    PromiseRef(p.cast())
+  }
+
+  unsafe extern "C" fn await_once_resume(coro: *mut Coroutine) -> CoroutineStep {
+    let coro = coro as *mut AwaitOnceCoro;
+    assert!(!coro.is_null());
+    match (*coro).state {
+      0 => {
+        (*coro).state = 1;
+        CoroutineStep {
+          tag: CoroutineStepTag::Await,
+          await_promise: (*coro).awaited,
+        }
+      }
+      1 => {
+        runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
+        CoroutineStep::complete()
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+
+  unsafe extern "C" fn await_once_destroy(coro: CoroutineRef) {
+    drop(Box::from_raw(coro as *mut AwaitOnceCoro));
+  }
+
+  static AWAIT_ONCE_VTABLE: CoroutineVTable = CoroutineVTable {
+    resume: await_once_resume,
+    destroy: await_once_destroy,
+    promise_size: core::mem::size_of::<PromiseHeader>() as u32,
+    promise_align: core::mem::align_of::<PromiseHeader>() as u32,
+    promise_shape_id: RtShapeId::INVALID,
+    abi_version: RT_ASYNC_ABI_VERSION,
+    reserved: [0; 4],
+  };
+
+  let _rt = TestRuntimeGuard::new();
+
+  // Allocate a native PromiseHeader directly and reject it with no handlers.
+  let mut p = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    reactions: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let p_ref = PromiseRef((&mut *p as *mut PromiseHeader).cast());
+  unsafe {
+    runtime_native::rt_promise_init(p_ref);
+    runtime_native::rt_promise_reject(p_ref);
+  }
+
+  // Next microtask checkpoint: should report as unhandled.
+  while runtime_native::rt_async_poll() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::UnhandledRejection { promise: p_ref }]
+  );
+
+  // Attach an `await` handler later; this must trigger `rejectionhandled` even if the native
+  // runtime takes the settled fast path (sync resumption) instead of registering a waiter.
+  let coro = Box::new(AwaitOnceCoro {
+    header: Coroutine {
+      vtable: &AWAIT_ONCE_VTABLE,
+      promise: core::ptr::null_mut(),
+      next_waiter: core::ptr::null_mut(),
+      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
+    },
+    state: 0,
+    awaited: (&mut *p as *mut PromiseHeader),
+  });
+  let coro_ref = Box::into_raw(coro) as *mut Coroutine;
+  let _ = unsafe { runtime_native::rt_async_spawn(coro_ref) };
+
+  while runtime_native::rt_async_poll() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::RejectionHandled { promise: p_ref }]
+  );
+}

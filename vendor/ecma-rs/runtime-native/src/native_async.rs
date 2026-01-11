@@ -119,6 +119,20 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   }
 }
 
+fn promise_mark_handled(p: *mut PromiseHeader) {
+  let p = validate_promise_ptr(p);
+  if p.is_null() {
+    return;
+  }
+
+  // `await` / `then` attaches a handler. Track the first transition so we can emit a
+  // `rejectionhandled` notification if the promise was previously reported as unhandled.
+  let transitioned = unsafe { (*p).mark_handled() };
+  if transitioned {
+    crate::unhandled_rejection::on_handle(promise_handle_from_header(p));
+  }
+}
+
 fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNode) {
   let p = validate_promise_ptr(p);
   if p.is_null() {
@@ -134,14 +148,7 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
   }
 
   // Mark "handled" as soon as someone attaches a reaction (await/then).
-  //
-  // This mirrors HTML/Node's notion that registering a rejection handler marks a promise as
-  // handled for the purposes of unhandled rejection tracking.
-  let promise = promise_handle_from_header(p);
-  unsafe {
-    (*p).mark_handled();
-  }
-  crate::unhandled_rejection::on_handle(promise);
+  promise_mark_handled(p);
 
   push_reaction(p, node);
 
@@ -319,6 +326,11 @@ CORO_FLAG_RUNTIME_OWNS_FRAME was not set (stack-owned coroutine frames must not 
         if awaited.is_null() {
           return;
         }
+
+        // `await` counts as attaching a rejection handler. This must happen even when taking the
+        // settled fast path (synchronous resumption), because attaching handlers after rejection
+        // should trigger `rejectionhandled` behavior.
+        promise_mark_handled(awaited);
 
         // Fast path: if the awaited promise is already settled, resume synchronously unless strict
         // mode is requested.
