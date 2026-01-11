@@ -11938,11 +11938,10 @@ impl InlineFormattingContext {
       Some(available_block)
     } else {
       // Percentage heights resolve against the containing block's definite used size (CSS2.1 §10.5).
-      // In block flow, the available height is typically indefinite even when the containing block
-      // establishes a definite percentage base (e.g. `aspect-ratio` auto heights). Prefer the
-      // explicit percentage base when provided so `height:100%` on inline replaced content can
-      // resolve correctly.
-      constraints.block_percentage_base.or_else(|| constraints.height())
+      // Prefer the explicit percentage base when provided rather than treating the definite
+      // available height as the percentage basis, since IFC roots can be laid out with a definite
+      // available height even when the containing block is `height:auto`.
+      constraints.block_percentage_base
     };
 
     // Resolve paragraph base direction before shaping so bidi analysis uses the correct base.
