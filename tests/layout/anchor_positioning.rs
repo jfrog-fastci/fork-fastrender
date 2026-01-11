@@ -148,6 +148,229 @@ fn anchor_positioning_places_absolute_box_using_position_anchor() {
 }
 
 #[test]
+fn anchor_positioning_uses_implicit_anchor_for_position_anchor_auto() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  let container_style = Arc::new(container_style);
+
+  let origin_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut origin_style = ComputedStyle::default();
+  origin_style.display = Display::Block;
+  origin_style.width = Some(Length::px(50.0));
+  origin_style.height = Some(Length::px(20.0));
+  origin_style.width_keyword = None;
+  origin_style.height_keyword = None;
+  let mut origin = BoxNode::new_block(Arc::new(origin_style), FormattingContextType::Block, vec![]);
+  origin.id = origin_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Auto;
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+  overlay.implicit_anchor_box_id = Some(origin_id);
+
+  origin.children.push(overlay);
+
+  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![origin]);
+  container.id = 101;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let origin_bounds = find_abs_bounds_by_box_id(&fragment, origin_id).expect("origin bounds");
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+
+  assert!(
+    (overlay_bounds.x() - origin_bounds.x()).abs() < 0.1,
+    "overlay left should resolve against the implicit anchor's left edge (overlay x={}, origin x={})",
+    overlay_bounds.x(),
+    origin_bounds.x()
+  );
+  assert!(
+    (overlay_bounds.y() - origin_bounds.max_y()).abs() < 0.1,
+    "overlay top should resolve against the implicit anchor's bottom edge (overlay y={}, origin bottom={})",
+    overlay_bounds.y(),
+    origin_bounds.max_y()
+  );
+}
+
+#[test]
+fn anchor_positioning_position_anchor_auto_without_implicit_anchor_uses_fallback() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let overlay_id = 1usize;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Auto;
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Top,
+    fallback: Some(Length::px(9.0)),
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: Some(Length::px(7.0)),
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+  overlay.implicit_anchor_box_id = None;
+
+  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  container.id = 102;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+  assert!(
+    (overlay_bounds.x() - 7.0).abs() < 0.1,
+    "overlay left should resolve to the anchor() fallback value"
+  );
+  assert!(
+    (overlay_bounds.y() - 9.0).abs() < 0.1,
+    "overlay top should resolve to the anchor() fallback value"
+  );
+}
+
+#[test]
+fn anchor_positioning_named_position_anchor_overrides_implicit_anchor() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let named_anchor_id = 1usize;
+  let origin_id = 2usize;
+  let overlay_id = 3usize;
+
+  let mut named_anchor_style = ComputedStyle::default();
+  named_anchor_style.display = Display::Block;
+  named_anchor_style.width = Some(Length::px(30.0));
+  named_anchor_style.height = Some(Length::px(10.0));
+  named_anchor_style.width_keyword = None;
+  named_anchor_style.height_keyword = None;
+  named_anchor_style.margin_left = Some(Length::px(50.0));
+  named_anchor_style.margin_bottom = Some(Length::px(20.0));
+  named_anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut named_anchor =
+    BoxNode::new_block(Arc::new(named_anchor_style), FormattingContextType::Block, vec![]);
+  named_anchor.id = named_anchor_id;
+
+  let mut origin_style = ComputedStyle::default();
+  origin_style.display = Display::Block;
+  origin_style.width = Some(Length::px(100.0));
+  origin_style.height = Some(Length::px(60.0));
+  origin_style.width_keyword = None;
+  origin_style.height_keyword = None;
+  let mut origin = BoxNode::new_block(
+    Arc::new(origin_style),
+    FormattingContextType::Block,
+    vec![named_anchor],
+  );
+  origin.id = origin_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(5.0));
+  overlay_style.height = Some(Length::px(5.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+  overlay.implicit_anchor_box_id = Some(origin_id);
+
+  origin.children.push(overlay);
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![origin]);
+  container.id = 103;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let named_anchor_bounds =
+    find_abs_bounds_by_box_id(&fragment, named_anchor_id).expect("named anchor bounds");
+  let origin_bounds = find_abs_bounds_by_box_id(&fragment, origin_id).expect("origin bounds");
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+
+  assert!(
+    (overlay_bounds.x() - named_anchor_bounds.x()).abs() < 0.1,
+    "named position-anchor should take precedence over implicit anchor (overlay x={}, named x={})",
+    overlay_bounds.x(),
+    named_anchor_bounds.x()
+  );
+  assert!(
+    (overlay_bounds.y() - named_anchor_bounds.max_y()).abs() < 0.1,
+    "named position-anchor should take precedence over implicit anchor (overlay y={}, named bottom={})",
+    overlay_bounds.y(),
+    named_anchor_bounds.max_y()
+  );
+  assert!(
+    (overlay_bounds.x() - origin_bounds.x()).abs() > 0.1
+      || (overlay_bounds.y() - origin_bounds.max_y()).abs() > 0.1,
+    "overlay should not resolve against the implicit anchor when a named anchor is set"
+  );
+}
+
+#[test]
 fn anchor_positioning_supports_inside_outside_center_and_percentage_sides() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
@@ -2592,6 +2815,7 @@ fn anchor_positioning_position_anchor_auto_uses_implicit_anchor_for_pseudo_eleme
     BoxNode::new_block(Arc::new(pseudo_style), FormattingContextType::Block, vec![]);
   pseudo.id = pseudo_id;
   pseudo.generated_pseudo = Some(GeneratedPseudoElement::Before);
+  pseudo.implicit_anchor_box_id = Some(parent_id);
 
   let mut parent = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![pseudo]);
   parent.id = parent_id;

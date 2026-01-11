@@ -7630,6 +7630,7 @@ fn create_replaced_box_from_styled(
     debug_info: None,
     styled_node_id: None,
     generated_pseudo: None,
+    implicit_anchor_box_id: None,
     form_control: None,
     table_cell_span: None,
     table_column_span: None,

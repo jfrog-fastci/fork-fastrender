@@ -6692,7 +6692,7 @@ impl FormattingContext for TableFormattingContext {
           AvailableSpace::Definite(cb.rect.size.width),
           AvailableSpace::Definite(cb.rect.size.height),
         );
-        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
           query_parent_box_id: Some(root_box_id),
           implicit_anchor_box_id,

@@ -14269,7 +14269,7 @@ impl FormattingContext for GridFormattingContext {
         );
 
         let anchors_for_cb = Some(&anchor_index);
-        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         let positioned_style =
           crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
             &child.style,

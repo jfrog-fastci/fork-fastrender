@@ -2784,7 +2784,9 @@ impl BlockFormattingContext {
       let padding_rect = Rect::new(padding_origin, padding_size);
       let mut anchor_index_physical = None;
       let mut parent_padding_cb_physical = None;
-      if block_axis_is_horizontal(style.writing_mode) {
+      let needs_physical_coordinate_space =
+        block_axis_is_horizontal(style.writing_mode) || !inline_axis_positive(style.writing_mode, style.direction);
+      if needs_physical_coordinate_space {
         let physical_children: Vec<_> = child_fragments
           .iter()
           .cloned()
@@ -2809,14 +2811,21 @@ impl BlockFormattingContext {
           child.id,
           &style.anchor_names,
           crate::layout::anchor_positioning::AnchorBox {
-            rect: Rect::new(Point::ZERO, Size::new(box_height, box_width)),
+            rect: Rect::new(
+              Point::ZERO,
+              if block_axis_is_horizontal(style.writing_mode) {
+                Size::new(box_height, box_width)
+              } else {
+                Size::new(box_width, box_height)
+              },
+            ),
             writing_mode: style.writing_mode,
             direction: style.direction,
           },
         );
         anchor_index_physical = Some(physical_index);
 
-        let padding_rect_physical = logical_rect_to_physical(
+        let padding_rect_physical = logical_rect_to_physical_full(
           padding_rect,
           box_width,
           box_height,
@@ -2962,7 +2971,7 @@ impl BlockFormattingContext {
           static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
         }
         if needs_physical_conversion {
-          static_pos = logical_rect_to_physical(
+          static_pos = logical_rect_to_physical_full(
             Rect::new(static_pos, Size::new(0.0, 0.0)),
             padding_size.width,
             padding_size.height,
@@ -3201,7 +3210,7 @@ impl BlockFormattingContext {
         );
         let (mut border_origin, mut border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
-          let logical_rect = physical_rect_to_logical(
+          let logical_rect = physical_rect_to_logical_full(
             border_rect,
             box_width,
             box_height,
@@ -3289,7 +3298,7 @@ impl BlockFormattingContext {
           );
           (border_origin, border_size) = if needs_physical_conversion {
             let border_rect = Rect::new(border_origin_physical, border_size_physical);
-            let logical_rect = physical_rect_to_logical(
+            let logical_rect = physical_rect_to_logical_full(
               border_rect,
               box_width,
               box_height,
@@ -4335,8 +4344,7 @@ impl BlockFormattingContext {
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
-        let implicit_anchor_box_id =
-          positioned_child.generated_pseudo.is_some().then_some(child.id);
+        let implicit_anchor_box_id = positioned_child.implicit_anchor_box_id;
         let mut positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &original_style,
           &cb,
@@ -5535,7 +5543,7 @@ impl BlockFormattingContext {
             }
             _ => ContainingBlockSource::Explicit(*nearest_positioned_cb),
           };
-          let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(parent.id);
+          let implicit_anchor_box_id = child.implicit_anchor_box_id;
           positioned_children.push(PositionedCandidate {
             node: child,
             source,
@@ -6166,7 +6174,7 @@ impl BlockFormattingContext {
           }
           _ => ContainingBlockSource::Explicit(*nearest_positioned_cb),
         };
-        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(parent.id);
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         positioned_children.push(PositionedCandidate {
           node: child.clone(),
           source,
@@ -7089,6 +7097,7 @@ impl BlockFormattingContext {
       generated_pseudo: parent.generated_pseudo,
       debug_info: parent.debug_info.clone(),
       styled_node_id: parent.styled_node_id,
+      implicit_anchor_box_id: parent.implicit_anchor_box_id,
       form_control: parent.form_control.clone(),
       table_cell_span: parent.table_cell_span,
       table_column_span: parent.table_column_span,
@@ -10749,6 +10758,9 @@ impl FormattingContext for BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
+      // `child_fragments` are already in this block's border-box coordinate space, so build the
+      // anchor index from them directly. Out-of-flow positioned boxes are also placed in this same
+      // coordinate space (with the padding edge at `padding_origin`).
       let mut anchor_index =
         crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
           child_fragments.as_slice(),
@@ -10768,7 +10780,9 @@ impl FormattingContext for BlockFormattingContext {
       );
       let mut anchor_index_physical = None;
       let mut parent_padding_cb_physical = None;
-      if block_axis_is_horizontal(style.writing_mode) {
+      let needs_physical_coordinate_space =
+        block_axis_is_horizontal(style.writing_mode) || !inline_axis_positive(style.writing_mode, style.direction);
+      if needs_physical_coordinate_space {
         let physical_children: Vec<_> = child_fragments
           .iter()
           .cloned()
@@ -10793,14 +10807,21 @@ impl FormattingContext for BlockFormattingContext {
           box_node.id,
           &style.anchor_names,
           crate::layout::anchor_positioning::AnchorBox {
-            rect: Rect::new(Point::ZERO, Size::new(box_height, box_width)),
+            rect: Rect::new(
+              Point::ZERO,
+              if block_axis_is_horizontal(style.writing_mode) {
+                Size::new(box_height, box_width)
+              } else {
+                Size::new(box_width, box_height)
+              },
+            ),
             writing_mode: style.writing_mode,
             direction: style.direction,
           },
         );
         anchor_index_physical = Some(physical_index);
 
-        let padding_rect_physical = logical_rect_to_physical(
+        let padding_rect_physical = logical_rect_to_physical_full(
           padding_rect,
           box_width,
           box_height,
@@ -10928,7 +10949,7 @@ impl FormattingContext for BlockFormattingContext {
           static_pos = Point::new(static_pos.x - origin.x, static_pos.y - origin.y);
         }
         if needs_physical_conversion {
-          static_pos = logical_rect_to_physical(
+          static_pos = logical_rect_to_physical_full(
             Rect::new(static_pos, Size::new(0.0, 0.0)),
             padding_size.width,
             padding_size.height,
@@ -11135,7 +11156,7 @@ impl FormattingContext for BlockFormattingContext {
         );
         let (mut border_origin, mut border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
-          let logical_rect = physical_rect_to_logical(
+          let logical_rect = physical_rect_to_logical_full(
             border_rect,
             box_width,
             box_height,
@@ -11220,7 +11241,7 @@ impl FormattingContext for BlockFormattingContext {
           );
           (border_origin, border_size) = if needs_physical_conversion {
             let border_rect = Rect::new(border_origin_physical, border_size_physical);
-            let logical_rect = physical_rect_to_logical(
+            let logical_rect = physical_rect_to_logical_full(
               border_rect,
               box_width,
               box_height,
@@ -12506,6 +12527,119 @@ pub(crate) fn convert_fragment_axes_root(fragment: FragmentNode) -> FragmentNode
   let inline_size = fragment.bounds.width();
   let block_size = fragment.bounds.height();
   convert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
+}
+
+fn logical_rect_to_physical_full(
+  rect: Rect,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  writing_mode: WritingMode,
+  direction: crate::style::types::Direction,
+) -> Rect {
+  // Equivalent to the bounds conversion performed by `convert_fragment_axes_in_place`, but for
+  // standalone rectangles.
+  let parent_block_is_horizontal = block_axis_is_horizontal(writing_mode);
+  let parent_inline_positive = inline_axis_positive(writing_mode, direction);
+  let parent_block_positive = block_axis_positive(writing_mode);
+  let parent_physical_width = if parent_block_is_horizontal {
+    parent_block_size
+  } else {
+    parent_inline_size
+  };
+  let parent_physical_height = if parent_block_is_horizontal {
+    parent_inline_size
+  } else {
+    parent_block_size
+  };
+
+  let logical_inline_start = rect.x();
+  let logical_block_start = rect.y();
+  let inline_size = rect.width();
+  let block_size = rect.height();
+
+  if parent_block_is_horizontal {
+    let phys_x = if parent_block_positive {
+      logical_block_start
+    } else {
+      parent_physical_width - logical_block_start - block_size
+    };
+    let phys_y = if parent_inline_positive {
+      logical_inline_start
+    } else {
+      parent_physical_height - logical_inline_start - inline_size
+    };
+    Rect::from_xywh(phys_x, phys_y, block_size, inline_size)
+  } else {
+    let phys_x = if parent_inline_positive {
+      logical_inline_start
+    } else {
+      parent_physical_width - logical_inline_start - inline_size
+    };
+    let phys_y = if parent_block_positive {
+      logical_block_start
+    } else {
+      parent_physical_height - logical_block_start - block_size
+    };
+    Rect::from_xywh(phys_x, phys_y, inline_size, block_size)
+  }
+}
+
+fn physical_rect_to_logical_full(
+  rect: Rect,
+  parent_inline_size: f32,
+  parent_block_size: f32,
+  writing_mode: WritingMode,
+  direction: crate::style::types::Direction,
+) -> Rect {
+  // Inverse of `logical_rect_to_physical_full`.
+  let parent_block_is_horizontal = block_axis_is_horizontal(writing_mode);
+  let parent_inline_positive = inline_axis_positive(writing_mode, direction);
+  let parent_block_positive = block_axis_positive(writing_mode);
+  let parent_physical_width = if parent_block_is_horizontal {
+    parent_block_size
+  } else {
+    parent_inline_size
+  };
+  let parent_physical_height = if parent_block_is_horizontal {
+    parent_inline_size
+  } else {
+    parent_block_size
+  };
+
+  if parent_block_is_horizontal {
+    // Physical x/y correspond to the logical block/inline axes respectively.
+    let block_size = rect.width();
+    let inline_size = rect.height();
+
+    let logical_block_start = if parent_block_positive {
+      rect.x()
+    } else {
+      parent_physical_width - rect.x() - block_size
+    };
+    let logical_inline_start = if parent_inline_positive {
+      rect.y()
+    } else {
+      parent_physical_height - rect.y() - inline_size
+    };
+
+    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size)
+  } else {
+    let inline_size = rect.width();
+    let block_size = rect.height();
+
+    let logical_inline_start = if parent_inline_positive {
+      rect.x()
+    } else {
+      parent_physical_width - rect.x() - inline_size
+    };
+    let logical_block_start = if parent_block_positive {
+      rect.y()
+    } else {
+      parent_physical_height - rect.y() - block_size
+    };
+
+    Rect::from_xywh(logical_inline_start, logical_block_start, inline_size, block_size)
+  }
 }
 
 pub(crate) fn logical_rect_to_physical(

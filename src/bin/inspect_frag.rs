@@ -651,6 +651,7 @@ fn filter_box_subtree(node: &BoxNode, allowed_styled_ids: &HashSet<usize>) -> Op
     debug_info: node.debug_info.clone(),
     styled_node_id: node.styled_node_id,
     generated_pseudo: node.generated_pseudo,
+    implicit_anchor_box_id: node.implicit_anchor_box_id,
     form_control: node.form_control.clone(),
     table_cell_span: node.table_cell_span,
     table_column_span: node.table_column_span,

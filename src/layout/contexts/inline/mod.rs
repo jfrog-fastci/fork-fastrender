@@ -912,8 +912,7 @@ impl InlineFormattingContext {
           abs_cb_stack.last().copied()
         };
         let anchor = self.create_static_position_anchor(child);
-        let implicit_anchor_box_id =
-          child.generated_pseudo.is_some().then_some(parent_box_id).flatten();
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         positioned_children.push(PositionedChild {
           node: BoxNodeRef::new(child),
           box_id,
@@ -1898,8 +1897,7 @@ impl InlineFormattingContext {
             .iter()
             .filter(|desc| desc.style.position.is_absolutely_positioned())
           {
-            let implicit_anchor_box_id =
-              positioned_child.generated_pseudo.is_some().then_some(replaced_box_id);
+            let implicit_anchor_box_id = positioned_child.implicit_anchor_box_id;
             positioned_children.push(PositionedChild {
               node: BoxNodeRef::new(positioned_child),
               box_id: ensure_box_id(positioned_child),
@@ -2155,8 +2153,7 @@ impl InlineFormattingContext {
           abs_cb_stack.last().copied()
         };
         let anchor = self.create_static_position_anchor(child);
-        let implicit_anchor_box_id =
-          child.generated_pseudo.is_some().then_some(parent_box_id).flatten();
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         positioned_children.push(PositionedChild {
           node: BoxNodeRef::new(child),
           box_id,
@@ -3139,8 +3136,7 @@ impl InlineFormattingContext {
             .iter()
             .filter(|desc| desc.style.position.is_absolutely_positioned())
           {
-            let implicit_anchor_box_id =
-              positioned_child.generated_pseudo.is_some().then_some(replaced_box_id);
+            let implicit_anchor_box_id = positioned_child.implicit_anchor_box_id;
             positioned_children.push(PositionedChild {
               node: BoxNodeRef::new(positioned_child),
               box_id: ensure_box_id(positioned_child),
@@ -3853,6 +3849,7 @@ impl InlineFormattingContext {
       generated_pseudo: None,
       debug_info: None,
       styled_node_id: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,

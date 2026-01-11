@@ -33,6 +33,7 @@ use crate::style::types::Overflow;
 use crate::style::ComputedStyle;
 use crate::text::caret::CaretAffinity;
 use crate::tree::debug::DebugInfo;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -1236,6 +1237,16 @@ pub struct BoxNode {
   /// release builds.
   pub generated_pseudo: Option<GeneratedPseudoElement>,
 
+  /// Box id of this node's implicit anchor element, when one exists.
+  ///
+  /// css-anchor-position-1 defines implicit anchor elements for pseudo-elements; for the initial
+  /// implementation scope we track this as the originating element's **principal box id** so that
+  /// `position-anchor: auto` can resolve `anchor()`/`anchor-size()`/`position-area` against it.
+  ///
+  /// Policy: when the originating element does not generate a principal box (e.g. `display:
+  /// contents`), this remains `None`.
+  pub implicit_anchor_box_id: Option<usize>,
+
   /// Form control metadata for `appearance: none` controls rendered as non-replaced boxes.
   ///
   /// Native form controls are normally represented as replaced elements (see
@@ -1271,6 +1282,7 @@ impl Clone for BoxNode {
         debug_info: node.debug_info.clone(),
         styled_node_id: node.styled_node_id,
         generated_pseudo: node.generated_pseudo,
+        implicit_anchor_box_id: node.implicit_anchor_box_id,
         form_control: node.form_control.clone(),
         table_cell_span: node.table_cell_span,
         table_column_span: node.table_column_span,
@@ -1416,6 +1428,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1440,6 +1453,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1462,6 +1476,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1490,6 +1505,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1512,6 +1528,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1534,6 +1551,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1566,6 +1584,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1590,6 +1609,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1614,6 +1634,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1638,6 +1659,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      implicit_anchor_box_id: None,
       form_control: None,
       table_cell_span: None,
       table_column_span: None,
@@ -1883,12 +1905,62 @@ fn assign_box_ids(root: &mut BoxNode, next_id: &mut usize) {
   }
 }
 
+fn assign_implicit_anchor_box_ids(root: &mut BoxNode) {
+  // Map the originating styled node id to its principal box id (the non-pseudo box generated for
+  // the element). Generated pseudo-element boxes store the originating element's `styled_node_id`,
+  // so this lets us link pseudo boxes back to their originating element's principal box.
+  //
+  // Some elements generate multiple non-pseudo boxes with the same `styled_node_id` (e.g. list
+  // markers, table wrappers). The principal box is always encountered first in a pre-order walk of
+  // the box tree, so keep the first id we see and ignore later duplicates.
+  //
+  // If the originating element does not generate a principal box (e.g. `display: contents`), it
+  // will not appear in this map and the implicit anchor remains `None`.
+  let mut principal_by_styled_node_id: HashMap<usize, usize> = HashMap::new();
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.generated_pseudo.is_none() {
+      if let Some(styled_id) = node.styled_node_id {
+        principal_by_styled_node_id.entry(styled_id).or_insert(node.id);
+      }
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
+  while let Some(node_ptr) = stack.pop() {
+    // SAFETY: We only push pointers to nodes owned by `root`, and we never move the underlying
+    // `BoxNode`s while this traversal runs. Each pointer is popped, mutated, then its children are
+    // pushed for later processing.
+    unsafe {
+      let node = &mut *node_ptr;
+      if node.generated_pseudo.is_some() && node.implicit_anchor_box_id.is_none() {
+        node.implicit_anchor_box_id = node
+          .styled_node_id
+          .and_then(|id| principal_by_styled_node_id.get(&id).copied());
+      }
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut _);
+      }
+      for child in node.children.iter_mut().rev() {
+        stack.push(child as *mut _);
+      }
+    }
+  }
+}
+
 impl BoxTree {
   /// Creates a new box tree with the given root
   pub fn new(root: BoxNode) -> Self {
     let mut root = root;
     let mut next_id = 1;
     assign_box_ids(&mut root, &mut next_id);
+    assign_implicit_anchor_box_ids(&mut root);
     Self { root }
   }
 
@@ -2094,6 +2166,45 @@ mod tests {
 
     assert_eq!(tree.count_boxes(), 3); // root + text + block
     assert_eq!(tree.count_text_boxes(), 1);
+  }
+
+  #[test]
+  fn generated_pseudo_boxes_get_implicit_anchor_box_id() {
+    let style = default_style();
+    let mut root = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    root.styled_node_id = Some(1);
+
+    let mut pseudo = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    pseudo.styled_node_id = Some(1);
+    pseudo.generated_pseudo = Some(GeneratedPseudoElement::Before);
+    root.children.push(pseudo);
+
+    let tree = BoxTree::new(root);
+    let root_id = tree.root.id;
+    assert_eq!(
+      tree.root.children[0].implicit_anchor_box_id,
+      Some(root_id),
+      "pseudo-element box should implicitly anchor to its originating element's principal box"
+    );
+  }
+
+  #[test]
+  fn generated_pseudo_boxes_without_origin_principal_box_do_not_get_implicit_anchor() {
+    let style = default_style();
+    let mut root = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    root.styled_node_id = Some(1);
+
+    let mut pseudo = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    pseudo.styled_node_id = Some(999);
+    pseudo.generated_pseudo = Some(GeneratedPseudoElement::After);
+    root.children.push(pseudo);
+
+    let tree = BoxTree::new(root);
+    assert_eq!(
+      tree.root.children[0].implicit_anchor_box_id,
+      None,
+      "pseudo-element box should not get an implicit anchor when the originating element has no principal box"
+    );
   }
 
   #[test]

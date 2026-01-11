@@ -5128,7 +5128,7 @@ impl FormattingContext for FlexFormattingContext {
         let child_fragment = fc.layout(&layout_child, &child_constraints)?;
 
         let anchors_for_cb = Some(&anchor_index);
-        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
+        let implicit_anchor_box_id = child.implicit_anchor_box_id;
         let positioned_style = resolve_positioned_style_with_anchors(
           &original_style,
           &cb,
@@ -5310,11 +5310,11 @@ impl FormattingContext for FlexFormattingContext {
             &input,
             &candidate.original_style,
             &candidate.cb,
-            self.viewport_size,
-            &self.font_context,
-            Some(&anchor_index),
-            anchor_query,
-          )?;
+              self.viewport_size,
+              &self.font_context,
+              Some(&anchor_index),
+              anchor_query,
+            )?;
         let mut child_fragment = candidate.fragment;
         let mut border_size = Size::new(
           result.size.width + actual_horizontal,
@@ -11444,8 +11444,7 @@ impl FlexFormattingContext {
                     .unwrap_or(CrateAvailableSpace::Indefinite),
                 );
                 let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
-                let implicit_anchor_box_id =
-                  positioned_child.generated_pseudo.is_some().then_some(child_box.id);
+                let implicit_anchor_box_id = positioned_child.implicit_anchor_box_id;
                 let mut positioned_style = resolve_positioned_style_with_anchors(
                   &original_style,
                   &cb,

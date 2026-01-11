@@ -1864,6 +1864,7 @@ pub trait FormattingContext: Send + Sync {
         debug_info: box_node.debug_info.clone(),
         styled_node_id: box_node.styled_node_id,
         generated_pseudo: box_node.generated_pseudo,
+        implicit_anchor_box_id: box_node.implicit_anchor_box_id,
         form_control: box_node.form_control.clone(),
         table_cell_span: box_node.table_cell_span,
         table_column_span: box_node.table_column_span,
