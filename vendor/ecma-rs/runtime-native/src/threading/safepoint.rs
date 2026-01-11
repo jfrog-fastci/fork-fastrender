@@ -423,7 +423,9 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 /// 1) Per-thread root scopes (runtime-native handle stack).
 /// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
 /// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
-/// 4) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread.
+  /// 4) Stack roots described by LLVM statepoint stackmaps for each thread that is either:
+  ///    - has observed `stop_epoch` (published `safepoint_epoch_observed == stop_epoch`), or
+  ///    - is in a GC-safe ("NativeSafe") region with a published safepoint context.
 ///
 /// # Panics
 /// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
@@ -451,21 +453,17 @@ pub fn for_each_root_slot_world_stopped(
     return Ok(());
   };
 
-  let coordinator_id = registry::current_thread_id();
   registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
-    if Some(thread.id()) == coordinator_id {
+    if thread.is_parked() {
       return Ok(());
     }
-    if thread.is_parked() || thread.is_native_safe() {
-      return Ok(());
-    }
-    if thread.safepoint_epoch_observed() != stop_epoch {
+    if !thread.is_native_safe() && thread.safepoint_epoch_observed() != stop_epoch {
       return Ok(());
     }
 
     let ctx = thread
       .safepoint_context()
-      .expect("stopped thread must have a published safepoint context");
+      .expect("thread eligible for stack root enumeration must have a published safepoint context");
 
     let stack_bounds = thread
       .stack_bounds()
