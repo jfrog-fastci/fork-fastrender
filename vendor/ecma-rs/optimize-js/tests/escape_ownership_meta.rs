@@ -20,16 +20,17 @@ fn escape_and_ownership_metadata_is_attached() {
 
   let mut program = compile_source(src, TopLevelMode::Module, false);
   annotate_program(&mut program);
-
+ 
   let func = program.functions.get(0).expect("expected one nested function");
-
+  let cfg = func.analyzed_cfg();
+ 
   let mut alloc_escape = None;
   let mut return_use = None;
-
-  let mut labels = func.body.graph.labels_sorted();
+ 
+  let mut labels = cfg.graph.labels_sorted();
   labels.sort_unstable();
   for label in labels {
-    for inst in func.body.bblocks.get(label) {
+    for inst in cfg.bblocks.get(label) {
       if inst.t == InstTyp::Call {
         let (tgt, callee, _this, _args, _spreads) = inst.as_call();
         if matches!(callee, Arg::Builtin(name) if name == "__optimize_js_object") {

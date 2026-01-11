@@ -57,7 +57,6 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
         effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
-    InstTyp::Return => {}
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
@@ -134,6 +133,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     | InstTyp::Un
     | InstTyp::VarAssign
     | InstTyp::Phi
+    | InstTyp::Return
     | InstTyp::_Label => {}
     // These should not exist after CFG construction but are treated as no-ops for analysis.
     InstTyp::_Goto | InstTyp::_Dummy => {}

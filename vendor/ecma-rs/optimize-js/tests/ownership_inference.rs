@@ -6,6 +6,7 @@ use optimize_js::analysis::annotate_program;
 use optimize_js::analysis::driver::FunctionKey;
 use optimize_js::cfg::cfg::Cfg;
 use optimize_js::il::inst::{Arg, ArgUseMode, Const, InPlaceHint, InstTyp, OwnershipState};
+use optimize_js::CompileCfgOptions;
 use optimize_js::TopLevelMode;
 
 fn mode_at(inst: &optimize_js::il::inst::Inst, idx: usize) -> ArgUseMode {
@@ -138,47 +139,65 @@ fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
     })(cond);
     void out;
   "#;
-  let mut program = compile_source(src, TopLevelMode::Module, false);
+
+  // Disable optimisation passes so SSA VarAssign instructions remain in the analyzed CFG.
+  // (In strict SSA, `optpass_redundant_assigns` eliminates VarAssigns via copy propagation.)
+  let mut program = optimize_js::compile_source_with_cfg_options(
+    src,
+    TopLevelMode::Module,
+    false,
+    CompileCfgOptions {
+      keep_ssa: false,
+      run_opt_passes: false,
+    },
+  )
+  .expect("compile source");
   assert_eq!(program.functions.len(), 1);
 
-  // Attach ownership + consumption metadata to the deconstructed CFG (`body`) so we can assert on
-  // the VarAssign move site that appears after SSA deconstruction.
   let _analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
 
-  let (_ret_label, _ret_idx, ret_var) = find_unique_return_var(cfg);
-  let entry_defs: std::collections::HashSet<u32> = cfg
+  let alloc_var = cfg
     .bblocks
     .get(cfg.entry)
     .iter()
-    .flat_map(|inst| inst.tgts.iter().copied())
-    .collect();
+    .find_map(|inst| {
+      if inst.t != InstTyp::Call {
+        return None;
+      }
+      if matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object") {
+        inst.tgts.get(0).copied()
+      } else {
+        None
+      }
+    })
+    .expect("expected object allocation in entry block");
 
-  // Find the VarAssign that moves the entry-allocated object (`a`) into the merged return value.
-  let mut move_site = None::<(u32, usize, u32)>;
+  // Find the VarAssign that moves the allocated object into another SSA value.
+  let mut move_site = None::<(u32, usize, u32, u32)>;
   for label in cfg.graph.labels_sorted() {
     for (idx, inst) in cfg.bblocks.get(label).iter().enumerate() {
       if inst.t != InstTyp::VarAssign {
         continue;
       }
-      if inst.tgts.get(0) != Some(&ret_var) {
-        continue;
-      }
       let Some(Arg::Var(src)) = inst.args.get(0) else {
         continue;
       };
-      if !entry_defs.contains(src) {
+      if *src != alloc_var {
         continue;
       }
+      let Some(&tgt) = inst.tgts.get(0) else {
+        continue;
+      };
       assert!(
         move_site.is_none(),
-        "expected a single move VarAssign from entry-allocated value"
+        "expected a single move VarAssign from allocated value"
       );
-      move_site = Some((label, idx, *src));
+      move_site = Some((label, idx, *src, tgt));
     }
   }
-  let (label, idx, src) =
-    move_site.expect("expected VarAssign that moves entry allocation into return");
+  let (label, idx, src, tgt) =
+    move_site.expect("expected VarAssign that moves allocation into another value");
   let inst = &cfg.bblocks.get(label)[idx];
 
   assert_eq!(
@@ -188,7 +207,7 @@ fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
   );
   assert_eq!(
     inst.meta.in_place_hint,
-    Some(InPlaceHint::MoveNoClone { src, tgt: ret_var }),
+    Some(InPlaceHint::MoveNoClone { src, tgt }),
     "expected move VarAssign to record an in-place move hint"
   );
 }
@@ -206,7 +225,7 @@ fn arg_use_modes_is_empty_when_all_args_are_borrowed() {
   let mut program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let _analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
 
   let mut found_cond_goto = None;
   for label in cfg.graph.labels_sorted() {
@@ -218,6 +237,11 @@ fn arg_use_modes_is_empty_when_all_args_are_borrowed() {
     }
   }
   let cond_goto = found_cond_goto.expect("expected at least one CondGoto in test CFG");
+  assert_eq!(
+    mode_at(cond_goto, 0),
+    ArgUseMode::Borrow,
+    "expected branch condition to be borrowed"
+  );
   assert!(
     cond_goto.meta.arg_use_modes.is_empty(),
     "expected arg_use_modes to be omitted when all args are Borrow"
@@ -242,7 +266,7 @@ fn returned_value_is_consumed_as_an_ownership_transfer() {
   let mut program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses
     .ownership
     .get(&FunctionKey::Fn(0))
@@ -275,7 +299,7 @@ fn earlier_prop_assign_borrows_when_value_is_used_again() {
   let mut program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses
     .ownership
     .get(&FunctionKey::Fn(0))
@@ -317,7 +341,7 @@ fn thrown_value_is_consumed_as_an_ownership_transfer() {
   let mut program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses
     .ownership
     .get(&FunctionKey::Fn(0))
@@ -344,7 +368,7 @@ fn global_escape_forces_shared() {
   let mut program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let analyses = annotate_program(&mut program);
-  let cfg = &program.functions[0].body;
+  let cfg = program.functions[0].analyzed_cfg();
   let ownership = analyses
     .ownership
     .get(&FunctionKey::Fn(0))

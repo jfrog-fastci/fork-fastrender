@@ -10,7 +10,7 @@ use optimize_js::TopLevelMode;
 fn find_direct_fn_call<'a>(program: &'a optimize_js::Program, fn_id: usize) -> &'a optimize_js::il::inst::Inst {
   program
     .top_level
-    .body
+    .analyzed_cfg()
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
@@ -24,7 +24,7 @@ fn find_direct_fn_call<'a>(program: &'a optimize_js::Program, fn_id: usize) -> &
 fn find_top_level_object_alloc(program: &optimize_js::Program) -> u32 {
   program
     .top_level
-    .body
+    .analyzed_cfg()
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
