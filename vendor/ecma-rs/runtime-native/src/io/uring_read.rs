@@ -315,13 +315,22 @@ impl UringDriver {
     }
 
     #[cfg(target_os = "linux")]
-    thread::spawn(move || run_driver(entries, wake_fd, cmd_rx));
+    {
+      let ring = io_uring::IoUring::new(entries)?;
+      thread::spawn(move || run_driver(ring, wake_fd, cmd_rx));
+    }
     #[cfg(not(target_os = "linux"))]
-    thread::spawn(move || {
+    {
       let _ = entries;
-      let _ = wake_fd;
       let _ = cmd_rx;
-    });
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "io_uring is only supported on linux",
+      ));
+    }
 
     Ok(Self {
       inner: Arc::new(DriverInner {
@@ -387,16 +396,65 @@ impl UringDriver {
 }
 
 #[cfg(target_os = "linux")]
-fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
-  let mut ring = match io_uring::IoUring::new(entries) {
-    Ok(r) => r,
-    Err(_) => {
-      unsafe {
-        libc::close(wake_fd);
-      }
-      return;
+fn submit_with_retry(ring: &mut io_uring::IoUring) -> std::io::Result<usize> {
+  loop {
+    match ring.submit() {
+      Ok(n) => return Ok(n),
+      Err(err) if err.raw_os_error() == Some(libc::EINTR) => continue,
+      Err(err) => return Err(err),
     }
-  };
+  }
+}
+
+#[cfg(target_os = "linux")]
+fn push_sqe_with_backpressure(
+  ring: &mut io_uring::IoUring,
+  sqe: &io_uring::squeue::Entry,
+) -> std::io::Result<()> {
+  // SAFETY: `sqe` is copied into the submission ring by `io_uring`.
+  unsafe {
+    if ring.submission().push(sqe).is_ok() {
+      return Ok(());
+    }
+  }
+
+  // SQ is full; flush the current batch to the kernel to make room.
+  submit_with_retry(ring)?;
+
+  // SAFETY: `sqe` is copied into the submission ring by `io_uring`.
+  unsafe {
+    ring.submission().push(sqe).map_err(|_| {
+      std::io::Error::new(std::io::ErrorKind::Other, "io_uring submission queue is full")
+    })?;
+  }
+
+  Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn drain_eventfd(fd: RawFd) {
+  let mut buf = [0u8; 8];
+  loop {
+    // SAFETY: `buf` is a valid writable buffer and `fd` is expected to be an eventfd.
+    let rc = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+    if rc >= 0 {
+      continue;
+    }
+
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+      Some(libc::EINTR) => continue,
+      Some(libc::EAGAIN) => return,
+      _ => return,
+    }
+  }
+}
+
+#[cfg(target_os = "linux")]
+fn run_driver(mut ring: io_uring::IoUring, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
+  fn submit_errno(err: &std::io::Error) -> i32 {
+    -(err.raw_os_error().unwrap_or(libc::EIO))
+  }
 
   let ring_fd = ring.as_raw_fd();
 
@@ -414,8 +472,9 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
           let sqe = opcode::Read::new(types::Fd(fd), op.ptr, op.len as _)
             .build()
             .user_data(ud);
-          unsafe {
-            ring.submission().push(&sqe).ok();
+          if let Err(err) = push_sqe_with_backpressure(&mut ring, &sqe) {
+            op.complete(Err(IoError::Uring(submit_errno(&err))));
+            continue;
           }
           ops.insert(decode_user_data_id(ud), op);
         }
@@ -423,11 +482,12 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
           let target = user_data(id, UserDataKind::Read);
           let ud = user_data(id, UserDataKind::Cancel);
           let sqe = opcode::AsyncCancel::new(target).build().user_data(ud);
-          unsafe {
-            ring.submission().push(&sqe).ok();
-          }
+          let _ = push_sqe_with_backpressure(&mut ring, &sqe);
         }
         Command::Shutdown => {
+          for (_, op) in ops.drain() {
+            op.complete(Err(IoError::Cancelled));
+          }
           unsafe {
             libc::close(wake_fd);
           }
@@ -436,7 +496,16 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
       }
     }
 
-    let _ = ring.submit();
+    if let Err(err) = submit_with_retry(&mut ring) {
+      let code = submit_errno(&err);
+      for (_, op) in ops.drain() {
+        op.complete(Err(IoError::Uring(code)));
+      }
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return;
+    }
 
     let mut fds = [
       libc::pollfd {
@@ -450,15 +519,27 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
         revents: 0,
       },
     ];
-    unsafe {
-      libc::poll(fds.as_mut_ptr(), fds.len() as _, -1);
+    loop {
+      let poll_rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+      if poll_rc >= 0 {
+        break;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      let code = submit_errno(&err);
+      for (_, op) in ops.drain() {
+        op.complete(Err(IoError::Uring(code)));
+      }
+      unsafe {
+        libc::close(wake_fd);
+      }
+      return;
     }
 
     if fds[1].revents & libc::POLLIN != 0 {
-      let mut buf = [0u8; 8];
-      unsafe {
-        libc::read(wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
-      }
+      drain_eventfd(wake_fd);
     }
 
     let mut cq = ring.completion();
@@ -480,6 +561,226 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
         }
         UserDataKind::Cancel => {}
       }
+    }
+  }
+}
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+  use super::*;
+  use crate::gc::TypeDescriptor;
+  use crate::test_util::TestRuntimeGuard;
+  use crate::ArrayBuffer;
+  use std::os::fd::{FromRawFd, OwnedFd};
+  use std::task::Wake;
+  use std::time::{Duration, Instant};
+
+  static ARRAY_BUFFER_DESC: TypeDescriptor = TypeDescriptor::new(
+    OBJ_HEADER_SIZE + core::mem::size_of::<ArrayBuffer>(),
+    &[],
+  );
+  static UINT8_ARRAY_PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
+  static UINT8_ARRAY_DESC: TypeDescriptor = TypeDescriptor::new(
+    OBJ_HEADER_SIZE + core::mem::size_of::<Uint8Array>(),
+    &UINT8_ARRAY_PTR_OFFSETS,
+  );
+  static DUMMY_DESC: TypeDescriptor = TypeDescriptor::new(OBJ_HEADER_SIZE, &[]);
+
+  fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+      return Err(std::io::Error::last_os_error());
+    }
+    // Safety: `pipe` returns new, owned file descriptors.
+    let rfd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let wfd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    Ok((rfd, wfd))
+  }
+
+  fn write_all(fd: RawFd, bytes: &[u8]) {
+    let mut written = 0usize;
+    while written < bytes.len() {
+      let rc = unsafe {
+        libc::write(
+          fd,
+          bytes[written..].as_ptr() as *const libc::c_void,
+          bytes.len() - written,
+        )
+      };
+      assert!(rc >= 0, "write failed: {}", std::io::Error::last_os_error());
+      written += rc as usize;
+    }
+  }
+
+  struct FlagWake {
+    flag: Arc<AtomicBool>,
+  }
+
+  impl Wake for FlagWake {
+    fn wake(self: Arc<Self>) {
+      self.flag.store(true, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+      self.flag.store(true, Ordering::SeqCst);
+    }
+  }
+
+  fn flag_waker(flag: Arc<AtomicBool>) -> Waker {
+    Waker::from(Arc::new(FlagWake { flag }))
+  }
+
+  fn block_on<F: Future>(fut: F, timeout: Duration) -> F::Output {
+    let woke = Arc::new(AtomicBool::new(false));
+    let waker = flag_waker(woke.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = Box::pin(fut);
+    let deadline = Instant::now() + timeout;
+
+    loop {
+      match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(out) => return out,
+        Poll::Pending => {
+          while !woke.swap(false, Ordering::SeqCst) {
+            if Instant::now() > deadline {
+              panic!("timed out waiting for future");
+            }
+            std::thread::yield_now();
+          }
+        }
+      }
+    }
+  }
+
+  fn alloc_array_buffer(heap: &mut GcHeap, byte_len: usize) -> *mut u8 {
+    // Allocate the ArrayBuffer header in old gen so it does not move during nursery evacuation. The
+    // backing store itself is always non-moving.
+    let obj = heap.alloc_old(&ARRAY_BUFFER_DESC);
+    let payload = unsafe { obj.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer };
+    let header = ArrayBuffer::new_zeroed(byte_len).unwrap();
+    unsafe {
+      payload.write(header);
+    }
+    obj
+  }
+
+  fn alloc_uint8_array(
+    heap: &mut GcHeap,
+    buffer: *mut u8,
+    byte_offset: usize,
+    length: usize,
+  ) -> *mut u8 {
+    let obj = heap.alloc_young(&UINT8_ARRAY_DESC);
+    let payload = unsafe { obj.add(OBJ_HEADER_SIZE) as *mut Uint8Array };
+    let buffer_payload = unsafe { &*(buffer.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+    let view = Uint8Array::view(buffer_payload, byte_offset, length).unwrap();
+    unsafe {
+      payload.write(view);
+    }
+    obj
+  }
+
+  fn alloc_dummy(heap: &mut GcHeap) -> *mut u8 {
+    heap.alloc_young(&DUMMY_DESC)
+  }
+
+  fn finalize_array_buffer(buffer_obj: *mut u8) {
+    // Safety: payload layout matches `ArrayBuffer`.
+    let buf = unsafe { &mut *(buffer_obj.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer) };
+    buf.finalize();
+  }
+
+  fn pin_count(buffer_obj: *mut u8) -> u32 {
+    let buf = unsafe { &*(buffer_obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+    buf.pin_count()
+  }
+
+  #[test]
+  fn batches_reads_without_losing_ops_when_sq_is_full() {
+    let _rt = TestRuntimeGuard::new();
+
+    let heap = Arc::new(Mutex::new(GcHeap::new()));
+    let driver = UringDriver::new(2).unwrap();
+
+    let mut read_futs: Vec<(ReadFuture, *const u8, u8, *mut u8)> = Vec::new();
+    let mut read_fds: Vec<OwnedFd> = Vec::new();
+    let mut write_fds: Vec<OwnedFd> = Vec::new();
+
+    for idx in 0..4u8 {
+      let (rfd, wfd) = pipe().unwrap();
+
+      let (array_obj, buffer_obj, promise_obj, bytes_ptr) = {
+        let mut heap = heap.lock().unwrap();
+        let buffer_obj = alloc_array_buffer(&mut heap, 1);
+        let array_obj = alloc_uint8_array(&mut heap, buffer_obj, 0, 1);
+        let promise_obj = alloc_dummy(&mut heap);
+
+        let bytes_ptr = unsafe {
+          let view = &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array);
+          view.as_ptr_range().unwrap().0 as *const u8
+        };
+
+        (array_obj, buffer_obj, promise_obj, bytes_ptr)
+      };
+
+      // Mirror `UringDriver::read_into_uint8_array`, but enqueue a batch of commands and only wake
+      // the driver once to deterministically exercise SQ backpressure.
+      let pinned = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) }
+        .pin()
+        .expect("pin should succeed");
+      let borrow = pinned
+        .backing_store()
+        .try_borrow_io_write()
+        .expect("buffer should not already be borrowed");
+      let id = driver.next_op_id();
+      let op = Arc::new(IoOp::new(
+        id,
+        Arc::clone(&heap),
+        array_obj,
+        promise_obj,
+        pinned,
+        borrow,
+      ));
+      assert!(pin_count(buffer_obj) > 0);
+
+      driver
+        .inner
+        .cmd_tx
+        .send(Command::SubmitRead {
+          op: Arc::clone(&op),
+          fd: rfd.as_raw_fd(),
+        })
+        .unwrap();
+
+      read_futs.push((
+        ReadFuture {
+          op,
+          driver: driver.clone(),
+          cancel: None,
+        },
+        bytes_ptr,
+        idx,
+        buffer_obj,
+      ));
+      read_fds.push(rfd);
+      write_fds.push(wfd);
+    }
+
+    // Wake the driver once so it drains the whole batch in one go (ensuring it sees SQ full).
+    driver.signal();
+
+    for (idx, wfd) in write_fds.iter().enumerate() {
+      let byte = idx as u8;
+      write_all(wfd.as_raw_fd(), &[byte]);
+    }
+
+    for (fut, bytes_ptr, expected, buffer_obj) in read_futs {
+      let n = block_on(fut, Duration::from_secs(2)).unwrap();
+      assert_eq!(n, 1);
+      let got = unsafe { std::slice::from_raw_parts(bytes_ptr, n) };
+      assert_eq!(got, &[expected]);
+      assert_eq!(pin_count(buffer_obj), 0);
+      finalize_array_buffer(buffer_obj);
     }
   }
 }
