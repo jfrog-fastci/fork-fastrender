@@ -15,6 +15,7 @@ mod abspos_replaced_intrinsic_ratio_max_width;
 mod abspos_static_position;
 mod abspos_static_position_inline_line_box;
 mod abspos_static_position_subgrid;
+mod abspos_nested_bottom_inset_used_cb_height;
 mod anchor_positioning;
 mod position_area;
 mod aria_hidden_has_no_effect;

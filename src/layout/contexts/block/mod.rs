@@ -215,6 +215,95 @@ fn is_collapsible_whitespace_run(node: &BoxNode) -> bool {
   is_ignorable_whitespace(node)
 }
 
+fn abspos_depends_on_cb_block_size(style: &crate::style::ComputedStyle) -> bool {
+  use crate::style::types::InsetValue;
+
+  let inset_has_percentage = |value: &InsetValue| match value {
+    InsetValue::Length(length) => length.has_percentage(),
+    InsetValue::Auto | InsetValue::Anchor(_) => false,
+  };
+
+  // Percentage heights/vertical insets resolve against the containing block's used height for
+  // absolutely positioned elements (CSS 2.1 §10.5/§10.6.4).
+  if style.height.is_some_and(|l| l.has_percentage())
+    || style.min_height.is_some_and(|l| l.has_percentage())
+    || style.max_height.is_some_and(|l| l.has_percentage())
+    || inset_has_percentage(&style.top)
+    || inset_has_percentage(&style.bottom)
+  {
+    return true;
+  }
+
+  // Intrinsic sizing keywords can also depend on the available block size (e.g.
+  // `height: fill-available`), which is defined in terms of the containing block height.
+  if style.height_keyword.is_some() || style.min_height_keyword.is_some() || style.max_height_keyword.is_some() {
+    return true;
+  }
+
+  // Non-percentage insets can still require the containing block height for the absolute
+  // positioning constraint equation. In particular, `bottom: 0` (or `top/bottom` with
+  // `height:auto`) needs the *used* CB height to compute the block-start position and/or
+  // shrink-to-fit size. If the CB is `height:auto`, that used height isn't known until after
+  // in-flow layout.
+  let top_is_auto = matches!(style.top, InsetValue::Auto);
+  let bottom_is_auto = matches!(style.bottom, InsetValue::Auto);
+  let top_specified = !top_is_auto;
+  let bottom_specified = !bottom_is_auto;
+
+  // Any specified `bottom` requires the CB height for one or more of:
+  // - resolving `top:auto` from the constraint equation (most common),
+  // - overconstraint handling when both insets are present,
+  // - auto margin distribution.
+  if bottom_specified {
+    return true;
+  }
+
+  // When height is auto and a vertical inset is specified, the CSS2.1 algorithm shrink-to-fits the
+  // used height against the available CB height (CSS 2.1 §10.6.4).
+  let height_is_auto = style.height.is_none();
+  height_is_auto && top_specified
+}
+
+fn has_abspos_descendant_needing_used_cb_height(root: &BoxNode) -> bool {
+  fn walk(node: &BoxNode, under_inner_cb: bool, depth: usize) -> bool {
+    let style = node.style.as_ref();
+    let establishes_cb = style.establishes_abs_containing_block();
+
+    if matches!(style.position, Position::Absolute)
+      && !under_inner_cb
+      && abspos_depends_on_cb_block_size(style)
+    {
+      // Block-level abspos children are collected by the block formatting context and laid out
+      // after the containing block's used height is known, so they do not require relayout here.
+      let is_direct_block_level_child = depth == 1 && !style.display.is_inline_level();
+      if !is_direct_block_level_child {
+        return true;
+      }
+    }
+
+    // Once we're inside another abs containing block, descendants will resolve percentages (and
+    // bottom/top constraint equations) against that inner block instead of the current one, so the
+    // current block doesn't need to rerun layout for them.
+    if under_inner_cb || establishes_cb {
+      return false;
+    }
+
+    for child in &node.children {
+      if walk(child, false, depth + 1) {
+        return true;
+      }
+    }
+    false
+  }
+
+  for child in &root.children {
+    if walk(child, false, 1) {
+      return true;
+    }
+  }
+  false
+}
+
 #[derive(Clone)]
 struct PositionedCandidate {
   node: BoxNode,
@@ -1774,63 +1863,6 @@ impl BlockFormattingContext {
                     child.style.width.is_none(),
                 );
       }
-    }
-
-    fn abspos_depends_on_cb_block_size(style: &crate::style::ComputedStyle) -> bool {
-      let inset_has_percentage = |value: &crate::style::types::InsetValue| match value {
-        crate::style::types::InsetValue::Length(length) => length.has_percentage(),
-        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => false,
-      };
-
-      style.height.is_some_and(|l| l.has_percentage())
-        || style.min_height.is_some_and(|l| l.has_percentage())
-        || style.max_height.is_some_and(|l| l.has_percentage())
-        || inset_has_percentage(&style.top)
-        || inset_has_percentage(&style.bottom)
-        // CSS 2.1 §10.6.4: when `top` and `bottom` are specified and `height:auto`,
-        // the used height is derived from the constraint equation and depends on the
-        // containing block's *used* padding box height (even when all insets are lengths).
-        || (style.height.is_none() && !style.top.is_auto() && !style.bottom.is_auto())
-    }
-
-    fn has_abspos_descendant_needing_used_cb_height(root: &BoxNode) -> bool {
-      fn walk(node: &BoxNode, under_inner_cb: bool, depth: usize) -> bool {
-        let style = node.style.as_ref();
-        let establishes_cb = style.establishes_abs_containing_block();
-
-        if matches!(style.position, Position::Absolute)
-          && !under_inner_cb
-          && abspos_depends_on_cb_block_size(style)
-        {
-          // Block-level abspos children are collected by the block formatting context and laid out
-          // after the containing block's used height is known, so they do not require relayout here.
-          let is_direct_block_level_child = depth == 1 && !style.display.is_inline_level();
-          if !is_direct_block_level_child {
-            return true;
-          }
-        }
-
-        // Once we're inside another abs containing block, descendants will resolve percentages
-        // against that inner block instead of the current one, so the current block doesn't need
-        // to rerun layout for them.
-        if under_inner_cb || establishes_cb {
-          return false;
-        }
-
-        for child in &node.children {
-          if walk(child, false, depth + 1) {
-            return true;
-          }
-        }
-        false
-      }
-
-      for child in &root.children {
-        if walk(child, false, 1) {
-          return true;
-        }
-      }
-      false
     }
 
     // If this block establishes a new containing block for absolute/fixed descendants (via
@@ -9338,6 +9370,9 @@ impl FormattingContext for BlockFormattingContext {
     let cb_block_base = resolved_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
     let establishes_positioned_cb = style.establishes_abs_containing_block();
     let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
+      && cb_block_base.is_none()
+      && has_abspos_descendant_needing_used_cb_height(box_node);
     let nearest_cb = if establishes_positioned_cb {
       ContainingBlock::with_viewport_and_bases(
         Rect::new(padding_origin, padding_size),
@@ -9477,50 +9512,69 @@ impl FormattingContext for BlockFormattingContext {
       }
       crate::style::types::ContentVisibility::Visible => false,
     };
-    let (mut child_fragments, mut content_height, positioned_children, column_info) =
-      if skip_contents {
-        (Vec::new(), 0.0, Vec::new(), None)
-      } else if use_columns {
-        let (frags, height, positioned, info) = child_ctx.layout_multicolumn(
-          box_node,
-          &child_constraints,
-          &nearest_cb,
-          &nearest_fixed_cb,
-          computed_width.content_width,
-          paint_viewport,
-        )?;
-        (frags, height, positioned, info)
-      } else {
-        let (frags, height, positioned) = child_ctx.layout_children(
-          box_node,
-          &child_constraints,
-          &nearest_cb,
-          &nearest_fixed_cb,
-          paint_viewport,
-        )?;
-        (frags, height, positioned, None)
-      };
-    if skip_contents || style.containment.size {
-      let axis_is_width = block_axis_is_horizontal(style.writing_mode);
-      let axis = if axis_is_width {
-        style.contain_intrinsic_width
-      } else {
-        style.contain_intrinsic_height
-      };
-      let remembered = axis
-        .auto
-        .then(|| {
-          remembered_size_cache_lookup(box_node).map(|size| {
-            if axis_is_width {
-              size.width
-            } else {
-              size.height
-            }
+    let layout_contents = |ctx: &BlockFormattingContext,
+                           nearest_cb: &ContainingBlock,
+                           nearest_fixed_cb: &ContainingBlock|
+     -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>, Option<FragmentationInfo>), LayoutError> {
+      let (mut child_fragments, mut content_height, positioned_children, column_info) =
+        if skip_contents {
+          (Vec::new(), 0.0, Vec::new(), None)
+        } else if use_columns {
+          let (frags, height, positioned, info) = ctx.layout_multicolumn(
+            box_node,
+            &child_constraints,
+            nearest_cb,
+            nearest_fixed_cb,
+            computed_width.content_width,
+            paint_viewport,
+          )?;
+          (frags, height, positioned, info)
+        } else {
+          let (frags, height, positioned) = ctx.layout_children(
+            box_node,
+            &child_constraints,
+            nearest_cb,
+            nearest_fixed_cb,
+            paint_viewport,
+          )?;
+          (frags, height, positioned, None)
+        };
+
+      if skip_contents || style.containment.size {
+        let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+        let axis = if axis_is_width {
+          style.contain_intrinsic_width
+        } else {
+          style.contain_intrinsic_height
+        };
+        let remembered = axis
+          .auto
+          .then(|| {
+            remembered_size_cache_lookup(box_node).map(|size| {
+              if axis_is_width {
+                size.width
+              } else {
+                size.height
+              }
+            })
           })
-        })
-        .flatten();
-      let resolved = if axis.auto {
-        remembered.or_else(|| {
+          .flatten();
+        let resolved = if axis.auto {
+          remembered.or_else(|| {
+            axis.length.and_then(|l| {
+              resolve_length_with_percentage_metrics_and_root_font_metrics(
+                l,
+                containing_height,
+                self.viewport_size,
+                style.font_size,
+                style.root_font_size,
+                Some(style),
+                Some(&self.font_context),
+                self.factory.root_font_metrics(),
+              )
+            })
+          })
+        } else {
           axis.length.and_then(|l| {
             resolve_length_with_percentage_metrics_and_root_font_metrics(
               l,
@@ -9533,116 +9587,108 @@ impl FormattingContext for BlockFormattingContext {
               self.factory.root_font_metrics(),
             )
           })
-        })
-      } else {
-        axis.length.and_then(|l| {
-          resolve_length_with_percentage_metrics_and_root_font_metrics(
-            l,
-            containing_height,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-            self.factory.root_font_metrics(),
-          )
-        })
-      };
-      let mut value = resolved.unwrap_or(0.0);
-      if !value.is_finite() {
-        value = 0.0;
+        };
+        let mut value = resolved.unwrap_or(0.0);
+        if !value.is_finite() {
+          value = 0.0;
+        }
+        content_height = value.max(0.0);
       }
-      content_height = value.max(0.0);
-    }
 
-    // HTML fieldset/legend layout (approximation):
-    //
-    // The HTML rendering model positions the first `<legend>` element child on the fieldset
-    // border and wraps the remaining children in a "fieldset content" box. To approximate this in
-    // a CSS-centric block formatting context we:
-    // - Keep the anonymous fieldset content box in normal flow.
-    // - Pull the legend upward so it overlaps the fieldset border.
-    // - Pull the content box upward so it does not reserve the legend's full block-size, while
-    //   still avoiding overlap with the legend's lower half.
-    if let Some((fieldset_content_id, legend_id)) = {
-      let mut content_id: Option<usize> = None;
-      let mut legend_id: Option<usize> = None;
-      for child in &box_node.children {
-        if matches!(
-          &child.box_type,
-          BoxType::Anonymous(anon) if anon.anonymous_type == AnonymousType::FieldsetContent
-        ) {
-          content_id = Some(child.id);
-          continue;
-        }
-        if child.style.shrink_to_fit_inline_size && legend_id.is_none() {
-          legend_id = Some(child.id);
-        }
-      }
-      content_id.map(|content_id| (content_id, legend_id))
-    } {
-      if let Some(legend_id) = legend_id {
-        let mut legend_idx: Option<usize> = None;
-        let mut content_idx: Option<usize> = None;
-        for (idx, frag) in child_fragments.iter().enumerate() {
-          let FragmentContent::Block { box_id: Some(id) } = frag.content else {
+      // HTML fieldset/legend layout (approximation):
+      //
+      // The HTML rendering model positions the first `<legend>` element child on the fieldset
+      // border and wraps the remaining children in a "fieldset content" box. To approximate this in
+      // a CSS-centric block formatting context we:
+      // - Keep the anonymous fieldset content box in normal flow.
+      // - Pull the legend upward so it overlaps the fieldset border.
+      // - Pull the content box upward so it does not reserve the legend's full block-size, while
+      //   still avoiding overlap with the legend's lower half.
+      if let Some((fieldset_content_id, legend_id)) = {
+        let mut content_id: Option<usize> = None;
+        let mut legend_id: Option<usize> = None;
+        for child in &box_node.children {
+          if matches!(
+            &child.box_type,
+            BoxType::Anonymous(anon) if anon.anonymous_type == AnonymousType::FieldsetContent
+          ) {
+            content_id = Some(child.id);
             continue;
-          };
-          if id == legend_id {
-            legend_idx = Some(idx);
-          } else if id == fieldset_content_id {
-            content_idx = Some(idx);
           }
-          if legend_idx.is_some() && content_idx.is_some() {
-            break;
+          if child.style.shrink_to_fit_inline_size && legend_id.is_none() {
+            legend_id = Some(child.id);
           }
         }
-
-        if let (Some(legend_idx), Some(content_idx)) = (legend_idx, content_idx) {
-          let legend_block_size = child_fragments[legend_idx].bounds.height().max(0.0);
-          let legend_half_block = legend_block_size * 0.5;
-
-          // Desired legend placement in the fieldset's border box coordinate space: center it on
-          // the block-start border edge so it straddles the border line.
-          let legend_border_y = border_top - legend_half_block;
-          let legend_content_y = legend_border_y - content_origin.y;
-
-          // Place the content box at the normal content origin unless the legend's lower half would
-          // overlap it.
-          let content_border_y = border_top + padding_top.max(legend_half_block);
-          let content_content_y = content_border_y - content_origin.y;
-
-          let legend_delta = legend_content_y - child_fragments[legend_idx].bounds.y();
-          let content_delta = content_content_y - child_fragments[content_idx].bounds.y();
-          if legend_delta.is_finite() {
-            child_fragments[legend_idx].translate_root_in_place(Point::new(0.0, legend_delta));
-          }
-          if content_delta.is_finite() {
-            child_fragments[content_idx].translate_root_in_place(Point::new(0.0, content_delta));
-          }
-
-          // Recompute the flow block-size after repositioning so the legend does not artificially
-          // increase the fieldset's auto height.
-          let mut max_end = 0.0f32;
-          for frag in &child_fragments {
-            let end = frag.bounds.y() + frag.bounds.height();
-            if end.is_finite() {
-              max_end = max_end.max(end.max(0.0));
+        content_id.map(|content_id| (content_id, legend_id))
+      } {
+        if let Some(legend_id) = legend_id {
+          let mut legend_idx: Option<usize> = None;
+          let mut content_idx: Option<usize> = None;
+          for (idx, frag) in child_fragments.iter().enumerate() {
+            let FragmentContent::Block { box_id: Some(id) } = frag.content else {
+              continue;
+            };
+            if id == legend_id {
+              legend_idx = Some(idx);
+            } else if id == fieldset_content_id {
+              content_idx = Some(idx);
+            }
+            if legend_idx.is_some() && content_idx.is_some() {
+              break;
             }
           }
-          content_height = max_end;
+
+          if let (Some(legend_idx), Some(content_idx)) = (legend_idx, content_idx) {
+            let legend_block_size = child_fragments[legend_idx].bounds.height().max(0.0);
+            let legend_half_block = legend_block_size * 0.5;
+
+            // Desired legend placement in the fieldset's border box coordinate space: center it on
+            // the block-start border edge so it straddles the border line.
+            let legend_border_y = border_top - legend_half_block;
+            let legend_content_y = legend_border_y - content_origin.y;
+
+            // Place the content box at the normal content origin unless the legend's lower half would
+            // overlap it.
+            let content_border_y = border_top + padding_top.max(legend_half_block);
+            let content_content_y = content_border_y - content_origin.y;
+
+            let legend_delta = legend_content_y - child_fragments[legend_idx].bounds.y();
+            let content_delta = content_content_y - child_fragments[content_idx].bounds.y();
+            if legend_delta.is_finite() {
+              child_fragments[legend_idx].translate_root_in_place(Point::new(0.0, legend_delta));
+            }
+            if content_delta.is_finite() {
+              child_fragments[content_idx].translate_root_in_place(Point::new(0.0, content_delta));
+            }
+
+            // Recompute the flow block-size after repositioning so the legend does not artificially
+            // increase the fieldset's auto height.
+            let mut max_end = 0.0f32;
+            for frag in &child_fragments {
+              let end = frag.bounds.y() + frag.bounds.height();
+              if end.is_finite() {
+                max_end = max_end.max(end.max(0.0));
+              }
+            }
+            content_height = max_end;
+          }
         }
       }
-    }
 
-    // Child fragments are produced in the block's content coordinate space (0,0 at the content
-    // box). Translate them into the fragment's local coordinate space (border box) so padding and
-    // borders correctly offset in-flow content.
-    if content_origin.x != 0.0 || content_origin.y != 0.0 {
-      for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(content_origin);
+      // Child fragments are produced in the block's content coordinate space (0,0 at the content
+      // box). Translate them into the fragment's local coordinate space (border box) so padding and
+      // borders correctly offset in-flow content.
+      if content_origin.x != 0.0 || content_origin.y != 0.0 {
+        for fragment in child_fragments.iter_mut() {
+          fragment.translate_root_in_place(content_origin);
+        }
       }
-    }
+
+      Ok((child_fragments, content_height, positioned_children, column_info))
+    };
+
+    let (mut child_fragments, mut content_height, mut positioned_children, mut column_info) =
+      layout_contents(&child_ctx, &nearest_cb, &nearest_fixed_cb)?;
 
     let min_height = if let Some(keyword) = style.min_height_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
@@ -9910,6 +9956,61 @@ impl FormattingContext for BlockFormattingContext {
       min_height,
       max_height,
     );
+
+    if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
+      // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
+      // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
+      // even when the containing block itself is `height:auto`. The used height isn't known until
+      // after in-flow layout, but inline formatting contexts lay out their positioned descendants
+      // during the main flow pass. Re-run child layout with an updated containing block height so
+      // nested abspos descendants see the correct percentage basis and constraint-equation inputs.
+
+      let used_padding_size = Size::new(padding_size.width, height + padding_top + padding_bottom);
+      let used_cb_block_base = Some(used_padding_size.height);
+      let relayout_nearest_cb = if establishes_positioned_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, used_padding_size),
+          self.viewport_size,
+          Some(used_padding_size.width),
+          used_cb_block_base,
+        )
+      } else {
+        nearest_cb
+      };
+      let relayout_nearest_fixed_cb = if establishes_fixed_cb {
+        ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, used_padding_size),
+          self.viewport_size,
+          Some(used_padding_size.width),
+          used_cb_block_base,
+        )
+      } else {
+        nearest_fixed_cb
+      };
+
+      let mut relayout_ctx = child_ctx.clone();
+      relayout_ctx.nearest_positioned_cb = relayout_nearest_cb;
+      relayout_ctx.nearest_fixed_cb = relayout_nearest_fixed_cb;
+      if relayout_nearest_cb != child_ctx.nearest_positioned_cb
+        || relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb
+      {
+        if relayout_nearest_cb != child_ctx.nearest_positioned_cb {
+          relayout_ctx.factory = relayout_ctx.factory.with_positioned_cb(relayout_nearest_cb);
+        }
+        if relayout_nearest_fixed_cb != child_ctx.nearest_fixed_cb {
+          relayout_ctx.factory = relayout_ctx.factory.with_fixed_cb(relayout_nearest_fixed_cb);
+        }
+        relayout_ctx.intrinsic_inline_fc =
+          Arc::new(InlineFormattingContext::with_factory(relayout_ctx.factory.clone()));
+      }
+
+      let (frags, relayout_height, positioned, info) =
+        layout_contents(&relayout_ctx, &relayout_nearest_cb, &relayout_nearest_fixed_cb)?;
+      child_fragments = frags;
+      content_height = relayout_height;
+      positioned_children = positioned;
+      column_info = info;
+    }
 
     if !skip_contents {
       let remembered = if block_axis_is_horizontal(style.writing_mode) {

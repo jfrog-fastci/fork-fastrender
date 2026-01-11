@@ -48,6 +48,31 @@ use webidl_vm_js::VmJsHostHooksPayload;
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
+/// Minimal `VmHost` context used when running `vm-js` work without a full `DocumentHostState`
+/// embedder.
+///
+/// `vm-js`'s `VmHost` trait is `Any`-based and only exists for downcasting; this struct provides a
+/// `Document.currentScript` handle so microtasks can share the same bookkeeping utilities as normal
+/// script execution.
+#[derive(Clone)]
+struct VmJsHostContext {
+  current_script_state: CurrentScriptStateHandle,
+}
+
+impl Default for VmJsHostContext {
+  fn default() -> Self {
+    Self {
+      current_script_state: CurrentScriptStateHandle::default(),
+    }
+  }
+}
+
+impl VmJsHostContext {
+  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
+    Some(&self.current_script_state)
+  }
+}
+
 // Compile-time guard: `vm-js` must keep exposing the borrow-splitting accessor used by FastRender
 // embeddings (see `WindowRealm::new`).
 #[allow(dead_code)]
