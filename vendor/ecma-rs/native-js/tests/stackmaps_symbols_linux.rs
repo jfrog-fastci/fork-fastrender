@@ -1,7 +1,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM};
-use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
+use object::{Object, ObjectSegment, ObjectSymbol, SymbolScope};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -82,6 +82,24 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
   }
 }
 
+fn vaddr_range_bytes<'data>(
+  file: &object::File<'data>,
+  start: u64,
+  end: u64,
+) -> Option<&'data [u8]> {
+  for seg in file.segments() {
+    let seg_addr = seg.address();
+    let data = seg.data().ok()?;
+    let seg_file_end = seg_addr.checked_add(data.len() as u64)?;
+    if seg_addr <= start && end <= seg_file_end {
+      let rel_start = usize::try_from(start - seg_addr).ok()?;
+      let rel_end = usize::try_from(end - seg_addr).ok()?;
+      return data.get(rel_start..rel_end);
+    }
+  }
+  None
+}
+
 #[test]
 fn exported_stackmap_symbols_match_section_bounds() {
   let Some(clang) = find_clang() else {
@@ -101,19 +119,12 @@ fn exported_stackmap_symbols_match_section_bounds() {
   let data = fs::read(&elf).unwrap();
   let file = object::File::parse(&*data).unwrap();
 
-  let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .or_else(|| file.section_by_name(".llvm_stackmaps"))
-    .expect("missing stackmaps section (was it GC'd?)");
-
-  let section_addr = section.address();
-  let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty stackmaps section");
-
   let (start, start_scope) =
     find_symbol(&file, LLVM_STACKMAPS_START_SYM).expect("missing __start_llvm_stackmaps symbol");
   let (end, end_scope) =
     find_symbol(&file, LLVM_STACKMAPS_STOP_SYM).expect("missing __stop_llvm_stackmaps symbol");
+  assert!(end > start, "expected non-empty stackmaps symbol range");
+  let stackmaps_len = end - start;
 
   // Project / legacy symbol aliases.
   let (fastr_start, fastr_start_scope) = find_symbol(&file, "__fastr_stackmaps_start")
@@ -172,15 +183,6 @@ fn exported_stackmap_symbols_match_section_bounds() {
     "__llvm_stackmaps_end must be globally linkable (not a local symbol)"
   );
 
-  assert_eq!(
-    start, section_addr,
-    "start symbol must equal the stackmaps section virtual address"
-  );
-  assert_eq!(
-    end.checked_sub(start).unwrap(),
-    section_size,
-    "end-start must equal the stackmaps section size"
-  );
   assert_eq!(fastr_start, start, "__fastr_stackmaps_start must match {LLVM_STACKMAPS_START_SYM}");
   assert_eq!(fastr_end, end, "__fastr_stackmaps_end must match {LLVM_STACKMAPS_STOP_SYM}");
   assert_eq!(llvm_start, start, "__llvm_stackmaps_start must match {LLVM_STACKMAPS_START_SYM}");
@@ -194,15 +196,23 @@ fn exported_stackmap_symbols_match_section_bounds() {
     "__stackmaps_end must match {LLVM_STACKMAPS_STOP_SYM}"
   );
 
-  // Optional: ensure the section is backed by a readable load segment so the runtime can read the
-  // bytes directly from memory (via the start/end symbol pointers).
+  // This fixture emits a known 8-byte payload in `.llvm_stackmaps`. Ensure the exported symbol
+  // range exactly covers it in the final executable, regardless of the output section name used by
+  // the linker.
+  assert_eq!(stackmaps_len, 8, "unexpected stackmaps payload length");
+  let bytes =
+    vaddr_range_bytes(&file, start, end).expect("stackmaps symbol range not in any file segment");
+  assert_eq!(bytes, &[1, 2, 3, 4, 5, 6, 7, 8]);
+
+  // Ensure the range is backed by a readable load segment so the runtime can read the bytes
+  // directly from memory (via the start/end symbol pointers).
   let mut in_readable_segment = false;
-  let section_end = section_addr + section_size;
+  let stackmaps_end = start + stackmaps_len;
   for seg in file.segments() {
     let seg_addr = seg.address();
     let seg_end = seg_addr + seg.size();
     let flags = seg.flags();
-    if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+    if seg_addr <= start && stackmaps_end <= seg_end && segment_is_readable(flags) {
       in_readable_segment = true;
       break;
     }

@@ -3,9 +3,10 @@
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
+use llvm_stackmaps::elf;
 use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM, LinkOpts};
 use native_js::llvm::{gc, passes};
-use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
+use object::{Object, ObjectSegment, ObjectSymbol, SymbolScope};
 use runtime_native::stackmaps::StackMaps;
 use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
@@ -60,20 +61,17 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 
 fn assert_stackmaps_present(exe: &[u8]) {
   let file = object::File::parse(exe).expect("parse ELF");
-  let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .or_else(|| file.section_by_name(".llvm_stackmaps"))
-    .expect("missing stackmaps section (was it GC'd?)");
-
-  let section_addr = section.address();
-  let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty stackmaps section");
 
   // Ensure statepoint roots are spilled to stack slots, not registers. LTO code
   // generation happens inside `clang-18`, so this guards against it accidentally
   // emitting `Register` root locations that our frame-pointer-only stack walker
   // can't reconstruct.
-  let stackmaps_bytes = section.data().expect("read .llvm_stackmaps");
+  let stackmaps_bytes =
+    elf::stackmaps_section_bytes(exe).expect("missing stackmaps bytes (was it GC'd?)");
+  assert!(
+    !stackmaps_bytes.is_empty(),
+    "expected non-empty stackmaps range"
+  );
   let stackmaps = StackMaps::parse(stackmaps_bytes).expect("parse .llvm_stackmaps");
   for raw in stackmaps.raws() {
     verify_statepoint_stackmap(
@@ -103,24 +101,20 @@ fn assert_stackmaps_present(exe: &[u8]) {
   );
 
   assert_eq!(
-    start, section_addr,
-    "start symbol must equal the stackmaps section virtual address"
-  );
-  assert_eq!(
     end.checked_sub(start).unwrap(),
-    section_size,
-    "end-start must equal the stackmaps section size"
+    stackmaps_bytes.len() as u64,
+    "end-start must equal the stackmaps byte range size"
   );
 
   // Optional: ensure the section is backed by a readable load segment so the runtime can read the
   // bytes directly from memory (via the start/end symbol pointers).
   let mut in_readable_segment = false;
-  let section_end = section_addr + section_size;
+  let stackmaps_end = start + stackmaps_bytes.len() as u64;
   for seg in file.segments() {
     let seg_addr = seg.address();
     let seg_end = seg_addr + seg.size();
     let flags = seg.flags();
-    if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+    if seg_addr <= start && stackmaps_end <= seg_end && segment_is_readable(flags) {
       in_readable_segment = true;
       break;
     }

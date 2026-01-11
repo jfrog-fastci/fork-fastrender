@@ -223,14 +223,14 @@ pub fn link_elf_executable_with_options(
   let script_path = script_dir.path().join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path, opts)?;
 
-  // If producing a PIE, relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
+  // Relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
   // `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` in the input objects so lld can
-  // apply the required relocations without emitting DT_TEXTREL.
+  // place them in a RELRO-friendly segment without requiring DT_TEXTREL.
   //
   // We copy objects into a tempdir to avoid mutating the caller's build artifacts in-place.
   let mut patched_obj_dir: Option<tempfile::TempDir> = None;
   let mut object_files: Vec<PathBuf> = object_files.to_vec();
-  if cfg!(target_os = "linux") && opts.pie {
+  if cfg!(target_os = "linux") && (opts.pie || matches!(opts.linker, LinkerFlavor::Lld)) {
     let objcopy = find_llvm_objcopy()
       .context("unable to locate llvm-objcopy (expected `llvm-objcopy-18` or `llvm-objcopy`)")?;
     let td = tempfile::tempdir().context("failed to create tempdir for stackmaps objcopy")?;
@@ -344,6 +344,19 @@ pub fn link_object_buffers_to_elf_executable(
 pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec<u8>> {
   let clang =
     find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
+  // LTO emits `.llvm_stackmaps` during link-time codegen. Unlike object-file linking, we can't
+  // pre-patch input objects with `llvm-objcopy` to make stackmaps/faultmaps writable for lld.
+  //
+  // lld can fail those links with "relro sections not contiguous", so for now the `clang -flto`
+  // helpers fall back to the system linker when `LinkerFlavor::Lld` is requested.
+  let opts = if matches!(opts.linker, LinkerFlavor::Lld) {
+    LinkOpts {
+      linker: LinkerFlavor::System,
+      ..opts
+    }
+  } else {
+    opts
+  };
 
   let td = tempfile::tempdir().context("failed to create tempdir for LTO link")?;
   let bc_path = td.path().join("module.bc");
@@ -434,7 +447,12 @@ pub fn link_elf_executable_lto(
   output_path: &Path,
   bitcode_files: &[PathBuf],
 ) -> anyhow::Result<()> {
-  let opts = LinkOpts::default();
+  // Same rationale as `link_bitcode_to_exe`: avoid lld for LTO links (stackmaps are produced during
+  // link-time codegen so we can't pre-patch them with llvm-objcopy).
+  let opts = LinkOpts {
+    linker: LinkerFlavor::System,
+    ..LinkOpts::default()
+  };
   let clang =
     find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
   let out_dir = output_path
@@ -528,7 +546,7 @@ pub fn link_object_to_executable(
   // `clang -fuse-ld=lld{,-18}` selects the `ld.lld{,-18}` driver. Don't treat `lld`/`lld-18` as
   // sufficient here: those binaries may exist without the `ld.lld` symlink, and `clang` won't find
   // them under `-fuse-ld=...`.
-  let have_lld = find_program(&["ld.lld-18", "ld.lld"]).is_some();
+  let mut use_lld = find_program(&["ld.lld-18", "ld.lld"]).is_some();
 
   // Always inject the stackmaps linker script fragment:
   // - defines `__fastr_stackmaps_start/end` (and `__llvm_*` aliases)
@@ -546,16 +564,67 @@ pub fn link_object_to_executable(
     }
   })?;
 
+  // lld is stricter about RELRO layout. When using lld, rewrite the input object to rename
+  // `.llvm_stackmaps` (and `.llvm_faultmaps`) into RELRO-friendly data sections before linking.
+  // This avoids lld failing with "relro sections not contiguous" when the stackmaps linker-script
+  // fragment is injected.
+  let mut patched_obj_path = None;
+  if use_lld {
+    if let Some(objcopy) = find_llvm_objcopy() {
+      let dst = td.path().join("patched.o");
+      fs::copy(obj_path, &dst).map_err(|source| crate::NativeJsError::Io {
+        path: dst.clone(),
+        source,
+      })?;
+
+      let mut cmd = Command::new(objcopy);
+      cmd.args([
+        "--rename-section",
+        ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+        "--rename-section",
+        ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
+      ])
+      .arg(&dst);
+
+      let cmd_dbg = format!("{cmd:?}");
+      let out = cmd
+        .output()
+        .map_err(crate::NativeJsError::LinkerSpawnFailed)?;
+      if !out.status.success() {
+        return Err(crate::NativeJsError::LinkerFailed {
+          cmd: cmd_dbg,
+          stderr: format!(
+            "llvm-objcopy failed with status {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            status = out.status,
+            stdout = String::from_utf8_lossy(&out.stdout),
+            stderr = String::from_utf8_lossy(&out.stderr),
+          ),
+        });
+      }
+
+      patched_obj_path = Some(dst);
+    } else {
+      // If we can't patch objects, fall back to the system linker (GNU ld typically accepts the
+      // injected script without requiring section renames).
+      use_lld = false;
+      // Fall through: we'll link the original object with the system linker.
+      // Note: this is a best-effort convenience path used by tests/debug tools.
+    }
+  }
+
   let mut cmd = Command::new(&clang);
   cmd
     .arg("-O2")
     .arg("-Wl,--gc-sections")
     .arg(format!("-Wl,-T,{}", script_path.display()))
     .arg("-no-pie");
-  if have_lld {
+  if use_lld {
     cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
   }
-  cmd.arg(obj_path).arg("-o").arg(exe_path);
+  cmd
+    .arg(patched_obj_path.as_deref().unwrap_or(obj_path))
+    .arg("-o")
+    .arg(exe_path);
 
   let cmd_dbg = format!("{cmd:?}");
   let output = cmd

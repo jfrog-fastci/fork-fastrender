@@ -4,9 +4,11 @@
 //! object/executable file.
 //!
 //! LLVM typically emits stackmaps into the `.llvm_stackmaps` section in object
-//! files. When linking PIE binaries, this repository's linker-script fragment
-//! moves the bytes into a RELRO-friendly output section:
-//! `.data.rel.ro.llvm_stackmaps` (see `runtime-native/link/stackmaps.ld`).
+//! files. When linking executables, this repository's linker-script fragment
+//! keeps the bytes alive under `--gc-sections` and defines stable start/end
+//! symbols (see `runtime-native/link/stackmaps*.ld`). The final output section
+//! name is linker-dependent; it may be merged into `.data.rel.ro` rather than
+//! preserved as a standalone `.llvm_stackmaps` section.
 //!
 //! The runtime path uses linker-provided start/end symbols instead (see
 //! [`crate::stackmap::stackmaps_bytes`]).
@@ -172,6 +174,218 @@ pub fn stackmaps_section_bytes<'a>(file: &'a [u8]) -> Result<&'a [u8], ElfError>
         // can auto-synthesize `__start_`/`__stop_` symbols. This repo's default uses explicit symbol
         // definitions in `stackmaps.ld`, but accept this name for tooling compatibility.
         .or_else(|_| section_bytes(file, "llvm_stackmaps"))
+        // Newer link scripts may merge stackmaps into a broader RELRO output section (e.g.
+        // `.data.rel.ro`) and expose the precise byte range via `__start_llvm_stackmaps` /
+        // `__stop_llvm_stackmaps`. Fall back to symbol-based extraction for those binaries.
+        .or_else(|_| stackmaps_bytes_from_symbols(file))
+}
+
+fn stackmaps_bytes_from_symbols<'a>(file: &'a [u8]) -> Result<&'a [u8], ElfError> {
+    // Parse section headers.
+    if file.len() < 64 {
+        return Err(ElfError { message: "ELF: file too small" });
+    }
+    if &file[0..4] != b"\x7FELF" {
+        return Err(ElfError { message: "ELF: bad magic" });
+    }
+    if file[4] != 2 {
+        return Err(ElfError { message: "ELF: only ELF64 is supported" });
+    }
+    if file[5] != 1 {
+        return Err(ElfError { message: "ELF: only little-endian is supported" });
+    }
+
+    let e_shoff = u64_le(file, 0x28)? as usize;
+    let e_shentsize = u16_le(file, 0x3A)? as usize;
+    let e_shnum = u16_le(file, 0x3C)? as usize;
+    let e_shstrndx = u16_le(file, 0x3E)? as usize;
+
+    if e_shentsize == 0 {
+        return Err(ElfError { message: "ELF: e_shentsize=0" });
+    }
+    if e_shnum == 0 {
+        return Err(ElfError { message: "ELF: no section headers" });
+    }
+    if e_shstrndx >= e_shnum {
+        return Err(ElfError { message: "ELF: e_shstrndx out of range" });
+    }
+
+    let sht = file
+        .get(e_shoff..)
+        .ok_or(ElfError { message: "ELF: section header table offset out of range" })?;
+    let needed = e_shentsize
+        .checked_mul(e_shnum)
+        .ok_or(ElfError { message: "ELF: section header table size overflow" })?;
+    if sht.len() < needed {
+        return Err(ElfError { message: "ELF: truncated section header table" });
+    }
+
+    #[derive(Clone, Copy)]
+    struct SectionInfo {
+        addr: u64,
+        offset: usize,
+        size: usize,
+        sh_type: u32,
+        link: u32,
+        entsize: usize,
+    }
+
+    let mut sections = Vec::with_capacity(e_shnum);
+    for idx in 0..e_shnum {
+        let off = idx
+            .checked_mul(e_shentsize)
+            .and_then(|delta| e_shoff.checked_add(delta))
+            .ok_or(ElfError { message: "ELF: section header offset overflow" })?;
+        let sh_end = off
+            .checked_add(e_shentsize)
+            .ok_or(ElfError { message: "ELF: section header end offset overflow" })?;
+        let sh = file
+            .get(off..sh_end)
+            .ok_or(ElfError { message: "ELF: section header out of range" })?;
+        if sh.len() < 64 {
+            return Err(ElfError { message: "ELF: expected 64-byte section headers" });
+        }
+
+        let sh_type = u32_le(sh, 4)?;
+        let sh_addr = u64_le(sh, 16)?;
+        let sh_offset = u64_le(sh, 24)? as usize;
+        let sh_size = u64_le(sh, 32)? as usize;
+        let sh_link = u32_le(sh, 40)?;
+        let sh_entsize = u64_le(sh, 56)? as usize;
+
+        sections.push(SectionInfo {
+            addr: sh_addr,
+            offset: sh_offset,
+            size: sh_size,
+            sh_type,
+            link: sh_link,
+            entsize: sh_entsize,
+        });
+    }
+
+    fn find_symbol_in_table<'a>(
+        file: &'a [u8],
+        sections: &[SectionInfo],
+        symtab_idx: usize,
+        name: &str,
+    ) -> Result<Option<u64>, ElfError> {
+        let symtab = sections
+            .get(symtab_idx)
+            .ok_or(ElfError { message: "ELF: symtab index out of range" })?;
+        let strtab_idx = symtab.link as usize;
+        let strtab = sections
+            .get(strtab_idx)
+            .ok_or(ElfError { message: "ELF: symtab sh_link out of range" })?;
+
+        let sym_bytes_end = symtab
+            .offset
+            .checked_add(symtab.size)
+            .ok_or(ElfError { message: "ELF: symtab size overflow" })?;
+        let sym_bytes = file.get(symtab.offset..sym_bytes_end).ok_or(ElfError {
+            message: "ELF: symtab section out of range",
+        })?;
+
+        let str_bytes_end = strtab
+            .offset
+            .checked_add(strtab.size)
+            .ok_or(ElfError { message: "ELF: strtab size overflow" })?;
+        let str_bytes = file.get(strtab.offset..str_bytes_end).ok_or(ElfError {
+            message: "ELF: strtab section out of range",
+        })?;
+
+        let entsize = if symtab.entsize == 0 { 24 } else { symtab.entsize };
+        if entsize < 24 {
+            return Err(ElfError { message: "ELF: unexpected symtab entsize" });
+        }
+        if sym_bytes.len() % entsize != 0 {
+            return Err(ElfError { message: "ELF: truncated symtab" });
+        }
+
+        for entry in sym_bytes.chunks_exact(entsize) {
+            let st_name = u32_le(entry, 0)? as usize;
+            let st_value = u64_le(entry, 8)?;
+            let sym_name = get_cstr(str_bytes, st_name)?;
+            if sym_name == name {
+                return Ok(Some(st_value));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn find_symbol<'a>(
+        file: &'a [u8],
+        sections: &[SectionInfo],
+        name: &str,
+    ) -> Result<Option<u64>, ElfError> {
+        // Prefer the full symtab if present; fall back to dynsym.
+        const SHT_SYMTAB: u32 = 2;
+        const SHT_DYNSYM: u32 = 11;
+        for (idx, sec) in sections.iter().enumerate() {
+            if sec.sh_type == SHT_SYMTAB {
+                if let Some(v) = find_symbol_in_table(file, sections, idx, name)? {
+                    return Ok(Some(v));
+                }
+            }
+        }
+        for (idx, sec) in sections.iter().enumerate() {
+            if sec.sh_type == SHT_DYNSYM {
+                if let Some(v) = find_symbol_in_table(file, sections, idx, name)? {
+                    return Ok(Some(v));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    const START_SYMS: [&str; 4] = [
+        "__start_llvm_stackmaps",
+        "__stackmaps_start",
+        "__llvm_stackmaps_start",
+        "__fastr_stackmaps_start",
+    ];
+    const END_SYMS: [&str; 4] = [
+        "__stop_llvm_stackmaps",
+        "__stackmaps_end",
+        "__llvm_stackmaps_end",
+        "__fastr_stackmaps_end",
+    ];
+
+    let start = START_SYMS
+        .iter()
+        .find_map(|sym| find_symbol(file, &sections, sym).ok().flatten())
+        .ok_or(ElfError { message: "ELF: stackmaps start symbol not found" })?;
+    let end = END_SYMS
+        .iter()
+        .find_map(|sym| find_symbol(file, &sections, sym).ok().flatten())
+        .ok_or(ElfError { message: "ELF: stackmaps end symbol not found" })?;
+
+    if end < start {
+        return Err(ElfError { message: "ELF: stackmaps symbol range invalid" });
+    }
+
+    // Map the virtual address range back into a file range via the containing section header.
+    for sec in &sections {
+        let sec_start = sec.addr;
+        let sec_end = sec.addr.checked_add(sec.size as u64).unwrap_or(sec.addr);
+        if start >= sec_start && end <= sec_end {
+            let rel_start = (start - sec_start) as usize;
+            let rel_end = (end - sec_start) as usize;
+            let off_start = sec
+                .offset
+                .checked_add(rel_start)
+                .ok_or(ElfError { message: "ELF: stackmaps offset overflow" })?;
+            let off_end = sec
+                .offset
+                .checked_add(rel_end)
+                .ok_or(ElfError { message: "ELF: stackmaps offset overflow" })?;
+            return file.get(off_start..off_end).ok_or(ElfError {
+                message: "ELF: stackmaps symbol range out of file bounds",
+            });
+        }
+    }
+
+    Err(ElfError { message: "ELF: stackmaps symbol range not in any section" })
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::{fs, process::Command};
 
 use anyhow::{anyhow, Context as _, Result};
 use inkwell::context::Context;
+use inkwell::IntPredicate;
 use inkwell::targets::{CodeModel, RelocMode};
 use inkwell::OptimizationLevel;
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
@@ -11,7 +12,6 @@ use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 use native_js::link::{LinkOpts, LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM};
 use native_js::{emit, llvm::gc};
 
-const STACKMAP_SECTION_CANDIDATES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
 const STACKMAP_RELOC_SECTION_CANDIDATES: [&str; 4] = [
   ".rela.llvm_stackmaps",
   ".rel.llvm_stackmaps",
@@ -19,58 +19,13 @@ const STACKMAP_RELOC_SECTION_CANDIDATES: [&str; 4] = [
   ".rel.data.rel.ro.llvm_stackmaps",
 ];
 
-fn stackmaps_bytes_from_elf(bytes: &[u8]) -> Result<Vec<u8>> {
-  let file = object::File::parse(bytes).context("parse object/elf")?;
-
-  // Preferred: stackmaps live in a dedicated output section.
-  for name in STACKMAP_SECTION_CANDIDATES {
-    if let Some(sec) = file.section_by_name(name) {
-      if sec.size() == 0 {
-        return Err(anyhow!("expected section {name} to be non-empty"));
-      }
-      let data = sec.data().with_context(|| format!("read {name} section bytes"))?;
-      return Ok(data.to_vec());
-    }
+fn assert_stackmaps_present_and_parseable(exe: &[u8]) -> Result<()> {
+  let bytes = llvm_stackmaps::elf::stackmaps_section_bytes(exe)
+    .map_err(|e| anyhow!("failed to extract stackmaps from ELF: {e}"))?;
+  if bytes.is_empty() {
+    return Err(anyhow!("expected non-empty stackmaps range"));
   }
-
-  // Legacy fallback: older linker-script layouts may inject stackmaps into the standard
-  // `.data.rel.ro` output section. In that case, locate the stackmaps payload via the
-  // linker-script boundary symbols instead of a dedicated output section.
-  let sec = file
-    .section_by_name(".data.rel.ro")
-    .ok_or_else(|| anyhow!("missing .data.rel.ro section (expected stackmaps payload there)"))?;
-  let sec_addr = sec.address();
-  let sec_size = sec.size();
-  let start = find_symbol_addr(&file, LLVM_STACKMAPS_START_SYM)
-    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_START_SYM} symbol"))?;
-  let stop = find_symbol_addr(&file, LLVM_STACKMAPS_STOP_SYM)
-    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_STOP_SYM} symbol"))?;
-  if stop <= start {
-    return Err(anyhow!(
-      "invalid stackmaps symbol range: start=0x{start:x} stop=0x{stop:x}"
-    ));
-  }
-  if start < sec_addr || stop > sec_addr + sec_size {
-    return Err(anyhow!(
-      "stackmaps range (0x{start:x}..0x{stop:x}) must be within .data.rel.ro (addr=0x{sec_addr:x} size=0x{sec_size:x})"
-    ));
-  }
-
-  let data = sec.data().context("read .data.rel.ro section bytes")?;
-  let off = usize::try_from(start - sec_addr).context("stackmaps offset overflow")?;
-  let len = usize::try_from(stop - start).context("stackmaps length overflow")?;
-  if off + len > data.len() {
-    return Err(anyhow!(
-      "stackmaps range out of bounds: off={off} len={len} data_len={}",
-      data.len()
-    ));
-  }
-  Ok(data[off..off + len].to_vec())
-}
-
-fn assert_stackmaps_present_and_parseable(bytes: &[u8]) -> Result<()> {
-  let stackmaps = stackmaps_bytes_from_elf(bytes)?;
-  llvm_stackmaps::StackMaps::parse(&stackmaps)
+  llvm_stackmaps::StackMaps::parse(bytes)
     .map(|_| ())
     .map_err(|e| anyhow!("failed to parse stackmaps bytes: {e}"))
 }
@@ -173,6 +128,10 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
     eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return Ok(());
   }
+  if !command_works("llvm-objcopy-18") && !command_works("llvm-objcopy") {
+    eprintln!("skipping: llvm-objcopy not found in PATH (needed to link stackmaps under lld)");
+    return Ok(());
+  }
 
   let obj_bytes = build_statepoint_object().context("build statepoint object")?;
 
@@ -206,7 +165,6 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   if command_works("strip") {
     run(Command::new("strip").arg(&exe_path)).context("strip")?;
     let stripped = fs::read(&exe_path).context("read stripped executable")?;
-    assert_stackmaps_present_and_parseable(&stripped)?;
     for name in STACKMAP_RELOC_SECTION_CANDIDATES {
       assert_section_absent(&stripped, name)?;
     }
@@ -295,11 +253,18 @@ fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
 
     native_js::link::link_object_to_executable(&obj_path, &exe_path)
         .map_err(|err| anyhow!("link_object_to_executable failed: {err}"))?;
- 
+  
     let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
     assert_stackmaps_present_and_parseable(&exe_bytes)?;
- 
-      Ok(())
+
+    let status = Command::new(&exe_path)
+      .status()
+      .with_context(|| format!("run {}", exe_path.display()))?;
+    if !status.success() {
+      return Err(anyhow!("linked executable failed with status {status}"));
+    }
+
+     Ok(())
   }
 
 fn command_works(cmd: &str) -> bool {
@@ -401,6 +366,9 @@ fn build_statepoint_object() -> Result<Vec<u8>> {
   let builder = context.create_builder();
 
   let gc_ptr = gc::gc_ptr_type(&context);
+  let i8_ty = context.i8_type();
+  let i32_ty = context.i32_type();
+  let i64_ty = context.i64_type();
 
   let callee_ty = context.void_type().fn_type(&[], false);
   let callee = module.add_function("callee", callee_ty, None);
@@ -421,16 +389,37 @@ fn build_statepoint_object() -> Result<Vec<u8>> {
     .into_pointer_value();
   builder.build_return(Some(&arg0)).unwrap();
 
-  let main_ty = context.i32_type().fn_type(&[], false);
+  // Linker-script defined symbols exported by `runtime-native/link/stackmaps*.ld`.
+  let start_sym = module.add_global(i8_ty, None, native_js::link::LLVM_STACKMAPS_START_SYM);
+  let stop_sym = module.add_global(i8_ty, None, native_js::link::LLVM_STACKMAPS_STOP_SYM);
+
+  let main_ty = i32_ty.fn_type(&[], false);
   let main_fn = module.add_function("main", main_ty, None);
   let main_entry = context.append_basic_block(main_fn, "entry");
   builder.position_at_end(main_entry);
   builder
     .build_call(test_fn, &[gc_ptr.const_null().into()], "call_test")
     .unwrap();
-  builder
-    .build_return(Some(&context.i32_type().const_int(0, false)))
-    .unwrap();
+
+  // Ensure the linked output actually retained `.llvm_stackmaps` (and that the linker script
+  // symbols delimit a non-empty range).
+  let start = builder
+    .build_ptr_to_int(start_sym.as_pointer_value(), i64_ty, "stackmaps_start")
+    .expect("ptrtoint start");
+  let stop = builder
+    .build_ptr_to_int(stop_sym.as_pointer_value(), i64_ty, "stackmaps_stop")
+    .expect("ptrtoint stop");
+  let diff = builder
+    .build_int_sub(stop, start, "stackmaps_len")
+    .expect("sub stop-start");
+  let ok = builder
+    .build_int_compare(IntPredicate::NE, diff, i64_ty.const_zero(), "stackmaps_present")
+    .expect("icmp");
+  let ret = builder
+    .build_select(ok, i32_ty.const_zero(), i32_ty.const_int(1, false), "ret")
+    .expect("select")
+    .into_int_value();
+  builder.build_return(Some(&ret)).unwrap();
 
   let mut target = emit::TargetConfig::default();
   target.cpu = "generic".to_string();

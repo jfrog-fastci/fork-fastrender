@@ -2,20 +2,16 @@
 
 use anyhow::{bail, Context, Result};
 use native_js::link::{link_elf_executable_with_options, LinkOpts, LinkerFlavor};
-use object::{Object, ObjectSection, ObjectSegment};
+use object::{Object, ObjectSegment};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
-fn has_section_containing(path: &Path, needle: &str) -> Result<bool> {
+const STACKMAP_MAGIC: &[u8] = b"FASTR_STACKMAPS_TEST_MAGIC\0";
+
+fn file_contains_bytes(path: &Path, needle: &[u8]) -> Result<bool> {
   let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-  let file = object::File::parse(&*data).context("parse linked output")?;
-  Ok(
-    file
-      .sections()
-      .filter_map(|section| section.name().ok())
-      .any(|section_name| section_name.contains(needle)),
-  )
+  Ok(data.windows(needle.len()).any(|w| w == needle))
 }
 
 fn has_wx_load_segment(path: &Path) -> Result<bool> {
@@ -86,6 +82,8 @@ main:
   ret
 
 .section .llvm_stackmaps,"a",@progbits
+  .ascii "FASTR_STACKMAPS_TEST_MAGIC"
+  .byte 0
   .quad 0x1122334455667788
 
 .section .note.GNU-stack,"",@progbits
@@ -126,7 +124,7 @@ main:
   if !status.success() {
     bail!("{clang} failed to link (no script) with status {status}");
   }
-  if has_section_containing(&out_without_script, "llvm_stackmaps")? {
+  if file_contains_bytes(&out_without_script, STACKMAP_MAGIC)? {
     bail!("expected llvm_stackmaps section(s) to be dropped by --gc-sections without KEEP()");
   }
 
@@ -144,27 +142,34 @@ main:
     if !status.success() {
       bail!("{clang} failed to link (lld, no script) with status {status}");
     }
-    if has_section_containing(&out_without_script_lld, "llvm_stackmaps")? {
+    if file_contains_bytes(&out_without_script_lld, STACKMAP_MAGIC)? {
       bail!("expected llvm_stackmaps section(s) to be dropped by --gc-sections under lld without KEEP()");
     }
   }
 
-  // Fixed: native-js link helpers always inject a stackmaps retention linker script fragment so
-  // `--gc-sections` does not discard `.llvm_stackmaps` (non-PIE and PIE variants differ).
+  // Fixed: native-js link helpers always inject `runtime-native/link/stackmaps.ld`.
+  // When linking with lld, stackmaps are often merged into a broader output section (e.g.
+  // `.data.rel.ro`), so assert based on the payload bytes rather than section names.
   if lld_fuse.is_some() {
-    let out_with_script = td.path().join("b.out");
-    link_elf_executable_with_options(
-      &out_with_script,
-      &[obj_path.clone()],
-      LinkOpts {
-        gc_sections: true,
-        ..Default::default()
-      },
-    )
-    .context("link with KEEP() linker script")?;
- 
-    if !has_section_containing(&out_with_script, "llvm_stackmaps")? {
-      bail!("expected llvm_stackmaps section(s) to survive --gc-sections when kept via linker script");
+    if !has_cmd("llvm-objcopy-18") && !has_cmd("llvm-objcopy") {
+      eprintln!("skipping lld linker-script check: llvm-objcopy not found in PATH");
+    } else {
+      let out_with_script = td.path().join("b.out");
+      link_elf_executable_with_options(
+        &out_with_script,
+        &[obj_path.clone()],
+        LinkOpts {
+          gc_sections: true,
+          ..Default::default()
+        },
+      )
+      .context("link with KEEP() linker script")?;
+
+      if !file_contains_bytes(&out_with_script, STACKMAP_MAGIC)? {
+        bail!(
+          "expected llvm_stackmaps section(s) to survive --gc-sections when kept via linker script"
+        );
+      }
     }
   } else {
     eprintln!("skipping lld linker-script check: lld not found in PATH");
@@ -182,7 +187,7 @@ main:
     },
   )
   .context("link with KEEP() linker script (system ld)")?;
-  if !has_section_containing(&out_with_script_ld, "llvm_stackmaps")? {
+  if !file_contains_bytes(&out_with_script_ld, STACKMAP_MAGIC)? {
     bail!("expected llvm_stackmaps section(s) to survive --gc-sections (system ld)");
   }
 
@@ -199,7 +204,7 @@ main:
     },
   )
   .context("link with KEEP() linker script (system ld + PIE)")?;
-  if !has_section_containing(&out_with_script_pie_ld, "llvm_stackmaps")? {
+  if !file_contains_bytes(&out_with_script_pie_ld, STACKMAP_MAGIC)? {
     bail!("expected llvm_stackmaps section(s) to survive --gc-sections (system ld + PIE)");
   }
   if has_wx_load_segment(&out_with_script_pie_ld)? {

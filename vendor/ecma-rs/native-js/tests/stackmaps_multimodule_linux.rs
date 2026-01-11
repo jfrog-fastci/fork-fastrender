@@ -4,6 +4,7 @@ use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
+use llvm_stackmaps::elf;
 use native_js::llvm::gc;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection};
@@ -192,14 +193,8 @@ fn emit_bitcode(module: &inkwell::module::Module<'_>, path: &Path) {
 
 fn llvm_stackmaps_section(elf: &Path) -> Vec<u8> {
   let data = fs::read(elf).unwrap();
-  let file = object::File::parse(&*data).unwrap();
-  let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .or_else(|| file.section_by_name(".llvm_stackmaps"))
-    .expect("missing stackmaps section (was it GC'd?)");
-  section
-    .data()
-    .unwrap_or_else(|err| panic!("failed to read stackmaps section contents: {err}"))
+  elf::stackmaps_section_bytes(&data)
+    .expect("missing stackmaps bytes (was it GC'd?)")
     .to_vec()
 }
 
