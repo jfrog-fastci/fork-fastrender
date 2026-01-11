@@ -377,6 +377,59 @@ fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
 }
 
 #[test]
+fn derived_pointer_is_rematerialized_from_relocated_base() {
+  // LLVM is allowed (and often prefers) to rematerialize simple derived pointers
+  // (e.g. `gep base, const`) instead of relocating them directly. In that case,
+  // the base pointer must still be kept live across the safepoint and relocated,
+  // and the derived pointer must be recomputed from the relocated base.
+  let before = r#"
+  declare void @bar()
+
+  define i8 @test(ptr addrspace(1) %base) gc "coreclr" {
+  entry:
+    %derived = getelementptr i8, ptr addrspace(1) %base, i64 8
+    call void @bar()
+    %v = load i8, ptr addrspace(1) %derived
+    ret i8 %v
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%base".to_string()],
+    "expected gc-live to contain only %base (derived should be rematerialized), got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let base_reloc_line = expect_relocate_line(&func, "%base", "%base");
+  let base_relocated =
+    assigned_ssa(base_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {base_reloc_line}"));
+
+  let remat_line = func
+    .lines()
+    .find(|l| l.contains("getelementptr") && l.contains(&format!(" {base_relocated}, i64 8")))
+    .unwrap_or_else(|| {
+      panic!(
+        "expected derived pointer to be rematerialized from relocated base {base_relocated}:\n\n{func}"
+      )
+    });
+  let derived_remat = assigned_ssa(remat_line)
+    .unwrap_or_else(|| panic!("expected rematerialized derived GEP to be an assignment: {remat_line}"));
+
+  assert!(
+    func.contains(&format!("load i8, ptr addrspace(1) {derived_remat}")),
+    "expected post-safepoint load to use rematerialized derived pointer {derived_remat}:\n{func}"
+  );
+}
+
+#[test]
 fn derived_pointer_relocation_has_distinct_base_and_derived_indices() {
   let before = r#"
  declare void @bar()
