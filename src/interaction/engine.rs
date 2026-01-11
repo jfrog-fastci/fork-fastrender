@@ -19,8 +19,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::dom_mutation;
+use super::form_submit::{
+  form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod,
+};
 use super::fragment_geometry::content_rect_for_border_rect;
-use super::form_submit::{form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod};
 use super::hit_test::hit_test_dom;
 use super::image_maps;
 use super::resolve_url;
@@ -35,11 +37,19 @@ pub enum InputModality {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
   None,
-  Navigate { href: String },
-  OpenInNewTab { href: String },
+  Navigate {
+    href: String,
+  },
+  OpenInNewTab {
+    href: String,
+  },
   /// Navigation that carries an explicit HTTP method and optional body (used for form POST).
-  NavigateRequest { request: FormSubmission },
-  FocusChanged { node_id: Option<usize> },
+  NavigateRequest {
+    request: FormSubmission,
+  },
+  FocusChanged {
+    node_id: Option<usize>,
+  },
   OpenSelectDropdown {
     select_node_id: usize,
     control: crate::tree::box_tree::SelectControl,
@@ -230,12 +240,19 @@ mod tests {
     let index = DomIndexMut::new(dom);
     let node = index.node(node_id).expect("node");
     match &node.node_type {
-      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => attributes.len(),
+      DomNodeType::Element { attributes, .. } | DomNodeType::Slot { attributes, .. } => {
+        attributes.len()
+      }
       _ => 0,
     }
   }
 
-  fn set_text_selection_caret(engine: &mut InteractionEngine, _dom: &mut DomNode, node_id: usize, caret: usize) {
+  fn set_text_selection_caret(
+    engine: &mut InteractionEngine,
+    _dom: &mut DomNode,
+    node_id: usize,
+    caret: usize,
+  ) {
     engine.text_edit = Some(TextEditState {
       node_id,
       caret,
@@ -261,7 +278,8 @@ mod tests {
 
   #[test]
   fn ime_preedit_sets_composition_without_mutating_value() {
-    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -285,7 +303,8 @@ mod tests {
 
   #[test]
   fn ime_commit_inserts_text_and_clears_preedit() {
-    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -303,7 +322,8 @@ mod tests {
 
   #[test]
   fn ime_cancel_clears_preedit_without_mutating_value() {
-    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -321,7 +341,8 @@ mod tests {
 
   #[test]
   fn ime_commit_updates_textarea_value() {
-    let mut dom = crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
     let textarea_id = find_element_node_id(&mut dom, "textarea");
 
     let mut engine = InteractionEngine::new();
@@ -339,7 +360,8 @@ mod tests {
 
   #[test]
   fn clipboard_paste_cancels_ime_preedit_for_input() {
-    let mut dom = crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -355,7 +377,8 @@ mod tests {
 
   #[test]
   fn clipboard_cut_cancels_ime_preedit_for_input() {
-    let mut dom = crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -374,7 +397,8 @@ mod tests {
 
   #[test]
   fn clipboard_paste_cancels_ime_preedit_for_textarea() {
-    let mut dom = crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let mut dom = crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>")
+      .expect("parse");
     let textarea_id = find_element_node_id(&mut dom, "textarea");
 
     let mut engine = InteractionEngine::new();
@@ -390,8 +414,8 @@ mod tests {
 
   #[test]
   fn clipboard_cut_cancels_ime_preedit_for_textarea() {
-    let mut dom =
-      crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let mut dom = crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>")
+      .expect("parse");
     let textarea_id = find_element_node_id(&mut dom, "textarea");
 
     let mut engine = InteractionEngine::new();
@@ -427,8 +451,8 @@ mod tests {
 
   #[test]
   fn delete_removes_selection_in_focused_textarea() {
-    let mut dom =
-      crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let mut dom = crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>")
+      .expect("parse");
     let textarea_id = find_element_node_id(&mut dom, "textarea");
 
     let mut engine = InteractionEngine::new();
@@ -481,6 +505,80 @@ mod tests {
     let edit = engine.text_edit.as_ref().unwrap();
     assert_eq!(edit.caret, 3);
     assert_eq!(edit.selection(), Some((2, 3)));
+  }
+
+  #[test]
+  fn rtl_arrow_keys_move_caret_visually() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"rtl\" value=\"אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = "אבג".chars().count();
+
+    // RTL: ArrowLeft moves visually left, which increments the logical caret index.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 1);
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+
+    // RTL: ArrowRight moves visually right, which decrements the logical caret index.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, len);
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, len - 1);
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, len);
+  }
+
+  #[test]
+  fn rtl_shift_arrow_extends_selection_visually() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"rtl\" value=\"אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowLeft));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 1);
+    assert_eq!(edit.selection(), Some((0, 1)));
+  }
+
+  #[test]
+  fn bidi_mixed_direction_arrow_keys_follow_visual_order() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // In "ABC אבג" (LTR paragraph with an RTL run), the caret's visual order differs from the
+    // logical character index order. Visual ArrowRight traversal should move the caret:
+    //   0 → 1 → 2 → 3 → 7 → 6 → 5 → 4
+    let expected = [0usize, 1, 2, 3, 7, 6, 5, 4];
+    set_text_selection_caret(&mut engine, &mut dom, input_id, expected[0]);
+    for (idx, &caret) in expected.iter().enumerate() {
+      assert_eq!(
+        engine.text_edit.as_ref().unwrap().caret,
+        caret,
+        "at step {idx}"
+      );
+      if idx + 1 < expected.len() {
+        assert!(
+          engine.key_action(&mut dom, KeyAction::ArrowRight),
+          "ArrowRight should move at step {idx}"
+        );
+      }
+    }
   }
 
   #[test]
@@ -1146,12 +1244,7 @@ fn shaped_total_advance(runs: &[crate::text::pipeline::ShapedRun], fallback: f32
   }
 }
 
-fn caret_index_for_x_in_text(
-  text: &str,
-  style: &ComputedStyle,
-  rect: Rect,
-  x: f32,
-) -> usize {
+fn caret_index_for_x_in_text(text: &str, style: &ComputedStyle, rect: Rect, x: f32) -> usize {
   let char_count = text.chars().count();
   if char_count == 0 {
     return 0;
@@ -1294,6 +1387,249 @@ fn caret_index_for_text_control_point(
   None
 }
 
+fn inferred_text_direction_from_dom(
+  index: &DomIndexMut,
+  mut node_id: usize,
+) -> crate::style::types::Direction {
+  while node_id != 0 {
+    let Some(node) = index.node(node_id) else {
+      break;
+    };
+    if let Some(dir) = node.get_attribute_ref("dir") {
+      let dir = trim_ascii_whitespace(dir);
+      if dir.eq_ignore_ascii_case("rtl") {
+        return crate::style::types::Direction::Rtl;
+      }
+      if dir.eq_ignore_ascii_case("ltr") {
+        return crate::style::types::Direction::Ltr;
+      }
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  crate::style::types::Direction::Ltr
+}
+
+fn style_for_styled_node_id(box_tree: &BoxTree, node_id: usize) -> Option<Arc<ComputedStyle>> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(node_id) {
+      return Some(node.style.clone());
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VisualCaretStop {
+  char_idx: usize,
+  x: f32,
+  level: u8,
+  is_rtl: bool,
+}
+
+fn char_boundary_bytes(text: &str) -> Vec<usize> {
+  let mut out = Vec::with_capacity(text.chars().count() + 1);
+  for (byte_idx, _) in text.char_indices() {
+    out.push(byte_idx);
+  }
+  out.push(text.len());
+  out
+}
+
+fn char_idx_at_byte(boundary_bytes: &[usize], byte: usize) -> usize {
+  boundary_bytes.partition_point(|&b| b < byte)
+}
+
+fn visual_caret_stops_for_bidi(
+  text: &str,
+  base_dir: crate::style::types::Direction,
+) -> Vec<VisualCaretStop> {
+  let boundary_bytes = char_boundary_bytes(text);
+  let char_count = boundary_bytes.len().saturating_sub(1);
+
+  let mut style = ComputedStyle::default();
+  style.direction = base_dir;
+
+  let bidi = crate::text::pipeline::BidiAnalysis::analyze(text, &style);
+  let runs = bidi.visual_runs();
+
+  #[derive(Debug)]
+  struct RunInfo {
+    start: usize,
+    end: usize,
+    level: u8,
+    is_rtl: bool,
+    x_start: f32,
+    start_char_idx: usize,
+    char_count: usize,
+  }
+
+  let mut run_infos: Vec<RunInfo> = Vec::with_capacity(runs.len());
+  let mut pen_x = 0.0f32;
+  for run in &runs {
+    if run.is_empty() {
+      continue;
+    }
+    let start_char_idx = char_idx_at_byte(&boundary_bytes, run.start);
+    let end_char_idx = char_idx_at_byte(&boundary_bytes, run.end);
+    let char_count_in_run = end_char_idx.saturating_sub(start_char_idx);
+    let advance = char_count_in_run as f32;
+    run_infos.push(RunInfo {
+      start: run.start,
+      end: run.end,
+      level: run.level,
+      is_rtl: run.direction.is_rtl(),
+      x_start: pen_x,
+      start_char_idx,
+      char_count: char_count_in_run,
+    });
+    pen_x += advance;
+  }
+
+  let mut stops: Vec<VisualCaretStop> = Vec::with_capacity(char_count + 1);
+  for char_idx in 0..=char_count {
+    if char_count == 0 {
+      stops.push(VisualCaretStop {
+        char_idx: 0,
+        x: 0.0,
+        level: 0,
+        is_rtl: base_dir == crate::style::types::Direction::Rtl,
+      });
+      break;
+    }
+
+    let byte = boundary_bytes[char_idx];
+    let run = if char_idx == char_count {
+      run_infos.iter().find(|run| run.end == text.len())
+    } else {
+      run_infos
+        .iter()
+        .find(|run| run.start <= byte && byte < run.end)
+    };
+
+    let Some(run) = run else {
+      stops.push(VisualCaretStop {
+        char_idx,
+        x: char_idx as f32,
+        level: 0,
+        is_rtl: false,
+      });
+      continue;
+    };
+
+    let local_char_idx = if char_idx == char_count {
+      run.char_count
+    } else {
+      char_idx
+        .saturating_sub(run.start_char_idx)
+        .min(run.char_count)
+    };
+    let prefix = local_char_idx as f32;
+    let advance = run.char_count as f32;
+    let x_local = if run.is_rtl { advance - prefix } else { prefix };
+    stops.push(VisualCaretStop {
+      char_idx,
+      x: run.x_start + x_local,
+      level: run.level,
+      is_rtl: run.is_rtl,
+    });
+  }
+
+  stops
+}
+
+fn visual_caret_stops_for_shaped_runs(
+  text: &str,
+  runs: &[crate::text::pipeline::ShapedRun],
+  base_dir: crate::style::types::Direction,
+) -> Vec<VisualCaretStop> {
+  let boundary_bytes = char_boundary_bytes(text);
+  let char_count = boundary_bytes.len().saturating_sub(1);
+
+  let mut stops: Vec<VisualCaretStop> = Vec::with_capacity(char_count + 1);
+  for char_idx in 0..=char_count {
+    if char_count == 0 {
+      stops.push(VisualCaretStop {
+        char_idx: 0,
+        x: 0.0,
+        level: 0,
+        is_rtl: base_dir == crate::style::types::Direction::Rtl,
+      });
+      break;
+    }
+
+    let byte = boundary_bytes[char_idx];
+    let run = if char_idx == char_count {
+      runs.iter().find(|run| run.end == text.len())
+    } else {
+      runs.iter().find(|run| run.start <= byte && byte < run.end)
+    };
+
+    let x = crate::text::caret::x_for_char_idx(text, runs, char_idx).unwrap_or(char_idx as f32);
+    stops.push(VisualCaretStop {
+      char_idx,
+      x,
+      level: run.map(|run| run.level).unwrap_or(0),
+      is_rtl: run.map(|run| run.direction.is_rtl()).unwrap_or(false),
+    });
+  }
+
+  stops
+}
+
+fn visual_caret_order_for_text(
+  text: &str,
+  base_dir: crate::style::types::Direction,
+  style: Option<&ComputedStyle>,
+) -> (Vec<VisualCaretStop>, Vec<usize>) {
+  let char_count = text.chars().count();
+  let mut stops = if let Some(style) = style {
+    let runs = shape_text_runs_for_interaction(text, style).unwrap_or_default();
+    if runs.is_empty() {
+      visual_caret_stops_for_bidi(text, base_dir)
+    } else {
+      visual_caret_stops_for_shaped_runs(text, &runs, base_dir)
+    }
+  } else {
+    visual_caret_stops_for_bidi(text, base_dir)
+  };
+
+  use std::cmp::Ordering;
+  stops.sort_by(|a, b| {
+    let ord = a.x.total_cmp(&b.x);
+    if ord != Ordering::Equal {
+      return ord;
+    }
+    let ord = b.level.cmp(&a.level);
+    if ord != Ordering::Equal {
+      return ord;
+    }
+    let ord = b.is_rtl.cmp(&a.is_rtl);
+    if ord != Ordering::Equal {
+      return ord;
+    }
+    match base_dir {
+      crate::style::types::Direction::Rtl => b.char_idx.cmp(&a.char_idx),
+      _ => a.char_idx.cmp(&b.char_idx),
+    }
+  });
+
+  let mut pos_by_char: Vec<usize> = vec![0usize; char_count + 1];
+  for (pos, stop) in stops.iter().enumerate() {
+    if let Some(slot) = pos_by_char.get_mut(stop.char_idx) {
+      *slot = pos;
+    }
+  }
+
+  (stops, pos_by_char)
+}
+
 fn collect_select_option_nodes_dom(index: &DomIndexMut, select_id: usize) -> Vec<(usize, bool)> {
   let mut end = select_id;
   for id in (select_id + 1)..index.id_to_node.len() {
@@ -1360,7 +1696,12 @@ fn fragment_rect_for_box_id_at_point(
   }
 
   while let Some(Frame { node, abs_origin }) = stack.pop() {
-    let rect = Rect::from_xywh(abs_origin.x, abs_origin.y, node.bounds.width(), node.bounds.height());
+    let rect = Rect::from_xywh(
+      abs_origin.x,
+      abs_origin.y,
+      node.bounds.width(),
+      node.bounds.height(),
+    );
     if rect.contains_point(page_point) && node.box_id() == Some(target_box_id) {
       return Some(rect);
     }
@@ -1493,8 +1834,8 @@ fn apply_select_listbox_click(
     super::resolve_scaled_metrics_for_interaction(style)
   } else {
     None
-    };
-    let line_height =
+  };
+  let line_height =
     compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
   if line_height <= 0.0 || !line_height.is_finite() {
     return false;
@@ -1569,9 +1910,7 @@ fn apply_select_listbox_click(
   match item {
     SelectItem::OptGroupLabel { .. } => false,
     SelectItem::Option {
-      node_id,
-      disabled,
-      ..
+      node_id, disabled, ..
     } => {
       if *disabled {
         return false;
@@ -1591,7 +1930,12 @@ fn select_control_snapshot_from_box_tree(
       if let BoxType::Replaced(replaced) = &node.box_type {
         if let ReplacedType::FormControl(form_control) = &replaced.replaced_type {
           if let FormControlKind::Select(control) = &form_control.control {
-            return Some((node.id, control.clone(), form_control.disabled, node.style.clone()));
+            return Some((
+              node.id,
+              control.clone(),
+              form_control.disabled,
+              node.style.clone(),
+            ));
           }
         }
       }
@@ -1614,7 +1958,10 @@ fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> 
     }
     // Shadow roots are tree root boundaries for form owner resolution; do not walk out into the
     // shadow host tree.
-    if matches!(node.node_type, DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }) {
+    if matches!(
+      node.node_type,
+      DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }
+    ) {
       break;
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
@@ -1625,7 +1972,10 @@ fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> 
 fn tree_root_boundary_id(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;
-    if matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }) {
+    if matches!(
+      node.node_type,
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+    ) {
       return Some(node_id);
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
@@ -1681,7 +2031,10 @@ fn resolve_form_owner(index: &DomIndexMut, control_node_id: usize) -> Option<usi
   {
     let tree_root = tree_root_boundary_id(index, control_node_id)?;
     let referenced = find_element_by_id_attr_in_tree(index, tree_root, form_attr)?;
-    return index.node(referenced).is_some_and(is_form).then_some(referenced);
+    return index
+      .node(referenced)
+      .is_some_and(is_form)
+      .then_some(referenced);
   }
 
   find_ancestor_form(index, control_node_id)
@@ -1715,7 +2068,12 @@ fn find_default_form_submitter(index: &DomIndexMut, form_id: usize) -> Option<us
   None
 }
 
-fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_id: usize, key: KeyAction) -> bool {
+fn apply_select_keyboard_action(
+  dom: &mut DomNode,
+  index: &DomIndexMut,
+  select_id: usize,
+  key: KeyAction,
+) -> bool {
   if node_or_ancestor_is_inert(index, select_id) || node_is_disabled(index, select_id) {
     return false;
   }
@@ -1823,8 +2181,12 @@ impl InteractionEngine {
     option_node_id: usize,
     toggle_for_multiple: bool,
   ) -> bool {
-    let dom_changed =
-      dom_mutation::activate_select_option(dom, select_node_id, option_node_id, toggle_for_multiple);
+    let dom_changed = dom_mutation::activate_select_option(
+      dom,
+      select_node_id,
+      option_node_id,
+      toggle_for_multiple,
+    );
     let mut changed = dom_changed;
     if dom_changed {
       changed |= self.mark_user_validity(select_node_id);
@@ -1899,14 +2261,21 @@ impl InteractionEngine {
     if prev_focused != new_focused {
       if let Some(new_id) = new_focused {
         // Initialize text editing state for focused text controls.
-        if index.node(new_id).is_some_and(|node| is_text_input(node) || is_textarea(node)) {
+        if index
+          .node(new_id)
+          .is_some_and(|node| is_text_input(node) || is_textarea(node))
+        {
           let caret = index
             .node(new_id)
             .map(|node| {
               if is_textarea(node) {
                 textarea_value_for_editing(node).chars().count()
               } else {
-                node.get_attribute_ref("value").unwrap_or("").chars().count()
+                node
+                  .get_attribute_ref("value")
+                  .unwrap_or("")
+                  .chars()
+                  .count()
               }
             })
             .unwrap_or(0);
@@ -1993,7 +2362,11 @@ impl InteractionEngine {
       self.set_text_selection_caret(node_id, start);
       return;
     }
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let (start, end) = if start <= end {
+      (start, end)
+    } else {
+      (end, start)
+    };
     self.text_drag = None;
     match self.text_edit.as_mut() {
       Some(edit) if edit.node_id == node_id => {
@@ -2085,7 +2458,11 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
-        if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == state.node_id) {
+        if let Some(edit) = self
+          .text_edit
+          .as_mut()
+          .filter(|edit| edit.node_id == state.node_id)
+        {
           if let Some(caret) = caret_index_for_text_control_point(
             &index,
             box_tree,
@@ -2185,7 +2562,7 @@ impl InteractionEngine {
         if is_focusable_interactive_element(&index, hit.dom_node_id) {
           dom_changed |= self.set_focus(&mut index, Some(hit.dom_node_id), false);
         }
- 
+
         // Only update caret/selection state when the text control is (now) focused.
         if self.state.focused == Some(hit.dom_node_id) {
           let caret = caret_index_for_text_control_point(
@@ -2199,7 +2576,11 @@ impl InteractionEngine {
           .unwrap_or(0);
 
           let mut text_edit_changed = false;
-          match self.text_edit.as_mut().filter(|state| state.node_id == hit.dom_node_id) {
+          match self
+            .text_edit
+            .as_mut()
+            .filter(|state| state.node_id == hit.dom_node_id)
+          {
             Some(state) => {
               let prev = (state.caret, state.selection_anchor);
               state.set_caret(caret);
@@ -2452,7 +2833,9 @@ impl InteractionEngine {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
         } else if index.node(target_id).is_some_and(is_select) {
           let snapshot = select_control_snapshot_from_box_tree(box_tree, target_id);
-          let computed_disabled = snapshot.as_ref().is_some_and(|(_, _, disabled, _)| *disabled);
+          let computed_disabled = snapshot
+            .as_ref()
+            .is_some_and(|(_, _, disabled, _)| *disabled);
           if is_focusable_interactive_element(&index, target_id) && !computed_disabled {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
@@ -2555,9 +2938,8 @@ impl InteractionEngine {
                 .and_then(|node| node.get_attribute_ref("target"))
                 .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"));
 
-              let gesture_new_tab =
-                matches!(button, PointerButton::Middle)
-                  || (matches!(button, PointerButton::Primary) && modifiers.command());
+              let gesture_new_tab = matches!(button, PointerButton::Middle)
+                || (matches!(button, PointerButton::Primary) && modifiers.command());
 
               action = if target_blank || gesture_new_tab {
                 InteractionAction::OpenInNewTab { href: resolved }
@@ -2594,10 +2976,14 @@ impl InteractionEngine {
                 self.last_form_submitter = Some(target_id);
                 match submission.method {
                   FormSubmissionMethod::Get => {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                   FormSubmissionMethod::Post => {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }
@@ -2797,8 +3183,8 @@ impl InteractionEngine {
     let mut changed = self.set_focus(&mut index, Some(focused), true);
 
     // Only text inputs and textareas participate in IME composition.
-    let is_text_control =
-      index.node(focused).is_some_and(is_text_input) || index.node(focused).is_some_and(is_textarea);
+    let is_text_control = index.node(focused).is_some_and(is_text_input)
+      || index.node(focused).is_some_and(is_textarea);
     if !is_text_control {
       changed |= self.ime_cancel_internal();
       return changed;
@@ -3320,28 +3706,161 @@ impl InteractionEngine {
             return changed | self.text_input(dom, "\n");
           }
         }
-        KeyAction::ArrowLeft | KeyAction::ArrowRight => {
+        KeyAction::ArrowLeft
+        | KeyAction::ArrowRight
+        | KeyAction::ShiftArrowLeft
+        | KeyAction::ShiftArrowRight => {
+          let move_left = matches!(key, KeyAction::ArrowLeft | KeyAction::ShiftArrowLeft);
+          let extend_selection =
+            matches!(key, KeyAction::ShiftArrowLeft | KeyAction::ShiftArrowRight);
+
+          let style = box_tree.and_then(|tree| style_for_styled_node_id(tree, focused));
+          let base_dir = style
+            .as_deref()
+            .map(|style| style.direction)
+            .unwrap_or_else(|| inferred_text_direction_from_dom(&index, focused));
+
           let selection = edit.selection();
-          let len = current_len;
-          if let Some((start, end)) = selection {
-            edit.set_caret(if matches!(key, KeyAction::ArrowLeft) { start } else { end });
-          } else {
-            let next = match key {
-              KeyAction::ArrowLeft => edit.caret.saturating_sub(1),
-              KeyAction::ArrowRight => (edit.caret + 1).min(len),
-              _ => edit.caret,
+
+          if focused_is_textarea && current.contains('\n') {
+            // For `<textarea>`, use visual left/right movement within the current newline-delimited
+            // line. (Vertical movement remains line-based elsewhere.)
+            let total_chars = current_len;
+            let caret = edit.caret.min(total_chars);
+
+            let mut line_starts: Vec<usize> = vec![0];
+            let mut idx = 0usize;
+            for ch in current.chars() {
+              if ch == '\n' {
+                line_starts.push(idx + 1);
+              }
+              idx += 1;
+            }
+
+            let line_idx = line_starts
+              .partition_point(|&start| start <= caret)
+              .saturating_sub(1);
+            let line_start = *line_starts.get(line_idx).unwrap_or(&0);
+            let line_end = if let Some(next_start) = line_starts.get(line_idx + 1) {
+              next_start.saturating_sub(1)
+            } else {
+              total_chars
             };
-            edit.set_caret(next);
+            let line_len = line_end.saturating_sub(line_start);
+            let caret_in_line = caret.saturating_sub(line_start).min(line_len);
+
+            let start_byte = byte_offset_for_char_idx(&current, line_start);
+            let end_byte = byte_offset_for_char_idx(&current, line_end);
+            let line_text = current.get(start_byte..end_byte).unwrap_or("");
+
+            let (stops, pos_by_char) =
+              visual_caret_order_for_text(line_text, base_dir, style.as_deref());
+
+            if let Some((start, end)) = selection.filter(|_| !extend_selection) {
+              // Collapse selection without shift.
+              if start >= line_start && end <= line_end {
+                let start_in_line = start.saturating_sub(line_start).min(line_len);
+                let end_in_line = end.saturating_sub(line_start).min(line_len);
+                let start_pos = *pos_by_char.get(start_in_line).unwrap_or(&0);
+                let end_pos = *pos_by_char.get(end_in_line).unwrap_or(&0);
+                let (left_edge, right_edge) = if start_pos <= end_pos {
+                  (start, end)
+                } else {
+                  (end, start)
+                };
+                edit.set_caret(if move_left { left_edge } else { right_edge });
+              } else {
+                // Selection spans multiple lines; fall back to logical collapse.
+                edit.set_caret(if move_left { start } else { end });
+              }
+            } else {
+              // Move caret within the current line, falling back to crossing a newline when there is
+              // no further visual stop in the requested direction.
+              let current_pos = *pos_by_char.get(caret_in_line).unwrap_or(&0);
+              let next_pos = if move_left {
+                current_pos.saturating_sub(1)
+              } else {
+                (current_pos + 1).min(stops.len().saturating_sub(1))
+              };
+              let next_in_line = stops
+                .get(next_pos)
+                .map(|stop| stop.char_idx)
+                .unwrap_or(caret_in_line);
+
+              let mut next_caret = if next_in_line != caret_in_line {
+                line_start.saturating_add(next_in_line).min(total_chars)
+              } else if move_left {
+                caret.saturating_sub(1)
+              } else {
+                (caret + 1).min(total_chars)
+              };
+
+              // Clamp to textarea bounds.
+              next_caret = next_caret.min(total_chars);
+
+              edit.set_caret_and_maybe_extend_selection(next_caret, extend_selection);
+            }
+          } else if let Some((start, end)) = selection.filter(|_| !extend_selection) {
+            // Single-line selection collapse (including `<input>` and single-line `<textarea>`).
+            let display_text = if focused_is_text_input {
+              index
+                .node(focused)
+                .map(|node| {
+                  if input_type(node).eq_ignore_ascii_case("password") {
+                    "•".repeat(current_len)
+                  } else {
+                    current.clone()
+                  }
+                })
+                .unwrap_or_else(|| current.clone())
+            } else {
+              current.clone()
+            };
+
+            let (_, pos_by_char) =
+              visual_caret_order_for_text(&display_text, base_dir, style.as_deref());
+            let start_pos = *pos_by_char.get(start).unwrap_or(&0);
+            let end_pos = *pos_by_char.get(end).unwrap_or(&0);
+            let (left_edge, right_edge) = if start_pos <= end_pos {
+              (start, end)
+            } else {
+              (end, start)
+            };
+            edit.set_caret(if move_left { left_edge } else { right_edge });
+          } else {
+            // Single-line visual caret movement for `<input>` (and single-line textareas / no-style
+            // fallbacks).
+            let display_text = if focused_is_text_input {
+              index
+                .node(focused)
+                .map(|node| {
+                  if input_type(node).eq_ignore_ascii_case("password") {
+                    "•".repeat(current_len)
+                  } else {
+                    current.clone()
+                  }
+                })
+                .unwrap_or_else(|| current.clone())
+            } else {
+              current.clone()
+            };
+
+            let (stops, pos_by_char) =
+              visual_caret_order_for_text(&display_text, base_dir, style.as_deref());
+            let caret = edit.caret.min(current_len);
+            let current_pos = *pos_by_char.get(caret).unwrap_or(&0);
+            let next_pos = if move_left {
+              current_pos.saturating_sub(1)
+            } else {
+              (current_pos + 1).min(stops.len().saturating_sub(1))
+            };
+            let next_caret = stops
+              .get(next_pos)
+              .map(|stop| stop.char_idx)
+              .unwrap_or(caret);
+
+            edit.set_caret_and_maybe_extend_selection(next_caret, extend_selection);
           }
-        }
-        KeyAction::ShiftArrowLeft | KeyAction::ShiftArrowRight => {
-          let len = current_len;
-          let next = match key {
-            KeyAction::ShiftArrowLeft => edit.caret.saturating_sub(1),
-            KeyAction::ShiftArrowRight => (edit.caret + 1).min(len),
-            _ => edit.caret,
-          };
-          edit.set_caret_and_maybe_extend_selection(next, true);
         }
         KeyAction::Home | KeyAction::End => {
           let next = if matches!(key, KeyAction::Home) {
@@ -3429,7 +3948,8 @@ impl InteractionEngine {
     // Non-text-control keyboard actions.
     match key {
       KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
-        if matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown) && index.node(focused).is_some_and(is_range_input)
+        if matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown)
+          && index.node(focused).is_some_and(is_range_input)
         {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
@@ -3449,7 +3969,9 @@ impl InteractionEngine {
               changed |= self.mark_user_validity(focused);
             }
           }
-        } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+        } else if index.node(focused).is_some_and(is_select)
+          && !is_disabled_or_inert(&index, focused)
+        {
           if matches!(key, KeyAction::Home | KeyAction::End)
             && index
               .node(focused)
@@ -3702,10 +4224,14 @@ impl InteractionEngine {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate { href: submission.url };
+                  action = InteractionAction::Navigate {
+                    href: submission.url,
+                  };
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest { request: submission };
+                  action = InteractionAction::NavigateRequest {
+                    request: submission,
+                  };
                 }
               }
             }
@@ -3729,10 +4255,14 @@ impl InteractionEngine {
                 }
                 match submission.method {
                   FormSubmissionMethod::Get => {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                   FormSubmissionMethod::Post => {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }
@@ -3771,10 +4301,14 @@ impl InteractionEngine {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate { href: submission.url };
+                  action = InteractionAction::Navigate {
+                    href: submission.url,
+                  };
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest { request: submission };
+                  action = InteractionAction::NavigateRequest {
+                    request: submission,
+                  };
                 }
               }
             }
