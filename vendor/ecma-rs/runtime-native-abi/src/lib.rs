@@ -1021,6 +1021,18 @@ mod tests {
       "missing RT_THREAD TLS symbol declaration"
     );
     assert!(
+      header.contains("typedef struct RtCoroutineHeader RtCoroutineHeader;"),
+      "missing RtCoroutineHeader forward declaration"
+    );
+    assert!(
+      header.contains("typedef struct PromiseResolveInput PromiseResolveInput;"),
+      "missing PromiseResolveInput forward declaration"
+    );
+    assert!(
+      header.contains("typedef struct Coroutine Coroutine;"),
+      "missing Coroutine forward declaration"
+    );
+    assert!(
       header.contains("RT_GC_EPOCH;"),
       "missing RT_GC_EPOCH extern declaration"
     );
