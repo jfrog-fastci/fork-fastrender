@@ -125,6 +125,23 @@ fn json_check_error_contains_diagnostics_array() {
 }
 
 #[test]
+fn run_rejects_json_flag() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("--json")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("--json is not supported"));
+}
+
+#[test]
 fn build_and_run_returns_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

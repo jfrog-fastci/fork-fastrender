@@ -357,7 +357,11 @@ fn cmd_run(
   if status.success() {
     ExitCode::SUCCESS
   } else {
-    ExitCode::from(status.code().unwrap_or(1) as u8)
+    let code = status
+      .code()
+      .and_then(|code| u8::try_from(code).ok())
+      .unwrap_or(1);
+    ExitCode::from(code)
   }
 }
 
