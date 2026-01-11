@@ -2209,60 +2209,7 @@ fn supports_container_type_value(raw_value: &str) -> bool {
     return false;
   }
 
-  let mut input = ParserInput::new(raw_value);
-  let mut parser = Parser::new(&mut input);
-  let mut saw_normal = false;
-  let mut saw_scroll_state = false;
-  let mut size_type: Option<&'static str> = None;
-
-  while let Ok(token) = parser.next_including_whitespace_and_comments() {
-    match token {
-      Token::WhiteSpace(_) | Token::Comment(_) => continue,
-      Token::Ident(ident) => {
-        let ident = ident.as_ref();
-        if ident.eq_ignore_ascii_case("normal") {
-          if saw_normal || saw_scroll_state || size_type.is_some() {
-            return false;
-          }
-          saw_normal = true;
-          continue;
-        }
-        if ident.eq_ignore_ascii_case("scroll-state") {
-          if saw_scroll_state || saw_normal {
-            return false;
-          }
-          saw_scroll_state = true;
-          continue;
-        }
-        if ident.eq_ignore_ascii_case("size") || ident.eq_ignore_ascii_case("inline-size") {
-          if saw_normal {
-            return false;
-          }
-          let current = if ident.eq_ignore_ascii_case("size") {
-            "size"
-          } else {
-            "inline-size"
-          };
-          if let Some(existing) = size_type {
-            if existing != current {
-              return false;
-            }
-          } else {
-            size_type = Some(current);
-          }
-          continue;
-        }
-        return false;
-      }
-      _ => return false,
-    }
-  }
-
-  if saw_normal {
-    true
-  } else {
-    saw_scroll_state || size_type.is_some()
-  }
+  crate::style::types::ContainerType::parse(raw_value).is_some()
 }
 
 fn supports_animation_timeline_value(raw_value: &str) -> bool {
