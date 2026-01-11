@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use vm_js::{
   Heap, HeapLimits, PropertyDescriptor, PropertyKey as VmPropertyKey, PropertyKind, Scope, Value, Vm, VmError,
-  VmHostHooks, VmOptions,
+  VmHost, VmHostHooks, VmOptions,
 };
 use webidl::{InterfaceId, JsRuntime, PropertyKey, WebIdlHooks, WebIdlLimits};
 use webidl_vm_js::VmJsWebIdlCx;
@@ -27,7 +27,8 @@ thread_local! {
 fn method(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   _args: &[Value],
@@ -38,7 +39,8 @@ fn method(
 fn getter(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   _args: &[Value],
