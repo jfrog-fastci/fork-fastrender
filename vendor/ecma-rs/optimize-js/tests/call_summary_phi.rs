@@ -62,3 +62,46 @@ fn call_summary_propagates_param_origin_through_phi() {
     "expected returned parameter to be marked as ReturnEscape"
   );
 }
+
+#[test]
+fn call_summary_marks_param_escape_through_phi_arg() {
+  // Ensure `param_escape` propagation can see through SSA phi nodes.
+  //
+  // Without phi-origin tracking, the call argument `y` would be treated as an
+  // unknown origin (since it's defined by a Phi), and `x` would incorrectly
+  // remain `NoEscape`.
+  let source = r#"
+    function f(cond, x) {
+      let y;
+      if (cond) {
+        y = x;
+      } else {
+        y = x;
+      }
+      globalSink(y);
+      return 0;
+    }
+    f(unknown_cond(), {});
+  "#;
+
+  let program = compile_source_with_cfg_options(
+    source,
+    TopLevelMode::Module,
+    false,
+    CompileCfgOptions {
+      keep_ssa: false,
+      run_opt_passes: false,
+    },
+  )
+  .expect("compile");
+
+  assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
+
+  let summaries = summarize_program(&program);
+  let summary = &summaries[0];
+  assert_eq!(
+    summary.param_escape[1],
+    EscapeState::GlobalEscape,
+    "expected `x` to be marked as escaping via globalSink(y)"
+  );
+}
