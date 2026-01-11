@@ -114,6 +114,23 @@ void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 // -----------------------------------------------------------------------------
 // GC entrypoints (milestone runtime: mostly no-ops)
 // -----------------------------------------------------------------------------
+
+// Global GC/safepoint epoch (monotonically increasing).
+//
+// Semantics:
+//   - even: no stop-the-world requested
+//   - odd:  stop-the-world requested
+//
+// Generated code can inline the fast safepoint poll as:
+//   load RT_GC_EPOCH; if (epoch & 1) rt_gc_safepoint();
+#if defined(__cplusplus)
+extern uint64_t RT_GC_EPOCH;
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+extern _Atomic uint64_t RT_GC_EPOCH;
+#else
+extern uint64_t RT_GC_EPOCH;
+#endif
+
 void rt_gc_safepoint(void);
 // Generational write barrier for an object field store.
 //

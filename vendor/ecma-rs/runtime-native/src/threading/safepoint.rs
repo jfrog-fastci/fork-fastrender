@@ -13,13 +13,23 @@ extern "C" {
   fn rt_gc_safepoint_slow(requested_epoch: u64);
 }
 
-struct SafepointCoordinator {
-  /// Global GC/safepoint epoch.
-  ///
-  /// Even epochs mean "no stop-the-world GC requested".
-  /// Odd epochs mean "stop-the-world GC requested".
-  epoch: AtomicU64,
+/// Global GC/safepoint epoch (monotonically increasing).
+///
+/// # Semantics
+/// - Even values mean "no stop-the-world GC requested".
+/// - Odd values mean "stop-the-world GC requested".
+///
+/// This is exported as a stable, link-visible symbol so generated code can
+/// inline the safepoint fast path as:
+///
+/// ```text
+/// load RT_GC_EPOCH
+/// test low bit; if set call rt_gc_safepoint()
+/// ```
+#[no_mangle]
+pub static RT_GC_EPOCH: AtomicU64 = AtomicU64::new(0);
 
+struct SafepointCoordinator {
   /// How many threads are currently blocked inside [`rt_gc_safepoint`]'s slow path.
   threads_waiting: AtomicUsize,
 
@@ -30,7 +40,6 @@ struct SafepointCoordinator {
 impl SafepointCoordinator {
   fn new() -> Self {
     Self {
-      epoch: AtomicU64::new(0),
       threads_waiting: AtomicUsize::new(0),
       cv_mutex: Mutex::new(()),
       cv: Condvar::new(),
@@ -75,7 +84,7 @@ fn wake_all_gc_wakers() {
 
 /// Current global safepoint epoch (monotonically increasing).
 pub(crate) fn current_epoch() -> u64 {
-  coordinator().epoch.load(Ordering::Acquire)
+  RT_GC_EPOCH.load(Ordering::Acquire)
 }
 
 /// Notify any threads waiting for the world to stop that some observable state
@@ -107,7 +116,7 @@ pub(crate) fn wait_while_stop_the_world() {
 /// - Slow path: publish the current epoch as "observed", then block until resumed.
 #[inline(always)]
 pub fn rt_gc_safepoint() {
-  let epoch = coordinator().epoch.load(Ordering::Acquire);
+  let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
   if epoch & 1 == 0 {
     return;
   }
@@ -139,7 +148,7 @@ extern "C" fn rt_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const Safepo
   let coord = coordinator();
   coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
   let mut guard = coord.cv_mutex.lock().unwrap();
-  while coord.epoch.load(Ordering::Acquire) == requested_epoch {
+  while RT_GC_EPOCH.load(Ordering::Acquire) == requested_epoch {
     guard = coord.cv.wait(guard).unwrap();
   }
   drop(guard);
@@ -151,16 +160,13 @@ extern "C" fn rt_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const Safepo
 /// Returns the requested (odd) epoch.
 pub fn rt_gc_request_stop_the_world() -> u64 {
   let coord = coordinator();
-  let mut cur = coord.epoch.load(Ordering::Acquire);
+  let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
   loop {
     if cur & 1 == 1 {
       panic!("GC stop-the-world requested while another stop is already in progress (epoch={cur})");
     }
     let next = cur + 1;
-    match coord
-      .epoch
-      .compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire)
-    {
+    match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
         coord.notify_all();
         wake_all_gc_wakers();
@@ -181,7 +187,7 @@ pub fn rt_gc_wait_for_world_stopped() {
 
   let mut guard = coord.cv_mutex.lock().unwrap();
   loop {
-    let cur_epoch = coord.epoch.load(Ordering::Acquire);
+    let cur_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if cur_epoch & 1 == 0 {
       return;
     }
@@ -197,7 +203,7 @@ pub fn rt_gc_wait_for_world_stopped() {
 /// Like [`rt_gc_wait_for_world_stopped`], but with a timeout.
 pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
   let coord = coordinator();
-  let stop_epoch = coord.epoch.load(Ordering::Acquire);
+  let stop_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
   if stop_epoch & 1 == 0 {
     return true;
   }
@@ -208,7 +214,7 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
   let mut guard = coord.cv_mutex.lock().unwrap();
   loop {
     // If the request was cancelled/resumed, treat as "stopped" for the caller.
-    let cur_epoch = coord.epoch.load(Ordering::Acquire);
+    let cur_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if cur_epoch & 1 == 0 {
       return true;
     }
@@ -265,17 +271,14 @@ fn world_stopped(stop_epoch: u64, coordinator_id: Option<registry::ThreadId>) ->
 /// Returns the new (even) epoch.
 pub fn rt_gc_resume_world() -> u64 {
   let coord = coordinator();
-  let mut cur = coord.epoch.load(Ordering::Acquire);
+  let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
   loop {
     if cur & 1 == 0 {
       // Already resumed.
       return cur;
     }
     let next = cur + 1;
-    match coord
-      .epoch
-      .compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire)
-    {
+    match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
         coord.notify_all();
         return next;

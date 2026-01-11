@@ -67,6 +67,19 @@ Some embeddings require stable object addresses (FFI / host references). The run
 Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
 wired up.
 
+## GC safepoints (polling)
+
+The runtime coordinates stop-the-world GC using an exported global epoch,
+`RT_GC_EPOCH` (declared in `include/runtime_native.h`):
+
+* **even**: no stop-the-world requested
+* **odd**: stop-the-world requested
+
+Intended codegen fast path:
+
+1. load `RT_GC_EPOCH`
+2. if the low bit is set (odd), call `rt_gc_safepoint()` (or `rt_gc_safepoint_slow` directly)
+
 ## Parallel ABI (placeholder)
 
 The AOT compiler may emit calls to `rt_parallel_spawn` / `rt_parallel_join` for parallel work
