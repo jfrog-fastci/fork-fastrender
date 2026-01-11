@@ -1441,6 +1441,19 @@ pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn
 }
 
 #[no_mangle]
+pub extern "C" fn rt_promise_then_with_drop_legacy(
+  p: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+) {
+  abort_on_panic(|| {
+    ensure_current_thread_registered();
+    async_rt::promise::promise_then_with_drop(p, on_settle, data, drop_data)
+  })
+}
+
+#[no_mangle]
 pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();

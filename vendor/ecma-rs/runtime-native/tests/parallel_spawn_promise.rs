@@ -212,8 +212,8 @@ fn stress_parallel_spawn_promise_promise_all_like() {
   }
 
   extern "C" fn on_one_settle(data: *mut u8) {
-    // Safety: allocated as `Box<OneState>` in the test setup.
-    let one = unsafe { Box::from_raw(data as *mut OneState) };
+    // Safety: allocated as `Box<OneState>` in the test setup and freed by `drop_one_state`.
+    let one = unsafe { &*(data as *const OneState) };
     let all = unsafe { &*one.all };
 
     let payload = runtime_native::rt_promise_payload_ptr(one.promise) as *const u32;
@@ -225,6 +225,13 @@ fn stress_parallel_spawn_promise_promise_all_like() {
 
     if all.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
       runtime_native::rt_promise_resolve_legacy(all.all_promise, all.results as ValueRef);
+    }
+  }
+
+  extern "C" fn drop_one_state(data: *mut u8) {
+    // Safety: allocated as `Box<OneState>` in the test setup.
+    unsafe {
+      drop(Box::from_raw(data as *mut OneState));
     }
   }
 
@@ -273,7 +280,12 @@ fn stress_parallel_spawn_promise_promise_all_like() {
       promise,
       all: all_state_ptr,
     });
-    runtime_native::rt_promise_then_legacy(promise, on_one_settle, Box::into_raw(one) as *mut u8);
+    runtime_native::rt_promise_then_with_drop_legacy(
+      promise,
+      on_one_settle,
+      Box::into_raw(one) as *mut u8,
+      drop_one_state,
+    );
   }
 
   let mut completed = false;

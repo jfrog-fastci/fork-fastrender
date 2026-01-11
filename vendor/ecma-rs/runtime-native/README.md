@@ -364,7 +364,7 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
 
 * create a pending promise (`rt_promise_new_legacy`)
 * resolve/reject it (`rt_promise_resolve_legacy` / `rt_promise_reject_legacy`)
-* register a continuation (`rt_promise_then_legacy`)
+* register a continuation (`rt_promise_then_legacy`, or `rt_promise_then_with_drop_legacy` for owned callback state)
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
 FIFO by calling `rt_async_poll_legacy()`.

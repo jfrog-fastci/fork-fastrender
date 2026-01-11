@@ -48,6 +48,7 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef)`
 - `rt_promise_reject_legacy(p: LegacyPromiseRef, err: ValueRef)`
 - `rt_promise_then_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_promise_then_with_drop_legacy(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`
 - `rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef`
 - `rt_async_poll_legacy() -> bool`

@@ -137,6 +137,7 @@ struct CallbackReaction {
   node: PromiseReactionNode,
   callback: extern "C" fn(*mut u8),
   data: *mut u8,
+  drop_data: Option<extern "C" fn(*mut u8)>,
 }
 
 extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: crate::async_abi::PromiseRef) {
@@ -148,7 +149,10 @@ extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: cr
 extern "C" fn callback_reaction_drop(node: *mut PromiseReactionNode) {
   // Safety: allocated by `alloc_callback_reaction`.
   unsafe {
-    drop(Box::from_raw(node as *mut CallbackReaction));
+    let node = Box::from_raw(node as *mut CallbackReaction);
+    if let Some(drop_data) = node.drop_data {
+      drop_data(node.data);
+    }
   }
 }
 
@@ -157,7 +161,11 @@ static CALLBACK_REACTION_VTABLE: PromiseReactionVTable = PromiseReactionVTable {
   drop: callback_reaction_drop,
 };
 
-fn alloc_callback_reaction(callback: extern "C" fn(*mut u8), data: *mut u8) -> *mut PromiseReactionNode {
+fn alloc_callback_reaction(
+  callback: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: Option<extern "C" fn(*mut u8)>,
+) -> *mut PromiseReactionNode {
   let node = Box::new(CallbackReaction {
     node: PromiseReactionNode {
       next: null_mut(),
@@ -165,6 +173,7 @@ fn alloc_callback_reaction(callback: extern "C" fn(*mut u8), data: *mut u8) -> *
     },
     callback,
     data,
+    drop_data,
   });
   Box::into_raw(node) as *mut PromiseReactionNode
 }
@@ -272,7 +281,22 @@ pub(crate) fn promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), dat
     // Treat null as "never settles": keep it pending.
     return;
   }
-  let node = alloc_callback_reaction(on_settle, data);
+  let node = alloc_callback_reaction(on_settle, data, None);
+  promise_register_reaction(p, node);
+}
+
+pub(crate) fn promise_then_with_drop(
+  p: PromiseRef,
+  on_settle: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+) {
+  if p.is_null() {
+    // Treat null as "never settles": immediately discard owned callback state.
+    drop_data(data);
+    return;
+  }
+  let node = alloc_callback_reaction(on_settle, data, Some(drop_data));
   promise_register_reaction(p, node);
 }
 
@@ -516,8 +540,8 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
   }
 
   extern "C" fn adopt_on_settle(data: *mut u8) {
-    // Safety: allocated by `promise_resolve_promise`.
-    let cont = unsafe { Box::from_raw(data as *mut AdoptContinuation) };
+    // Safety: allocated by `promise_resolve_promise` and freed by the callback reaction drop hook.
+    let cont = unsafe { &*(data as *const AdoptContinuation) };
     match promise_outcome(cont.src) {
       PromiseOutcome::Fulfilled(v) => promise_resolve(cont.dst, v),
       PromiseOutcome::Rejected(e) => promise_reject(cont.dst, e),
@@ -527,13 +551,20 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
           dst: cont.dst,
           src: cont.src,
         });
-        promise_then(cont.src, adopt_on_settle, Box::into_raw(cont) as *mut u8);
+        promise_then_with_drop(cont.src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
       }
     }
   }
 
+  extern "C" fn drop_adopt_continuation(data: *mut u8) {
+    // Safety: allocated by `Box::into_raw` in `promise_resolve_promise`.
+    unsafe {
+      drop(Box::from_raw(data as *mut AdoptContinuation));
+    }
+  }
+
   let cont = Box::new(AdoptContinuation { dst, src });
-  promise_then(src, adopt_on_settle, Box::into_raw(cont) as *mut u8);
+  promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
 }
 
 pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {

@@ -695,6 +695,7 @@ mod tests {
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
       "void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
+      "void rt_promise_then_with_drop_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
       "LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);",
       "LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);",
       "bool rt_async_poll_legacy(void);",
@@ -779,6 +780,12 @@ mod tests {
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
     let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
+    let _promise_then_with_drop_legacy: extern "C" fn(
+      abi::PromiseRef,
+      extern "C" fn(*mut u8),
+      *mut u8,
+      extern "C" fn(*mut u8),
+    ) = rt_promise_then_with_drop_legacy;
     let _async_spawn_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn_legacy;
     let _async_spawn_deferred_legacy: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef =
       rt_async_spawn_deferred_legacy;
@@ -850,6 +857,7 @@ mod tests {
       _promise_resolve_legacy,
       _promise_reject_legacy,
       _promise_then_legacy,
+      _promise_then_with_drop_legacy,
       _async_spawn_legacy,
       _async_poll_legacy,
       _async_sleep_legacy,
