@@ -117,7 +117,7 @@ if (epoch & 1) {
 useful for embeddings/tests, but codegen should prefer the inline poll so the slow path captures
 the callsite context correctly.
 
-## Parallel ABI (placeholder)
+## Parallel ABI
 
 The AOT compiler may emit calls to `rt_parallel_spawn` / `rt_parallel_join` for parallel work
 splitting. The ABI shape is stable:
@@ -126,11 +126,39 @@ splitting. The ABI shape is stable:
 - `rt_parallel_spawn` returns a `TaskId`.
 - `rt_parallel_join` takes a `TaskId*` + `size_t` count.
 
-The scheduler implementation itself is intentionally minimal for now; the ABI is the contract.
+The scheduler implementation is a **work-stealing pool** suitable for compiler-inserted parallel
+regions; the ABI is the contract.
 
-Current behavior: `rt_parallel_spawn` enqueues work onto a global FIFO queue serviced by a small
-worker pool (default: one worker per CPU). `rt_parallel_join` waits for completion and may
-opportunistically execute queued tasks on the joining thread to reduce idle time.
+### Scheduler design
+
+- Fixed number of worker threads (default: one per CPU, override via
+  `ECMA_RS_RUNTIME_NATIVE_THREADS`).
+- Each worker has a local deque (LIFO pop/push for cache locality).
+- External submissions go into a global injector queue.
+- Workers run: pop local → steal from injector → steal from other workers → spin → sleep.
+
+`rt_parallel_join` is *helping*: the joining thread may also steal and execute tasks while waiting,
+reducing idle time and avoiding deadlocks in nested spawn/join patterns.
+
+`TaskId` handles are **one-shot**: each spawned task must be joined exactly once. Passing duplicate
+task ids (or otherwise invalid ids) to `rt_parallel_join` is treated as an ABI contract violation
+and aborts the process.
+
+### Granularity control
+
+`rt_parallel_for` exists for loop parallelization and includes basic granularity control:
+
+- Default chunk size targets ~`workers * 4` chunks, bounded by `RT_PAR_FOR_MIN_GRAIN` (default 1024).
+- A (currently stub) cost-model hook is exposed to Rust via `runtime_native::parallel::set_cost_model`.
+
+### Rust convenience APIs
+
+For Rust-side callers (tests/benchmarks/future compiler helpers), the `runtime_native::parallel`
+module exposes:
+
+- `spawn(FnOnce() + Send) -> TaskId`
+- `join(&[TaskId])`
+- `parallel_for(range, body, chunking)`
 
 ## Blocking thread pool ABI (`rt_spawn_blocking`)
 
