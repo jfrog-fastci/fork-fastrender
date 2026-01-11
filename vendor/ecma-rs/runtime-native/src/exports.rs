@@ -1988,7 +1988,12 @@ pub extern "C" fn rt_io_register_handle_with_drop(
   })
 }
 
-/// Update the interest mask for an I/O watcher created by [`rt_io_register`].
+/// Update the interest mask for an I/O watcher created by any of:
+/// - [`rt_io_register`]
+/// - [`rt_io_register_with_drop`]
+/// - [`rt_io_register_rooted`]
+/// - [`rt_io_register_handle`]
+/// - [`rt_io_register_handle_with_drop`]
 ///
 /// If the watcher is invalid or the underlying fd no longer satisfies the
 /// nonblocking contract, the update is ignored. In debug builds, failures are
@@ -2027,7 +2032,12 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
   })
 }
 
-/// Unregister an I/O watcher created by [`rt_io_register`].
+/// Unregister an I/O watcher created by any of:
+/// - [`rt_io_register`]
+/// - [`rt_io_register_with_drop`]
+/// - [`rt_io_register_rooted`]
+/// - [`rt_io_register_handle`]
+/// - [`rt_io_register_handle_with_drop`]
 ///
 /// If the watcher is invalid, this is a no-op. In debug builds, failures are
 /// logged to stderr.
