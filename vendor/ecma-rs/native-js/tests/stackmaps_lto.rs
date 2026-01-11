@@ -21,6 +21,21 @@ fn has_clang_18() -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn has_lld() -> bool {
+  for cand in ["ld.lld-18", "ld.lld"] {
+    if Command::new(cand)
+      .arg("--version")
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .status()
+      .is_ok_and(|s| s.success())
+    {
+      return true;
+    }
+  }
+  false
+}
+
 fn find_symbol<'data>(file: &object::File<'data>, name: &str) -> Option<(u64, SymbolScope)> {
   for sym in file.symbols() {
     if sym.name().ok() == Some(name) {
@@ -120,6 +135,10 @@ fn assert_stackmaps_present(exe: &[u8]) {
 fn stackmaps_survive_lto_with_and_without_gc_sections() {
   if !has_clang_18() {
     eprintln!("skipping: clang-18 not found in PATH");
+    return;
+  }
+  if !has_lld() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
   }
 

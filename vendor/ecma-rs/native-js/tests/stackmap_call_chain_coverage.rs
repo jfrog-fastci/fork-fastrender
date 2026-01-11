@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
@@ -16,6 +17,23 @@ use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection, ObjectSymbol};
+
+fn cmd_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn clang_available() -> bool {
+  cmd_works("clang-18") || cmd_works("clang")
+}
+
+fn lld_available() -> bool {
+  cmd_works("ld.lld-18") || cmd_works("ld.lld")
+}
 
 fn init_llvm() {
   native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
@@ -94,6 +112,15 @@ fn write_file(path: &Path, bytes: &[u8]) {
 
 #[test]
 fn deep_ts_call_chain_callsite_pcs_are_present_in_stackmaps() {
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   let tm = host_target_machine();
   let context = Context::create();
   let module = context.create_module("stackmap_call_chain");
