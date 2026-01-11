@@ -133,6 +133,49 @@
       base: Pure
       args: [0]
 
+- name: Array.prototype.findIndex
+  semantics: FindIndex
+  effects:
+    depends_on_args:
+      base: MAY_THROW
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Pure
+      args: [0]
+
+- name: Array.prototype.includes
+  semantics: Includes
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Array.prototype.indexOf
+  semantics: IndexOf
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Array.prototype.lastIndexOf
+  semantics: LastIndexOf
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Array.prototype.slice
+  semantics: Slice
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Allocating
+
 - name: Array.prototype.length
   kind: property_get
   effects: Pure
