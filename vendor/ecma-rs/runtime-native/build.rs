@@ -138,7 +138,17 @@ fn maybe_enable_stackmaps_linker_symbols() {
   // support the GNU ld linker script features used by `stackmaps.ld`
   // (SECTIONS/KEEP/INSERT). Force LLD so the script is accepted and stackmaps
   // are not discarded under `--gc-sections`.
-  println!("cargo:rustc-link-arg=-fuse-ld=lld");
+  let lld_fuse = if Command::new("ld.lld-18")
+    .arg("--version")
+    .output()
+    .map(|out| out.status.success())
+    .unwrap_or(false)
+  {
+    "lld-18"
+  } else {
+    "lld"
+  };
+  println!("cargo:rustc-link-arg=-fuse-ld={lld_fuse}");
 
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.
