@@ -398,13 +398,13 @@ fn fixture_runtime_toggles_from_env_map(
   }
 
   // `xtask chrome-baseline-fixtures` captures screenshots with a small `--virtual-time-budget`
-  // (5s when JS is disabled). For offline fixtures this usually allows swap-mode web fonts to load
-  // and trigger the reflow before the screenshot is taken.
+  // (~5s when JS is disabled). For offline fixtures this usually allows `font-display: swap` web
+  // fonts (especially icon fonts) to load and trigger the reflow before the screenshot is taken.
   //
   // Wait briefly by default so fixture-chrome diffs are not dominated by fallback font
-  // metric/layout differences. Keep this timeout short: real-world pages can ship many swap-mode
-  // fonts, and waiting for *all* of them can be expensive and often unnecessary for the initial
-  // viewport.
+  // metric/layout differences (or missing icon glyphs). Keep this timeout short: pages can ship
+  // many swap-mode fonts, and waiting for *all* of them can be expensive and often unnecessary for
+  // the initial viewport.
   //
   // Set `FASTR_WEB_FONT_WAIT_MS` explicitly to opt out (`0`) or to wait longer when debugging font
   // behavior.
