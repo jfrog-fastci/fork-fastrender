@@ -67,6 +67,33 @@ pub fn validate_cors_allow_origin(
   }
 
   let credentialed = credentials_mode == FetchCredentialsMode::Include;
+  // https://fetch.spec.whatwg.org/#cors-check
+  // Fetch compares the byte-serialized request origin to the raw
+  // `Access-Control-Allow-Origin` header value (after trimming HTTP OWS), rather than performing an
+  // origin-equivalence check.
+  let serialized_request_origin = if request_origin.is_http_like() {
+    let scheme = request_origin.scheme().to_ascii_lowercase();
+    let Some(host) = request_origin.host() else {
+      "null".to_string()
+    };
+    let host = host.to_ascii_lowercase();
+    let host = if host.contains(':') && !host.starts_with('[') {
+      format!("[{host}]")
+    } else {
+      host
+    };
+    let port = match (scheme.as_str(), request_origin.port()) {
+      ("http", Some(80)) | ("https", Some(443)) => None,
+      (_, Some(port)) => Some(port),
+      _ => None,
+    };
+    match port {
+      Some(port) => format!("{scheme}://{host}:{port}"),
+      None => format!("{scheme}://{host}"),
+    }
+  } else {
+    "null".to_string()
+  };
 
   let raw = resource
     .access_control_allow_origin
@@ -92,24 +119,9 @@ pub fn validate_cors_allow_origin(
     ));
   }
 
-  if raw.eq_ignore_ascii_case("null") {
-    if credentialed && !resource.access_control_allow_credentials {
-      return Err("blocked by CORS: missing Access-Control-Allow-Credentials: true".to_string());
-    }
-    if !request_origin.is_http_like() {
-      return Ok(());
-    }
+  if raw != serialized_request_origin {
     return Err(format!(
-      "blocked by CORS: Access-Control-Allow-Origin null does not match request origin {request_origin}"
-    ));
-  }
-
-  let parsed_origin =
-    Url::parse(raw).map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
-  let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_origin);
-  if !allowed_origin.same_origin(request_origin) {
-    return Err(format!(
-      "blocked by CORS: Access-Control-Allow-Origin {allowed_origin} does not match request origin {request_origin}"
+      "blocked by CORS: Access-Control-Allow-Origin {raw} does not match request origin {serialized_request_origin}"
     ));
   }
 
@@ -249,7 +261,7 @@ mod tests {
     )
     .expect_err("NBSP-prefixed ACAO wildcard must not be accepted");
     assert!(
-      err.contains("invalid Access-Control-Allow-Origin"),
+      err.contains("does not match request origin"),
       "unexpected error: {err}"
     );
   }
@@ -345,6 +357,54 @@ mod tests {
     .expect_err("comma-separated ACAO must be rejected");
     assert!(
       err.contains("multiple values"),
+      "unexpected error message: {err}"
+    );
+  }
+
+  #[test]
+  fn rejects_allow_origin_with_trailing_slash() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://client.example/".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("ACAO containing a path must be rejected");
+    assert!(
+      err.contains("does not match request origin"),
+      "unexpected error message: {err}"
+    );
+  }
+
+  #[test]
+  fn rejects_allow_origin_with_explicit_default_port() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://client.example:443".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("ACAO containing an explicit default port must be rejected");
+    assert!(
+      err.contains("does not match request origin"),
       "unexpected error message: {err}"
     );
   }
