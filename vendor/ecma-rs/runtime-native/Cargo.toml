@@ -31,6 +31,8 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 ahash = { workspace = true }
 bitflags = { workspace = true }
+crossbeam-deque = { workspace = true }
+crossbeam-utils = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }

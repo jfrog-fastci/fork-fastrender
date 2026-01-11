@@ -144,6 +144,8 @@ tracing-subscriber = { version = "0.3.19", default-features = false }
 unicode-ident = "1.0"
 walkdir = "2.5"
 wait-timeout = "0.2"
+crossbeam-deque = "0.8.6"
+crossbeam-utils = "0.8.21"
 
 [patch.crates-io]
 derive-visitor = { path = "third_party/derive-visitor" }

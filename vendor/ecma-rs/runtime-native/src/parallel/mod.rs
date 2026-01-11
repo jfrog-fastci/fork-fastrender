@@ -1,13 +1,36 @@
-use std::collections::{HashSet, VecDeque};
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
+
+use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use crossbeam_utils::sync::{Parker, Unparker};
 
 use crate::abi::TaskId;
 use crate::threading::{self, ThreadKind};
 
 mod parallel_for;
+
+thread_local! {
+  static LOCAL_WORKER: Cell<*const Worker<Arc<TaskState>>> = Cell::new(ptr::null());
+  static WORKER_INDEX: Cell<usize> = Cell::new(usize::MAX);
+}
+
+fn local_worker_ptr() -> Option<(*const Worker<Arc<TaskState>>, usize)> {
+  LOCAL_WORKER.with(|worker| {
+    let ptr = worker.get();
+    if ptr.is_null() {
+      None
+    } else {
+      let idx = WORKER_INDEX.with(|idx| idx.get());
+      Some((ptr, idx))
+    }
+  })
+}
 
 /// Internal parallel scheduler state.
 ///
@@ -180,8 +203,10 @@ impl TaskState {
 }
 
 struct SchedulerInner {
-  queue: Mutex<VecDeque<Arc<TaskState>>>,
-  queue_cv: Condvar,
+  injector: Injector<Arc<TaskState>>,
+  stealers: Vec<Stealer<Arc<TaskState>>>,
+  unparkers: Vec<Unparker>,
+  next_unparker: AtomicUsize,
 }
 
 struct Scheduler {
@@ -197,16 +222,33 @@ impl Scheduler {
       .filter(|&n| n > 0)
       .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
+    let mut workers: Vec<Worker<Arc<TaskState>>> = Vec::with_capacity(worker_count);
+    let mut stealers: Vec<Stealer<Arc<TaskState>>> = Vec::with_capacity(worker_count);
+    let mut parkers: Vec<Parker> = Vec::with_capacity(worker_count);
+    let mut unparkers: Vec<Unparker> = Vec::with_capacity(worker_count);
+
+    for _ in 0..worker_count {
+      let worker = Worker::new_lifo();
+      stealers.push(worker.stealer());
+      workers.push(worker);
+
+      let parker = Parker::new();
+      unparkers.push(parker.unparker().clone());
+      parkers.push(parker);
+    }
+
     let inner = Arc::new(SchedulerInner {
-      queue: Mutex::new(VecDeque::new()),
-      queue_cv: Condvar::new(),
+      injector: Injector::new(),
+      stealers,
+      unparkers,
+      next_unparker: AtomicUsize::new(0),
     });
 
-    for idx in 0..worker_count {
+    for (idx, (local, parker)) in workers.into_iter().zip(parkers).enumerate() {
       let inner = inner.clone();
       if thread::Builder::new()
         .name(format!("rt-par-worker-{idx}"))
-        .spawn(move || worker_loop(inner))
+        .spawn(move || worker_loop(idx, inner, local, parker))
         .is_err()
       {
         // Never unwind across our FFI boundary (this can be reached during
@@ -215,49 +257,130 @@ impl Scheduler {
       }
     }
 
-    Self {
-      worker_count,
-      inner,
+    Self { worker_count, inner }
+  }
+
+  fn wake_one(&self) {
+    let n = self.inner.unparkers.len();
+    if n == 0 {
+      return;
     }
+    let idx = self.inner.next_unparker.fetch_add(1, Ordering::Relaxed) % n;
+    self.inner.unparkers[idx].unpark();
   }
 
   fn enqueue(&self, task: Arc<TaskState>) {
-    let mut q = self.inner.queue.lock().unwrap_or_else(|_| std::process::abort());
-    q.push_back(task);
-    self.inner.queue_cv.notify_one();
+    if let Some((ptr, _idx)) = local_worker_ptr() {
+      unsafe { (&*ptr).push(task) };
+    } else {
+      self.inner.injector.push(task);
+    }
+    self.wake_one();
   }
 
   fn try_pop(&self) -> Option<Arc<TaskState>> {
-    match self.inner.queue.try_lock() {
-      Ok(mut q) => q.pop_front(),
-      Err(std::sync::TryLockError::WouldBlock) => None,
-      Err(std::sync::TryLockError::Poisoned(_)) => std::process::abort(),
+    if let Some((ptr, idx)) = local_worker_ptr() {
+      let local = unsafe { &*ptr };
+      if let Some(task) = local.pop() {
+        return Some(task);
+      }
+
+      match self.inner.injector.steal_batch_and_pop(local) {
+        Steal::Success(task) => return Some(task),
+        Steal::Retry => return None,
+        Steal::Empty => {}
+      }
+
+      let n = self.inner.stealers.len();
+      if n > 1 {
+        for offset in 1..n {
+          let victim = (idx + offset) % n;
+          match self.inner.stealers[victim].steal_batch_and_pop(local) {
+            Steal::Success(task) => return Some(task),
+            Steal::Retry => return None,
+            Steal::Empty => {}
+          }
+        }
+      }
+
+      None
+    } else {
+      match self.inner.injector.steal() {
+        Steal::Success(task) => return Some(task),
+        Steal::Retry => return None,
+        Steal::Empty => {}
+      }
+
+      for stealer in &self.inner.stealers {
+        match stealer.steal() {
+          Steal::Success(task) => return Some(task),
+          Steal::Retry => return None,
+          Steal::Empty => {}
+        }
+      }
+
+      None
     }
   }
 }
 
-fn worker_loop(inner: Arc<SchedulerInner>) -> ! {
+fn worker_loop(
+  idx: usize,
+  inner: Arc<SchedulerInner>,
+  local: Worker<Arc<TaskState>>,
+  parker: Parker,
+) -> ! {
   threading::register_current_thread(ThreadKind::Worker);
 
-  loop {
-    let task = {
-      let mut q = inner.queue.lock().unwrap_or_else(|_| std::process::abort());
-      loop {
-        if let Some(task) = q.pop_front() {
-          break task;
-        }
+  LOCAL_WORKER.with(|worker| worker.set(&local));
+  WORKER_INDEX.with(|index| index.set(idx));
 
-        threading::set_parked(true);
-        q = inner
-          .queue_cv
-          .wait(q)
-          .unwrap_or_else(|_| std::process::abort());
-        threading::set_parked(false);
-        // Before running mutator code, poll the GC safepoint.
-        threading::safepoint_poll();
+  let mut spins = 0usize;
+  'work: loop {
+    if let Some(task) = local.pop() {
+      spins = 0;
+      task.run();
+      continue;
+    }
+
+    match inner.injector.steal_batch_and_pop(&local) {
+      Steal::Success(task) => {
+        spins = 0;
+        task.run();
+        continue;
       }
-    };
+      Steal::Retry => continue,
+      Steal::Empty => {}
+    }
 
-    task.run();
+    let n = inner.stealers.len();
+    if n > 1 {
+      for offset in 1..n {
+        let victim = (idx + offset) % n;
+        match inner.stealers[victim].steal_batch_and_pop(&local) {
+          Steal::Success(task) => {
+            spins = 0;
+            task.run();
+            continue 'work;
+          }
+          Steal::Retry => continue 'work,
+          Steal::Empty => {}
+        }
+      }
+    }
+
+    if spins < 10 {
+      spins += 1;
+      std::hint::spin_loop();
+      continue;
+    }
+    spins = 0;
+
+    threading::set_parked(true);
+    parker.park_timeout(Duration::from_millis(1));
+    threading::set_parked(false);
+
+    // Before running mutator code, poll the GC safepoint.
+    threading::safepoint_poll();
   }
 }
