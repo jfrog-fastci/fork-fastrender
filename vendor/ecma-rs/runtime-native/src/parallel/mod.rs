@@ -89,24 +89,24 @@ impl ParallelRuntime {
           continue;
         }
 
-        let mut guard = task
-          .done_lock
-          .lock()
-          .unwrap_or_else(|_| std::process::abort());
         // Avoid deadlocking stop-the-world GC: treat this thread as GC-safe while blocked on the
-        // task completion condition variable.
+        // task completion condvar.
         //
-        // Note: keep the GC-safe guard alive for the whole wait loop, and drop it *after* dropping
-        // the mutex guard. Dropping `GcSafeGuard` may block if a stop-the-world is active; we must
-        // not hold `done_lock` while doing so or we could deadlock the completing worker.
+        // Note: acquire `GcSafeGuard` *before* locking `done_lock` so lock acquisition itself can't
+        // deadlock the GC coordinator if contended.
         let gc_safe = threading::enter_gc_safe_region();
-        while !task.done.load(Ordering::Acquire) {
-          guard = task
-            .done_cv
-            .wait(guard)
+        {
+          let mut guard = task
+            .done_lock
+            .lock()
             .unwrap_or_else(|_| std::process::abort());
+          while !task.done.load(Ordering::Acquire) {
+            guard = task
+              .done_cv
+              .wait(guard)
+              .unwrap_or_else(|_| std::process::abort());
+          }
         }
-        drop(guard);
         drop(gc_safe);
       }
     }
@@ -222,8 +222,11 @@ impl Scheduler {
   }
 
   fn try_pop(&self) -> Option<Arc<TaskState>> {
-    let mut q = self.inner.queue.lock().unwrap_or_else(|_| std::process::abort());
-    q.pop_front()
+    match self.inner.queue.try_lock() {
+      Ok(mut q) => q.pop_front(),
+      Err(std::sync::TryLockError::WouldBlock) => None,
+      Err(std::sync::TryLockError::Poisoned(_)) => std::process::abort(),
+    }
   }
 }
 
