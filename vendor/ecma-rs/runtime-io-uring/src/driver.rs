@@ -666,6 +666,516 @@ mod imp {
             ))
         }
 
+        /// Submit a readv with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_readv_with_timeout<B: IoBufMut>(
+            &mut self,
+            fd: RawFd,
+            mut bufs: Vec<B>,
+            offset: Option<u64>,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<Vec<B>>, IoOp<OpId>)> {
+            let read_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let read_shared = Arc::new(OpShared::new(read_id));
+            let read_weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&read_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let iovecs = SendIovecs(build_readv_iovecs(&mut bufs));
+            let iovecs_len: u32 = iovecs
+                .len()
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
+
+            let stability = crate::debug_stability::record(read_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                for (i, b) in bufs.iter_mut().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_mut_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
+            let off = offset.unwrap_or(u64::MAX);
+            let read_entry = opcode::Readv::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
+                .offset(off as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(read_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [read_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                read_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        for (i, b) in bufs.iter_mut().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_mut_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
+                    if let Some(shared) = read_weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, read_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: read_id,
+                    shared: read_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit a writev with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_writev_with_timeout<B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            bufs: Vec<B>,
+            offset: Option<u64>,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<Vec<B>>, IoOp<OpId>)> {
+            let write_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let write_shared = Arc::new(OpShared::new(write_id));
+            let write_weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&write_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let iovecs = SendIovecs(build_writev_iovecs(&bufs));
+            let iovecs_len: u32 = iovecs
+                .len()
+                .try_into()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
+
+            let stability = crate::debug_stability::record(write_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                for (i, b) in bufs.iter().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
+            let off = offset.unwrap_or(u64::MAX);
+            let write_entry = opcode::Writev::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
+                .offset(off as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(write_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [write_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                write_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        for (i, b) in bufs.iter().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
+                    if let Some(shared) = write_weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, write_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: write_id,
+                    shared: write_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit a sendmsg with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_sendmsg_with_timeout<'a, B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            msg: SendMsg<'a, B>,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<Vec<B>>, IoOp<OpId>)> {
+            let send_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let send_shared = Arc::new(OpShared::new(send_id));
+            let send_weak: Weak<OpShared<Vec<B>>> = Arc::downgrade(&send_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            if msg.bufs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "sendmsg requires at least one buffer",
+                ));
+            }
+
+            let bufs = msg.bufs;
+            let iovecs = SendIovecs(build_sendmsg_iovecs(&bufs));
+            let name = match msg.name {
+                None => None,
+                Some(bytes) => Some(copy_sockaddr_storage(bytes)?),
+            };
+            let control = msg.control.map(|c| c.to_vec().into_boxed_slice());
+
+            let mut hdr: SendMsgHdr = SendMsgHdr(Box::new(unsafe { mem::zeroed() }));
+            hdr.as_mut().msg_iov = iovecs.as_ptr().cast_mut();
+            hdr.as_mut().msg_iovlen = iovecs.len();
+
+            if let Some(ref name) = name {
+                hdr.as_mut().msg_name =
+                    (name.as_ref() as *const libc::sockaddr_storage).cast_mut().cast();
+                hdr.as_mut().msg_namelen = msg.name.unwrap().len() as libc::socklen_t;
+            }
+
+            if let Some(ref control) = control {
+                hdr.as_mut().msg_control = control.as_ptr().cast_mut().cast();
+                hdr.as_mut().msg_controllen = control.len();
+            }
+
+            let stability = crate::debug_stability::record(send_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::MsgHdr,
+                    hdr.as_ptr().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                if let Some(ref name) = name {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::SockAddr,
+                        (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                    );
+                }
+                if let Some(ref control) = control {
+                    rec.ptr(crate::debug_stability::PtrKind::MsgControl, control.as_ptr());
+                }
+                for (i, b) in bufs.iter().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
+            let send_entry = opcode::SendMsg::new(types::Fd(fd), hdr.as_ptr())
+                .flags(msg.flags as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(send_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [send_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                send_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::MsgHdr,
+                            hdr.as_ptr().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        if let Some(ref name) = name {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::SockAddr,
+                                (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                            );
+                        }
+                        if let Some(ref control) = control {
+                            rec.ptr(crate::debug_stability::PtrKind::MsgControl, control.as_ptr());
+                        }
+                        for (i, b) in bufs.iter().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
+                    let _keep = (iovecs, hdr, name, control);
+                    if let Some(shared) = send_weak.upgrade() {
+                        shared.complete(result, bufs);
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, send_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: send_id,
+                    shared: send_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit a recvmsg with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_recvmsg_with_timeout<B: IoBufMut>(
+            &mut self,
+            fd: RawFd,
+            msg: RecvMsg<B>,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<RecvMsgResource<B>>, IoOp<OpId>)> {
+            let recv_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let recv_shared = Arc::new(OpShared::new(recv_id));
+            let recv_weak: Weak<OpShared<RecvMsgResource<B>>> = Arc::downgrade(&recv_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            if msg.bufs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recvmsg requires at least one buffer",
+                ));
+            }
+
+            let mut bufs = msg.bufs;
+            let iovecs = SendIovecs(build_recvmsg_iovecs(&mut bufs));
+
+            let name = if msg.want_name {
+                Some(Box::new(unsafe { mem::zeroed::<libc::sockaddr_storage>() }))
+            } else {
+                None
+            };
+            let control = msg
+                .control_len
+                .map(|len| vec![0u8; len].into_boxed_slice());
+
+            let mut hdr: SendMsgHdr = SendMsgHdr(Box::new(unsafe { mem::zeroed() }));
+            hdr.as_mut().msg_iov = iovecs.as_ptr().cast_mut();
+            hdr.as_mut().msg_iovlen = iovecs.len();
+
+            if let Some(ref name) = name {
+                hdr.as_mut().msg_name =
+                    (name.as_ref() as *const libc::sockaddr_storage).cast_mut().cast();
+                hdr.as_mut().msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            }
+
+            if let Some(ref control) = control {
+                hdr.as_mut().msg_control = control.as_ptr().cast_mut().cast();
+                hdr.as_mut().msg_controllen = control.len();
+            }
+
+            let stability = crate::debug_stability::record(recv_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::MsgHdr,
+                    hdr.as_ptr().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                if let Some(ref name) = name {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::SockAddr,
+                        (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                    );
+                }
+                if let Some(ref control) = control {
+                    rec.ptr(crate::debug_stability::PtrKind::MsgControl, control.as_ptr());
+                }
+                for (i, b) in bufs.iter_mut().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_mut_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
+            let recv_entry = opcode::RecvMsg::new(types::Fd(fd), hdr.as_mut_ptr())
+                .flags(msg.flags as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(recv_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [recv_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                recv_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::MsgHdr,
+                            hdr.as_ptr().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        if let Some(ref name) = name {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::SockAddr,
+                                (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                            );
+                        }
+                        if let Some(ref control) = control {
+                            rec.ptr(crate::debug_stability::PtrKind::MsgControl, control.as_ptr());
+                        }
+                        for (i, b) in bufs.iter_mut().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_mut_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
+
+                    let hdr_ref = hdr.as_ref();
+                    let msg_flags = if result < 0 { 0 } else { hdr_ref.msg_flags };
+
+                    let (name_len, control_len) = if result < 0 {
+                        (0usize, 0usize)
+                    } else {
+                        (
+                            hdr_ref.msg_namelen as usize,
+                            hdr_ref.msg_controllen as usize,
+                        )
+                    };
+
+                    let resource = RecvMsgResource::new(bufs, name, name_len, control, control_len, msg_flags);
+
+                    let _keep = (iovecs, hdr);
+                    if let Some(shared) = recv_weak.upgrade() {
+                        shared.complete(result, resource);
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, recv_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: recv_id,
+                    shared: recv_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
         pub fn is_link_timeout_supported(&self) -> io::Result<bool> {
             let ring = self
                 .ring
