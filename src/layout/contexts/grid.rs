@@ -3449,13 +3449,14 @@ impl GridFormattingContext {
           self.convert_grid_template(&style.grid_template_rows, style);
       }
 
-      // `grid-template-areas` defines the explicit grid size even when no explicit template tracks
-      // are provided via `grid-template-columns/rows`. In that case, CSS uses `auto` sizing for the
-      // template tracks (and `grid-auto-{rows,columns}` for any additional implicit tracks).
+      // `grid-template-areas` participates in defining the explicit grid size. When the area
+      // matrix is larger than the template track list, CSS creates additional tracks and sizes them
+      // using `grid-auto-rows` / `grid-auto-columns` (CSS Grid §7.2: The Implicit Grid).
       //
-      // Taffy has historically treated area-only grids as having no explicit tracks, which can
-      // yield incorrect track sizing in some real-world layouts. Mirror the CSS behavior by
-      // synthesizing explicit `auto` tracks for the area-defined grid size.
+      // Taffy has historically only handled the “area-only” case (no explicit template tracks at
+      // all). Ensure we also synthesize the extra tracks when `grid-template-rows/columns` exists
+      // but is shorter than the area matrix — even when no grid items occupy those tracks (BBC uses
+      // this pattern with an empty "supplementary" row at some breakpoints).
       if !style.grid_template_areas.is_empty() {
         let css_row_count = style.grid_template_areas.len();
         let css_col_count = style
@@ -3465,27 +3466,81 @@ impl GridFormattingContext {
           .max()
           .unwrap_or(0);
 
-        let make_auto_tracks =
-          |count: usize| -> Vec<GridTemplateComponent<String>> {
-            (0..count)
-              .map(|_| GridTemplateComponent::Single(TrackSizingFunction::AUTO))
-              .collect()
+        let template_track_count =
+          |template: &[GridTemplateComponent<String>]| -> Option<usize> {
+            let mut count = 0usize;
+            for component in template {
+              match component {
+                GridTemplateComponent::Single(_) => count += 1,
+                GridTemplateComponent::Repeat(rep) => match rep.count {
+                  // Explicit repeat counts are expanded during style parsing; keep this for
+                  // completeness in case a caller constructs Taffy styles directly.
+                  RepetitionCount::Count(n) => {
+                    count = count.saturating_add((n as usize).saturating_mul(rep.tracks.len()));
+                  }
+                  // Auto-repeat resolves during layout. We can't safely reason about the final
+                  // track count here, so skip synthesis in that case.
+                  RepetitionCount::AutoFill | RepetitionCount::AutoFit => return None,
+                },
+              }
+            }
+            Some(count)
           };
 
+        let ensure_tracks = |
+          template: &mut Vec<GridTemplateComponent<String>>,
+          required: usize,
+          implicit_tracks: &Arc<[GridTrack]>,
+        | {
+          if required == 0 {
+            return;
+          }
+          let Some(current) = template_track_count(template) else {
+            return;
+          };
+          if current == 0 {
+            // With no explicit template tracks, CSS defaults the area-defined tracks to `auto`.
+            template.extend((0..required).map(|_| GridTemplateComponent::Single(TrackSizingFunction::AUTO)));
+            return;
+          }
+          if current >= required {
+            return;
+          }
+          let missing = required - current;
+          let default_auto_track = GridTrack::Auto;
+          for i in 0..missing {
+            let track = if implicit_tracks.is_empty() {
+              &default_auto_track
+            } else {
+              &implicit_tracks[i % implicit_tracks.len()]
+            };
+            template.push(GridTemplateComponent::Single(self.convert_track_size(track, style)));
+          }
+        };
+
         if swap_grid_axes {
-          if taffy_style.grid_template_columns.is_empty() && css_row_count > 0 {
-            taffy_style.grid_template_columns = make_auto_tracks(css_row_count);
-          }
-          if taffy_style.grid_template_rows.is_empty() && css_col_count > 0 {
-            taffy_style.grid_template_rows = make_auto_tracks(css_col_count);
-          }
+          // CSS rows map to physical columns; CSS columns map to physical rows.
+          ensure_tracks(
+            &mut taffy_style.grid_template_columns,
+            css_row_count,
+            &style.grid_auto_rows,
+          );
+          ensure_tracks(
+            &mut taffy_style.grid_template_rows,
+            css_col_count,
+            &style.grid_auto_columns,
+          );
         } else {
-          if taffy_style.grid_template_columns.is_empty() && css_col_count > 0 {
-            taffy_style.grid_template_columns = make_auto_tracks(css_col_count);
-          }
-          if taffy_style.grid_template_rows.is_empty() && css_row_count > 0 {
-            taffy_style.grid_template_rows = make_auto_tracks(css_row_count);
-          }
+          ensure_tracks(
+            &mut taffy_style.grid_template_columns,
+            css_col_count,
+            &style.grid_auto_columns,
+          );
+          ensure_tracks(
+            &mut taffy_style.grid_template_rows,
+            css_row_count,
+            &style.grid_auto_rows,
+          );
         }
       }
 
@@ -6628,6 +6683,21 @@ impl GridFormattingContext {
               bounds.y() - reused.bounds.y(),
             );
             translate_fragment_tree(&mut reused, delta, deadline_counter)?;
+            // Measured grid item fragments are laid out at `origin=(0, 0)` using the grid
+            // container's containing blocks (because the final item placement isn't known during
+            // Taffy measurement). When we later translate the item root into its final grid-area
+            // position, out-of-flow positioned descendants whose containing block is outside the
+            // item subtree must *not* inherit that translation.
+            //
+            // This mirrors the translation-cancellation logic in parallel block layout.
+            let viewport_fixed_cb = self.factory.viewport_fixed_cb();
+            let external_fixed_cb = self.factory.nearest_fixed_cb() != viewport_fixed_cb;
+            cancel_translation_for_out_of_flow_positioned_descendants(
+              &mut reused,
+              delta,
+              external_fixed_cb,
+              deadline_counter,
+            )?;
             let percentage_base = constraints
               .inline_percentage_base
               .filter(|base| base.is_finite())
@@ -10774,6 +10844,89 @@ fn translate_fragment_tree(
   Ok(())
 }
 
+fn cancel_translation_for_out_of_flow_positioned_descendants(
+  fragment: &mut FragmentNode,
+  delta: Point,
+  external_fixed_cb: bool,
+  deadline_counter: &mut usize,
+) -> Result<(), LayoutError> {
+  if delta.x == 0.0 && delta.y == 0.0 {
+    return Ok(());
+  }
+  let cancel = Point::new(-delta.x, -delta.y);
+
+  fn walk(
+    node: &mut FragmentNode,
+    cancel: Point,
+    has_abs_cb: bool,
+    has_fixed_cb: bool,
+    external_fixed_cb: bool,
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    check_layout_deadline(deadline_counter)?;
+    let (has_abs_cb_here, has_fixed_cb_here) = node
+      .style
+      .as_deref()
+      .map(|style| {
+        (
+          has_abs_cb || style.establishes_abs_containing_block(),
+          has_fixed_cb || style.establishes_fixed_containing_block(),
+        )
+      })
+      .unwrap_or((has_abs_cb, has_fixed_cb));
+
+    for child in node.children_mut() {
+      let is_abs = child
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, crate::style::position::Position::Absolute));
+      let is_fixed = child
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, crate::style::position::Position::Fixed));
+
+      let needs_cancel = (is_abs && !has_abs_cb_here)
+        || (is_fixed && external_fixed_cb && !has_fixed_cb_here);
+      if needs_cancel {
+        child.bounds = child.bounds.translate(cancel);
+        child.logical_override =
+          child.logical_override.map(|logical| logical.translate(cancel));
+        // The out-of-flow subtree inherits the cancelled translation. Avoid walking into it so we
+        // don't double-apply the adjustment.
+        continue;
+      }
+
+      walk(
+        child,
+        cancel,
+        has_abs_cb_here,
+        has_fixed_cb_here,
+        external_fixed_cb,
+        deadline_counter,
+      )?;
+    }
+
+    Ok(())
+  }
+
+  let has_abs_cb_root = fragment
+    .style
+    .as_deref()
+    .is_some_and(|style| style.establishes_abs_containing_block());
+  let has_fixed_cb_root = fragment
+    .style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  walk(
+    fragment,
+    cancel,
+    has_abs_cb_root,
+    has_fixed_cb_root,
+    external_fixed_cb,
+    deadline_counter,
+  )
+}
+
 fn normalize_fragment_origin(
   mut fragment: FragmentNode,
   deadline_counter: &mut usize,
@@ -11975,6 +12128,8 @@ impl FormattingContext for GridFormattingContext {
         constraints,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       ) {
         drop(intrinsic_keyword_overrides);
         return Ok(cached);
@@ -12754,7 +12909,17 @@ impl FormattingContext for GridFormattingContext {
 
     if let Some(start) = grid_trace_start {
       let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-      eprintln!("[grid-layout] done id={} ms={elapsed_ms:.2}", box_node.id);
+      match taffy.layout(root_id) {
+        Ok(layout) => {
+          eprintln!(
+            "[grid-layout] done id={} ms={elapsed_ms:.2} size=({:.2}x{:.2})",
+            box_node.id, layout.size.width, layout.size.height
+          );
+        }
+        Err(_) => {
+          eprintln!("[grid-layout] done id={} ms={elapsed_ms:.2}", box_node.id);
+        }
+      }
     }
 
     // Convert back to FragmentNode tree and layout each in-flow child using its formatting context.
@@ -13756,6 +13921,8 @@ impl FormattingContext for GridFormattingContext {
         &fragment,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       );
     }
 

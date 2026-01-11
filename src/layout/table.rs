@@ -6240,6 +6240,8 @@ impl FormattingContext for TableFormattingContext {
         constraints,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       ) {
         return Ok(cached);
       }
@@ -7250,6 +7252,8 @@ impl FormattingContext for TableFormattingContext {
           &fragment,
           self.factory.viewport_scroll(),
           self.viewport_size,
+          self.nearest_positioned_cb,
+          self.nearest_fixed_cb,
         );
       }
       return Ok(fragment);
@@ -8900,6 +8904,8 @@ impl FormattingContext for TableFormattingContext {
           &fragment,
           self.factory.viewport_scroll(),
           self.viewport_size,
+          self.nearest_positioned_cb,
+          self.nearest_fixed_cb,
         );
       }
       return Ok(fragment);
@@ -9202,6 +9208,8 @@ impl FormattingContext for TableFormattingContext {
         &wrapper_fragment,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       );
     }
 

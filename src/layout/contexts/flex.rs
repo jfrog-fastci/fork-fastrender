@@ -944,6 +944,8 @@ impl FormattingContext for FlexFormattingContext {
         &constraints,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       ) {
         return Ok(cached);
       }
@@ -1361,47 +1363,101 @@ impl FormattingContext for FlexFormattingContext {
       .map(|h| (h - vertical_edges).max(0.0))
       .filter(|h| h.is_finite());
 
-    let establishes_fixed_cb = style.has_transform()
-      || style.perspective.is_some()
-      || style.containment.layout
-      || style.containment.paint;
+    // The flex container can establish containing blocks for both absolute and fixed descendants
+    // (CSS 2.1 §10.1 / CSS Transforms). We must thread those containing blocks into flex item
+    // measurement so nested out-of-flow positioned descendants do not resolve against the
+    // viewport during the Taffy measurement phase.
+    let establishes_abs_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+
+    // Establish the positioned containing block for descendants when this flex container is
+    // positioned (or otherwise establishes a containing block such as via transforms/filters).
+    //
+    // During the measurement phase we may not yet know the final `height:auto` used size, so the
+    // block-size can be 0px/indefinite. This is still better than inheriting the viewport CB: it
+    // prevents "absolute fill" patterns from inflating intrinsic sizes to viewport dimensions, and
+    // the final conversion pass will re-layout positioned-sensitive children once the real used
+    // height is known.
+    let descendant_nearest_positioned_cb = if establishes_abs_cb {
+      let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
+      let border_left =
+        self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+      let border_right =
+        self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+      let border_top =
+        self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+      let border_bottom =
+        self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+
+      let border_box_width = container_used_border_box_width
+        .filter(|w| w.is_finite())
+        .map(|w| w.max(0.0))
+        .unwrap_or(0.0);
+      let border_box_height = container_used_border_box_height
+        .filter(|h| h.is_finite())
+        .map(|h| h.max(0.0))
+        .unwrap_or(0.0);
+
+      let padding_origin = Point::new(border_left, border_top);
+      let padding_size = Size::new(
+        (border_box_width - border_left - border_right).max(0.0),
+        (border_box_height - border_top - border_bottom).max(0.0),
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+
+      ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        viewport_size,
+        Some(padding_rect.size.width),
+        // Only treat the block percentage base as definite when the border box height is definite.
+        container_used_border_box_height.map(|_| padding_rect.size.height),
+      )
+    } else {
+      self.nearest_positioned_cb
+    };
     let descendant_nearest_fixed_cb = if establishes_fixed_cb {
       let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
-      let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
-      let padding_right =
-        self.resolve_length_for_width(style.padding_right, percentage_base, style);
-      let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
-      let padding_bottom =
-        self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
       let border_left =
-        self.resolve_length_for_width(style.border_left_width, percentage_base, style);
+        self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
       let border_top =
-        self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+        self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+      let border_right =
+        self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+      let border_bottom =
+        self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
 
-      let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
-      let content_width = constraints.width().unwrap_or(0.0).max(0.0);
-      let content_height = constraints.height().unwrap_or(0.0).max(0.0);
+      let padding_origin = Point::new(border_left, border_top);
+      let border_box_width = container_used_border_box_width
+        .filter(|w| w.is_finite())
+        .map(|w| w.max(0.0))
+        .unwrap_or(0.0);
+      let border_box_height = container_used_border_box_height
+        .filter(|h| h.is_finite())
+        .map(|h| h.max(0.0))
+        .unwrap_or(0.0);
       let padding_size = Size::new(
-        content_width + padding_left + padding_right,
-        content_height + padding_top + padding_bottom,
+        (border_box_width - border_left - border_right).max(0.0),
+        (border_box_height - border_top - border_bottom).max(0.0),
       );
       let padding_rect = Rect::new(padding_origin, padding_size);
       ContainingBlock::with_viewport_and_bases(
         padding_rect,
         viewport_size,
         Some(padding_rect.size.width),
-        constraints.height().map(|_| padding_rect.size.height),
+        container_used_border_box_height.map(|_| padding_rect.size.height),
       )
       .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       self.nearest_fixed_cb
     };
 
-    let base_factory = if descendant_nearest_fixed_cb == self.factory.nearest_fixed_cb() {
-      self.child_factory()
-    } else {
-      self.factory.with_fixed_cb(descendant_nearest_fixed_cb)
-    };
+    let mut base_factory = self.child_factory();
+    if descendant_nearest_positioned_cb != self.factory.nearest_positioned_cb() {
+      base_factory = base_factory.with_positioned_cb(descendant_nearest_positioned_cb);
+    }
+    if descendant_nearest_fixed_cb != self.factory.nearest_fixed_cb() {
+      base_factory = base_factory.with_fixed_cb(descendant_nearest_fixed_cb);
+    }
     let factory = base_factory.clone();
     let viewport_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
     let mut scroll_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
@@ -2315,7 +2371,17 @@ impl FormattingContext for FlexFormattingContext {
                     let measure_style: &ComputedStyle = override_style
                       .as_deref()
                       .unwrap_or_else(|| measure_box.style.as_ref());
-                    let cache_key = if scroll_sensitive_items.contains(&box_ptr) {
+                    let cache_key = if positioned_sensitive_items.contains(&box_ptr) {
+                      let positioned_cb = factory.nearest_positioned_cb();
+                      let fixed_cb = factory.nearest_fixed_cb();
+                      flex_cache_key_with_style_scroll_and_containing_blocks(
+                        measure_box,
+                        measure_style,
+                        viewport_scroll,
+                        &positioned_cb,
+                        &fixed_cb,
+                      )
+                    } else if scroll_sensitive_items.contains(&box_ptr) {
                       flex_cache_key_with_style_and_scroll(
                         measure_box,
                         measure_style,
@@ -5330,6 +5396,8 @@ impl FormattingContext for FlexFormattingContext {
         &fragment,
         self.factory.viewport_scroll(),
         self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
       );
     }
 
@@ -6177,6 +6245,60 @@ fn flex_cache_key_with_style_and_scroll(
   base.hash(&mut h);
   f32_to_canonical_bits(viewport_scroll.x).hash(&mut h);
   f32_to_canonical_bits(viewport_scroll.y).hash(&mut h);
+  h.finish()
+}
+
+fn hash_containing_block_for_cache_key(
+  cb: &ContainingBlock,
+  h: &mut FingerprintHasher,
+) {
+  use std::hash::Hash;
+  // Containing blocks influence the layout of out-of-flow positioned descendants. Include the
+  // translated containing block rect and percentage bases so fragment reuse remains correct when a
+  // positioned ancestor changes size (e.g. a `position:relative` flex container with `height:auto`)
+  // between the measurement phase and final layout.
+  let rect = cb.rect;
+  f32_to_canonical_bits(rect.origin.x).hash(h);
+  f32_to_canonical_bits(rect.origin.y).hash(h);
+  f32_to_canonical_bits(rect.size.width).hash(h);
+  f32_to_canonical_bits(rect.size.height).hash(h);
+
+  let viewport = cb.viewport_size();
+  f32_to_canonical_bits(viewport.width).hash(h);
+  f32_to_canonical_bits(viewport.height).hash(h);
+
+  match cb.inline_percentage_base() {
+    Some(v) => {
+      1u8.hash(h);
+      f32_to_canonical_bits(v).hash(h);
+    }
+    None => 0u8.hash(h),
+  }
+  match cb.block_percentage_base() {
+    Some(v) => {
+      1u8.hash(h);
+      f32_to_canonical_bits(v).hash(h);
+    }
+    None => 0u8.hash(h),
+  }
+}
+
+fn flex_cache_key_with_style_scroll_and_containing_blocks(
+  box_node: &BoxNode,
+  style: &ComputedStyle,
+  viewport_scroll: Point,
+  positioned_cb: &ContainingBlock,
+  fixed_cb: &ContainingBlock,
+) -> u64 {
+  use std::hash::Hash;
+  let base = flex_cache_key_with_style_and_scroll(box_node, style, viewport_scroll);
+  let mut h = FingerprintHasher::default();
+  base.hash(&mut h);
+  // Tag this variant so a base key that happens to hash the same as our appended fields cannot
+  // collide.
+  0xCBu8.hash(&mut h);
+  hash_containing_block_for_cache_key(positioned_cb, &mut h);
+  hash_containing_block_for_cache_key(fixed_cb, &mut h);
   h.finish()
 }
 
@@ -9351,10 +9473,6 @@ impl FlexFormattingContext {
     scroll_sensitive: &FxHashSet<*const BoxNode>,
     positioned_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
-    // Use a small epsilon to treat near-zero border-box sizes as collapsed. This is only used for
-    // root rect sanitisation/corrections (when Taffy returns 0/NaN) and should not meaningfully
-    // affect normal layout.
-    let rect_eps = 0.01;
     // Get layout from Taffy
     taffy_tree
       .layout(taffy_node)
@@ -10205,11 +10323,37 @@ impl FlexFormattingContext {
         && !(is_positioned_sensitive && (establishes_abs_cb || establishes_fixed_cb))
       {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
+        let origin = Point::new(translated_origin_x, translated_origin_y);
+        let origin = if origin.x.is_finite() && origin.y.is_finite() {
+          origin
+        } else {
+          Point::ZERO
+        };
         let child_scroll = Point::new(
-          parent_scroll.x - translated_origin_x,
-          parent_scroll.y - translated_origin_y,
+          parent_scroll.x - origin.x,
+          parent_scroll.y - origin.y,
         );
-        let cache_key = if is_scroll_sensitive || is_positioned_sensitive {
+        let cache_key = if is_positioned_sensitive {
+          // Absolutely positioned descendants can resolve against containing blocks established by
+          // ancestors (e.g. a `position:relative` flex container). The translated containing blocks
+          // become part of the effective layout input for this subtree, so include them in the
+          // cache key to avoid reusing fragments measured under a different containing block.
+          let delta = Point::new(-origin.x, -origin.y);
+          let positioned_cb = factory.nearest_positioned_cb().translate(delta);
+          let viewport_fixed_cb = factory.viewport_fixed_cb();
+          let fixed_cb = if factory.nearest_fixed_cb() == viewport_fixed_cb {
+            viewport_fixed_cb
+          } else {
+            factory.nearest_fixed_cb().translate(delta)
+          };
+          flex_cache_key_with_style_scroll_and_containing_blocks(
+            child_box,
+            child_box.style.as_ref(),
+            child_scroll,
+            &positioned_cb,
+            &fixed_cb,
+          )
+        } else if is_scroll_sensitive {
           flex_cache_key_with_scroll(child_box, child_scroll)
         } else {
           flex_cache_key(child_box)

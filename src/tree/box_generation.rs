@@ -4346,6 +4346,22 @@ fn generate_boxes_for_styled_into(
     display.blockify()
   }
 
+  fn blockify_display_for_out_of_flow_position(display: Display) -> Display {
+    // CSS 2.1 §9.7 / CSS Display Level 3: floats and absolutely positioned elements are
+    // blockified.
+    //
+    // Table-internal display types cannot participate in table layout once taken out-of-flow, so
+    // they fall back to `block`.
+    //
+    // https://www.w3.org/TR/CSS21/visuren.html#dis-pos-flo
+    // https://www.w3.org/TR/css-display-3/#transformations
+    if display.is_table_internal() {
+      Display::Block
+    } else {
+      display.blockify()
+    }
+  }
+
   fn blockify_display_for_float(display: Display) -> Display {
     // CSS 2.1 §9.7: the used display type is affected by `float`.
     //
@@ -4353,17 +4369,7 @@ fn generate_boxes_for_styled_into(
     // cannot participate in table layout once taken out of flow.
     //
     // https://www.w3.org/TR/CSS21/visuren.html#dis-pos-flo
-    match display {
-      Display::TableRow
-      | Display::TableCell
-      | Display::TableRowGroup
-      | Display::TableHeaderGroup
-      | Display::TableFooterGroup
-      | Display::TableColumn
-      | Display::TableColumnGroup
-      | Display::TableCaption => Display::Block,
-      other => other.blockify(),
-    }
+    blockify_display_for_out_of_flow_position(display)
   }
 
   fn transform_style_for_box_generation_if_needed<'a>(
@@ -4384,6 +4390,11 @@ fn generate_boxes_for_styled_into(
       ) {
         display = blockify_flex_or_grid_item_display(display);
       }
+    }
+
+    // CSS 2.1 §9.7 / CSS Display Level 3: absolutely positioned and fixed elements are blockified.
+    if matches!(style.position, Position::Absolute | Position::Fixed) {
+      display = blockify_display_for_out_of_flow_position(display);
     }
 
     // CSS 2.1 §9.7: floats are blockified for box generation.
@@ -5348,19 +5359,42 @@ fn create_pseudo_element_box(
       Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
     )
   {
-    let blockified = match display {
-      Display::Inline => Display::Block,
-      Display::InlineBlock => Display::FlowRoot,
-      Display::InlineFlex => Display::Flex,
-      Display::InlineGrid => Display::Grid,
-      Display::InlineTable => Display::Table,
-      // FastRender models ruby as inline-level flow boxes; blockify to a plain block.
-      Display::Ruby
-      | Display::RubyBase
-      | Display::RubyText
-      | Display::RubyBaseContainer
-      | Display::RubyTextContainer => Display::Block,
-      _ => display,
+    // CSS Display Level 3: flex/grid items are blockified.
+    //
+    // https://www.w3.org/TR/css-display-3/#transformations
+    let blockified = display.blockify();
+    if blockified != display {
+      let mut new_style = pseudo_style.as_ref().clone();
+      new_style.display = blockified;
+      pseudo_style = Arc::new(new_style);
+      display = blockified;
+    }
+  }
+
+  // CSS 2.1 §9.7 / CSS Display Level 3: absolutely positioned and fixed elements are blockified.
+  //
+  // Table-internal display types cannot participate in table layout once taken out-of-flow, so
+  // they fall back to `block`.
+  if matches!(pseudo_style.position, Position::Absolute | Position::Fixed) {
+    let blockified = if display.is_table_internal() {
+      Display::Block
+    } else {
+      display.blockify()
+    };
+    if blockified != display {
+      let mut new_style = pseudo_style.as_ref().clone();
+      new_style.display = blockified;
+      pseudo_style = Arc::new(new_style);
+      display = blockified;
+    }
+  }
+
+  // CSS 2.1 §9.7: floats are blockified.
+  if pseudo_style.float.is_floating() {
+    let blockified = if display.is_table_internal() {
+      Display::Block
+    } else {
+      display.blockify()
     };
     if blockified != display {
       let mut new_style = pseudo_style.as_ref().clone();

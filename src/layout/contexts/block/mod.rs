@@ -8847,6 +8847,8 @@ impl FormattingContext for BlockFormattingContext {
       constraints,
       self.factory.viewport_scroll(),
       self.viewport_size,
+      self.nearest_positioned_cb,
+      self.nearest_fixed_cb,
     ) {
       return Ok(cached);
     }
@@ -11247,6 +11249,8 @@ impl FormattingContext for BlockFormattingContext {
       &converted,
       self.factory.viewport_scroll(),
       self.viewport_size,
+      self.nearest_positioned_cb,
+      self.nearest_fixed_cb,
     );
 
     return Ok(converted);

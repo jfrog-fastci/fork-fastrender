@@ -131,13 +131,12 @@ fn flex_items_blockify_inline_level_elements() {
 
   let abs = find_box_with_id(&intermediates.box_tree.root, "abs").expect("find abspos item");
   assert!(
-    abs.is_inline_level(),
-    "expected out-of-flow (absolute positioned) child of flex container to keep its inline-level box; got {abs:#?}"
+    abs.is_block_level(),
+    "expected absolutely positioned element to be blockified to a block-level box; got {abs:#?}"
   );
   assert_eq!(
     abs.style.display,
-    Display::Inline,
-    "expected out-of-flow child to keep its original Display::Inline value"
+    Display::Block,
+    "expected absolutely positioned element's used display value to be blockified to Display::Block"
   );
 }
-
