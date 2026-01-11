@@ -17,6 +17,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - `ecma-rs` submodule workflow: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
 - JavaScript integration architecture: [javascript.md](javascript.md)
 - LLVM StackMaps / statepoint metadata decoding: [llvm_stackmaps.md](llvm_stackmaps.md)
+- LLVM 18 statepoint StackMap ABI assumptions (regression-tested): [llvm_statepoint_stackmap_abi.md](llvm_statepoint_stackmap_abi.md)
 - HTML `<script>` processing model (spec-mapped): [html_script_processing.md](html_script_processing.md)
 - Import maps (spec-mapped parsing + merge/register + resolution): [import_maps.md](import_maps.md)
 - WebIDL bindings/codegen pipeline: [webidl_bindings.md](webidl_bindings.md)
