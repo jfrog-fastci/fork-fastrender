@@ -337,7 +337,7 @@ impl<'a> Cursor<'a> {
 /// `dl_iterate_phdr` enumerates **currently loaded** images. Call this again
 /// after `dlopen` if you need stackmaps from newly loaded DSOs.
 pub fn load_all_llvm_stackmaps() -> anyhow::Result<Vec<&'static [u8]>> {
-  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
   {
     use std::ffi::{CStr, OsStr};
     use std::os::raw::c_int;
@@ -501,9 +501,9 @@ pub fn load_all_llvm_stackmaps() -> anyhow::Result<Vec<&'static [u8]>> {
     Ok(ctx.out)
   }
 
-  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  #[cfg(not(all(target_os = "linux", target_pointer_width = "64", target_endian = "little")))]
   {
-    anyhow::bail!("load_all_llvm_stackmaps is only supported on Linux x86_64");
+    anyhow::bail!("load_all_llvm_stackmaps is only supported on Linux 64-bit little-endian");
   }
 }
 
@@ -606,14 +606,14 @@ pub fn build_global_stackmap_index() -> anyhow::Result<StackMapIndex> {
   StackMapIndex::new(blobs)
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 #[derive(Debug, Clone, Copy)]
 struct ElfSectionVaddr {
   vaddr: u64,
   size: u64,
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 fn find_stackmap_section_vaddr_and_size(
   obj: &object::File<'_>,
 ) -> Result<Option<ElfSectionVaddr>, object::Error> {
@@ -648,7 +648,7 @@ fn find_stackmap_section_vaddr_and_size(
   Ok(None)
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 fn range_in_readable_load_segment(
   info: &libc::dl_phdr_info,
   base: u64,
