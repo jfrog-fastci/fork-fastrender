@@ -1,6 +1,6 @@
 use hir_js::{
   Body, CallExpr, ExprId, ExprKind, HirFile, ImportKind, Literal, MemberExpr, NameId, NameInterner,
-  ObjectKey, PatKind, StmtKind, VarDeclKind,
+  ObjectKey, PatId, PatKind, StmtKind, VarDeclKind,
 };
 use knowledge_base::{ApiId, ApiKind, KnowledgeBase};
 
@@ -30,6 +30,8 @@ pub fn resolve_api_use(
   match &expr_node.kind {
     ExprKind::Call(call) => resolve_call_api_use(file, body, call, names, kb),
     ExprKind::Member(member) => resolve_member_api_use(file, body, expr, member, names, kb),
+    ExprKind::Ident(_) => resolve_ident_api_use(file, body, expr, names, kb),
+    ExprKind::Assignment { target, .. } => resolve_assignment_api_use(file, body, *target, names, kb),
     _ => None,
   }
 }
@@ -83,6 +85,43 @@ fn resolve_member_api_use(
     api: entry.id,
     kind: use_kind,
   })
+}
+
+fn resolve_ident_api_use(
+  file: &HirFile,
+  body: &Body,
+  expr: ExprId,
+  names: &NameInterner,
+  kb: &KnowledgeBase,
+) -> Option<ResolvedApiUse> {
+  let path = resolve_expr_path(file, body, expr, false, names)?;
+  let entry = kb.get(&path)?;
+  Some(ResolvedApiUse {
+    api: entry.id,
+    kind: ApiUseKind::Value,
+  })
+}
+
+fn resolve_assignment_api_use(
+  file: &HirFile,
+  body: &Body,
+  target: PatId,
+  names: &NameInterner,
+  kb: &KnowledgeBase,
+) -> Option<ResolvedApiUse> {
+  let pat = body.pats.get(target.0 as usize)?;
+  let PatKind::AssignTarget(target_expr) = pat.kind else {
+    return None;
+  };
+  let path = resolve_expr_path(file, body, target_expr, true, names)?;
+  let entry = kb.get(&path)?;
+  match entry.kind {
+    ApiKind::Setter | ApiKind::Value => Some(ResolvedApiUse {
+      api: entry.id,
+      kind: ApiUseKind::Set,
+    }),
+    _ => None,
+  }
 }
 
 fn resolve_expr_path(
@@ -478,7 +517,13 @@ fn is_name_declared_in_body(body: &Body, name: NameId) -> bool {
     }
   }
 
-  for stmt in &body.stmts {
+  // Model only root-level `var`/`let`/`const` names. Nested block-scoped
+  // declarations do not shadow identifiers outside their block, and modeling
+  // scope precisely is outside the goal of this best-effort resolver.
+  for stmt_id in body.root_stmts.iter().copied() {
+    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+      continue;
+    };
     let StmtKind::Var(var) = &stmt.kind else {
       continue;
     };
@@ -634,6 +679,24 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         properties: Default::default(),
       },
       ApiSemantics {
+        id: ApiId::from_name("Math.PI"),
+        name: "Math.PI".to_string(),
+        kind: ApiKind::Value,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSet::empty(),
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
         id: ApiId::from_name("Response.prototype.json"),
         name: "Response.prototype.json".to_string(),
         kind: ApiKind::Function,
@@ -659,6 +722,24 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         effects: EffectTemplate::Pure,
         effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("Foo.prototype.bar"),
+        name: "Foo.prototype.bar".to_string(),
+        kind: ApiKind::Value,
+        aliases: vec![],
+        effects: EffectTemplate::Unknown,
+        effect_summary: EffectSet::UNKNOWN,
+        purity: PurityTemplate::Unknown,
         async_: None,
         idempotent: None,
         deterministic: None,
@@ -746,6 +827,75 @@ fn is_allowed_global_member_root(name: &str) -> bool {
       Some(ResolvedApiUse {
         api: ApiId::from_name("Math.sqrt"),
         kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_ident_value() {
+    let source = r#"const ctor = URL;"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let url_ident = find_expr(body, |kind| match kind {
+      ExprKind::Ident(id) => names.resolve(*id) == Some("URL"),
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, url_ident, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL"),
+        kind: ApiUseKind::Value,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_value_property_read_as_get() {
+    let source = r#"Math.PI;"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let pi_member = find_expr(body, |kind| match kind {
+      ExprKind::Member(member) => matches!(
+        &member.property,
+        ObjectKey::Ident(id) if names.resolve(*id) == Some("PI")
+      ),
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, pi_member, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Math.PI"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_assignment_to_value_property_as_set() {
+    let source = r#"new Foo().bar = 1;"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let assign_expr = find_expr(body, |kind| matches!(kind, ExprKind::Assignment { .. }));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, assign_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Foo.prototype.bar"),
+        kind: ApiUseKind::Set,
       })
     );
   }

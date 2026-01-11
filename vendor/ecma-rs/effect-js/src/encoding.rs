@@ -498,7 +498,6 @@ mod tests {
     use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
     use std::sync::Arc;
     use typecheck_ts::{FileKey, MemoryHost, Program};
-    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::new();

@@ -67,3 +67,18 @@
     network: false
     nondeterministic: false
   purity: Pure
+
+- name: Math.PI
+  kind: value
+  async: false
+  idempotent: true
+  deterministic: true
+  parallelizable: true
+  effects:
+    template: pure
+    may_throw: false
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
