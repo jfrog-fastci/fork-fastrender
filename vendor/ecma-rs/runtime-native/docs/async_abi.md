@@ -232,9 +232,8 @@ completion/cancellation (destroying the frame if `CORO_FLAG_RUNTIME_OWNS_FRAME` 
 
 ### `rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRef`
 
-- Same allocation/initialization semantics as `rt_async_spawn`.
+- Same allocation/initialization and ownership semantics as `rt_async_spawn`.
 - Enqueues the coroutine’s *first resume* as a **microtask** (does not resume synchronously).
-- Frees the coroutine handle when the coroutine completes.
 
 ### `rt_async_poll() -> bool`
 
@@ -675,7 +674,8 @@ PromiseRef rt_async_spawn(CoroutineId coro);
   `promise` field.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
-- The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
+- The runtime **consumes** the coroutine handle and frees it when the coroutine completes (or is
+  cancelled).
 
 #### `rt_async_spawn_deferred` (microtask-style)
 
@@ -688,7 +688,8 @@ PromiseRef rt_async_spawn_deferred(CoroutineId coro);
 - Enqueues the coroutine’s *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
   a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
-- The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
+- The runtime **consumes** the coroutine handle and frees it when the coroutine completes (or is
+  cancelled).
 
 This API exists for Web-standard semantics that require guaranteed asynchronous execution, including:
 
