@@ -281,10 +281,41 @@ mod linux {
             }
         }
 
+        fn validate(&self) -> io::Result<()> {
+            match self {
+                PreparedOp::Read { buf, .. } => {
+                    if buf.len() > u32::MAX as usize {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "read buffer length exceeds u32::MAX",
+                        ));
+                    }
+                }
+                PreparedOp::RecvWithBufSelect { pool, .. }
+                | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                    // `ProvideBuffers` takes an `i32` length and the SQE takes a `u32` length; the
+                    // pool constructor validates the bounds, so this should never fail unless the
+                    // pool invariants are violated.
+                    if pool.buf_size() > u32::MAX as usize {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "provided buffer size exceeds u32::MAX",
+                        ));
+                    }
+                }
+                PreparedOp::Connect { .. }
+                | PreparedOp::Accept { .. }
+                | PreparedOp::OpenAt { .. }
+                | PreparedOp::Statx { .. } => {}
+            }
+            Ok(())
+        }
+
         fn build_sqe(&mut self) -> squeue::Entry {
             match self {
                 PreparedOp::Read { fd, buf, .. } => {
-                    opcode::Read::new(types::Fd(*fd), buf.as_mut_ptr(), buf.len() as _).build()
+                    let len: u32 = buf.len().try_into().expect("validated in PreparedOp::validate");
+                    opcode::Read::new(types::Fd(*fd), buf.as_mut_ptr(), len).build()
                 }
                 PreparedOp::Connect { fd, addr, .. } => {
                     opcode::Connect::new(types::Fd(*fd), addr.addr_ptr(), addr.addr_len()).build()
@@ -304,7 +335,9 @@ mod linux {
                 PreparedOp::RecvWithBufSelect { fd, pool } => opcode::Recv::new(
                     types::Fd(*fd),
                     std::ptr::null_mut(),
-                    pool.buf_size() as u32,
+                    pool.buf_size()
+                        .try_into()
+                        .expect("validated in PreparedOp::validate"),
                 )
                 .buf_group(pool.buf_group())
                 .build()
@@ -312,7 +345,9 @@ mod linux {
                 PreparedOp::ReadWithBufSelect { fd, offset, pool } => opcode::Read::new(
                     types::Fd(*fd),
                     std::ptr::null_mut(),
-                    pool.buf_size() as u32,
+                    pool.buf_size()
+                        .try_into()
+                        .expect("validated in PreparedOp::validate"),
                 )
                 .offset(*offset)
                 .buf_group(pool.buf_group())
@@ -801,6 +836,8 @@ mod linux {
         }
 
         pub fn submit(&mut self, mut op: PreparedOp) -> io::Result<OpId> {
+            op.validate()?;
+
             let mut inner_guard = self
                 .inner
                 .lock()
@@ -950,6 +987,8 @@ mod linux {
             mut op: PreparedOp,
             timeout: Duration,
         ) -> io::Result<OpWithTimeout> {
+            op.validate()?;
+
             let mut inner_guard = self
                 .inner
                 .lock()
@@ -1209,6 +1248,21 @@ mod linux {
             }
 
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak/panic.
+            //
+            // Note: dropping internal keepalive pools can submit additional ops (e.g.
+            // `IORING_OP_REMOVE_BUFFERS`). Run a second best-effort poll after dropping those pools
+            // so our in-flight counts reflect any newly-submitted requests.
+            let keepalive_to_drop = {
+                let mut guard = match self.inner.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                guard.poll_completions()
+            };
+            drop(keepalive_to_drop);
+
+            // Second pass: dropping keepalive pools may have submitted new ops and/or produced
+            // immediately-available CQEs.
             let (ops_len, multishots_len, internal_in_flight, keepalive_to_drop) = {
                 let mut guard = match self.inner.lock() {
                     Ok(g) => g,
