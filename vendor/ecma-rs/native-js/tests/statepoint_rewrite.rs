@@ -1493,6 +1493,35 @@ l1:
 }
 
 #[test]
+fn rewrite_statepoints_rejects_inline_asm_in_gc_function() {
+  init_llvm();
+
+  let llvm_ir = r#"
+define void @test() gc "coreclr" {
+entry:
+  call void asm sideeffect "", ""()
+  ret void
+}
+"#;
+
+  let context = Context::create();
+  let buffer = MemoryBuffer::create_from_memory_range_copy(llvm_ir.as_bytes(), "test.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{llvm_ir}"));
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::UnsupportedInlineAsmInGcFunction { .. }),
+    "expected UnsupportedInlineAsmInGcFunction, got: {err}"
+  );
+}
+
+#[test]
 fn object_emits_llvm_stackmaps_section() {
   let before = r#"
  declare void @bar()

@@ -10,7 +10,7 @@ use llvm_sys::core::{
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction,
   LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetParamTypes, LLVMGetReturnType,
-  LLVMGetStringAttributeAtIndex,
+  LLVMGetStringAttributeAtIndex, LLVMGetValueKind,
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
   LLVMInstructionEraseFromParent, LLVMInstructionRemoveFromParent, LLVMInt64TypeInContext, LLVMIsAConstantExpr,
   LLVMIsAFunction, LLVMIsAInstruction, LLVMIsABitCastInst, LLVMIsFunctionVarArg, LLVMPositionBuilderAtEnd,
@@ -22,7 +22,10 @@ use llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_sys::transforms::pass_builder::{
   LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses,
 };
-use llvm_sys::{LLVMAtomicOrdering, LLVMIntPredicate, LLVMLinkage, LLVMTailCallKind, LLVMOpcode, LLVMTypeKind};
+use llvm_sys::{
+  LLVMAtomicOrdering, LLVMIntPredicate, LLVMLinkage, LLVMTailCallKind, LLVMOpcode, LLVMTypeKind,
+  LLVMValueKind,
+};
 use std::ffi::{CStr, CString};
 use std::ptr;
 
@@ -54,6 +57,10 @@ pub enum PassError {
     "GC-managed function `{function}` contains a `callbr` instruction, which LLVM 18's `rewrite-statepoints-for-gc` pass can crash on: {instruction}"
   )]
   UnsupportedCallBrInGcFunction { function: String, instruction: String },
+  #[error(
+    "GC-managed function `{function}` contains a call to inline asm, which LLVM 18's `rewrite-statepoints-for-gc` pass cannot rewrite without aborting: {instruction}"
+  )]
+  UnsupportedInlineAsmInGcFunction { function: String, instruction: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
   #[error("LLVM module defines `{name}` with incompatible type (expected `i64`)")]
@@ -139,11 +146,21 @@ fn reject_callbr_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
       while !bb.is_null() {
         let mut inst = LLVMGetFirstInstruction(bb);
         while !inst.is_null() {
-          if LLVMGetInstructionOpcode(inst) == LLVMOpcode::LLVMCallBr {
+          let opcode = LLVMGetInstructionOpcode(inst);
+          if opcode == LLVMOpcode::LLVMCallBr {
             return Err(PassError::UnsupportedCallBrInGcFunction {
               function: func_name,
               instruction: value_to_string(inst),
             });
+          }
+          if opcode == LLVMOpcode::LLVMCall || opcode == LLVMOpcode::LLVMInvoke {
+            let callee = strip_callee_pointer_casts(get_call_callee_operand(inst));
+            if LLVMGetValueKind(callee) == LLVMValueKind::LLVMInlineAsmValueKind {
+              return Err(PassError::UnsupportedInlineAsmInGcFunction {
+                function: func_name,
+                instruction: value_to_string(inst),
+              });
+            }
           }
 
           inst = LLVMGetNextInstruction(inst);
