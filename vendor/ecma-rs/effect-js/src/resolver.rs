@@ -169,7 +169,7 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
           if obj.rest.is_some() {
             continue;
           }
-          let Some(module) = extract_require_module(lower, body, init) else {
+          let Some((module, prefix_path)) = extract_require_member_path(lower, body, init) else {
             continue;
           };
           let mut collected = Vec::new();
@@ -185,12 +185,14 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
             collected.push((*local, key));
           }
           for (local, key) in collected {
+            let mut path = prefix_path.clone();
+            path.push(key);
             bindings.insert(
               local,
               start,
               BindingTarget {
                 module: module.clone(),
-                path: vec![key],
+                path,
               },
             );
           }
@@ -292,17 +294,18 @@ fn join_api(module: &str, path: &[String]) -> String {
 }
 
 fn lookup_api<'a>(db: &'a ApiDatabase, module: &str, path: &[String]) -> Option<&'a str> {
-  let canonical = join_api(module, path);
-  if let Some(api) = db.get(&canonical) {
-    return Some(api.name.as_str());
-  }
-
   if module.starts_with("node:") {
-    return None;
+    let canonical = join_api(module, path);
+    return db.get(&canonical).map(|api| api.name.as_str());
   }
 
   let canonical_node = join_api(&format!("node:{module}"), path);
-  db.get(&canonical_node).map(|api| api.name.as_str())
+  if let Some(api) = db.get(&canonical_node) {
+    return Some(api.name.as_str());
+  }
+
+  let canonical = join_api(module, path);
+  db.get(&canonical).map(|api| api.name.as_str())
 }
 
 pub fn resolve_api_call<'a>(
@@ -466,6 +469,29 @@ mod tests {
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_require_without_node_prefix_to_node_canonical() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('fs');
+        fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_destructure_from_require_member_chain() {
+    let calls = resolved_calls(
+      r#"
+        const { readFile, writeFile: wf } = require('node:fs').promises;
+        readFile('x', () => {});
+        wf('y', 'z');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.promises.readFile", "node:fs.promises.writeFile"]);
   }
 
   #[test]
