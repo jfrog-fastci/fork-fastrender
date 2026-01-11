@@ -21,3 +21,20 @@
   parallelizable: true
   idempotent: false
   deterministic: false
+
+- name: crypto.randomUUID
+  kind: function
+  since: "v19.0.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+    io: false
+    network: false
+  purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+  properties:
+    encoding.output: ascii

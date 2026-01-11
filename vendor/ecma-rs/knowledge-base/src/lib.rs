@@ -2568,12 +2568,38 @@ properties:
       Some("node/web_crypto.yaml")
     );
 
+    let uuid = kb
+      .api_for_target("crypto.randomUUID", &node_20)
+      .expect("crypto.randomUUID should resolve for Node 19+");
+    assert_eq!(uuid.name, "crypto.randomUUID");
+    assert_eq!(
+      kb.source_for_target("crypto.randomUUID", &node_20),
+      Some("node/web_crypto.yaml")
+    );
+
+    let digest = kb
+      .api_for_target("crypto.subtle.digest", &node_20)
+      .expect("crypto.subtle.digest should resolve for Node 19+");
+    assert_eq!(digest.name, "crypto.subtle.digest");
+    assert_eq!(
+      kb.source_for_target("crypto.subtle.digest", &node_20),
+      Some("node/web_crypto_subtle.yaml")
+    );
+
     let node_18 = TargetEnv::Node {
       version: Version::parse("18.0.0").unwrap(),
     };
     assert!(
       kb.api_for_target("crypto.getRandomValues", &node_18).is_none(),
       "crypto.getRandomValues should not resolve for Node < 19"
+    );
+    assert!(
+      kb.api_for_target("crypto.randomUUID", &node_18).is_none(),
+      "crypto.randomUUID should not resolve for Node < 19"
+    );
+    assert!(
+      kb.api_for_target("crypto.subtle.digest", &node_18).is_none(),
+      "crypto.subtle.digest should not resolve for Node < 19"
     );
   }
 

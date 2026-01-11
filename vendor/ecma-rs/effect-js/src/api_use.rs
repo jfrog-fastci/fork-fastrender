@@ -808,6 +808,42 @@ mod tests {
         properties: Default::default(),
       },
       ApiSemantics {
+        id: ApiId::from_name("crypto.randomUUID"),
+        name: "crypto.randomUUID".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("crypto.subtle.digest"),
+        name: "crypto.subtle.digest".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
         id: ApiId::from_name("node:fs.readFile"),
         name: "node:fs.readFile".to_string(),
         kind: ApiKind::Function,
@@ -1107,6 +1143,46 @@ mod tests {
       resolve_api_use(file, body, call_expr, names, &kb),
       Some(ResolvedApiUse {
         api: ApiId::from_name("crypto.getRandomValues"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_crypto_random_uuid_call() {
+    let source = r#"crypto.randomUUID();"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("crypto.randomUUID"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_crypto_subtle_digest_call() {
+    let source = r#"crypto.subtle.digest(algo, data);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("crypto.subtle.digest"),
         kind: ApiUseKind::Call,
       })
     );
