@@ -134,7 +134,10 @@ pub use runtime_native_abi::{
 };
 
 pub use exports::*;
-pub use async_abi::*;
+pub use async_abi::{
+  Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
+  PromiseState,
+};
 pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks, PromiseLayout};
 pub use buffer::{
   global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStore, BackingStoreAllocError,
@@ -260,6 +263,18 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
   crate::ffi::abort_on_panic(|| crate::native_async::promise_fulfill(_p))
 }
 
+/// Attempt to fulfill a promise, returning whether this call won the settle race.
+///
+/// If callers might race (duplicate callbacks, buggy code, etc.), generated code should use this
+/// API to decide which caller is responsible for writing the payload.
+///
+/// # Safety
+/// `p` must point to a valid promise allocation.
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_try_fulfill(p: PromiseRef) -> bool {
+  crate::ffi::abort_on_panic(|| unsafe { crate::native_async::promise_try_fulfill(p) })
+}
+
 /// Mark a promise as rejected.
 ///
 /// # Safety
@@ -267,6 +282,15 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
   crate::ffi::abort_on_panic(|| crate::native_async::promise_reject(_p))
+}
+
+/// Attempt to reject a promise, returning whether this call won the settle race.
+///
+/// # Safety
+/// `p` must point to a valid promise allocation.
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_try_reject(p: PromiseRef) -> bool {
+  crate::ffi::abort_on_panic(|| unsafe { crate::native_async::promise_try_reject(p) })
 }
 /// Request a stop-the-world GC safepoint.
 ///
@@ -594,7 +618,9 @@ mod tests {
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
       "void rt_promise_fulfill(PromiseRef p);",
+      "bool rt_promise_try_fulfill(PromiseRef p);",
       "void rt_promise_reject(PromiseRef p);",
+      "bool rt_promise_try_reject(PromiseRef p);",
       "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "PromiseRef rt_async_spawn_deferred(CoroutineRef coro);",
@@ -676,7 +702,9 @@ mod tests {
       rt_spawn_blocking;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
+    let _promise_try_fulfill: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_fulfill;
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
+    let _promise_try_reject: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_reject;
     let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
     let _async_spawn_deferred: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn_deferred;
@@ -746,7 +774,9 @@ mod tests {
       _spawn_blocking,
       _promise_init,
       _promise_fulfill,
+      _promise_try_fulfill,
       _promise_reject,
+      _promise_try_reject,
       _promise_payload_ptr,
       _async_spawn,
       _async_cancel_all,

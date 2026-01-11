@@ -363,12 +363,38 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
 
 /// Reset write barrier state for tests.
 ///
-/// This intentionally resets only process-global configuration used by the
-/// exported barrier (currently: the active nursery range). Per-object metadata
-/// (e.g. the `REMEMBERED` header bit) is owned by the objects themselves.
+/// This clears only process-global state used by the exported barrier:
+/// - the active nursery range (`YOUNG_SPACE`),
+/// - and the runtime's remembered-set tracking (used by GC model tests).
+///
+/// Per-object metadata (e.g. the `REMEMBERED` header bit) is owned by the
+/// objects themselves and is not cleared (the runtime cannot enumerate all
+/// objects in the current milestone GC).
 #[doc(hidden)]
 pub fn clear_write_barrier_state_for_tests() {
   rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
+  REMEMBERED_SET.lock().clear();
+}
+
+/// Process-global remembered set tracking objects whose `REMEMBERED` bit is set.
+///
+/// This is currently only used by GC model tests (`remembered_set_*_for_tests`) and by
+/// the write barrier to provide a list of candidates for rebuilding.
+static REMEMBERED_SET: Lazy<Mutex<Vec<usize>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Debug/test helper: is the given object base pointer currently in the remembered set?
+///
+/// Currently this is equivalent to checking the `REMEMBERED` bit on the object's header.
+#[doc(hidden)]
+pub fn remembered_set_contains(obj: *mut u8) -> bool {
+  if obj.is_null() {
+    return false;
+  }
+  // Avoid UB: callers must pass an object base pointer.
+  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    std::process::abort();
+  }
+  unsafe { (&*(obj as *const ObjHeader)).is_remembered() }
 }
 
 /// Debug/test helper: rebuild the global remembered set in-place.
@@ -382,19 +408,31 @@ pub fn clear_write_barrier_state_for_tests() {
 pub fn remembered_set_scan_and_rebuild_for_tests(
   mut object_has_young_refs: impl FnMut(*mut u8) -> bool,
 ) {
-  REMEMBERED_SET
-    .lock()
-    .scan_and_rebuild(|obj| object_has_young_refs(obj));
+  REMEMBERED_SET.lock().retain(|&obj| {
+    let obj = obj as *mut u8;
+    if object_has_young_refs(obj) {
+      true
+    } else {
+      // SAFETY: entries are inserted only for valid object base pointers.
+      unsafe {
+        (&mut *(obj as *mut ObjHeader)).set_remembered(false);
+      }
+      false
+    }
+  });
 }
 
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());
-  // `rt_write_barrier` is classified as `NoGC` by the ABI contract, so it must
-  // not allocate. We only set the per-object header bit (idempotently); the GC
-  // can later discover remembered objects and/or consult per-object card tables.
+  // `rt_write_barrier` is classified as `NoGC` by the ABI contract (must not
+  // safepoint/GC). We set the per-object remembered bit (idempotently) and
+  // record the object in a process-global list so tests can rebuild the
+  // remembered set.
   let header = &*(obj as *const ObjHeader);
-  header.set_remembered_idempotent();
+  if header.set_remembered_idempotent() {
+    REMEMBERED_SET.lock().push(obj as usize);
+  }
 }
 /// Write barrier for GC.
 ///
@@ -535,8 +573,7 @@ mod write_barrier_tests {
   }
 
   fn clear_for_test() {
-    // Clear young range so tests don't leak configuration between them.
-    rt_gc_set_young_range(std::ptr::null_mut(), std::ptr::null_mut());
+    clear_write_barrier_state_for_tests();
   }
 
   #[test]

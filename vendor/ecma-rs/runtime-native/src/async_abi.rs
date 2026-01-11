@@ -13,8 +13,7 @@
 //! - A coroutine must resolve/reject `coro.promise` itself before returning
 //!   [`CoroutineStepTag::Complete`] from its `resume` function.
 
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::RtShapeId;
 
@@ -56,6 +55,22 @@ impl PromiseHeader {
   pub const PENDING: PromiseState = 0;
   pub const FULFILLED: PromiseState = 1;
   pub const REJECTED: PromiseState = 2;
+
+  #[inline]
+  pub fn load_state(&self) -> PromiseState {
+    self.state.load(Ordering::Acquire)
+  }
+
+  /// Attempt to transition this promise from [`PromiseHeader::PENDING`] to a final state.
+  ///
+  /// Returns `true` iff the caller won the transition race.
+  #[inline]
+  pub fn try_transition_state(&self, target: PromiseState) -> bool {
+    self
+      .state
+      .compare_exchange(Self::PENDING, target, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+  }
 }
 
 /// Opaque pointer to a promise header (and therefore the start of a generated `Promise<T>`).
@@ -143,7 +158,8 @@ pub struct Coroutine {
   /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
   pub promise: PromiseRef,
 
-  /// Intrusive list pointer used by the runtime while the coroutine is suspended.
+  /// Intrusive list pointer used by the runtime while the coroutine is suspended (e.g. awaiting a
+  /// promise).
   ///
   /// Generated code should initialize this to null.
   pub next_waiter: CoroutineRef,

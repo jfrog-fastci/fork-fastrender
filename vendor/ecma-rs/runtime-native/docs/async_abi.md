@@ -28,7 +28,9 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 
 - `rt_promise_init(p: PromiseRef)`
 - `rt_promise_fulfill(p: PromiseRef)`
+- `rt_promise_try_fulfill(p: PromiseRef) -> bool`
 - `rt_promise_reject(p: PromiseRef)`
+- `rt_promise_try_reject(p: PromiseRef) -> bool`
 - `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_cancel_all()`
@@ -96,7 +98,9 @@ uint8_t* rt_promise_payload_ptr(PromiseRef promise);
 
 // Settle the promise (exactly once).
 void rt_promise_fulfill(PromiseRef promise);
+bool rt_promise_try_fulfill(PromiseRef promise);
 void rt_promise_reject(PromiseRef promise);
+bool rt_promise_try_reject(PromiseRef promise);
 ```
 
 `PromiseLayout` is:
@@ -132,6 +136,42 @@ queue, establishing a happens-before edge such that:
 - Promise settlement may occur on any worker thread.
 - Settlement wakes all awaiting coroutines by enqueuing microtasks onto the async event loop.
 - Promise continuations are stored in a FIFO list; continuations are enqueued in registration order.
+## Promise settlement (thread-safe, idempotent)
+
+Promises have a `PromiseHeader.state`:
+
+- `PENDING`
+- `FULFILLED`
+- `REJECTED`
+
+Settlement is **first-wins** and **idempotent**:
+
+- `rt_promise_fulfill` / `rt_promise_reject` are safe to call concurrently from multiple OS
+  threads (duplicate callbacks, buggy code, etc.).
+- The transition from `PENDING → (FULFILLED | REJECTED)` happens exactly once using an atomic
+  compare-and-swap (CAS) on `PromiseHeader.state`.
+- Only the winning caller performs the reaction drain/wakeup. Losing callers are no-ops (no
+  additional wakeups, no payload overwrite).
+
+If the caller needs to know whether it won the settle race, use:
+
+- `rt_promise_try_fulfill(...) -> bool`
+- `rt_promise_try_reject(...) -> bool`
+
+Exactly one concurrent settle call will observe `true`.
+
+## Payload ownership
+
+Generated promises are laid out as:
+
+- `PromiseHeader` prefix at offset 0, followed immediately by the payload `T`.
+
+The runtime settlement APIs do not write the payload: generated code is responsible for writing it
+into the promise allocation before settling.
+
+Because settlement is first-wins, generated code must ensure only the winning settle call writes
+the payload. Losing settle calls are ignored by the runtime (no additional wakeups), but
+unsynchronized payload writes are still a data race at the machine level.
 
 ## Panic / unwinding policy
 

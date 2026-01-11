@@ -145,10 +145,10 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
   }
 }
 
-pub(crate) unsafe fn promise_fulfill(p: AbiPromiseRef) {
+pub(crate) unsafe fn promise_try_fulfill(p: AbiPromiseRef) -> bool {
   let header = promise_header_ptr(p);
   if header.is_null() {
-    return;
+    return false;
   }
 
   let state = &(*header).state;
@@ -161,17 +161,22 @@ pub(crate) unsafe fn promise_fulfill(p: AbiPromiseRef) {
     )
     .is_err()
   {
-    return;
+    return false;
   }
 
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
   drain_reactions(header);
+  true
 }
 
-pub(crate) unsafe fn promise_reject(p: AbiPromiseRef) {
+pub(crate) unsafe fn promise_fulfill(p: AbiPromiseRef) {
+  let _ = unsafe { promise_try_fulfill(p) };
+}
+
+pub(crate) unsafe fn promise_try_reject(p: AbiPromiseRef) -> bool {
   let header = promise_header_ptr(p);
   if header.is_null() {
-    return;
+    return false;
   }
 
   let state = &(*header).state;
@@ -184,11 +189,16 @@ pub(crate) unsafe fn promise_reject(p: AbiPromiseRef) {
     )
     .is_err()
   {
-    return;
+    return false;
   }
 
   state.store(PromiseHeader::REJECTED, Ordering::Release);
   drain_reactions(header);
+  true
+}
+
+pub(crate) unsafe fn promise_reject(p: AbiPromiseRef) {
+  let _ = unsafe { promise_try_reject(p) };
 }
 
 #[repr(C)]

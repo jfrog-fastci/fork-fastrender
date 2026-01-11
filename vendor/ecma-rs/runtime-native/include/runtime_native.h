@@ -418,7 +418,9 @@ LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uin
 // -----------------------------------------------------------------------------
 void rt_promise_init(PromiseRef p);
 void rt_promise_fulfill(PromiseRef p);
+bool rt_promise_try_fulfill(PromiseRef p);
 void rt_promise_reject(PromiseRef p);
+bool rt_promise_try_reject(PromiseRef p);
 // Returns the payload pointer for promises created by `rt_parallel_spawn_promise`.
 uint8_t* rt_promise_payload_ptr(PromiseRef p);
 
