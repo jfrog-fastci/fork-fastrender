@@ -64,12 +64,21 @@ Naively linking a PIE with GNU ld can succeed but emit `DT_TEXTREL` warnings if
 `.llvm_stackmaps` is mapped read-only.
 
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
-relocation**. `native-js` (and `scripts/native_link.sh` when `ECMA_RS_NATIVE_PIE=1`) do this by
-rewriting the input objects’ section flags via `llvm-objcopy`:
+relocation**.
+
+The recommended approach (used by `native_js::link` and `scripts/native_js_link_linux.sh`) is to
+relocate stackmaps into a RELRO-friendly section in the *input objects* using
+`llvm-objcopy --rename-section`:
 
 ```bash
-llvm-objcopy --set-section-flags .llvm_stackmaps=alloc,load,contents,data <obj>
+llvm-objcopy --rename-section \
+  .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+  <obj>
 ```
+
+The more general `scripts/native_link.sh` uses `llvm-objcopy --set-section-flags` when
+`ECMA_RS_NATIVE_PIE=1` and relies on its injected linker script (`scripts/keep_llvm_stackmaps.ld`)
+to place `.llvm_stackmaps` in a writable/RELRO output section.
 
 Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
 caller opts into PIE explicitly.
