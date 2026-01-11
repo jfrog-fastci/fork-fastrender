@@ -9,4 +9,3 @@ repository.workspace = true
 effect-model = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-

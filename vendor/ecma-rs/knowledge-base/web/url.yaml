@@ -1,71 +1,121 @@
 URL:
+  aliases:
+    - URL
+  since: "baseline"
   purity:
     template: pure
   throws: maybe
   effects:
+    template: pure
     io: false
+    network: false
 
 URL.createObjectURL:
+  aliases:
+    - URL.createObjectURL
+  since: "baseline"
   purity:
     template: impure
   throws: maybe
   effects:
-    io: false
     template: unknown
+    io: false
+    network: false
 
 URL.prototype.toString:
+  aliases:
+    - URL.prototype.toString
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
 
 # Treat getters as pure reads.
 URL.prototype.href:
+  aliases:
+    - URL.prototype.href
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
 
 URL.prototype.pathname:
+  aliases:
+    - URL.prototype.pathname
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
 
 URL.prototype.searchParams:
+  aliases:
+    - URL.prototype.searchParams
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
 
 URLSearchParams.prototype.get:
+  aliases:
+    - URLSearchParams.prototype.get
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
 
 URLSearchParams.prototype.set:
+  aliases:
+    - URLSearchParams.prototype.set
+  since: "baseline"
   purity:
     template: impure
   throws: never
   effects:
+    template: unknown
     io: false
+    network: false
 
 URLSearchParams.prototype.append:
+  aliases:
+    - URLSearchParams.prototype.append
+  since: "baseline"
   purity:
     template: impure
   throws: never
   effects:
+    template: unknown
     io: false
+    network: false
 
 URLSearchParams.prototype.toString:
+  aliases:
+    - URLSearchParams.prototype.toString
+  since: "baseline"
   purity:
-    template: readonly
+    template: pure
   throws: never
   effects:
+    template: pure
     io: false
+    network: false
+

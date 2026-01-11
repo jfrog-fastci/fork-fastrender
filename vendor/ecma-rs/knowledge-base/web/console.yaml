@@ -1,6 +1,12 @@
 console.log:
+  aliases:
+    - console.log
+  since: "baseline"
   purity:
     template: impure
-  throws: unknown
+  throws: maybe
   effects:
+    template: io
     io: true
+    network: false
+
