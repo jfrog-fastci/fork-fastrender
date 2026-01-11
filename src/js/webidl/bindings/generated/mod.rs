@@ -1235,7 +1235,7 @@ pub mod window {
           &converted_args,
         )
       }
-    } else if args.len() == 1 && (matches!(args[0], Value::String(_))) {
+    } else if args.len() >= 1 && args.len() <= 1 && (matches!(args[0], Value::String(_))) {
       {
         let mut converted_args: Vec<Value> = Vec::new();
         let v0 = if args.len() > 0 {
