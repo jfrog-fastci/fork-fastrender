@@ -144,6 +144,22 @@ fn native_strict_bans_eval_via_function_prototype_call_call() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_function_call_call() {
+  let source = "Function.call.call(eval, null, \"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_eval_via_function_prototype_call_apply() {
   let source = "Function.prototype.call.apply(eval, [null, \"1\"]);";
   let (diagnostics, file_id) = check(source, true);

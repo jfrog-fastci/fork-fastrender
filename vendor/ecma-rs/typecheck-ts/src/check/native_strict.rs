@@ -565,9 +565,10 @@ pub fn validate_native_strict_body(
               }
 
               // `Function.prototype.call.call(...)` and friends are a common way to indirectly
-              // invoke a function (bypassing direct `eval.call(...)` checks etc).
+              // invoke a function (bypassing direct `eval.call(...)` checks etc). Also covers the
+              // equivalent `Function.call.*` / `Function.apply.*` forms.
               if is_call_or_apply {
-                let obj_is_function_prototype_call = expr_is_function_prototype_member(
+                let obj_is_call_invoker = expr_is_function_prototype_member(
                   body,
                   member.object,
                   global_this_name,
@@ -575,8 +576,16 @@ pub fn validate_native_strict_body(
                   prototype_name,
                   call_name,
                   "call",
+                ) || expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  "Function",
+                  call_name,
+                  "call",
                 );
-                let obj_is_function_prototype_apply = expr_is_function_prototype_member(
+                let obj_is_apply_invoker = expr_is_function_prototype_member(
                   body,
                   member.object,
                   global_this_name,
@@ -584,8 +593,16 @@ pub fn validate_native_strict_body(
                   prototype_name,
                   apply_name,
                   "apply",
+                ) || expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  "Function",
+                  apply_name,
+                  "apply",
                 );
-                if obj_is_function_prototype_call || obj_is_function_prototype_apply {
+                if obj_is_call_invoker || obj_is_apply_invoker {
                   if let Some(target_arg) =
                     call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
                   {
@@ -668,7 +685,7 @@ pub fn validate_native_strict_body(
                     // For prototype mutation helpers where the ban depends on arguments, attempt to
                     // extract the argument list when it's statically knowable.
                     let mut args_for_target: Option<Vec<hir_js::ExprId>> = None;
-                    if obj_is_function_prototype_call {
+                    if obj_is_call_invoker {
                       if prop_is_call {
                         // `Function.prototype.call.call(target, thisArg, ...args)`
                         let mut out = Vec::new();
@@ -695,7 +712,7 @@ pub fn validate_native_strict_body(
                           }
                         }
                       }
-                    } else if obj_is_function_prototype_apply {
+                    } else if obj_is_apply_invoker {
                       if prop_is_call {
                         // `Function.prototype.apply.call(target, thisArg, argsArray)`
                         if let Some(args_array) =
