@@ -1,6 +1,6 @@
 use inkwell::context::AsContextRef as _;
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::types::AsTypeRef as _;
 use inkwell::OptimizationLevel;
 use inkwell::values::AsValueRef as _;
@@ -12,7 +12,7 @@ use tempfile::tempdir;
 
 #[test]
 fn stackmap_locations_include_gc_pointer_call_args_for_statepoint_emitter() {
-  Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  native_js::llvm::init_native_target().expect("failed to init native target");
 
   let context = Context::create();
   let module = context.create_module("statepoint_call_args_stackmap");

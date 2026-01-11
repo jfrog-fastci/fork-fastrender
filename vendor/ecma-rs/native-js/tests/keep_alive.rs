@@ -2,22 +2,12 @@
 fn keep_alive_keeps_owner_in_statepoint_live_set() {
   use inkwell::context::Context;
   use inkwell::memory_buffer::MemoryBuffer;
-  use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+  use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
   use inkwell::OptimizationLevel;
   use native_js::llvm::passes;
-  use std::sync::Once;
-
-  static LLVM_INIT: Once = Once::new();
-
-  fn init_llvm() {
-    LLVM_INIT.call_once(|| {
-      Target::initialize_native(&InitializationConfig::default())
-        .expect("failed to initialize native LLVM target");
-    });
-  }
 
   fn host_target_machine() -> TargetMachine {
-    init_llvm();
+    native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).expect("host target");
     let cpu = TargetMachine::get_host_cpu_name().to_string();
@@ -53,8 +43,6 @@ entry:
   ret void
 }
 "#;
-
-  init_llvm();
 
   let context = Context::create();
   let buffer = MemoryBuffer::create_from_memory_range_copy(before.as_bytes(), "keep_alive.ll");
