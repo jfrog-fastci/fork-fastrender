@@ -37,9 +37,10 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::sync::GcAwareMutex;
+
 /// Global serialization guard for the core poll loop.
-static POLL_LOCK: Lazy<crate::sync::GcAwareMutex<()>> =
-  Lazy::new(|| crate::sync::GcAwareMutex::new(()));
+static POLL_LOCK: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
 
 /// When enabled, `await` follows JS microtask semantics even when the awaited promise is already
 /// settled: the coroutine is resumed in a later microtask turn instead of synchronously.
@@ -388,6 +389,21 @@ pub fn debug_in_epoll_wait() -> bool {
 #[doc(hidden)]
 pub fn debug_timer_count() -> usize {
   global().loop_.debug_timers_count()
+}
+
+/// Test-only hook: execute `f` while holding the global microtask-queue lock.
+///
+/// This exists to deterministically reproduce contention scenarios for
+/// stop-the-world safepoint coordination.
+#[doc(hidden)]
+pub fn debug_with_microtasks_lock<R>(f: impl FnOnce() -> R) -> R {
+  global().loop_.debug_with_microtasks_lock(f)
+}
+
+/// Test-only hook: execute `f` while holding the reactor's watcher-map lock.
+#[doc(hidden)]
+pub fn debug_with_reactor_watchers_lock<R>(f: impl FnOnce() -> R) -> R {
+  global().loop_.debug_with_reactor_watchers_lock(f)
 }
 
 #[cfg(test)]

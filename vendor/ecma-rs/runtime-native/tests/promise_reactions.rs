@@ -55,7 +55,6 @@ extern "C" fn push_log(data: *mut u8) {
 #[test]
 fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
   let _rt = TestRuntimeGuard::new();
-
   let awaited = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 

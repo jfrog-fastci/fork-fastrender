@@ -11,14 +11,13 @@ use crate::threading;
 use std::collections::VecDeque;
 use std::io;
 use std::os::fd::RawFd;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
 pub struct EventLoop {
   poll_lock: GcAwareMutex<()>,
-  microtasks: Mutex<VecDeque<Task>>,
-  macrotasks: Mutex<VecDeque<Task>>,
+  microtasks: GcAwareMutex<VecDeque<Task>>,
+  macrotasks: GcAwareMutex<VecDeque<Task>>,
   timers: Timers,
   reactor: Reactor,
 }
@@ -54,8 +53,8 @@ impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
     Ok(Self {
       poll_lock: GcAwareMutex::new(()),
-      microtasks: Mutex::new(VecDeque::new()),
-      macrotasks: Mutex::new(VecDeque::new()),
+      microtasks: GcAwareMutex::new(VecDeque::new()),
+      macrotasks: GcAwareMutex::new(VecDeque::new()),
       timers: Timers::new(),
       reactor: Reactor::new()?,
     })
@@ -63,7 +62,7 @@ impl EventLoop {
 
   pub fn enqueue_microtask(&self, task: Task) {
     let needs_wake = {
-      let mut q = self.microtasks.lock().unwrap();
+      let mut q = self.microtasks.lock();
       if async_runtime::has_error() {
         return;
       }
@@ -87,7 +86,7 @@ impl EventLoop {
 
   pub fn enqueue_microtasks(&self, tasks: impl IntoIterator<Item = Task>) {
     let needs_wake = {
-      let mut q = self.microtasks.lock().unwrap();
+      let mut q = self.microtasks.lock();
       if async_runtime::has_error() {
         return;
       }
@@ -115,7 +114,7 @@ impl EventLoop {
 
   pub fn enqueue_macrotask(&self, task: Task) {
     let needs_wake = {
-      let mut q = self.macrotasks.lock().unwrap();
+      let mut q = self.macrotasks.lock();
       if async_runtime::has_error() {
         return;
       }
@@ -205,7 +204,7 @@ impl EventLoop {
     if due.is_empty() {
       return;
     }
-    let mut mq = self.macrotasks.lock().unwrap();
+    let mut mq = self.macrotasks.lock();
     if async_runtime::has_error() {
       return;
     }
@@ -222,15 +221,15 @@ impl EventLoop {
   }
 
   fn pop_macrotask(&self) -> Option<Task> {
-    self.macrotasks.lock().unwrap().pop_front()
+    self.macrotasks.lock().pop_front()
   }
 
   fn has_macrotasks(&self) -> bool {
-    !self.macrotasks.lock().unwrap().is_empty()
+    !self.macrotasks.lock().is_empty()
   }
 
   fn has_microtasks(&self) -> bool {
-    !self.microtasks.lock().unwrap().is_empty()
+    !self.microtasks.lock().is_empty()
   }
 
   fn drain_microtasks_inner(&self) -> bool {
@@ -245,7 +244,7 @@ impl EventLoop {
     let mut ran = 0usize;
     loop {
       {
-        let mut q = self.microtasks.lock().unwrap();
+        let mut q = self.microtasks.lock();
         if q.is_empty() {
           break;
         }
@@ -255,7 +254,7 @@ impl EventLoop {
         if steps >= max_steps {
           batch.push_front(task);
           let pending = {
-            let mut q = self.microtasks.lock().unwrap();
+            let mut q = self.microtasks.lock();
             batch.append(&mut *q);
             let pending = batch.len();
             std::mem::swap(&mut *q, &mut batch);
@@ -279,7 +278,7 @@ impl EventLoop {
         task.run();
         steps += 1;
         if async_runtime::has_error() {
-          let mut q = self.microtasks.lock().unwrap();
+          let mut q = self.microtasks.lock();
           batch.append(&mut *q);
           std::mem::swap(&mut *q, &mut batch);
           return did_work;
@@ -346,10 +345,10 @@ impl EventLoop {
     if crate::async_rt::has_external_pending() {
       return true;
     }
-    if !self.microtasks.lock().unwrap().is_empty() {
+    if !self.microtasks.lock().is_empty() {
       return true;
     }
-    if !self.macrotasks.lock().unwrap().is_empty() {
+    if !self.macrotasks.lock().is_empty() {
       return true;
     }
     false
@@ -431,7 +430,7 @@ impl EventLoop {
       threading::safepoint_poll();
       drop(parked);
       if !ready.is_empty() {
-        let mut mq = self.macrotasks.lock().unwrap();
+        let mut mq = self.macrotasks.lock();
         if async_runtime::has_error() {
           return false;
         }
@@ -488,7 +487,7 @@ impl EventLoop {
       drop(parked);
 
       if !ready.is_empty() {
-        self.macrotasks.lock().unwrap().extend(ready);
+        self.macrotasks.lock().extend(ready);
         return;
       }
 
@@ -500,15 +499,24 @@ impl EventLoop {
   pub(crate) fn reset_for_tests(&self) {
     let _guard = self.poll_lock.lock();
 
-    self.microtasks.lock().unwrap().clear();
-    self.macrotasks.lock().unwrap().clear();
+    self.microtasks.lock().clear();
+    self.macrotasks.lock().clear();
     self.timers.clear();
     self.reactor.clear_watchers();
     // Clearing watchers may invoke drop hooks that enqueue additional work (e.g. to release
     // refcounted watcher userdata). Clear queues again so tests start fully idle.
-    self.microtasks.lock().unwrap().clear();
-    self.macrotasks.lock().unwrap().clear();
+    self.microtasks.lock().clear();
+    self.macrotasks.lock().clear();
     self.timers.clear();
     let _ = self.reactor.drain_wake();
+  }
+
+  pub(crate) fn debug_with_microtasks_lock<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.microtasks.lock();
+    f()
+  }
+
+  pub(crate) fn debug_with_reactor_watchers_lock<R>(&self, f: impl FnOnce() -> R) -> R {
+    self.reactor.debug_with_watchers_lock(f)
   }
 }

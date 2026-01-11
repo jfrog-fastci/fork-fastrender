@@ -1,9 +1,9 @@
 use crate::async_rt::Task;
-use std::collections::HashMap;
+use crate::sync::GcAwareMutex;
 use crate::timer_wheel::{TimerKey, TimerWheel};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::Mutex;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -21,7 +21,7 @@ impl TimerId {
 
 pub struct Timers {
   next_id: AtomicU64,
-  inner: Mutex<TimersInner>,
+  inner: GcAwareMutex<TimersInner>,
 }
 
 struct TimersInner {
@@ -38,7 +38,7 @@ impl Timers {
   pub fn new() -> Self {
     Self {
       next_id: AtomicU64::new(1),
-      inner: Mutex::new(TimersInner {
+      inner: GcAwareMutex::new(TimersInner {
         wheel: TimerWheel::new(),
         keys: HashMap::new(),
       }),
@@ -46,16 +46,16 @@ impl Timers {
   }
 
   pub fn has_timers(&self) -> bool {
-    !self.inner.lock().unwrap().keys.is_empty()
+    !self.inner.lock().keys.is_empty()
   }
 
   pub fn len(&self) -> usize {
-    self.inner.lock().unwrap().keys.len()
+    self.inner.lock().keys.len()
   }
 
   pub fn schedule(&self, deadline: Instant, task: Task) -> TimerId {
     let id = TimerId(self.next_id.fetch_add(1, AtomicOrdering::Relaxed));
-    let mut inner = self.inner.lock().unwrap();
+    let mut inner = self.inner.lock();
     let key = inner.wheel.schedule(deadline, TimerEntry { id, task });
     let prev = inner.keys.insert(id, key);
     debug_assert!(prev.is_none(), "timer id collision");
@@ -64,7 +64,7 @@ impl Timers {
   }
 
   pub fn cancel(&self, id: TimerId) -> bool {
-    let mut inner = self.inner.lock().unwrap();
+    let mut inner = self.inner.lock();
     let Some(key) = inner.keys.remove(&id) else {
       return false;
     };
@@ -76,7 +76,7 @@ impl Timers {
 
   pub fn drain_due(&self, now: Instant) -> Vec<Task> {
     let mut ready = Vec::new();
-    let mut inner = self.inner.lock().unwrap();
+    let mut inner = self.inner.lock();
     let mut fired_ids = Vec::new();
     inner.wheel.poll_expired(now, |entry| {
       fired_ids.push(entry.id);
@@ -93,11 +93,11 @@ impl Timers {
   }
 
   pub fn next_deadline(&self) -> Option<Instant> {
-    self.inner.lock().unwrap().wheel.next_deadline()
+    self.inner.lock().wheel.next_deadline()
   }
 
   pub fn clear(&self) {
-    let mut inner = self.inner.lock().unwrap();
+    let mut inner = self.inner.lock();
     let active = inner.keys.len() as u64;
     inner.wheel = TimerWheel::new();
     inner.keys.clear();
@@ -109,7 +109,7 @@ impl Timers {
 
 impl Drop for Timers {
   fn drop(&mut self) {
-    let active = self.inner.lock().unwrap().keys.len() as u64;
+    let active = self.inner.lock().keys.len() as u64;
     if active > 0 {
       crate::rt_trace::timer_heap_dec_by(active);
     }
@@ -122,6 +122,7 @@ mod tests {
   use rand::rngs::StdRng;
   use rand::{Rng, SeedableRng};
   use std::collections::HashMap;
+  use std::sync::Mutex;
   use std::time::Duration;
 
   struct RecordCtx {

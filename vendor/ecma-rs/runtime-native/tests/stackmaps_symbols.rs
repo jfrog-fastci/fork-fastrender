@@ -4,11 +4,13 @@ use core::arch::global_asm;
 
 // Define a tiny but valid StackMap v3 blob (0 functions / 0 records).
 //
-// Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which defines
-// `__fastr_stackmaps_start/end` at the output-section boundaries and keeps all `.llvm_stackmaps`
-// input sections under `--gc-sections`. This blob ensures the section is non-empty even in minimal
-// environments that don't have LLVM tools installed (and therefore don't build the stackmap test
-// artifact).
+// Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which:
+// - keeps `.llvm_stackmaps` under `--gc-sections`, and
+// - defines `__fastr_stackmaps_start/end` at the output-section boundaries.
+//
+// This blob ensures the section is non-empty even in minimal environments that don't have LLVM
+// tools installed (and therefore don't build the stackmap test artifact). The output section may
+// still contain additional concatenated stackmap blobs from other object files.
 global_asm!(
   r#"
   .section .llvm_stackmaps,"a",@progbits

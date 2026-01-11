@@ -112,7 +112,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
   });
   let coro_ptr = Box::into_raw(coro);
 
-  let promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut (*coro_ptr).header) };
+  let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_ptr.cast::<Coroutine>()) };
   assert_eq!(counter.load(Ordering::SeqCst), 0);
   assert_eq!(promise_ptr.load(Ordering::SeqCst), 0);
   assert_eq!(promise.0, unsafe { (*coro_ptr).header.promise.cast::<c_void>() });
@@ -208,7 +208,7 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
   });
   let coro_ptr = Box::into_raw(coro);
 
-  let promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut (*coro_ptr).header) };
+  let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_ptr.cast::<Coroutine>()) };
   assert_eq!(promise.0, unsafe { (*coro_ptr).header.promise.cast::<c_void>() });
   assert!(!started);
   assert!(!completed);

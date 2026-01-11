@@ -4,13 +4,14 @@ use crate::reactor::{
   Event as ReactorEvent, Interest as ReactorInterest, Reactor as SysReactor, Token as ReactorToken,
   Waker,
 };
+use crate::sync::GcAwareMutex;
 use crate::threading;
 use bitflags::bitflags;
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 static IN_EPOLL_WAIT: AtomicBool = AtomicBool::new(false);
@@ -85,7 +86,7 @@ pub struct Reactor {
 
   next_id: AtomicU64,
   watchers_count: AtomicUsize,
-  watchers: Mutex<HashMap<WatcherId, Watcher>>,
+  watchers: GcAwareMutex<HashMap<WatcherId, Watcher>>,
 }
 
 struct Watcher {
@@ -144,7 +145,7 @@ impl Reactor {
       waker,
       next_id: AtomicU64::new(1),
       watchers_count: AtomicUsize::new(0),
-      watchers: Mutex::new(HashMap::new()),
+      watchers: GcAwareMutex::new(HashMap::new()),
     })
   }
 
@@ -172,7 +173,7 @@ impl Reactor {
       ));
     }
     ensure_nonblocking(fd)?;
-    let mut watchers = self.watchers.lock().unwrap();
+    let mut watchers = self.watchers.lock();
     if watchers.values().any(|w| w.fd == fd) {
       return Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -230,7 +231,7 @@ impl Reactor {
       ));
     }
     ensure_nonblocking(fd)?;
-    let mut watchers = self.watchers.lock().unwrap();
+    let mut watchers = self.watchers.lock();
     if watchers.values().any(|w| w.fd == fd) {
       return Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -268,7 +269,7 @@ impl Reactor {
     if interest.is_empty() {
       return false;
     }
-    let mut watchers = self.watchers.lock().unwrap();
+    let mut watchers = self.watchers.lock();
     let Some(watcher) = watchers.get_mut(&id) else {
       return false;
     };
@@ -302,7 +303,7 @@ impl Reactor {
 
   pub fn deregister(&self, id: WatcherId) -> bool {
     let watcher = {
-      let mut watchers = self.watchers.lock().unwrap();
+      let mut watchers = self.watchers.lock();
       let watcher = watchers.remove(&id);
       if let Some(w) = &watcher {
         self.watchers_count.fetch_sub(1, Ordering::Release);
@@ -351,7 +352,7 @@ impl Reactor {
     // Don't hold the map lock while invoking watcher drop hooks; those hooks may queue work or call
     // back into the async runtime.
     let drained: Vec<(WatcherId, Watcher)> = {
-      let mut watchers = self.watchers.lock().unwrap();
+      let mut watchers = self.watchers.lock();
       if watchers.is_empty() {
         return;
       }
@@ -407,7 +408,7 @@ impl Reactor {
     }
     crate::rt_trace::epoll_wakeups_inc();
 
-    let watchers = self.watchers.lock().unwrap();
+    let watchers = self.watchers.lock();
     let mut tasks = Vec::with_capacity(n);
 
     for ev in events {
@@ -447,6 +448,11 @@ impl Reactor {
     }
 
     Ok(tasks)
+  }
+
+  pub(crate) fn debug_with_watchers_lock<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.watchers.lock();
+    f()
   }
 
   fn alloc_watcher_id(&self) -> io::Result<WatcherId> {
