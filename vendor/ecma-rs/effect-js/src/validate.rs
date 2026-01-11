@@ -614,4 +614,53 @@ mod tests {
       ValidationError::EmptyDependsOnArgs { .. }
     )));
   }
+
+  #[test]
+  fn allows_alias_collisions_with_env_specific_duplicate_names() {
+    // `ApiDatabase::get`/`iter` selects a single "best" entry for a canonical
+    // name under `TargetEnv::Unknown`, which can be an environment-specific
+    // variant (e.g. `node/` vs `web/` globals).
+    //
+    // If a `node:`-prefixed API has an implicit `node:`-stripped alias spelling
+    // that matches such a canonical name, `effect-js` should accept it as long
+    // as *any* entry for that canonical name has identical semantics.
+    //
+    // This is a minimal reproduction of the `crypto.randomUUID` /
+    // `node:crypto.randomUUID` scenario in the bundled knowledge base.
+    let sources = [
+      (
+        "web/crypto.yaml",
+        r#"
+- name: crypto.randomUUID
+  kind: function
+  since: "v14.17.0"
+  effects: Unknown
+  purity: Impure
+"#,
+      ),
+      (
+        "node/web_crypto.yaml",
+        r#"
+- name: crypto.randomUUID
+  kind: function
+  since: "v19.0.0"
+  effects: Unknown
+  purity: Impure
+"#,
+      ),
+      (
+        "node/crypto.yaml",
+        r#"
+- name: node:crypto.randomUUID
+  kind: function
+  since: "v14.17.0"
+  effects: Unknown
+  purity: Impure
+"#,
+      ),
+    ];
+
+    let db = ApiDatabase::load_from_sources(&sources).expect("load test knowledge base");
+    validate(&db).expect("env-specific duplicates should not trigger DuplicateApiName");
+  }
 }
