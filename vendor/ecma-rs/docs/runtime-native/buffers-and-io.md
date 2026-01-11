@@ -114,6 +114,9 @@ all I/O backends. Violations are memory safety bugs.
 
 - **External memory is tracked:** backing store bytes are added to a GC-visible
   external-memory counter on allocation and removed on free.
+- **Finalization drops only the handle:** when an `ArrayBuffer` header becomes unreachable, its
+  finalizer must only drop its `BackingStore` handle. The backing store allocation (and external
+  bytes accounting) must remain alive as long as any host pin guard still holds a strong reference.
 - **GC does not need to scan backing store bytes:** backing store contents are
   treated as raw bytes and must not contain GC pointers.
 
