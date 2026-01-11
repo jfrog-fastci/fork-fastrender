@@ -699,13 +699,15 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     // mutability so we can call back into `vm-js` APIs that also borrow `&mut Vm`.
     let (
       fetcher,
-      max_script_bytes,
+      options,
       document_origin,
       cors_mode,
       document_url,
       base_url,
       module_map_ptr,
       import_map_state_ptr,
+      loaded_bytes_total_ptr,
+      module_depths_ptr,
     ) = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         let err_value = make_type_error_value(vm, scope, "module loading requires a window realm")?;
@@ -740,15 +742,31 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
       (
         loader.fetcher.clone(),
-        loader.max_script_bytes,
+        loader.options,
         loader.document_origin.clone(),
         loader.cors_mode,
         document_url,
         base_url,
         &mut loader.module_map as *mut HashMap<String, ModuleId>,
         &mut loader.import_map_state as *mut crate::js::import_maps::ImportMapState,
+        &mut loader.loaded_bytes_total as *mut usize,
+        &mut loader.module_depths as *mut HashMap<ModuleId, usize>,
       )
     };
+
+    if let Err(err) = options.check_module_specifier(&module_request.specifier) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
 
     let default_base = base_url.unwrap_or_else(|| document_url.clone());
     let referrer_url = match referrer {
@@ -790,6 +808,20 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       }
     };
 
+    if let Err(err) = options.check_module_specifier(&resolved_url) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
     // Check the URL-level module cache first (required for dynamic import caching invariants).
     if let Some(existing) = unsafe { (&*module_map_ptr).get(&resolved_url).copied() } {
       vm.finish_loading_imported_module(
@@ -804,8 +836,56 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       return Ok(());
     }
 
+    let depth: usize = match referrer {
+      ModuleReferrer::Module(module_id) => unsafe { &*module_depths_ptr }
+        .get(&module_id)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1),
+      ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => 0,
+    };
+    if let Err(err) = options.check_module_graph_depth(depth, &resolved_url) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
+    let next_modules = unsafe { (&*module_map_ptr).len() }
+      .checked_add(1)
+      .ok_or(VmError::OutOfMemory)?;
+    if let Err(err) = options.check_module_graph_modules(next_modules, &resolved_url) {
+      let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(err_value)),
+      )?;
+      return Ok(());
+    }
+
+    let current_total = unsafe { *loaded_bytes_total_ptr };
+    let remaining_total = options.max_module_graph_total_bytes.saturating_sub(current_total);
+
     // Fetch the module source.
-    let max_fetch = max_script_bytes.saturating_add(1);
+    //
+    // Cap the fetch size by both the per-module script size budget and the remaining graph budget
+    // so hostile graphs cannot force us to download/allocate more bytes than we intend to accept.
+    let max_fetch = options
+      .max_script_bytes
+      .min(remaining_total)
+      .saturating_add(1);
     let mut req = FetchRequest::new(&resolved_url, FetchDestination::ScriptCors);
     // Prefer the module referrer's URL for the Referer header. If the referrer is a Script/Realm
     // record, fall back to the document URL.
@@ -910,11 +990,11 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       }
     }
 
-    if fetched.bytes.len() > max_script_bytes {
+    if fetched.bytes.len() > options.max_script_bytes {
       let message = format!(
         "module {resolved_url} is too large ({} bytes > max {})",
         fetched.bytes.len(),
-        max_script_bytes
+        options.max_script_bytes
       );
       let err_value = make_type_error_value(vm, scope, &message)?;
       vm.finish_loading_imported_module(
@@ -928,6 +1008,23 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       )?;
       return Ok(());
     }
+
+    let next_total = match options.check_module_graph_total_bytes(current_total, fetched.bytes.len(), &resolved_url) {
+      Ok(next) => next,
+      Err(err) => {
+        let err_value = make_type_error_value(vm, scope, &err.to_string())?;
+        vm.finish_loading_imported_module(
+          scope,
+          modules,
+          self,
+          referrer,
+          module_request,
+          payload,
+          Err(VmError::Throw(err_value)),
+        )?;
+        return Ok(());
+      }
+    };
 
     let source_text =
       decode_classic_script_bytes(&fetched.bytes, fetched.content_type.as_deref(), UTF_8);
@@ -958,6 +1055,8 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     let id = modules.add_module(record);
     unsafe {
       (&mut *module_map_ptr).insert(resolved_url.clone(), id);
+      *loaded_bytes_total_ptr = next_total;
+      (&mut *module_depths_ptr).insert(id, depth);
     }
 
     vm.finish_loading_imported_module(scope, modules, self, referrer, module_request, payload, Ok(id))?;

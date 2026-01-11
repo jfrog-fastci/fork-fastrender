@@ -371,7 +371,6 @@ impl WindowHostState {
       let document_origin = crate::resource::origin_from_url(&document_url);
       if let Err(err) = window.enable_module_loader(
         fetcher.clone(),
-        js_execution_options.max_script_bytes,
         document_origin,
       ) {
         unregister_dom_source(dom_source_id);
@@ -1097,6 +1096,54 @@ mod tests {
       get_global_prop(&mut host, "__x"),
       Value::Number(n) if n == 42.0
     ));
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_dynamic_import_enforces_module_graph_module_count_budget() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(
+      "https://example.invalid/mod.js",
+      FetchedResource::new(
+        "import './dep.js'; export default 42;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    fetcher.insert(
+      "https://example.invalid/dep.js",
+      FetchedResource::new(
+        "export const x = 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    options.max_module_graph_modules = 1; // only the entry module allowed
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, options)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__x = 0;
+      globalThis.__err = "";
+      import("https://example.invalid/mod.js")
+        .then(m => { globalThis.__x = m.default; })
+        .catch(e => { globalThis.__err = String(e && e.message || e); });
+      "#,
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+
+    let err = get_global_prop_utf8(&mut host, "__err").unwrap_or_default();
+    assert!(
+      err.contains("max_module_graph_modules"),
+      "expected module count budget error, got: {err:?}"
+    );
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
     Ok(())
   }
 

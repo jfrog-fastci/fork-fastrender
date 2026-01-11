@@ -244,21 +244,18 @@ where
       Ok(())
     }
     ScriptType::ImportMap => {
+      // Import maps are only meaningful when module scripts are supported. When modules are
+      // disabled, treat `type="importmap"` like an unknown script type and ignore it.
+      if !supports_module_scripts {
+        return Ok(());
+      }
+
       // HTML: import maps must be inline; `src` is invalid and must queue an `error` event task (and
       // suppress inline processing).
-      //
-      // Even when module scripts are disabled, `src` presence must still suppress inline fallback
-      // and queue `error` (mirroring how invalid `src` behaves for other script types).
       if spec.src_attr_present {
         event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
           host.dispatch_script_event(ScriptElementEvent::Error, &spec)
         })?;
-        return Ok(());
-      }
-
-      // Import maps are only meaningful when module scripts are supported. When modules are
-      // disabled, treat `type="importmap"` like an unknown script type and ignore it.
-      if !supports_module_scripts {
         return Ok(());
       }
       Ok(())

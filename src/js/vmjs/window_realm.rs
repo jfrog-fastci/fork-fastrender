@@ -225,15 +225,22 @@ pub(crate) struct WindowRealmModuleLoaderState {
   pub(crate) module_map: HashMap<String, ModuleId>,
   pub(crate) import_map_state: crate::js::import_maps::ImportMapState,
   pub(crate) fetcher: Arc<dyn ResourceFetcher>,
-  pub(crate) max_script_bytes: usize,
   pub(crate) document_origin: Option<crate::resource::DocumentOrigin>,
   pub(crate) cors_mode: CorsMode,
+  pub(crate) options: JsExecutionOptions,
+  /// Total bytes of module source payloads successfully loaded into `module_graph`.
+  ///
+  /// This is a host-side accounting mechanism used to enforce
+  /// [`JsExecutionOptions::max_module_graph_total_bytes`].
+  pub(crate) loaded_bytes_total: usize,
+  /// Best-effort module depth tracking used to enforce [`JsExecutionOptions::max_module_graph_depth`].
+  pub(crate) module_depths: HashMap<ModuleId, usize>,
 }
 
 impl WindowRealmModuleLoaderState {
   pub(crate) fn new(
     fetcher: Arc<dyn ResourceFetcher>,
-    max_script_bytes: usize,
+    options: JsExecutionOptions,
     document_origin: Option<crate::resource::DocumentOrigin>,
   ) -> Self {
     Self {
@@ -241,9 +248,11 @@ impl WindowRealmModuleLoaderState {
       module_map: HashMap::new(),
       import_map_state: crate::js::import_maps::ImportMapState::new_empty(),
       fetcher,
-      max_script_bytes,
       document_origin,
       cors_mode: CorsMode::Anonymous,
+      options,
+      loaded_bytes_total: 0,
+      module_depths: HashMap::new(),
     }
   }
 }
@@ -478,9 +487,9 @@ impl WindowRealm {
   pub(crate) fn enable_module_loader(
     &mut self,
     fetcher: Arc<dyn ResourceFetcher>,
-    max_script_bytes: usize,
     document_origin: Option<crate::resource::DocumentOrigin>,
   ) -> Result<(), VmError> {
+    let options = self.js_execution_options;
     let vm = self.vm_mut();
     let graph_ptr = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
@@ -488,7 +497,7 @@ impl WindowRealm {
       };
       data.module_loader = Some(WindowRealmModuleLoaderState::new(
         fetcher,
-        max_script_bytes,
+        options,
         document_origin,
       ));
       let loader = data

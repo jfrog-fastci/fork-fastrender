@@ -183,7 +183,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     if js_execution_options.supports_module_scripts {
       let document_origin = origin_from_url(url);
       realm
-        .enable_module_loader(Arc::clone(&fetcher), js_execution_options.max_script_bytes, document_origin)
+        .enable_module_loader(Arc::clone(&fetcher), document_origin)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 
@@ -357,10 +357,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
       let (
-        max_script_bytes,
+        options,
         document_origin,
         module_map_ptr,
         import_map_state_ptr,
+        loaded_bytes_total_ptr,
+        module_depths_ptr,
       ) = {
         let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
           return Err(Error::Other("window realm missing user data".to_string()));
@@ -373,10 +375,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         loader.fetcher = Arc::clone(&fetcher);
         loader.cors_mode = cors_mode;
         (
-          loader.max_script_bytes,
+          loader.options,
           loader.document_origin.clone(),
           &mut loader.module_map as *mut std::collections::HashMap<String, ModuleId>,
           &mut loader.import_map_state as *mut crate::js::import_maps::ImportMapState,
+          &mut loader.loaded_bytes_total as *mut usize,
+          &mut loader.module_depths as *mut std::collections::HashMap<ModuleId, usize>,
         )
       };
 
@@ -406,12 +410,31 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         Error::Other(message)
       };
 
+      if let Err(err) = options.check_module_specifier(&entry_specifier) {
+        return Err(record_nonfatal_error(err.to_string()));
+      }
+      if let Err(err) = options.check_module_graph_depth(0, &entry_specifier) {
+        return Err(record_nonfatal_error(err.to_string()));
+      }
+
       let entry_module: ModuleId = if let Some(id) =
         unsafe { (&*module_map_ptr).get(&entry_specifier).copied() }
       {
         id
       } else if spec.src_attr_present {
-        let max_fetch = max_script_bytes.saturating_add(1);
+        let next_modules = unsafe { (&*module_map_ptr).len() }
+          .checked_add(1)
+          .ok_or_else(|| record_nonfatal_error("Module graph module count overflowed usize".to_string()))?;
+        if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
+          return Err(record_nonfatal_error(err.to_string()));
+        }
+
+        let current_total = unsafe { *loaded_bytes_total_ptr };
+        let remaining_total = options.max_module_graph_total_bytes.saturating_sub(current_total);
+        let max_fetch = options
+          .max_script_bytes
+          .min(remaining_total)
+          .saturating_add(1);
         let mut req = FetchRequest::new(&entry_specifier, FetchDestination::ScriptCors)
           .with_referrer_url(&document_url)
           .with_credentials_mode(cors_mode.credentials_mode());
@@ -446,13 +469,19 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           }
         }
 
-        if fetched.bytes.len() > max_script_bytes {
+        if fetched.bytes.len() > options.max_script_bytes {
           return Err(record_nonfatal_error(format!(
             "module {entry_specifier} is too large ({} bytes > max {})",
             fetched.bytes.len(),
-            max_script_bytes
+            options.max_script_bytes
           )));
         }
+
+        let next_total = match options.check_module_graph_total_bytes(current_total, fetched.bytes.len(), &entry_specifier)
+        {
+          Ok(next) => next,
+          Err(err) => return Err(record_nonfatal_error(err.to_string())),
+        };
 
         let source_text = decode_classic_script_bytes(
           &fetched.bytes,
@@ -467,16 +496,32 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         let id = module_graph.add_module(record);
         unsafe {
           (&mut *module_map_ptr).insert(entry_specifier.clone(), id);
+          *loaded_bytes_total_ptr = next_total;
+          (&mut *module_depths_ptr).insert(id, 0);
         }
         id
       } else {
-        if max_script_bytes != usize::MAX && spec.inline_text.as_bytes().len() > max_script_bytes {
+        let next_modules = unsafe { (&*module_map_ptr).len() }
+          .checked_add(1)
+          .ok_or_else(|| record_nonfatal_error("Module graph module count overflowed usize".to_string()))?;
+        if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
+          return Err(record_nonfatal_error(err.to_string()));
+        }
+
+        let inline_len = spec.inline_text.as_bytes().len();
+        if options.max_script_bytes != usize::MAX && inline_len > options.max_script_bytes {
           return Err(record_nonfatal_error(format!(
             "inline module {entry_specifier} is too large ({} bytes > max {})",
-            spec.inline_text.as_bytes().len(),
-            max_script_bytes
+            inline_len,
+            options.max_script_bytes
           )));
         }
+
+        let current_total = unsafe { *loaded_bytes_total_ptr };
+        let next_total = match options.check_module_graph_total_bytes(current_total, inline_len, &entry_specifier) {
+          Ok(next) => next,
+          Err(err) => return Err(record_nonfatal_error(err.to_string())),
+        };
 
         let source = Arc::new(SourceText::new(
           entry_specifier.clone(),
@@ -489,6 +534,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         let id = module_graph.add_module(record);
         unsafe {
           (&mut *module_map_ptr).insert(entry_specifier.clone(), id);
+          *loaded_bytes_total_ptr = next_total;
+          (&mut *module_depths_ptr).insert(id, 0);
         }
         id
       };
@@ -600,7 +647,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
       let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
-      let module_map_ptr: *mut std::collections::HashMap<String, ModuleId> = {
+      let (options, module_map_ptr, loaded_bytes_total_ptr, module_depths_ptr) = {
         let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
           return Err(Error::Other("window realm missing user data".to_string()));
         };
@@ -611,7 +658,12 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         };
         loader.fetcher = document.fetcher();
         loader.cors_mode = cors_mode;
-        &mut loader.module_map as *mut std::collections::HashMap<String, ModuleId>
+        (
+          loader.options,
+          &mut loader.module_map as *mut std::collections::HashMap<String, ModuleId>,
+          &mut loader.loaded_bytes_total as *mut usize,
+          &mut loader.module_depths as *mut std::collections::HashMap<ModuleId, usize>,
+        )
       };
 
       let entry_module = {
@@ -619,6 +671,47 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         if let Some(id) = module_map.get(&entry_specifier).copied() {
           id
         } else {
+          let record_budget_error = |message: String| {
+            if let Some(diag) = diagnostics.as_ref() {
+              diag.record_js_exception(message, None);
+            }
+          };
+
+          if let Err(err) = options.check_module_specifier(&entry_specifier) {
+            record_budget_error(err.to_string());
+            return Ok(());
+          }
+          if let Err(err) = options.check_module_graph_depth(0, &entry_specifier) {
+            record_budget_error(err.to_string());
+            return Ok(());
+          }
+
+          let next_modules = module_map
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| Error::Other("Module graph module count overflowed usize".to_string()))?;
+          if let Err(err) = options.check_module_graph_modules(next_modules, &entry_specifier) {
+            record_budget_error(err.to_string());
+            return Ok(());
+          }
+
+          let module_bytes = script_text.as_bytes().len();
+          let context = format!("source=module specifier={entry_specifier}");
+          if let Err(err) = options.check_script_source_bytes(module_bytes, &context) {
+            record_budget_error(err.to_string());
+            return Ok(());
+          }
+
+          let current_total = unsafe { *loaded_bytes_total_ptr };
+          let next_total =
+            match options.check_module_graph_total_bytes(current_total, module_bytes, &entry_specifier) {
+              Ok(next) => next,
+              Err(err) => {
+                record_budget_error(err.to_string());
+                return Ok(());
+              }
+            };
+
           let source = Arc::new(SourceText::new(entry_specifier.clone(), script_text));
           let record = match SourceTextModuleRecord::parse_source_with_vm(&mut vm, source) {
             Ok(record) => record,
@@ -635,6 +728,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           };
           let id = module_graph.add_module(record);
           module_map.insert(entry_specifier.clone(), id);
+          unsafe {
+            *loaded_bytes_total_ptr = next_total;
+            (&mut *module_depths_ptr).insert(id, 0);
+          }
           id
         }
       };
@@ -1137,6 +1234,75 @@ mod tests {
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_fetch_module_graph_counts_entry_module_bytes_for_total_budget() -> Result<()> {
+    let entry_source = "import './dep.js';";
+    let dep_source = "export const value = 1;";
+    let dep_url = "https://example.com/dep.js";
+    let document_url = "https://example.com/doc.html";
+
+    let total_limit = entry_source
+      .as_bytes()
+      .len()
+      .saturating_add(dep_source.as_bytes().len())
+      .saturating_sub(1);
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        dep_source.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let fetcher_trait: Arc<dyn ResourceFetcher> = fetcher.clone();
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher_trait.clone())
+      .build()?;
+    let mut document =
+      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    options.max_module_graph_total_bytes = total_limit;
+    executor.reset_for_navigation(Some(document_url), &mut document, &current_script, options)?;
+
+    let spec = ScriptElementSpec {
+      base_url: Some(document_url.to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: entry_source.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Module,
+    };
+
+    let err = executor
+      .fetch_module_graph(&spec, fetcher_trait, &mut document, &mut event_loop)
+      .expect_err("expected module graph total bytes budget error");
+    assert!(
+      err.to_string().contains("max_module_graph_total_bytes"),
+      "unexpected error: {err}"
+    );
     Ok(())
   }
 
