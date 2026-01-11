@@ -10,6 +10,7 @@ fn main() {
   println!("cargo:rerun-if-env-changed=RUSTFLAGS");
 
   enforce_force_frame_pointers();
+  build_rt_thread_tls();
 
   // Silence `unexpected_cfgs` warnings for cfgs set by this build script.
   println!("cargo::rustc-check-cfg=cfg(runtime_native_has_stackmap_test_artifact)");
@@ -35,6 +36,18 @@ fn main() {
   // Integration test artifact (x86_64 only): compile a tiny statepoint module and extract the
   // `Indirect [SP + off]` stackmap location so we can validate stack walking logic.
   maybe_build_stackmap_test_artifact();
+}
+
+fn build_rt_thread_tls() {
+  println!("cargo:rerun-if-changed=src/rt_thread_tls.c");
+
+  // Define `RT_THREAD` as a link-visible TLS symbol for native codegen.
+  //
+  // Rust's `#[thread_local]` static is still unstable, so we rely on a tiny C
+  // translation unit compiled by the build script.
+  cc::Build::new()
+    .file("src/rt_thread_tls.c")
+    .compile("runtime_native_tls");
 }
 
 fn enforce_force_frame_pointers() {

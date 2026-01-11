@@ -1,18 +1,18 @@
 use crate::runtime::Runtime;
-use std::cell::Cell;
+use core::ffi::c_void;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-// TLS pointer to the currently-attached [`Thread`].
-thread_local! {
-  static RT_THREAD: Cell<*mut Thread> = Cell::new(std::ptr::null_mut());
+extern "C" {
+  fn runtime_native_tls_get_rt_thread() -> *mut c_void;
+  fn runtime_native_tls_set_rt_thread(thread: *mut c_void);
 }
 
 /// Get the raw TLS pointer to the current thread record.
 pub fn current_thread_ptr() -> *mut Thread {
-  RT_THREAD.with(|ptr| ptr.get())
+  unsafe { runtime_native_tls_get_rt_thread().cast() }
 }
 
 /// Returns the current thread record if the calling OS thread is attached.
@@ -44,7 +44,7 @@ pub fn current_thread_state() -> ThreadState {
 /// # Safety
 /// Must only be called by the runtime during attach/detach.
 pub unsafe fn set_current_thread_ptr(thread: *mut Thread) {
-  RT_THREAD.with(|ptr| ptr.set(thread));
+  runtime_native_tls_set_rt_thread(thread.cast());
 }
 
 /// Per-mutator thread record.

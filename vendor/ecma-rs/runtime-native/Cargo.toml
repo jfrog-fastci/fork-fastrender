@@ -91,6 +91,7 @@ io-uring = { workspace = true }
 
 [build-dependencies]
 object = { workspace = true }
+cc = "1"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

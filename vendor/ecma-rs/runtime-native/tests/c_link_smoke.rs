@@ -160,12 +160,16 @@ static void par_for_body(size_t i, uint8_t* data) {
   out[i] = (uint32_t)(i * 3u + 1u);
 }
 
-int main(void) {
-  rt_thread_init(0);
-
-  // Global root registration (word-sized slot).
-  static size_t global_root = 0;
-  rt_global_root_register(&global_root);
+ int main(void) {
+   rt_thread_init(0);
+ 
+   // Touch the RT_THREAD TLS symbol so this smoke test also verifies that the
+   // runtime provides it for native codegen.
+   RT_THREAD = (Thread*)0;
+ 
+   // Global root registration (word-sized slot).
+   static size_t global_root = 0;
+   rt_global_root_register(&global_root);
   rt_global_root_unregister(&global_root);
 
   static const RtShapeDescriptor kShapes[1] = {
