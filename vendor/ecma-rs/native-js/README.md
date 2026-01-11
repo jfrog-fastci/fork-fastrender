@@ -231,8 +231,9 @@ println!(\"wrote {}\", artifact.path.display());
 > imports; type-only imports/re-exports are ignored), running module initializers in dependency order (matching source
 > request order for sibling imports/re-exports). Re-export statements (`export { foo } from`,
 > `export * from`) are included in the runtime dependency graph for module
-> initialization ordering. The entry file must export `main()`, but it may be
-> re-exported (e.g. `export { main } from "./impl"`).
+> initialization ordering, and imports can resolve through re-export-only modules.
+>
+> The entry file must export `main()`, but it may be re-exported (e.g. `export { main } from "./impl"`).
 >
 > Type-only exports/re-exports do **not** trigger module evaluation (see the
 > `type_only_reexport_does_not_execute_module` integration test in `native-js-cli`). Cyclic runtime
