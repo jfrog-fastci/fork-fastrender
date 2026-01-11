@@ -71,6 +71,7 @@ pub use gc::RememberedSet;
 pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
+pub use async_rt::set_strict_await_yields;
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use string::*;

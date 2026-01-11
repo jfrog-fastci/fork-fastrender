@@ -28,6 +28,7 @@ pub use timer::TimerId;
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -35,6 +36,12 @@ use std::time::Instant;
 
 /// Global serialization guard for the core poll loop.
 static POLL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// When enabled, `await` follows JS microtask semantics even when the awaited promise is already
+/// settled: the coroutine is resumed in a later microtask turn instead of synchronously.
+///
+/// Default is `false` to allow a fast-path synchronous resumption (an EXEC.plan-allowed deviation).
+static STRICT_AWAIT_YIELDS: AtomicBool = AtomicBool::new(false);
 
 pub type TaskFn = extern "C" fn(*mut u8);
 
@@ -209,11 +216,27 @@ pub(crate) fn clear_state_for_tests() {
 
   let _guard = POLL_LOCK.lock();
   global().loop_.reset_for_tests();
+
+  // Tests should be isolated from configuration toggles.
+  STRICT_AWAIT_YIELDS.store(false, Ordering::Release);
 }
 
 // -----------------------------------------------------------------------------
 // Public convenience helpers.
 // -----------------------------------------------------------------------------
+
+/// Configure whether `await` on an already-settled promise yields (strict JS semantics) or resumes
+/// synchronously (fast-path).
+///
+/// - `true` (strict): `await Promise.resolve(x)` resumes in a later microtask turn.
+/// - `false` (default): `await Promise.resolve(x)` resumes synchronously during coroutine driving.
+pub fn set_strict_await_yields(strict: bool) {
+  STRICT_AWAIT_YIELDS.store(strict, Ordering::Release);
+}
+
+pub(crate) fn strict_await_yields() -> bool {
+  STRICT_AWAIT_YIELDS.load(Ordering::Acquire)
+}
 
 pub fn enqueue_microtask(callback: TaskFn, data: *mut u8) {
   global().enqueue_microtask(Task::new(callback, data));

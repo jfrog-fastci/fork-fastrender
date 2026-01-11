@@ -3,6 +3,7 @@ use crate::abi::RtCoroStatus;
 use crate::abi::RtCoroutineHeader;
 
 use super::promise::{promise_new, promise_outcome, promise_then, PromiseOutcome};
+use super::strict_await_yields;
 use super::{queue_macrotask, TaskFn};
 
 extern "C" fn coro_resume_task(data: *mut u8) {
@@ -102,6 +103,38 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
     (*coro).await_is_error = 0;
     (*coro).await_value = core::ptr::null_mut();
     (*coro).await_error = core::ptr::null_mut();
+  }
+
+  // Null promises are treated as "never settles" sentinels. Don't allocate a waiter or try to
+  // register with the promise in that case.
+  if awaited.is_null() {
+    return;
+  }
+
+  // Fast-path: if the promise is already settled, resume the coroutine synchronously (unless strict
+  // mode is requested).
+  if !strict_await_yields() {
+    match promise_outcome(awaited) {
+      PromiseOutcome::Pending => {}
+      PromiseOutcome::Fulfilled(v) => {
+        unsafe {
+          (*coro).await_is_error = 0;
+          (*coro).await_value = v;
+          (*coro).await_error = core::ptr::null_mut();
+        }
+        run_coroutine(coro);
+        return;
+      }
+      PromiseOutcome::Rejected(e) => {
+        unsafe {
+          (*coro).await_is_error = 1;
+          (*coro).await_value = core::ptr::null_mut();
+          (*coro).await_error = e;
+        }
+        run_coroutine(coro);
+        return;
+      }
+    }
   }
 
   let cont = Box::new(AwaitContinuation { coro, awaited });
