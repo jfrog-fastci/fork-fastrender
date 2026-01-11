@@ -2474,6 +2474,19 @@ pub unsafe extern "C" fn rt_thread_detach(thread: *mut Thread) {
     return;
   };
 
+  // Detach must not allow a thread to "disappear" from any runtime-visible
+  // registries while a stop-the-world safepoint epoch is active.
+  //
+  // If the current thread participates in the safepoint registry, join the
+  // safepoint first so the coordinator can make progress.
+  if crate::threading::safepoint::current_epoch() & 1 == 1 {
+    if registry::current_thread_id().is_some() {
+      crate::threading::safepoint::rt_gc_safepoint();
+    } else {
+      crate::threading::safepoint::wait_while_stop_the_world();
+    }
+  }
+
   // Best-effort: we cannot report errors over this C ABI.
   let _ = runtime.detach_thread_ptr(thread);
 }

@@ -31,6 +31,9 @@ Notes:
 
 * Registration is required so the GC can stop and (in the future) precisely scan mutator stacks.
 * Threads must unregister before exiting; otherwise the registry will retain stale entries.
+* `rt_thread_unregister` may **block** during an active stop-the-world epoch. A thread is not
+  removed from the global mutator set while `RT_GC_EPOCH` is odd. Callers must not hold runtime
+  locks while unregistering.
 
 ## `parked` semantics
 

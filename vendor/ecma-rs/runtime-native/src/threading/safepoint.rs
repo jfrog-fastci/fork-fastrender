@@ -60,8 +60,13 @@ impl SafepointCoordinator {
     }
   }
 
-  fn notify_all(&self) {
+  fn notify_all_locked(&self, _guard: &std::sync::MutexGuard<'_, ()>) {
     self.cv.notify_all();
+  }
+
+  fn notify_all(&self) {
+    let guard = self.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    self.notify_all_locked(&guard);
   }
 }
 
@@ -121,9 +126,7 @@ pub(crate) fn notify_state_change() {
   // while checking stop-the-world conditions, and all notifiers briefly acquire
   // it before waking waiters. This ensures notifies can't race with the
   // check→sleep transition.
-  let coord = coordinator();
-  let _guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
-  coord.notify_all();
+  coordinator().notify_all();
 }
 
 /// Block the current thread until any in-progress stop-the-world request is resumed.
@@ -182,7 +185,7 @@ pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
-        coord.notify_all();
+        coord.notify_all_locked(&guard);
         drop(guard);
         wake_all_gc_wakers();
         return Some(next);
@@ -328,7 +331,7 @@ where
 
   let stop_epoch = cur + 1;
   RT_GC_EPOCH.store(stop_epoch, Ordering::Release);
-  coord.notify_all();
+  coord.notify_all_locked(&cv_guard);
 
   let mut expected_threads: Vec<_> = Vec::new();
   registry::for_each_thread(|thread| {
@@ -385,9 +388,9 @@ where
   if !stopped {
     let resume_epoch = stop_epoch + 1;
     {
-      let _guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+      let guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
       RT_GC_EPOCH.store(resume_epoch, Ordering::Release);
-      coord.notify_all();
+      coord.notify_all_locked(&guard);
     }
     drop(gc_guard);
     panic!("stop_the_world({reason:?}) timed out waiting for threads to park");
@@ -397,9 +400,9 @@ where
 
   let resume_epoch = stop_epoch + 1;
   {
-    let _guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
     RT_GC_EPOCH.store(resume_epoch, Ordering::Release);
-    coord.notify_all();
+    coord.notify_all_locked(&guard);
   }
 
   let deadline = cfg!(debug_assertions).then(|| Instant::now() + Duration::from_secs(5));
@@ -612,7 +615,7 @@ fn world_stopped(stop_epoch: u64, coordinator_id: Option<registry::ThreadId>) ->
 pub fn rt_gc_resume_world() -> u64 {
   let coord = coordinator();
   // Synchronize the epoch transition with any threads waiting on `cv`.
-  let _guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
+  let guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
   loop {
     if cur & 1 == 0 {
@@ -622,7 +625,7 @@ pub fn rt_gc_resume_world() -> u64 {
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
-        coord.notify_all();
+        coord.notify_all_locked(&guard);
         return next;
       }
       Err(actual) => cur = actual,

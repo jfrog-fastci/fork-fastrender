@@ -57,6 +57,17 @@ impl<T> GcAwareMutex<T> {
       return g;
     }
 
+    // Unregistered threads are not part of the mutator registry and therefore
+    // do not participate in stop-the-world coordination. Treat this as a plain
+    // mutex acquisition so GC coordinator threads can still lock GC-aware
+    // runtime mutexes while the world is stopped.
+    //
+    // This is important for root enumeration: the coordinator may need to take
+    // GC-aware locks (e.g. the global root registry) while `RT_GC_EPOCH` is odd.
+    if threading::registry::current_thread_state().is_none() {
+      return self.inner.lock();
+    }
+
     loop {
       let gc_safe = threading::enter_gc_safe_region();
       let guard = self.inner.lock();

@@ -353,10 +353,7 @@ struct ThreadRegistration {
 
 impl Drop for ThreadRegistration {
   fn drop(&mut self) {
-    self
-      .state
-      .detached
-      .store(true, Ordering::Release);
+    self.state.detached.store(true, Ordering::Release);
     registry().unregister_thread(self.state.id);
     safepoint::notify_state_change();
   }
