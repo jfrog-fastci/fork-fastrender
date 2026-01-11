@@ -114,8 +114,10 @@ fn runtime_native_release_has_frame_pointers() {
   rustflags.push_str("-C force-frame-pointers=yes");
 
   // Keep symbols so the disassembly can find `rt_fp_test_*` by name.
-  let mut cmd = Command::new("cargo");
+  let cargo_agent = workspace_root.join("scripts").join("cargo_agent.sh");
+  let mut cmd = Command::new("bash");
   cmd
+    .arg(cargo_agent)
     .current_dir(workspace_root)
     .env("CARGO_TARGET_DIR", &target_dir)
     // `lto = true` in the workspace release profile produces LLVM bitcode

@@ -45,6 +45,13 @@ check_path version
 check_path parse-js/scripts
 check_path bench/minify-js/build
 
+# Also disallow spawning a nested Cargo process from Rust code (commonly seen in
+# integration tests). This bypasses the wrapper's global slot limiting + memory
+# caps and can OOM shared hosts.
+if rg -n --fixed-strings 'Command::new("cargo")' -g'*.rs' .; then
+  fail=1
+fi
+
 if [[ "${fail}" -ne 0 ]]; then
   echo "error: raw cargo invocations found; use scripts/cargo_agent.sh instead" >&2
   exit 1

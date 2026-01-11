@@ -107,10 +107,13 @@ fn main() {
     stackmaps_ld.display()
   ));
 
-  let status = Command::new("cargo")
+  let cargo_agent = workspace_root.join("scripts").join("cargo_agent.sh");
+  let status = Command::new("bash")
+    .arg(cargo_agent)
     .arg("build")
     .arg("--quiet")
-    .current_dir(project_dir)
+    .arg("--manifest-path")
+    .arg(project_dir.join("Cargo.toml"))
     .env("CARGO_TARGET_DIR", &target_dir)
     .env("RUSTFLAGS", rustflags)
     .status()
