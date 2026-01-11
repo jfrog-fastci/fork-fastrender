@@ -12,6 +12,11 @@ use std::cmp::Ordering;
 use std::f64::consts::{E, FRAC_1_SQRT_2, LN_10, LN_2, LOG10_E, LOG2_E, PI, SQRT_2};
 use std::mem::discriminant;
 
+// To avoid compile-time resource exhaustion, we cap BigInt operations that can rapidly amplify a
+// small literal into an enormous value (e.g. `1n << 10_000_000n` or `2n ** 10_000_000n`). When the
+// output could exceed this size, we skip folding and preserve runtime semantics.
+const BIGINT_MAX_RESULT_BITS: usize = 1 << 20; // 1,048,576 bits (~128 KiB)
+
 /**
  * NOTES ON BUILTINS
  *
@@ -69,6 +74,43 @@ fn bigint_from_integral_f64(value: f64) -> BigInt {
   }
 
   if sign { -result } else { result }
+}
+
+fn bigint_abs_bit_info(value: &BigInt) -> (usize, Option<usize>) {
+  // Returns `(bit_length, pow2_log2)` for `abs(value)`.
+  //
+  // `pow2_log2` is `Some(k)` when `abs(value) == 2^k`, otherwise `None`.
+  let (_, bytes) = value.to_bytes_le();
+  if bytes.is_empty() {
+    return (0, None);
+  }
+
+  let last = *bytes.last().unwrap();
+  let bit_len = bytes.len() * 8 - (last.leading_zeros() as usize);
+
+  let mut pow2: Option<(usize, u8)> = None;
+  for (i, &b) in bytes.iter().enumerate() {
+    if b == 0 {
+      continue;
+    }
+    if pow2.is_some() {
+      pow2 = None;
+      break;
+    }
+    if (b & (b - 1)) != 0 {
+      pow2 = None;
+      break;
+    }
+    pow2 = Some((i, b));
+  }
+
+  let pow2_log2 = pow2.map(|(i, b)| i * 8 + (b.trailing_zeros() as usize));
+  (bit_len, pow2_log2)
+}
+
+fn bigint_is_odd(value: &BigInt) -> bool {
+  let (_, bytes) = value.to_bytes_le();
+  bytes.first().is_some_and(|b| (b & 1) == 1)
 }
 
 fn parse_int_digits_to_bigint(digits: &str, radix: u32) -> Option<BigInt> {
@@ -497,6 +539,7 @@ pub fn js_strict_eq(a: &Const, b: &Const) -> bool {
 pub fn maybe_eval_const_bin_expr(op: BinOp, a: &Const, b: &Const) -> Option<Const> {
   #[rustfmt::skip]
   let res = match (op, a, b) {
+    (Add, BigInt(l), BigInt(r)) => BigInt(l + r),
     (Add, Num(l), Num(r)) => Num(JN(l.0 + r.0)),
     (Add, Str(l), r) => {
       let rhs = const_to_js_string(r);
@@ -512,13 +555,44 @@ pub fn maybe_eval_const_bin_expr(op: BinOp, a: &Const, b: &Const) -> Option<Cons
       out.push_str(r);
       Str(out)
     },
+    (BitAnd, BigInt(l), BigInt(r)) => BigInt(l & r),
     (Div, Num(l), Num(r)) => Num(JN(js_div(l.0, r.0))),
     (Div, Num(l), Str(r)) => Num(JN(js_div(l.0, coerce_str_to_num(r)))),
     (Div, Str(l), Num(r)) => Num(JN(js_div(coerce_str_to_num(l), r.0))),
     (Div, Str(l), Str(r)) => Num(JN(js_div(coerce_str_to_num(l), coerce_str_to_num(r)))),
+    (Div, BigInt(_), BigInt(r)) if r.is_zero() => return None,
+    (Div, BigInt(l), BigInt(r)) => BigInt(l / r),
     (BitAnd, l, r) => Num(JN((coerce_to_int32(l)? & coerce_to_int32(r)?) as f64)),
+    (BitOr, BigInt(l), BigInt(r)) => BigInt(l | r),
     (BitOr, l, r) => Num(JN((coerce_to_int32(l)? | coerce_to_int32(r)?) as f64)),
+    (BitXor, BigInt(l), BigInt(r)) => BigInt(l ^ r),
     (BitXor, l, r) => Num(JN((coerce_to_int32(l)? ^ coerce_to_int32(r)?) as f64)),
+    (Exp, BigInt(l), BigInt(r)) => {
+      if r.sign() == Sign::Minus {
+        // `2n ** -1n` throws a RangeError.
+        return None;
+      }
+      if r.is_zero() {
+        BigInt(BigInt::from(1))
+      } else if l.is_zero() {
+        BigInt(BigInt::from(0))
+      } else if l == &BigInt::from(1) {
+        BigInt(BigInt::from(1))
+      } else if l == &BigInt::from(-1) {
+        if bigint_is_odd(r) { BigInt(BigInt::from(-1)) } else { BigInt(BigInt::from(1)) }
+      } else {
+        let exp = r.to_u32()?;
+        let (base_bits, pow2_log2) = bigint_abs_bit_info(l);
+        let est_bits = match pow2_log2 {
+          Some(k) => k.saturating_mul(exp as usize).saturating_add(1),
+          None => base_bits.saturating_mul(exp as usize).saturating_add(1),
+        };
+        if est_bits > BIGINT_MAX_RESULT_BITS {
+          return None;
+        }
+        BigInt(l.pow(exp))
+      }
+    }
     (Exp, Num(l), Num(r)) => Num(JN(l.0.powf(r.0))),
     (Exp, Num(l), Str(r)) => Num(JN(l.0.powf(coerce_str_to_num(r)))),
     (Exp, Str(l), Num(r)) => Num(JN(coerce_str_to_num(l).powf(r.0))),
@@ -528,29 +602,63 @@ pub fn maybe_eval_const_bin_expr(op: BinOp, a: &Const, b: &Const) -> Option<Cons
     (Leq, l, r) => Bool(js_cmp(l, r).is_some_and(|c| c.is_le())),
     (LooseEq, l, r) => Bool(js_loose_eq(l, r)),
     (Lt, l, r) => Bool(js_cmp(l, r).is_some_and(|c| c.is_lt())),
+    (Mod, BigInt(_), BigInt(r)) if r.is_zero() => return None,
+    (Mod, BigInt(l), BigInt(r)) => BigInt(l % r),
     (Mod, Num(l), Num(r)) => Num(JN(js_mod(l.0, r.0))),
     (Mod, Num(l), Str(r)) => Num(JN(js_mod(l.0, coerce_str_to_num(r)))),
     (Mod, Str(l), Num(r)) => Num(JN(js_mod(coerce_str_to_num(l), r.0))),
     (Mod, Str(l), Str(r)) => Num(JN(js_mod(coerce_str_to_num(l), coerce_str_to_num(r)))),
+    (Mul, BigInt(l), BigInt(r)) => BigInt(l * r),
     (Mul, Num(l), Num(r)) => Num(JN(l.0 * r.0)),
     (Mul, Num(l), Str(r)) => Num(JN(l.0 * coerce_str_to_num(r))),
     (Mul, Str(l), Num(r)) => Num(JN(coerce_str_to_num(l) * r.0)),
     (Mul, Str(l), Str(r)) => Num(JN(coerce_str_to_num(l) * coerce_str_to_num(r))),
     (NotLooseEq, l, r) => Bool(!js_loose_eq(l, r)),
     (NotStrictEq, l, r) => Bool(!js_strict_eq(l, r)),
+    (Shl, BigInt(l), BigInt(r)) => {
+      if r.sign() == Sign::Minus {
+        return None;
+      }
+      if l.is_zero() {
+        BigInt(BigInt::from(0))
+      } else {
+        let shift = r.to_usize()?;
+        let (lhs_bits, _) = bigint_abs_bit_info(l);
+        if lhs_bits.saturating_add(shift) > BIGINT_MAX_RESULT_BITS {
+          return None;
+        }
+        BigInt(l << shift)
+      }
+    }
     (Shl, l, r) => {
       let shift = (coerce_to_uint32(r)? & 0x1f) as u32;
       Num(JN(coerce_to_int32(l)?.wrapping_shl(shift) as f64))
+    }
+    (Shr, BigInt(l), BigInt(r)) => {
+      if r.sign() == Sign::Minus {
+        return None;
+      }
+      if l.is_zero() {
+        BigInt(BigInt::from(0))
+      } else if let Some(shift) = r.to_usize() {
+        BigInt(l >> shift)
+      } else if l.sign() == Sign::Minus {
+        BigInt(BigInt::from(-1))
+      } else {
+        BigInt(BigInt::from(0))
+      }
     }
     (Shr, l, r) => {
       let shift = (coerce_to_uint32(r)? & 0x1f) as u32;
       Num(JN(coerce_to_int32(l)?.wrapping_shr(shift) as f64))
     }
+    (UShr, BigInt(_), BigInt(_)) => return None,
     (UShr, l, r) => {
       let shift = (coerce_to_uint32(r)? & 0x1f) as u32;
       Num(JN(coerce_to_uint32(l)?.wrapping_shr(shift) as f64))
     }
     (StrictEq, l, r) => Bool(js_strict_eq(l, r)),
+    (Sub, BigInt(l), BigInt(r)) => BigInt(l - r),
     (Sub, Num(l), Num(r)) => Num(JN(l.0 - r.0)),
     (Sub, Num(l), Str(r)) => Num(JN(l.0 - coerce_str_to_num(r))),
     (Sub, Str(l), Num(r)) => Num(JN(coerce_str_to_num(l) - r.0)),
@@ -563,7 +671,9 @@ pub fn maybe_eval_const_bin_expr(op: BinOp, a: &Const, b: &Const) -> Option<Cons
 pub fn maybe_eval_const_un_expr(op: UnOp, a: &Const) -> Option<Const> {
   #[rustfmt::skip]
   let res = match (op, a) {
+    (BitNot, BigInt(a)) => BigInt(!a),
     (BitNot, a) => Num(JN((!coerce_to_int32(a)?) as f64)),
+    (Neg, BigInt(a)) => BigInt(-a),
     (Neg, Num(l)) => Num(JN(-l.0)),
     (Not, a) => Bool(!coerce_to_bool(a)),
     (Plus, BigInt(_)) => return None,

@@ -186,6 +186,106 @@ fn bitwise_and_shift_ops_follow_to_int32_semantics() {
 }
 
 #[test]
+fn bigint_arithmetic_and_bitops_are_constant_folded() {
+  let one = ConstBigInt(BigInt::from(1));
+  let two = ConstBigInt(BigInt::from(2));
+  let three = ConstBigInt(BigInt::from(3));
+
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &one, &two),
+    Some(three.clone())
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Sub, &one, &two),
+    Some(ConstBigInt(BigInt::from(-1)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Mul, &ConstBigInt(BigInt::from(-3)), &two),
+    Some(ConstBigInt(BigInt::from(-6)))
+  );
+
+  // Division and remainder are truncated toward zero (matching JS BigInt semantics).
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Div, &ConstBigInt(BigInt::from(7)), &three),
+    Some(ConstBigInt(BigInt::from(2)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Div, &ConstBigInt(BigInt::from(-7)), &three),
+    Some(ConstBigInt(BigInt::from(-2)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Mod, &ConstBigInt(BigInt::from(-7)), &three),
+    Some(ConstBigInt(BigInt::from(-1)))
+  );
+
+  // BigInt bit operations.
+  let minus_one = ConstBigInt(BigInt::from(-1));
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::BitAnd, &minus_one, &one),
+    Some(one.clone())
+  );
+  assert_eq!(
+    maybe_eval_const_un_expr(UnOp::BitNot, &ConstBigInt(BigInt::from(0))),
+    Some(minus_one.clone())
+  );
+
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Shl, &one, &two),
+    Some(ConstBigInt(BigInt::from(4)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Shr, &ConstBigInt(BigInt::from(-3)), &one),
+    Some(ConstBigInt(BigInt::from(-2)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::UShr, &one, &one),
+    None,
+    "BigInt does not support `>>>`"
+  );
+
+  // Exponentiation.
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Exp, &ConstBigInt(BigInt::from(-2)), &three),
+    Some(ConstBigInt(BigInt::from(-8)))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Exp, &ConstBigInt(BigInt::from(0)), &ConstBigInt(BigInt::from(0))),
+    Some(one.clone())
+  );
+
+  // Operations that throw at runtime should not be folded.
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Div, &one, &ConstBigInt(BigInt::from(0))),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Mod, &one, &ConstBigInt(BigInt::from(0))),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Exp, &two, &ConstBigInt(BigInt::from(-1))),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Shl, &one, &ConstBigInt(BigInt::from(-1))),
+    None
+  );
+
+  // Avoid compile-time amplification of huge BigInts from small literals.
+  let huge = ConstBigInt(BigInt::from(1_000_000_000u64));
+  assert_eq!(maybe_eval_const_bin_expr(BinOp::Shl, &one, &huge), None);
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Exp, &two, &huge),
+    None,
+    "2n ** 1e9n would allocate an enormous BigInt"
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Shl, &ConstBigInt(BigInt::from(0)), &huge),
+    Some(ConstBigInt(BigInt::from(0)))
+  );
+}
+
+#[test]
 fn string_concatenation_uses_js_to_string_for_numbers() {
   let empty = ConstStr(String::new());
 
