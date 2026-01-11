@@ -1,4 +1,5 @@
 use crate::stackmaps::{Location, StackMaps, STACKMAP_VERSION};
+use crate::statepoints::StatepointRecord;
 
 #[cfg(target_arch = "aarch64")]
 use crate::stackmaps::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP};
@@ -91,11 +92,37 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
     let patchpoint_id = record.patchpoint_id;
     let instruction_offset = record.instruction_offset;
 
-    let filtered: Vec<&Location> = record
-      .locations
-      .iter()
-      .filter(|loc| !matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
-      .collect();
+    // LLVM statepoint stackmap record layout (LLVM 18 observed):
+    //   3 constant header locations, then `deopt_count` deopt operand locations, then (base, derived)
+    //   GC relocation pairs.
+    //
+    // Deopt operand locations are *not* relocation pairs and must not be validated as such (they can
+    // be any location kind). Use `StatepointRecord` to skip over them when the record structurally
+    // looks like a statepoint (3 leading constants).
+    let looks_like_statepoint = record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+
+    let filtered: Vec<&Location> = if looks_like_statepoint {
+      let statepoint = StatepointRecord::new(record).map_err(|_| ValidationError::OddLocationCount {
+        pc,
+        patchpoint_id,
+        instruction_offset,
+        count: record.locations.len(),
+      })?;
+      statepoint
+        .gc_pairs()
+        .iter()
+        .flat_map(|pair| [&pair.base, &pair.derived])
+        .collect()
+    } else {
+      record
+        .locations
+        .iter()
+        .filter(|loc| !matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
+        .collect()
+    };
 
     if filtered.len() % 2 != 0 {
       return Err(ValidationError::OddLocationCount {
