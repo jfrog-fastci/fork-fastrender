@@ -9,7 +9,7 @@ use runtime_native::stackmaps::{Location, StackMap};
 use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions, LLVM_STATEPOINT_PATCHPOINT_ID,
 };
-use runtime_native::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS;
+use runtime_native::statepoints::StatepointRecord;
 use tempfile::TempDir;
 
 const LLVM_OPT: &str = "opt-18";
@@ -103,11 +103,11 @@ fn has_register_roots(stackmap: &StackMap) -> bool {
     if rec.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
       continue;
     }
-    if rec.locations.len() <= LLVM18_STATEPOINT_HEADER_CONSTANTS {
+    let Ok(sp) = StatepointRecord::new(rec) else {
       continue;
-    }
-    for loc in &rec.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..] {
-      if matches!(loc, Location::Register { .. }) {
+    };
+    for (base, derived) in sp.gc_pairs() {
+      if matches!(base, Location::Register { .. }) || matches!(derived, Location::Register { .. }) {
         return true;
       }
     }
@@ -277,9 +277,8 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
       if rec.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
         continue;
       }
-      let tail = rec.locations.len() - LLVM18_STATEPOINT_HEADER_CONSTANTS;
-      assert_eq!(tail % 2, 0, "expected (base, derived) pairs in record");
-      seen_n.insert(tail / 2);
+      let sp = StatepointRecord::new(rec).expect("decode statepoint record");
+      seen_n.insert(sp.gc_pair_count());
     }
     let expected: BTreeSet<usize> = (0..=64).collect();
     assert_eq!(seen_n, expected, "matrix cfg {cfg_idx} missing root counts");
