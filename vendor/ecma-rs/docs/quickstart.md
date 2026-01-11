@@ -4,6 +4,19 @@ This repo is a Rust workspace (toolchain pinned via [`rust-toolchain.toml`](../r
 
 If you only want to build and run the core crates/CLIs, you **do not** need Node or submodules.
 
+## Nested-workspace note (when vendored in FastRender)
+
+In the FastRender mono-repo, `ecma-rs` lives under `vendor/ecma-rs/` and is **not** part of the
+top-level Cargo workspace.
+
+If you're running commands from the FastRender repo root, prefer the nested wrapper so `cargo`
+runs against the correct workspace *and* picks up the pinned toolchain:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+```
+
 > Note: the native backend crates (`native-js`, `runtime-native`) require LLVM 18
 > to be installed. See [`native-js/README.md`](../native-js/README.md) (and
 > `scripts/check_system.sh`) for setup instructions.
