@@ -14,6 +14,17 @@ pub struct EffectDb {
   kb: KnowledgeBase,
 }
 
+/// Facts inferred about a specific callsite (e.g. callback purity/index usage).
+///
+/// This is intentionally a small, stable surface that downstream analyses can
+/// consume without needing to understand the full callback body.
+#[derive(Debug, Default, Clone)]
+pub struct CallSiteInfo {
+  pub callback_is_pure: Option<bool>,
+  pub callback_uses_index: Option<bool>,
+  pub callback_is_associative: Option<bool>,
+}
+
 impl EffectDb {
   pub fn load_default() -> Result<Self> {
     // `knowledge-base` errors are not `Send + Sync` (they may wrap dyn errors),
