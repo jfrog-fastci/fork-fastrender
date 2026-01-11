@@ -12,20 +12,20 @@ struct LogCoroutine {
 }
 
 extern "C" fn log_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
-  let coro = coro as *mut LogCoroutine;
-  assert!(!coro.is_null());
+  let coro_ptr = coro as *mut LogCoroutine;
+  assert!(!coro_ptr.is_null());
 
   unsafe {
-    match (*coro).header.state {
+    match (*coro_ptr).header.state {
       0 => {
-        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(coro, (*coro_ptr).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
-        let log = &*(*coro).log;
-        log.lock().unwrap().push((*coro).id);
+        let log = &*(*coro_ptr).log;
+        log.lock().unwrap().push((*coro_ptr).id);
         runtime_native::rt_promise_resolve_legacy(
-          (*coro).header.promise,
+          (*coro_ptr).header.promise,
           core::ptr::null_mut::<core::ffi::c_void>(),
         );
         RtCoroStatus::Done
