@@ -253,6 +253,21 @@ Implementation note: if we support backing stores backed by `mmap` or other
 external sources, the accounting still tracks the virtual size to maintain GC
 backpressure.
 
+## Async I/O limiter accounting (DoS resistance)
+
+In addition to GC external-memory accounting, `runtime-native` also implements an async I/O
+**limiter** (`io::IoLimiter`) to defend against programs that start many long-lived operations and
+thereby keep large external allocations alive until completion/cancel-ack.
+
+Accounting contract:
+
+- **Charge retained allocation size:** pinning/borrowing any range of a `BackingStore` retains the
+  *entire allocation* against detach/transfer/free for the lifetime of the I/O op. Therefore limiter
+  “pinned bytes” accounting must charge `BackingStore::alloc_len()` (not the user-specified range
+  length).
+- **Deduplicate within an op:** vectored ops may reference the same backing store multiple times;
+  the limiter should charge each unique backing store at most once per op.
+
 ## Cancellation contract
 
 Pinning is coupled to the *OS-level lifetime* of the pointer, not to the JS
