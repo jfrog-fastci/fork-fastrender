@@ -85,6 +85,13 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
     );
   }
 
+  if backend == WebIdlBindingsBackend::Vmjs {
+    assert!(
+      out1.contains("install_foo_bindings_vm_js"),
+      "expected vm-js backend to emit per-interface installer functions"
+    );
+  }
+
   assert_eq!(out1, expected, "expected generated output to match golden");
 
   // Ensure rustfmt is stable (what CI's `cargo fmt -- --check` effectively enforces).

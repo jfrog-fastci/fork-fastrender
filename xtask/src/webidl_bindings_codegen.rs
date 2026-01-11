@@ -1421,6 +1421,7 @@ fn generate_bindings_module_unformatted_vmjs(
   };
 
   let mut reexports: Vec<(String, String)> = Vec::new();
+  let mut window_interface_reexports: Vec<String> = Vec::new();
 
   for target in targets {
     let (module_name, install_fn_name, globals): (&str, &str, &[&str]) = match target {
@@ -1431,7 +1432,7 @@ fn generate_bindings_module_unformatted_vmjs(
 
     let filtered = resolved.filter_by_exposure(*target);
     let analyzed = crate::webidl::analyze::analyze_resolved_world(&filtered);
-    let inner = generate_bindings_module_for_target_vmjs_unformatted(
+    let (inner, interface_reexports) = generate_bindings_module_for_target_vmjs_unformatted(
       &filtered,
       &analyzed,
       config,
@@ -1444,8 +1445,14 @@ fn generate_bindings_module_unformatted_vmjs(
     out.push_str("}\n\n");
 
     reexports.push((module_name.to_string(), install_fn_name.to_string()));
+    if *target == ExposureTarget::Window {
+      window_interface_reexports = interface_reexports;
+    }
   }
 
+  for install_fn_name in window_interface_reexports {
+    out.push_str(&format!("pub use window::{install_fn_name};\n"));
+  }
   for (module_name, install_fn_name) in reexports {
     out.push_str(&format!("pub use {module_name}::{install_fn_name};\n"));
   }
@@ -1866,7 +1873,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   config: &WebIdlBindingsCodegenConfig,
   install_fn_name: &str,
   global_interfaces: &[&str],
-) -> Result<String> {
+) -> Result<(String, Vec<String>)> {
   let is_global_iface = |name: &str| global_interfaces.iter().any(|g| *g == name);
 
   let selected = select_interfaces(resolved, analyzed, config)?;
@@ -1941,50 +1948,45 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     }
   }
 
-  // Install entrypoint.
-  out.push_str(&format!(
-    "pub fn {install_fn_name}(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> Result<(), VmError> {{\n",
-  ));
-  out.push_str("  let mut rt = BindingsRuntime::new(vm, heap);\n");
-  out.push_str("  let global = realm.global_object();\n");
-  out.push_str("  rt.scope.push_root(Value::Object(global))?;\n\n");
-  out.push_str("  let global_var_attrs = DataPropertyAttributes::new(true, false, true);\n");
-  out.push_str("  let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);\n\n");
+  let mut interface_installers: Vec<String> = Vec::new();
 
-  // Create prototypes.
   for iface in selected.values() {
-    if is_global_iface(&iface.name) {
-      continue;
-    }
+    let global_iface = is_global_iface(&iface.name);
+    let install_name = if global_iface {
+      format!(
+        "install_{}_ops_bindings_vm_js",
+        to_snake_public_ident(&iface.name)
+      )
+    } else {
+      format!(
+        "install_{}_bindings_vm_js",
+        to_snake_public_ident(&iface.name)
+      )
+    };
+    interface_installers.push(install_name.clone());
+
     out.push_str(&format!(
-      "  let proto_{snake} = rt.alloc_object()?;\n",
-      snake = to_snake_ident(&iface.name)
+      "pub fn {install_name}(\n  vm: &mut Vm,\n  heap: &mut Heap,\n  realm: &Realm,\n) -> Result<(), VmError> {{\n",
     ));
-  }
-  out.push('\n');
+    out.push_str("  let mut rt = BindingsRuntime::new(vm, heap);\n");
+    out.push_str("  let global = realm.global_object();\n");
+    out.push_str("  rt.scope.push_root(Value::Object(global))?;\n\n");
 
-  if config.prototype_chains {
-    // Set prototype chains.
-    for iface in selected.values() {
-      if is_global_iface(&iface.name) {
-        continue;
-      }
-      if let Some(parent) = iface.inherits.as_deref() {
-        if selected.contains_key(parent) && !is_global_iface(parent) {
-          out.push_str(&format!(
-            "  rt.set_prototype(proto_{child}, Some(proto_{parent}))?;\n",
-            child = to_snake_ident(&iface.name),
-            parent = to_snake_ident(parent),
-          ));
-        }
-      }
+    // Idempotent install: avoid clobbering existing globals.
+    //
+    // For non-global interfaces, we can use the constructor name as a single "sentinel". For global
+    // interface operations (e.g. `Window.setTimeout`) we need to check each operation independently
+    // because a realm may already have some (handwritten) globals installed.
+    if !global_iface {
+      out.push_str(&format!(
+        "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n    return Ok(());\n  }}\n\n",
+        name_lit = rust_string_literal(&iface.name),
+      ));
     }
-    out.push('\n');
-  }
 
-  // Define constructors + prototypes + methods.
-  for iface in selected.values() {
-    if is_global_iface(&iface.name) {
+    out.push_str("  let global_var_attrs = DataPropertyAttributes::new(true, false, true);\n");
+
+    if global_iface {
       // Global functions live on the global object.
       for (op_name, overloads) in &iface.operations {
         let length = overloads
@@ -1993,14 +1995,18 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
           .min()
           .unwrap_or(0) as u32;
         out.push_str(&format!(
-          "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(func), global_var_attrs)?;\n",
+          "  {{\n    let key = rt.property_key({name_lit})?;\n    if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {{\n      let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n      rt.define_data_property_str(global, {name_lit}, Value::Object(func), global_var_attrs)?;\n    }}\n  }}\n",
           func = op_wrapper_fn_name(&iface.name, op_name),
           name_lit = rust_string_literal(op_name),
           length = length,
         ));
       }
+      out.push_str("  Ok(())\n");
+      out.push_str("}\n\n");
       continue;
     }
+
+    out.push_str("  let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);\n\n");
 
     let proto_var = format!("proto_{}", to_snake_ident(&iface.name));
     let iterable_iterator_alias = iface.iterable.as_ref().map(|it| {
@@ -2010,6 +2016,21 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         "values"
       }
     });
+    out.push_str(&format!("  let {proto_var} = rt.alloc_object()?;\n",));
+
+    if config.prototype_chains {
+      if let Some(parent) = iface.inherits.as_deref() {
+        if selected.contains_key(parent) && !is_global_iface(parent) {
+          // Look up the parent prototype object from the existing global bindings (installed earlier
+          // by the aggregator or supplied by the embedder).
+          out.push_str(&format!(
+            "  let parent_proto = {{\n    let ctor_key = rt.property_key({parent_lit})?;\n    let ctor_value = rt\n      .scope\n      .heap()\n      .object_get_own_data_property_value(global, &ctor_key)?\n      .unwrap_or(Value::Undefined);\n    if let Value::Object(ctor_obj) = ctor_value {{\n      let proto_key = rt.property_key(\"prototype\")?;\n      match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {{\n        Value::Object(obj) => Some(obj),\n        _ => None,\n      }}\n    }} else {{\n      None\n    }}\n  }};\n  if let Some(parent_proto) = parent_proto {{\n    rt.set_prototype({child_proto}, Some(parent_proto))?;\n  }}\n\n",
+            parent_lit = rust_string_literal(parent),
+            child_proto = proto_var,
+          ));
+        }
+      }
+    }
 
     // Prototype methods.
     for (op_name, overloads) in &iface.operations {
@@ -2039,6 +2060,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         }
       }
     }
+
     // Prototype attributes.
     for attr in iface.attributes.values() {
       out.push_str(&format!(
@@ -2131,8 +2153,18 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
         constant,
       );
     }
+
+    out.push_str("  Ok(())\n");
+    out.push_str("}\n\n");
   }
 
+  // Convenience aggregator (maintains the old entrypoint name).
+  out.push_str(&format!(
+    "pub fn {install_fn_name}(\n  vm: &mut Vm,\n  heap: &mut Heap,\n  realm: &Realm,\n) -> Result<(), VmError> {{\n",
+  ));
+  for install in &interface_installers {
+    out.push_str(&format!("  {install}(vm, heap, realm)?;\n", install = install));
+  }
   out.push_str("  Ok(())\n");
   out.push_str("}\n");
 
@@ -2164,7 +2196,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     &import_line,
   );
 
-  Ok(out)
+  Ok((out, interface_installers))
 }
 
 fn write_constant_define_vmjs(out: &mut String, ctor_var: &str, proto_var: &str, constant: &ConstantSig) {
@@ -6781,6 +6813,43 @@ fn to_snake_ident(name: &str) -> String {
       out.push(ch);
     }
   }
+  if out.is_empty() {
+    "_".to_string()
+  } else {
+    out
+  }
+}
+
+fn to_snake_public_ident(name: &str) -> String {
+  // Like `to_snake_ident`, but handle consecutive uppercase sequences more naturally so
+  // `URLSearchParams` becomes `url_search_params` (rather than `u_r_l_search_params`).
+  let chars: Vec<char> = name.chars().collect();
+  let mut out = String::new();
+
+  for (i, ch) in chars.iter().copied().enumerate() {
+    if ch == '-' {
+      out.push('_');
+      continue;
+    }
+
+    if ch.is_ascii_uppercase() {
+      let prev = chars.get(i.wrapping_sub(1)).copied();
+      let next = chars.get(i + 1).copied();
+
+      let prev_is_lower_or_digit = prev.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+      let prev_is_upper = prev.is_some_and(|c| c.is_ascii_uppercase());
+      let next_is_lower = next.is_some_and(|c| c.is_ascii_lowercase());
+
+      if i != 0 && (prev_is_lower_or_digit || (prev_is_upper && next_is_lower)) {
+        out.push('_');
+      }
+      out.push(ch.to_ascii_lowercase());
+      continue;
+    }
+
+    out.push(ch);
+  }
+
   if out.is_empty() {
     "_".to_string()
   } else {

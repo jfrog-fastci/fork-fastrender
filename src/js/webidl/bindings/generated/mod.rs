@@ -1740,7 +1740,7 @@ pub mod window {
     }
   }
 
-  pub fn install_window_bindings_vm_js(
+  pub fn install_event_target_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
     realm: &Realm,
@@ -1749,15 +1749,15 @@ pub mod window {
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
 
+    let key = rt.property_key("EventTarget")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_event_target = rt.alloc_object()?;
-    let proto_node = rt.alloc_object()?;
-    let proto_u_r_l = rt.alloc_object()?;
-    let proto_u_r_l_search_params = rt.alloc_object()?;
-
-    rt.set_prototype(proto_node, Some(proto_event_target))?;
 
     let func =
       rt.alloc_native_function(event_target_add_event_listener, None, "addEventListener", 2)?;
@@ -1812,6 +1812,48 @@ pub mod window {
       Value::Object(ctor_event_target),
       ctor_link_attrs,
     )?;
+    Ok(())
+  }
+
+  pub fn install_node_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Node")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_node = rt.alloc_object()?;
+    let parent_proto = {
+      let ctor_key = rt.property_key("EventTarget")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_node, Some(parent_proto))?;
+    }
+
     let slots = [Value::Object(proto_node)];
     let ctor_node = rt.alloc_native_function_with_slots(
       node_call_without_new,
@@ -2049,6 +2091,28 @@ pub mod window {
       Value::Number(3.0),
       DataPropertyAttributes::CONST,
     )?;
+    Ok(())
+  }
+
+  pub fn install_url_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("URL")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_u_r_l = rt.alloc_object()?;
+
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
       proto_u_r_l,
@@ -2110,6 +2174,28 @@ pub mod window {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    Ok(())
+  }
+
+  pub fn install_url_search_params_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("URLSearchParams")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_u_r_l_search_params = rt.alloc_object()?;
+
     let func = rt.alloc_native_function(u_r_l_search_params_append, None, "append", 2)?;
     rt.define_data_property_str(
       proto_u_r_l_search_params,
@@ -2223,33 +2309,90 @@ pub mod window {
       Value::Object(ctor_u_r_l_search_params),
       ctor_link_attrs,
     )?;
-    let func = rt.alloc_native_function(window_alert, None, "alert", 0)?;
-    rt.define_data_property_str(global, "alert", Value::Object(func), global_var_attrs)?;
-    let func = rt.alloc_native_function(window_clear_interval, None, "clearInterval", 0)?;
-    rt.define_data_property_str(
-      global,
-      "clearInterval",
-      Value::Object(func),
-      global_var_attrs,
-    )?;
-    let func = rt.alloc_native_function(window_clear_timeout, None, "clearTimeout", 0)?;
-    rt.define_data_property_str(
-      global,
-      "clearTimeout",
-      Value::Object(func),
-      global_var_attrs,
-    )?;
-    let func = rt.alloc_native_function(window_queue_microtask, None, "queueMicrotask", 1)?;
-    rt.define_data_property_str(
-      global,
-      "queueMicrotask",
-      Value::Object(func),
-      global_var_attrs,
-    )?;
-    let func = rt.alloc_native_function(window_set_interval, None, "setInterval", 1)?;
-    rt.define_data_property_str(global, "setInterval", Value::Object(func), global_var_attrs)?;
-    let func = rt.alloc_native_function(window_set_timeout, None, "setTimeout", 1)?;
-    rt.define_data_property_str(global, "setTimeout", Value::Object(func), global_var_attrs)?;
+    Ok(())
+  }
+
+  pub fn install_window_ops_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+
+    {
+      let key = rt.property_key("alert")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_alert, None, "alert", 0)?;
+        rt.define_data_property_str(global, "alert", Value::Object(func), global_var_attrs)?;
+      }
+    }
+    {
+      let key = rt.property_key("clearInterval")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_clear_interval, None, "clearInterval", 0)?;
+        rt.define_data_property_str(
+          global,
+          "clearInterval",
+          Value::Object(func),
+          global_var_attrs,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("clearTimeout")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_clear_timeout, None, "clearTimeout", 0)?;
+        rt.define_data_property_str(
+          global,
+          "clearTimeout",
+          Value::Object(func),
+          global_var_attrs,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("queueMicrotask")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_queue_microtask, None, "queueMicrotask", 1)?;
+        rt.define_data_property_str(
+          global,
+          "queueMicrotask",
+          Value::Object(func),
+          global_var_attrs,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("setInterval")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_set_interval, None, "setInterval", 1)?;
+        rt.define_data_property_str(global, "setInterval", Value::Object(func), global_var_attrs)?;
+      }
+    }
+    {
+      let key = rt.property_key("setTimeout")?;
+      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+        let func = rt.alloc_native_function(window_set_timeout, None, "setTimeout", 1)?;
+        rt.define_data_property_str(global, "setTimeout", Value::Object(func), global_var_attrs)?;
+      }
+    }
+    Ok(())
+  }
+
+  pub fn install_window_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    install_event_target_bindings_vm_js(vm, heap, realm)?;
+    install_node_bindings_vm_js(vm, heap, realm)?;
+    install_url_bindings_vm_js(vm, heap, realm)?;
+    install_url_search_params_bindings_vm_js(vm, heap, realm)?;
+    install_window_ops_bindings_vm_js(vm, heap, realm)?;
     Ok(())
   }
 }
@@ -3661,7 +3804,7 @@ pub mod worker {
     }
   }
 
-  pub fn install_worker_bindings_vm_js(
+  pub fn install_event_target_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
     realm: &Realm,
@@ -3670,12 +3813,15 @@ pub mod worker {
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
 
+    let key = rt.property_key("EventTarget")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_event_target = rt.alloc_object()?;
-    let proto_u_r_l = rt.alloc_object()?;
-    let proto_u_r_l_search_params = rt.alloc_object()?;
 
     let func =
       rt.alloc_native_function(event_target_add_event_listener, None, "addEventListener", 2)?;
@@ -3730,6 +3876,28 @@ pub mod worker {
       Value::Object(ctor_event_target),
       ctor_link_attrs,
     )?;
+    Ok(())
+  }
+
+  pub fn install_url_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("URL")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_u_r_l = rt.alloc_object()?;
+
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
       proto_u_r_l,
@@ -3791,6 +3959,28 @@ pub mod worker {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    Ok(())
+  }
+
+  pub fn install_url_search_params_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("URLSearchParams")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let proto_u_r_l_search_params = rt.alloc_object()?;
+
     let func = rt.alloc_native_function(u_r_l_search_params_append, None, "append", 2)?;
     rt.define_data_property_str(
       proto_u_r_l_search_params,
@@ -3906,7 +4096,23 @@ pub mod worker {
     )?;
     Ok(())
   }
+
+  pub fn install_worker_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    install_event_target_bindings_vm_js(vm, heap, realm)?;
+    install_url_bindings_vm_js(vm, heap, realm)?;
+    install_url_search_params_bindings_vm_js(vm, heap, realm)?;
+    Ok(())
+  }
 }
 
+pub use window::install_event_target_bindings_vm_js;
+pub use window::install_node_bindings_vm_js;
+pub use window::install_url_bindings_vm_js;
+pub use window::install_url_search_params_bindings_vm_js;
+pub use window::install_window_ops_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;
 pub use worker::install_worker_bindings_vm_js;

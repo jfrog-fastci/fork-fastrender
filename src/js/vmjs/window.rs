@@ -933,17 +933,94 @@ mod tests {
   }
 
   #[test]
+  fn generated_vmjs_url_search_params_installer_is_idempotent_and_does_not_clobber_dom() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let before = get_global_prop(&mut host, "URLSearchParams");
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_url_search_params_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+    let after = get_global_prop(&mut host, "URLSearchParams");
+    assert_eq!(
+      before, after,
+      "expected URLSearchParams installer to be idempotent (no clobber)"
+    );
+
+    let out = host.exec_script("new URLSearchParams('a=1').get('a')")?;
+    assert_eq!(value_to_string(&host, out), "1");
+
+    let el = host.exec_script("document.createElement('div')")?;
+    assert!(
+      matches!(el, Value::Object(_)),
+      "expected document.createElement('div') to return an object"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn generated_vmjs_window_ops_installer_does_not_clobber_existing_timers() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let before = get_global_prop(&mut host, "setTimeout");
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_ops_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+    let after = get_global_prop(&mut host, "setTimeout");
+    assert_eq!(
+      before, after,
+      "expected Window ops installer to avoid clobbering existing setTimeout"
+    );
+
+    let el = host.exec_script("document.createElement('div')")?;
+    assert!(
+      matches!(el, Value::Object(_)),
+      "expected document.createElement('div') to return an object"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
     // WindowRealm installs handcrafted URL bindings by default (`src/js/vmjs/window_url.rs`), which
-    // do not use the WebIDL host slot. Install the generated WebIDL vm-js bindings to ensure the
-    // executed script hits `webidl_vm_js::host_from_hooks()`.
+    // do not use the WebIDL host slot. The generated URLSearchParams bindings are now idempotent,
+    // so delete the existing global before installing the generated binding to ensure the executed
+    // script hits `webidl_vm_js::host_from_hooks()`.
+    {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key_s = scope
+        .alloc_string("URLSearchParams")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .delete_property_or_throw(global, key)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
     {
       let window = host.host_mut().window_mut();
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)
+      crate::js::bindings::install_url_search_params_bindings_vm_js(vm, heap, realm)
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 

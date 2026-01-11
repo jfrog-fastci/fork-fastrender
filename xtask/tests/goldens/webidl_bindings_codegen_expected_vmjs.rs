@@ -996,7 +996,7 @@ pub mod window {
     }
   }
 
-  pub fn install_window_bindings_vm_js(
+  pub fn install_foo_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
     realm: &Realm,
@@ -1004,6 +1004,11 @@ pub mod window {
     let mut rt = BindingsRuntime::new(vm, heap);
     let global = realm.global_object();
     rt.scope.push_root(Value::Object(global))?;
+
+    let key = rt.property_key("Foo")?;
+    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+      return Ok(());
+    }
 
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
@@ -1160,6 +1165,16 @@ pub mod window {
     )?;
     Ok(())
   }
+
+  pub fn install_window_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    install_foo_bindings_vm_js(vm, heap, realm)?;
+    Ok(())
+  }
 }
 
+pub use window::install_foo_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;
