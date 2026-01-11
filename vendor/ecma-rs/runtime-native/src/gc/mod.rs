@@ -15,6 +15,7 @@ mod evacuate;
 mod mark;
 
 pub use heap::GcHeap;
+pub use heap::PersistentRoot;
 pub use handle_table::{HandleId, HandleTable, PersistentHandle};
 pub use roots::RememberedSet;
 pub use roots::RootHandle;

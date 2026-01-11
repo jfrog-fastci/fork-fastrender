@@ -94,3 +94,22 @@ fn stale_handle_detection() {
   heap.root_remove(h1);
   assert_eq!(heap.root_get(h2).unwrap(), obj2);
 }
+
+#[test]
+fn persistent_root_guard_removes_on_drop() {
+  let mut heap = GcHeap::new();
+
+  let obj = heap.alloc_old(&BIG_OBJECT_DESC);
+  assert!(heap.is_in_los(obj));
+  assert_eq!(heap.los_object_count(), 1);
+
+  {
+    let root = heap.persistent_root(obj);
+    assert_eq!(root.get().unwrap(), obj);
+  }
+
+  let mut roots = RootStack::new();
+  let mut remembered = NullRememberedSet::default();
+  heap.collect_major(&mut roots, &mut remembered);
+  assert_eq!(heap.los_object_count(), 0);
+}

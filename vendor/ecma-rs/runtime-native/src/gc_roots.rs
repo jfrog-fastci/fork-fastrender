@@ -233,7 +233,7 @@ fn visit_callsite_reloc_pairs(
       frame.return_address, record.patchpoint_id
     )
   });
-
+ 
   // LLVM 18 statepoint lowering emits locations in (base, derived) order for each `gc.relocate`
   // call. `gc_pairs()` is already offset past the 3-entry statepoint header and any deopt
   // operands.

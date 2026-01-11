@@ -1,7 +1,9 @@
 use std::alloc::handle_alloc_error;
 use std::alloc::Layout;
+use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -103,6 +105,66 @@ struct FinalizerEntry {
 // interner) without requiring every internal pointer type to be `Send`.
 unsafe impl Send for GcHeap {}
 
+/// RAII wrapper for a persistent GC root created by [`GcHeap::root_add`].
+///
+/// This is intended for runtime/host code that needs to keep an object alive across fallible
+/// operations and wants to avoid leaking roots on early returns.
+///
+/// While the guard is alive it holds a mutable borrow of the [`GcHeap`]. For long-lived roots
+/// stored in host state, prefer storing the returned [`RootHandle`] from [`GcHeap::root_add`]
+/// directly.
+#[must_use]
+pub struct PersistentRoot<'a> {
+  heap: &'a mut GcHeap,
+  handle: RootHandle,
+  // Prevent sending this guard across threads; it borrows the heap mutably and is intended for
+  // short-lived rooting scopes.
+  _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl<'a> PersistentRoot<'a> {
+  pub fn new(heap: &'a mut GcHeap, value: *mut u8) -> Self {
+    debug_assert!(!value.is_null(), "PersistentRoot cannot store a null pointer");
+    let handle = heap.root_add(value);
+    Self {
+      heap,
+      handle,
+      _not_send_or_sync: PhantomData,
+    }
+  }
+
+  #[inline]
+  pub fn handle(&self) -> RootHandle {
+    self.handle
+  }
+
+  #[inline]
+  pub fn get(&self) -> Option<*mut u8> {
+    self.heap.root_get(self.handle)
+  }
+
+  #[inline]
+  pub fn set(&mut self, value: *mut u8) {
+    self.heap.root_set(self.handle, value);
+  }
+
+  #[inline]
+  pub fn heap(&self) -> &GcHeap {
+    &*self.heap
+  }
+
+  #[inline]
+  pub fn heap_mut(&mut self) -> &mut GcHeap {
+    &mut *self.heap
+  }
+}
+
+impl Drop for PersistentRoot<'_> {
+  fn drop(&mut self) {
+    self.heap.root_remove(self.handle);
+  }
+}
+
 impl Default for GcHeap {
   fn default() -> Self {
     Self::new()
@@ -189,6 +251,12 @@ impl GcHeap {
   #[inline]
   pub fn root_remove(&mut self, h: RootHandle) {
     self.root_handles.root_remove(h);
+  }
+
+  /// Adds `value` to the heap's persistent root table and returns a guard that removes it on drop.
+  #[inline]
+  pub fn persistent_root(&mut self, value: *mut u8) -> PersistentRoot<'_> {
+    PersistentRoot::new(self, value)
   }
 
   pub(crate) fn process_weak_handles_minor(&mut self) {

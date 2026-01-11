@@ -136,6 +136,7 @@ pub use buffer::{
 pub use gc::GcHeap;
 pub use gc::{HandleId, HandleTable, PersistentHandle};
 pub use gc::RememberedSet;
+pub use gc::PersistentRoot;
 pub use gc::RootHandle;
 pub use gc::RootSet;
 pub use gc::RootStack;
