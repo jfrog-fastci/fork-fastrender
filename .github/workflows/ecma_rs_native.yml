@@ -158,3 +158,13 @@ jobs:
           else
             echo "native-oracle-harness package not present in this checkout; skipping."
           fi
+
+      - name: runtime-native reactor conformance
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          # Only run the portable reactor conformance suite; `runtime-native` has other tests/benches
+          # that may be heavier and are not needed for this workflow's goals.
+          bash scripts/cargo_agent.sh test -p runtime-native --test reactor_conformance
