@@ -342,14 +342,28 @@ mod effect_summary_serde {
 impl EffectSummary {
   #[inline]
   pub const fn is_pure(&self) -> bool {
-    self.flags.is_empty() && matches!(self.throws, ThrowBehavior::Never)
+    let has_may_throw = (self.flags.bits() & EffectSet::MAY_THROW.bits()) != 0;
+    let flags = EffectFlags::from_bits_truncate(self.flags.bits() & !EffectSet::MAY_THROW.bits());
+    let throws = if has_may_throw {
+      ThrowBehavior::join(self.throws, ThrowBehavior::Maybe)
+    } else {
+      self.throws
+    };
+
+    flags.is_empty() && matches!(throws, ThrowBehavior::Never)
   }
 
   #[inline]
   pub const fn join(a: Self, b: Self) -> Self {
+    let flags_bits = a.flags.bits() | b.flags.bits();
+    let has_may_throw = (flags_bits & EffectSet::MAY_THROW.bits()) != 0;
     Self {
-      flags: a.flags.union(b.flags),
-      throws: ThrowBehavior::join(a.throws, b.throws),
+      flags: EffectFlags::from_bits_truncate(flags_bits & !EffectSet::MAY_THROW.bits()),
+      throws: if has_may_throw {
+        ThrowBehavior::join(ThrowBehavior::join(a.throws, b.throws), ThrowBehavior::Maybe)
+      } else {
+        ThrowBehavior::join(a.throws, b.throws)
+      },
     }
   }
 
@@ -358,19 +372,20 @@ impl EffectSummary {
     // Note: this is intentionally coarse. Throw behavior is tracked separately
     // (see `EffectSet::MAY_THROW` in the API semantics layer), so we do not
     // force `Impure` purely because something may throw.
-    if self.flags.is_empty() {
+    let flags = EffectFlags::from_bits_truncate(self.flags.bits() & !EffectSet::MAY_THROW.bits());
+    if flags.is_empty() {
       return Purity::Pure;
     }
-    if self.flags.contains(EffectFlags::UNKNOWN) || self.flags.contains(EffectFlags::WRITES_GLOBAL) {
+    if flags.contains(EffectFlags::UNKNOWN) || flags.contains(EffectFlags::WRITES_GLOBAL) {
       return Purity::Impure;
     }
-    if self.flags.contains(EffectFlags::IO) || self.flags.contains(EffectFlags::NETWORK) {
+    if flags.contains(EffectFlags::IO) || flags.contains(EffectFlags::NETWORK) {
       return Purity::Impure;
     }
-    if self.flags.contains(EffectFlags::ALLOCATES) {
+    if flags.contains(EffectFlags::ALLOCATES) {
       return Purity::Allocating;
     }
-    if self.flags.contains(EffectFlags::READS_GLOBAL) || self.flags.contains(EffectFlags::NONDETERMINISTIC) {
+    if flags.contains(EffectFlags::READS_GLOBAL) || flags.contains(EffectFlags::NONDETERMINISTIC) {
       return Purity::ReadOnly;
     }
     Purity::Impure
@@ -381,8 +396,9 @@ impl EffectSummary {
   /// Note: this conversion is lossy; [`ThrowBehavior::Always`] and
   /// [`ThrowBehavior::Maybe`] are both mapped to [`EffectSet::MAY_THROW`].
   pub fn to_effect_set(self) -> EffectSet {
+    let has_may_throw = self.flags.contains(EffectSet::MAY_THROW);
     let mut out = self.flags & !EffectSet::MAY_THROW;
-    if !matches!(self.throws, ThrowBehavior::Never) {
+    if has_may_throw || !matches!(self.throws, ThrowBehavior::Never) {
       out |= EffectSet::MAY_THROW;
     }
     out
@@ -588,6 +604,14 @@ mod tests {
     // Throwing does not automatically imply impurity at this coarse layer; we
     // track throws separately via `EffectSet::MAY_THROW`.
     assert_eq!(throwing.inferred_purity(), Purity::Pure);
+
+    // Backwards compatibility: older data sometimes encoded MAY_THROW in flags.
+    // Purity inference should ignore this bit (throwing is tracked separately).
+    let throwing_flag = EffectSummary {
+      flags: EffectFlags::MAY_THROW,
+      throws: ThrowBehavior::Never,
+    };
+    assert_eq!(throwing_flag.inferred_purity(), Purity::Pure);
   }
 
   #[test]
@@ -622,5 +646,24 @@ mod tests {
       EffectSet::UNKNOWN_CALL.to_effect_summary().to_effect_set(),
       EffectSet::UNKNOWN_CALL
     );
+  }
+
+  #[test]
+  fn may_throw_in_flags_is_normalized() {
+    let summary = EffectSummary {
+      flags: EffectFlags::MAY_THROW,
+      throws: ThrowBehavior::Never,
+    };
+
+    // `is_pure` should treat MAY_THROW as throwing even if it appears in flags.
+    assert!(!summary.is_pure());
+
+    // Converting to an EffectSet should preserve the MAY_THROW information.
+    assert!(summary.to_effect_set().contains(EffectSet::MAY_THROW));
+
+    // Joining should strip MAY_THROW from flags and carry it into throws.
+    let joined = EffectSummary::join(summary, EffectSummary::PURE);
+    assert!(!joined.flags.contains(EffectSet::MAY_THROW));
+    assert_eq!(joined.throws, ThrowBehavior::Maybe);
   }
 }
