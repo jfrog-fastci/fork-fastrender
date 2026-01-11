@@ -99,13 +99,16 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
 #[test]
 fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord};
+  use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
   //   1 deopt operand (Indirect, must NOT be treated as a root)
   //   1 GC (base, derived) pair
   let rec = StackMapRecord {
-    patchpoint_id: 0,
+    // Mark the record as a statepoint so `gc_root_rbp_offsets_strict` uses the statepoint layout
+    // decoder (which skips over deopt operands before enumerating GC pairs).
+    patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
     instruction_offset: 0,
     locations: vec![
       Location::Constant { size: 8, value: 0 }, // callconv

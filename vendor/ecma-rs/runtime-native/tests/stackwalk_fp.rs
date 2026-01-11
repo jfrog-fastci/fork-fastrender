@@ -201,7 +201,6 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
     write_u64(start_fp + 8, callsite_ra);
-
     write_u64(caller_fp + 0, 0);
     write_u64(caller_fp + 8, 0);
   }
@@ -244,6 +243,42 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
   let derived_after = unsafe { read_u64(caller_sp + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, 0, "null derived pointer must remain null");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn non_statepoint_records_are_skipped() {
+  let mut bytes = build_stackmaps_with_derived_pointer();
+  // Overwrite the patchpoint id so the record no longer looks like a statepoint.
+  //
+  // Offset: header (16) + function record (24) = 40.
+  bytes[40..48].copy_from_slice(&0x1234_5678u64.to_le_bytes());
+
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let start_fp = align_up(base + 128, 16);
+  let caller_fp = align_up(base + 256, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let mut visited = Vec::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+  assert!(visited.is_empty());
 }
 
 fn align_up(v: usize, align: usize) -> usize {

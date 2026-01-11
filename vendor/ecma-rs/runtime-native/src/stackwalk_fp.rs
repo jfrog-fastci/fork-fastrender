@@ -424,6 +424,12 @@ fn enumerate_roots_for_frame(
   bounds: Option<StackBounds>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
+  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
+  // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
+  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+    return Ok(());
+  }
+
   let stack_size = callsite.stack_size;
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {
