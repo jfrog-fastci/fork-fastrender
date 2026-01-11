@@ -60,6 +60,8 @@ int main(void) {
   if (check(rt_handle_load(h) == obj2)) { rc = 9; goto done; }
   rt_handle_free(h);
   if (check(rt_handle_load(h) == NULL)) { rc = 10; goto done; }
+  rt_handle_store(h, obj1);
+  if (check(rt_handle_load(h) == NULL)) { rc = 11; goto done; }
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
