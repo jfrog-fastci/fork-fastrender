@@ -12054,6 +12054,18 @@ impl InlineFormattingContext {
       return Ok(None);
     }
 
+    // `text-overflow` is only observable when it produces a marker (`ellipsis`/string). The default
+    // `clip` value should rely on regular overflow clipping instead of mutating the line contents.
+    //
+    // Trimming atomic inline content (inline-blocks/replaced) to "fit" discards partially visible
+    // items that should still paint up to the clip edge (e.g. horizontal carousels in
+    // `overflow-x:auto; white-space:nowrap` containers).
+    if matches!(start_side, crate::style::types::TextOverflowSide::Clip)
+      && matches!(end_side, crate::style::types::TextOverflowSide::Clip)
+    {
+      return Ok(None);
+    }
+
     let start_marker =
       self.build_overflow_marker_item(start_side, style, line.resolved_direction)?;
     let end_marker = self.build_overflow_marker_item(end_side, style, line.resolved_direction)?;
@@ -22341,6 +22353,58 @@ mod tests {
     assert!(
       line_fragment.bounds.width() <= 60.1,
       "line width should clamp to the available inline size when clipped"
+    );
+  }
+
+  #[test]
+  fn text_overflow_clip_keeps_partially_visible_inline_blocks() {
+    let mut container_style = ComputedStyle::default();
+    container_style.white_space = WhiteSpace::Nowrap;
+    container_style.overflow_x = Overflow::Auto;
+    // Be explicit: `text-overflow: clip` is the default, but this test is specifically about
+    // ensuring clip does not truncate partially visible atomic inlines.
+    container_style.text_overflow = TextOverflow {
+      inline_start: TextOverflowSide::Clip,
+      inline_end: TextOverflowSide::Clip,
+    };
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::InlineBlock;
+    child_style.width = Some(Length::px(120.0));
+    child_style.width_keyword = None;
+    child_style.height = Some(Length::px(20.0));
+    child_style.height_keyword = None;
+    let child_style = Arc::new(child_style);
+
+    let mut a = BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    a.id = 1;
+    let mut b = BoxNode::new_inline_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    b.id = 2;
+    let mut c = BoxNode::new_inline_block(child_style, FormattingContextType::Block, vec![]);
+    c.id = 3;
+
+    let root = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Block,
+      vec![a, b, c],
+    );
+    let constraints = LayoutConstraints::definite_width(250.0);
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+
+    fn subtree_contains_box_id(node: &FragmentNode, target: usize) -> bool {
+      if matches!(
+        node.content,
+        FragmentContent::Block { box_id: Some(id) } if id == target
+      ) {
+        return true;
+      }
+      node.children.iter().any(|child| subtree_contains_box_id(child, target))
+    }
+
+    assert!(
+      subtree_contains_box_id(&fragment, 3),
+      "expected the partially visible inline-block to remain when `text-overflow: clip` is active"
     );
   }
 
