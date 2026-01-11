@@ -289,6 +289,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
+- `--json`: emit versioned JSON diagnostics to stdout (`schema_version = 1`).
 - `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
 - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.

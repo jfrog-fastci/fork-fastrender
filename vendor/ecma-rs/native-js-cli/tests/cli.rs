@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use serde_json::Value;
 use std::fs;
 use std::process::Command as StdCommand;
 use std::time::Duration;
@@ -55,6 +56,72 @@ fn check_fails_on_any() {
     .failure()
     .stderr(predicates::str::contains("NJS0010"))
     .stderr(predicates::str::contains("`any` is not supported"));
+}
+
+#[test]
+fn json_check_success_contains_schema_version_and_diagnostics_array() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  let assert = native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("--json")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .success()
+    .code(0);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+  assert_eq!(value["diagnostics"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn json_check_error_contains_diagnostics_array() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "const x: any = 1;\nexport function main(): number { return 0; }\n",
+  )
+  .unwrap();
+
+  let assert = native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("--json")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+
+  let diagnostics = value
+    .get("diagnostics")
+    .and_then(|value| value.as_array())
+    .expect("expected diagnostics array");
+  assert!(
+    !diagnostics.is_empty(),
+    "expected diagnostics to be non-empty, got: {diagnostics:?}"
+  );
 }
 
 #[test]
