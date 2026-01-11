@@ -2920,11 +2920,25 @@ mod state_machine_tests {
 
     h.discover(module_external("https://example.com/a.js", false))?;
     assert!(
-      h.started_fetches.is_empty(),
+      h.started_module_graph_fetches.is_empty(),
       "expected module scripts to be ignored when supports_module_scripts is false"
     );
     assert!(h.blocked_parser_on.is_none());
     assert!(h.host.log.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_with_empty_src_queue_error_even_when_module_scripts_not_supported() -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover(module_external("", false))?;
+    assert!(
+      h.started_module_graph_fetches.is_empty(),
+      "expected empty-src module scripts to not start module graph fetch"
+    );
+    h.run_event_loop()?;
+    assert_eq!(h.host.log, vec!["event:error".to_string()]);
     Ok(())
   }
 
