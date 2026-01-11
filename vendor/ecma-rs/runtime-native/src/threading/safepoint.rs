@@ -351,14 +351,15 @@ fn runtime_native_gc_safepoint_slow_impl_inner(requested_epoch: u64, ctx: *const
 
   let coord = coordinator();
   coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       registry::set_current_thread_safepoint_epoch_observed(epoch);
       break;
     }
-    guard = coord.cv.wait(guard).unwrap();
+    guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
   // Notify after releasing the mutex to avoid self-deadlocking with
   // `notify_state_change`'s synchronization.
@@ -454,10 +455,13 @@ where
         break false;
       }
       let remaining = deadline - now;
-      let (g, _) = coord.cv.wait_timeout(guard, remaining).unwrap();
+      let (g, _) = coord
+        .cv
+        .wait_timeout(guard, remaining)
+        .unwrap_or_else(|e| e.into_inner());
       guard = g;
     } else {
-      guard = coord.cv.wait(guard).unwrap();
+      guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
     }
   };
   drop(guard);
@@ -512,10 +516,13 @@ where
         break false;
       }
       let remaining = deadline - now;
-      let (g, _) = coord.cv.wait_timeout(guard, remaining).unwrap();
+      let (g, _) = coord
+        .cv
+        .wait_timeout(guard, remaining)
+        .unwrap_or_else(|e| e.into_inner());
       guard = g;
     } else {
-      guard = coord.cv.wait(guard).unwrap();
+      guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
     }
   };
   drop(guard);
@@ -575,14 +582,15 @@ fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegCont
 
   let coord = coordinator();
   coord.threads_waiting.fetch_add(1, Ordering::SeqCst);
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       registry::set_current_thread_safepoint_epoch_observed(epoch);
       break;
     }
-    guard = coord.cv.wait(guard).unwrap();
+    guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
   // Notify after releasing the mutex to avoid self-deadlocking with
   // `notify_state_change`'s synchronization.
@@ -615,7 +623,8 @@ pub fn rt_gc_wait_for_world_stopped() {
 
   let coordinator_id = registry::current_thread_id();
 
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     let cur_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if cur_epoch & 1 == 0 {
@@ -626,7 +635,7 @@ pub fn rt_gc_wait_for_world_stopped() {
       return;
     }
 
-    guard = coord.cv.wait(guard).unwrap();
+    guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
 }
 
@@ -641,7 +650,8 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
   let coordinator_id = registry::current_thread_id();
 
   let start = Instant::now();
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     // If the request was cancelled/resumed, treat as "stopped" for the caller.
     let cur_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
@@ -664,7 +674,10 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
       return false;
     }
 
-    let (g, wait_res) = coord.cv.wait_timeout(guard, remaining).unwrap();
+    let (g, wait_res) = coord
+      .cv
+      .wait_timeout(guard, remaining)
+      .unwrap_or_else(|e| e.into_inner());
     guard = g;
     if wait_res.timed_out() && !world_stopped(stop_epoch, coordinator_id) {
       return false;
@@ -689,7 +702,8 @@ pub fn rt_gc_wait_for_world_resumed_timeout(timeout: Duration) -> bool {
   let coordinator_id = registry::current_thread_id();
 
   let start = Instant::now();
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` is only used to synchronize notify/wait transitions; poisoning is not meaningful.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     let cur_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     debug_assert_eq!(cur_epoch, resume_epoch, "nested GC requests are not supported");
@@ -705,7 +719,10 @@ pub fn rt_gc_wait_for_world_resumed_timeout(timeout: Duration) -> bool {
       return false;
     }
 
-    let (g, wait_res) = coord.cv.wait_timeout(guard, remaining).unwrap();
+    let (g, wait_res) = coord
+      .cv
+      .wait_timeout(guard, remaining)
+      .unwrap_or_else(|e| e.into_inner());
     guard = g;
     if wait_res.timed_out() && !world_stopped(resume_epoch, coordinator_id) {
       return false;
