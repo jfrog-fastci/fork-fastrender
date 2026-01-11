@@ -1,64 +1,124 @@
 - name: node:timers.setTimeout
+  kind: function
   aliases:
     - timers.setTimeout
   since: "v0.1.0"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: [async, depends_on_callback]
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:timers.clearTimeout
+  kind: function
   aliases:
     - timers.clearTimeout
   since: "v0.1.0"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: []
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: true
   deterministic: false
 
 - name: node:timers.setInterval
+  kind: function
   aliases:
     - timers.setInterval
   since: "v0.1.0"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: [async, depends_on_callback]
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:timers.clearInterval
+  kind: function
   aliases:
     - timers.clearInterval
   since: "v0.1.0"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: []
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: true
   deterministic: false
 
 - name: node:timers.setImmediate
+  kind: function
   aliases:
     - timers.setImmediate
   since: "v0.9.1"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: [async, depends_on_callback]
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:timers.clearImmediate
+  kind: function
   aliases:
     - timers.clearImmediate
   since: "v0.9.1"
-  effects: Unknown
-  purity: Impure
+  effects:
+    template: unknown
+    base: []
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: true

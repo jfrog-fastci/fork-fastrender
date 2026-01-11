@@ -1,40 +1,55 @@
 - name: node:http.request
+  kind: function
   aliases:
     - http.request
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: IO | NETWORK
-      throws: Maybe
-  purity: Impure
+    base: [io, network, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    network: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: true
   idempotent: false
   deterministic: false
 
 - name: node:http.get
+  kind: function
   aliases:
     - http.get
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: IO | NETWORK
-      throws: Maybe
-  purity: Impure
+    base: [io, network, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    network: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: true
   idempotent: false
   deterministic: false
 
 - name: node:http.createServer
+  kind: function
   aliases:
     - http.createServer
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: IO | NETWORK
-      throws: Maybe
-  purity: Impure
+    base: [io, network, may_throw]
+    depends_on_args: [0]
+    io: true
+    network: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false

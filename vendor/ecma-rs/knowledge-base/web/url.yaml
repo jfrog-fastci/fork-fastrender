@@ -97,6 +97,7 @@
 - name: URL.prototype.origin
   aliases:
     - URL.prototype.origin
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -108,6 +109,7 @@
 - name: URL.prototype.protocol
   aliases:
     - URL.prototype.protocol
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -119,6 +121,7 @@
 - name: URL.prototype.host
   aliases:
     - URL.prototype.host
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -130,6 +133,7 @@
 - name: URL.prototype.hostname
   aliases:
     - URL.prototype.hostname
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -141,6 +145,7 @@
 - name: URL.prototype.port
   aliases:
     - URL.prototype.port
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -152,6 +157,7 @@
 - name: URL.prototype.search
   aliases:
     - URL.prototype.search
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
@@ -163,6 +169,7 @@
 - name: URL.prototype.hash
   aliases:
     - URL.prototype.hash
+  kind: getter
   since: "baseline"
   effects:
     allocates: true
