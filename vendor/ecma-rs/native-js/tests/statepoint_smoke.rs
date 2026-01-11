@@ -81,10 +81,6 @@ fn statepoint_smoke() {
 
   assert_eq!(stackmap.version, runtime_native::stackmaps::STACKMAP_VERSION);
   let call_ret_off = call_return_offset(&file, "ts_fn").expect("locate call instruction");
-  assert!(
-    !stackmap.records.is_empty(),
-    "expected at least one stackmap record"
-  );
   let record = stackmap
     .records
     .iter()
@@ -142,11 +138,16 @@ fn call_return_offset(obj: &object::File<'_>, fn_name: &str) -> Option<usize> {
   }
   let func_bytes = &data[start..start + size];
 
-  // Look for the first direct CALL rel32 encoding: E8 <imm32>.
+  // Look for the last direct CALL rel32 encoding: E8 <imm32>.
+  //
+  // `place-safepoints` may insert an entry safepoint poll which becomes an extra
+  // statepoint call before the user-authored call in this test. Using the last
+  // CALL targets the original callee callsite.
+  let mut last_call = None;
   for i in 0..func_bytes.len().saturating_sub(4) {
     if func_bytes[i] == 0xE8 {
-      return Some(i + 5);
+      last_call = Some(i + 5);
     }
   }
-  None
+  last_call
 }

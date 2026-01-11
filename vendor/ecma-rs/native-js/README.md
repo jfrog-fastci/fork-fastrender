@@ -310,7 +310,7 @@ The helper surface lives under `native_js::llvm`:
 - `native_js::llvm::gc`
   - `gc_ptr_type(&Context) -> ptr addrspace(1)` for GC references
   - `set_default_gc_strategy(&FunctionValue)` to mark a function `gc "coreclr"`
-  - `set_gc_strategy(&FunctionValue, &str)` to mark a function with a custom `gc "<strategy>"` (advanced)
+  - `set_gc_strategy(&FunctionValue, &str)` to mark a function with a custom `gc "<strategy>"` string (advanced)
 - `native_js::llvm::passes`
   - `rewrite_statepoints_for_gc(&Module, &TargetMachine)` (runs via `llvm-sys`
     `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds)

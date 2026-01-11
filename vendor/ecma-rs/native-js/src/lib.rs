@@ -394,5 +394,9 @@ export function main() {
       ir.contains("define i32 @main()"),
       "expected generated IR to define a C ABI main() shim, got:\n{ir}"
     );
+    assert!(
+      ir.contains("call i32 @__nativejs_def_"),
+      "expected main() shim to call the lowered TS main(), got:\n{ir}"
+    );
   }
 }
