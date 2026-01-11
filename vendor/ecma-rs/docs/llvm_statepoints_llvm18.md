@@ -204,6 +204,8 @@ Key observations (x86_64):
   If `patch_bytes > 0`, LLVM reserves a patchable region and `instruction offset`
   points to the byte *after* that region (where execution would resume if a call
   is patched in).
+  This implies a runtime patcher must ensure the call's return address matches
+  that end-of-region address (the stackmap lookup key).
 * GC roots typically show up as locations like:
 
   ```

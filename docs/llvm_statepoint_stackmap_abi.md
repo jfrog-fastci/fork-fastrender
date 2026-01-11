@@ -72,6 +72,7 @@ This is the lookup key used by stack walkers that match frames via their return 
 
 Important nuance: `gc.statepoint` supports **patchable call sites** via the `patch_bytes` argument.
 When `patch_bytes > 0` on x86_64, LLVM 18 emits a NOP sled instead of an actual call instruction, and the stackmap instruction offset points to the end of that reserved region (the "return address" if/when a call is patched in).
+This means a runtime patcher must ensure the *actual* call return address matches the stackmap key (i.e. returns to the end of the reserved region), not just to the byte after the patched call instruction.
 
 ## `gc.statepoint`: `flags` is a 2-bit mask on LLVM 18
 
