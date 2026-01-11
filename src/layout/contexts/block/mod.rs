@@ -55,9 +55,9 @@ use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation::{
-  clip_node_with_axes, forces_break_between, normalize_fragment_margins_with_axes,
-  propagate_fragment_metadata, propagate_fragmentainer_columns, FragmentationAnalyzer,
-  FragmentationContext,
+  clip_node_with_axes, collect_forced_boundaries_for_pagination_with_axes, forces_break_between,
+  normalize_fragment_margins_with_axes, propagate_fragment_metadata, propagate_fragmentainer_columns,
+  ForcedBoundary, FragmentationAnalyzer, FragmentationContext,
 };
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
@@ -90,6 +90,7 @@ use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
 use crate::style::RootFontMetrics;
+use crate::style::page::PageSide;
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::AnonymousType;
@@ -7414,6 +7415,52 @@ impl BlockFormattingContext {
       }
     }
 
+    // In a paged context, page/side breaks inside a multi-column container must be promoted to
+    // *column set* boundaries (i.e. between page-sized sets of columns) so the outer paginator never
+    // fragments mid column-set.
+    //
+    // Collect forced pagination boundaries from the uncolumnized flow root and inject them into the
+    // column fragmentation analyzer so boundary selection (which runs in
+    // `FragmentationContext::Column`) still accounts for `break-before/after: page|left|right|recto|verso`.
+    let mut forced_pagination_boundaries: Vec<ForcedBoundary> = Vec::new();
+    if fragmented_context {
+      forced_pagination_boundaries =
+        collect_forced_boundaries_for_pagination_with_axes(&physical_flow_root, 0.0, axes);
+
+      // Deduplicate forced boundaries by position and merge side constraints (matching the @page
+      // paginator's `dedup_forced_boundaries` logic).
+      const EPSILON: f32 = 0.01;
+      forced_pagination_boundaries.sort_by(|a, b| {
+        a.position
+          .partial_cmp(&b.position)
+          .unwrap_or(std::cmp::Ordering::Equal)
+      });
+      let mut deduped: Vec<ForcedBoundary> = Vec::new();
+      for boundary in forced_pagination_boundaries.drain(..) {
+        if let Some(last) = deduped.last_mut() {
+          if (last.position - boundary.position).abs() < EPSILON {
+            match (last.page_side, boundary.page_side) {
+              (None, side) => last.page_side = side,
+              (side, None) => last.page_side = side,
+              (Some(a), Some(b)) if a == b => last.page_side = Some(a),
+              // Conflicting side constraints at the same boundary are unsatisfiable; treat it as a
+              // generic forced break.
+              (Some(_), Some(_)) => last.page_side = None,
+            }
+            continue;
+          }
+        }
+        deduped.push(boundary);
+      }
+      forced_pagination_boundaries = deduped;
+
+      analyzer.add_forced_break_positions(
+        forced_pagination_boundaries
+          .iter()
+          .map(|boundary| boundary.position),
+      );
+    }
+
     let min_total_extent = if fragmented_context {
       first_set_height
     } else {
@@ -7459,6 +7506,49 @@ impl BlockFormattingContext {
       if balanced_count == column_count {
         boundaries = balanced;
       }
+    }
+
+    // Promote any forced pagination break positions to column-set boundaries by padding the column
+    // boundary list with zero-length fragments (empty columns) until the next real fragment starts
+    // at the first column of a new set.
+    let mut promoted_set_start_slices: Vec<(usize, Option<PageSide>)> = Vec::new();
+    if fragmented_context && !forced_pagination_boundaries.is_empty() && column_count > 0 {
+      const EPSILON: f32 = 0.01;
+      for forced in &forced_pagination_boundaries {
+        let p = forced.position;
+        if !p.is_finite() {
+          continue;
+        }
+        let Some(boundary_index) = boundaries.iter().position(|b| (*b - p).abs() < EPSILON) else {
+          continue;
+        };
+
+        // Pad after the boundary so the slice index containing content after `p` becomes a multiple
+        // of `column_count` (start of the next column set).
+        let pad = (column_count - (boundary_index % column_count)) % column_count;
+        for _ in 0..pad {
+          boundaries.insert(boundary_index + 1, p);
+        }
+
+        let start_slice = boundary_index + pad;
+        if start_slice < boundaries.len().saturating_sub(1) && start_slice % column_count == 0 {
+          promoted_set_start_slices.push((start_slice, forced.page_side));
+        }
+      }
+
+      promoted_set_start_slices.sort_by_key(|(idx, _)| *idx);
+      promoted_set_start_slices.dedup_by(|a, b| {
+        if a.0 != b.0 {
+          return false;
+        }
+        a.1 = match (a.1, b.1) {
+          (None, side) => side,
+          (side, None) => side,
+          (Some(a), Some(b)) if a == b => Some(a),
+          (Some(_), Some(_)) => None,
+        };
+        true
+      });
     }
 
     // In paged/fragmented contexts the fragmentainer block-size hint pins the physical column
@@ -7660,6 +7750,36 @@ impl BlockFormattingContext {
     let mut fragments = Vec::new();
     let mut fragment_heights = vec![0.0f32; fragment_count];
     let mut fragment_has_content = vec![false; fragment_count];
+
+    // Clear forced page/side break hints inside the columnized subtree so the outer paginator does
+    // not select an in-set boundary (which would split a column set). The promoted breaks are
+    // reintroduced via marker fragments at column-set boundaries.
+    fn rewrite_pagination_breaks_in_place(node: &mut FragmentNode) {
+      let rewrite = |value: crate::style::types::BreakBetween| match value {
+        crate::style::types::BreakBetween::Page
+        | crate::style::types::BreakBetween::Left
+        | crate::style::types::BreakBetween::Right
+        | crate::style::types::BreakBetween::Recto
+        | crate::style::types::BreakBetween::Verso => crate::style::types::BreakBetween::Auto,
+        other => other,
+      };
+
+      if let Some(style) = node.style.as_ref() {
+        let new_before = rewrite(style.break_before);
+        let new_after = rewrite(style.break_after);
+        if new_before != style.break_before || new_after != style.break_after {
+          let mut updated = style.as_ref().clone();
+          updated.break_before = new_before;
+          updated.break_after = new_after;
+          node.style = Some(Arc::new(updated));
+        }
+      }
+      for child in node.children_mut().iter_mut() {
+        rewrite_pagination_breaks_in_place(child);
+      }
+    }
+
+    let mut promoted_break_iter = promoted_set_start_slices.iter().peekable();
     for (index, window) in boundaries.windows(2).enumerate() {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Layout)
@@ -7672,6 +7792,28 @@ impl BlockFormattingContext {
         continue;
       }
 
+      if fragmented_context {
+        while promoted_break_iter
+          .peek()
+          .is_some_and(|&&(slice_idx, _)| slice_idx == index)
+        {
+          let (_, side) = promoted_break_iter.next().copied().expect("peeked break");
+          let set_index = index / column_count;
+          let offset = axes.block_offset(set_offset(set_index));
+          let bounds = Rect::from_xywh(offset.x, offset.y, 0.0, 0.0);
+          let mut marker_style = ComputedStyle::default();
+          marker_style.display = Display::Block;
+          marker_style.writing_mode = writing_mode;
+          marker_style.direction = direction;
+          marker_style.break_after = match side {
+            Some(PageSide::Left) => crate::style::types::BreakBetween::Left,
+            Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
+            None => crate::style::types::BreakBetween::Page,
+          };
+          let marker_style = Arc::new(marker_style);
+          fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), marker_style));
+        }
+      }
       let fragmentainer_size = fragmentainer_size_for_column(index);
       if let Some(mut clipped) = clip_node_with_axes(
         &physical_flow_root,
@@ -7711,6 +7853,9 @@ impl BlockFormattingContext {
         fragment_heights[index] = axes.block_size(&clipped.logical_bounding_box());
         let mut children: Vec<_> = std::mem::take(&mut clipped.children).into_iter().collect();
         for child in &mut children {
+          if fragmented_context {
+            rewrite_pagination_breaks_in_place(child);
+          }
           child.translate_root_in_place(offset);
         }
         fragments.extend(children);
