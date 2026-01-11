@@ -1273,6 +1273,12 @@ purity:
   }
 
   #[test]
+  fn api_id_from_raw_roundtrips() {
+    let id = ApiId::from_name("JSON.parse");
+    assert_eq!(ApiId::from_raw(id.raw()), id);
+  }
+
+  #[test]
   fn load_default_has_unique_api_ids() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
     let mut ids = BTreeSet::new();

@@ -22,9 +22,18 @@ impl ApiId {
     ApiId(hash)
   }
 
+  /// Construct an [`ApiId`] from an already-hashed raw 64-bit value.
+  ///
+  /// This is useful when another crate stores API IDs as stable hashes (e.g.
+  /// `hir-js::ApiId`) and needs to look them up in a [`crate::ApiDatabase`]
+  /// without re-hashing the canonical name.
+  #[inline]
+  pub const fn from_raw(raw: u64) -> ApiId {
+    ApiId(raw)
+  }
+
   #[inline]
   pub const fn raw(self) -> u64 {
     self.0
   }
 }
-
