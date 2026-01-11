@@ -43,13 +43,13 @@ declaration itself; predeclaring the poll function avoids the crash:
 declare void @gc.safepoint_poll()
 ```
 
-`native-js` supports running the combined pipeline
-`function(place-safepoints),rewrite-statepoints-for-gc` and applies this predeclaration workaround
-automatically.
+`native-js` applies this workaround inside `native-js/src/llvm/passes.rs` before running
+`function(place-safepoints),rewrite-statepoints-for-gc` (see
+`vendor/ecma-rs/docs/llvm_place_safepoints_llvm18.md` for repro details).
 
-For performance, we still prefer compiler-emitted “fast polls” (load+branch with a slow-path call
-into the runtime) so the common case is ~1-2 instructions when GC is inactive. See
-`vendor/ecma-rs/docs/llvm_place_safepoints_llvm18.md`.
+For lower overhead than a poll call at every backedge, `native-js` also supports emitting explicit
+fast-poll IR (load+branch / leaf poll) and only calling into the runtime on the slow path; see
+`native-js/src/codegen/safepoint.rs`.
 
 This is independent of the chosen strategy name.
 
