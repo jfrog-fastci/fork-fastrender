@@ -31,27 +31,24 @@ fn embedded_knowledge_base_contains_node_and_web_entries() {
 
   // Spot-check a few conservative effect tags.
   let read_file = db.get("node:fs.readFile").unwrap();
-  let read_file_effects = read_file.effects_for_call(&[]);
   assert!(
-    read_file_effects.contains(EffectSet::IO),
-    "expected node:fs.readFile to have io effect, got {read_file_effects:?}",
+    read_file.effect_summary.flags.contains(EffectSet::IO),
+    "expected node:fs.readFile to have io effect summary",
   );
 
   let fetch = db.get("fetch").unwrap();
-  let fetch_effects = fetch.effects_for_call(&[]);
   assert!(
-    fetch_effects.contains(EffectSet::IO),
-    "expected fetch to have io effect, got {fetch_effects:?}",
+    fetch.effect_summary.flags.contains(EffectSet::IO),
+    "expected fetch to have io effect summary",
   );
   assert!(
-    fetch_effects.contains(EffectSet::NETWORK),
-    "expected fetch to have network effect, got {fetch_effects:?}",
+    fetch.effect_summary.flags.contains(EffectSet::NETWORK),
+    "expected fetch to have network effect summary",
   );
 
   let join = db.get("node:path.join").unwrap();
-  let join_effects = join.effects_for_call(&[]);
   assert!(
-    join_effects.is_empty(),
-    "expected node:path.join to be pure, got {join_effects:?}",
+    join.effect_summary.is_pure(),
+    "expected node:path.join to be pure, got {join:?}",
   );
 }
