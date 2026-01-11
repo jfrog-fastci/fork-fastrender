@@ -393,12 +393,12 @@ fn runtime_native_c_header_declares_all_exported_rt_symbols() {
   }
 
   // `nm` is part of the standard toolchain on Ubuntu; still skip gracefully if absent.
-  if Command::new("nm")
+  if !Command::new("nm")
     .arg("--version")
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_err()
+    .is_ok_and(|s| s.success())
   {
     eprintln!("skipping: `nm` not available");
     return;
@@ -466,12 +466,12 @@ fn runtime_native_staticlib_exports_expected_global_symbols() {
   const EXPECTED_GLOBALS: &[&str] = &["RT_GC_EPOCH", "RT_THREAD"];
 
   // `nm` is part of the standard toolchain on Ubuntu; still skip gracefully if absent.
-  if Command::new("nm")
+  if !Command::new("nm")
     .arg("--version")
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_err()
+    .is_ok_and(|s| s.success())
   {
     eprintln!("skipping: `nm` not available");
     return;
@@ -522,12 +522,12 @@ fn runtime_native_staticlib_exports_expected_global_symbols() {
 
   // Best-effort: verify that RT_THREAD is actually emitted as a TLS symbol (not a plain global).
   // This requires `readelf` (binutils); skip if unavailable.
-  if Command::new("readelf")
+  if !Command::new("readelf")
     .arg("--version")
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_err()
+    .is_ok_and(|s| s.success())
   {
     eprintln!("skipping: `readelf` not available; cannot verify RT_THREAD TLS symbol type");
     return;
