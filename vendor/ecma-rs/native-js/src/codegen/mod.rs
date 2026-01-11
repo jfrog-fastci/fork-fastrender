@@ -1204,65 +1204,85 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     body: StmtId,
     span: Span,
   ) -> Result<bool, Vec<Diagnostic>> {
-    if let Some(init) = init {
-      match init {
-        ForInit::Expr(expr) => {
-          let _ = self.codegen_expr(*expr)?;
-        }
-        ForInit::Var(decl) => {
-          self.codegen_var_decl(decl, span)?;
+    // `for (let/const ...)` introduces a lexical scope that does *not* leak
+    // outside the loop. Without this, shadowing an outer `let` via a loop
+    // initializer would incorrectly override the outer binding for the remainder
+    // of the function.
+    let needs_loop_scope = matches!(
+      init,
+      Some(ForInit::Var(decl)) if matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const)
+    );
+    if needs_loop_scope {
+      self.env.push_scope();
+    }
+
+    let result = (|| -> Result<bool, Vec<Diagnostic>> {
+      if let Some(init) = init {
+        match init {
+          ForInit::Expr(expr) => {
+            let _ = self.codegen_expr(*expr)?;
+          }
+          ForInit::Var(decl) => {
+            self.codegen_var_decl(decl, span)?;
+          }
         }
       }
-    }
 
-    let cond_bb = self.cg.context.append_basic_block(self.func, "for.cond");
-    let body_bb = self.cg.context.append_basic_block(self.func, "for.body");
-    let update_bb = self.cg.context.append_basic_block(self.func, "for.update");
-    let end_bb = self.cg.context.append_basic_block(self.func, "for.end");
+      let cond_bb = self.cg.context.append_basic_block(self.func, "for.cond");
+      let body_bb = self.cg.context.append_basic_block(self.func, "for.body");
+      let update_bb = self.cg.context.append_basic_block(self.func, "for.update");
+      let end_bb = self.cg.context.append_basic_block(self.func, "for.end");
 
-    self
-      .builder
-      .build_unconditional_branch(cond_bb)
-      .expect("failed to build branch");
-
-    self.builder.position_at_end(cond_bb);
-    let cond_i1 = if let Some(test) = test {
-      let v = self.codegen_expr(test)?;
-      self.is_truthy_i1(v)
-    } else {
-      self.cg.bool_ty.const_int(1, false)
-    };
-    self
-      .builder
-      .build_conditional_branch(cond_i1, body_bb, end_bb)
-      .expect("failed to build conditional branch");
-
-    self.builder.position_at_end(body_bb);
-    self.loop_stack.push(LoopContext {
-      break_bb: end_bb,
-      continue_bb: update_bb,
-      label,
-    });
-    let body_fallthrough = self.codegen_stmt(body)?;
-    if body_fallthrough {
       self
         .builder
-        .build_unconditional_branch(update_bb)
+        .build_unconditional_branch(cond_bb)
         .expect("failed to build branch");
-    }
-    self.loop_stack.pop();
 
-    self.builder.position_at_end(update_bb);
-    if let Some(update) = update {
-      let _ = self.codegen_expr(update)?;
-    }
-    self
-      .builder
-      .build_unconditional_branch(cond_bb)
-      .expect("failed to build branch");
+      self.builder.position_at_end(cond_bb);
+      let cond_i1 = if let Some(test) = test {
+        let v = self.codegen_expr(test)?;
+        self.is_truthy_i1(v)
+      } else {
+        self.cg.bool_ty.const_int(1, false)
+      };
+      self
+        .builder
+        .build_conditional_branch(cond_i1, body_bb, end_bb)
+        .expect("failed to build conditional branch");
 
-    self.builder.position_at_end(end_bb);
-    Ok(true)
+      self.builder.position_at_end(body_bb);
+      self.loop_stack.push(LoopContext {
+        break_bb: end_bb,
+        continue_bb: update_bb,
+        label,
+      });
+      let body_fallthrough = self.codegen_stmt(body)?;
+      if body_fallthrough {
+        self
+          .builder
+          .build_unconditional_branch(update_bb)
+          .expect("failed to build branch");
+      }
+      self.loop_stack.pop();
+
+      self.builder.position_at_end(update_bb);
+      if let Some(update) = update {
+        let _ = self.codegen_expr(update)?;
+      }
+      self
+        .builder
+        .build_unconditional_branch(cond_bb)
+        .expect("failed to build branch");
+
+      self.builder.position_at_end(end_bb);
+      Ok(true)
+    })();
+
+    if needs_loop_scope {
+      self.env.pop_scope();
+    }
+
+    result
   }
 
   fn codegen_var_decl(&mut self, decl: &VarDecl, span: Span) -> Result<(), Vec<Diagnostic>> {

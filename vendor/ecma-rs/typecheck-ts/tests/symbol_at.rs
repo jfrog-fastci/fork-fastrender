@@ -270,6 +270,36 @@ fn symbol_at_respects_local_shadowing() {
 }
 
 #[test]
+fn symbol_at_respects_for_loop_initializer_shadowing() {
+  let mut host = MemoryHost::default();
+  let file = FileKey::new("file.ts");
+  let source = "const x = 10; for (let x = 0; x < 3; x = x + 1) {} const after = x;";
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file.clone()]);
+  let file_id = program.file_id(&file).unwrap();
+
+  let outer_decl = symbol_for_occurrence(&program, file_id, source, "x", 0);
+  let inner_decl = symbol_for_occurrence(&program, file_id, source, "x", 1);
+  let cond_use = symbol_for_occurrence(&program, file_id, source, "x", 2);
+  let update_target = symbol_for_occurrence(&program, file_id, source, "x", 3);
+  let update_value = symbol_for_occurrence(&program, file_id, source, "x", 4);
+  let after_use = symbol_for_occurrence(&program, file_id, source, "x", 5);
+
+  assert_eq!(inner_decl, cond_use, "loop condition should see loop binding");
+  assert_eq!(inner_decl, update_target, "loop update target should see loop binding");
+  assert_eq!(inner_decl, update_value, "loop update value should see loop binding");
+  assert_ne!(
+    inner_decl, outer_decl,
+    "shadowed bindings should have distinct symbols"
+  );
+  assert_eq!(
+    outer_decl, after_use,
+    "outer usage after loop should see outer binding"
+  );
+}
+
+#[test]
 fn symbol_at_resolves_type_only_imports() {
   let mut host = MemoryHost::default();
   let file_a = FileKey::new("a.ts");

@@ -750,6 +750,16 @@ impl DeclarePass {
   }
 
   fn walk_for_triple(&mut self, triple: &mut Node<ForTripleStmt>) {
+    // `for (let/const ...)` introduces a lexical scope for the entire loop header/body.
+    // Without this, shadowing an outer `let` via a loop initializer incorrectly
+    // resolves to the outer binding.
+    let needs_loop_scope = matches!(
+      &triple.stx.init,
+      ForTripleStmtInit::Decl(d) if d.stx.mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(triple));
+    }
     self.mark_scope(&mut triple.assoc);
     match &mut triple.stx.init {
       ForTripleStmtInit::Expr(e) => self.walk_expr(e),
@@ -763,6 +773,9 @@ impl DeclarePass {
       self.walk_expr(post);
     }
     self.walk_for_body(&mut triple.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_for_in(&mut self, for_in: &mut Node<ForInStmt>) {
@@ -1397,6 +1410,7 @@ impl<'a> ResolvePass<'a> {
         }
       }
       AstStmt::ForTriple(triple) => {
+        self.push_scope_from_assoc(&triple.assoc);
         match &mut triple.stx.init {
           ForTripleStmtInit::Expr(e) => self.walk_expr(e),
           ForTripleStmtInit::Decl(d) => {
@@ -1416,6 +1430,7 @@ impl<'a> ResolvePass<'a> {
           self.walk_expr(post);
         }
         self.walk_for_body(&mut triple.stx.body);
+        self.pop_scope_from_assoc(&triple.assoc);
       }
       AstStmt::ForIn(for_in) => {
         match &mut for_in.stx.lhs {
@@ -2257,6 +2272,13 @@ impl DeclareTablesPass {
   }
 
   fn walk_for_triple(&mut self, triple: &Node<ForTripleStmt>) {
+    let needs_loop_scope = matches!(
+      &triple.stx.init,
+      ForTripleStmtInit::Decl(d) if d.stx.mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(triple));
+    }
     self.mark_scope(triple);
     match &triple.stx.init {
       ForTripleStmtInit::Expr(e) => self.walk_expr(e),
@@ -2270,6 +2292,9 @@ impl DeclareTablesPass {
       self.walk_expr(post);
     }
     self.walk_for_body(&triple.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_for_in(&mut self, for_in: &Node<ForInStmt>) {
@@ -2882,6 +2907,7 @@ impl<'a> ResolveTablesPass<'a> {
         }
       }
       AstStmt::ForTriple(triple) => {
+        self.push_scope_for_node(triple);
         match &triple.stx.init {
           ForTripleStmtInit::Expr(e) => self.walk_expr(e),
           ForTripleStmtInit::Decl(d) => {
@@ -2901,6 +2927,7 @@ impl<'a> ResolveTablesPass<'a> {
           self.walk_expr(post);
         }
         self.walk_for_body(&triple.stx.body);
+        self.pop_scope_for_node(triple);
       }
       AstStmt::ForIn(for_in) => {
         match &for_in.stx.lhs {

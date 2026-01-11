@@ -177,6 +177,23 @@ fn for_loop_postfix_update_op() {
 }
 
 #[test]
+fn for_loop_let_shadows_outer_binding_only_within_loop() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let x = 10;
+      let y = 0;
+      for (let x = 0; x < 3; x = x + 1) {
+        y = y + 1;
+      }
+      return x * 10 + y;
+    }
+    "#,
+  );
+  assert_eq!(value, 103);
+}
+
+#[test]
 fn shadowing_in_nested_blocks() {
   let value = run_main(
     r#"
