@@ -139,10 +139,6 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     .arg("-o")
     .arg(&exe)
     .arg(&obj)
-    // Ensure `.dynamic` exists so `link/stackmaps.ld`'s `INSERT BEFORE .dynamic`
-    // anchor is present even for a minimal `-nostdlib` link.
-    .arg("-Wl,--no-as-needed")
-    .arg("-lc")
     .status()
     .unwrap();
   assert!(status.success(), "linking failed");
