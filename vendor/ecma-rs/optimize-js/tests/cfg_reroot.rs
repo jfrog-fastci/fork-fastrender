@@ -4,6 +4,7 @@ use optimize_js::il::inst::{Arg, Const, Inst};
 use optimize_js::opt::optpass_cfg_prune::optpass_cfg_prune;
 use optimize_js::ssa::ssa_rename::rename_targets_for_ssa_construction;
 use optimize_js::util::counter::Counter;
+use optimize_js::{structure_cfg, ControlTree};
 
 fn simple_cfg_with_entry_jump() -> Cfg {
   let mut graph = CfgGraph::default();
@@ -22,6 +23,28 @@ fn simple_cfg_with_entry_jump() -> Cfg {
   );
   bblocks.add(2, vec![Inst::var_assign(1, Arg::Var(0))]);
   bblocks.add(3, vec![Inst::var_assign(2, Arg::Var(0))]);
+
+  Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  }
+}
+
+fn irreducible_cfg_with_entry_jump() -> Cfg {
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(1, 3);
+  graph.connect(2, 3);
+  graph.connect(3, 2);
+
+  let mut bblocks = CfgBBlocks::default();
+  // Empty entry block that will be rerooted by `optpass_cfg_prune`.
+  bblocks.add(0, vec![]);
+  bblocks.add(1, vec![Inst::cond_goto(Arg::Var(0), 2, 3)]);
+  bblocks.add(2, vec![Inst::var_assign(1, Arg::Const(Const::Bool(false)))]);
+  bblocks.add(3, vec![Inst::var_assign(2, Arg::Const(Const::Bool(false)))]);
 
   Cfg {
     graph,
@@ -76,4 +99,18 @@ fn dominance_and_ssa_handle_new_entry() {
   let other_child = cfg.bblocks.get(3);
   assert_eq!(other_child[0].tgts, vec![12]);
   assert_eq!(other_child[0].args, vec![Arg::Var(10)]);
+}
+
+#[test]
+fn structurer_state_machine_entry_follows_rerooted_entry() {
+  let mut cfg = irreducible_cfg_with_entry_jump();
+  optpass_cfg_prune(&mut cfg);
+  assert_eq!(cfg.entry, 1);
+
+  let tree = structure_cfg(&cfg);
+  assert!(
+    matches!(tree, ControlTree::StateMachine { entry: 1, .. }),
+    "expected state machine rooted at entry=1, got: {}",
+    tree.to_debug_string()
+  );
 }
