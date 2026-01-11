@@ -826,12 +826,35 @@ mod tests {
             out.push(' ');
             prev_space = true;
           }
-        } else {
-          out.push(ch);
-          prev_space = false;
+          continue;
         }
+        out.push(ch);
+        prev_space = false;
       }
-      out
+
+      let mut stripped = String::with_capacity(out.len());
+      let mut prev: Option<char> = None;
+      let mut it = out.chars().peekable();
+      while let Some(ch) = it.next() {
+        if ch == ' ' {
+          let next = it.peek().copied();
+          match (prev, next) {
+            (Some('(' | '[' | '{'), _) => continue,
+            (_, Some(')' | ']' | '}' | ',' | ';')) => continue,
+            (Some(','), _) => continue,
+            (_, Some('*')) => continue,
+            (Some('*'), _) => continue,
+            _ => {
+              stripped.push(' ');
+              prev = Some(' ');
+            }
+          }
+          continue;
+        }
+        stripped.push(ch);
+        prev = Some(ch);
+      }
+      stripped
     }
 
     let normalized_header = normalize_ws(HEADER);
@@ -839,13 +862,17 @@ mod tests {
     // Keep these strings in sync with `include/runtime_native.h` to ensure we
     // don't forget to update the header when changing the exported ABI.
     const DECLS: &[&str] = &[
+      "typedef uint64_t IoWatcherId;",
+      "typedef int32_t RtFd;",
       "typedef uint32_t RtShapeId;",
       "typedef struct RtShapeDescriptor {",
       "typedef uint32_t InternedId;",
       "typedef uint64_t TaskId;",
+      "typedef uint64_t TimerId;",
       "typedef void* ValueRef;",
       "typedef uint8_t* GcPtr;",
       "typedef uint8_t** GcHandle;",
+      "typedef uint64_t HandleId;",
       "typedef struct StringRef {",
       "void rt_thread_init(uint32_t kind);",
       "void rt_thread_deinit(void);",
@@ -904,6 +931,7 @@ mod tests {
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
       "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
+      "PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
@@ -956,9 +984,17 @@ mod tests {
       "TimerId rt_set_interval_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
       "TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);",
       "void rt_clear_timer(TimerId id);",
+      "void rt_queue_microtask_handle(void (*cb)(GcPtr), HandleId data);",
+      "void rt_queue_microtask_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr));",
+      "TimerId rt_set_timeout_handle(void (*cb)(GcPtr), HandleId data, uint64_t delay_ms);",
+      "TimerId rt_set_timeout_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t delay_ms);",
+      "TimerId rt_set_interval_handle(void (*cb)(GcPtr), HandleId data, uint64_t interval_ms);",
+      "TimerId rt_set_interval_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t interval_ms);",
       "IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
       "IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));",
       "IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
+      "IoWatcherId rt_io_register_handle(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, GcPtr data), HandleId data);",
+      "IoWatcherId rt_io_register_handle_with_drop(RtFd fd, uint32_t interests, void (*cb)(uint32_t events, GcPtr data), HandleId data, void (*drop_data)(GcPtr));",
       "void rt_io_update(IoWatcherId id, uint32_t interests);",
       "void rt_io_unregister(IoWatcherId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
@@ -1061,6 +1097,11 @@ mod tests {
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
     let _spawn_promise: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8, PromiseLayout) -> abi::PromiseRef =
       rt_parallel_spawn_promise;
+    let _spawn_promise_rooted: extern "C" fn(
+      extern "C" fn(*mut u8, abi::PromiseRef),
+      *mut u8,
+      PromiseLayout,
+    ) -> abi::PromiseRef = rt_parallel_spawn_promise_rooted;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
     let _spawn_blocking_rooted: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
@@ -1112,15 +1153,24 @@ mod tests {
     let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
       rt_queue_microtask_with_drop;
     let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask_rooted;
+    let _queue_microtask_handle: extern "C" fn(extern "C" fn(*mut u8), u64) = rt_queue_microtask_handle;
+    let _queue_microtask_handle_with_drop: extern "C" fn(extern "C" fn(*mut u8), u64, extern "C" fn(*mut u8)) =
+      rt_queue_microtask_handle_with_drop;
     let _drain_microtasks: extern "C" fn() -> bool = rt_drain_microtasks_abi;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
     let _set_timeout_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout_rooted;
     let _set_timeout_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_timeout_with_drop;
+    let _set_timeout_handle: extern "C" fn(extern "C" fn(*mut u8), u64, u64) -> abi::TimerId = rt_set_timeout_handle;
+    let _set_timeout_handle_with_drop: extern "C" fn(extern "C" fn(*mut u8), u64, extern "C" fn(*mut u8), u64) -> abi::TimerId =
+      rt_set_timeout_handle_with_drop;
     let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
     let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval_rooted;
     let _set_interval_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_interval_with_drop;
+    let _set_interval_handle: extern "C" fn(extern "C" fn(*mut u8), u64, u64) -> abi::TimerId = rt_set_interval_handle;
+    let _set_interval_handle_with_drop: extern "C" fn(extern "C" fn(*mut u8), u64, extern "C" fn(*mut u8), u64) -> abi::TimerId =
+      rt_set_interval_handle_with_drop;
     let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
     let _io_register: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> abi::IoWatcherId = rt_io_register;
     let _io_register_with_drop: extern "C" fn(
@@ -1131,6 +1181,15 @@ mod tests {
       extern "C" fn(*mut u8),
     ) -> abi::IoWatcherId = rt_io_register_with_drop;
     let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> abi::IoWatcherId = rt_io_register_rooted;
+    let _io_register_handle: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), u64) -> abi::IoWatcherId =
+      rt_io_register_handle;
+    let _io_register_handle_with_drop: extern "C" fn(
+      i32,
+      u32,
+      extern "C" fn(u32, *mut u8),
+      u64,
+      extern "C" fn(*mut u8),
+    ) -> abi::IoWatcherId = rt_io_register_handle_with_drop;
     let _io_update: extern "C" fn(abi::IoWatcherId, u32) = rt_io_update;
     let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
