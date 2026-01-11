@@ -681,3 +681,232 @@
     kind: operator
     operator_type: multicasting
     stateful: "true"
+
+- name: rxjs.forkJoin
+  aliases: []
+  semantics: ObservableForkJoin
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_combinator
+
+- name: rxjs.zip
+  aliases: []
+  semantics: ObservableZip
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_combinator
+
+- name: rxjs.race
+  aliases: []
+  semantics: ObservableRace
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_combinator
+    depends_on_scheduling: "true"
+
+- name: rxjs.concat
+  aliases: []
+  semantics: ObservableConcat
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: observable_combinator
+
+- name: rxjs.EMPTY
+  aliases: []
+  semantics: ObservableEmpty
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: observable_constant
+
+- name: rxjs.NEVER
+  aliases: []
+  semantics: ObservableNever
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: observable_constant
+
+- name: rxjs.operators.mapTo
+  aliases: []
+  semantics: MapTo
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: transformation
+
+- name: rxjs.operators.pluck
+  aliases: []
+  semantics: Pluck
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: transformation
+
+- name: rxjs.operators.pairwise
+  aliases: []
+  semantics: Pairwise
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: transformation
+
+- name: rxjs.operators.bufferCount
+  aliases: []
+  semantics: BufferCount
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: buffering
+
+- name: rxjs.operators.reduce
+  aliases: []
+  semantics: Reduce
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: aggregation
+
+- name: rxjs.operators.toArray
+  aliases: []
+  semantics: ToArray
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: aggregation
+
+- name: rxjs.Observable.prototype.subscribe
+  aliases: []
+  semantics: Subscribe
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_method
+    starts_execution: "true"

@@ -817,3 +817,129 @@
   properties:
     kind: object_operator
     output: new_object
+
+- name: lodash.camelCase
+  aliases: [_.camelCase]
+  semantics: CamelCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.kebabCase
+  aliases: [_.kebabCase]
+  semantics: KebabCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.snakeCase
+  aliases: [_.snakeCase]
+  semantics: SnakeCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.startCase
+  aliases: [_.startCase]
+  semantics: StartCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.upperFirst
+  aliases: [_.upperFirst]
+  semantics: UpperFirst
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.lowerFirst
+  aliases: [_.lowerFirst]
+  semantics: LowerFirst
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.escapeRegExp
+  aliases: [_.escapeRegExp]
+  semantics: EscapeRegExp
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
