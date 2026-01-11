@@ -860,6 +860,35 @@ mod tests {
   }
 
   #[test]
+  fn importmap_registers_before_subsequent_module_fetch_starts() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
+      Some("https://ex/doc.html"),
+      ParseBudget::new(1),
+    );
+    p.feed_str(
+      r#"<script type=importmap>{"imports":{"x":"/x.js"}}</script><script type=module src="/m.js"></script>"#,
+    )?;
+    p.finish_input()?;
+
+    // 1st DOMManipulation parse task: should hit the import map boundary and register it.
+    assert!(p.event_loop().run_next_task(&mut host)?);
+    assert_eq!(host.log, vec![r#"importmap:{"imports":{"x":"/x.js"}}"#.to_string()]);
+    assert!(
+      host.started_module_fetches.is_empty(),
+      "module fetch must not start until after import map is processed"
+    );
+
+    // 2nd DOMManipulation parse task: should reach the module script boundary and start its fetch.
+    assert!(p.event_loop().run_next_task(&mut host)?);
+    assert_eq!(host.started_module_fetches.len(), 1);
+
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(p.parsing_finished());
+    Ok(())
+  }
+
+  #[test]
   fn async_module_scripts_can_execute_before_parsing_finishes() -> Result<()> {
     let mut host = Host::default();
     let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
