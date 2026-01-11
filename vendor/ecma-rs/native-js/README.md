@@ -404,6 +404,10 @@ matching the validator’s checks):
   - e.g. unions/intersections, object types, function types, nominal/reference
     types, `bigint`, `symbol`, template-literal types, etc.
 
+> Note: TypeScript-only, runtime-inert expression wrappers such as `satisfies`,
+> type assertions (`as`), and non-null assertions (`!`) are allowed by this
+> validator, but the wrapped runtime expressions are still validated.
+
 Even if the strict subset validator passes, note that the current HIR-based
 backend is still minimal; some programs may still fail later during codegen.
 
