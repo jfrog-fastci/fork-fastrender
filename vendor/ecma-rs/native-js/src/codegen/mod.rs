@@ -2149,7 +2149,7 @@ fn declare_puts<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Function
     return existing;
   }
   let i32_ty = context.i32_type();
-  let ptr_ty = context.i8_type().ptr_type(AddressSpace::default());
+  let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("puts", i32_ty.fn_type(&[ptr_ty.into()], false), None)
 }
 
