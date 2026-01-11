@@ -1,7 +1,7 @@
 use crate::analysis::liveness::calculate_live_outs;
 use crate::analysis::ownership::OwnershipResult;
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, ArgUseMode, InstTyp, OwnershipState};
+use crate::il::inst::{Arg, ArgUseMode, InPlaceHint, InstTyp, OwnershipState};
 use ahash::{HashMap, HashSet};
  
 fn ownership_of_var(ownership: &OwnershipResult, var: u32) -> OwnershipState {
@@ -31,6 +31,7 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
  
       let inst = &mut cfg.bblocks.get_mut(label)[inst_idx];
       inst.meta.arg_use_modes.clear();
+      inst.meta.in_place_hint = None;
  
       if inst.args.is_empty() {
         continue;
@@ -65,7 +66,9 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
           }
         }
         InstTyp::Call => {
-          for (idx, arg) in inst.args.iter().enumerate() {
+          // args layout: [callee, this, arg0, ...]
+          // NOTE: we currently treat the callee as always borrowed.
+          for (idx, arg) in inst.args.iter().enumerate().skip(1) {
             let Arg::Var(var) = arg else {
               continue;
             };
@@ -75,8 +78,17 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
             }
           }
         }
-        // Copy/rename instructions do not consume.
-        InstTyp::VarAssign | InstTyp::Phi => {}
+        InstTyp::VarAssign => {
+          if let (Some(Arg::Var(var)), Some(&tgt)) = (inst.args.get(0), inst.tgts.get(0)) {
+            if should_consume_var(*var, &live_out, ownership) {
+              modes[0] = ArgUseMode::Consume;
+              any_consume = true;
+              inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *var, tgt });
+            }
+          }
+        }
+        // SSA merge nodes do not consume.
+        InstTyp::Phi => {}
         // Conservative default: do not consume args for other ops yet.
         _ => {}
       };

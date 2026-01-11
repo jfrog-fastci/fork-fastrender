@@ -106,6 +106,10 @@ pub enum OwnershipState {
   Unknown,
 }
 
+/// Ownership use-mode for an instruction argument.
+///
+/// This is intentionally defined in the IL layer (instead of the analysis layer)
+/// so downstream backends can consume it directly from [`InstMeta`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -145,6 +149,17 @@ impl OwnershipState {
       (Owned, Owned) => Owned,
     }
   }
+}
+
+/// Hints for downstream lowering that can implement certain ownership transfers
+/// without a clone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum InPlaceHint {
+  /// This `VarAssign` is a move of an owned value and can be implemented as a transfer/no-clone in
+  /// downstream lowering.
+  MoveNoClone { src: u32, tgt: u32 },
 }
 
 /// Branch-local nullability information derived from comparisons against `null`.
@@ -209,11 +224,21 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "OwnershipState::is_default")
   )]
   pub ownership: OwnershipState,
+  /// Per-argument ownership use modes for this instruction.
+  ///
+  /// Convention: an empty vector means all args are [`ArgUseMode::Borrow`]. This keeps the IL
+  /// compact for the common case; the vector is only populated when at least one argument is
+  /// [`ArgUseMode::Consume`].
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "is_default_arg_use_modes")
   )]
   pub arg_use_modes: Vec<ArgUseMode>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub in_place_hint: Option<InPlaceHint>,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
@@ -249,6 +274,7 @@ impl InstMeta {
       && !self.excludes_nullish
       && self.ownership.is_default()
       && is_default_arg_use_modes(&self.arg_use_modes)
+      && self.in_place_hint.is_none()
       && self.result_escape.is_none()
       && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
@@ -270,6 +296,7 @@ impl Default for InstMeta {
       excludes_nullish: false,
       ownership: OwnershipState::default(),
       arg_use_modes: Vec::new(),
+      in_place_hint: None,
       result_escape: None,
       callee_purity: Purity::Impure,
       nullability_narrowing: None,

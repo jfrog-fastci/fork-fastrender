@@ -652,6 +652,7 @@ pub(crate) fn build_program_function_with_options(
   let ownership =
     analysis::ownership::analyze_cfg_ownership_with_escapes_and_params(&ssa_cfg, &params, &escapes);
   analysis::ownership::annotate_cfg_ownership(&mut ssa_cfg, &ownership);
+  analysis::consume::annotate_cfg_consumption(&mut ssa_cfg, &ownership);
   for (_label, insts) in ssa_cfg.bblocks.all_mut() {
     for inst in insts {
       let Some(tgt) = inst.tgts.get(0).copied() else {
