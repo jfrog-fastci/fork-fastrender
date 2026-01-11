@@ -237,7 +237,7 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     let statepoint_decl = self.get_statepoint_decl(callee.ptr.get_type());
     let statepoint_fn_ty = unsafe { LLVMGlobalGetValueType(statepoint_decl) };
 
-    // Fixed args: (i64 id, i32 patch_bytes, ptr callee, i32 num_call_args, i32 num_deopt_args, ...)
+    // Fixed args: (i64 id, i32 patch_bytes, ptr callee, i32 num_call_args, i32 flags, ...)
     let mut args: Vec<LLVMValueRef> = Vec::with_capacity(5 + call_args.len() + 2);
     unsafe {
        args.push(LLVMConstInt(i64_ty, statepoint_id, 0));
