@@ -8,7 +8,6 @@ set -uo pipefail
 #   scripts/check_system.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -17,20 +16,30 @@ NC='\033[0m' # No Color
 errors=0
 warnings=0
 
+version_line() {
+  local cmd="$1"
+  # Avoid `cmd --version | head -1` under `set -o pipefail`: when `head` exits early it can SIGPIPE
+  # the producer (flaky across scheduling/buffering), causing the pipeline to fail and spurious
+  # "unknown" output to be appended.
+  #
+  # Capture stderr too: some tools print version/help text there (e.g. `lld`).
+  local ver
+  ver="$("$cmd" --version 2>&1 || true)"
+  ver="${ver%%$'\n'*}"
+  ver="${ver%%$'\r'*}"
+  if [[ -z "${ver}" ]]; then
+    echo "unknown"
+  else
+    echo "${ver}"
+  fi
+}
+
 check_cmd() {
   local cmd="$1"
   local pkg="${2:-$1}"
   if command -v "$cmd" >/dev/null 2>&1; then
     local ver
-    # Avoid `cmd --version | head -1` under `set -o pipefail`: when `head` exits early it can
-    # SIGPIPE the producer (flaky across scheduling/buffering), causing the pipeline to fail and
-    # spurious "unknown" output to be appended. Capture stderr too: some tools print version/help
-    # text there (e.g. `lld`).
-    ver="$("$cmd" --version 2>&1 || true)"
-    ver="${ver%%$'\n'*}"
-    if [[ -z "${ver}" ]]; then
-      ver="unknown"
-    fi
+    ver="$(version_line "$cmd")"
     echo -e "${GREEN}✓${NC} $cmd: $ver"
     return 0
   else
@@ -45,12 +54,7 @@ check_cmd_optional() {
   local pkg="${2:-$1}"
   if command -v "$cmd" >/dev/null 2>&1; then
     local ver
-    # See `check_cmd`: avoid SIGPIPE/pipefail flakiness from `head -1`.
-    ver="$("$cmd" --version 2>&1 || true)"
-    ver="${ver%%$'\n'*}"
-    if [[ -z "${ver}" ]]; then
-      ver="unknown"
-    fi
+    ver="$(version_line "$cmd")"
     echo -e "${GREEN}✓${NC} $cmd: $ver"
     return 0
   else
@@ -103,16 +107,13 @@ elif check_cmd_optional clang "clang"; then
   :
 fi
 
-# On Linux/ELF, LLD is typically invoked via the `ld.lld` driver. `lld` itself is a generic
-# multi-platform wrapper that may exit non-zero for `--version`, so prefer the platform-specific
-# entrypoint.
+# `lld` is packaged as a family of drivers (`ld.lld`, `lld-link`, etc). The
+# `lld`/`lld-18` entrypoints are *generic* drivers and return a non-zero exit
+# code for `--version`. Prefer checking the `ld.lld` driver since it's what we
+# actually use for ELF linking.
 if check_cmd_optional ld.lld-18 "lld-18"; then
   :
 elif check_cmd_optional ld.lld "lld"; then
-  :
-elif check_cmd_optional lld-18 "lld-18"; then
-  :
-elif check_cmd_optional lld "lld"; then
   :
 fi
 if check_cmd_optional llc-18 "llvm-18"; then
