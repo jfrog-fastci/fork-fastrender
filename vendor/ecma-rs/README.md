@@ -141,8 +141,9 @@ The `native-js-cli` package currently builds **two experimental** tools:
 
 - `native-js-cli`: compiles a TypeScript **entry module** (plus a small subset of ES module imports)
   to textual LLVM IR and runs it (TS → LLVM IR → `clang` → native executable).
-  This uses a small `parse-js`-driven IR emitter; it does not use TypeScript’s type system for
-  code generation yet (it only uses `typecheck-ts` for module graph discovery).
+  The default `--pipeline project` mode uses a small `parse-js`-driven IR emitter; it does not use
+  TypeScript’s type system for code generation (it only uses `typecheck-ts` for module graph discovery).
+  Use `--pipeline checked` (or the `native-js` binary) for the typechecked backend.
 - `native-js`: proof-of-concept **typechecked AOT** pipeline (very small subset today):
   `typecheck-ts` + `native-js` strict validation + HIR → LLVM + object emission + `clang` link.
 

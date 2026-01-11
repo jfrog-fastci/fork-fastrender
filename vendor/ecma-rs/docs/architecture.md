@@ -148,10 +148,12 @@ other crates use this for structured errors and spans.
   - `native_js::link` provides stackmap-aware ELF linking helpers and exports
     `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` (plus aliases like
     `__fastr_stackmaps_start/end`) so the runtime can locate `.llvm_stackmaps` in memory.
+  - `native_js::compile_program` is the typechecked compilation entrypoint used by the
+    `native-js` CLI binary (and by `native-js-cli --pipeline checked`).
   - `native_js::compile_typescript_to_llvm_ir` / `native_js::compile_project_to_llvm_ir` are
-    small, `parse-js`-driven LLVM IR emitters used by the `native-js-cli` binary for end-to-end
-    smoke tests. The multi-file project entrypoint uses `typecheck-ts` only for module graph
-    discovery/export maps (not for typechecked codegen).
+    small, `parse-js`-driven LLVM IR emitters used by `native-js-cli --pipeline project` for
+    end-to-end smoke tests. The multi-file project entrypoint uses `typecheck-ts` only for
+    module graph discovery/export maps (not for typechecked codegen).
 - Eventually:
   - lowers typechecked HIR into LLVM IR / object files and links with
     `runtime-native`.

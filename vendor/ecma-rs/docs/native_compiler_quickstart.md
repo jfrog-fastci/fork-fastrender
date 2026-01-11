@@ -239,9 +239,12 @@ This switches the erasure step to:
 
 In addition to the oracle harness, there are two native bring-up CLIs:
 
-- `native-js-cli`: minimal `parse-js` → LLVM IR emitter (no typechecked codegen; uses `typecheck-ts`
-  only for module graph discovery in the multi-file ES module subset)
-- `native-js`: experimental **typechecked AOT** pipeline (`typecheck-ts` + strict validation + HIR → LLVM)
+- `native-js-cli`: minimal `parse-js` → LLVM IR emitter (default `--pipeline project`; uses `typecheck-ts`
+  only for module graph discovery/export maps in the multi-file ES module subset). It also has an
+  opt-in typechecked mode (`--pipeline checked`) that runs `native_js::compile_program` (single entry file;
+  expects `export function main()`).
+- `native-js`: experimental **typechecked AOT** pipeline (`typecheck-ts` + strict subset validation + HIR → LLVM),
+  with additional flags (including `--project` for `tsconfig.json`).
 
 Both require LLVM; use the LLVM wrapper:
 

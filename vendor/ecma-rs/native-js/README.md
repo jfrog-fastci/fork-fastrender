@@ -138,10 +138,14 @@ print!("{}", String::from_utf8_lossy(&output.stdout));
 See `native-js-cli` for the CLI front-ends:
 
 ```bash
-# Minimal parse-js-driven emitter (entry module + small ES module subset; no typechecked codegen):
+# Minimal parse-js-driven emitter (default `native-js-cli --pipeline project`):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
 
-# Typechecked AOT pipeline (expects entry file to export `main()`):
+# Typechecked pipeline (single entry file; expects `export function main()`):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked check path/to/entry.ts
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked run path/to/entry.ts
+
+# Typechecked AOT pipeline with `tsconfig.json` support (more flags):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- check path/to/entry.ts
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
 ```
