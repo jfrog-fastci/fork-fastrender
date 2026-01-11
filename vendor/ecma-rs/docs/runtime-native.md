@@ -217,11 +217,12 @@ pub struct InternedId(pub u32);
 #[repr(transparent)]
 pub struct TaskId(pub u64);
 
-/// Stable generational handle ID used for referencing GC-managed runtime entities.
+/// Stable persistent handle ID used for referencing GC-managed objects across async/OS/thread
+/// boundaries.
 ///
-/// The async runtime must be able to store coroutine identities in OS/userdata
-/// (epoll/kqueue) and cross-thread wakers across awaits, so coroutine IDs must
-/// remain stable even under a moving/compacting GC.
+/// This is backed by the runtime's persistent handle table (`rt_handle_alloc` / `rt_handle_load` /
+/// `rt_handle_store` / `rt_handle_free`). The GC treats every live handle as a root and may update
+/// the stored pointer when objects relocate.
 #[repr(transparent)]
 pub struct HandleId(pub u64);
 
