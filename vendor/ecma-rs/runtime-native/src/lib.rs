@@ -368,6 +368,10 @@ mod tests {
 
     let parsed = StackMaps::parse(bytes).expect("stack maps should parse");
     assert_eq!(parsed.raw().version, 3);
+
+    // Also validate the lazy global accessor used by stack walking / GC.
+    let cached = crate::stackmap::stackmaps();
+    assert_eq!(cached.raw().version, 3);
   }
 
   extern "C" fn inc_atomic(data: *mut u8) {

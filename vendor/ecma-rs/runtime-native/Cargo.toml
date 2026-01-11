@@ -49,4 +49,3 @@ object = { workspace = true }
 [[bench]]
 name = "card_table"
 harness = false
-
