@@ -24,7 +24,7 @@
     subscribe_function_argument: 0
 
 - name: rxjs.of
-  aliases: []
+  aliases: [rxjs/of]
   semantics: ObservableOf
   since: "v0.1.0"
   purity:
@@ -42,7 +42,7 @@
     lazy: true
 
 - name: rxjs.from
-  aliases: []
+  aliases: [rxjs/from]
   semantics: ObservableFrom
   since: "v0.1.0"
   purity:
@@ -61,7 +61,7 @@
     nondeterministic_if: input_is_promise_or_async_iterable
 
 - name: rxjs.merge
-  aliases: []
+  aliases: [rxjs/merge]
   semantics: ObservableMerge
   since: "v0.1.0"
   purity:
@@ -80,7 +80,7 @@
     interleaves_sources: true
 
 - name: rxjs.combineLatest
-  aliases: []
+  aliases: [rxjs/combineLatest]
   semantics: ObservableCombineLatest
   since: "v0.1.0"
   purity:
@@ -99,7 +99,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.operators.map
-  aliases: []
+  aliases: [rxjs/operators.map, rxjs/operators/map]
   semantics: Map
   since: "v0.1.0"
   purity:
@@ -117,7 +117,7 @@
     operator_type: transformation
 
 - name: rxjs.operators.filter
-  aliases: []
+  aliases: [rxjs/operators.filter, rxjs/operators/filter]
   semantics: Filter
   since: "v0.1.0"
   purity:
@@ -135,7 +135,7 @@
     operator_type: filtration
 
 - name: rxjs.operators.mergeMap
-  aliases: []
+  aliases: [rxjs/operators.mergeMap, rxjs/operators/mergeMap]
   semantics: MergeMap
   since: "v0.1.0"
   purity:
@@ -154,7 +154,7 @@
     concurrency: true
 
 - name: rxjs.operators.switchMap
-  aliases: []
+  aliases: [rxjs/operators.switchMap, rxjs/operators/switchMap]
   semantics: SwitchMap
   since: "v0.1.0"
   purity:
@@ -173,7 +173,7 @@
     cancels_previous_inner: true
 
 - name: rxjs.operators.tap
-  aliases: []
+  aliases: [rxjs/operators.tap, rxjs/operators/tap]
   semantics: Tap
   since: "v0.1.0"
   purity:
@@ -191,7 +191,7 @@
     operator_type: side_effect
 
 - name: rxjs.operators.catchError
-  aliases: []
+  aliases: [rxjs/operators.catchError, rxjs/operators/catchError]
   semantics: CatchError
   since: "v0.1.0"
   purity:
@@ -209,7 +209,7 @@
     operator_type: error_handling
 
 - name: rxjs.operators.take
-  aliases: []
+  aliases: [rxjs/operators.take, rxjs/operators/take]
   semantics: Take
   since: "v0.1.0"
   purity:
@@ -227,7 +227,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.debounceTime
-  aliases: []
+  aliases: [rxjs/operators.debounceTime, rxjs/operators/debounceTime]
   semantics: DebounceTime
   since: "v0.1.0"
   purity:

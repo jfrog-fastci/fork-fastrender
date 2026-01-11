@@ -7,7 +7,7 @@
 # - Property-based import styles (e.g. `import _ from "lodash"`).
 
 - name: lodash.map
-  aliases: [_.map]
+  aliases: [_.map, lodash/map, lodash-es.map, lodash-es/map]
   semantics: Map
   since: "v0.1.0"
   purity:
@@ -28,7 +28,7 @@
     callback_optional: true
 
 - name: lodash.filter
-  aliases: [_.filter]
+  aliases: [_.filter, lodash/filter, lodash-es.filter, lodash-es/filter]
   semantics: Filter
   since: "v0.1.0"
   purity:
@@ -49,7 +49,7 @@
     callback_optional: true
 
 - name: lodash.reduce
-  aliases: [_.reduce]
+  aliases: [_.reduce, lodash/reduce, lodash-es.reduce, lodash-es/reduce]
   semantics: Reduce
   since: "v0.1.0"
   purity:
@@ -69,7 +69,13 @@
     callback_optional: false
 
 - name: lodash.cloneDeep
-  aliases: [_.cloneDeep]
+  aliases:
+    - _.cloneDeep
+    - lodash/cloneDeep
+    - lodash/clonedeep
+    - lodash.clonedeep
+    - lodash-es.cloneDeep
+    - lodash-es/cloneDeep
   semantics: CloneDeep
   since: "v0.1.0"
   purity:
@@ -88,7 +94,7 @@
     does_not_mutate_inputs: true
 
 - name: lodash.merge
-  aliases: [_.merge]
+  aliases: [_.merge, lodash/merge, lodash-es.merge, lodash-es/merge]
   semantics: Merge
   since: "v0.1.0"
   purity:
@@ -108,7 +114,7 @@
     returns_argument: 0
 
 - name: lodash.debounce
-  aliases: [_.debounce]
+  aliases: [_.debounce, lodash/debounce, lodash-es.debounce, lodash-es/debounce]
   semantics: Debounce
   since: "v0.1.0"
   purity:
@@ -127,7 +133,7 @@
     returns: function
 
 - name: lodash.throttle
-  aliases: [_.throttle]
+  aliases: [_.throttle, lodash/throttle, lodash-es.throttle, lodash-es/throttle]
   semantics: Throttle
   since: "v0.1.0"
   purity:
@@ -146,7 +152,7 @@
     returns: function
 
 - name: lodash.memoize
-  aliases: [_.memoize]
+  aliases: [_.memoize, lodash/memoize, lodash-es.memoize, lodash-es/memoize]
   semantics: Memoize
   since: "v0.1.0"
   purity:
