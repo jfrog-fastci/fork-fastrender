@@ -1,0 +1,91 @@
+use std::collections::VecDeque;
+use std::mem;
+use std::ptr;
+
+use super::roots::RememberedSet;
+use super::roots::RootSet;
+use super::ObjHeader;
+use super::Tracer;
+use crate::gc::heap::GcHeap;
+
+impl GcHeap {
+  /// Perform a minor collection (nursery evacuation).
+  ///
+  /// # Stop-the-world requirement
+  /// This GC is **stop-the-world**: the caller must ensure there are no
+  /// concurrent mutators and that the provided root/remembered sets remain
+  /// stable for the duration of the call.
+  pub fn collect_minor(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
+    self.stats.minor_collections += 1;
+
+    {
+      let mut evac = Evacuator { heap: self, worklist: VecDeque::new() };
+
+      roots.for_each_root_slot(&mut |slot| {
+        evac.visit_slot(slot);
+      });
+
+      remembered.for_each_remembered_obj(&mut |obj| {
+        evac.visit_obj(obj);
+      });
+
+      while let Some(obj) = evac.worklist.pop_front() {
+        evac.visit_obj(obj);
+      }
+    }
+
+    // All nursery pointers reachable from roots/remembered objects should now be
+    // forwarded to old-gen.
+    self.nursery.reset();
+    remembered.clear();
+  }
+}
+
+struct Evacuator<'a> {
+  heap: &'a mut GcHeap,
+  worklist: VecDeque<*mut u8>,
+}
+
+impl Evacuator<'_> {
+  fn evacuate(&mut self, obj: *mut u8) -> *mut u8 {
+    debug_assert!(self.heap.is_in_nursery(obj));
+
+    // SAFETY: `obj` is a valid GC object in the nursery.
+    unsafe {
+      let header = &mut *(obj as *mut ObjHeader);
+      if header.is_forwarded() {
+        return header.forwarding_ptr();
+      }
+
+      let desc = header.type_desc();
+      let size = desc.size;
+
+      let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>());
+
+      ptr::copy_nonoverlapping(obj, new_obj, size);
+      header.set_forwarding_ptr(new_obj);
+
+      self.worklist.push_back(new_obj);
+      new_obj
+    }
+  }
+}
+
+impl Tracer for Evacuator<'_> {
+  fn visit_slot(&mut self, slot: *mut *mut u8) {
+    // SAFETY: `slot` originates from root enumeration or from a valid object
+    // descriptor, so it is a valid pointer to a GC reference.
+    let obj = unsafe { *slot };
+    if obj.is_null() {
+      return;
+    }
+
+    if self.heap.is_in_nursery(obj) {
+      let new_obj = self.evacuate(obj);
+      // SAFETY: `slot` is valid and writable.
+      unsafe {
+        *slot = new_obj;
+      }
+    }
+  }
+}

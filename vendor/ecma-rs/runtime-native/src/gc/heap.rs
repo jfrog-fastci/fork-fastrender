@@ -1,0 +1,417 @@
+use std::alloc::alloc_zeroed;
+use std::alloc::dealloc;
+use std::alloc::handle_alloc_error;
+use std::alloc::Layout;
+use std::mem;
+use std::ptr;
+use std::ptr::NonNull;
+
+use super::align_up;
+use super::ObjHeader;
+use super::TypeDescriptor;
+
+/// Immix block size in bytes.
+pub const IMMIX_BLOCK_SIZE: usize = 32 * 1024;
+
+/// Immix line size in bytes.
+pub const IMMIX_LINE_SIZE: usize = 256;
+
+pub const IMMIX_LINES_PER_BLOCK: usize = IMMIX_BLOCK_SIZE / IMMIX_LINE_SIZE;
+
+/// Maximum object size that is eligible for Immix allocation.
+pub const IMMIX_MAX_OBJECT_SIZE: usize = IMMIX_BLOCK_SIZE / 2;
+
+const OBJ_ALIGN: usize = mem::align_of::<ObjHeader>();
+
+#[derive(Debug, Default)]
+pub struct GcStats {
+  pub minor_collections: usize,
+  pub major_collections: usize,
+  pub bytes_allocated_young: usize,
+  pub bytes_allocated_old: usize,
+}
+
+struct RawMemory {
+  ptr: NonNull<u8>,
+  layout: Layout,
+}
+
+impl RawMemory {
+  fn new_zeroed(size: usize, align: usize) -> Self {
+    let layout = Layout::from_size_align(size, align).expect("invalid allocation layout");
+    // SAFETY: `layout` is valid.
+    let ptr = unsafe { alloc_zeroed(layout) };
+    let ptr = match NonNull::new(ptr) {
+      Some(p) => p,
+      None => handle_alloc_error(layout),
+    };
+    Self { ptr, layout }
+  }
+
+  #[inline]
+  fn as_ptr(&self) -> *mut u8 {
+    self.ptr.as_ptr()
+  }
+
+  #[inline]
+  fn size(&self) -> usize {
+    self.layout.size()
+  }
+}
+
+impl Drop for RawMemory {
+  fn drop(&mut self) {
+    // SAFETY: The pointer was allocated with this `layout`.
+    unsafe {
+      dealloc(self.ptr.as_ptr(), self.layout);
+    }
+  }
+}
+
+pub(crate) struct NurserySpace {
+  mem: RawMemory,
+  bump: usize,
+}
+
+impl NurserySpace {
+  fn new(size: usize) -> Self {
+    Self {
+      mem: RawMemory::new_zeroed(size, OBJ_ALIGN),
+      bump: 0,
+    }
+  }
+
+  fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
+    let base = self.mem.as_ptr() as usize;
+    let start = align_up(base + self.bump, align);
+    let end = start.checked_add(size)?;
+    if end <= base + self.mem.size() {
+      self.bump = end - base;
+      Some(start as *mut u8)
+    } else {
+      None
+    }
+  }
+
+  pub(crate) fn reset(&mut self) {
+    self.bump = 0;
+  }
+
+  fn contains(&self, ptr: *mut u8) -> bool {
+    let base = self.mem.as_ptr() as usize;
+    let end = base + self.mem.size();
+    let p = ptr as usize;
+    p >= base && p < end
+  }
+}
+
+struct ImmixBlock {
+  mem: RawMemory,
+  line_mark: [u8; IMMIX_LINES_PER_BLOCK],
+  free_ranges: Vec<(usize, usize)>,
+}
+
+impl ImmixBlock {
+  fn new() -> Self {
+    Self {
+      mem: RawMemory::new_zeroed(IMMIX_BLOCK_SIZE, IMMIX_LINE_SIZE),
+      line_mark: [0; IMMIX_LINES_PER_BLOCK],
+      free_ranges: vec![(0, IMMIX_BLOCK_SIZE)],
+    }
+  }
+
+  #[inline]
+  fn base(&self) -> usize {
+    self.mem.as_ptr() as usize
+  }
+
+  fn contains(&self, ptr: *mut u8) -> bool {
+    let p = ptr as usize;
+    let base = self.base();
+    p >= base && p < base + IMMIX_BLOCK_SIZE
+  }
+
+  fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
+    debug_assert!(size <= IMMIX_BLOCK_SIZE);
+    let base = self.base();
+
+    for idx in 0..self.free_ranges.len() {
+      let (range_start, range_end) = self.free_ranges[idx];
+
+      let abs_start = base + range_start;
+      let abs_alloc_start = align_up(abs_start, align);
+      let alloc_start = abs_alloc_start - base;
+      let alloc_end = alloc_start.checked_add(size)?;
+
+      if alloc_end <= range_end {
+        let mut replacement = Vec::new();
+        if range_start < alloc_start {
+          replacement.push((range_start, alloc_start));
+        }
+        if alloc_end < range_end {
+          replacement.push((alloc_end, range_end));
+        }
+
+        self.free_ranges.splice(idx..=idx, replacement);
+        return Some((base + alloc_start) as *mut u8);
+      }
+    }
+
+    None
+  }
+
+  fn clear_line_marks(&mut self) {
+    self.line_mark.fill(0);
+  }
+
+  fn set_lines_for_live_object(&mut self, obj: *mut u8, size: usize) {
+    let start = (obj as usize).wrapping_sub(self.base());
+    let end = start + size;
+    debug_assert!(end <= IMMIX_BLOCK_SIZE);
+
+    let start_line = start / IMMIX_LINE_SIZE;
+    let end_line = (end - 1) / IMMIX_LINE_SIZE;
+
+    for line in start_line..=end_line {
+      self.line_mark[line] = 1;
+    }
+  }
+
+  fn rebuild_free_ranges_from_marks(&mut self) {
+    self.free_ranges.clear();
+
+    let mut run_start: Option<usize> = None;
+    for line in 0..IMMIX_LINES_PER_BLOCK {
+      let is_free = self.line_mark[line] == 0;
+      match (run_start, is_free) {
+        (None, true) => run_start = Some(line),
+        (Some(_), true) => {}
+        (Some(start), false) => {
+          self
+            .free_ranges
+            .push((start * IMMIX_LINE_SIZE, line * IMMIX_LINE_SIZE));
+          run_start = None;
+        }
+        (None, false) => {}
+      }
+    }
+
+    if let Some(start) = run_start {
+      self.free_ranges.push((start * IMMIX_LINE_SIZE, IMMIX_BLOCK_SIZE));
+    }
+  }
+
+  fn free_bytes(&self) -> usize {
+    self
+      .free_ranges
+      .iter()
+      .map(|(start, end)| end - start)
+      .sum()
+  }
+}
+
+pub(crate) struct ImmixSpace {
+  blocks: Vec<ImmixBlock>,
+}
+
+impl ImmixSpace {
+  fn new() -> Self {
+    Self { blocks: Vec::new() }
+  }
+
+  fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+    debug_assert!(size <= IMMIX_MAX_OBJECT_SIZE);
+
+    for block in &mut self.blocks {
+      if let Some(ptr) = block.alloc(size, align) {
+        return ptr;
+      }
+    }
+
+    let mut block = ImmixBlock::new();
+    let ptr = block
+      .alloc(size, align)
+      .expect("fresh Immix block must have enough space");
+    self.blocks.push(block);
+    ptr
+  }
+
+  fn contains(&self, ptr: *mut u8) -> bool {
+    self.blocks.iter().any(|b| b.contains(ptr))
+  }
+
+  pub(crate) fn clear_line_marks(&mut self) {
+    for block in &mut self.blocks {
+      block.clear_line_marks();
+    }
+  }
+
+  pub(crate) fn set_lines_for_live_object(&mut self, obj: *mut u8, size: usize) {
+    for block in &mut self.blocks {
+      if block.contains(obj) {
+        block.set_lines_for_live_object(obj, size);
+        return;
+      }
+    }
+    debug_assert!(false, "object not in ImmixSpace");
+  }
+
+  pub(crate) fn finalize_after_marking(&mut self) {
+    for block in &mut self.blocks {
+      block.rebuild_free_ranges_from_marks();
+    }
+  }
+
+  fn block_count(&self) -> usize {
+    self.blocks.len()
+  }
+
+  fn free_bytes(&self) -> usize {
+    self.blocks.iter().map(|b| b.free_bytes()).sum()
+  }
+}
+
+struct LargeObject {
+  mem: RawMemory,
+}
+
+pub(crate) struct LargeObjectSpace {
+  objects: Vec<LargeObject>,
+}
+
+impl LargeObjectSpace {
+  fn new() -> Self {
+    Self { objects: Vec::new() }
+  }
+
+  fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+    let mem = RawMemory::new_zeroed(size, align);
+    let ptr = mem.as_ptr();
+    self.objects.push(LargeObject { mem });
+    ptr
+  }
+
+  fn contains(&self, ptr: *mut u8) -> bool {
+    self.objects.iter().any(|o| o.mem.as_ptr() == ptr)
+  }
+
+  pub(crate) fn sweep(&mut self, current_epoch: u8) {
+    self.objects.retain(|obj| {
+      // SAFETY: The object is a valid allocation and always begins with ObjHeader.
+      let header = unsafe { &*(obj.mem.as_ptr() as *const ObjHeader) };
+      header.is_marked(current_epoch)
+    });
+  }
+
+  fn object_count(&self) -> usize {
+    self.objects.len()
+  }
+}
+
+pub struct GcHeap {
+  pub(crate) nursery: NurserySpace,
+  pub(crate) immix: ImmixSpace,
+  pub(crate) los: LargeObjectSpace,
+
+  /// Current mark epoch (toggled on every major GC).
+  pub(crate) mark_epoch: u8,
+
+  pub(crate) stats: GcStats,
+}
+
+impl Default for GcHeap {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl GcHeap {
+  pub fn new() -> Self {
+    Self::with_nursery_size(1024 * 1024)
+  }
+
+  pub fn with_nursery_size(nursery_size: usize) -> Self {
+    Self {
+      nursery: NurserySpace::new(nursery_size),
+      immix: ImmixSpace::new(),
+      los: LargeObjectSpace::new(),
+      mark_epoch: 0,
+      stats: GcStats::default(),
+    }
+  }
+
+  pub fn stats(&self) -> &GcStats {
+    &self.stats
+  }
+
+  pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    let obj = self
+      .nursery
+      .alloc(desc.size, OBJ_ALIGN)
+      .expect("nursery out of space");
+
+    // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.
+    // SAFETY: The nursery allocation is valid for `desc.size` bytes.
+    unsafe {
+      ptr::write_bytes(obj, 0, desc.size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = desc as *const TypeDescriptor;
+      header.meta = 0;
+      header.set_mark_epoch(self.mark_epoch);
+    }
+
+    self.stats.bytes_allocated_young += desc.size;
+    obj
+  }
+
+  pub fn alloc_old(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    let obj = self.alloc_old_raw(desc.size, OBJ_ALIGN);
+
+    // SAFETY: The allocation is valid for `desc.size` bytes.
+    unsafe {
+      ptr::write_bytes(obj, 0, desc.size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = desc as *const TypeDescriptor;
+      header.meta = 0;
+      header.set_mark_epoch(self.mark_epoch);
+    }
+
+    obj
+  }
+
+  pub(crate) fn alloc_old_raw(&mut self, size: usize, align: usize) -> *mut u8 {
+    debug_assert!(align.is_power_of_two());
+    let obj = if size > IMMIX_MAX_OBJECT_SIZE {
+      self.los.alloc(size, align)
+    } else {
+      self.immix.alloc(size, align)
+    };
+
+    self.stats.bytes_allocated_old += size;
+    obj
+  }
+
+  pub fn is_in_nursery(&self, obj: *mut u8) -> bool {
+    self.nursery.contains(obj)
+  }
+
+  pub fn is_in_immix(&self, obj: *mut u8) -> bool {
+    self.immix.contains(obj)
+  }
+
+  pub fn is_in_los(&self, obj: *mut u8) -> bool {
+    self.los.contains(obj)
+  }
+
+  pub fn immix_block_count(&self) -> usize {
+    self.immix.block_count()
+  }
+
+  pub fn immix_free_bytes(&self) -> usize {
+    self.immix.free_bytes()
+  }
+
+  pub fn los_object_count(&self) -> usize {
+    self.los.object_count()
+  }
+}

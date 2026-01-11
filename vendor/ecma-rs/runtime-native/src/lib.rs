@@ -1,9 +1,11 @@
 //! Native runtime library for `native-js` AOT output.
 //!
-//! This crate provides a stable C ABI surface that LLVM-generated code can
-//! link against.
+//! This crate provides:
+//! - A stable C ABI surface that LLVM-generated code can link against.
+//! - A precise, generational GC implementation for managed allocations.
 
 pub mod abi;
+pub mod gc;
 
 mod alloc;
 mod exports;
@@ -12,6 +14,11 @@ mod string;
 mod trap;
 
 pub use exports::*;
+pub use gc::GcHeap;
+pub use gc::RememberedSet;
+pub use gc::RootSet;
+pub use gc::RootStack;
+pub use gc::TypeDescriptor;
 pub use string::*;
 
 #[cfg(test)]
