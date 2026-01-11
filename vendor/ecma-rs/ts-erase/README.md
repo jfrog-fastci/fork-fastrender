@@ -38,6 +38,10 @@ erase_types(FileId(0), SourceType::Module, &mut top_level)?;
 Strict-native mode only erases TS-only syntax and deterministically rejects TS
 runtime constructs (e.g. `enum`, `namespace`, `import =`, `export =`).
 
+It also rejects syntax that is not valid strict ECMAScript (e.g. decorators and
+JSX/TSX), since strict-native output is intended to be parsed/executed as
+`Dialect::Ecma`.
+
 This is intended for oracle tooling where we want a stable TS→JS pipeline while
 still enforcing a strict TS subset.
 
@@ -54,4 +58,3 @@ erase_types_strict_native(FileId(0), SourceType::Script, &mut top_level)?;
 This crate emits stable diagnostics with the `MINIFYTS####` prefix (legacy from
 the original `minify-js` implementation). See `docs/diagnostic-codes.md` for the
 repo-wide registry.
-
