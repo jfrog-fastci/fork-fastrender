@@ -186,6 +186,242 @@ mod linux {
     }
 
     #[test]
+    fn timeout_holds_pins_until_target_cqe() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let link_timeout_supported = match driver.is_link_timeout_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("skipping timeout test: failed to probe io_uring ops: {err}");
+                return Ok(());
+            }
+        };
+        if !link_timeout_supported {
+            eprintln!("skipping timeout test: IORING_OP_LINK_TIMEOUT not supported by kernel");
+            return Ok(());
+        }
+
+        let (read_fd, write_fd) = pipe()?;
+
+        let gc = MockGc::new();
+        let handle = gc.alloc_zeroed(8);
+
+        let buf: GcIoBuf<_> = GcIoBuf::from_gc(&gc, handle);
+        let (read_op, timeout_op) =
+            driver.submit_read_with_timeout(read_fd.0, buf, 0, Duration::from_millis(100))?;
+
+        assert_eq!(gc.root_drops(handle), 0);
+        assert_eq!(gc.pin_drops(handle), 0);
+
+        let mut saw_timeout_before_read = false;
+        while !(timeout_op.is_completed() && read_op.is_completed()) {
+            driver.wait_for_cqe()?;
+
+            if timeout_op.is_completed() && !read_op.is_completed() {
+                saw_timeout_before_read = true;
+                assert_eq!(gc.root_drops(handle), 0);
+                assert_eq!(gc.pin_drops(handle), 0);
+                assert_eq!(gc.root_count(handle), 1);
+                assert_eq!(gc.pin_count(handle), 1);
+            }
+        }
+
+        // Keep the pipe write end alive (otherwise reads can complete with EOF instead of blocking).
+        drop(write_fd);
+
+        let timeout_c = timeout_op
+            .try_take_completion()
+            .expect("timeout completed");
+        let read_c = read_op.try_take_completion().expect("read completed");
+
+        assert_eq!(timeout_c.result, -(libc::ETIME as i32));
+        assert_eq!(timeout_c.resource, read_c.id);
+        assert_eq!(read_c.result, -(libc::ECANCELED as i32));
+
+        // The pinned/rooted guards are stored in the returned buffer, so they must not have dropped
+        // yet even though the timeout CQE was processed.
+        assert_eq!(gc.root_drops(handle), 0);
+        assert_eq!(gc.pin_drops(handle), 0);
+
+        drop(read_c);
+        assert_eq!(gc.root_drops(handle), 1);
+        assert_eq!(gc.pin_drops(handle), 1);
+        assert_eq!(gc.root_count(handle), 0);
+        assert_eq!(gc.pin_count(handle), 0);
+
+        if !saw_timeout_before_read {
+            eprintln!("note: timeout CQE arrived after read CQE on this kernel");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn timeout_race_complete_just_before_deadline() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let link_timeout_supported = match driver.is_link_timeout_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("skipping timeout race test: failed to probe io_uring ops: {err}");
+                return Ok(());
+            }
+        };
+        if !link_timeout_supported {
+            eprintln!("skipping timeout race test: IORING_OP_LINK_TIMEOUT not supported by kernel");
+            return Ok(());
+        }
+
+        let (reader, mut writer) = UnixStream::pair()?;
+        let read_buf = OwnedIoBuf::new_zeroed(5);
+        let (read_op, timeout_op) = driver.submit_read_with_timeout(
+            reader.as_raw_fd(),
+            read_buf,
+            0,
+            Duration::from_millis(1000),
+        )?;
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(800));
+            writer.write_all(b"hello").unwrap();
+        });
+
+        while !(timeout_op.is_completed() && read_op.is_completed()) {
+            driver.wait_for_cqe()?;
+        }
+
+        let read_c = read_op.try_take_completion().expect("read completed");
+        let timeout_c = timeout_op
+            .try_take_completion()
+            .expect("timeout completed");
+
+        assert_eq!(read_c.result, 5);
+        assert_eq!(read_c.resource.as_slice(), b"hello");
+        assert_eq!(timeout_c.result, -(libc::ECANCELED as i32));
+        assert_eq!(timeout_c.resource, read_c.id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_cancel_vs_timeout_race() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let link_timeout_supported = match driver.is_link_timeout_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!(
+                    "skipping cancel-vs-timeout test: failed to probe io_uring ops: {err}"
+                );
+                return Ok(());
+            }
+        };
+        if !link_timeout_supported {
+            eprintln!(
+                "skipping cancel-vs-timeout test: IORING_OP_LINK_TIMEOUT not supported by kernel"
+            );
+            return Ok(());
+        }
+
+        let async_cancel_supported = match driver.is_async_cancel_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!(
+                    "skipping cancel-vs-timeout test: failed to probe io_uring ops: {err}"
+                );
+                return Ok(());
+            }
+        };
+        if !async_cancel_supported {
+            eprintln!(
+                "skipping cancel-vs-timeout test: IORING_OP_ASYNC_CANCEL not supported by kernel"
+            );
+            return Ok(());
+        }
+
+        let (read_fd, write_fd) = pipe()?;
+
+        let gc = MockGc::new();
+        let handle = gc.alloc_zeroed(8);
+
+        let buf: GcIoBuf<_> = GcIoBuf::from_gc(&gc, handle);
+        let (read_op, timeout_op) =
+            driver.submit_read_with_timeout(read_fd.0, buf, 0, Duration::from_secs(5))?;
+        let cancel_op = driver.cancel(read_op.id())?;
+
+        // Safety net: if cancellation doesn't work, write some data so the read unblocks.
+        let write_fd_dup = unsafe { libc::dup(write_fd.0) };
+        assert!(write_fd_dup >= 0);
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            let _ = unsafe { libc::write(write_fd_dup, b"x".as_ptr() as *const _, 1) };
+            unsafe {
+                libc::close(write_fd_dup);
+            }
+        });
+
+        assert_eq!(gc.root_drops(handle), 0);
+        assert_eq!(gc.pin_drops(handle), 0);
+
+        while !(cancel_op.is_completed() && timeout_op.is_completed() && read_op.is_completed()) {
+            driver.wait_for_cqe()?;
+
+            if (cancel_op.is_completed() || timeout_op.is_completed()) && !read_op.is_completed() {
+                assert_eq!(gc.root_drops(handle), 0);
+                assert_eq!(gc.pin_drops(handle), 0);
+                assert_eq!(gc.root_count(handle), 1);
+                assert_eq!(gc.pin_count(handle), 1);
+            }
+        }
+
+        writer.join().expect("writer thread panicked");
+        drop(write_fd);
+
+        let cancel_res = cancel_op.try_take_completion().expect("cancel completed").result;
+        let timeout_res = timeout_op
+            .try_take_completion()
+            .expect("timeout completed")
+            .result;
+        let read_c = read_op.try_take_completion().expect("read completed");
+
+        let read_canceled =
+            read_c.result == -(libc::ECANCELED as i32) || read_c.result == -(libc::EINTR as i32);
+        if !read_canceled {
+            eprintln!(
+                "skipping cancel-vs-timeout semantics due to race: read result was {}",
+                read_c.result
+            );
+            return Ok(());
+        }
+
+        assert!(
+            timeout_res == -(libc::ECANCELED as i32) || timeout_res == -(libc::ETIME as i32),
+            "unexpected timeout CQE result: {timeout_res}"
+        );
+        assert!(
+            cancel_res == 0 || cancel_res == -(libc::ENOENT as i32),
+            "unexpected cancel CQE result: {cancel_res}"
+        );
+
+        assert_eq!(gc.root_drops(handle), 0);
+        assert_eq!(gc.pin_drops(handle), 0);
+
+        drop(read_c);
+        assert_eq!(gc.root_drops(handle), 1);
+        assert_eq!(gc.pin_drops(handle), 1);
+        assert_eq!(gc.root_count(handle), 0);
+        assert_eq!(gc.pin_count(handle), 0);
+
+        Ok(())
+    }
+
+    #[test]
     fn moving_gc_simulation_pin_prevents_relocation() -> io::Result<()> {
         let Some(mut driver) = try_driver()? else {
             return Ok(());

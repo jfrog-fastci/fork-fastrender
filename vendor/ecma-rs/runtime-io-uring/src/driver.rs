@@ -111,8 +111,11 @@ mod imp {
     use std::net::SocketAddr;
     use std::os::fd::RawFd;
     use std::sync::Weak;
+    use std::time::Duration;
 
-    use io_uring::{opcode, types, IoUring};
+    use io_uring::{opcode, squeue, types, IoUring};
+
+    use crate::timeout::duration_to_timespec;
 
     use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
     use crate::op_readv_writev::{build_readv_iovecs, build_writev_iovecs};
@@ -211,6 +214,21 @@ mod imp {
             Ok(())
         }
 
+        fn push_entries(&mut self, entries: &[io_uring::squeue::Entry]) -> io::Result<()> {
+            let mut sq = self.ring().submission();
+            let available = sq.capacity() - sq.len();
+            if available < entries.len() {
+                return Err(io::Error::new(io::ErrorKind::Other, "io_uring SQ is full"));
+            }
+
+            unsafe {
+                for entry in entries {
+                    sq.push(entry).expect("capacity checked");
+                }
+            }
+            Ok(())
+        }
+
         fn submit_sqes(&mut self) -> io::Result<()> {
             loop {
                 match self.ring().submit() {
@@ -229,6 +247,171 @@ mod imp {
                     Err(err) => return Err(err),
                 }
             }
+        }
+
+        /// Submit a read with a linked timeout.
+        ///
+        /// This uses `IOSQE_IO_LINK` + `IORING_OP_LINK_TIMEOUT`:
+        /// - If the read completes before the timeout, the read CQE returns its normal result and
+        ///   the timeout CQE returns `-ECANCELED`.
+        /// - If the timeout expires first, the timeout CQE returns `-ETIME` and the read CQE
+        ///   returns `-ECANCELED`.
+        ///
+        /// Resource lifetime rule: even if the timeout CQE is observed first, the read buffer is
+        /// kept alive by the driver until the read CQE is processed.
+        pub fn submit_read_with_timeout<B: IoBufMut>(
+            &mut self,
+            fd: RawFd,
+            mut buf: B,
+            offset: u64,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<B>, IoOp<OpId>)> {
+            let read_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let read_shared = Arc::new(OpShared::new(read_id));
+            let read_weak: Weak<OpShared<B>> = Arc::downgrade(&read_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let ptr = buf.stable_mut_ptr().as_ptr();
+            let len = buf.len();
+            let read_entry = opcode::Read::new(types::Fd(fd), ptr, len as _)
+                .offset(offset as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(read_id.0);
+
+            // `IORING_OP_LINK_TIMEOUT` takes a pointer to a `__kernel_timespec`. That memory must
+            // stay valid until the timeout request completes, so it cannot live on the stack here.
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [read_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                read_id.0,
+                Box::new(move |result| {
+                    if let Some(shared) = read_weak.upgrade() {
+                        shared.complete(result, buf);
+                    }
+                }),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, read_id);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: read_id,
+                    shared: read_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit a write with a linked timeout.
+        ///
+        /// See [`Self::submit_read_with_timeout`] for CQE result semantics.
+        pub fn submit_write_with_timeout<B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            buf: B,
+            offset: u64,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<B>, IoOp<OpId>)> {
+            let write_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let write_shared = Arc::new(OpShared::new(write_id));
+            let write_weak: Weak<OpShared<B>> = Arc::downgrade(&write_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let ptr = buf.stable_ptr().as_ptr() as *const u8;
+            let len = buf.len();
+            let write_entry = opcode::Write::new(types::Fd(fd), ptr, len as _)
+                .offset(offset as _)
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(write_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [write_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                write_id.0,
+                Box::new(move |result| {
+                    if let Some(shared) = write_weak.upgrade() {
+                        shared.complete(result, buf);
+                    }
+                }),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, write_id);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: write_id,
+                    shared: write_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        pub fn is_link_timeout_supported(&self) -> io::Result<bool> {
+            let ring = self
+                .ring
+                .as_ref()
+                .expect("IoUringDriver used after drop (ring already taken)");
+            let mut probe = io_uring::Probe::new();
+            ring.submitter().register_probe(&mut probe)?;
+            Ok(probe.is_supported(opcode::LinkTimeout::CODE))
+        }
+
+        pub fn is_async_cancel_supported(&self) -> io::Result<bool> {
+            let ring = self
+                .ring
+                .as_ref()
+                .expect("IoUringDriver used after drop (ring already taken)");
+            let mut probe = io_uring::Probe::new();
+            ring.submitter().register_probe(&mut probe)?;
+            Ok(probe.is_supported(opcode::AsyncCancel::CODE))
         }
 
         pub fn submit_read<B: IoBufMut>(
@@ -960,6 +1143,40 @@ impl IoUringDriver {
             io::ErrorKind::Unsupported,
             "io_uring is only supported on Linux",
         ))
+    }
+
+    pub fn submit_read_with_timeout<B: IoBufMut>(
+        &mut self,
+        _fd: i32,
+        _buf: B,
+        _offset: u64,
+        _timeout: std::time::Duration,
+    ) -> io::Result<(IoOp<B>, IoOp<OpId>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn submit_write_with_timeout<B: IoBuf>(
+        &mut self,
+        _fd: i32,
+        _buf: B,
+        _offset: u64,
+        _timeout: std::time::Duration,
+    ) -> io::Result<(IoOp<B>, IoOp<OpId>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn is_link_timeout_supported(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn is_async_cancel_supported(&self) -> io::Result<bool> {
+        Ok(false)
     }
 
     pub fn poll_completions(&mut self) -> io::Result<usize> {
