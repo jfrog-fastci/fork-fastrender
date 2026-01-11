@@ -17,9 +17,9 @@
 
 use crate::abi::PromiseRef;
 use crate::async_abi::PromiseHeader;
+use crate::gc::HandleId;
 use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromiseRejectionEvent {
@@ -29,9 +29,9 @@ pub enum PromiseRejectionEvent {
 
 #[derive(Default)]
 struct Tracker {
-  about_to_be_notified: Vec<PromiseRef>,
-  outstanding_rejected: HashSet<PromiseRef>,
-  pending_rejectionhandled: Vec<PromiseRef>,
+  about_to_be_notified: Vec<HandleId>,
+  outstanding_rejected: Vec<HandleId>,
+  pending_rejectionhandled: Vec<HandleId>,
   events: Vec<PromiseRejectionEvent>,
 }
 
@@ -62,9 +62,36 @@ fn promise_is_handled_generic(p: PromiseRef) -> bool {
   unsafe { &*header }.is_handled()
 }
 
+#[inline]
+fn alloc_promise_root(promise: PromiseRef) -> Option<HandleId> {
+  if promise.is_null() {
+    return None;
+  }
+  // Root the promise pointer in the persistent handle table so it can be updated across GC moves
+  // while it is stored inside this Rust-owned tracker.
+  Some(crate::roots::global_persistent_handle_table().alloc(promise.0.cast()))
+}
+
+#[inline]
+fn promise_from_root(id: HandleId) -> PromiseRef {
+  PromiseRef(
+    crate::roots::global_persistent_handle_table()
+      .get(id)
+      .unwrap_or_else(|| std::process::abort())
+      .cast(),
+  )
+}
+
+#[inline]
+fn free_promise_root(id: HandleId) {
+  let _ = crate::roots::global_persistent_handle_table().free(id);
+}
+
 pub(crate) fn on_reject(promise: PromiseRef) {
   let mut tracker = TRACKER.lock();
-  tracker.about_to_be_notified.push(promise);
+  if let Some(id) = alloc_promise_root(promise) {
+    tracker.about_to_be_notified.push(id);
+  }
 }
 
 pub(crate) fn on_handle(promise: PromiseRef) {
@@ -73,14 +100,21 @@ pub(crate) fn on_handle(promise: PromiseRef) {
   if let Some(idx) = tracker
     .about_to_be_notified
     .iter()
-    .position(|p| *p == promise)
+    .position(|id| promise_from_root(*id) == promise)
   {
-    tracker.about_to_be_notified.remove(idx);
+    let id = tracker.about_to_be_notified.remove(idx);
+    free_promise_root(id);
     return;
   }
 
-  if tracker.outstanding_rejected.remove(&promise) {
-    tracker.pending_rejectionhandled.push(promise);
+  let handled = tracker
+    .outstanding_rejected
+    .iter()
+    .copied()
+    .find(|id| promise_from_root(*id) == promise);
+  if let Some(id) = handled {
+    tracker.outstanding_rejected.retain(|other| *other != id);
+    tracker.pending_rejectionhandled.push(id);
   }
 }
 
@@ -103,8 +137,10 @@ pub(crate) fn microtask_checkpoint() {
   if !tracker.about_to_be_notified.is_empty() {
     // Drain the about-to-be-notified list and report any promises that remain unhandled.
     let to_check = std::mem::take(&mut tracker.about_to_be_notified);
-    for promise in to_check {
+    for id in to_check {
+      let promise = promise_from_root(id);
       if promise_is_handled_generic(promise) {
+        free_promise_root(id);
         continue;
       }
 
@@ -112,26 +148,34 @@ pub(crate) fn microtask_checkpoint() {
         .events
         .push(PromiseRejectionEvent::UnhandledRejection { promise });
       eprintln!("unhandledrejection: {promise:?}");
-      tracker.outstanding_rejected.insert(promise);
+      tracker.outstanding_rejected.push(id);
     }
   }
 
   if !tracker.pending_rejectionhandled.is_empty() {
     let to_report = std::mem::take(&mut tracker.pending_rejectionhandled);
-    for promise in to_report {
+    for id in to_report {
+      let promise = promise_from_root(id);
       tracker
         .events
         .push(PromiseRejectionEvent::RejectionHandled { promise });
       eprintln!("rejectionhandled: {promise:?}");
+      free_promise_root(id);
     }
   }
 }
 
 pub(crate) fn clear_state_for_tests() {
   let mut tracker = TRACKER.lock();
-  tracker.about_to_be_notified.clear();
-  tracker.outstanding_rejected.clear();
-  tracker.pending_rejectionhandled.clear();
+  for id in tracker.about_to_be_notified.drain(..) {
+    free_promise_root(id);
+  }
+  for id in tracker.outstanding_rejected.drain(..) {
+    free_promise_root(id);
+  }
+  for id in tracker.pending_rejectionhandled.drain(..) {
+    free_promise_root(id);
+  }
   tracker.events.clear();
 }
 

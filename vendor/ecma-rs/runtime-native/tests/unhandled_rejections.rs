@@ -1,4 +1,6 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef};
+use runtime_native::abi::{
+  PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDescriptor, RtShapeId, ValueRef,
+};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
@@ -54,7 +56,10 @@ extern "C" fn propagating_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroSt
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 1);
-        runtime_native::rt_promise_reject_legacy((*coro).header.promise, (*coro).header.await_error);
+        runtime_native::rt_promise_reject_legacy(
+          (*coro).header.promise,
+          (*coro).header.await_error,
+        );
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -153,6 +158,61 @@ fn native_promise_rejection_is_reported_as_unhandled() {
 }
 
 #[test]
+fn native_promise_unhandled_rejection_uses_relocated_promise_ptr() {
+  use runtime_native::threading;
+  use std::sync::atomic::{AtomicU8, AtomicUsize};
+
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise1 = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    waiters: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let mut promise2 = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::REJECTED),
+    waiters: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+
+  let promise1_ref = PromiseRef((&mut *promise1 as *mut PromiseHeader).cast());
+  let promise2_ref = PromiseRef((&mut *promise2 as *mut PromiseHeader).cast());
+
+  unsafe {
+    runtime_native::rt_promise_init(promise1_ref);
+    runtime_native::rt_promise_reject(promise1_ref);
+  }
+
+  let old_ptr = promise1_ref.0.cast::<u8>();
+  let new_ptr = promise2_ref.0.cast::<u8>();
+
+  // Simulate a moving GC relocating the promise object by rewriting the persistent handle slot used
+  // by the unhandled-rejection tracker. The event should carry the updated pointer.
+  let mut updated = 0usize;
+  threading::safepoint::with_world_stopped(|epoch| {
+    threading::safepoint::for_each_root_slot_world_stopped(epoch, |slot| unsafe {
+      if *slot == old_ptr {
+        *slot = new_ptr;
+        updated += 1;
+      }
+    })
+    .expect("root enumeration should succeed");
+  });
+  assert_eq!(
+    updated, 1,
+    "expected exactly one rooted promise pointer slot"
+  );
+
+  while runtime_native::rt_async_poll() {}
+  assert_eq!(
+    runtime_native::test_util::drain_promise_rejection_events(),
+    vec![PromiseRejectionEvent::UnhandledRejection {
+      promise: promise2_ref
+    }]
+  );
+}
+
+#[test]
 fn native_promise_mark_handled_before_checkpoint_suppresses_unhandled() {
   let _rt = TestRuntimeGuard::new();
 
@@ -205,8 +265,8 @@ fn native_promise_mark_handled_after_unhandled_reports_rejectionhandled() {
 fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_later() {
   use runtime_native::abi::RtShapeId;
   use runtime_native::async_abi::{
-    Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, CORO_FLAG_RUNTIME_OWNS_FRAME,
-    RT_ASYNC_ABI_VERSION,
+    Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable,
+    CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
   };
   use runtime_native::CoroutineId;
 
