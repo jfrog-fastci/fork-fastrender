@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -44,8 +44,18 @@ impl ParallelRuntime {
     }
 
     let ids = unsafe { std::slice::from_raw_parts(tasks, count) };
+    let mut seen: HashSet<u64> = HashSet::with_capacity(ids.len());
     let mut tasks: Vec<Arc<TaskState>> = Vec::with_capacity(ids.len());
     for &TaskId(id) in ids {
+      // `TaskId` is an opaque handle and must be unique within a join call.
+      // Duplicates would cause UB (double `Arc::from_raw`), so fail loudly.
+      if id == 0
+        || (id as usize) % std::mem::align_of::<TaskState>() != 0
+        || !seen.insert(id)
+      {
+        std::process::abort();
+      }
+
       let ptr = id as usize as *const TaskState;
       tasks.push(unsafe { Arc::from_raw(ptr) });
     }
@@ -203,4 +213,3 @@ fn worker_loop(inner: Arc<SchedulerInner>) -> ! {
     task.run();
   }
 }
-

@@ -58,6 +58,10 @@ splitting. The ABI shape is stable:
 
 The scheduler implementation itself is intentionally minimal for now; the ABI is the contract.
 
+Current behavior: `rt_parallel_spawn` enqueues work onto a global FIFO queue serviced by a small
+worker pool (default: one worker per CPU). `rt_parallel_join` waits for completion and may
+opportunistically execute queued tasks on the joining thread to reduce idle time.
+
 ## Coroutine ABI
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is
