@@ -3,6 +3,8 @@ use inkwell::context::Context;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use typecheck_ts::{Program, TypeId, TypeKindSummary};
 
+use crate::codes;
+
 /// Subset of native ABI types supported by the initial native-js backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeType {
@@ -38,8 +40,7 @@ pub fn classify_type(program: &Program, type_id: TypeId) -> Result<NativeType, D
     TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Ok(NativeType::F64),
     TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Ok(NativeType::I1),
     TypeKindSummary::Void | TypeKindSummary::Undefined => Ok(NativeType::Void),
-    other => Err(Diagnostic::error(
-      "NATIVE0001",
+    other => Err(codes::UNSUPPORTED_NATIVE_TYPE.error(
       format!(
         "unsupported type for native codegen: {} ({other:?})",
         program.display_type(type_id)

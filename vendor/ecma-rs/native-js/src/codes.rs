@@ -24,6 +24,10 @@ pub const STRICT_SUBSET_UNSUPPORTED_SYNTAX: Code =
 pub const STRICT_SUBSET_UNSUPPORTED_TYPE: Code =
   Code::new("NJS0010", "unsupported type in native-js strict subset");
 
+/// NJS0011: Type cannot be represented in the current native ABI/codegen layer.
+pub const UNSUPPORTED_NATIVE_TYPE: Code =
+  Code::new("NJS0011", "unsupported type for native codegen");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }
