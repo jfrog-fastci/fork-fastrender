@@ -12,6 +12,32 @@ pub const RT_ARRAY_ELEM_PTR_FLAG: usize = 1usize << (usize::BITS - 1);
 /// Header flag: the array payload is a `len`-long sequence of `*mut u8` GC pointers.
 pub const RT_ARRAY_FLAG_PTR_ELEMS: u32 = 1 << 0;
 
+// Keep the runtime's internal array header in sync with the public ABI surface used by codegen.
+// If these diverge, generated code may compute incorrect offsets or mis-classify pointer payloads.
+const _: () = {
+  assert!(RT_ARRAY_ELEM_PTR_FLAG == runtime_native_abi::RT_ARRAY_ELEM_PTR_FLAG);
+  assert!(RT_ARRAY_FLAG_PTR_ELEMS == runtime_native_abi::RT_ARRAY_FLAG_PTR_ELEMS);
+  assert!(RT_ARRAY_DATA_OFFSET == runtime_native_abi::RT_ARRAY_DATA_OFFSET);
+
+  assert!(
+    core::mem::size_of::<RtArrayHeader>() == core::mem::size_of::<runtime_native_abi::RtArrayHeader>()
+  );
+  assert!(
+    core::mem::align_of::<RtArrayHeader>() == core::mem::align_of::<runtime_native_abi::RtArrayHeader>()
+  );
+  assert!(
+    core::mem::offset_of!(RtArrayHeader, len) == core::mem::offset_of!(runtime_native_abi::RtArrayHeader, len)
+  );
+  assert!(
+    core::mem::offset_of!(RtArrayHeader, elem_size)
+      == core::mem::offset_of!(runtime_native_abi::RtArrayHeader, elem_size)
+  );
+  assert!(
+    core::mem::offset_of!(RtArrayHeader, elem_flags)
+      == core::mem::offset_of!(runtime_native_abi::RtArrayHeader, elem_flags)
+  );
+};
+
 /// `TypeDescriptor` used for all runtime-native array objects.
 ///
 /// Arrays have a dynamic length, so the GC does not rely on `TypeDescriptor.ptr_offsets()` to find
@@ -132,4 +158,24 @@ pub unsafe fn array_data_ptr(array: *mut u8) -> *mut u8 {
   };
   // SAFETY: caller promises `array` points to a valid array allocation base.
   unsafe { array.add(RT_ARRAY_DATA_OFFSET) }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use core::mem::size_of;
+
+  #[test]
+  fn rt_array_data_offset_matches_header_size() {
+    assert_eq!(RT_ARRAY_DATA_OFFSET, size_of::<RtArrayHeader>());
+  }
+
+  #[test]
+  fn array_data_ptr_is_base_plus_offset() {
+    let mut buf = vec![0u8; RT_ARRAY_DATA_OFFSET + 16];
+    let base = buf.as_mut_ptr();
+    let data = unsafe { array_data_ptr(base) };
+    assert_eq!(data, unsafe { base.add(RT_ARRAY_DATA_OFFSET) });
+    assert_eq!(unsafe { array_data_ptr(core::ptr::null_mut()) }, core::ptr::null_mut());
+  }
 }

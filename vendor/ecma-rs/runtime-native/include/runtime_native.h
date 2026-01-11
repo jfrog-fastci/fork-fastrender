@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 // Stable C ABI surface for runtime-native.
 //
@@ -210,6 +211,70 @@ GcPtr rt_alloc(size_t size, RtShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.
 GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);
+
+// -----------------------------------------------------------------------------
+// Arrays (`rt_alloc_array`)
+// -----------------------------------------------------------------------------
+// `rt_alloc_array` allocates a GC-managed array object with a fixed-size header
+// followed by a contiguous payload of `len * elem_size` bytes.
+//
+// IMPORTANT:
+// - `rt_alloc_array` returns the **object base pointer** (start of the header),
+//   consistent with `rt_alloc`.
+// - The payload starts at `RT_ARRAY_DATA_OFFSET` bytes after the returned base
+//   pointer. Use `RT_ARRAY_DATA_PTR(base)` to compute it.
+//
+// Pointer element arrays:
+// - By default, the runtime treats the payload as raw bytes (no interior GC
+//   pointers), even if `elem_size == sizeof(void*)`.
+// - To request an array whose payload is a `len`-long sequence of GC pointers,
+//   set `RT_ARRAY_ELEM_PTR_FLAG` in the `elem_size` argument:
+//     encoded = sizeof(void*) | RT_ARRAY_ELEM_PTR_FLAG
+//   The runtime/GC will then trace + update each element slot as a `uint8_t*`
+//   object pointer.
+//
+// This encoding exists so codegen can distinguish between:
+// - "pointer-sized scalar bytes" (e.g. `uint64_t`, `double`) and
+// - "GC pointer elements" (payload must be traced).
+
+// High-bit encoding in the `elem_size` argument: indicates that the payload
+// consists of GC pointers (and must therefore be traced and updated by the GC).
+#define RT_ARRAY_ELEM_PTR_FLAG ((size_t)1u << (sizeof(size_t) * CHAR_BIT - 1u))
+
+// Array header flag: payload is a `len`-long sequence of `uint8_t*` GC pointers.
+#define RT_ARRAY_FLAG_PTR_ELEMS (1u << 0)
+
+// FFI-stable array header layout. The object base pointer returned from
+// `rt_alloc_array` points at the start of this header.
+//
+// The first two words are the runtime's internal `ObjHeader` (opaque to C):
+// - `type_desc`: pointer to runtime type/shape metadata
+// - `meta`:      per-object GC metadata bits / forwarding pointer
+typedef struct RtArrayHeader {
+  const void* type_desc;
+  size_t meta;
+  size_t len;
+  uint32_t elem_size;
+  uint32_t elem_flags;
+#if defined(__cplusplus)
+  // Flexible array members are not standard C++; use a 1-byte trailing field to
+  // keep the header usable from C++ while still computing the correct payload
+  // offset via `offsetof(RtArrayHeader, data)`.
+  uint8_t data[1];
+#else
+  uint8_t data[];
+#endif
+} RtArrayHeader;
+
+// Byte offset from the object base pointer to the start of the array payload.
+#define RT_ARRAY_DATA_OFFSET offsetof(RtArrayHeader, data)
+
+// Encode an `elem_size` value that requests a pointer-element array.
+#define RT_ARRAY_ENCODE_PTR_ELEM_SIZE() (sizeof(void*) | RT_ARRAY_ELEM_PTR_FLAG)
+
+// Compute the pointer to the element payload for an array base pointer.
+#define RT_ARRAY_DATA_PTR(base) ((uint8_t*)(base) + RT_ARRAY_DATA_OFFSET)
+
 GcPtr rt_alloc_array(size_t len, size_t elem_size);
 uint8_t* rt_alloc_ptr_array(size_t len);
 

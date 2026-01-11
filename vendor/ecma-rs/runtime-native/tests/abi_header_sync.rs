@@ -47,6 +47,27 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "`runtime_native.h` is missing/incorrect async ABI version tag (expected to contain `{expected}`)"
   );
 
+  // Array ABI (rt_alloc_array).
+  for sym in ["RT_ARRAY_ELEM_PTR_FLAG", "RT_ARRAY_DATA_OFFSET", "typedef struct RtArrayHeader"] {
+    assert!(
+      HEADER.contains(sym),
+      "`runtime_native.h` is missing expected array ABI declaration: {sym}"
+    );
+  }
+  for field in [
+    "const void* type_desc",
+    "size_t meta",
+    "size_t len",
+    "uint32_t elem_size",
+    "uint32_t elem_flags",
+    "uint8_t data[]",
+  ] {
+    assert!(
+      HEADER.contains(field),
+      "`runtime_native.h` is missing expected RtArrayHeader field: {field}"
+    );
+  }
+
   // Stats APIs are feature-gated on the Rust side; the C header uses a macro
   // guard to avoid exposing unavailable symbols by default.
   assert!(

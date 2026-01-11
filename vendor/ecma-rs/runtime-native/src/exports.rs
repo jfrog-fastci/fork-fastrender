@@ -1809,6 +1809,30 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 // Legacy promise/coroutine ABI (used by current async_rt tests)
 // -----------------------------------------------------------------------------
 
+// Compatibility layer: older tests/codegen used the unsuffixed `rt_promise_*` and `rt_coro_await`
+// symbols. Keep them as forwarding shims to the `_legacy` implementations so external tooling can
+// link against a stable name while the async ABI evolves.
+
+#[no_mangle]
+pub extern "C" fn rt_promise_new() -> PromiseRef {
+  rt_promise_new_legacy()
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_resolve(p: PromiseRef, value: ValueRef) {
+  rt_promise_resolve_legacy(p, value)
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+  rt_promise_then_legacy(p, on_settle, data)
+}
+
+#[no_mangle]
+pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+  rt_coro_await_legacy(coro, awaited, next_state)
+}
+
 #[no_mangle]
 pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
   abort_on_panic(|| {

@@ -592,7 +592,9 @@ impl<'a> CallSite<'a> {
 
     // `gc.relocate` pairing is only meaningful for LLVM statepoints. Detect statepoints by their
     // structural prefix (3 constant header locations), not by `patchpoint_id`: LLVM allows overriding
-    // the ID (via `"statepoint-id"`) and does not guarantee a fixed constant.
+    // the ID (via `"statepoint-id"`) and does not guarantee a fixed constant. Misclassifying a
+    // statepoint as a generic patchpoint would cause us to treat deopt operands as roots or skip
+    // relocation pairs entirely.
     let looks_like_statepoint = self.record.locations.len()
       >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]

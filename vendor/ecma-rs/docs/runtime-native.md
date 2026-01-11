@@ -426,6 +426,61 @@ LLVM loads/stores can use correct `align` metadata.
 - Non-GC allocations (stack/arena) are allowed only when proven safe by
   compiler analysis; they are outside this ABI.
 
+### 4.4 Array objects (`rt_alloc_array`)
+`rt_alloc_array(len, elem_size)` allocates a GC-managed array object whose base
+pointer points at an [`RtArrayHeader`] prefix (defined in
+`runtime-native/include/runtime_native.h`).
+
+Layout (object base pointer):
+
+```
+base (returned)  +---------------------------+
+                 | ObjHeader (2 words)       |
+                 | len: usize                |
+                 | elem_size: u32            |
+                 | elem_flags: u32           |
+                 +---------------------------+  <- base + RT_ARRAY_DATA_OFFSET
+                 | element payload bytes...  |
+                 +---------------------------+
+```
+
+Payload pointer:
+- The element payload starts **immediately after** the header.
+- `RT_ARRAY_DATA_OFFSET == sizeof(RtArrayHeader)`
+- Compute the payload pointer as:
+  - C: `uint8_t* data = RT_ARRAY_DATA_PTR(base);`
+  - Rust: `let data = unsafe { runtime_native::array::array_data_ptr(base) };`
+
+#### Pointer-element arrays (GC-traced arrays)
+By default, the runtime treats the array payload as **raw bytes** (no interior GC
+pointers), even if `elem_size == sizeof(void*)`.
+
+To request an array whose payload is a `len`-long sequence of GC pointers, set
+the high-bit flag in the `elem_size` argument:
+
+- C:
+  ```c
+  uint8_t* base = rt_alloc_array(len, RT_ARRAY_ENCODE_PTR_ELEM_SIZE());
+  uint8_t** elems = (uint8_t**)RT_ARRAY_DATA_PTR(base);
+  ```
+- Rust:
+  ```rust
+  let base = unsafe { runtime_native::rt_alloc_array(len, core::mem::size_of::<*mut u8>() | runtime_native::array::RT_ARRAY_ELEM_PTR_FLAG) };
+  let elems = unsafe { runtime_native::array::array_data_ptr(base) as *mut *mut u8 };
+  ```
+
+GC behavior:
+- If the pointer-element flag is set, the GC traces and updates each element slot
+  as a `*mut u8` object pointer.
+- If the flag is **not** set, the payload is treated as raw bytes. Pointer-sized
+  elements are **not traced** and **not updated** by the GC (and will become
+  invalid after objects move).
+
+Limitation:
+- Arrays of structs with interior pointers are not supported yet. Represent such
+  data as arrays of pointers to separately-allocated objects until the runtime
+  gains bitmap/shape-driven interior tracing for array elements.
+
 ---
 
 ## 5. GC integration plan (LLVM statepoints + stackmaps)

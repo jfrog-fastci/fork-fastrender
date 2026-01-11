@@ -18,7 +18,7 @@ int main(void) {
   // The runtime expects mutator threads to register before executing compiled
   // code or participating in GC safepoints.
   rt_thread_init(0);
-
+  int rc = 0;
   static const RtShapeDescriptor kShapes[1] = {
     {
       .size = 16,
@@ -47,38 +47,23 @@ int main(void) {
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
-  if (check(id1 == id2)) goto fail1;
+  if (check(id1 == id2)) { rc = 1; goto done; }
   rt_string_pin_interned(id1);
 
   StringRef ab = rt_string_concat(BYTES_LIT("a"), BYTES_LIT("b"));
-  if (check(ab.len == 2)) goto fail2;
-  if (check(ab.ptr != NULL)) goto fail3;
-  if (check(memcmp(ab.ptr, "ab", 2) == 0)) goto fail4;
+  if (check(ab.len == 2)) { rc = 2; goto done; }
+  if (check(ab.ptr != NULL)) { rc = 3; goto done; }
+  if (check(memcmp(ab.ptr, "ab", 2) == 0)) { rc = 4; goto done; }
 
   enum { N = 4096 };
   uint32_t out[N];
   memset(out, 0, sizeof(out));
   rt_parallel_for(0, N, par_for_body, (uint8_t*)out);
   for (size_t i = 0; i < N; i++) {
-    if (check(out[i] == (uint32_t)(i * 3u + 1u))) goto fail5;
+    if (check(out[i] == (uint32_t)(i * 3u + 1u))) { rc = 5; goto done; }
   }
 
+done:
   rt_thread_deinit();
-  return 0;
-
-fail1:
-  rt_thread_deinit();
-  return 1;
-fail2:
-  rt_thread_deinit();
-  return 2;
-fail3:
-  rt_thread_deinit();
-  return 3;
-fail4:
-  rt_thread_deinit();
-  return 4;
-fail5:
-  rt_thread_deinit();
-  return 5;
+  return rc;
 }

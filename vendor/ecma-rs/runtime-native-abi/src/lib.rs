@@ -51,6 +51,42 @@ pub type GcPtr = *mut u8;
 /// relocation, and runtime code can reload `*handle` after any safepoint.
 pub type GcHandle = *mut GcPtr;
 
+// -----------------------------------------------------------------------------
+// Array ABI (`rt_alloc_array`)
+// -----------------------------------------------------------------------------
+
+/// When set in the `elem_size` argument passed to `rt_alloc_array`, the array payload is treated as
+/// a contiguous sequence of GC pointers.
+///
+/// The raw element size is `elem_size & !RT_ARRAY_ELEM_PTR_FLAG` and must equal
+/// `size_of::<*mut u8>()`.
+pub const RT_ARRAY_ELEM_PTR_FLAG: usize = 1usize << (usize::BITS - 1);
+
+/// Array header flag: the array payload is a `len`-long sequence of `*mut u8` GC pointers.
+pub const RT_ARRAY_FLAG_PTR_ELEMS: u32 = 1 << 0;
+
+/// FFI-stable array header layout.
+///
+/// The object base pointer returned by `rt_alloc_array` points at the start of this header.
+///
+/// The first two words are the runtime's internal `ObjHeader` (opaque at the ABI boundary):
+/// - `type_desc`: pointer to runtime type/shape metadata
+/// - `meta`: per-object GC metadata bits / forwarding pointer
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RtArrayHeader {
+  pub type_desc: *const c_void,
+  pub meta: usize,
+  pub len: usize,
+  pub elem_size: u32,
+  pub elem_flags: u32,
+  /// Flexible payload; `RT_ARRAY_DATA_OFFSET` is the offset of this field.
+  pub data: [u8; 0],
+}
+
+/// Byte offset from the array base pointer (header) to the start of the element payload.
+pub const RT_ARRAY_DATA_OFFSET: usize = core::mem::offset_of!(RtArrayHeader, data);
+
 /// Reserved invalid / sentinel runtime shape id value (raw).
 ///
 /// Shape tables are 1-indexed: `RtShapeId(1)` refers to the first descriptor.
@@ -268,6 +304,18 @@ mod tests {
   const _: () = {
     assert!(RT_PTR_SIZE_BYTES == 8);
     assert!(RT_PTR_ALIGN_BYTES == 8);
+
+    assert!(RT_ARRAY_ELEM_PTR_FLAG == (1usize << 63));
+    assert!(RT_ARRAY_DATA_OFFSET == 32);
+
+    assert!(size_of::<RtArrayHeader>() == 32);
+    assert!(align_of::<RtArrayHeader>() == 8);
+    assert!(core::mem::offset_of!(RtArrayHeader, type_desc) == 0);
+    assert!(core::mem::offset_of!(RtArrayHeader, meta) == 8);
+    assert!(core::mem::offset_of!(RtArrayHeader, len) == 16);
+    assert!(core::mem::offset_of!(RtArrayHeader, elem_size) == 24);
+    assert!(core::mem::offset_of!(RtArrayHeader, elem_flags) == 28);
+    assert!(core::mem::offset_of!(RtArrayHeader, data) == size_of::<RtArrayHeader>());
 
     assert!(size_of::<RtShapeId>() == 4);
     assert!(align_of::<RtShapeId>() == 4);
