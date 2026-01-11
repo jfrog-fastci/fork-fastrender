@@ -7,7 +7,7 @@ use crate::async_runtime::PromiseLayout;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use std::sync::{Condvar, Mutex};
 
-use super::queue_microtask;
+use super::{global as async_global, Task};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -592,8 +592,8 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   }
 
   extern "C" fn run_thenable_job(data: *mut u8) {
-    // Safety: allocated by `promise_resolve_thenable` and run as a microtask.
-    let job = unsafe { Box::from_raw(data as *mut ThenableJob) };
+    // Safety: allocated by `promise_resolve_thenable` and freed by the task drop hook.
+    let job = unsafe { &*(data as *const ThenableJob) };
 
     // If the destination promise was already settled by another path, do not invoke the thenable at
     // all.
@@ -625,5 +625,17 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   }
 
   let job = Box::new(ThenableJob { dst, thenable });
-  queue_microtask(run_thenable_job, Box::into_raw(job) as *mut u8);
+
+  extern "C" fn drop_thenable_job(data: *mut u8) {
+    // Safety: allocated by `Box::into_raw` above.
+    unsafe {
+      drop(Box::from_raw(data as *mut ThenableJob));
+    }
+  }
+
+  async_global().enqueue_microtask(Task::new_with_drop(
+    run_thenable_job,
+    Box::into_raw(job) as *mut u8,
+    drop_thenable_job,
+  ));
 }
