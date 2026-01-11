@@ -76,7 +76,7 @@
     - fs.stat
   since: "v0.1.0"
   effects:
-    base: [io, may_throw]
+    base: [io, async, may_throw]
     depends_on_args: [0]
     io: true
     may_throw: true
@@ -107,22 +107,36 @@
   deterministic: false
 
 - name: node:fs.readdir
+  kind: function
   aliases:
     - fs.readdir
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.readdirSync
+  kind: function
   aliases:
     - fs.readdirSync
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: false
   parallelizable: true
   idempotent: true
@@ -147,264 +161,432 @@
   deterministic: false
 
 - name: node:fs.promises.readFile
+  kind: function
   aliases:
     - fs.promises.readFile
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.promises.writeFile
+  kind: function
   aliases:
     - fs.promises.writeFile
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.promises.stat
+  kind: function
   aliases:
     - fs.promises.stat
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.promises.readdir
+  kind: function
   aliases:
     - fs.promises.readdir
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.mkdir
+  kind: function
   aliases:
     - fs.mkdir
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.mkdirSync
+  kind: function
   aliases:
     - fs.mkdirSync
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.promises.mkdir
+  kind: function
   aliases:
     - fs.promises.mkdir
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.rm
+  kind: function
   aliases:
     - fs.rm
   since: "v14.14.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.rmSync
+  kind: function
   aliases:
     - fs.rmSync
   since: "v14.14.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.promises.rm
+  kind: function
   aliases:
     - fs.promises.rm
   since: "v14.14.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.unlink
+  kind: function
   aliases:
     - fs.unlink
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.unlinkSync
+  kind: function
   aliases:
     - fs.unlinkSync
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.promises.unlink
+  kind: function
   aliases:
     - fs.promises.unlink
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.copyFile
+  kind: function
   aliases:
     - fs.copyFile
   since: "v8.5.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.copyFileSync
+  kind: function
   aliases:
     - fs.copyFileSync
   since: "v8.5.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.promises.copyFile
+  kind: function
   aliases:
     - fs.promises.copyFile
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs/promises.readFile
+  kind: function
   aliases:
     - fs/promises.readFile
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs/promises.writeFile
+  kind: function
   aliases:
     - fs/promises.writeFile
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs/promises.stat
+  kind: function
   aliases:
     - fs/promises.stat
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs/promises.readdir
+  kind: function
   aliases:
     - fs/promises.readdir
   since: "v10.0.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs/promises.mkdir
+  kind: function
   aliases:
     - fs/promises.mkdir
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs/promises.rm
+  kind: function
   aliases:
     - fs/promises.rm
   since: "v14.14.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs/promises.unlink
+  kind: function
   aliases:
     - fs/promises.unlink
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs/promises.copyFile
+  kind: function
   aliases:
     - fs/promises.copyFile
   since: "v10.0.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
