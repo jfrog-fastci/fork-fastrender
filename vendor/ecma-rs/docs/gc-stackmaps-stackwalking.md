@@ -6,8 +6,8 @@ section describing where GC references live at each safepoint.
 Two details matter for the runtime:
 
 1. **Stackmap records are keyed by the _return address_**  
-   The "instruction offset" in a stackmap record refers to the address of the instruction *after*
-   the safepoint call (i.e. the return address pushed by the call instruction).
+    The "instruction offset" in a stackmap record refers to the address of the instruction *after*
+    the safepoint call (i.e. the callsite return address).
 
 2. **Most stack locations are `Indirect [SP + off]`**  
     When LLVM needs a GC ref to be in memory at a safepoint, stackmaps typically describe it as

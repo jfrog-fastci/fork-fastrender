@@ -505,7 +505,7 @@ After `rewrite-statepoints-for-gc` in LLVM 18:
 
 - Stackmap record `instruction_offset` equals the **return address offset** from the function start.
   - Absolute callsite address is `FunctionAddress + instruction_offset` (StackMap v3 format).
-  - For statepoints, this absolute address equals the machine return address pushed by the `call` instruction (or the end of the reserved patch region).
+  - For statepoints, this absolute address equals the callsite return address (or the end of the reserved patch region).
   - For `NumPatchBytes = 0`, this is the PC after the `call` instruction.
   - For `NumPatchBytes > 0`, LLVM reserves a patchable region at the callsite (x86_64: a NOP sled)
     and the return address is the PC after that reserved region.
