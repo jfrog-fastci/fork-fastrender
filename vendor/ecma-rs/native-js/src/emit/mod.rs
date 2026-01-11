@@ -25,12 +25,18 @@ pub enum EmitError {
   #[error(transparent)]
   Pass(#[from] passes::PassError),
 
+  #[error("failed to create LLVM target machine for {triple}: {message}")]
+  TargetMachine { triple: String, message: String },
+
   #[error("failed to emit LLVM module as {file_type:?} to {path}: {message}")]
   Codegen {
     file_type: FileType,
     path: PathBuf,
     message: String,
   },
+
+  #[error("failed to emit LLVM module as {file_type:?}: {message}")]
+  CodegenBuffer { file_type: FileType, message: String },
 }
 
 /// Runs the native-js LLVM pass pipeline and writes an object file.
@@ -99,8 +105,8 @@ pub fn emit_bitcode(module: &Module<'_>) -> Vec<u8> {
 pub fn emit_object(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
   ensure_targets_initialized();
 
-  let target_ref =
-    Target::from_triple(&target.triple).expect("failed to resolve LLVM target from triple");
+  let target_ref = Target::from_triple(&target.triple)
+    .unwrap_or_else(|err| panic!("failed to resolve LLVM target from triple {}: {err}", target.triple));
   let machine = target_ref
     .create_target_machine(
       &target.triple,
@@ -110,7 +116,7 @@ pub fn emit_object(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
       target.reloc_mode,
       target.code_model,
     )
-    .expect("failed to create LLVM target machine");
+    .unwrap_or_else(|| panic!("failed to create LLVM target machine for {}", target.triple));
 
   module.set_triple(&target.triple);
   module.set_data_layout(&machine.get_target_data().get_data_layout());
@@ -120,6 +126,45 @@ pub fn emit_object(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
     .expect("failed to emit object file")
     .as_slice()
     .to_vec()
+}
+
+pub fn emit_object_with_statepoints(
+  module: &Module<'_>,
+  target: TargetConfig,
+) -> Result<Vec<u8>, EmitError> {
+  ensure_targets_initialized();
+
+  let target_ref = Target::from_triple(&target.triple).map_err(|err| EmitError::TargetMachine {
+    triple: target.triple.to_string(),
+    message: err.to_string(),
+  })?;
+  let machine = target_ref.create_target_machine(
+    &target.triple,
+    &target.cpu,
+    &target.features,
+    target.opt_level,
+    target.reloc_mode,
+    target.code_model,
+  ).ok_or_else(|| EmitError::TargetMachine {
+    triple: target.triple.to_string(),
+    message: "failed to create LLVM TargetMachine".to_string(),
+  })?;
+
+  module.set_triple(&target.triple);
+  module.set_data_layout(&machine.get_target_data().get_data_layout());
+
+  passes::rewrite_statepoints_for_gc(module, &machine)?;
+
+  Ok(
+    machine
+      .write_to_memory_buffer(module, FileType::Object)
+      .map_err(|e| EmitError::CodegenBuffer {
+        file_type: FileType::Object,
+        message: e.to_string(),
+      })?
+      .as_slice()
+      .to_vec(),
+  )
 }
 
 pub fn emit_asm(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
@@ -146,4 +191,40 @@ pub fn emit_asm(module: &Module<'_>, target: TargetConfig) -> Vec<u8> {
     .expect("failed to emit assembly")
     .as_slice()
     .to_vec()
+}
+
+pub fn emit_asm_with_statepoints(module: &Module<'_>, target: TargetConfig) -> Result<Vec<u8>, EmitError> {
+  ensure_targets_initialized();
+
+  let target_ref = Target::from_triple(&target.triple).map_err(|err| EmitError::TargetMachine {
+    triple: target.triple.to_string(),
+    message: err.to_string(),
+  })?;
+  let machine = target_ref.create_target_machine(
+    &target.triple,
+    &target.cpu,
+    &target.features,
+    target.opt_level,
+    target.reloc_mode,
+    target.code_model,
+  ).ok_or_else(|| EmitError::TargetMachine {
+    triple: target.triple.to_string(),
+    message: "failed to create LLVM TargetMachine".to_string(),
+  })?;
+
+  module.set_triple(&target.triple);
+  module.set_data_layout(&machine.get_target_data().get_data_layout());
+
+  passes::rewrite_statepoints_for_gc(module, &machine)?;
+
+  Ok(
+    machine
+      .write_to_memory_buffer(module, FileType::Assembly)
+      .map_err(|e| EmitError::CodegenBuffer {
+        file_type: FileType::Assembly,
+        message: e.to_string(),
+      })?
+      .as_slice()
+      .to_vec(),
+  )
 }

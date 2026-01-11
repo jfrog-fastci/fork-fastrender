@@ -169,7 +169,8 @@ fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
 
   let mut target = native_js::emit::TargetConfig::default();
   target.opt_level = opt_level(cli.opt)?;
-  let obj = native_js::emit::emit_object(&module, target);
+  let obj = native_js::emit::emit_object_with_statepoints(&module, target)
+    .map_err(|err| err.to_string())?;
 
   link_object(cli.debug, &obj, output)?;
 
@@ -248,11 +249,13 @@ fn emit_artifact(
       fs::write(path, bc).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     EmitKind::Obj => {
-      let obj = native_js::emit::emit_object(module, target);
+      let obj = native_js::emit::emit_object_with_statepoints(module, target)
+        .map_err(|err| err.to_string())?;
       fs::write(path, obj).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     EmitKind::Asm => {
-      let asm = native_js::emit::emit_asm(module, target);
+      let asm = native_js::emit::emit_asm_with_statepoints(module, target)
+        .map_err(|err| err.to_string())?;
       fs::write(path, asm).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
   }
