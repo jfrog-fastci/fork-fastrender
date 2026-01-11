@@ -538,6 +538,76 @@ fn gc_pointer_select_is_relocated_across_safepoint() {
 }
 
 #[test]
+fn multiple_gc_roots_are_relocated_with_correct_indices() {
+  // Common JS runtime scenario: multiple GC pointers are simultaneously live
+  // across a safepoint (e.g. multiple locals/temps across a runtime call).
+  //
+  // Ensure each relocated SSA uses the correct gc-live index (and is then used
+  // after the safepoint).
+  let before = r#"
+  declare void @bar()
+
+  define i8 @test(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
+  entry:
+    call void @bar()
+    %va = load i8, ptr addrspace(1) %a, align 1
+    %vb = load i8, ptr addrspace(1) %b, align 1
+    %sum = add i8 %va, %vb
+    ret i8 %sum
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let gc_live = parse_gc_live_vars(statepoint_line);
+
+  assert!(
+    gc_live.len() == 2 && gc_live.iter().any(|v| v == "%a") && gc_live.iter().any(|v| v == "%b"),
+    "expected gc-live to contain exactly %a and %b, got {gc_live:?}\n\n{func}"
+  );
+
+  for var in ["%a", "%b"] {
+    let reloc_line = expect_relocate_line(&func, var, var);
+    let relocated = assigned_ssa(reloc_line)
+      .unwrap_or_else(|| panic!("expected relocate assignment for {var}: {reloc_line}"));
+    let (base_idx, derived_idx) = parse_relocate_indices(reloc_line)
+      .unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+    let pos = gc_live
+      .iter()
+      .position(|v| v == var)
+      .unwrap_or_else(|| panic!("expected {var} to be present in gc-live vars {gc_live:?}\n\n{func}"));
+    assert_eq!(
+      (base_idx as usize, derived_idx as usize),
+      (pos, pos),
+      "expected gc.relocate indices for {var} to be ({pos},{pos}), got ({base_idx},{derived_idx})\n\n{func}"
+    );
+    assert!(
+      func.contains(&format!("load i8, ptr addrspace(1) {relocated}")),
+      "expected post-safepoint load to use relocated value {relocated} for {var}:\n{func}"
+    );
+  }
+
+  // Ensure the original (pre-safepoint) SSA values are not used by the loads.
+  assert!(
+    !func
+      .lines()
+      .any(|l| l.contains("load i8, ptr addrspace(1) %a,")),
+    "expected loads to not use original %a after safepoint:\n{func}"
+  );
+  assert!(
+    !func
+      .lines()
+      .any(|l| l.contains("load i8, ptr addrspace(1) %b,")),
+    "expected loads to not use original %b after safepoint:\n{func}"
+  );
+}
+
+#[test]
 fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
   // Important real-world pattern: allocate an object (pointer result from a
   // statepoint) and then keep it live across a later safepoint call.
