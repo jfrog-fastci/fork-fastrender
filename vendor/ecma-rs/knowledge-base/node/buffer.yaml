@@ -125,3 +125,91 @@
   parallelizable: true
   idempotent: false
   deterministic: false
+
+- name: node:buffer.Buffer.prototype.toString
+  kind: function
+  aliases:
+    - buffer.Buffer.prototype.toString
+    - Buffer.prototype.toString
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.prototype.slice
+  kind: function
+  aliases:
+    - buffer.Buffer.prototype.slice
+    - Buffer.prototype.slice
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.prototype.subarray
+  kind: function
+  aliases:
+    - buffer.Buffer.prototype.subarray
+    - Buffer.prototype.subarray
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.prototype.equals
+  kind: function
+  aliases:
+    - buffer.Buffer.prototype.equals
+    - Buffer.prototype.equals
+  since: "v0.1.0"
+  effects:
+    template: pure
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.prototype.compare
+  kind: function
+  aliases:
+    - buffer.Buffer.prototype.compare
+    - Buffer.prototype.compare
+  since: "v0.1.0"
+  effects:
+    template: pure
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

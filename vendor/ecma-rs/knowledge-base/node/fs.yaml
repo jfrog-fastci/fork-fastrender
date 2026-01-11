@@ -987,3 +987,183 @@
   parallelizable: false
   idempotent: false
   deterministic: false
+
+- name: node:fs.access
+  kind: function
+  aliases:
+    - fs.access
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.accessSync
+  kind: function
+  aliases:
+    - fs.accessSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.promises.access
+  kind: function
+  aliases:
+    - fs.promises.access
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs/promises.access
+  kind: function
+  aliases:
+    - fs/promises.access
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.open
+  kind: function
+  aliases:
+    - fs.open
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.openSync
+  kind: function
+  aliases:
+    - fs.openSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.promises.open
+  kind: function
+  aliases:
+    - fs.promises.open
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs/promises.open
+  kind: function
+  aliases:
+    - fs/promises.open
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.close
+  kind: function
+  aliases:
+    - fs.close
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.closeSync
+  kind: function
+  aliases:
+    - fs.closeSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
