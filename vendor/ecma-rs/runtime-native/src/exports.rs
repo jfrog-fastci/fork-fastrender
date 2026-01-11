@@ -615,6 +615,15 @@ pub extern "C" fn rt_async_poll_legacy() -> bool {
   async_rt::poll()
 }
 
+/// Configure whether `await` on an already-settled promise yields to the microtask queue (strict JS
+/// semantics) or resumes synchronously (fast-path).
+///
+/// Default is `false` (fast-path).
+#[no_mangle]
+pub extern "C" fn rt_async_set_strict_await_yields(strict: bool) {
+  async_rt::set_strict_await_yields(strict);
+}
+
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
   let _ = crate::rt_ensure_init();

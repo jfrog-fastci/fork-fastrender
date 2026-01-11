@@ -307,6 +307,12 @@ PromiseRef rt_async_spawn(CoroutineRef coro);
 // Drive the async runtime. Returns true if any work was performed.
 bool rt_async_poll(void);
 
+// Configure whether `await` on an already-settled promise yields (strict JS microtask semantics) or
+// resumes synchronously (fast-path).
+//
+// Default is false.
+void rt_async_set_strict_await_yields(bool strict);
+
 // -----------------------------------------------------------------------------
 // Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 // -----------------------------------------------------------------------------

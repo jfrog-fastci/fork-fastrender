@@ -494,6 +494,7 @@ mod tests {
       "void rt_promise_reject(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "bool rt_async_poll(void);",
+      "void rt_async_set_strict_await_yields(bool strict);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",

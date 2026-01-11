@@ -177,7 +177,7 @@ extern "C" fn settled_await_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus
 #[test]
 fn strict_mode_awaiting_settled_promise_yields_to_microtask() {
   let _rt = TestRuntimeGuard::new();
-  runtime_native::set_strict_await_yields(true);
+  runtime_native::rt_async_set_strict_await_yields(true);
 
   let awaited = runtime_native::rt_promise_new_legacy();
   runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
@@ -207,7 +207,7 @@ fn strict_mode_awaiting_settled_promise_yields_to_microtask() {
 #[test]
 fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
   let _rt = TestRuntimeGuard::new();
-  runtime_native::set_strict_await_yields(false);
+  runtime_native::rt_async_set_strict_await_yields(false);
 
   let awaited = runtime_native::rt_promise_new_legacy();
   runtime_native::rt_promise_resolve_legacy(awaited, 0xBEEFusize as ValueRef);
