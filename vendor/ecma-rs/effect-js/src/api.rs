@@ -15,6 +15,7 @@ pub enum ApiId {
   PromiseAll,
   PromisePrototypeThen,
   MapPrototypeGet,
+  MapPrototypeHas,
   Fetch,
   JsonParse,
   MathSqrt,
@@ -34,6 +35,7 @@ impl ApiId {
       ApiId::PromiseAll => "Promise.all",
       ApiId::PromisePrototypeThen => "Promise.prototype.then",
       ApiId::MapPrototypeGet => "Map.prototype.get",
+      ApiId::MapPrototypeHas => "Map.prototype.has",
       ApiId::Fetch => "fetch",
       ApiId::JsonParse => "JSON.parse",
       ApiId::MathSqrt => "Math.sqrt",
@@ -54,6 +56,7 @@ impl ApiId {
       "Promise.all" => ApiId::PromiseAll,
       "Promise.prototype.then" => ApiId::PromisePrototypeThen,
       "Map.prototype.get" => ApiId::MapPrototypeGet,
+      "Map.prototype.has" => ApiId::MapPrototypeHas,
       "fetch" => ApiId::Fetch,
       "JSON.parse" => ApiId::JsonParse,
       "Math.sqrt" => ApiId::MathSqrt,
@@ -69,4 +72,3 @@ impl fmt::Display for ApiId {
     f.write_str(self.as_str())
   }
 }
-

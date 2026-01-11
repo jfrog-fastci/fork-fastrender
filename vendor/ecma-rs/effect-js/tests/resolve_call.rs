@@ -86,6 +86,7 @@ fn resolves_typed_map_and_promise_instance_methods() {
 
   let source = r#"
 const m: Map<string, number> = new Map();
+m.has("a");
 m.get("a");
 
 const p: Promise<number> = Promise.resolve(1);
@@ -108,6 +109,13 @@ p.then(x => x + 1);
   let body = lower.body(body_id).unwrap();
   let types = TypedProgram::from_program(program.clone(), file_id);
   let db = effect_js::load_default_api_database();
+
+  let map_has_span = range_of(source, "m.has(\"a\")");
+  let map_has = find_call_expr(body, map_has_span);
+  let resolved =
+    resolve_call(lower, body_id, body, map_has, &db, Some(&types)).expect("resolve Map.has");
+  assert_eq!(resolved.api, "Map.prototype.has");
+  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeHas));
 
   let map_get_span = range_of(source, "m.get(\"a\")");
   let map_get = find_call_expr(body, map_get_span);

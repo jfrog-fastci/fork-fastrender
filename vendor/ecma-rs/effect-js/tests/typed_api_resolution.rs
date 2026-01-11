@@ -9,6 +9,7 @@ use typecheck_ts::{FileKey, MemoryHost, Program};
 const INDEX_TS: &str = r#"
 const arr: number[] = [1, 2, 3];
 arr.map(x => x + 1);
+arr.forEach(x => x + 1);
 const total = arr.map(x => x + 1).filter(x => x > 1).reduce((a, b) => a + b, 0);
 
 const ro: ReadonlyArray<number> = arr;
@@ -16,8 +17,10 @@ ro.map(x => x);
 
 const str: string = "HELLO";
 str.toLowerCase();
+str.split("");
 
 const m: Map<string, number> = new Map();
+m.has("a");
 m.get("a");
 const v = m.get("a") ?? 0;
 
@@ -61,8 +64,11 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
     .collect();
 
   assert!(apis.contains(&ApiId::ArrayPrototypeMap));
+  assert!(apis.contains(&ApiId::ArrayPrototypeForEach));
   assert!(apis.contains(&ApiId::StringPrototypeToLowerCase));
+  assert!(apis.contains(&ApiId::StringPrototypeSplit));
   assert!(apis.contains(&ApiId::MapPrototypeGet));
+  assert!(apis.contains(&ApiId::MapPrototypeHas));
   assert!(apis.contains(&ApiId::PromisePrototypeThen));
 
   // Ensure we do not resolve prototype APIs when the receiver type is `any`.
