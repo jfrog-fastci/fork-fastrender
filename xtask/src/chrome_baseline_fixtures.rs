@@ -1358,6 +1358,15 @@ fn build_chrome_common_args(
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--hide-scrollbars",
+    // Reduce nondeterminism + Chrome-vs-FastRender diffs caused by LCD subpixel text.
+    //
+    // Chrome's default text output often uses per-channel subpixel antialiasing (RGB fringes),
+    // which FastRender does not currently emulate. Disabling LCD text keeps baseline renders
+    // grayscale, improving diff signal for layout/paint primitives.
+    "--disable-lcd-text",
+    // When LCD text is disabled, subpixel positioning can still introduce 1px jitter across
+    // platforms/builds. Disable it so text pixel placement is more stable.
+    "--disable-font-subpixel-positioning",
   ]
   .iter()
   .map(|v| v.to_string()));
@@ -1644,6 +1653,28 @@ mod tests {
         .iter()
         .any(|arg| arg == "--virtual-time-budget=5000"),
       "expected --virtual-time-budget=5000 in args: {args:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_args_disable_lcd_text() {
+    let temp = tempdir().expect("tempdir");
+    let args = super::build_chrome_common_args(
+      super::HeadlessMode::New,
+      temp.path(),
+      (1040, 1240),
+      1.0,
+    )
+    .expect("build chrome args");
+    assert!(
+      args.iter().any(|arg| arg == "--disable-lcd-text"),
+      "expected --disable-lcd-text in args: {args:?}"
+    );
+    assert!(
+      args
+        .iter()
+        .any(|arg| arg == "--disable-font-subpixel-positioning"),
+      "expected --disable-font-subpixel-positioning in args: {args:?}"
     );
   }
 }

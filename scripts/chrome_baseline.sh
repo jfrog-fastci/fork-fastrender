@@ -602,6 +602,11 @@ PY
   fi
   chrome_args+=(
     --hide-scrollbars
+    # Reduce nondeterminism + Chrome-vs-FastRender diffs caused by LCD subpixel text.
+    # FastRender does not emulate per-channel subpixel antialiasing, so keep baselines grayscale.
+    --disable-lcd-text
+    # Avoid 1px jitter in text placement from subpixel positioning (platform-dependent).
+    --disable-font-subpixel-positioning
     --window-size="${VIEWPORT_W},${WINDOW_H}"
     --force-device-scale-factor="${DPR}"
     --disable-web-security
