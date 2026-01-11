@@ -1016,6 +1016,28 @@ fn checked_pipeline_run_supports_reexported_main() {
 }
 
 #[test]
+fn checked_pipeline_run_supports_renamed_reexported_main() {
+  let tmp = TempDir::new().unwrap();
+
+  let impl_file = tmp.path().join("impl.ts");
+  fs::write(&impl_file, "export function run(): number { return 7; }\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export { run as main } from \"./impl\";\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(7)
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn checked_pipeline_run_supports_export_all_reexported_main() {
   let tmp = TempDir::new().unwrap();
 

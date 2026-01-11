@@ -480,6 +480,27 @@ fn auto_calls_reexported_main() {
 }
 
 #[test]
+fn auto_calls_renamed_reexported_main() {
+  let dir = tempdir().unwrap();
+  let impl_file = dir.path().join("impl.ts");
+  let entry = dir.path().join("entry.ts");
+
+  fs::write(
+    &impl_file,
+    "console.log(\"dep\");\nexport function run(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+  fs::write(&entry, "export { run as main } from './impl';\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg(entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
 fn auto_calls_export_all_reexported_main() {
   let dir = tempdir().unwrap();
   let impl_file = dir.path().join("impl.ts");
