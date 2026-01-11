@@ -86,3 +86,16 @@
     network: false
     nondeterministic: false
   purity: Pure
+
+- name: Object.prototype.hasOwnProperty
+  semantics: HasOwnProperty
+  signature: "(propertyKey) => boolean"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure

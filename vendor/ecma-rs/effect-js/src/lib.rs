@@ -133,6 +133,7 @@ mod tests {
       "Object.create",
       "Object.is",
       "Object.hasOwn",
+      "Object.prototype.hasOwnProperty",
       "fetch",
       "MutationObserver",
       "MutationObserver.prototype.observe",
