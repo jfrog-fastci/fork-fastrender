@@ -41,7 +41,9 @@ impl std::fmt::Display for TsToJsError {
         diagnostics.len()
       ),
       #[cfg(feature = "optimize-js-fallback")]
-      TsToJsError::OptimizeEmit(err) => write!(f, "optimize-js TS→JS fallback emit failed: {err}"),
+      TsToJsError::OptimizeEmit(err) => {
+        write!(f, "optimize-js TS→JS fallback emit failed: {err:?}")
+      }
     }
   }
 }
