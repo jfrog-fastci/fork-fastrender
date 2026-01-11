@@ -45,6 +45,22 @@ just ci
 
 Note: CI runs the same commands with `--locked` after generating `Cargo.lock`; the `just` recipes omit `--locked` for convenience.
 
+### Nested-workspace builds (when this repo is vendored)
+
+In this mono-repo, `ecma-rs` lives under `vendor/ecma-rs/` and is **not** part of the top-level
+Cargo workspace. Use the nested wrapper to ensure Cargo uses `vendor/ecma-rs/Cargo.toml`:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
+```
+
+Or, if you're already inside `vendor/ecma-rs/`:
+
+```bash
+bash ../../scripts/cargo_agent.sh test -p effect-js --lib
+```
+
 `just ci` runs:
 
 - `cargo fmt --all --check`

@@ -18,7 +18,6 @@ set -euo pipefail
 #   - Release builds with LTO
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Higher RAM limit for LLVM operations (default 96GB, override with LLVM_LIMIT_AS)
 export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
@@ -36,5 +35,4 @@ if [[ -n "${LLVM_SYS_180_PREFIX:-}" && -d "${LLVM_SYS_180_PREFIX}/bin" ]]; then
 fi
 
 # Delegate to the standard cargo wrapper
-cd "${REPO_ROOT}"
-exec bash "${REPO_ROOT}/../../scripts/cargo_agent.sh" "$@"
+exec bash "${SCRIPT_DIR}/cargo_agent.sh" "$@"
