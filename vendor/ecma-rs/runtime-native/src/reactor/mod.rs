@@ -236,6 +236,12 @@ impl Reactor {
         "Token::WAKE is reserved for the reactor waker",
       ));
     }
+    if interest.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "reactor interest must include READABLE and/or WRITABLE",
+      ));
+    }
     ensure_nonblocking(fd)?;
     self.sys.register(fd.as_raw_fd(), token, interest)
   }
@@ -250,6 +256,12 @@ impl Reactor {
       return Err(io::Error::new(
         io::ErrorKind::InvalidInput,
         "Token::WAKE is reserved for the reactor waker",
+      ));
+    }
+    if interest.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "reactor interest must include READABLE and/or WRITABLE",
       ));
     }
     ensure_nonblocking(fd)?;
@@ -495,6 +507,7 @@ mod sys {
 ))]
 mod sys {
   use super::{Event, Interest, Token};
+  use std::collections::HashMap;
   use std::io;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
   use std::time::Instant;
@@ -502,6 +515,13 @@ mod sys {
   pub(super) struct ReactorSys {
     kqueue: OwnedFd,
     wake_read: Option<OwnedFd>,
+    registrations: HashMap<RawFd, Registration>,
+  }
+
+  #[derive(Copy, Clone, Debug)]
+  struct Registration {
+    token: Token,
+    interest: Interest,
   }
 
   impl ReactorSys {
@@ -511,6 +531,7 @@ mod sys {
         return Err(io::Error::last_os_error());
       }
       let kqueue = unsafe { OwnedFd::from_raw_fd(kq) };
+      set_cloexec(kqueue.as_raw_fd())?;
 
       let (wake_read, waker_inner) = if cfg!(feature = "force_pipe_wake") {
         let (read, write) = create_pipe()?;
@@ -549,7 +570,11 @@ mod sys {
         }
       };
 
-      let sys = ReactorSys { kqueue, wake_read };
+      let sys = ReactorSys {
+        kqueue,
+        wake_read,
+        registrations: HashMap::new(),
+      };
 
       let waker = super::Waker {
         inner: std::sync::Arc::new(waker_inner),
@@ -559,7 +584,15 @@ mod sys {
     }
 
     pub(super) fn register(&mut self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
-      self.update(fd, token, interest, false)
+      if self.registrations.contains_key(&fd) {
+        return Err(io::Error::from_raw_os_error(libc::EEXIST));
+      }
+
+      let changes = changes_for_register(fd, token, interest);
+      apply_changes(self.kqueue.as_raw_fd(), &changes)?;
+
+      self.registrations.insert(fd, Registration { token, interest });
+      Ok(())
     }
 
     pub(super) fn reregister(
@@ -568,81 +601,26 @@ mod sys {
       token: Token,
       interest: Interest,
     ) -> io::Result<()> {
-      self.update(fd, token, interest, true)
-    }
+      let Some(old) = self.registrations.get(&fd).copied() else {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+      };
 
-    pub(super) fn deregister(&mut self, fd: RawFd) -> io::Result<()> {
-      // Best-effort delete; ignore ENOENT.
-      for filter in [libc::EVFILT_READ, libc::EVFILT_WRITE] {
-        let mut kev = libc::kevent {
-          ident: fd as libc::uintptr_t,
-          filter,
-          flags: libc::EV_DELETE,
-          fflags: 0,
-          data: 0,
-          udata: std::ptr::null_mut(),
-        };
-        let rc = unsafe {
-          libc::kevent(
-            self.kqueue.as_raw_fd(),
-            &kev as *const libc::kevent,
-            1,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-          )
-        };
-        if rc == -1 {
-          let err = io::Error::last_os_error();
-          if err.raw_os_error() == Some(libc::ENOENT) {
-            continue;
-          }
-          return Err(err);
-        }
-      }
+      let changes = changes_for_reregister(fd, old, token, interest);
+      apply_changes(self.kqueue.as_raw_fd(), &changes)?;
+
+      self.registrations.insert(fd, Registration { token, interest });
       Ok(())
     }
 
-    fn update(&mut self, fd: RawFd, token: Token, interest: Interest, clear_existing: bool) -> io::Result<()> {
-      if clear_existing {
-        self.deregister(fd)?;
-      }
-
-      let mut changes: Vec<libc::kevent> = Vec::new();
-      if interest.contains(Interest::READABLE) {
-        changes.push(make_kevent(
-          fd,
-          libc::EVFILT_READ,
-          token,
-          libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
-        ));
-      }
-      if interest.contains(Interest::WRITABLE) {
-        changes.push(make_kevent(
-          fd,
-          libc::EVFILT_WRITE,
-          token,
-          libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
-        ));
-      }
-
-      if changes.is_empty() {
-        return Ok(());
-      }
-
-      let rc = unsafe {
-        libc::kevent(
-          self.kqueue.as_raw_fd(),
-          changes.as_ptr(),
-          changes.len() as i32,
-          std::ptr::null_mut(),
-          0,
-          std::ptr::null(),
-        )
+    pub(super) fn deregister(&mut self, fd: RawFd) -> io::Result<()> {
+      let Some(old) = self.registrations.get(&fd).copied() else {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
-      }
+
+      let changes = changes_for_deregister(fd, old);
+      apply_changes(self.kqueue.as_raw_fd(), &changes)?;
+
+      self.registrations.remove(&fd);
       Ok(())
     }
 
@@ -725,6 +703,107 @@ mod sys {
       }
       Ok(())
     }
+  }
+
+  fn apply_changes(kqueue: RawFd, changes: &[libc::kevent]) -> io::Result<()> {
+    if changes.is_empty() {
+      return Ok(());
+    }
+    loop {
+      let rc = unsafe {
+        libc::kevent(
+          kqueue,
+          changes.as_ptr(),
+          changes.len() as i32,
+          std::ptr::null_mut(),
+          0,
+          std::ptr::null(),
+        )
+      };
+      if rc != -1 {
+        return Ok(());
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    }
+  }
+
+  fn changes_for_register(fd: RawFd, token: Token, interest: Interest) -> Vec<libc::kevent> {
+    let mut changes = Vec::new();
+    if interest.contains(Interest::READABLE) {
+      changes.push(make_kevent(
+        fd,
+        libc::EVFILT_READ,
+        token,
+        libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+      ));
+    }
+    if interest.contains(Interest::WRITABLE) {
+      changes.push(make_kevent(
+        fd,
+        libc::EVFILT_WRITE,
+        token,
+        libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+      ));
+    }
+    changes
+  }
+
+  fn changes_for_reregister(fd: RawFd, old: Registration, token: Token, interest: Interest) -> Vec<libc::kevent> {
+    let mut changes = Vec::new();
+
+    // Update / add / remove filters individually so we don't depend on kqueue "best effort" ENOENT
+    // semantics, and so we can enforce mio-style register/reregister/deregister errors uniformly
+    // across backends.
+    for (filter, bit) in [
+      (libc::EVFILT_READ, Interest::READABLE),
+      (libc::EVFILT_WRITE, Interest::WRITABLE),
+    ] {
+      let had = old.interest.contains(bit);
+      let wants = interest.contains(bit);
+
+      match (had, wants) {
+        (true, true) => {
+          // Modify existing: ensure it's enabled and update udata (token).
+          changes.push(make_kevent(
+            fd,
+            filter,
+            token,
+            libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+          ));
+        }
+        (false, true) => {
+          // Newly interested: add+enable.
+          changes.push(make_kevent(
+            fd,
+            filter,
+            token,
+            libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
+          ));
+        }
+        (true, false) => {
+          // No longer interested: delete.
+          changes.push(make_kevent(fd, filter, old.token, libc::EV_DELETE));
+        }
+        (false, false) => {}
+      }
+    }
+
+    changes
+  }
+
+  fn changes_for_deregister(fd: RawFd, reg: Registration) -> Vec<libc::kevent> {
+    let mut changes = Vec::new();
+    if reg.interest.contains(Interest::READABLE) {
+      changes.push(make_kevent(fd, libc::EVFILT_READ, reg.token, libc::EV_DELETE));
+    }
+    if reg.interest.contains(Interest::WRITABLE) {
+      changes.push(make_kevent(fd, libc::EVFILT_WRITE, reg.token, libc::EV_DELETE));
+    }
+    changes
   }
 
   fn register_user_waker(kqueue: RawFd, ident: libc::uintptr_t) -> io::Result<()> {
@@ -855,25 +934,53 @@ mod sys {
   }
 
   fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 {
-      return Err(io::Error::last_os_error());
-    }
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    if rc == -1 {
-      return Err(io::Error::last_os_error());
+    let flags = loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+      if rc != -1 {
+        break rc;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
+    loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+      if rc != -1 {
+        break;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
     }
     Ok(())
   }
 
   fn set_cloexec(fd: RawFd) -> io::Result<()> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags == -1 {
-      return Err(io::Error::last_os_error());
-    }
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-    if rc == -1 {
-      return Err(io::Error::last_os_error());
+    let flags = loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+      if rc != -1 {
+        break rc;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
+    loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+      if rc != -1 {
+        break;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
     }
     Ok(())
   }

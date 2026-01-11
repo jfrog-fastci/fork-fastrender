@@ -170,6 +170,84 @@ fn token_wake_is_reserved() {
 }
 
 #[test]
+fn empty_interest_behavior() {
+  let (read, _write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+
+  let err = reactor
+    .register(read.as_fd(), Token(12), Interest::empty())
+    .expect_err("expected registering with empty interest to fail");
+  assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "got {err:?}");
+
+  reactor
+    .register(read.as_fd(), Token(12), Interest::READABLE)
+    .unwrap();
+
+  let err = reactor
+    .reregister(read.as_fd(), Token(12), Interest::empty())
+    .expect_err("expected reregistering with empty interest to fail");
+  assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "got {err:?}");
+}
+
+#[test]
+fn double_register_behavior() {
+  let (read, write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  reactor
+    .register(read.as_fd(), Token(13), Interest::READABLE)
+    .unwrap();
+
+  // A second register must fail and must not change the existing registration.
+  let err = reactor
+    .register(read.as_fd(), Token(14), Interest::READABLE)
+    .expect_err("expected registering an already-registered fd to fail");
+  assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "got {err:?}");
+
+  // Ensure the original token is still delivered.
+  let b = [0x1u8];
+  let rc = unsafe { libc::write(write.as_raw_fd(), b.as_ptr() as *const libc::c_void, 1) };
+  assert_eq!(rc, 1);
+
+  let mut events = Vec::new();
+  reactor
+    .poll(&mut events, Some(Duration::from_secs(1)))
+    .unwrap();
+  assert!(
+    events.iter().any(|e| e.token == Token(13) && e.readable),
+    "expected readable event for original token, got {events:?}"
+  );
+
+  drain_read_nonblocking(read.as_raw_fd()).unwrap();
+}
+
+#[test]
+fn reregister_without_register_behavior() {
+  let (read, _write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  let err = reactor
+    .reregister(read.as_fd(), Token(15), Interest::READABLE)
+    .expect_err("expected reregistering an unregistered fd to fail");
+  assert_eq!(err.kind(), io::ErrorKind::NotFound, "got {err:?}");
+}
+
+#[test]
+fn deregister_without_register_behavior() {
+  let (read, _write) = pipe().unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  let err = reactor
+    .deregister(read.as_fd())
+    .expect_err("expected deregistering an unregistered fd to fail");
+  assert_eq!(err.kind(), io::ErrorKind::NotFound, "got {err:?}");
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();

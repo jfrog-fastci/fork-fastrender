@@ -8,6 +8,45 @@ This document defines the **cross-platform reactor contract** for `runtime-nativ
 The goal is that higher layers (async runtime, scheduler, I/O resources) can rely on **one set of
 readiness semantics** and not contain platform-specific special cases.
 
+## Registration API contract
+
+The reactor exposes a small stateful API:
+
+- `register(fd, token, interest)`
+- `reregister(fd, token, interest)`
+- `deregister(fd)`
+
+The backend implementation **must provide the same observable behavior** on all platforms.
+
+### Interest cannot be empty
+
+`interest` **must not** be empty.
+
+- `register(..., Interest::empty())` returns `InvalidInput`.
+- `reregister(..., Interest::empty())` returns `InvalidInput`.
+
+To express "no longer interested", callers must use `deregister(fd)`.
+
+### `register` when already registered
+
+If `fd` is already registered with the same reactor, `register` fails with:
+
+- `io::ErrorKind::AlreadyExists` (Linux: `EEXIST`)
+
+The existing registration is left unchanged.
+
+### `reregister` when not registered
+
+If `fd` is not registered with the reactor, `reregister` fails with:
+
+- `io::ErrorKind::NotFound` (Linux: `ENOENT`)
+
+### `deregister` when not registered
+
+If `fd` is not registered with the reactor, `deregister` fails with:
+
+- `io::ErrorKind::NotFound` (Linux: `ENOENT`)
+
 ## Trigger mode: edge-triggered
 
 The reactor is **edge-triggered** on all platforms:
