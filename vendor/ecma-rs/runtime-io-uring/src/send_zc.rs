@@ -7,6 +7,7 @@
 //! indicates when those pages are released and it is safe to drop/unpin/reuse the
 //! buffer. See crate-level docs for the policy and safety rationale.
 
+use std::io;
 use std::os::fd::RawFd;
 
 use io_uring::opcode;
@@ -45,13 +46,23 @@ pub struct SendZcResource<B> {
   pub send_flags: u32,
 }
 
-pub(crate) fn build_sqe<B: IoBuf>(fd: RawFd, buf: &B, flags: SendZcFlags) -> squeue::Entry {
+pub(crate) fn build_sqe<B: IoBuf>(
+  fd: RawFd,
+  buf: &B,
+  flags: SendZcFlags,
+) -> io::Result<squeue::Entry> {
   let ptr = buf.stable_ptr().as_ptr() as *const u8;
-  let len = buf.len();
+  let len: u32 = buf.len().try_into().map_err(|_| {
+    io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "buffer length exceeds u32::MAX",
+    )
+  })?;
 
-  opcode::SendZc::new(types::Fd(fd), ptr, len as _)
-    .flags(flags.msg_flags)
-    .zc_flags(flags.zc_flags)
-    .build()
+  Ok(
+    opcode::SendZc::new(types::Fd(fd), ptr, len)
+      .flags(flags.msg_flags)
+      .zc_flags(flags.zc_flags)
+      .build(),
+  )
 }
-

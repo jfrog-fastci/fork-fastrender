@@ -1803,7 +1803,7 @@ mod imp {
                 rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr);
             });
 
-            let entry = crate::send_zc::build_sqe(fd, &buf, flags).user_data(id.0);
+            let entry = crate::send_zc::build_sqe(fd, &buf, flags)?.user_data(id.0);
             self.push_entry(&entry)?;
 
             self.in_flight().insert(
