@@ -11937,7 +11937,12 @@ impl InlineFormattingContext {
     let available_height = if inline_vertical {
       Some(available_block)
     } else {
-      constraints.height()
+      // Percentage heights resolve against the containing block's definite used size (CSS2.1 §10.5).
+      // In block flow, the available height is typically indefinite even when the containing block
+      // establishes a definite percentage base (e.g. `aspect-ratio` auto heights). Prefer the
+      // explicit percentage base when provided so `height:100%` on inline replaced content can
+      // resolve correctly.
+      constraints.block_percentage_base.or_else(|| constraints.height())
     };
 
     // Resolve paragraph base direction before shaping so bidi analysis uses the correct base.

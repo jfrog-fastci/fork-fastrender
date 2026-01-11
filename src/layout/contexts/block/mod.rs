@@ -5040,7 +5040,9 @@ impl BlockFormattingContext {
         LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
       } else {
         LayoutConstraints::new(available_height, AvailableSpace::Definite(containing_width))
-      };
+      }
+      .with_inline_percentage_base(Some(containing_width))
+      .with_block_percentage_base(constraints.block_percentage_base);
       let mut inline_fragment = match inline_fc.layout_with_floats(
         &inline_container,
         &inline_constraints,
@@ -7887,9 +7889,12 @@ impl FormattingContext for BlockFormattingContext {
         }
       }
       let containing_height = if inline_is_horizontal {
-        constraints.height()
+        // Prefer the explicit block percentage base so replaced elements with percentage heights
+        // can resolve against a definite containing-block size even when the block axis available
+        // space is indefinite (e.g. `aspect-ratio` auto heights).
+        constraints.block_percentage_base.or_else(|| constraints.height())
       } else {
-        constraints.width()
+        constraints.block_percentage_base.or_else(|| constraints.width())
       };
       let percentage_base = Some(crate::geometry::Size::new(
         containing_width,
@@ -13124,6 +13129,77 @@ mod tests {
       (inline_block_fragment.bounds.height() - 100.0).abs() < 0.1,
       "expected inline-block height:100% to resolve against definite containing height; got {}",
       inline_block_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn percentage_height_resolves_for_inline_replaced_against_aspect_ratio_auto_height() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Inline;
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.height_keyword = None;
+    let mut replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      crate::tree::box_tree::ReplacedType::Canvas,
+      Some(Size::new(150.0, 150.0)),
+      None,
+    );
+    replaced.id = 3;
+
+    let mut ratio_style = ComputedStyle::default();
+    ratio_style.display = Display::Block;
+    ratio_style.aspect_ratio = crate::style::types::AspectRatio::Ratio(1.5);
+    // Avoid baseline strut effects; this test is about percentage resolution, not typography.
+    ratio_style.line_height = crate::style::types::LineHeight::Length(Length::px(0.0));
+    let mut ratio_box = BoxNode::new_block(
+      Arc::new(ratio_style),
+      FormattingContextType::Block,
+      vec![replaced],
+    );
+    ratio_box.id = 2;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![ratio_box],
+    );
+    // Root element margins never collapse with children; mimic the real HTML root.
+    root.id = 1;
+
+    let fragment = bfc
+      .layout(&root, &LayoutConstraints::definite_width(150.0))
+      .unwrap();
+
+    fn find_fragment_by_box_id<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_fragment_by_box_id(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let ratio_fragment = find_fragment_by_box_id(&fragment, 2).expect("ratio fragment");
+    assert!(
+      (ratio_fragment.bounds.height() - 100.0).abs() < 0.1,
+      "expected aspect-ratio box to be 100px tall; got {}",
+      ratio_fragment.bounds.height()
+    );
+
+    let replaced_fragment = find_fragment_by_box_id(&fragment, 3).expect("replaced fragment");
+    assert!(
+      (replaced_fragment.bounds.height() - 100.0).abs() < 0.1,
+      "expected height:100% replaced content to resolve against ratio height; got {}",
+      replaced_fragment.bounds.height()
     );
   }
 
