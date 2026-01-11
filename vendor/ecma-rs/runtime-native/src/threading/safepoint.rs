@@ -355,7 +355,7 @@ pub fn rt_gc_poll() -> bool {
   (epoch & 1) != 0
 }
 
-fn fixup_safepoint_context_to_nearest_managed(
+pub(crate) fn fixup_safepoint_context_to_nearest_managed(
   mut ctx: SafepointContext,
   stackmaps: Option<&crate::stackmaps::StackMaps>,
 ) -> SafepointContext {

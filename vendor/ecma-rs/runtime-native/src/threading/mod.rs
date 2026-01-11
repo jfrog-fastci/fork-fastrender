@@ -79,24 +79,7 @@ pub fn set_parked(parked: bool) {
   // *outer* caller frame that remains live while the thread is blocked.
   if parked && is_registered && !was_parked {
     let mut ctx = crate::arch::capture_safepoint_context();
-    if let Some(stackmaps) = crate::stackmap::try_stackmaps() {
-      if stackmaps.lookup(ctx.ip as u64).is_none() {
-        if let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) {
-          let sp_callsite = cursor.sp.unwrap_or(0);
-          #[cfg(target_arch = "x86_64")]
-          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-          #[cfg(not(target_arch = "x86_64"))]
-          let sp_entry = sp_callsite;
-
-          ctx = crate::arch::SafepointContext {
-            sp_entry: sp_entry as usize,
-            sp: sp_callsite as usize,
-            fp: cursor.fp as usize,
-            ip: cursor.pc as usize,
-          };
-        }
-      }
-    }
+    ctx = safepoint::fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
     registry::set_current_thread_safepoint_context(ctx);
   }
 
