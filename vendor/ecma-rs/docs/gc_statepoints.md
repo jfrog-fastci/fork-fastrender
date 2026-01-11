@@ -145,7 +145,7 @@ declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32, i32)
 
 declare void @rt_safepoint(ptr addrspace(1))
 
-define void @example(ptr addrspace(1) %obj) gc "statepoint-example" {
+define void @example(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
       i64 0, i32 0,

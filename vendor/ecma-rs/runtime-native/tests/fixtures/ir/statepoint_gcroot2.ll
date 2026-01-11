@@ -15,7 +15,7 @@ declare void @llvm.gcroot(ptr, ptr)
 
 declare void @safepoint()
 
-define i64 @statepoint_gcroot2(ptr addrspace(1) %p1, ptr addrspace(1) %p2) gc "statepoint-example" {
+define i64 @statepoint_gcroot2(ptr addrspace(1) %p1, ptr addrspace(1) %p2) gc "coreclr" {
 entry:
   %root1 = alloca ptr addrspace(1), align 8
   %root2 = alloca ptr addrspace(1), align 8

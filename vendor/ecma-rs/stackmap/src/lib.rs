@@ -375,7 +375,7 @@ declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32, i32)
 declare void @callee(i64)
 declare void @use(ptr addrspace(1))
 
-define void @test(ptr addrspace(1) %p, i64 %x) gc "statepoint-example" {
+define void @test(ptr addrspace(1) %p, i64 %x) gc "coreclr" {
 entry:
   %safepoint = call fastcc token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr elementtype(void (i64)) @callee, i32 1, i32 1, i64 %x, i32 0, i32 0) [ "deopt"(i64 %x, i64 123), "gc-live"(ptr addrspace(1) %p) ]
   %p.relocated = call ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %safepoint, i32 0, i32 0)

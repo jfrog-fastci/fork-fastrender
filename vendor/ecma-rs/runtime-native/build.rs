@@ -145,7 +145,7 @@ entry:
   ret void
 }
 
-define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "statepoint-example" {
+define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "coreclr" {
 entry:
   call void @safepoint()
   ret ptr addrspace(1) %p
