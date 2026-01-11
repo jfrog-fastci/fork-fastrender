@@ -5974,7 +5974,32 @@ impl TableFormattingContext {
     }
 
     let constraints = LayoutConstraints::definite_width(cell_width.max(0.0));
-    let override_style = style_overrides.derive(&cell_box.style, flags);
+    let mut override_style = style_overrides.derive(&cell_box.style, flags);
+    if override_style.display == Display::TableCell && override_style.height.is_some() {
+      // CSS 2.1 §17.5.3: the `height` property on table cells specifies the *minimum* height
+      // of the cell (it does not establish a fixed-height box like normal block layout).
+      //
+      // Treat `height` as an additional `min-height` constraint so table-cell contents participate
+      // in intrinsic sizing and vertical-align calculations (e.g. `vertical-align: middle`), rather
+      // than being incorrectly centered within an undersized fixed-height fragment.
+      let mut owned = (*override_style).clone();
+      if let Some(height) = owned.height.take() {
+        owned.min_height = match owned.min_height {
+          None => Some(height),
+          Some(existing) => {
+            if existing.unit.is_absolute() && height.unit.is_absolute() {
+              Some(Length::px(existing.to_px().max(height.to_px())))
+            } else {
+              // When the units are not directly comparable (percent/font-relative), keep the
+              // existing `min-height`. This matches the common case (`height` with no `min-height`)
+              // and avoids creating a lossy `calc(max(...))` expression.
+              Some(existing)
+            }
+          }
+        };
+      }
+      override_style = Arc::new(owned);
+    }
     if cell_box.id() == 0 {
       let mut cloned = cell_box.clone();
       cloned.style = override_style;
