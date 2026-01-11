@@ -3105,6 +3105,112 @@ fn lowers_promise_all_array_literal() {
   ));
 }
 
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn does_not_lower_promise_all_when_promise_is_shadowed_by_param() {
+  let lowered = lower_from_source_with_kind(
+    FileKind::Ts,
+    "function f(Promise) { return Promise.all([a,b]); }",
+  )
+  .expect("lower");
+
+  // Promise is a local binding; do not lower into the specialized semantic node.
+  for body in lowered.bodies.iter() {
+    for expr in body.exprs.iter() {
+      assert!(
+        !matches!(expr.kind, ExprKind::PromiseAll { .. } | ExprKind::PromiseRace { .. }),
+        "unexpected Promise semantic op for shadowed Promise binding",
+      );
+    }
+  }
+
+  // We should still see a normal member call to `Promise.all`.
+  let mut found_call = false;
+  for body in lowered.bodies.iter() {
+    for expr in body.exprs.iter() {
+      let ExprKind::Call(call) = &expr.kind else { continue };
+      if call.optional || call.is_new {
+        continue;
+      }
+      let ExprKind::Member(member) = &body.exprs[call.callee.0 as usize].kind else {
+        continue;
+      };
+      if member.optional {
+        continue;
+      }
+      let ExprKind::Ident(obj) = &body.exprs[member.object.0 as usize].kind else {
+        continue;
+      };
+      if lowered.names.resolve(*obj) != Some("Promise") {
+        continue;
+      }
+      let hir_js::ObjectKey::Ident(prop) = &member.property else {
+        continue;
+      };
+      if lowered.names.resolve(*prop) != Some("all") {
+        continue;
+      }
+      found_call = true;
+    }
+  }
+  assert!(found_call, "expected Promise.all call expression");
+}
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn promise_all_lowering_ignores_named_function_expression_promise() {
+  let lowered = lower_from_source_with_kind(
+    FileKind::Ts,
+    "const x = function Promise() { return Promise.all([a,b]); }; const y = Promise.all([c,d]);",
+  )
+  .expect("lower");
+
+  // Named function expressions do not bind in the surrounding scope, so the
+  // top-level `Promise.all` call should still be lowered.
+  let root_body = lowered.body(lowered.root_body()).expect("root body");
+  let mut found_root_promise_all = None;
+  for (idx, expr) in root_body.exprs.iter().enumerate() {
+    if matches!(expr.kind, ExprKind::PromiseAll { .. }) {
+      found_root_promise_all = Some(ExprId(idx as u32));
+      break;
+    }
+  }
+  let expr_id = found_root_promise_all.expect("expected top-level PromiseAll semantic op");
+  let ExprKind::PromiseAll { promises } = &root_body.exprs[expr_id.0 as usize].kind else {
+    unreachable!()
+  };
+  assert_eq!(promises.len(), 2);
+  assert!(matches!(
+    &root_body.exprs[promises[0].0 as usize].kind,
+    ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("c")
+  ));
+  assert!(matches!(
+    &root_body.exprs[promises[1].0 as usize].kind,
+    ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("d")
+  ));
+
+  // The `Promise.all` call inside the named function expression should NOT be
+  // lowered, because `Promise` refers to the function's own name binding.
+  let mut func_body_id = None;
+  for expr in root_body.exprs.iter() {
+    if let ExprKind::FunctionExpr { body, name, .. } = &expr.kind {
+      if name.is_some_and(|id| lowered.names.resolve(id) == Some("Promise")) {
+        func_body_id = Some(*body);
+        break;
+      }
+    }
+  }
+  let func_body = lowered
+    .body(func_body_id.expect("expected named function expression body"))
+    .expect("function body");
+  for expr in func_body.exprs.iter() {
+    assert!(
+      !matches!(expr.kind, ExprKind::PromiseAll { .. } | ExprKind::PromiseRace { .. }),
+      "unexpected Promise semantic op inside named function expression",
+    );
+  }
+}
+
 proptest! {
   #[test]
   fn lowering_is_deterministic(sample in proptest::sample::select(vec![

@@ -74,6 +74,10 @@ pub(crate) struct LoweringContext {
   cancelled: Option<Arc<AtomicBool>>,
   diagnostics: Vec<Diagnostic>,
   parent_stack: Vec<Option<RawNode>>,
+  #[cfg(feature = "semantic-ops")]
+  semantic_ops_promise_shadowed_top_level: bool,
+  #[cfg(feature = "semantic-ops")]
+  semantic_ops_promise_shadowed_by_def: HashMap<DefId, bool>,
 }
 
 impl LoweringContext {
@@ -83,6 +87,10 @@ impl LoweringContext {
       cancelled,
       diagnostics: Vec::new(),
       parent_stack: vec![None],
+      #[cfg(feature = "semantic-ops")]
+      semantic_ops_promise_shadowed_top_level: false,
+      #[cfg(feature = "semantic-ops")]
+      semantic_ops_promise_shadowed_by_def: HashMap::new(),
     }
   }
 
@@ -165,6 +173,36 @@ impl LoweringContext {
     let result = f(self);
     self.parent_stack.pop();
     result
+  }
+
+  fn init_semantic_ops_promise_shadowing(&mut self, planned: &[PlannedDef<'_>]) {
+    #[cfg(feature = "semantic-ops")]
+    {
+      let (top_level, per_def) = compute_semantic_ops_promise_shadowing(planned);
+      self.semantic_ops_promise_shadowed_top_level = top_level;
+      self.semantic_ops_promise_shadowed_by_def = per_def;
+    }
+    #[cfg(not(feature = "semantic-ops"))]
+    let _ = planned;
+  }
+
+  fn semantic_ops_promise_shadowed(&self, owner: DefId) -> bool {
+    #[cfg(feature = "semantic-ops")]
+    {
+      if owner == MISSING_DEF {
+        return self.semantic_ops_promise_shadowed_top_level;
+      }
+      return self
+        .semantic_ops_promise_shadowed_by_def
+        .get(&owner)
+        .copied()
+        .unwrap_or(false);
+    }
+    #[cfg(not(feature = "semantic-ops"))]
+    {
+      let _ = owner;
+      false
+    }
   }
 }
 
@@ -355,6 +393,134 @@ struct PlannedDef<'a> {
   def_path: DefPath,
   parent: Option<DefId>,
   body: Option<PlannedBody>,
+}
+
+#[cfg(feature = "semantic-ops")]
+fn compute_semantic_ops_promise_shadowing(
+  planned: &[PlannedDef<'_>],
+) -> (bool, HashMap<DefId, bool>) {
+  use std::collections::HashSet;
+
+  fn is_scope_boundary(kind: DefKind) -> bool {
+    matches!(
+      kind,
+      DefKind::Function
+        | DefKind::Method
+        | DefKind::Constructor
+        | DefKind::Getter
+        | DefKind::Setter
+        | DefKind::Class
+        | DefKind::StaticBlock
+    )
+  }
+
+  fn enclosing_scope(
+    mut def: Option<DefId>,
+    parents: &HashMap<DefId, Option<DefId>>,
+    kinds: &HashMap<DefId, DefKind>,
+  ) -> Option<DefId> {
+    while let Some(id) = def {
+      if kinds.get(&id).is_some_and(|k| is_scope_boundary(*k)) {
+        return Some(id);
+      }
+      def = parents.get(&id).copied().flatten();
+    }
+    None
+  }
+
+  fn outer_scope(
+    def: DefId,
+    parents: &HashMap<DefId, Option<DefId>>,
+    kinds: &HashMap<DefId, DefKind>,
+  ) -> Option<DefId> {
+    enclosing_scope(parents.get(&def).copied().flatten(), parents, kinds)
+  }
+
+  fn shadowed(
+    scope: Option<DefId>,
+    promise_scopes: &HashSet<Option<DefId>>,
+    parents: &HashMap<DefId, Option<DefId>>,
+    kinds: &HashMap<DefId, DefKind>,
+    cache: &mut HashMap<Option<DefId>, bool>,
+  ) -> bool {
+    if let Some(&cached) = cache.get(&scope) {
+      return cached;
+    }
+
+    let value = if promise_scopes.contains(&scope) {
+      true
+    } else {
+      match scope {
+        None => false,
+        Some(id) => shadowed(outer_scope(id, parents, kinds), promise_scopes, parents, kinds, cache),
+      }
+    };
+
+    cache.insert(scope, value);
+    value
+  }
+
+  let mut parents: HashMap<DefId, Option<DefId>> = HashMap::new();
+  let mut kinds: HashMap<DefId, DefKind> = HashMap::new();
+  for def in planned {
+    parents.insert(def.def_id, def.parent);
+    kinds.insert(def.def_id, def.desc.kind);
+  }
+
+  // Collect the set of lexical scopes that bind a value named `Promise`.
+  //
+  // This is conservative: it ignores block-level shadowing and treats any value
+  // binding in a scope as shadowing `Promise.all`/`Promise.race` semantic
+  // lowering throughout that scope.
+  let mut promise_scopes: HashSet<Option<DefId>> = HashSet::new();
+  for def in planned {
+    if def.desc.name_text != "Promise" {
+      continue;
+    }
+
+    match def.desc.kind {
+      // Plain bindings; use the nearest enclosing scope boundary.
+      DefKind::Var | DefKind::Param | DefKind::ImportBinding | DefKind::Enum | DefKind::Namespace | DefKind::Module => {
+        promise_scopes.insert(enclosing_scope(Some(def.def_id), &parents, &kinds));
+      }
+      DefKind::Function => match &def.desc.source {
+        // Function declarations bind in their containing scope.
+        DefSource::Function(_) => {
+          promise_scopes.insert(enclosing_scope(def.parent, &parents, &kinds));
+        }
+        // Named function expressions bind their name only within their own
+        // function scope.
+        DefSource::FuncExpr(_) => {
+          promise_scopes.insert(Some(def.def_id));
+        }
+        _ => {}
+      },
+      DefKind::Class => match &def.desc.source {
+        // Class declarations bind in their containing scope.
+        DefSource::ClassDecl(_) => {
+          promise_scopes.insert(enclosing_scope(def.parent, &parents, &kinds));
+        }
+        // Named class expressions bind their name only within the class body.
+        DefSource::ClassExpr(_) => {
+          promise_scopes.insert(Some(def.def_id));
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  let mut cache: HashMap<Option<DefId>, bool> = HashMap::new();
+  let top_level_shadowed = shadowed(None, &promise_scopes, &parents, &kinds, &mut cache);
+
+  let mut per_def: HashMap<DefId, bool> = HashMap::new();
+  for def in planned {
+    let scope = enclosing_scope(Some(def.def_id), &parents, &kinds);
+    let is_shadowed = shadowed(scope, &promise_scopes, &parents, &kinds, &mut cache);
+    per_def.insert(def.def_id, is_shadowed);
+  }
+
+  (top_level_shadowed, per_def)
 }
 
 impl DefLookup {
@@ -582,6 +748,8 @@ pub fn lower_file_with_diagnostics_with_cancellation(
       body,
     });
   }
+
+  ctx.init_semantic_ops_promise_shadowing(&planned);
 
   let mut body_ids: Vec<BodyId> = Vec::new();
   let mut bodies: Vec<Arc<Body>> = Vec::new();
@@ -816,6 +984,7 @@ fn lower_root_body(
     span,
     body_id,
     BodyKind::TopLevel,
+    ctx.semantic_ops_promise_shadowed(MISSING_DEF),
     def_lookup,
     names,
     types,
@@ -943,6 +1112,7 @@ fn lower_body_from_source(
         span,
         body_id,
         BodyKind::Class,
+        ctx.semantic_ops_promise_shadowed(owner),
         def_lookup,
         names,
         types,
@@ -988,6 +1158,7 @@ fn lower_body_from_source(
         span,
         body_id,
         BodyKind::TopLevel,
+        ctx.semantic_ops_promise_shadowed(owner),
         def_lookup,
         names,
         types,
@@ -1005,6 +1176,7 @@ fn lower_body_from_source(
         span,
         body_id,
         BodyKind::TopLevel,
+        ctx.semantic_ops_promise_shadowed(owner),
         def_lookup,
         names,
         types,
@@ -1037,6 +1209,7 @@ fn lower_var_body(
     span,
     body_id,
     BodyKind::Initializer,
+    ctx.semantic_ops_promise_shadowed(owner),
     def_lookup,
     names,
     types,
@@ -1084,6 +1257,7 @@ fn lower_field_initializer_body(
     span,
     body_id,
     BodyKind::Initializer,
+    ctx.semantic_ops_promise_shadowed(owner),
     def_lookup,
     names,
     types,
@@ -1113,6 +1287,7 @@ fn lower_function_body(
     span,
     body_id,
     BodyKind::Function,
+    ctx.semantic_ops_promise_shadowed(owner),
     def_lookup,
     names,
     types,
@@ -1255,6 +1430,7 @@ fn lower_class_body<'a>(
     span,
     body_id,
     BodyKind::Class,
+    ctx.semantic_ops_promise_shadowed(owner),
     def_lookup,
     names,
     types,
@@ -2144,34 +2320,36 @@ fn lower_call_expr(
     }
 
     if !is_new && !call.stx.optional_chaining {
-      // Lower Promise.{all,race}([..]) calls into semantic nodes when the input is an array literal
-      // without holes/spreads.
-      if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
-        if !member.optional {
-          if let ObjectKey::Ident(prop) = member.property {
-            let prop = builder.names.resolve(prop);
-            if let Some(prop) = prop.filter(|p| *p == "all" || *p == "race") {
-              if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
-                if builder.names.resolve(*obj) == Some("Promise") {
-                  if args.len() == 1 && !args[0].spread {
-                    if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
-                      let mut promises = Vec::new();
-                      let mut ok = true;
-                      for element in arr.elements.iter() {
-                        match element {
-                          ArrayElement::Expr(expr) => promises.push(*expr),
-                          ArrayElement::Empty | ArrayElement::Spread(_) => {
-                            ok = false;
-                            break;
+      if !builder.semantic_ops_promise_shadowed {
+        // Lower Promise.{all,race}([..]) calls into semantic nodes when the input is an array
+        // literal without holes/spreads.
+        if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
+          if !member.optional {
+            if let ObjectKey::Ident(prop) = member.property {
+              let prop = builder.names.resolve(prop);
+              if let Some(prop) = prop.filter(|p| *p == "all" || *p == "race") {
+                if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
+                  if builder.names.resolve(*obj) == Some("Promise") {
+                    if args.len() == 1 && !args[0].spread {
+                      if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
+                        let mut promises = Vec::new();
+                        let mut ok = true;
+                        for element in arr.elements.iter() {
+                          match element {
+                            ArrayElement::Expr(expr) => promises.push(*expr),
+                            ArrayElement::Empty | ArrayElement::Spread(_) => {
+                              ok = false;
+                              break;
+                            }
                           }
                         }
-                      }
-                      if ok {
-                        return match prop {
-                          "all" => ExprKind::PromiseAll { promises },
-                          "race" => ExprKind::PromiseRace { promises },
-                          _ => unreachable!(),
-                        };
+                        if ok {
+                          return match prop {
+                            "all" => ExprKind::PromiseAll { promises },
+                            "race" => ExprKind::PromiseRace { promises },
+                            _ => unreachable!(),
+                          };
+                        }
                       }
                     }
                   }
@@ -2748,6 +2926,8 @@ struct BodyBuilder<'a> {
   span: TextRange,
   kind: BodyKind,
   body_id: BodyId,
+  #[cfg(feature = "semantic-ops")]
+  semantic_ops_promise_shadowed: bool,
   exprs: Vec<Expr>,
   stmts: Vec<Stmt>,
   pats: Vec<Pat>,
@@ -2766,16 +2946,21 @@ impl<'a> BodyBuilder<'a> {
     span: TextRange,
     body_id: BodyId,
     kind: BodyKind,
+    semantic_ops_promise_shadowed: bool,
     def_lookup: &'a DefLookup,
     names: &'a mut NameInterner,
     types: &'a mut crate::hir::TypeArenasByDef,
     span_map: &'a mut SpanMap,
   ) -> Self {
+    #[cfg(not(feature = "semantic-ops"))]
+    let _ = semantic_ops_promise_shadowed;
     Self {
       owner,
       span,
       kind,
       body_id,
+      #[cfg(feature = "semantic-ops")]
+      semantic_ops_promise_shadowed,
       exprs: Vec::new(),
       stmts: Vec::new(),
       pats: Vec::new(),
@@ -5468,6 +5653,7 @@ fn lower_module_item_attributes(
     span,
     body_id,
     BodyKind::Unknown,
+    ctx.semantic_ops_promise_shadowed(MISSING_DEF),
     def_lookup,
     names,
     types,
