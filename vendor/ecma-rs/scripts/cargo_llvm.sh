@@ -49,8 +49,16 @@ done
 # fastrender workspace (which excludes `vendor/ecma-rs`).
 cd "${REPO_ROOT}"
 
-# Higher RAM limit for LLVM operations (default 96GB, override with LLVM_LIMIT_AS)
-export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
+# Higher RAM limit for LLVM operations.
+#
+# Default to 96GB (matches `vendor/ecma-rs/EXEC.plan.md`). Allow callers to
+# override via the standard `FASTR_CARGO_LIMIT_AS` knob (preferred).
+#
+# `LLVM_LIMIT_AS` is kept as a legacy alias for older automation; if both are
+# unset we fall back to 96G.
+if [[ -z "${FASTR_CARGO_LIMIT_AS:-}" ]]; then
+  export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
+fi
 
 # Precise GC via LLVM statepoint stackmaps requires reliable stack walking. We currently
 # enforce frame-pointer walking as the first milestone, so all Rust code that can run on
