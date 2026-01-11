@@ -51,8 +51,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (i, callsite) in maps.callsites().iter().enumerate() {
         let rec = &maps.records[callsite.record_index];
         println!(
-            "[{i}] pc=0x{:x} id={} locations={} live_outs={}",
+            "[{i}] pc=0x{:x} func=0x{:x} stack_size={} id={} locations={} live_outs={}",
             callsite.pc,
+            callsite.function_address,
+            callsite.stack_size,
             rec.id,
             rec.locations.len(),
             rec.live_outs.len()
@@ -62,12 +64,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(pc) = pc {
         println!();
         println!("Lookup pc=0x{pc:x}:");
-        let Some(rec) = maps.lookup(pc) else {
+        let Some(callsite) = maps.lookup_callsite(pc) else {
             println!("  no record");
             return Ok(());
         };
+        let rec = &maps.records[callsite.record_index];
 
-        println!("  record id={} instruction_offset={}", rec.id, rec.instruction_offset);
+        println!(
+            "  record id={} instruction_offset={} func=0x{:x} stack_size={}",
+            rec.id, rec.instruction_offset, callsite.function_address, callsite.stack_size
+        );
         println!("  locations:");
         for (i, loc) in rec.locations().iter().enumerate() {
             println!("    #{:>2} {}", i + 1, loc);
