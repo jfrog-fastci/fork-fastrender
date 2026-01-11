@@ -184,7 +184,7 @@ target triple = "x86_64-unknown-linux-gnu"
 declare ptr addrspace(1) @allocate(i64)
 declare void @consume(ptr addrspace(1), ptr addrspace(1))
 
-define ptr addrspace(1) @managed_fp_test(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "statepoint-example" {
+ define ptr addrspace(1) @managed_fp_test(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "coreclr" {
 entry:
   %statepoint_token = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 2882400000, i32 0, ptr elementtype(ptr addrspace(1) (i64)) @allocate, i32 1, i32 0, i64 16, i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %a, ptr addrspace(1) %b) ]
   %pair1 = call ptr addrspace(1) @llvm.experimental.gc.result.p1(token %statepoint_token)

@@ -15,12 +15,6 @@ use std::ffi::CString;
 /// See `native-js/docs/llvm_gc_strategy.md` for rationale.
 pub const GC_STRATEGY: &str = "coreclr";
 
-/// LLVM's built-in reference/demo GC strategy.
-///
-/// This is the strategy name used throughout LLVM's own documentation/examples
-/// for statepoint rewriting.
-pub const STATEPOINT_EXAMPLE_STRATEGY: &str = "statepoint-example";
-
 /// Address space used for GC-managed pointers.
 ///
 /// LLVM's statepoint lowering identifies GC references by address space, so
@@ -58,14 +52,4 @@ pub fn set_gc_strategy(
 #[inline]
 pub fn set_default_gc_strategy(function: &FunctionValue<'_>) -> Result<(), std::ffi::NulError> {
   set_gc_strategy(function, GC_STRATEGY)
-}
-
-/// Convenience wrapper for [`STATEPOINT_EXAMPLE_STRATEGY`].
-///
-/// Prefer [`set_default_gc_strategy`] for production code (we default to
-/// `gc "coreclr"`), but tests and experiments often want the LLVM reference
-/// strategy.
-#[inline]
-pub fn set_statepoint_example_gc(function: &FunctionValue<'_>) -> Result<(), std::ffi::NulError> {
-  set_gc_strategy(function, STATEPOINT_EXAMPLE_STRATEGY)
 }

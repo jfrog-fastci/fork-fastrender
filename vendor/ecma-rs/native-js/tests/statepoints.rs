@@ -10,10 +10,6 @@ fn set_native_js_gc<'ctx>(func: inkwell::values::FunctionValue<'ctx>) {
   llvm_gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
 }
 
-fn set_statepoint_example_gc<'ctx>(func: inkwell::values::FunctionValue<'ctx>) {
-  llvm_gc::set_statepoint_example_gc(&func).expect("GC strategy contains NUL byte");
-}
-
 #[test]
 fn indirect_callee_has_elementtype_attribute() {
   // LLVM 18 (opaque pointers) requires `gc.statepoint`'s callee operand to carry
@@ -182,7 +178,7 @@ fn gc_pointer_call_args_are_implicitly_in_gc_live() {
 
   let caller_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
   let caller = module.add_function("caller", caller_ty, None);
-  set_statepoint_example_gc(caller);
+  set_native_js_gc(caller);
 
   let entry = context.append_basic_block(caller, "entry");
   builder.position_at_end(entry);
