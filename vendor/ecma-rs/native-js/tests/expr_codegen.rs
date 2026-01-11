@@ -1,9 +1,17 @@
 use native_js::compiler::compile_entry_to_llvm_ir;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
+
+fn es5_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  })
+}
 
 #[test]
 fn arithmetic_codegen_emits_fmul_fadd() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let file = FileKey::new("file0.ts");
   host.insert(
     file.clone(),
@@ -31,7 +39,7 @@ fn arithmetic_codegen_emits_fmul_fadd() {
 
 #[test]
 fn comparison_codegen_emits_fcmp() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let file = FileKey::new("file0.ts");
   host.insert(
     file.clone(),
@@ -58,7 +66,7 @@ fn comparison_codegen_emits_fcmp() {
 
 #[test]
 fn typeof_is_rejected() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let file = FileKey::new("file0.ts");
   host.insert(file.clone(), "export function main() { return typeof 1; }");
   let program = Program::new(host, vec![file.clone()]);

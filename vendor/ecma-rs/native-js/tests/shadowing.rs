@@ -1,5 +1,13 @@
 use native_js::eval::Evaluator;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program, Severity};
+
+fn es5_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  })
+}
 
 #[test]
 fn nested_let_shadowing_resolves_correctly() {
@@ -16,7 +24,7 @@ export function run() {
 }
 "#;
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   host.insert(key.clone(), src);
   let program = Program::new(host, vec![key.clone()]);
   let diagnostics = program.check();
@@ -48,7 +56,7 @@ export function run() {
 }
 "#;
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   host.insert(key.clone(), src);
   let program = Program::new(host, vec![key.clone()]);
   let diagnostics = program.check();
@@ -87,7 +95,7 @@ export function run() {
 }
 "#;
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   host.insert(a_key.clone(), a_src);
   host.insert(b_key.clone(), b_src);
   host.link(b_key.clone(), "./a.ts", a_key.clone());

@@ -2,13 +2,21 @@ use native_js::{compile_program, CompilerOptions, EmitKind, NativeJsError};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program, Severity};
 
 static REL_OUT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+fn es5_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  })
+}
+
 #[test]
 fn compile_emits_llvm_ir_file() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let key = FileKey::new("main.ts");
   host.insert(key.clone(), "export function main() { let x = 1; return x + 2; }");
 
@@ -41,7 +49,7 @@ fn compile_emits_executable_and_runs() {
     return;
   }
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let key = FileKey::new("main.ts");
   host.insert(key.clone(), "export function main(): number { return 3; }");
 
@@ -109,7 +117,7 @@ fn compile_allows_executable_output_path_without_parent_dir() {
     return;
   }
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let key = FileKey::new("main.ts");
   host.insert(key.clone(), "export function main(): number { return 7; }");
 
@@ -189,7 +197,7 @@ fn compile_allows_executable_output_path_without_parent_dir() {
 
 #[test]
 fn compile_rejects_type_errors() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let key = FileKey::new("main.ts");
   host.insert(
     key.clone(),

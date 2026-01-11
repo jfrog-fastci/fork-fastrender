@@ -2,7 +2,15 @@ use diagnostics::Severity;
 use native_js::{compile_program, CompilerOptions, EmitKind};
 use std::process::Command;
 use tempfile::tempdir;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
+
+fn es5_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  })
+}
 
 fn clang_available() -> bool {
   for cand in ["clang-18", "clang"] {
@@ -26,7 +34,7 @@ fn require_executable_emission_or_skip() -> bool {
 }
 
 fn compile_and_run(ts_src: &str) -> std::process::Output {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let file = FileKey::new("main.ts");
   host.insert(file.clone(), ts_src);
 
@@ -91,7 +99,7 @@ fn entrypoint_reexported_main_returns_exit_code() {
     return;
   }
 
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let entry = FileKey::new("entry.ts");
   let impl_file = FileKey::new("impl.ts");
   host.insert(entry.clone(), r#"export { main } from "./impl.ts";"#);
@@ -119,7 +127,7 @@ fn entrypoint_reexported_main_returns_exit_code() {
 
 #[test]
 fn missing_entrypoint_reports_diagnostic() {
-  let mut host = MemoryHost::new();
+  let mut host = es5_host();
   let file = FileKey::new("main.ts");
   host.insert(file.clone(), "export const x = 1;");
 

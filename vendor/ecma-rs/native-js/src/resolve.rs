@@ -196,7 +196,15 @@ impl FileMap {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
   use typecheck_ts::{FileKey, MemoryHost};
+
+  fn es5_host() -> MemoryHost {
+    MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+      ..Default::default()
+    })
+  }
 
   #[test]
   fn resolver_builds_file_map_once() {
@@ -209,7 +217,7 @@ export function run() {
 }
 "#;
 
-    let mut host = MemoryHost::new();
+    let mut host = es5_host();
     host.insert(key.clone(), src);
     let program = Program::new(host, vec![key.clone()]);
     program.check();
@@ -251,7 +259,7 @@ export function run() {
 }
 "#;
 
-    let mut host = MemoryHost::new();
+    let mut host = es5_host();
     host.insert(key.clone(), src);
     let program = Program::new(host, vec![key.clone()]);
     program.check();

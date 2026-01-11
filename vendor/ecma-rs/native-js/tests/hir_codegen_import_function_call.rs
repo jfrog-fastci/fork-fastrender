@@ -1,6 +1,7 @@
 use inkwell::context::Context;
 use native_js::{codegen, strict};
 use std::process::Command;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 fn find_clang() -> Option<&'static str> {
@@ -42,7 +43,10 @@ export function main(): number {
 }
 "#;
 
-  let mut host = MemoryHost::new();
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  });
   host.insert(a_key.clone(), a_src);
   host.insert(b_key.clone(), b_src);
   host.link(b_key.clone(), "./a.ts", a_key.clone());
