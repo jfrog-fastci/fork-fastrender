@@ -193,14 +193,27 @@ fields are reserved for the eventual LLVM-backed backend.
   - empty statements (`;`)
   - expression statements (`expr;`)
 - Expressions:
-  - number / boolean / string literals
-  - numeric `+` (only for numbers)
-  - `===` (only for numbers and booleans; both sides must be the same type)
+  - number / boolean / string / null literals
+  - identifiers: `undefined`, `NaN`, `Infinity`
+  - unary operators:
+    - `-` / `+` (numbers only)
+    - `!` (booleans only)
+  - numeric `+` (numbers only)
+  - `===` (numbers / booleans / `null` / `undefined`; both sides must be the same type)
   - builtin calls (when `CompileOptions { builtins: true, .. }`):
     - `console.log(...)` / `print(...)`
     - `assert(cond, msg?)`
     - `panic(msg?)`
     - `trap()`
+
+### Builtin printing behavior (current)
+
+- `console.log(...)` / `print(...)` accept 0+ arguments (spread args are rejected).
+- Arguments are printed space-separated with a trailing newline.
+- Printing always flushes stdout (`fflush(NULL)`) after the call to make debugging output visible
+  even if the program later traps/aborts.
+- Numbers use libc formatting for finite values, but `NaN`/`Infinity`/`-Infinity` are printed in
+  a JS-friendly form (instead of libc `nan`/`inf` strings).
 
 Everything else currently fails with a coarse `native_js::codegen::CodegenError`
 (`unsupported statement`, `unsupported expression`, `unsupported operator: ...`,
