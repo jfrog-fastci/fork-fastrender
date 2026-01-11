@@ -276,7 +276,7 @@ fn tsconfig_paths_are_resolved() {
 }
 
 #[test]
-fn ts_runtime_inert_wrappers_do_not_block_codegen() {
+fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
   fs::write(
@@ -284,6 +284,13 @@ fn ts_runtime_inert_wrappers_do_not_block_codegen() {
     "export function main(): number { return ((1 satisfies number) as number)!; }\n",
   )
   .unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .success();
 
   let out = tmp.path().join("out-bin");
   native_js()
@@ -297,6 +304,38 @@ fn ts_runtime_inert_wrappers_do_not_block_codegen() {
 
   let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(1));
+}
+
+#[test]
+fn check_and_build_reject_eval() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { eval(\"1\"); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0009"))
+    .stderr(predicates::str::contains("`eval()` is not supported"));
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("NJS0009"))
+    .stderr(predicates::str::contains("`eval()` is not supported"));
 }
 
 #[test]

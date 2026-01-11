@@ -52,6 +52,13 @@ struct Cli {
   /// Best-effort debug build (passes `-g` to the system linker).
   #[arg(long, global = true)]
   debug: bool,
+
+  /// Also run the legacy `native_js::strict::validate` checks.
+  ///
+  /// This is stricter than `validate_strict_subset` and may reject TypeScript-only,
+  /// runtime-inert wrappers like `satisfies` / `as` / `!`.
+  #[arg(long, global = true)]
+  extra_strict: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -139,7 +146,7 @@ fn cmd_check(cli: &Cli, entry: &Path, render: diagnostics::render::RenderOptions
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
 
-  let diagnostics = collect_check_diagnostics(&program, entry_file);
+  let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
   let exit_code = exit_code_for_diagnostics(&diagnostics);
   match output::emit_diagnostics(&program, diagnostics, cli.json, render) {
     Ok(_) => exit_code,
@@ -176,7 +183,7 @@ fn cmd_build(
   };
 
   // Typecheck + strict validation + entrypoint diagnostics.
-  let diagnostics = collect_check_diagnostics(&program, entry_file);
+  let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
   let exit_code = exit_code_for_diagnostics(&diagnostics);
   if exit_code != ExitCode::SUCCESS {
     let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
@@ -274,7 +281,7 @@ fn cmd_emit_ir(
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
 
-  let diagnostics = collect_check_diagnostics(&program, entry_file);
+  let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
   let exit_code = exit_code_for_diagnostics(&diagnostics);
   if exit_code != ExitCode::SUCCESS {
     let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
@@ -365,13 +372,17 @@ fn cmd_run(
   }
 }
 
-fn collect_check_diagnostics(program: &Program, entry_file: FileId) -> Vec<Diagnostic> {
+fn collect_check_diagnostics(program: &Program, entry_file: FileId, extra_strict: bool) -> Vec<Diagnostic> {
   let mut diagnostics = program.check();
   let has_type_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
 
   if !has_type_errors {
     if let Err(diags) = native_js::validate::validate_strict_subset(program) {
       diagnostics.extend(diags);
+    }
+
+    if extra_strict {
+      diagnostics.extend(native_js::strict::validate(program, &program.reachable_files()));
     }
 
     if let Err(diags) = native_js::strict::entrypoint(program, entry_file) {

@@ -167,7 +167,8 @@ The API is intentionally small and currently consists of:
 - `strict::validate(...)`: legacy strict validator that rejects unsafe constructs
   (`any`, `eval`, etc). This is still useful for tests and tooling, but the AOT
   pipeline prefers `validate_strict_subset` (which allows TS-only runtime-inert
-  wrappers like `satisfies` / `as` / `!`).
+  wrappers like `satisfies` / `as` / `!`). Some frontends also expose
+  `strict::validate` behind an opt-in flag (e.g. `native-js --extra-strict`).
 - `strict::entrypoint(...)`: locate the exported `main()` entrypoint in a
   typechecked program (used by the early HIR-based backend).
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
@@ -466,8 +467,9 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic>
 ```
 
 This validator is intended to be run on a `typecheck-ts` program, but it is
-**not** invoked by the minimal `compile_typescript_to_llvm_ir` emitter (and
-therefore not by `native-js-cli`).
+**not** invoked by the minimal `compile_typescript_to_llvm_ir` emitter (the
+default `native-js-cli` binary). The typechecked `native-js` CLI may run it as
+an optional extra pass (e.g. `native-js --extra-strict`).
 
 ### Rejected constructs (enforced today)
 

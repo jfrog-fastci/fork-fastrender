@@ -278,6 +278,9 @@ producing an executable:
 > Note: `native-js check` performs the same typechecking + subset validation as
 > `native-js build`/`run`, but stops before producing/linking an executable.
 
+Pass `--extra-strict` to also run the legacy `native_js::strict::validate` checks (this rejects
+TypeScript-only runtime-inert wrappers like `satisfies` / `as` / `!`).
+
 If you have the binary installed on your `PATH`, the equivalent invocation is:
 
 ```bash
@@ -326,6 +329,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 - `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
 - `--debug`: best-effort debug build (passes `-g` to the system linker).
+- `--extra-strict`: also run the legacy strict validator (`native_js::strict::validate`).
 
 ### Diagnostics
 
@@ -336,6 +340,7 @@ renders source-context diagnostics (file/line caret spans) from:
 - `native-js` validators (`NJS####` codes):
   - backend subset (`native_js::validate::validate_strict_subset`): `NJS0009` / `NJS0010`
   - entrypoint checks (`native_js::strict::entrypoint`): `NJS0108..NJS0111`
+  - legacy strict validator (`native_js::strict::validate`, only with `--extra-strict`): `NJS0001..NJS0008`
 - `native-js` HIR-based code generation (when it fails)
 
 Diagnostics are rendered via `diagnostics::render` in a rustc-like format:
