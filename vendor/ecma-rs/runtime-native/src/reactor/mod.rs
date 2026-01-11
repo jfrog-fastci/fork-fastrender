@@ -476,16 +476,19 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
             std::mem::size_of::<u64>(),
           )
         };
+        if rc == 8 {
+          continue;
+        }
         if rc == -1 {
           let err = io::Error::last_os_error();
-          if err.kind() == io::ErrorKind::Interrupted {
-            continue;
+          match err.kind() {
+            io::ErrorKind::Interrupted => continue,
+            io::ErrorKind::WouldBlock => return Ok(()),
+            _ => return Err(err),
           }
-          if err.kind() == io::ErrorKind::WouldBlock {
-            return Ok(());
-          }
-          return Err(err);
         }
+        // eventfd reads are expected to be atomic (8 bytes). Treat EOF/short reads as drained.
+        return Ok(());
       }
     }
   }
