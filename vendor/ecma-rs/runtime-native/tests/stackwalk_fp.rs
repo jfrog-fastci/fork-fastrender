@@ -4,6 +4,8 @@ use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 #[cfg(target_arch = "aarch64")]
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
+use runtime_native::stackwalk::StackBounds;
+
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn synthetic_stack_enumerates_roots_from_stackmaps() {
@@ -91,8 +93,9 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   }
 
   let mut visited: BTreeMap<usize, usize> = BTreeMap::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   unsafe {
-    walk_gc_roots_from_fp(start_fp as u64, &stackmaps, |slot| {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
       let slot_addr = slot as usize;
       // SAFETY: The walker only yields aligned pointer slots.
       let value = *(slot as *mut *mut u8) as usize;
@@ -132,7 +135,8 @@ fn derived_pointers_fail_fast() {
     write_u64(caller_fp + 8, 0);
   }
 
-  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, &stackmaps, |_| {}) };
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
   match res {
     Err(WalkError::DerivedPointerNotSupported { .. }) => {}
     other => panic!("expected DerivedPointerNotSupported, got {other:?}"),
@@ -283,8 +287,9 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   }
 
   let mut visited: BTreeMap<usize, usize> = BTreeMap::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   unsafe {
-    walk_gc_roots_from_fp(start_fp as u64, &stackmaps, |slot| {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
       let slot_addr = slot as usize;
       let value = *(slot as *mut *mut u8) as usize;
       visited.insert(slot_addr, value);

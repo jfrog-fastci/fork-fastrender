@@ -407,10 +407,14 @@ pub fn for_each_root_slot_world_stopped(
       .safepoint_context()
       .expect("stopped thread must have a published safepoint context");
 
+    let stack_bounds = thread
+      .stack_bounds()
+      .and_then(|b| crate::stackwalk::StackBounds::new(b.lo as u64, b.hi as u64).ok());
+
     // SAFETY: The caller guarantees the world is stopped and the thread's stack
     // is stable to read.
     unsafe {
-      crate::walk_gc_roots_from_fp(ctx.fp as u64, stackmaps, |slot_addr| {
+      crate::stackwalk_fp::walk_gc_roots_from_safepoint_context(&ctx, stack_bounds, stackmaps, |slot_addr| {
         f(slot_addr as *mut *mut u8);
       })?;
     }

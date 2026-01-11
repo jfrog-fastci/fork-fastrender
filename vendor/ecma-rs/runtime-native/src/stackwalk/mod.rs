@@ -133,6 +133,7 @@ pub enum StackWalkError {
   FramePointerOutOfBounds { fp: u64, bounds: StackBounds },
   CallerSpOutOfBounds { caller_sp: u64, bounds: StackBounds },
   ReturnAddressIsNull { fp: u64 },
+  ReturnAddressNonCanonical { fp: u64, return_address: u64 },
   NonMonotonicFramePointer { fp: u64, next_fp: u64 },
   MaxDepthExceeded { max_depth: usize },
   UnalignedRead { addr: u64 },
@@ -160,6 +161,10 @@ impl fmt::Display for StackWalkError {
       StackWalkError::ReturnAddressIsNull { fp } => {
         write!(f, "return address at {fp:#x}+8 is null")
       }
+      StackWalkError::ReturnAddressNonCanonical { fp, return_address } => write!(
+        f,
+        "return address {return_address:#x} at {fp:#x}+8 is not canonical"
+      ),
       StackWalkError::NonMonotonicFramePointer { fp, next_fp } => write!(
         f,
         "frame pointer chain is non-monotonic: fp={fp:#x}, next_fp={next_fp:#x}"
@@ -233,6 +238,25 @@ impl StackWalker {
   }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn is_canonical_pc(pc: u64) -> bool {
+  // Canonical addresses are sign-extended from bit 47 (SysV x86_64).
+  let sign = (pc >> 47) & 1;
+  let top = pc >> 48;
+  if sign == 0 {
+    top == 0
+  } else {
+    top == 0xffff
+  }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn is_canonical_pc(_pc: u64) -> bool {
+  true
+}
+
 impl Iterator for StackWalker {
   type Item = Result<StackFrame, StackWalkError>;
 
@@ -290,6 +314,14 @@ impl Iterator for StackWalker {
       return Some(Err(StackWalkError::ReturnAddressIsNull { fp }));
     }
 
+    if !is_canonical_pc(ret_addr) {
+      self.done = true;
+      return Some(Err(StackWalkError::ReturnAddressNonCanonical {
+        fp,
+        return_address: ret_addr,
+      }));
+    }
+
     if prev_fp != 0 && prev_fp <= fp {
       self.done = true;
       return Some(Err(StackWalkError::NonMonotonicFramePointer {
@@ -330,10 +362,10 @@ mod tests {
 
     unsafe {
       (fp0 as *mut u64).write(fp1);
-      ((fp0 + 8) as *mut u64).write(0x1111_2222_3333_4444);
+      ((fp0 + 8) as *mut u64).write(0x1111);
 
       (fp1 as *mut u64).write(0);
-      ((fp1 + 8) as *mut u64).write(0xaaaa_bbbb_cccc_dddd);
+      ((fp1 + 8) as *mut u64).write(0x2222);
     }
 
     let ctx = ThreadContext::new(0, fp0, 0);
@@ -347,7 +379,7 @@ mod tests {
     assert_eq!(
       frames[0],
       StackFrame {
-        return_address: 0x1111_2222_3333_4444,
+        return_address: 0x1111,
         caller_sp: fp0 + 16,
         frame_pointer: fp0,
       }
@@ -355,7 +387,7 @@ mod tests {
     assert_eq!(
       frames[1],
       StackFrame {
-        return_address: 0xaaaa_bbbb_cccc_dddd,
+        return_address: 0x2222,
         caller_sp: fp1 + 16,
         frame_pointer: fp1,
       }

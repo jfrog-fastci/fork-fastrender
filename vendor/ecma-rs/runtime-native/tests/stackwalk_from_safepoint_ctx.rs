@@ -2,6 +2,7 @@
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
+  use runtime_native::stackwalk::StackBounds;
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::StackMaps;
@@ -18,9 +19,9 @@ mod x86_64 {
     // Fake stack memory.
     let mut stack = vec![0u8; 4096];
     let base = stack.as_mut_ptr() as usize;
- 
+
     // Single managed frame (terminal, caller_fp->0).
-    let caller_fp = align_up(base + 3072, 8);
+    let caller_fp = align_up(base + 3072, 16);
     unsafe {
       write_u64(caller_fp + 0, 0);
       write_u64(caller_fp + 8, 0);
@@ -43,7 +44,8 @@ mod x86_64 {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(
-              *dwarf_reg, X86_64_DWARF_REG_SP,
+              *dwarf_reg,
+              X86_64_DWARF_REG_SP,
               "fixture roots must be [SP + off]"
             );
             let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
@@ -55,10 +57,11 @@ mod x86_64 {
     }
     expected_slots.sort_unstable();
     expected_slots.dedup();
- 
+
     let mut visited: Vec<usize> = Vec::new();
+    let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
     unsafe {
-      walk_gc_roots_from_safepoint_context(&ctx, &stackmaps, |slot| {
+      walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
         visited.push(slot as usize);
       })
       .expect("walk");
@@ -90,6 +93,7 @@ mod x86_64 {
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
+  use runtime_native::stackwalk::StackBounds;
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::StackMaps;
@@ -131,7 +135,8 @@ mod aarch64 {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(
-              *dwarf_reg, AARCH64_DWARF_REG_SP,
+              *dwarf_reg,
+              AARCH64_DWARF_REG_SP,
               "fixture roots must be [SP + off]"
             );
             let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
@@ -143,10 +148,11 @@ mod aarch64 {
     }
     expected_slots.sort_unstable();
     expected_slots.dedup();
- 
+
     let mut visited: Vec<usize> = Vec::new();
+    let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
     unsafe {
-      walk_gc_roots_from_safepoint_context(&ctx, &stackmaps, |slot| {
+      walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
         visited.push(slot as usize);
       })
       .expect("walk");

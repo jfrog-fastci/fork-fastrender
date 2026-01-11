@@ -1,4 +1,5 @@
 use crate::stackmaps::{CallSite, Location, StackMaps};
+use crate::stackwalk::StackBounds;
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
@@ -19,7 +20,9 @@ mod arch {
   /// DWARF register number for the frame pointer (RBP).
   pub const DWARF_FP: u16 = 6;
 
-  pub const FP_ALIGN: u64 = 8;
+  // With a standard prologue (`push rbp; mov rbp, rsp`), the SysV ABI guarantees
+  // the frame pointer is 16-byte aligned.
+  pub const FP_ALIGN: u64 = 16;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -53,6 +56,12 @@ pub enum WalkError {
   MaxDepth { max_depth: usize },
   #[error("frame pointer {fp:#x} is not aligned to {alignment} bytes")]
   MisalignedFramePointer { fp: u64, alignment: u64 },
+  #[error("frame pointer {fp:#x} is outside stack bounds [{lo:#x}, {hi:#x})")]
+  FramePointerOutOfBounds { fp: u64, lo: u64, hi: u64 },
+  #[error("return address is null in frame record at fp={fp:#x}")]
+  ReturnAddressIsNull { fp: u64 },
+  #[error("return address {return_addr:#x} in frame record at fp={fp:#x} is not canonical")]
+  ReturnAddressNonCanonical { fp: u64, return_addr: u64 },
   #[error("frame pointer chain is not monotonically increasing: cur_fp={cur_fp:#x} caller_fp={caller_fp:#x}")]
   NonMonotonicFp { cur_fp: u64, caller_fp: u64 },
   #[error(
@@ -131,6 +140,7 @@ const MAX_FRAMES: usize = 100_000;
 /// end-of-region address (so the stackmap lookup key matches).
 pub unsafe fn walk_gc_roots_from_fp(
   start_fp: u64,
+  bounds: Option<StackBounds>,
   stackmaps: &StackMaps,
   mut visit: impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
@@ -141,6 +151,9 @@ pub unsafe fn walk_gc_roots_from_fp(
   let mut cur_fp = start_fp;
   for depth in 0..MAX_FRAMES {
     check_fp_alignment(cur_fp)?;
+    if let Some(bounds) = bounds {
+      check_fp_bounds(cur_fp, bounds)?;
+    }
 
     // Frame layout:
     // [FP + 0] = previous FP
@@ -155,6 +168,21 @@ pub unsafe fn walk_gc_roots_from_fp(
     check_fp_alignment(caller_fp)?;
     if caller_fp <= cur_fp {
       return Err(WalkError::NonMonotonicFp { cur_fp, caller_fp });
+    }
+
+    if let Some(bounds) = bounds {
+      check_fp_bounds(caller_fp, bounds)?;
+    }
+
+    if caller_ra == 0 {
+      return Err(WalkError::ReturnAddressIsNull { fp: cur_fp });
+    }
+
+    if !is_canonical_pc(caller_ra) {
+      return Err(WalkError::ReturnAddressNonCanonical {
+        fp: cur_fp,
+        return_addr: caller_ra,
+      });
     }
 
     if let Some(callsite) = stackmaps.lookup(caller_ra) {
@@ -204,6 +232,7 @@ pub unsafe fn walk_gc_roots_from_fp(
 /// pointers enabled, and `stackmaps` must correspond to the code being walked.
 pub unsafe fn walk_gc_roots_from_safepoint_context(
   ctx: &crate::arch::SafepointContext,
+  bounds: Option<StackBounds>,
   stackmaps: &crate::StackMaps,
   mut visit: impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
@@ -213,8 +242,20 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
 
   check_fp_alignment(caller_fp)?;
+  if let Some(bounds) = bounds {
+    check_fp_bounds(caller_fp, bounds)?;
+  }
 
   let caller_ra = ctx.ip as u64;
+  if caller_ra == 0 {
+    return Err(WalkError::ReturnAddressIsNull { fp: caller_fp });
+  }
+  if !is_canonical_pc(caller_ra) {
+    return Err(WalkError::ReturnAddressNonCanonical {
+      fp: caller_fp,
+      return_addr: caller_ra,
+    });
+  }
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
     enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
   }
@@ -222,7 +263,42 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   // Continue walking older frames. Starting from the managed frame pointer means the delegated
   // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
   // managed frame we just handled above.
-  walk_gc_roots_from_fp(caller_fp, stackmaps, visit)
+  walk_gc_roots_from_fp(caller_fp, bounds, stackmaps, visit)
+}
+
+#[inline]
+fn check_fp_bounds(fp: u64, bounds: StackBounds) -> Result<(), WalkError> {
+  // We must be able to read:
+  //   [fp + FP_LINK_OFFSET] => caller fp
+  //   [fp + RA_OFFSET]      => caller return address / LR
+  let record_size = arch::RA_OFFSET + arch::WORD;
+  if !bounds.contains_range(fp, record_size) {
+    return Err(WalkError::FramePointerOutOfBounds {
+      fp,
+      lo: bounds.lo,
+      hi: bounds.hi,
+    });
+  }
+  Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn is_canonical_pc(pc: u64) -> bool {
+  // Canonical addresses are sign-extended from bit 47 (SysV x86_64).
+  let sign = (pc >> 47) & 1;
+  let top = pc >> 48;
+  if sign == 0 {
+    top == 0
+  } else {
+    top == 0xffff
+  }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn is_canonical_pc(_pc: u64) -> bool {
+  true
 }
 
 fn enumerate_roots_for_frame(
