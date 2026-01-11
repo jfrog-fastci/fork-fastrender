@@ -288,25 +288,83 @@ fn multicol_break_after_verso_inserts_blank_page_rtl() {
 #[test]
 fn multicol_break_after_recto_inserts_blank_page_ltr() {
   let html = r#"
-    <html>
-      <head>
-        <style>
-          html { direction: ltr; }
-          @page { size: 200px 200px; margin: 20px; }
-          @page :blank { @top-center { content: "Blank"; } }
-          body { margin: 0; }
-          .multi { column-count: 2; column-gap: 0; }
-          .blk { height: 80px; margin: 0; }
-          #a { break-after: recto; }
-        </style>
-      </head>
-      <body>
-        <div class="multi">
-          <div class="blk" id="a">A</div>
-          <div class="blk" id="b">B</div>
-        </div>
-      </body>
-    </html>
+     <html>
+       <head>
+         <style>
+           html { direction: ltr; }
+           @page { size: 200px 200px; margin: 20px; }
+           @page :blank { @top-center { content: "Blank"; } }
+           body { margin: 0; }
+           .multi { column-count: 2; column-gap: 0; }
+           .blk { height: 80px; margin: 0; }
+           #a { break-after: recto; }
+         </style>
+       </head>
+       <body>
+         <div class="multi">
+           <div class="blk" id="a">A</div>
+           <div class="blk" id="b">B</div>
+         </div>
+       </body>
+     </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 3);
+
+  let page1 = page_roots[0];
+  let blank_page = page_roots[1];
+  let page3 = page_roots[2];
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_none());
+  assert!(find_text(page1, "Blank").is_none());
+
+  assert!(find_text(blank_page, "Blank").is_some());
+  assert!(find_text_eq(blank_page, "A").is_none());
+  assert!(find_text_eq(blank_page, "B").is_none());
+
+  let page3_content = page_content(page3);
+  assert!(find_text_eq(page3_content, "B").is_some());
+  assert!(find_text(page3, "Blank").is_none());
+  let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B on page 3");
+  assert!(
+    pos_b.1 <= page_content_start_y(page3) + 1.0,
+    "expected B to start at the top of the third page; pos={pos_b:?} content_start_y={}",
+    page_content_start_y(page3)
+  );
+}
+
+#[test]
+fn multicol_recto_mapping_uses_root_page_progression_not_container_direction() {
+  let html = r#"
+     <html>
+       <head>
+         <style>
+           html { direction: ltr; }
+           @page { size: 200px 200px; margin: 20px; }
+           @page :blank { @top-center { content: "Blank"; } }
+           body { margin: 0; }
+           .multi { direction: rtl; column-count: 2; column-gap: 0; }
+           .blk { height: 80px; margin: 0; }
+           #a { break-after: recto; }
+         </style>
+       </head>
+       <body>
+         <div class="multi">
+           <div class="blk" id="a">A</div>
+           <div class="blk" id="b">B</div>
+         </div>
+       </body>
+     </html>
   "#;
 
   let mut renderer = FastRender::new().unwrap();
@@ -482,8 +540,8 @@ fn multicol_break_after_verso_does_not_insert_blank_page_ltr() {
 #[test]
 fn multicol_break_after_recto_inserts_blank_page_ltr_progression() {
   let html = r#"
-    <html>
-      <head>
+     <html>
+       <head>
         <style>
           @page { size: 200px 200px; margin: 20px; }
           @page :blank { @top-center { content: "Blank"; } }
