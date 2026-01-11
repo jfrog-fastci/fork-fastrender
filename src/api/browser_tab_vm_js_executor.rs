@@ -203,6 +203,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.fetch_bindings = Some(fetch_bindings);
     self.realm = Some(realm);
     self.module_graph = Some(ModuleGraph::new());
+
+    // `vm-js` dynamic `import()` expressions (including those executed from classic scripts or from
+    // Promise jobs) require an embedding-owned `ModuleGraph` to be attached to the VM. Module graph
+    // APIs like `ModuleGraph::evaluate_with_scope` temporarily install the graph pointer, but that
+    // does not cover non-module script execution or microtasks that run after module evaluation has
+    // returned. Keep the graph attached for the lifetime of this document.
+    if let (Some(realm), Some(module_graph)) = (self.realm.as_mut(), self.module_graph.as_mut()) {
+      realm.vm_mut().set_module_graph(module_graph);
+    }
     Ok(())
   }
 
@@ -230,13 +239,32 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
 
+    let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let document_origin = self.document_origin.clone();
+    let document_url = self.document_url.clone();
+    let module_map = &mut self.module_map;
+    let import_map_state = &mut self.import_map_state;
+    let fetcher = document.fetcher();
+
     let exec_result: Result<()> = with_event_loop(event_loop, || {
       update_time_bindings_clock(realm.heap(), clock.clone())
         .map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       realm.reset_interrupt();
 
-      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
+      // Classic scripts can evaluate dynamic `import()` expressions, which require module loading
+      // hooks and an attached `ModuleGraph`. Use the same hook implementation as module scripts so
+      // `import()` resolves through import maps and fetches modules via the document fetcher.
+      let mut hooks = ModuleLoaderHooks {
+        inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+        fetcher,
+        max_script_bytes,
+        module_map,
+        import_map_state,
+        document_origin,
+        cors_mode: CorsMode::Anonymous,
+        document_url,
+      };
       let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source);
 
       if let Some(err) = hooks.finish(realm.heap_mut()) {
@@ -774,6 +802,7 @@ impl ModuleLoaderHooks<'_> {
   }
 
   fn referrer_url_for_resolution<'a>(
+    vm: &'a Vm,
     modules: &'a ModuleGraph,
     referrer: ModuleReferrer,
   ) -> Option<&'a str> {
@@ -782,7 +811,16 @@ impl ModuleLoaderHooks<'_> {
         .get_module(module_id)
         .and_then(|m| m.source.as_ref())
         .map(|s| s.name.as_ref()),
-      _ => None,
+      // `vm-js` represents script referrers as opaque IDs with no built-in URL mapping. For browser
+      // embeddings, dynamic `import()` in classic scripts should resolve relative to the current
+      // document base URL (as tracked by `WindowRealmUserData`).
+      //
+      // Note: external classic scripts should ideally resolve relative to their own URL, but that
+      // information is not currently available from `ScriptId`. Using the document base URL matches
+      // inline scripts and is a reasonable fallback until script records carry URLs.
+      ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => vm
+        .user_data::<crate::js::window_realm::WindowRealmUserData>()
+        .and_then(|data| data.base_url.as_deref()),
     }
   }
 
@@ -993,7 +1031,8 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
   ) -> std::result::Result<(), VmError> {
     let _ = host_defined;
 
-    let base_url = Self::referrer_url_for_resolution(modules, referrer).unwrap_or("about:blank");
+    let base_url =
+      Self::referrer_url_for_resolution(vm, modules, referrer).unwrap_or("about:blank");
     let base_url = Url::parse(base_url).unwrap_or_else(|_| {
       Url::parse("about:blank").expect("about:blank is a valid URL")
     });
@@ -1019,7 +1058,7 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
       }
     };
 
-    let referrer_url = Self::referrer_url_for_resolution(modules, referrer)
+    let referrer_url = Self::referrer_url_for_resolution(vm, modules, referrer)
       .map(|s| s.to_string());
     let completion = match self.load_module_by_url(
       vm,
@@ -1273,6 +1312,105 @@ mod tests {
 
     let realm = executor.realm.as_mut().expect("realm initialized");
     assert_eq!(get_global_prop(realm, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_supports_dynamic_import_in_classic_scripts() -> Result<()> {
+    let dep_url = "https://example.com/dep.js";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 7;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher::new(map));
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()?;
+    let mut document =
+      BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", RenderOptions::default())?;
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      options,
+    )?;
+
+    let script_text = "globalThis.__dynImportPromise = import('./dep.js');";
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Classic,
+    };
+    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+
+    let realm = executor.realm.as_mut().expect("realm initialized");
+    let promise_value = get_global_prop(realm, "__dynImportPromise");
+    let Value::Object(promise_obj) = promise_value else {
+      panic!("expected dynamic import to return a Promise object");
+    };
+    assert_eq!(
+      realm.heap().promise_state(promise_obj).map_err(|err| Error::Other(err.to_string()))?,
+      PromiseState::Fulfilled,
+      "expected dynamic import promise to be fulfilled"
+    );
+
+    let ns_value = realm
+      .heap()
+      .promise_result(promise_obj)
+      .map_err(|err| Error::Other(err.to_string()))?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(ns_obj) = ns_value else {
+      panic!("expected dynamic import promise to fulfill with a module namespace object");
+    };
+
+    let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope
+      .push_root(Value::Object(ns_obj))
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let key_s = scope
+      .alloc_string("value")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    scope
+      .push_root(Value::String(key_s))
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let key = PropertyKey::from_string(key_s);
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(ns_obj, &key)
+        .map_err(|err| Error::Other(err.to_string()))?
+        .is_some(),
+      "expected module namespace to expose exported binding"
+    );
+
     Ok(())
   }
 

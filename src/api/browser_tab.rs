@@ -2255,8 +2255,8 @@ impl BrowserTabHost {
       sources: Arc<Mutex<HashMap<String, String>>>,
     }
 
-    impl ResourceFetcher for OverlayFetcher {
-      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    impl OverlayFetcher {
+      fn override_bytes(&self, url: &str) -> Option<Vec<u8>> {
         let source = {
           let sources = self
             .sources
@@ -2264,32 +2264,66 @@ impl BrowserTabHost {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
           sources.get(url).cloned()
         };
-        if let Some(source) = source {
-          return Ok(FetchedResource::with_final_url(
-            source.into_bytes(),
-            Some("application/javascript".to_string()),
-            Some(url.to_string()),
-          ));
+        source.map(|s| s.into_bytes())
+      }
+
+      fn allow_origin_for_request(req: FetchRequest<'_>) -> String {
+        // Synthetic script sources are used by tests/fixtures and do not have real response headers.
+        // Mirror permissive CORS headers so module graphs can be fetched in CORS mode without
+        // introducing test-only branching in the module loader.
+        if req.credentials_mode == crate::resource::FetchCredentialsMode::Include {
+          match req.client_origin {
+            Some(origin) if origin.is_http_like() => origin.to_string(),
+            // File/non-http origins are represented as "null" for CORS header matching.
+            Some(_) => "null".to_string(),
+            None => "*".to_string(),
+          }
+        } else {
+          "*".to_string()
+        }
+      }
+
+      fn override_resource(url: &str, bytes: Vec<u8>, allow_origin: String) -> FetchedResource {
+        let mut res = FetchedResource::new(bytes, Some("application/javascript".to_string()));
+        // Mirror HTTP fetches so downstream validations (status/CORS) remain deterministic.
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        // Allow CORS-mode scripts/modules to pass enforcement if enabled.
+        res.access_control_allow_origin = Some(allow_origin);
+        res.access_control_allow_credentials = true;
+        res
+      }
+    }
+
+    impl ResourceFetcher for OverlayFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        if let Some(bytes) = self.override_bytes(url) {
+          return Ok(Self::override_resource(url, bytes, "*".to_string()));
         }
         self.base.fetch(url)
       }
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-        let source = {
-          let sources = self
-            .sources
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-          sources.get(req.url).cloned()
-        };
-        if let Some(source) = source {
-          return Ok(FetchedResource::with_final_url(
-            source.into_bytes(),
-            Some("application/javascript".to_string()),
-            Some(req.url.to_string()),
-          ));
+        if let Some(bytes) = self.override_bytes(req.url) {
+          let allow_origin = Self::allow_origin_for_request(req);
+          return Ok(Self::override_resource(req.url, bytes, allow_origin));
         }
         self.base.fetch_with_request(req)
+      }
+
+      fn fetch_partial_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        if let Some(mut bytes) = self.override_bytes(req.url) {
+          if bytes.len() > max_bytes {
+            bytes.truncate(max_bytes);
+          }
+          let allow_origin = Self::allow_origin_for_request(req);
+          return Ok(Self::override_resource(req.url, bytes, allow_origin));
+        }
+        self.base.fetch_partial_with_request(req, max_bytes)
       }
 
       fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
