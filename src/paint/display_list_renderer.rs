@@ -18484,18 +18484,22 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
     if out_len == 0 || src_len == 0 || dest_size <= 0.0 || !dest_size.is_finite() {
       return None;
     }
-    let scale = src_len as f64 / dest_size as f64;
+    // Skia's raster pipeline uses 32-bit float (`SkScalar`) math when mapping from device pixels to
+    // source coordinates. Using 64-bit float here can produce widespread ±1 channel diffs across
+    // large photos due to slightly different fixed-point rounding, so keep the coordinate math in
+    // f32 to match Skia more closely.
+    let scale = src_len as f32 / dest_size;
     if !scale.is_finite() || !out_origin.is_finite() || !dest_origin.is_finite() {
       return None;
     }
-    let max = src_len as f64 - 1.0;
+    let max = src_len as f32 - 1.0;
     let mut samples = Vec::new();
     if samples.try_reserve_exact(out_len as usize).is_err() {
       return None;
     }
     for i in 0..out_len {
-      let device = out_origin as f64 + i as f64 + 0.5;
-      let mut s = (device - dest_origin as f64) * scale - 0.5;
+      let device = out_origin + i as f32 + 0.5;
+      let mut s = (device - dest_origin) * scale - 0.5;
       if !s.is_finite() || !max.is_finite() {
         return None;
       }
@@ -18676,7 +18680,11 @@ fn image_data_to_scaled_pixmap_from_src_rect_with_phase_inner(
   out_origin_x_device: f32,
   out_origin_y_device: f32,
 ) -> RenderResult<Option<Pixmap>> {
-  if out_width == 0 || out_height == 0 {
+  if out_width == 0
+    || out_height == 0
+    || !out_origin_x_device.is_finite()
+    || !out_origin_y_device.is_finite()
+  {
     return Ok(None);
   }
   if !(dest_device.width().is_finite()
@@ -18705,160 +18713,38 @@ fn image_data_to_scaled_pixmap_from_src_rect_with_phase_inner(
     return Ok(None);
   }
 
-  let Some(size) = IntSize::from_wh(out_width, out_height) else {
-    return Ok(None);
-  };
-  let Some(bytes) = u64::from(out_width)
-    .checked_mul(u64::from(out_height))
-    .and_then(|px| px.checked_mul(4))
-  else {
-    return Ok(None);
-  };
-
-  let mut data = match reserve_buffer(bytes, "scaled image pixmap (src-rect phase)") {
-    Ok(buf) => buf,
-    Err(_) => return Ok(None),
-  };
-  data.resize(bytes as usize, 0);
-
-  check_active(RenderStage::Paint)?;
-  let src_pixels = image.pixels.as_ref().as_slice();
-  let Some(expected_src_bytes) = u64::from(src_w)
-    .checked_mul(u64::from(src_h))
-    .and_then(|px| px.checked_mul(4))
-  else {
-    return Ok(None);
-  };
-  let Ok(expected_src_len) = usize::try_from(expected_src_bytes) else {
-    return Ok(None);
-  };
-  if src_pixels.len() != expected_src_len {
+  // `ImageItem::src_rect` is implemented by mapping the *full* image into the destination rect
+  // (preserving fractional source offsets) and then clipping to the destination. Reconstruct that
+  // same full-image destination mapping and feed it through the mipmap-capable Skia-aligned sampler
+  // so downscaled backgrounds behave closer to Chrome.
+  let scale_x = dest_device.width() / src_rect.width();
+  let scale_y = dest_device.height() / src_rect.height();
+  if !scale_x.is_finite() || !scale_y.is_finite() || scale_x <= 0.0 || scale_y <= 0.0 {
     return Ok(None);
   }
-
-  #[derive(Clone, Copy)]
-  struct AxisSample {
-    i0: u32,
-    i1: u32,
-    t: f32,
-  }
-
-  let scale_x = src_rect.width() / dest_device.width();
-  let scale_y = src_rect.height() / dest_device.height();
-  if !scale_x.is_finite() || !scale_y.is_finite() {
+  let tx = dest_device.x() - src_rect.x() * scale_x;
+  let ty = dest_device.y() - src_rect.y() * scale_y;
+  let full_w = src_w as f32 * scale_x;
+  let full_h = src_h as f32 * scale_y;
+  if !(tx.is_finite()
+    && ty.is_finite()
+    && full_w.is_finite()
+    && full_h.is_finite()
+    && full_w > 0.0
+    && full_h > 0.0)
+  {
     return Ok(None);
   }
-  let max_x = src_w as f32 - 1.0;
-  let max_y = src_h as f32 - 1.0;
+  let dest_full = Rect::from_xywh(tx, ty, full_w, full_h);
 
-  let mut xs = Vec::new();
-  if xs.try_reserve_exact(out_width as usize).is_err() {
-    return Ok(None);
-  }
-  for x in 0..out_width {
-    let device_x = out_origin_x_device + x as f32 + 0.5;
-    let mut sx = src_rect.x() + (device_x - dest_device.x()) * scale_x - 0.5;
-    if !sx.is_finite() {
-      return Ok(None);
-    }
-    sx = sx.clamp(0.0, max_x);
-    let sx0 = sx.floor() as u32;
-    let sx1 = (sx0 + 1).min(src_w - 1);
-    xs.push(AxisSample {
-      i0: sx0,
-      i1: sx1,
-      t: sx - sx0 as f32,
-    });
-  }
-
-  let mut ys = Vec::new();
-  if ys.try_reserve_exact(out_height as usize).is_err() {
-    return Ok(None);
-  }
-  for y in 0..out_height {
-    let device_y = out_origin_y_device + y as f32 + 0.5;
-    let mut sy = src_rect.y() + (device_y - dest_device.y()) * scale_y - 0.5;
-    if !sy.is_finite() {
-      return Ok(None);
-    }
-    sy = sy.clamp(0.0, max_y);
-    let sy0 = sy.floor() as u32;
-    let sy1 = (sy0 + 1).min(src_h - 1);
-    ys.push(AxisSample {
-      i0: sy0,
-      i1: sy1,
-      t: sy - sy0 as f32,
-    });
-  }
-
-  let premultiplied = image.premultiplied;
-  let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-  let mut pixel_counter = 0usize;
-  for (y, ysamp) in ys.iter().enumerate() {
-    let y = y as u32;
-    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
-    let row0 = sy0 as usize * src_w as usize;
-    let row1 = sy1 as usize * src_w as usize;
-    for (x, xsamp) in xs.iter().enumerate() {
-      if (pixel_counter & 4095) == 0 {
-        check_active(RenderStage::Paint)?;
-      }
-      pixel_counter = pixel_counter.wrapping_add(1);
-
-      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
-
-      let idx00 = (row0 + sx0 as usize) * 4;
-      let idx10 = (row0 + sx1 as usize) * 4;
-      let idx01 = (row1 + sx0 as usize) * 4;
-      let idx11 = (row1 + sx1 as usize) * 4;
-
-      let read = |idx: usize| -> (f32, f32, f32, f32) {
-        let r = src_pixels[idx] as f32;
-        let g = src_pixels[idx + 1] as f32;
-        let b = src_pixels[idx + 2] as f32;
-        let a = src_pixels[idx + 3] as f32;
-        if premultiplied {
-          (r, g, b, a)
-        } else {
-          let af = a / 255.0;
-          (r * af, g * af, b * af, a)
-        }
-      };
-
-      let (r00, g00, b00, a00) = read(idx00);
-      let (r10, g10, b10, a10) = read(idx10);
-      let (r01, g01, b01, a01) = read(idx01);
-      let (r11, g11, b11, a11) = read(idx11);
-
-      let top_r = lerp(r00, r10, fx);
-      let top_g = lerp(g00, g10, fx);
-      let top_b = lerp(b00, b10, fx);
-      let top_a = lerp(a00, a10, fx);
-
-      let bot_r = lerp(r01, r11, fx);
-      let bot_g = lerp(g01, g11, fx);
-      let bot_b = lerp(b01, b11, fx);
-      let bot_a = lerp(a01, a11, fx);
-
-      // Match Chrome/Skia's bilinear sampling: convert to 8-bit by rounding down.
-      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
-      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
-      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
-
-      r = r.min(a);
-      g = g.min(a);
-      b = b.min(a);
-
-      let dst_idx = (y * out_width + x as u32) as usize * 4;
-      data[dst_idx] = r;
-      data[dst_idx + 1] = g;
-      data[dst_idx + 2] = b;
-      data[dst_idx + 3] = a;
-    }
-  }
-
-  Ok(Pixmap::from_vec(data, size))
+  image_data_to_scaled_pixmap_with_phase_inner(
+    image,
+    dest_full,
+    out_width,
+    out_height,
+    out_origin_x_device,
+    out_origin_y_device,
+  )
 }
 
 fn image_data_to_scaled_pixmap_inner(
