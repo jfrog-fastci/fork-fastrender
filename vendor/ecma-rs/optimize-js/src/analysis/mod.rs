@@ -1,4 +1,5 @@
 pub mod dataflow;
+pub mod dataflow_edge;
 pub mod defs;
 pub mod find_conds;
 pub mod find_loops;

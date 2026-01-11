@@ -2,8 +2,9 @@ use super::dataflow::{
   AnalysisBoundary, BlockState, DataFlowAnalysis, DataFlowResult, Direction,
   ResolvedAnalysisBoundary,
 };
+use super::dataflow_edge::{run_forward_edge_dataflow, ForwardEdgeDataFlowAnalysis};
 use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-use crate::il::inst::Inst;
+use crate::il::inst::{Arg, Inst, InstTyp};
 use ahash::HashMap;
 use std::collections::BTreeSet;
 
@@ -94,6 +95,22 @@ fn cfg(labels: &[u32], edges: &[(u32, u32)]) -> Cfg {
   }
 }
 
+fn cfg_with_bblocks(bblocks: Vec<(u32, Vec<Inst>)>, edges: &[(u32, u32)]) -> Cfg {
+  let mut graph = CfgGraph::default();
+  for &(from, to) in edges {
+    graph.connect(from, to);
+  }
+  let mut cfg_bblocks = CfgBBlocks::default();
+  for (label, block) in bblocks {
+    cfg_bblocks.add(label, block);
+  }
+  Cfg {
+    graph,
+    bblocks: cfg_bblocks,
+    entry: 0,
+  }
+}
+
 fn assert_exit(states: &HashMap<u32, BlockState<BTreeSet<u32>>>, label: u32, expected: &[u32]) {
   let expected_set = expected.iter().copied().collect::<BTreeSet<_>>();
   assert_eq!(
@@ -120,6 +137,56 @@ fn forward(cfg: &Cfg, boundary: AnalysisBoundary) -> DataFlowResult<BTreeSet<u32
 
 fn backward(cfg: &Cfg, boundary: AnalysisBoundary) -> DataFlowResult<BTreeSet<u32>> {
   BackwardCollectLabels::default().analyze(cfg, boundary)
+}
+
+#[derive(Default)]
+struct BranchMarkingEdgeAnalysis;
+
+impl ForwardEdgeDataFlowAnalysis for BranchMarkingEdgeAnalysis {
+  type State = BTreeSet<u32>;
+
+  fn bottom(&self, _cfg: &Cfg) -> Self::State {
+    BTreeSet::new()
+  }
+
+  fn meet(&mut self, states: &[(u32, &Self::State)]) -> Self::State {
+    union_sets(states)
+  }
+
+  fn apply_to_instruction(
+    &mut self,
+    _label: u32,
+    _inst_idx: usize,
+    _inst: &Inst,
+    _state: &mut Self::State,
+  ) {
+  }
+
+  fn apply_edge(
+    &mut self,
+    _pred: u32,
+    succ: u32,
+    pred_block: &[Inst],
+    state_at_end_of_pred: &Self::State,
+    _cfg: &Cfg,
+  ) -> Self::State {
+    let mut out = state_at_end_of_pred.clone();
+    if let Some(inst) = pred_block.last() {
+      if inst.t == InstTyp::CondGoto {
+        let (_, t, f) = inst.as_cond_goto();
+        if succ == t {
+          out.insert(1);
+        } else if succ == f {
+          out.insert(2);
+        }
+      }
+    }
+    out
+  }
+}
+
+fn set(vals: &[u32]) -> BTreeSet<u32> {
+  vals.iter().copied().collect()
 }
 
 #[test]
@@ -237,4 +304,51 @@ fn loop_propagation_converges() {
   assert_exit(&result.blocks, 1, &[0, 1, 2]);
   assert_exit(&result.blocks, 2, &[0, 1, 2]);
   assert_exit(&result.blocks, 3, &[0, 1, 2, 3]);
+}
+
+#[test]
+fn forward_edge_dataflow_refines_per_successor_state() {
+  let cfg = cfg_with_bblocks(
+    vec![
+      (0, vec![Inst::cond_goto(Arg::Var(0), 1, 2)]),
+      (1, vec![]),
+      (2, vec![]),
+      (3, vec![]),
+    ],
+    &[(0, 1), (0, 2), (1, 3), (2, 3)],
+  );
+
+  let result = run_forward_edge_dataflow(&mut BranchMarkingEdgeAnalysis::default(), &cfg, 0);
+  assert_eq!(result.block_exit.get(&0), Some(&set(&[])));
+  assert_eq!(result.edge_out.get(&(0, 1)), Some(&set(&[1])));
+  assert_eq!(result.edge_out.get(&(0, 2)), Some(&set(&[2])));
+  assert_eq!(result.block_entry.get(&1), Some(&set(&[1])));
+  assert_eq!(result.block_entry.get(&2), Some(&set(&[2])));
+  assert_eq!(result.block_entry.get(&3), Some(&set(&[1, 2])));
+}
+
+#[test]
+fn forward_edge_dataflow_deterministic_across_edge_ordering() {
+  let cfg1 = cfg_with_bblocks(
+    vec![
+      (0, vec![Inst::cond_goto(Arg::Var(0), 1, 2)]),
+      (1, vec![]),
+      (2, vec![]),
+      (3, vec![]),
+    ],
+    &[(0, 1), (0, 2), (1, 3), (2, 3)],
+  );
+  let cfg2 = cfg_with_bblocks(
+    vec![
+      (0, vec![Inst::cond_goto(Arg::Var(0), 1, 2)]),
+      (1, vec![]),
+      (2, vec![]),
+      (3, vec![]),
+    ],
+    &[(2, 3), (0, 2), (1, 3), (0, 1)],
+  );
+
+  let r1 = run_forward_edge_dataflow(&mut BranchMarkingEdgeAnalysis::default(), &cfg1, 0);
+  let r2 = run_forward_edge_dataflow(&mut BranchMarkingEdgeAnalysis::default(), &cfg2, 0);
+  assert_eq!(r1, r2);
 }
