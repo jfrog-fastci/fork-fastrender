@@ -22,6 +22,7 @@ pub(crate) mod coroutine;
 pub(crate) mod promise;
 
 pub mod gc;
+pub mod gc_handle;
 
 pub use reactor::Interest;
 pub use reactor::WatcherId;
@@ -388,3 +389,6 @@ pub fn debug_in_epoll_wait() -> bool {
 pub fn debug_timer_count() -> usize {
   global().loop_.debug_timers_count()
 }
+
+#[cfg(test)]
+mod tests;

@@ -161,6 +161,7 @@ pub use thread_registry::{
   rt_register_current_thread, rt_register_thread, rt_unregister_current_thread, rt_unregister_thread,
 };
 pub use gc_roots::{relocate_derived_pairs, RelocPair, StackRootEnumerator};
+pub use async_rt::gc_handle::{AsyncHandle, MustDiscardOwnedAsyncHandle, OwnedAsyncHandle};
 pub use stackmaps::{
   global_stackmap_registry, lookup, rt_stackmaps_register, rt_stackmaps_unregister, CallSiteHandle,
   StackMapRegistry, StackMaps,
