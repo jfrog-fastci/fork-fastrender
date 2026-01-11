@@ -50,6 +50,7 @@ impl FilterOutset {
 /// - kernel filters (`feGaussianBlur`, `feMorphology`, `feConvolveMatrix`)
 /// - displacement (`feDisplacementMap`)
 /// - translations (`feOffset`, and `feDropShadow` dx/dy)
+/// - tiling (`feTile`)
 /// - lighting normals (`feDiffuseLighting`, `feSpecularLighting` via `kernelUnitLength`)
 fn svg_filter_kernel_outset_css(
   filter: &crate::paint::svg_filter::SvgFilter,
@@ -57,6 +58,19 @@ fn svg_filter_kernel_outset_css(
 ) -> FilterOutset {
   let mut pad_x = 0.0f32;
   let mut pad_y = 0.0f32;
+  let filter_region = filter.resolve_region(bbox);
+  let filter_region_w = filter_region.width().abs();
+  let filter_region_h = filter_region.height().abs();
+  let filter_region_w = if filter_region_w.is_finite() {
+    filter_region_w
+  } else {
+    0.0
+  };
+  let filter_region_h = if filter_region_h.is_finite() {
+    filter_region_h
+  } else {
+    0.0
+  };
   let bbox_w = bbox.width().abs();
   let bbox_h = bbox.height().abs();
   let bbox_w = if bbox_w.is_finite() { bbox_w } else { 0.0 };
@@ -182,6 +196,14 @@ fn svg_filter_kernel_outset_css(
           pad_x += margin;
           pad_y += margin;
         }
+      }
+      FilterPrimitive::Tile { .. } => {
+        // `feTile` can sample from any pixel within its input region (wrapping as needed). When
+        // rendering tiles in isolation this means pixels near a tile edge can depend on pixels far
+        // away (potentially on the other side of the filter region). Conservatively request a halo
+        // large enough to cover the full filter region so each tile sees a complete wrap source.
+        pad_x = pad_x.max(filter_region_w);
+        pad_y = pad_y.max(filter_region_h);
       }
       FilterPrimitive::DiffuseLighting {
         kernel_unit_length,
