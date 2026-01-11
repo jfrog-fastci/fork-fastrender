@@ -96,6 +96,8 @@ usually `0` for `ccc`).
 Depending on whether LLVM chooses to use the stackmap constant pool, `#2` may be
 printed as either `Constant <flags>` or `ConstIndex`/`ConstantIndex ... (<flags>)`;
 the value must match the IR `flags` immarg either way.
+On 64-bit targets, LLVM prints these header constants with `size: 8` even though
+the IR `flags` operand is an `i32`.
 
 ## `gc.statepoint`: `patch_bytes > 0` reserves a patchable region (x86_64)
 

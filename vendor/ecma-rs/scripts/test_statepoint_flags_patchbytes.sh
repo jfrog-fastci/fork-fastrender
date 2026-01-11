@@ -232,6 +232,28 @@ extract_location1_constant() {
   printf '%s' "${val}"
 }
 
+extract_location_size() {
+  local stackmap="$1"
+  local idx="$2"
+  local size
+  size="$(
+    printf '%s\n' "${stackmap}" | awk -v idx="${idx}" '
+      $1 == "#"idx":" {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "size:") {
+            v = $(i + 1)
+            sub(/,/, "", v)
+            print v
+            exit
+          }
+        }
+      }
+    '
+  )"
+  [[ "${size}" =~ ^[0-9]+$ ]] || die "failed to parse location #${idx} size from llvm-readobj output"
+  printf '%s' "${size}"
+}
+
 OFF_A="$(extract_instruction_offset "${STACKMAP_A}")"
 OFF_B="$(extract_instruction_offset "${STACKMAP_B}")"
 
@@ -248,6 +270,16 @@ FLAGS_B_GOT="$(extract_location2_constant "${STACKMAP_B}")"
 if [[ "${FLAGS_B_GOT}" != "${FLAGS_B_EXPECTED}" ]]; then
   echo "${STACKMAP_B}" >&2
   die "stackmap constant #2 (flags) mismatch for fixture B: expected ${FLAGS_B_EXPECTED}, got ${FLAGS_B_GOT}"
+fi
+
+FLAGS_A_SIZE="$(extract_location_size "${STACKMAP_A}" 2)"
+FLAGS_B_SIZE="$(extract_location_size "${STACKMAP_B}" 2)"
+if [[ "${FLAGS_A_SIZE}" != "8" || "${FLAGS_B_SIZE}" != "8" ]]; then
+  echo "=== stackmap A ===" >&2
+  echo "${STACKMAP_A}" >&2
+  echo "=== stackmap B ===" >&2
+  echo "${STACKMAP_B}" >&2
+  die "expected statepoint header flags location (#2) size to be 8 bytes on x86_64; got A.size=${FLAGS_A_SIZE}, B.size=${FLAGS_B_SIZE}"
 fi
 
 if (( OFF_B <= OFF_A )); then
