@@ -45,6 +45,7 @@ pub mod emit;
 pub mod link;
 pub mod llvm;
 pub mod runtime_abi;
+pub mod poc_stackmaps;
 pub mod strict;
 pub mod llvm_passes;
 

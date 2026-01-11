@@ -19,7 +19,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
 # Ensure we're running Cargo against the ecma-rs workspace, not the outer
 # fastrender workspace (which excludes `vendor/ecma-rs`).
 cd "${REPO_ROOT}"

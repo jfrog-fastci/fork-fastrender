@@ -5,3 +5,11 @@
 # without switching toolchains.
 RUSTC_BOOTSTRAP = "1"
 
+# The parent repository's `.cargo/config.toml` configures `-fuse-ld=mold` for
+# faster linking. Some build environments (including our agent CI images) ship a
+# `clang` that does not recognize `mold` as a valid `-fuse-ld` value.
+#
+# Override it in this nested workspace so `scripts/cargo_llvm.sh` builds work
+# reliably everywhere.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
