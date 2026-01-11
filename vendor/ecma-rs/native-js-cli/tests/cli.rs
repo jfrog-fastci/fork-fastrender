@@ -5,7 +5,6 @@ use std::fs;
 use std::process::Command as StdCommand;
 use std::time::Duration;
 use tempfile::TempDir;
-use wait_timeout::ChildExt;
 
 // These tests spawn `native-js` / `native-js-cli` binaries which perform LLVM codegen and system
 // linking. Under heavy CI/agent contention this can take tens of seconds, so keep the timeout
@@ -18,20 +17,6 @@ fn native_js() -> Command {
 
 fn native_js_cli() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
-}
-
-fn run_with_timeout(
-  cmd: &mut StdCommand,
-  timeout: Duration,
-) -> std::io::Result<std::process::ExitStatus> {
-  let mut child = cmd.spawn()?;
-  match child.wait_timeout(timeout)? {
-    Some(status) => Ok(status),
-    None => {
-      let _ = child.kill();
-      child.wait()
-    }
-  }
 }
 
 #[test]
@@ -199,8 +184,9 @@ fn build_and_run_returns_exit_code() {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(42));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
@@ -239,8 +225,9 @@ fn build_with_emit_ir_writes_executable_and_ir_file() {
     "expected IR to contain module init symbols"
   );
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(7));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
 }
 
 #[test]
@@ -287,8 +274,8 @@ fn run_exits_with_program_exit_code() {
     .arg("--")
     .arg("--dummy-arg")
     .assert()
-    .failure()
-    .code(42);
+    .success()
+    .stdout(predicate::eq("42\n"));
 }
 
 #[test]
@@ -315,8 +302,9 @@ fn relative_imports_are_resolved() {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(42));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
@@ -363,8 +351,9 @@ fn tsconfig_paths_are_resolved() {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(42));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
@@ -394,8 +383,9 @@ fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(1));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 }
 
 #[test]
@@ -475,8 +465,9 @@ fn tsconfig_types_are_loaded_from_type_roots() {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(0));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n");
 }
 
 #[test]
@@ -495,7 +486,7 @@ fn print_builtin_writes_stdout() {
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("3\n"));
+    .stdout(predicate::eq("3\n0\n"));
 }
 
 #[test]
@@ -516,7 +507,7 @@ fn checked_pipeline_run_prints_stdout() {
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("3\n"));
+    .stdout(predicate::eq("3\n0\n"));
 }
 
 #[test]
@@ -636,9 +627,8 @@ fn checked_pipeline_run_exits_with_program_exit_code() {
     .arg("run")
     .arg(&entry)
     .assert()
-    .failure()
-    .code(42)
-    .stdout(predicate::eq("3\n"));
+    .success()
+    .stdout(predicate::eq("3\n42\n"));
 }
 
 #[test]
@@ -705,8 +695,9 @@ export function main(): number { return x; }
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(42));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
@@ -731,7 +722,7 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("42\n"));
+    .stdout(predicate::eq("42\n0\n"));
 }
 
 #[test]
@@ -775,8 +766,9 @@ export function main(): number { return x; }
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(2));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
 }
 
 #[test]
@@ -807,7 +799,7 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq(""));
+    .stdout(predicate::eq("0\n"));
 }
 
 #[test]
@@ -845,8 +837,9 @@ export function main(): number { return x; }
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(42));
+  let output = StdCommand::new(&out).output().unwrap();
+  assert!(output.status.success(), "unexpected status {:?}", output.status);
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
@@ -877,5 +870,37 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq(""));
+    .stdout(predicate::eq("0\n"));
+}
+
+#[test]
+fn module_init_runs_once_and_in_import_order() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(&dep, "print(0);\n").unwrap();
+
+  let b = tmp.path().join("b.ts");
+  fs::write(&b, "import \"./dep\";\nprint(1);\n").unwrap();
+
+  let c = tmp.path().join("c.ts");
+  fs::write(&c, "import \"./dep\";\nprint(2);\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import "./b";
+import "./c";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("0\n1\n2\n0\n"));
 }
