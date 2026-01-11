@@ -1,6 +1,7 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp};
 use crate::{FnId, Program};
+use effect_model::{EffectFlags, ThrowBehavior};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,12 +46,12 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     InstTyp::Bin => {
       if inst.bin_op == BinOp::GetProp {
         effects.reads.insert(EffectLocation::Heap);
-        effects.may_throw = true;
+        effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
     InstTyp::PropAssign => {
       effects.writes.insert(EffectLocation::Heap);
-      effects.may_throw = true;
+      effects.summary.throws = ThrowBehavior::Maybe;
     }
     InstTyp::ForeignLoad => {
       effects
@@ -66,13 +67,13 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
       effects
         .reads
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
-      effects.may_throw = true;
+      effects.summary.throws = ThrowBehavior::Maybe;
     }
     InstTyp::UnknownStore => {
       effects
         .writes
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
-      effects.may_throw = true;
+      effects.summary.throws = ThrowBehavior::Maybe;
     }
     InstTyp::Call => {
       let (_, callee, _, _, _) = inst.as_call();
@@ -86,26 +87,22 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
           | "__optimize_js_regex"
           | "__optimize_js_template"
           | "__optimize_js_tagged_template" => {
-            effects.allocates = true;
+            effects.summary.flags |= EffectFlags::ALLOCATES;
           }
           "__optimize_js_delete" => {
             effects.writes.insert(EffectLocation::Heap);
-            effects.unknown = true;
-            effects.may_throw = true;
+            effects.mark_unknown();
           }
           "__optimize_js_new" | "__optimize_js_await" | "import" => {
-            effects.unknown = true;
-            effects.may_throw = true;
+            effects.mark_unknown();
           }
           _ if is_pure_consteval_builtin_call(path) => {}
           _ => {
-            effects.unknown = true;
-            effects.may_throw = true;
+            effects.mark_unknown();
           }
         },
         _ => {
-          effects.unknown = true;
-          effects.may_throw = true;
+          effects.mark_unknown();
         }
       }
     }
@@ -127,8 +124,7 @@ fn inst_total_effect(inst: &Inst, fn_summaries: &FnEffectMap) -> EffectSet {
       } else {
         // An `Arg::Fn` with no corresponding summary should be impossible, but if it happens we
         // must stay conservative.
-        effects.unknown = true;
-        effects.may_throw = true;
+        effects.mark_unknown();
       }
     }
   }
@@ -190,7 +186,7 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
       if let Some(summary) = summaries.get(callee) {
         new_top.merge(summary);
       } else {
-        new_top.unknown = true;
+        new_top.mark_unknown();
       }
     }
     if new_top != summaries.top_level {
@@ -204,7 +200,7 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
         if let Some(summary) = summaries.get(callee) {
           new_summary.merge(summary);
         } else {
-          new_summary.unknown = true;
+          new_summary.mark_unknown();
         }
       }
       if new_summary != summaries.functions[fn_id] {
@@ -268,14 +264,14 @@ mod tests {
     let load_eff = inst_local_effect(&load);
     assert!(load_eff.reads.contains(&EffectLocation::Foreign(sym)));
     assert!(load_eff.writes.is_empty());
-    assert!(!load_eff.allocates);
+    assert!(!load_eff.summary.flags.contains(EffectFlags::ALLOCATES));
     assert!(!load_eff.unknown);
 
     let store = Inst::foreign_store(sym, Arg::Const(Const::Undefined));
     let store_eff = inst_local_effect(&store);
     assert!(store_eff.writes.contains(&EffectLocation::Foreign(sym)));
     assert!(store_eff.reads.is_empty());
-    assert!(!store_eff.allocates);
+    assert!(!store_eff.summary.flags.contains(EffectFlags::ALLOCATES));
     assert!(!store_eff.unknown);
   }
 
@@ -297,7 +293,7 @@ mod tests {
       );
       let eff = inst_local_effect(&call);
       assert!(
-        eff.allocates,
+        eff.summary.flags.contains(EffectFlags::ALLOCATES),
         "{builtin} should allocate but got {eff:?}"
       );
       assert!(
@@ -305,8 +301,8 @@ mod tests {
         "{builtin} should not be marked unknown but got {eff:?}"
       );
       assert!(
-        !eff.may_throw,
-        "{builtin} should not be marked may_throw but got {eff:?}"
+        eff.summary.throws == ThrowBehavior::Never,
+        "{builtin} should not be marked as throwing but got {eff:?}"
       );
       assert!(eff.reads.is_empty());
       assert!(eff.writes.is_empty());
@@ -324,7 +320,7 @@ mod tests {
     );
     let eff = inst_local_effect(&call);
     assert!(eff.unknown);
-    assert!(eff.may_throw);
+    assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
   }
 
   #[test]
@@ -337,7 +333,7 @@ mod tests {
     );
     let eff = inst_local_effect(&inst);
     assert!(eff.reads.contains(&EffectLocation::Heap));
-    assert!(eff.may_throw);
+    assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
   }
 
   #[test]
@@ -407,11 +403,11 @@ mod tests {
     };
 
     let summaries = compute_program_effects(&program);
-    assert!(summaries.functions[0].may_throw);
-    assert!(summaries.functions[1].may_throw);
+    assert_eq!(summaries.functions[0].summary.throws, ThrowBehavior::Maybe);
+    assert_eq!(summaries.functions[1].summary.throws, ThrowBehavior::Maybe);
 
     annotate_cfg_effects(&mut program.functions[1].body, &summaries);
     let call_effects = &program.functions[1].body.bblocks.get(0)[0].meta.effects;
-    assert!(call_effects.may_throw);
+    assert_eq!(call_effects.summary.throws, ThrowBehavior::Maybe);
   }
-}
+} 

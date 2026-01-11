@@ -1,5 +1,6 @@
 use crate::analysis::purity::Purity;
 use crate::symbol::semantics::SymbolId;
+use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
 use std::collections::BTreeSet;
@@ -26,30 +27,35 @@ pub enum EffectLocation {
 pub struct EffectSet {
   pub reads: BTreeSet<EffectLocation>,
   pub writes: BTreeSet<EffectLocation>,
-  pub allocates: bool,
+  pub summary: EffectSummary,
   pub unknown: bool,
-  pub may_throw: bool,
 }
 
 impl EffectSet {
   pub fn is_default(&self) -> bool {
     self.reads.is_empty()
       && self.writes.is_empty()
-      && !self.allocates
+      && self.summary.is_pure()
       && !self.unknown
-      && !self.may_throw
   }
 
   pub fn is_pure(&self) -> bool {
     self.is_default()
   }
 
+  pub fn mark_unknown(&mut self) {
+    self.unknown = true;
+    self.summary.flags = EffectFlags::all();
+    self.summary.throws = ThrowBehavior::Maybe;
+  }
+
   pub fn merge(&mut self, other: &Self) {
     self.reads.extend(other.reads.iter().cloned());
     self.writes.extend(other.writes.iter().cloned());
-    self.allocates |= other.allocates;
-    self.unknown |= other.unknown;
-    self.may_throw |= other.may_throw;
+    self.summary = EffectSummary::join(self.summary, other.summary);
+    if other.unknown {
+      self.mark_unknown();
+    }
   }
 
   pub fn union(mut self, other: Self) -> Self {

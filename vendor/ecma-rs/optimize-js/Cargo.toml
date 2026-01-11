@@ -12,6 +12,7 @@ serde = [
   "dep:serde",
   "ahash/serde",
   "dashmap/serde",
+  "effect-model/serde",
   "num-bigint/serde",
   "parse-js/serde",
 ]
@@ -20,6 +21,7 @@ serde = [
 ahash = { workspace = true }
 dashmap = { workspace = true }
 derive-visitor = { workspace = true }
+effect-model = { workspace = true }
 itertools = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }

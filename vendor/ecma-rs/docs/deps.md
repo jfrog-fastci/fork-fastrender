@@ -9,6 +9,7 @@ graph TD
     conformance_harness["conformance-harness"]
     diagnostics["diagnostics"]
     effect_js["effect-js"]
+    effect_js_cli["effect-js-cli"]
     effect_model["effect-model"]
     emit_js["emit-js"]
     hir_js["hir-js"]
@@ -26,6 +27,7 @@ graph TD
     runtime_js["runtime-js"]
     runtime_native["runtime-native"]
     semantic_js["semantic-js"]
+    stackmap_context["stackmap-context"]
     test262["test262"]
     test262_semantic["test262-semantic"]
     typecheck_ts["typecheck-ts"]
@@ -41,6 +43,11 @@ graph TD
     effect_js --> knowledge_base
     effect_js --> typecheck_ts
     effect_js --> types_ts_interned
+    effect_js_cli --> diagnostics
+    effect_js_cli --> effect_js
+    effect_js_cli --> hir_js
+    effect_js_cli --> knowledge_base
+    effect_js_cli --> parse_js
     emit_js --> diagnostics
     emit_js --> hir_js
     emit_js --> parse_js
@@ -61,10 +68,14 @@ graph TD
     native_js --> diagnostics
     native_js --> hir_js
     native_js --> parse_js
+    native_js --> runtime_native
     native_js --> typecheck_ts
     native_js --> types_ts_interned
+    native_js_cli --> diagnostics
     native_js_cli --> native_js
+    native_js_cli --> typecheck_ts
     optimize_js --> diagnostics
+    optimize_js --> effect_model
     optimize_js --> emit_js
     optimize_js --> hir_js
     optimize_js --> parse_js

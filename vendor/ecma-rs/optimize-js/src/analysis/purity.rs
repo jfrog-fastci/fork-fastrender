@@ -3,6 +3,7 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::EffectSet;
 use crate::il::inst::{Arg, InstTyp};
 use crate::{FnId, Program};
+use effect_model::{EffectFlags, ThrowBehavior};
 
 /// Conservative purity lattice for JS operations.
 ///
@@ -44,7 +45,10 @@ impl FnPurityMap {
 }
 
 fn purity_from_effects(effects: &EffectSet) -> Purity {
-  if effects.unknown || !effects.writes.is_empty() || effects.may_throw {
+  if effects.unknown
+    || !effects.writes.is_empty()
+    || !matches!(effects.summary.throws, ThrowBehavior::Never)
+  {
     return Purity::Impure;
   }
 
@@ -52,8 +56,16 @@ fn purity_from_effects(effects: &EffectSet) -> Purity {
     return Purity::ReadOnly;
   }
 
-  if effects.allocates {
+  if effects.summary.flags.contains(EffectFlags::ALLOCATES) {
+    // Allocating is only used when allocation is the *only* tracked effect.
+    if effects.summary.flags != EffectFlags::ALLOCATES {
+      return Purity::Impure;
+    }
     return Purity::Allocating;
+  }
+
+  if !effects.summary.flags.is_empty() {
+    return Purity::Impure;
   }
 
   Purity::Pure
