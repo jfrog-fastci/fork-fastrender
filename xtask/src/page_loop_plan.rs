@@ -17,7 +17,11 @@ use std::process::Command;
 
 use crate::cmd;
 
-const CHROME_BASELINE_ANIMATION_TIME_MS: &str = "4950";
+// Chrome baseline screenshots are captured via `--virtual-time-budget=5000`. Animated images start
+// animating slightly after the budget begins (decode/paint delay), so sample at an offset that
+// matches the baseline output. Keep this value away from common frame boundaries (e.g. 30ms GIFs)
+// so we don't systematically land exactly on a frame transition.
+const CHROME_BASELINE_ANIMATION_TIME_MS: &str = "4940";
 
 fn resolve_cargo_target_dir(repo_root: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {
   match cargo_target_dir {

@@ -134,8 +134,8 @@ fn page_loop_render_fixtures_runs_prebuilt_binary_under_run_limited() {
   assert!(
     args
       .windows(2)
-      .any(|w| w == ["--animation-time-ms", "4950"]),
-    "expected page-loop Chrome diff mode to sample animated images at 4950ms (align with Chrome screenshot timing), got {args:?}"
+      .any(|w| w == ["--animation-time-ms", "4940"]),
+    "expected page-loop Chrome diff mode to sample animated images at 4940ms (align with Chrome screenshot timing), got {args:?}"
   );
   assert_eq!(
     cmd_env(&cmd, "FASTR_USE_BUNDLED_FONTS").as_deref(),
