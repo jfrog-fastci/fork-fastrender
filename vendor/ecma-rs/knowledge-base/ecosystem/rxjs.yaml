@@ -5,6 +5,7 @@
 # - `rxjs.operators.*` for pipeable operators from `rxjs/operators`.
 
 - name: rxjs.Observable
+  kind: constructor
   aliases: [rxjs/Observable]
   semantics: ObservableConstructor
   since: "v0.1.0"
@@ -338,6 +339,7 @@
     timer_based: true
 
 - name: rxjs.Subject
+  kind: constructor
   aliases: [rxjs/Subject]
   semantics: SubjectConstructor
   since: "v0.1.0"
@@ -356,6 +358,7 @@
     stateful: true
 
 - name: rxjs.BehaviorSubject
+  kind: constructor
   aliases: [rxjs/BehaviorSubject]
   semantics: BehaviorSubjectConstructor
   since: "v0.1.0"
@@ -752,6 +755,7 @@
     kind: observable_combinator
 
 - name: rxjs.EMPTY
+  kind: value
   aliases: [rxjs/EMPTY]
   semantics: ObservableEmpty
   since: "v0.1.0"
@@ -769,6 +773,7 @@
     kind: observable_constant
 
 - name: rxjs.NEVER
+  kind: value
   aliases: [rxjs/NEVER]
   semantics: ObservableNever
   since: "v0.1.0"
