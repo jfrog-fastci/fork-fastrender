@@ -2,6 +2,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use native_js::link::LinkOpts;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -444,21 +445,15 @@ fn opt_level(raw: u8) -> Result<OptimizationLevel, String> {
 }
 
 fn link_object(debug: bool, obj: &[u8], output: &Path) -> Result<(), String> {
-  let tmpdir = tempfile::tempdir().map_err(|err| format!("failed to create tempdir: {err}"))?;
-  let obj_path = tmpdir.path().join("out.o");
-  fs::write(&obj_path, obj).map_err(|err| format!("failed to write {}: {err}", obj_path.display()))?;
-
-  let clang = find_clang().ok_or_else(|| "failed to find clang (tried clang-18 and clang)".to_string())?;
-  let mut cmd = Command::new(clang);
-  cmd.arg(&obj_path).arg("-o").arg(output);
-  if debug {
-    cmd.arg("-g");
-  }
-  let status = cmd.status().map_err(|err| format!("failed to invoke clang: {err}"))?;
-  if !status.success() {
-    return Err(format!("clang failed with status {}", status.code().unwrap_or(1)));
-  }
-  Ok(())
+  native_js::link::link_object_buffers_to_elf_executable(
+    output,
+    &[obj],
+    LinkOpts {
+      debug,
+      ..Default::default()
+    },
+  )
+  .map_err(|err| err.to_string())
 }
 
 fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {
@@ -476,21 +471,6 @@ fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {
   } else {
     ExitCode::from(1)
   }
-}
-
-fn find_clang() -> Option<&'static str> {
-  for cand in ["clang-18", "clang"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok()
-    {
-      return Some(cand);
-    }
-  }
-  None
 }
 
 fn exit_internal_without_program(json: bool, message: String) -> ExitCode {

@@ -62,6 +62,12 @@ pub struct LinkOpts {
   /// PIE. On Linux, `pie: true` passes `-pie` explicitly so the link mode is reproducible across
   /// toolchains.
   pub pie: bool,
+
+  /// Best-effort request for debug info during linking (`clang -g`).
+  ///
+  /// This does not generate debug info by itself; it only tells the linker driver to keep debug
+  /// sections from the input objects (useful when those objects already contain DWARF).
+  pub debug: bool,
 }
 
 impl Default for LinkOpts {
@@ -70,6 +76,7 @@ impl Default for LinkOpts {
       gc_sections: true,
       linker: LinkerFlavor::default(),
       pie: false,
+      debug: false,
     }
   }
 }
@@ -218,6 +225,10 @@ pub fn link_elf_executable_with_options(
   let mut cmd = Command::new(clang);
   cmd.arg("-o").arg(output_path);
 
+  if opts.debug {
+    cmd.arg("-g");
+  }
+
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
@@ -298,6 +309,10 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
+
+  if opts.debug {
+    cmd.arg("-g");
+  }
 
   if cfg!(target_os = "linux") {
     if opts.pie {
