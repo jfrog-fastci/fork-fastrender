@@ -330,13 +330,13 @@ target triple = "x86_64-pc-linux-gnu"
 declare void @callee()
 declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
 
-define void @test(ptr %obj) gc "coreclr" {
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 0, i32 0,
     ptr elementtype(void ()) @callee,
     i32 0, i32 3,
-    i32 0, i32 0) [ "gc-live"(ptr %obj) ]
+    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
   ret void
 }
 EOF
@@ -358,13 +358,13 @@ target triple = "x86_64-pc-linux-gnu"
 declare void @callee()
 declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
 
-define void @test(ptr %obj) gc "coreclr" {
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call fastcc token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 0, i32 0,
     ptr elementtype(void ()) @callee,
     i32 0, i32 0,
-    i32 0, i32 0) [ "gc-live"(ptr %obj) ]
+    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
   ret void
 }
 EOF
@@ -386,13 +386,13 @@ target triple = "x86_64-pc-linux-gnu"
 declare void @callee()
 declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
 
-define void @test(ptr %obj) gc "coreclr" {
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
     i64 0, i32 0,
     ptr elementtype(void ()) @callee,
     i32 0, i32 4,
-    i32 0, i32 0) [ "gc-live"(ptr %obj) ]
+    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
   ret void
 }
 EOF
