@@ -262,9 +262,11 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
       break;
     }
     if bytes.len() - off < STACKMAP_HEADER_SIZE {
-      // StackMap v3 headers are 16 bytes. Any remaining tail cannot contain a full header, so it
-      // cannot start another blob. Empirically some toolchains can leave non-zero alignment
-      // padding here; ignore it.
+      // We already skipped any 0x00 padding. StackMap v3 headers are 16 bytes, so any remaining
+      // bytes cannot start a valid blob.
+      //
+      // Some toolchains produce short non-zero tails (e.g. section alignment noise). Treat those
+      // bytes as ignorable and stop parsing.
       break;
     }
 

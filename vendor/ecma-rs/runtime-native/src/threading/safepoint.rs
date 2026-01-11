@@ -341,6 +341,51 @@ pub fn threads_waiting_at_safepoint() -> usize {
   coordinator().threads_waiting.load(Ordering::Acquire)
 }
 
+/// Best-effort diagnostics for stop-the-world timeouts.
+///
+/// This is intended to be called by the GC coordinator when
+/// [`rt_gc_wait_for_world_stopped_timeout`] returns `false`.
+pub fn dump_stop_the_world_timeout(stop_epoch: u64, timeout: Duration) {
+  eprintln!(
+    "runtime-native: stop-the-world timed out (epoch={stop_epoch}, timeout={timeout:?}, threads_waiting={})",
+    threads_waiting_at_safepoint()
+  );
+
+  let counts = registry::thread_counts();
+  eprintln!(
+    "  registered threads: total={} main={} worker={} io={} external={}",
+    counts.total, counts.main, counts.worker, counts.io, counts.external
+  );
+
+  let coordinator_id = registry::current_thread_id();
+  for thread in registry::all_threads() {
+    let role = if Some(thread.id()) == coordinator_id {
+      "coordinator"
+    } else {
+      "mutator"
+    };
+
+    let status = if thread.is_parked() {
+      "parked"
+    } else if thread.is_native_safe() {
+      "native_safe"
+    } else if thread.safepoint_epoch_observed() == stop_epoch {
+      "at_safepoint"
+    } else {
+      "RUNNING (not yet stopped)"
+    };
+
+    eprintln!(
+      "  thread id={} os_tid={} kind={:?} role={role} status={status} observed_epoch={} has_ctx={}",
+      thread.id().get(),
+      thread.os_thread_id(),
+      thread.kind(),
+      thread.safepoint_epoch_observed(),
+      thread.safepoint_context().is_some()
+    );
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Stop-the-world helper + root enumeration
 // -----------------------------------------------------------------------------

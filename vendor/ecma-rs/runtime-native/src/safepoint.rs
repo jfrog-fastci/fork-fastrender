@@ -86,10 +86,10 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   let _resume = ResumeOnDrop;
 
   let timeout = Duration::from_secs(2);
-  assert!(
-    crate::rt_gc_wait_for_world_stopped_timeout(timeout),
-    "world did not reach safepoint in time (timeout={timeout:?}, epoch={stop_epoch})"
-  );
+  if !crate::rt_gc_wait_for_world_stopped_timeout(timeout) {
+    threading::safepoint::dump_stop_the_world_timeout(stop_epoch, timeout);
+    panic!("world did not reach safepoint in time (timeout={timeout:?}, epoch={stop_epoch})");
+  }
 
   // Root enumeration hook. This is intentionally a "plumbing" step: we count
   // roots to validate that:
