@@ -82,7 +82,7 @@ mod linux {
 
   enum OpState {
     Target { op: PreparedOp },
-    Timeout { target: OpId },
+    Timeout { target: OpId, _ts: Box<types::Timespec> },
     Cancel { target: OpId },
   }
 
@@ -154,8 +154,10 @@ mod linux {
         .flags(squeue::Flags::IO_LINK)
         .user_data(op_id.as_u64());
 
-      let ts = duration_to_timespec(timeout);
-      let timeout_entry = opcode::LinkTimeout::new(&ts)
+      // `IORING_OP_LINK_TIMEOUT` takes a pointer to a `__kernel_timespec`. That memory must stay
+      // valid until the timeout request completes, so it cannot live on the stack here.
+      let ts = Box::new(duration_to_timespec(timeout));
+      let timeout_entry = opcode::LinkTimeout::new(&*ts)
         .build()
         .user_data(timeout_id.as_u64());
 
@@ -167,7 +169,7 @@ mod linux {
         }
 
         self.ops.insert(op_id, OpState::Target { op });
-        self.ops.insert(timeout_id, OpState::Timeout { target: op_id });
+        self.ops.insert(timeout_id, OpState::Timeout { target: op_id, _ts: ts });
 
         unsafe {
           sq.push(&entry).unwrap();
@@ -229,7 +231,7 @@ mod linux {
 
           match state {
             OpState::Target { op } => self.ready.push_back(Completion::Op { id, res, op }),
-            OpState::Timeout { target } => self.ready.push_back(Completion::Timeout { id, target, res }),
+            OpState::Timeout { target, .. } => self.ready.push_back(Completion::Timeout { id, target, res }),
             OpState::Cancel { target } => self.ready.push_back(Completion::Cancel { id, target, res }),
           }
         }
