@@ -628,12 +628,15 @@ PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
 // or during `rt_async_poll_legacy` when the event loop is otherwise idle).
 void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
+void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 
 // Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll_legacy` runs a
 // microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms
 // clamp) is handled at higher layers.
 TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
+TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);
 TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
+TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);
 void rt_clear_timer(TimerId id);
 
 // -----------------------------------------------------------------------------

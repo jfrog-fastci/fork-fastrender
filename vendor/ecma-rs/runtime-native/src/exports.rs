@@ -1323,8 +1323,16 @@ struct WebTimerState {
   kind: WebTimerKind,
   cb: async_rt::TaskFn,
   data: *mut u8,
+  drop_data: Option<async_rt::TaskDropFn>,
   interval: Duration,
   internal_id: async_rt::TimerId,
+  /// True while the timer's callback is executing.
+  ///
+  /// This allows `rt_clear_timer` to defer dropping callback state when a callback clears its own
+  /// interval (JS-style `clearInterval` from within the interval callback).
+  firing: bool,
+  /// Interval cancellation requested while `firing == true`.
+  cancelled: bool,
 }
 
 // Safety: `WebTimerState` is stored behind a mutex in a process-global map and contains only opaque
@@ -1337,7 +1345,12 @@ static NEXT_WEB_TIMER_ID: AtomicU64 = AtomicU64::new(1);
 static WEB_TIMERS: Lazy<Mutex<HashMap<TimerId, WebTimerState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn clear_web_timers_for_tests() {
-  WEB_TIMERS.lock().clear();
+  let mut timers = WEB_TIMERS.lock();
+  for (_, st) in timers.drain() {
+    if let Some(drop_data) = st.drop_data {
+      (drop_data)(st.data);
+    }
+  }
 }
 
 fn alloc_web_timer_id() -> TimerId {
@@ -1360,33 +1373,56 @@ fn timer_id_from_ptr(data: *mut u8) -> TimerId {
 extern "C" fn web_timer_fire(data: *mut u8) {
   let id = timer_id_from_ptr(data);
 
-  let (kind, cb, cb_data, interval) = {
+  let (kind, cb, cb_data, interval, drop_data) = {
     let mut timers = WEB_TIMERS.lock();
-    let Some(st) = timers.get(&id).copied() else {
+    let Some(snapshot) = timers.get(&id).copied() else {
       return;
     };
 
-    match st.kind {
+    match snapshot.kind {
       WebTimerKind::Timeout => {
         let st = timers.remove(&id).expect("timer entry disappeared");
-        (WebTimerKind::Timeout, st.cb, st.data, Duration::ZERO)
+        (WebTimerKind::Timeout, st.cb, st.data, Duration::ZERO, st.drop_data)
       }
-      WebTimerKind::Interval => (WebTimerKind::Interval, st.cb, st.data, st.interval),
+      WebTimerKind::Interval => {
+        let st = timers.get_mut(&id).expect("timer entry disappeared");
+        st.firing = true;
+        (WebTimerKind::Interval, snapshot.cb, snapshot.data, snapshot.interval, snapshot.drop_data)
+      }
     }
   };
 
   (cb)(cb_data);
 
-  if kind != WebTimerKind::Interval {
+  if kind == WebTimerKind::Timeout {
+    if let Some(drop_data) = drop_data {
+      drop_data(cb_data);
+    }
     return;
   }
 
   // Reschedule interval if it is still active after the callback.
-  let mut timers = WEB_TIMERS.lock();
-  let Some(st) = timers.get_mut(&id) else {
-    return;
+  let drop_after = {
+    let mut timers = WEB_TIMERS.lock();
+    let Some(st) = timers.get_mut(&id) else {
+      return;
+    };
+    if st.kind != WebTimerKind::Interval {
+      return;
+    }
+    st.firing = false;
+
+    // If the callback cleared the interval, tear down the callback state now.
+    if st.cancelled {
+      let st = timers.remove(&id).expect("timer entry disappeared");
+      st.drop_data.map(|f| (f, st.data))
+    } else {
+      None
+    }
   };
-  if st.kind != WebTimerKind::Interval {
+
+  if let Some((drop_data, cb_data)) = drop_after {
+    drop_data(cb_data);
     return;
   }
 
@@ -1394,8 +1430,16 @@ extern "C" fn web_timer_fire(data: *mut u8) {
   // currently track nesting; higher layers can implement clamping policy if needed.
   let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
   let task = async_rt::Task::new(web_timer_fire, data);
-  let internal_id = async_rt::global().schedule_timer(deadline, task);
-  st.internal_id = internal_id;
+  {
+    let mut timers = WEB_TIMERS.lock();
+    let Some(st) = timers.get_mut(&id) else {
+      return;
+    };
+    if st.kind != WebTimerKind::Interval || st.cancelled {
+      return;
+    }
+    st.internal_id = async_rt::global().schedule_timer(deadline, task);
+  };
 }
 
 #[no_mangle]
@@ -1403,6 +1447,18 @@ pub extern "C" fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8) 
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
     async_rt::enqueue_microtask(cb, data);
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_queue_microtask_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+) {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(cb, data, drop_data));
   })
 }
 
@@ -1422,8 +1478,43 @@ pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, dela
         kind: WebTimerKind::Timeout,
         cb,
         data,
+        drop_data: None,
         interval: Duration::ZERO,
         internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_timeout_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+  delay_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb,
+        data,
+        drop_data: Some(drop_data),
+        interval: Duration::ZERO,
+        internal_id,
+        firing: false,
+        cancelled: false,
       },
     );
     id
@@ -1450,8 +1541,43 @@ pub extern "C" fn rt_set_interval(
         kind: WebTimerKind::Interval,
         cb,
         data,
+        drop_data: None,
         interval,
         internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_interval_with_drop(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop_data: extern "C" fn(*mut u8),
+  interval_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb,
+        data,
+        drop_data: Some(drop_data),
+        interval,
+        internal_id,
+        firing: false,
+        cancelled: false,
       },
     );
     id
@@ -1462,10 +1588,23 @@ pub extern "C" fn rt_set_interval(
 pub extern "C" fn rt_clear_timer(id: TimerId) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
-    let Some(st) = WEB_TIMERS.lock().remove(&id) else {
-      return;
+    let (st, should_drop) = {
+      let mut timers = WEB_TIMERS.lock();
+      let Some(st) = timers.get(&id).copied() else {
+        return;
+      };
+      if st.kind == WebTimerKind::Interval && st.firing {
+        let st = timers.get_mut(&id).expect("timer entry disappeared");
+        st.cancelled = true;
+        return;
+      }
+      let st = timers.remove(&id).expect("timer entry disappeared");
+      (st, st.drop_data.map(|f| (f, st.data)))
     };
     let _ = async_rt::global().cancel_timer(st.internal_id);
+    if let Some((drop_data, cb_data)) = should_drop {
+      drop_data(cb_data);
+    }
   })
 }
 

@@ -58,8 +58,11 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 ### Microtasks + timers
 
 - `rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
+- `rt_set_timeout_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
 - `rt_set_interval(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
+- `rt_set_interval_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
 - `rt_clear_timer(id: TimerId)`
 
 ### I/O readiness watchers

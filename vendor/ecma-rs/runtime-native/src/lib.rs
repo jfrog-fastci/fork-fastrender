@@ -718,8 +718,11 @@ mod tests {
       "char* rt_async_take_last_error(void);",
       "void rt_async_free_c_string(char* s);",
       "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
+      "void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
       "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
+      "TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);",
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
+      "TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);",
       "void rt_clear_timer(TimerId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
     ];
@@ -815,8 +818,14 @@ mod tests {
     let _async_take_last_error: extern "C" fn() -> *mut core::ffi::c_char = rt_async_take_last_error;
     let _async_free_c_string: unsafe extern "C" fn(*mut core::ffi::c_char) = rt_async_free_c_string;
     let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
+    let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
+      rt_queue_microtask_with_drop;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
+    let _set_timeout_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
+      rt_set_timeout_with_drop;
     let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
+    let _set_interval_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
+      rt_set_interval_with_drop;
     let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
 
@@ -891,8 +900,11 @@ mod tests {
       _async_poll_legacy,
       _async_sleep_legacy,
       _queue_microtask,
+      _queue_microtask_with_drop,
       _set_timeout,
+      _set_timeout_with_drop,
       _set_interval,
+      _set_interval_with_drop,
       _clear_timer,
       _coro_await_legacy,
     );
