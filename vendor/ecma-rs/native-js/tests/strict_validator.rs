@@ -120,6 +120,17 @@ fn rejects_any_nested_in_object_types() {
 }
 
 #[test]
+fn rejects_any_in_exported_function_signature() {
+  let diags = validate(
+    r#"
+      export declare function f(): Function;
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0001");
+}
+
+#[test]
 fn rejects_any_in_pattern_types() {
   let source = r#"const onlyAny = JSON.parse("1");"#;
   let diags = validate(source, FileKind::Ts);
