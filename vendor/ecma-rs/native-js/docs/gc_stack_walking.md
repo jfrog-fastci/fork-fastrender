@@ -52,7 +52,7 @@ frame-pointer requirement, we would need to move to unwinding-based stack walkin
 
 Until then, **frame pointers + no tail calls** are treated as a hard invariant.
 
-## Register-located roots
+## GC root locations: must be spilled stack slots
 
 LLVM stackmaps can describe live values as either:
 
@@ -60,8 +60,8 @@ LLVM stackmaps can describe live values as either:
 - registers (`Register R#N`, encoded as DWARF register numbers).
 
 For our current `runtime-native` stack-walking implementation, **GC roots at statepoints must not be
-encoded as `Register` locations**: we require addressable spill slots so the GC can update pointers
-in-place by walking frames.
+encoded as `Register` locations**: we require addressable spill slots (SP-relative `Indirect`
+locations) so the GC can update pointers in-place by walking frames.
 
 To enforce this:
 
@@ -69,8 +69,15 @@ To enforce this:
   `native-js/src/llvm/mod.rs`) using:
   - `--fixup-allow-gcptr-in-csr=false` (preferred)
   - `--fixup-max-csr-statepoints=0` (defense-in-depth)
+- When codegen happens out-of-process (e.g. `llc-18` or `clang-18 -flto`), pass the equivalent
+  backend flag:
+  - `llc-18 --fixup-max-csr-statepoints=0`
+  - `clang-18 -mllvm --fixup-max-csr-statepoints=0`
 - `runtime-native` has a verifier (`runtime-native/src/statepoint_verify.rs`) that rejects any
   statepoint record whose GC roots are not SP-relative `Indirect` stack slots.
+
+See `vendor/ecma-rs/docs/stackmaps.md` for the full contract and the regression tests that assert
+no `Register` roots appear in `.llvm_stackmaps`.
 
 If we later relax this policy to allow register roots for performance, the runtime must be upgraded
 to support register-root relocation for *all* scanned frames (which likely requires unwind-based
