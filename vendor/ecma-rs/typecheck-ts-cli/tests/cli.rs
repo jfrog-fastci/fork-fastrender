@@ -46,7 +46,7 @@ fn typecheck_succeeds_on_basic_fixture() {
   let path = fixture("basic.ts");
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
     .success()
@@ -66,7 +66,7 @@ fn type_at_reports_number() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .args(["--type-at", &query])
     .assert()
@@ -99,7 +99,7 @@ fn symbol_at_json_paths_are_normalized() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .arg("--json")
     .args(["--symbol-at", &query])
@@ -132,7 +132,7 @@ fn resolves_relative_modules_and_index_files() {
   let path = fixture("resolution/entry.ts");
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
     .success()
@@ -154,7 +154,7 @@ fn node_modules_resolution_is_opt_in() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
     .failure()
@@ -162,7 +162,7 @@ fn node_modules_resolution_is_opt_in() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -185,7 +185,7 @@ fn resolves_mjs_modules_without_internal_error() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -225,7 +225,7 @@ fn node_resolve_prefers_node_modules_over_cwd_for_package_subpaths() {
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
     .current_dir(tmp.path())
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .arg("--json")
@@ -273,7 +273,7 @@ fn resolves_package_json_types_entry() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -300,7 +300,7 @@ fn resolves_package_json_exports_types() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -327,7 +327,7 @@ fn resolves_package_json_exports_types_without_dot_key() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -354,7 +354,7 @@ fn resolves_package_json_typings_entry() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -377,7 +377,7 @@ fn resolves_node_modules_from_ancestor_directories() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -404,7 +404,7 @@ fn resolves_imports_specifiers_from_package_json() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -431,7 +431,7 @@ fn resolves_imports_star_patterns_from_package_json() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -458,7 +458,7 @@ fn resolves_exports_subpath_patterns_with_types_condition() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -481,7 +481,7 @@ fn resolves_at_types_fallback_packages() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(entry.as_os_str())
     .arg("--node-resolve")
     .assert()
@@ -512,7 +512,7 @@ fn tsconfig_paths_patterns_prefer_most_specific_match() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tmp.path().join("tsconfig.json").as_os_str())
     .assert()
@@ -526,7 +526,7 @@ fn json_output_is_stable_and_parseable() {
   let run = || {
     typecheck_cli()
       .timeout(CLI_TIMEOUT)
-      .args(["typecheck"])
+      .args(["typecheck", "--lib", "es5"])
       .arg(path.as_os_str())
       .arg("--json")
       .assert()
@@ -597,7 +597,7 @@ fn rejects_invalid_utf8_sources() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg(path.as_os_str())
     .assert()
     .failure()
@@ -618,7 +618,7 @@ fn timeout_secs_cancels_typecheck() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--timeout-secs")
     .arg("0")
     .arg("--json")
@@ -654,7 +654,7 @@ fn project_mode_discovers_files_and_resolves_paths() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -723,7 +723,7 @@ fn project_mode_exports_and_type_at_queries_work() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -795,7 +795,7 @@ fn project_mode_honors_include_exclude_patterns() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(project_dir.as_os_str())
     .arg("--json")
@@ -837,7 +837,7 @@ fn project_mode_honors_files_list_over_include() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -871,7 +871,7 @@ fn project_mode_merges_compiler_options_from_extends() {
 
   let inherit_out = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(inherit.as_os_str())
     .arg("--json")
@@ -901,7 +901,7 @@ fn project_mode_merges_compiler_options_from_extends() {
 
   let override_out = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(override_config.as_os_str())
     .arg("--json")
@@ -928,7 +928,7 @@ fn project_mode_uses_module_resolution_from_tsconfig() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -957,7 +957,7 @@ fn project_mode_resolves_types_and_type_roots() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1061,7 +1061,7 @@ fn project_mode_resolves_scoped_types_packages() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1104,7 +1104,7 @@ fn project_mode_applies_jsx_import_source_types() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1148,7 +1148,7 @@ fn project_mode_discovers_mts_files() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1179,7 +1179,7 @@ fn project_mode_resolves_paths_relative_to_extended_config() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1209,7 +1209,7 @@ fn project_mode_uses_include_from_extended_config() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -1240,7 +1240,7 @@ fn project_mode_honors_module_kind_from_tsconfig() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(esm.as_os_str())
     .arg("--json")
@@ -1263,7 +1263,7 @@ fn project_mode_honors_module_kind_from_tsconfig() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(cjs.as_os_str())
     .arg("--json")
@@ -1290,7 +1290,7 @@ fn project_mode_use_define_for_class_fields_controls_diagnostics() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(define.as_os_str())
     .arg("--json")
@@ -1319,7 +1319,7 @@ fn project_mode_use_define_for_class_fields_controls_diagnostics() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(assign.as_os_str())
     .arg("--json")
@@ -1345,7 +1345,7 @@ fn project_mode_serializes_emit_related_compiler_options() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")

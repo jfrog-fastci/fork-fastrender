@@ -20,7 +20,7 @@ fn strict_native_reports_explicit_any() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--strict-native")
     .arg(entry.as_os_str())
     .assert()
@@ -36,7 +36,7 @@ fn strict_native_json_includes_compiler_option() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--strict-native")
     .arg("--json")
     .arg(entry.as_os_str())
@@ -77,7 +77,7 @@ fn strict_native_reports_type_and_non_null_assertions() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--strict-native")
     .arg(entry.as_os_str())
     .assert()
@@ -112,7 +112,7 @@ eval("1+1");
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--strict-native")
     .arg(entry.as_os_str())
     .assert()
@@ -136,7 +136,7 @@ dict[key];
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--strict-native")
     .arg(entry.as_os_str())
     .assert()
@@ -154,7 +154,7 @@ fn native_strict_json_includes_legacy_compiler_option() {
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--native-strict")
     .arg("--json")
     .arg(entry.as_os_str())
@@ -201,7 +201,7 @@ fn native_strict_tsconfig_enables_strict_diagnostics() {
 
   typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .assert()
@@ -245,7 +245,7 @@ eval("1+1");
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
@@ -310,7 +310,7 @@ eval("1+1");
 
   let output = typecheck_cli()
     .timeout(CLI_TIMEOUT)
-    .args(["typecheck"])
+    .args(["typecheck", "--lib", "es5"])
     .arg("--project")
     .arg(tsconfig.as_os_str())
     .arg("--json")
