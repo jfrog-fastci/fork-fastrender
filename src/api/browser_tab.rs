@@ -851,16 +851,16 @@ impl BrowserTabHost {
       }
       if !host.script_blocking_stylesheets.has_blocking_stylesheet() {
         // Wake parser-blocking scripts/parsing if this was the last blocking stylesheet.
-         if let Err(err) = host.queue_parse_task(event_loop) {
-           // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
-           // deadlocking parser-blocking scripts.
-           let _ = err;
-           while host.parse_until_blocked(event_loop)? {}
-         }
-       }
-       match load_result {
-         Ok(()) => Ok(()),
-         Err(err @ Error::Render(_)) => Err(err),
+        if let Err(err) = host.queue_parse_task(event_loop) {
+          // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
+          // deadlocking parser-blocking scripts.
+          let _ = err;
+          while host.parse_until_blocked(event_loop)? {}
+        }
+      }
+      match load_result {
+        Ok(()) => Ok(()),
+        Err(err @ Error::Render(_)) => Err(err),
         Err(_) => Ok(()),
       }
     });

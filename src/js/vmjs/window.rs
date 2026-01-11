@@ -1,7 +1,7 @@
 use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
-use crate::js::import_maps::ImportMapState;
+use crate::js::import_maps::{ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError};
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{
@@ -238,6 +238,8 @@ pub struct WindowHostState {
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
   pub base_url: Option<String>,
   import_map_state: ImportMapState,
+  import_map_warnings: Vec<ImportMapWarning>,
+  import_map_errors: Vec<ImportMapError>,
   dom_source_id: Option<u64>,
   /// Host-owned document state used as the `vm-js` [`vm_js::VmHost`] context.
   document: Box<DocumentHostState>,
@@ -395,7 +397,9 @@ impl WindowHostState {
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
-      import_map_state: ImportMapState::default(),
+      import_map_state: ImportMapState::new_empty(),
+      import_map_warnings: Vec::new(),
+      import_map_errors: Vec::new(),
       dom_source_id: Some(dom_source_id),
       document,
       window,
@@ -458,6 +462,22 @@ impl WindowHostState {
     &mut self.import_map_state
   }
 
+  pub fn import_maps(&self) -> &ImportMapState {
+    self.import_map_state()
+  }
+
+  pub fn import_maps_mut(&mut self) -> &mut ImportMapState {
+    self.import_map_state_mut()
+  }
+
+  pub fn take_import_map_warnings(&mut self) -> Vec<ImportMapWarning> {
+    std::mem::take(&mut self.import_map_warnings)
+  }
+
+  pub fn take_import_map_errors(&mut self) -> Vec<ImportMapError> {
+    std::mem::take(&mut self.import_map_errors)
+  }
+
   pub fn register_import_map_string(
     &mut self,
     json: &str,
@@ -486,6 +506,32 @@ impl WindowHostState {
     Ok(warnings)
   }
 
+  pub fn register_import_map_from_script_text(&mut self, input: &str, base_url: &::url::Url) -> Result<()> {
+    let limits = self.js_execution_options.import_map_limits;
+    let mut result = crate::js::import_maps::create_import_map_parse_result_with_limits(input, base_url, &limits);
+    self.import_map_warnings.append(&mut result.warnings);
+
+    if let Err(err) =
+      crate::js::import_maps::register_import_map_with_limits(&mut self.import_map_state, result, &limits)
+    {
+      // For now, keep the host API stable and let higher-level HTML plumbing decide how to surface
+      // import map errors (console, `window.onerror`, etc.).
+      self.import_map_errors.push(err);
+    }
+
+    Ok(())
+  }
+
+  pub fn register_import_map_using_document_base(&mut self, input: &str) -> Result<()> {
+    let base_str = self.base_url.as_deref().unwrap_or(&self.document_url);
+    let base_url = ::url::Url::parse(base_str).map_err(|err| {
+      Error::Other(format!(
+        "invalid document base URL {base_str:?} while registering import map: {err}"
+      ))
+    })?;
+    self.register_import_map_from_script_text(input, &base_url)
+  }
+
   pub fn resolve_module_specifier_with_import_maps(
     &mut self,
     specifier: &str,
@@ -496,6 +542,27 @@ impl WindowHostState {
       specifier,
       base_url,
     )
+  }
+
+  pub fn resolve_module_specifier(
+    &mut self,
+    specifier: &str,
+    referrer_base: &::url::Url,
+  ) -> std::result::Result<::url::Url, ModuleResolutionError> {
+    crate::js::import_maps::resolve_module_specifier(&mut self.import_map_state, specifier, referrer_base)
+  }
+
+  pub fn resolve_module_specifier_using_document_base(
+    &mut self,
+    specifier: &str,
+  ) -> std::result::Result<::url::Url, ModuleResolutionError> {
+    let base_str = self.base_url.as_deref().unwrap_or(&self.document_url);
+    let base_url = ::url::Url::parse(base_str).map_err(|err| {
+      ModuleResolutionError::TypeError(format!(
+        "invalid document base URL {base_str:?} while resolving module specifier: {err}"
+      ))
+    })?;
+    self.resolve_module_specifier(specifier, &base_url)
   }
 
   pub fn resolve_module_integrity_metadata(&self, url: &::url::Url) -> &str {
@@ -743,6 +810,37 @@ mod tests {
     let limits = host.host().window().heap().limits();
     assert_eq!(limits.max_bytes, limit);
     assert_eq!(limits.gc_threshold, (limit / 2).min(limit));
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_state_registers_import_maps_and_respects_resolved_module_set() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHostState::new(dom, "https://example.invalid/base/page.html")?;
+
+    host.register_import_map_using_document_base(r#"{"imports":{"foo":"/mapped.js"}}"#)?;
+
+    let mapped = host
+      .resolve_module_specifier_using_document_base("foo")
+      .expect("resolve mapped bare specifier");
+    assert_eq!(mapped.as_str(), "https://example.invalid/mapped.js");
+    assert_eq!(host.import_maps().resolved_module_set().len(), 1);
+
+    // URL-like specifiers resolve without an import map rule, but still participate in the resolved
+    // module set (so later import map registrations cannot change their resolution).
+    let direct = host
+      .resolve_module_specifier_using_document_base("/direct.js")
+      .expect("resolve url-like specifier");
+    assert_eq!(direct.as_str(), "https://example.invalid/direct.js");
+    assert_eq!(host.import_maps().resolved_module_set().len(), 2);
+
+    // A later import map that would change the already-resolved module is ignored.
+    host.register_import_map_using_document_base(r#"{"imports":{"/direct.js":"/changed.js"}}"#)?;
+    let direct_again = host
+      .resolve_module_specifier_using_document_base("/direct.js")
+      .expect("resolve url-like specifier again");
+    assert_eq!(direct_again, direct);
+
     Ok(())
   }
 
