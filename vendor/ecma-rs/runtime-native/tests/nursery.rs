@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use runtime_native::nursery::{NurserySpace, ThreadNursery, TLAB_SIZE};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn single_thread_alignment() {
+  let _rt = TestRuntimeGuard::new();
   let nursery = NurserySpace::new(1024 * 1024).unwrap();
   let mut tn = ThreadNursery::new();
 
@@ -22,6 +24,7 @@ fn single_thread_alignment() {
 
 #[test]
 fn refill_path_and_large_alloc() {
+  let _rt = TestRuntimeGuard::new();
   let nursery = NurserySpace::new(2 * 1024 * 1024).unwrap();
   let mut tn = ThreadNursery::new();
 
@@ -48,6 +51,7 @@ fn refill_path_and_large_alloc() {
 
 #[test]
 fn reset_resets_bump_pointer() {
+  let _rt = TestRuntimeGuard::new();
   let nursery = NurserySpace::new(1024 * 1024).unwrap();
   let mut tn = ThreadNursery::new();
 
@@ -67,6 +71,7 @@ fn reset_resets_bump_pointer() {
 
 #[test]
 fn multithread_allocations_do_not_overlap() {
+  let _rt = TestRuntimeGuard::new();
   let nursery = Arc::new(NurserySpace::new(16 * 1024 * 1024).unwrap());
 
   let threads = 8;

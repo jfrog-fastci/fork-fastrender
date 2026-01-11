@@ -6,6 +6,7 @@ use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[repr(C)]
 struct Node {
@@ -27,6 +28,7 @@ impl RememberedSet for NullRememberedSet {
 
 #[test]
 fn minor_evacuation_updates_root_and_interior_pointers() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let a = heap.alloc_young(&NODE_DESC);
@@ -82,6 +84,7 @@ impl RememberedSet for VecRememberedSet {
 
 #[test]
 fn minor_gc_traces_remembered_old_objects() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let old = heap.alloc_old(&NODE_DESC);

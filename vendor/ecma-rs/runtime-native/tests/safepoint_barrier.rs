@@ -1,5 +1,6 @@
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -11,6 +12,7 @@ use std::time::Duration;
 
 #[test]
 fn safepoint_barrier_stops_and_resumes_workers() {
+  let _rt = TestRuntimeGuard::new();
   const WORKERS: usize = 4;
 
   // Register the test harness thread as the runtime "main" thread.
@@ -119,4 +121,3 @@ fn safepoint_barrier_stops_and_resumes_workers() {
 
   threading::unregister_current_thread();
 }
-

@@ -124,6 +124,12 @@ impl Timers {
     inner.purge_stale_top();
     inner.heap.peek().map(|e| e.deadline)
   }
+
+  pub fn clear(&self) {
+    let mut inner = self.inner.lock().unwrap();
+    inner.heap.clear();
+    inner.states.clear();
+  }
 }
 
 impl TimersInner {
@@ -162,4 +168,3 @@ impl TimersInner {
     self.heap = heap;
   }
 }
-

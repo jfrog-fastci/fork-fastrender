@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use runtime_native::test_util::TestRuntimeGuard;
+
 fn find_c_compiler() -> Option<String> {
   // Prefer $CC when set (common in CI / cross toolchains).
   if let Ok(cc) = std::env::var("CC") {
@@ -49,6 +51,8 @@ fn c_can_link_and_call_runtime_native() {
     eprintln!("skipping: no C compiler (`cc`/`clang`/`gcc`) available");
     return;
   };
+
+  let _rt = TestRuntimeGuard::new();
 
   let tmp = tempfile::tempdir().expect("create temp dir");
   let build_target_dir = tmp.path().join("cargo-target");

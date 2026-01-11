@@ -63,6 +63,10 @@ impl EventLoop {
     self.reactor.deregister(id)
   }
 
+  pub(crate) fn wake(&self) {
+    self.reactor.wake();
+  }
+
   fn flush_due_timers(&self) {
     let now = Instant::now();
     let due = self.timers.drain_due(now);
@@ -167,5 +171,14 @@ impl EventLoop {
       // Loop to run the newly-ready tasks (or newly-due timers).
     }
   }
-}
 
+  pub(crate) fn reset_for_tests(&self) {
+    let _guard = self.poll_lock.lock().unwrap();
+
+    self.microtasks.lock().unwrap().clear();
+    self.macrotasks.lock().unwrap().clear();
+    self.timers.clear();
+    self.reactor.clear_watchers();
+    let _ = self.reactor.drain_wake();
+  }
+}

@@ -119,6 +119,11 @@ pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
   async_rt::coroutine::async_spawn(coro)
 }
 
+/// Drive the runtime's async/event-loop queues.
+///
+/// This runtime maintains process-global singleton state. `rt_async_poll` may be called from
+/// multiple threads, but calls are **globally serialized** (only one thread executes the poll loop
+/// at a time).
 #[no_mangle]
 pub extern "C" fn rt_async_poll() -> bool {
   let _ = crate::rt_ensure_init();

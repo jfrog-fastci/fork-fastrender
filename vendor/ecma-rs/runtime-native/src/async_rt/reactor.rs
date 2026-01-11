@@ -70,6 +70,10 @@ impl Reactor {
     self.wake.wake();
   }
 
+  pub fn drain_wake(&self) -> io::Result<()> {
+    self.wake.drain()
+  }
+
   pub fn has_watchers(&self) -> bool {
     self.watchers_count.load(Ordering::Acquire) > 0
   }
@@ -99,6 +103,19 @@ impl Reactor {
     self.watchers_count.fetch_sub(1, Ordering::Release);
     self.wake();
     true
+  }
+
+  pub fn clear_watchers(&self) {
+    let mut watchers = self.watchers.lock().unwrap();
+    if watchers.is_empty() {
+      return;
+    }
+
+    for (_id, watcher) in watchers.drain() {
+      let _ = self.epoll.ctl_del(watcher.fd);
+    }
+    self.watchers_count.store(0, Ordering::Release);
+    self.wake();
   }
 
   pub fn wait(&self, timeout_ms: i32) -> io::Result<Vec<Task>> {

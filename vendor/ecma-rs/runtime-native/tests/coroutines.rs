@@ -1,4 +1,5 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[repr(C)]
 struct TestCoroutine {
@@ -36,6 +37,7 @@ extern "C" fn test_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
 
 #[test]
 fn coroutine_spawn_runs_sync_until_first_await_and_resumes_as_microtask() {
+  let _rt = TestRuntimeGuard::new();
   let awaited = runtime_native::rt_promise_new();
   let mut side_effect = false;
   let mut completed = false;

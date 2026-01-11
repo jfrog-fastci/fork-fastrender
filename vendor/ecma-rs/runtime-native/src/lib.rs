@@ -27,6 +27,7 @@ pub mod async_rt;
 pub mod stackmaps;
 pub mod statepoints;
 pub mod stackwalk_fp;
+pub mod test_util;
 
 mod alloc;
 mod exports;

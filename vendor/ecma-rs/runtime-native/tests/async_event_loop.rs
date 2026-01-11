@@ -1,13 +1,11 @@
 use runtime_native::async_rt::Interest;
 use runtime_native::async_rt::Task;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::os::fd::RawFd;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
-
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 extern "C" fn set_atomic_bool(data: *mut u8) {
   let flag = unsafe { &*(data as *const AtomicBool) };
@@ -16,7 +14,7 @@ extern "C" fn set_atomic_bool(data: *mut u8) {
 
 #[test]
 fn timer_fires() {
-  let _guard = TEST_LOCK.lock().unwrap();
+  let _rt = TestRuntimeGuard::new();
 
   let fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   runtime_native::async_rt::global().schedule_timer(
@@ -53,7 +51,7 @@ extern "C" fn on_readable(data: *mut u8) {
 
 #[test]
 fn epoll_readiness() {
-  let _guard = TEST_LOCK.lock().unwrap();
+  let _rt = TestRuntimeGuard::new();
 
   let mut fds = [0i32; 2];
   let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
@@ -103,7 +101,7 @@ fn epoll_readiness() {
 
 #[test]
 fn wake_from_epoll_wait() {
-  let _guard = TEST_LOCK.lock().unwrap();
+  let _rt = TestRuntimeGuard::new();
 
   let ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
@@ -140,7 +138,7 @@ fn wake_from_epoll_wait() {
 
 #[test]
 fn idle_detection() {
-  let _guard = TEST_LOCK.lock().unwrap();
+  let _rt = TestRuntimeGuard::new();
 
   let start = Instant::now();
   let pending = runtime_native::rt_async_poll();

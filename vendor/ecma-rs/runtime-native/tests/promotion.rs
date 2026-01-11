@@ -6,6 +6,7 @@ use runtime_native::gc::RememberedSet;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[repr(C)]
 struct Node {
@@ -18,6 +19,7 @@ static NODE_DESC: TypeDescriptor = TypeDescriptor::new(mem::size_of::<Node>(), &
 
 #[test]
 fn promotion_registers_old_to_young_edge() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let parent_young = heap.alloc_young(&NODE_DESC);

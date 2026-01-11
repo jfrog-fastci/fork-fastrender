@@ -7,6 +7,11 @@
 //! The event loop is driven by `rt_async_poll` and is conceptually single-threaded
 //! to preserve JS ordering. Other threads may enqueue work; an `eventfd` is used
 //! to wake a blocked `epoll_wait`.
+//!
+//! ## Concurrency
+//! The runtime is process-global (a singleton). `rt_async_poll` is therefore **thread-safe but not
+//! concurrent**: it may be called from multiple threads, but only one thread is allowed to execute
+//! the poll loop at a time (calls are internally serialized).
 
 mod event_loop;
 mod reactor;
@@ -21,9 +26,14 @@ pub use reactor::Interest;
 pub use reactor::WatcherId;
 pub use timer::TimerId;
 
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
+
+/// Global serialization guard for the core poll loop.
+static POLL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 pub type TaskFn = extern "C" fn(*mut u8);
 
@@ -110,7 +120,12 @@ impl AsyncRuntime {
     self.loop_.cancel_timer(id)
   }
 
-  pub fn register_fd(&self, fd: std::os::fd::RawFd, interest: Interest, task: Task) -> std::io::Result<WatcherId> {
+  pub fn register_fd(
+    &self,
+    fd: std::os::fd::RawFd,
+    interest: Interest,
+    task: Task,
+  ) -> std::io::Result<WatcherId> {
     self.loop_.register_fd(fd, interest, task)
   }
 
@@ -141,7 +156,29 @@ pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
 ///
 /// Returns `true` if there is still pending work after the turn.
 pub(crate) fn poll() -> bool {
+  // Serialize at the ABI boundary: the event loop itself is single-consumer.
+  let _guard = POLL_LOCK.lock();
   global().poll()
+}
+
+/// Test helper: reset the process-global async runtime to a clean idle state.
+///
+/// This clears:
+/// - microtask queue
+/// - macrotask queue
+/// - timers
+/// - I/O watchers
+/// - wake eventfd counter
+///
+/// It does **not** tear down any background worker threads (the current runtime
+/// doesn't spawn any; this is future-proofing for when it does).
+pub(crate) fn clear_state_for_tests() {
+  // If another thread is currently blocked in `epoll_wait` inside the poll loop, ensure it wakes up
+  // so we don't block indefinitely on the poll lock during test cleanup.
+  global().loop_.wake();
+
+  let _guard = POLL_LOCK.lock();
+  global().loop_.reset_for_tests();
 }
 
 // -----------------------------------------------------------------------------
@@ -160,6 +197,11 @@ pub fn schedule_timer(deadline: Instant, callback: TaskFn, data: *mut u8) -> Tim
   global().schedule_timer(deadline, Task::new(callback, data))
 }
 
-pub fn register_fd(fd: std::os::fd::RawFd, interest: Interest, callback: TaskFn, data: *mut u8) -> std::io::Result<WatcherId> {
+pub fn register_fd(
+  fd: std::os::fd::RawFd,
+  interest: Interest,
+  callback: TaskFn,
+  data: *mut u8,
+) -> std::io::Result<WatcherId> {
   global().register_fd(fd, interest, Task::new(callback, data))
 }

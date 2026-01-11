@@ -7,6 +7,7 @@ use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
+use runtime_native::test_util::TestRuntimeGuard;
 
 static NO_PTR_OFFSETS: [usize; 0] = [];
 
@@ -33,6 +34,7 @@ impl RememberedSet for NullRememberedSet {
 
 #[test]
 fn major_gc_reclaims_dead_immix_lines_and_sweeps_large_objects() {
+  let _rt = TestRuntimeGuard::new();
   assert_eq!(mem::size_of::<LineObject>(), IMMIX_LINE_SIZE);
 
   let mut heap = GcHeap::new();
