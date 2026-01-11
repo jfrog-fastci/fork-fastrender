@@ -276,34 +276,11 @@ impl GcHeap {
     Self::with_config(HeapConfig::default(), HeapLimits::default())
   }
 
-  pub fn with_nursery_size(nursery_size: usize) -> Self {
-    Self {
-      config: HeapConfig {
-        nursery_size_bytes: nursery_size,
-        ..HeapConfig::default()
-      },
-      limits: HeapLimits::default(),
-      nursery: nursery::NurserySpace::new(nursery_size).expect("failed to reserve nursery space"),
-      nursery_tlab: ThreadNursery::new(),
-      card_tables: CardTableSpace::default(),
-      immix: ImmixSpace::new(),
-      los: LargeObjectSpace::new(),
-      weak_handles: WeakHandles::new(),
-      // `ArrayBuffer` backing stores live outside the GC heap but contribute to memory pressure.
-      // We keep a per-heap backing-store allocator so `GcHeap::external_bytes()` can include their
-      // total.
-      backing_store_alloc: Box::new(GlobalBackingStoreAllocator::default()),
-      external_bytes: 0,
-      finalizers: Vec::new(),
-      mark_epoch: 0,
-      major_compaction: MajorCompactionConfig::default(),
-      stats: GcStats::default(),
-      root_handles: RootHandles::new(),
-      work_stack: WorkStack::new(),
-    }
-  }
-
-  pub fn with_config(config: HeapConfig, limits: HeapLimits) -> Self {
+  pub fn with_config_and_backing_store_allocator(
+    config: HeapConfig,
+    limits: HeapLimits,
+    backing_store_alloc: GlobalBackingStoreAllocator,
+  ) -> Self {
     let nursery =
       nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
 
@@ -316,7 +293,10 @@ impl GcHeap {
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
-      backing_store_alloc: Box::new(GlobalBackingStoreAllocator::default()),
+      // `ArrayBuffer` backing stores live outside the GC heap but contribute to memory pressure.
+      // We keep a per-heap backing-store allocator so `GcHeap::external_bytes()` can include their
+      // total.
+      backing_store_alloc: Box::new(backing_store_alloc),
       external_bytes: 0,
       finalizers: Vec::new(),
       mark_epoch: 0,
@@ -325,6 +305,22 @@ impl GcHeap {
       root_handles: RootHandles::new(),
       work_stack: WorkStack::new(),
     }
+  }
+
+  pub fn with_nursery_size(nursery_size: usize) -> Self {
+    let config = HeapConfig {
+      nursery_size_bytes: nursery_size,
+      ..HeapConfig::default()
+    };
+    Self::with_config_and_backing_store_allocator(
+      config,
+      HeapLimits::default(),
+      GlobalBackingStoreAllocator::default(),
+    )
+  }
+
+  pub fn with_config(config: HeapConfig, limits: HeapLimits) -> Self {
+    Self::with_config_and_backing_store_allocator(config, limits, GlobalBackingStoreAllocator::default())
   }
 
   pub fn config(&self) -> &HeapConfig {
@@ -480,7 +476,8 @@ impl GcHeap {
     });
   }
 
-  /// Approximate total heap bytes for enforcing [`HeapLimits`].
+  /// Approximate total GC-heap bytes (excluding external allocations) for enforcing
+  /// [`HeapLimits::max_heap_bytes`].
   ///
   /// This is intentionally an estimate: it counts committed/reserved regions plus rough metadata
   /// overhead, so that OOM behavior is stable and deterministic.
@@ -492,6 +489,17 @@ impl GcHeap {
       + (self.immix.block_count() * METADATA_PER_IMMIX_BLOCK)
       + (self.los.object_count() * METADATA_PER_LOS_OBJECT);
     nursery + immix + los + meta
+  }
+
+  /// Approximate total bytes including external (non-GC) allocations.
+  ///
+  /// This is used for enforcing [`HeapLimits::max_total_bytes`] and for triggering collections
+  /// under external memory pressure (e.g. `ArrayBuffer` backing stores).
+  #[inline]
+  pub fn estimated_total_bytes_including_external(&self) -> usize {
+    self
+      .estimated_total_bytes()
+      .saturating_add(self.external_bytes())
   }
 
   fn projected_total_bytes_with(
@@ -507,31 +515,44 @@ impl GcHeap {
       .saturating_add(additional_los_committed_bytes)
   }
 
-  pub fn alloc_object(
+  #[inline]
+  fn projected_total_bytes_including_external_with(
+    &self,
+    additional_immix_blocks: usize,
+    additional_los_objects: usize,
+    additional_los_committed_bytes: usize,
+  ) -> usize {
+    self
+      .projected_total_bytes_with(
+        additional_immix_blocks,
+        additional_los_objects,
+        additional_los_committed_bytes,
+      )
+      .saturating_add(self.external_bytes())
+  }
+
+  #[inline]
+  fn is_above_hard_limits(&self) -> bool {
+    self.estimated_total_bytes() > self.limits.max_heap_bytes
+      || self.estimated_total_bytes_including_external() > self.limits.max_total_bytes
+  }
+
+  fn alloc_object_with_type_desc(
     &mut self,
-    req: AllocRequest,
+    desc: &'static TypeDescriptor,
+    size: usize,
+    align: usize,
+    kind: Option<AllocKind>,
     roots: &mut dyn RootSet,
     remembered: &mut dyn RememberedSet,
   ) -> Result<*mut u8, AllocError> {
-    if req.align == 0 || !req.align.is_power_of_two() {
-      trap::rt_trap_invalid_arg("GcHeap::alloc_object: align must be a non-zero power of two");
-    }
-
-    let desc = type_desc_from_shape_id(req.shape_id);
-    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
-    super::verify::register_type_descriptor(desc);
-
-    if req.size != desc.size {
-      trap::rt_trap_invalid_arg("GcHeap::alloc_object: size does not match registered shape");
-    }
-
-    let size = req.size;
-    let align = req.align.max(desc.align).max(OBJ_ALIGN);
+    debug_assert!(align != 0 && align.is_power_of_two());
+    let align = align.max(desc.align).max(OBJ_ALIGN);
 
     // If we're already above the hard cap, try a full collection before giving up.
-    if self.estimated_total_bytes() > self.limits.max_heap_bytes {
+    if self.is_above_hard_limits() {
       self.collect_major(roots, remembered)?;
-      if self.estimated_total_bytes() > self.limits.max_heap_bytes {
+      if self.is_above_hard_limits() {
         return Err(AllocError::OutOfMemory);
       }
     }
@@ -540,7 +561,7 @@ impl GcHeap {
       self.collect_major(roots, remembered)?;
     }
 
-    let kind = req.kind.unwrap_or(AllocKind::YoungPreferred);
+    let kind = kind.unwrap_or(AllocKind::YoungPreferred);
     if kind == AllocKind::Pinned {
       if let Some(obj) = self.try_alloc_pinned(desc, size, align)? {
         return Ok(obj);
@@ -591,6 +612,40 @@ impl GcHeap {
     }
 
     Err(AllocError::OutOfMemory)
+  }
+
+  pub(crate) fn alloc_object_with_type_desc_gc(
+    &mut self,
+    desc: &'static TypeDescriptor,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+    kind: Option<AllocKind>,
+  ) -> Result<*mut u8, AllocError> {
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(desc);
+
+    self.alloc_object_with_type_desc(desc, desc.size, OBJ_ALIGN, kind, roots, remembered)
+  }
+
+  pub fn alloc_object(
+    &mut self,
+    req: AllocRequest,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<*mut u8, AllocError> {
+    if req.align == 0 || !req.align.is_power_of_two() {
+      trap::rt_trap_invalid_arg("GcHeap::alloc_object: align must be a non-zero power of two");
+    }
+
+    let desc = type_desc_from_shape_id(req.shape_id);
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+    super::verify::register_type_descriptor(desc);
+
+    if req.size != desc.size {
+      trap::rt_trap_invalid_arg("GcHeap::alloc_object: size does not match registered shape");
+    }
+
+    self.alloc_object_with_type_desc(desc, req.size, req.align, req.kind, roots, remembered)
   }
 
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
@@ -805,8 +860,9 @@ impl GcHeap {
       .checked_add(align.saturating_sub(1))
       .ok_or(AllocError::OutOfMemory)?;
     let committed = round_up(committed_bytes, LOS_PAGE_SIZE);
-    let projected = self.projected_total_bytes_with(0, 1, committed);
-    if projected > self.limits.max_heap_bytes {
+    let projected_heap = self.projected_total_bytes_with(0, 1, committed);
+    let projected_total = self.projected_total_bytes_including_external_with(0, 1, committed);
+    if projected_heap > self.limits.max_heap_bytes || projected_total > self.limits.max_total_bytes {
       return Ok(None);
     }
 
@@ -880,8 +936,9 @@ impl GcHeap {
         .checked_add(align.saturating_sub(1))
         .ok_or(AllocError::OutOfMemory)?;
       let committed = round_up(committed_bytes, LOS_PAGE_SIZE);
-      let projected = self.projected_total_bytes_with(0, 1, committed);
-      if projected > self.limits.max_heap_bytes {
+      let projected_heap = self.projected_total_bytes_with(0, 1, committed);
+      let projected_total = self.projected_total_bytes_including_external_with(0, 1, committed);
+      if projected_heap > self.limits.max_heap_bytes || projected_total > self.limits.max_total_bytes {
         return Ok(None);
       }
 
@@ -897,8 +954,9 @@ impl GcHeap {
       return Ok(None);
     }
     if needs_grow && grow == GrowMode::AllowGrow {
-      let projected = self.projected_total_bytes_with(1, 0, 0);
-      if projected > self.limits.max_heap_bytes {
+      let projected_heap = self.projected_total_bytes_with(1, 0, 0);
+      let projected_total = self.projected_total_bytes_including_external_with(1, 0, 0);
+      if projected_heap > self.limits.max_heap_bytes || projected_total > self.limits.max_total_bytes {
         return Ok(None);
       }
     }
@@ -926,6 +984,7 @@ impl GcHeap {
     let old_bytes = (self.immix.block_count() * IMMIX_BLOCK_SIZE).saturating_add(self.los.committed_bytes());
     old_bytes > self.config.major_gc_old_bytes_threshold
       || self.immix.block_count() > self.config.major_gc_old_blocks_threshold
+      || self.external_bytes() > self.config.major_gc_external_bytes_threshold
   }
 
   pub fn is_in_nursery(&self, obj: *mut u8) -> bool {

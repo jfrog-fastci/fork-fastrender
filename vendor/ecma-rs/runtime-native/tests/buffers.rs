@@ -1,8 +1,10 @@
 use core::mem::MaybeUninit;
 
-use runtime_native::{ArrayBuffer, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array};
+use runtime_native::{
+  ArrayBuffer, BackingStoreAllocError, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array,
+};
 use runtime_native::{GcHeap, RootStack};
-use runtime_native::gc::SimpleRememberedSet;
+use runtime_native::gc::{HeapConfig, HeapLimits, SimpleRememberedSet};
 use runtime_native::gc::OBJ_HEADER_SIZE;
 use runtime_native::test_util::TestRuntimeGuard;
 
@@ -107,13 +109,15 @@ fn gc_finalizer_releases_arraybuffer_backing_store_on_minor_gc() {
 
   let count = 8usize;
   let size = 1024 * 1024;
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
   for _ in 0..count {
-    heap.alloc_array_buffer_young(size).expect("alloc array buffer");
+    heap
+      .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, size)
+      .expect("alloc array buffer");
   }
   assert_eq!(heap.external_bytes(), count * size);
 
-  let mut roots = RootStack::new();
-  let mut remembered = SimpleRememberedSet::new();
   heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
 }
@@ -123,14 +127,17 @@ fn gc_finalizer_not_called_on_promotion_and_runs_once() {
   let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+
   let size = 256 * 1024;
-  let mut root = heap.alloc_array_buffer_young(size).expect("alloc array buffer");
+  let mut root = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, size)
+    .expect("alloc array buffer");
   assert!(heap.is_in_nursery(root));
   assert_eq!(heap.external_bytes(), size);
 
-  let mut roots = RootStack::new();
   roots.push(&mut root as *mut *mut u8);
-  let mut remembered = SimpleRememberedSet::new();
 
   heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert!(
@@ -158,8 +165,13 @@ fn gc_finalizer_delays_backing_store_free_until_unpinned() {
   let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+
   let size = 1024 * 1024;
-  let buf_obj = heap.alloc_array_buffer_young(size).expect("alloc array buffer");
+  let buf_obj = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, size)
+    .expect("alloc array buffer");
 
   let pinned = {
     // Pin the backing store pointer without rooting the ArrayBuffer header.
@@ -167,8 +179,6 @@ fn gc_finalizer_delays_backing_store_free_until_unpinned() {
     buf.pin().expect("pin")
   };
  
-  let mut roots = RootStack::new();
-  let mut remembered = SimpleRememberedSet::new();
   heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
   // The header is unreachable so the GC finalizer should have run, but the backing store is still
@@ -186,11 +196,14 @@ fn gc_finalizer_survives_major_compaction_relocation() {
 
   // Promote an ArrayBuffer header to old-gen first so the major-GC compactor can move it.
   let size = 128 * 1024;
-  let mut root = heap.alloc_array_buffer_young(size).expect("alloc array buffer");
   let mut roots = RootStack::new();
-  roots.push(&mut root as *mut *mut u8);
   let mut remembered = SimpleRememberedSet::new();
- 
+
+  let mut root = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, size)
+    .expect("alloc array buffer");
+  roots.push(&mut root as *mut *mut u8);
+  
   heap.collect_minor(&mut roots, &mut remembered).unwrap();
   assert!(!heap.is_in_nursery(root));
   let promoted = root;
@@ -215,5 +228,111 @@ fn gc_finalizer_survives_major_compaction_relocation() {
   heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
   assert_eq!(heap.external_bytes(), 0);
   heap.collect_major(&mut empty_roots, &mut remembered).unwrap();
+  assert_eq!(heap.external_bytes(), 0);
+}
+
+#[test]
+fn backing_store_oom_triggers_gc_and_retries_allocation() {
+  let _rt = TestRuntimeGuard::new();
+
+  let budget = 64 * 1024;
+  let buf_size = 32 * 1024;
+
+  let alloc = GlobalBackingStoreAllocator::with_max_external_bytes(budget);
+  let config = HeapConfig {
+    // Ensure the collection is triggered by backing-store OOM rather than a threshold.
+    major_gc_external_bytes_threshold: usize::MAX,
+    ..HeapConfig::default()
+  };
+  let limits = HeapLimits::default();
+  let mut heap = GcHeap::with_config_and_backing_store_allocator(config, limits, alloc);
+
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+
+  // Allocate ArrayBuffers up to the allocator's external-bytes budget.
+  let mut a = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, buf_size)
+    .expect("alloc a");
+  roots.push(&mut a as *mut *mut u8);
+
+  let mut b = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, buf_size)
+    .expect("alloc b");
+  roots.push(&mut b as *mut *mut u8);
+
+  assert_eq!(heap.external_bytes(), budget);
+
+  // Drop roots so the existing backing stores become reclaimable.
+  a = core::ptr::null_mut();
+  b = core::ptr::null_mut();
+  // `RootStack` will read these slots via raw pointers during GC; keep an explicit read here so
+  // the assignments are not treated as dead stores by the Rust compiler.
+  let _ = (a, b);
+  assert_eq!(heap.external_bytes(), budget);
+
+  // The next allocation would exceed the external budget; we should see a major GC run and the
+  // allocation succeed on retry after finalizers release backing stores.
+  let major_before = heap.stats().major_collections;
+  let _c = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, buf_size)
+    .expect("alloc should succeed after GC+retry");
+  let major_after = heap.stats().major_collections;
+  assert!(
+    major_after > major_before,
+    "expected a major GC when backing store allocator reports OOM"
+  );
+
+  // Previous two buffers were unreachable and should have been finalized; only the new one remains.
+  assert_eq!(heap.external_bytes(), buf_size);
+
+  // Clean up: avoid leaking external memory across tests.
+  heap.collect_minor(&mut roots, &mut remembered).unwrap();
+  assert_eq!(heap.external_bytes(), 0);
+}
+
+#[test]
+fn pinned_backing_store_is_not_reclaimed_by_gc() {
+  let _rt = TestRuntimeGuard::new();
+
+  let budget = 32 * 1024;
+
+  let alloc = GlobalBackingStoreAllocator::with_max_external_bytes(budget);
+  let config = HeapConfig {
+    major_gc_external_bytes_threshold: usize::MAX,
+    ..HeapConfig::default()
+  };
+  let limits = HeapLimits::default();
+  let mut heap = GcHeap::with_config_and_backing_store_allocator(config, limits, alloc);
+
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+
+  // Fill the budget with a single backing store, then pin it so it can't be freed.
+  let buf_obj = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, budget)
+    .expect("alloc pinned buffer");
+  assert_eq!(heap.external_bytes(), budget);
+
+  let pinned = {
+    // Pin the backing store pointer without rooting the ArrayBuffer header.
+    let buf = unsafe { &*(buf_obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+    buf.pin().expect("pin")
+  };
+
+  // Attempting another allocation must still fail even after GC runs, because the backing store is
+  // pinned and therefore not reclaimable.
+  let major_before = heap.stats().major_collections;
+  let err = heap
+    .alloc_array_buffer_young_gc_aware(&mut roots, &mut remembered, 1)
+    .unwrap_err();
+  assert_eq!(err, BackingStoreAllocError::OutOfMemory);
+  assert!(
+    heap.stats().major_collections > major_before,
+    "expected a major GC attempt on backing store OOM"
+  );
+  assert_eq!(heap.external_bytes(), budget);
+
+  drop(pinned);
   assert_eq!(heap.external_bytes(), 0);
 }

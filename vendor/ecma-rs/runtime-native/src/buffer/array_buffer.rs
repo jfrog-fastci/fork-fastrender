@@ -3,7 +3,7 @@ use super::backing_store::{
   BackingStorePinError, BorrowError, BorrowGuardRead, BorrowGuardWrite, PinnedBackingStore,
 };
 use core::ptr::NonNull;
-use crate::gc::{GcHeap, ObjHeader, TypeDescriptor, OBJ_HEADER_SIZE};
+use crate::gc::{GcHeap, ObjHeader, RememberedSet, RootSet, TypeDescriptor, OBJ_HEADER_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayBufferError {
@@ -473,10 +473,86 @@ unsafe fn finalize_gc_array_buffer(heap: &mut GcHeap, obj: *mut u8) {
 impl GcHeap {
   /// Allocate an `ArrayBuffer` header object in the nursery and register a GC finalizer that
   /// releases the backing store when the object becomes unreachable.
+  ///
+  /// Note: this helper does **not** perform any GC or retry on external allocator OOM. It is kept
+  /// for tests and low-level scenarios that can guarantee allocation won't fail.
+  #[deprecated(note = "use GcHeap::alloc_array_buffer_young_gc_aware(..) to allow GC+retry on backing-store OOM")]
   pub fn alloc_array_buffer_young(&mut self, len: usize) -> Result<*mut u8, BackingStoreAllocError> {
     let buf = ArrayBuffer::new_zeroed_in(self.backing_store_allocator(), len)?;
 
     let obj = self.alloc_young(&GC_ARRAY_BUFFER_DESC);
+    // SAFETY: `obj` is valid for `GC_ARRAY_BUFFER_DESC.size` bytes; the payload begins after the
+    // object header.
+    unsafe {
+      (obj.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer).write(buf);
+    }
+
+    self.register_finalizer(obj, finalize_gc_array_buffer);
+    Ok(obj)
+  }
+
+  /// Allocate a GC-managed `ArrayBuffer` header plus external backing store.
+  ///
+  /// This is a GC-aware allocation routine: it may run a major collection to reclaim unreachable
+  /// `ArrayBuffer` backing stores when:
+  /// - external bytes exceed configured thresholds, or
+  /// - the backing store allocator returns [`BackingStoreAllocError::OutOfMemory`].
+  ///
+  /// On backing-store OOM, this method runs a major GC and retries exactly once.
+  pub fn alloc_array_buffer_young_gc_aware(
+    &mut self,
+    roots: &mut dyn RootSet,
+    remembered: &mut dyn RememberedSet,
+    len: usize,
+  ) -> Result<*mut u8, BackingStoreAllocError> {
+    let collect_major_or_oom = |heap: &mut GcHeap,
+                                roots: &mut dyn RootSet,
+                                remembered: &mut dyn RememberedSet|
+     -> Result<(), BackingStoreAllocError> {
+      heap
+        .collect_major(roots, remembered)
+        .map_err(|_| BackingStoreAllocError::OutOfMemory)
+    };
+
+    // If we're already under external memory pressure (or would exceed the total hard cap with this
+    // allocation), attempt to reclaim unreachable `ArrayBuffer` headers before asking the backing
+    // store allocator for more bytes.
+    //
+    // This is important because backing store allocations happen outside the GC heap; without a
+    // pre-collection here, the process can hit allocator OOM before the GC has a chance to run any
+    // finalizers.
+    let projected_total = self
+      .estimated_total_bytes_including_external()
+      .saturating_add(len);
+    if self.external_bytes() > self.config().major_gc_external_bytes_threshold
+      || projected_total > self.limits().max_total_bytes
+    {
+      collect_major_or_oom(self, roots, remembered)?;
+    }
+
+    // Enforce the total hard cap deterministically before attempting the external allocation.
+    let projected_total = self
+      .estimated_total_bytes_including_external()
+      .saturating_add(len);
+    if projected_total > self.limits().max_total_bytes {
+      return Err(BackingStoreAllocError::OutOfMemory);
+    }
+
+    // Allocate backing store first so any GC we trigger below doesn't need to worry about rooting a
+    // partially-initialized GC header object.
+    let buf = match ArrayBuffer::new_zeroed_in(self.backing_store_allocator(), len) {
+      Ok(buf) => buf,
+      Err(BackingStoreAllocError::OutOfMemory) => {
+        collect_major_or_oom(self, roots, remembered)?;
+        ArrayBuffer::new_zeroed_in(self.backing_store_allocator(), len)?
+      }
+      Err(other) => return Err(other),
+    };
+
+    let obj = self
+      .alloc_object_with_type_desc_gc(&GC_ARRAY_BUFFER_DESC, roots, remembered, None)
+      .map_err(|_| BackingStoreAllocError::OutOfMemory)?;
+
     // SAFETY: `obj` is valid for `GC_ARRAY_BUFFER_DESC.size` bytes; the payload begins after the
     // object header.
     unsafe {

@@ -121,10 +121,12 @@ fn nursery_fills_triggers_minor_and_preserves_graph() {
     minor_gc_nursery_used_percent: 50,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
     promote_after_minor_survivals: 1,
   };
   let limits = HeapLimits {
     max_heap_bytes: 16 * 1024 * 1024,
+    max_total_bytes: usize::MAX,
   };
   let mut heap = GcHeap::with_config(config, limits);
 
@@ -236,12 +238,14 @@ fn tiny_heap_is_deterministic_oom() {
     minor_gc_nursery_used_percent: 100,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
     promote_after_minor_survivals: 1,
   };
 
   // Allow the nursery plus a small number of Immix blocks.
   let limits = HeapLimits {
     max_heap_bytes: 256 * 1024,
+    max_total_bytes: usize::MAX,
   };
 
   fn run_once(config: HeapConfig, limits: HeapLimits) -> usize {
@@ -286,10 +290,12 @@ fn los_allocations_do_not_consume_nursery() {
     minor_gc_nursery_used_percent: 100,
     major_gc_old_bytes_threshold: usize::MAX,
     major_gc_old_blocks_threshold: usize::MAX,
+    major_gc_external_bytes_threshold: usize::MAX,
     promote_after_minor_survivals: 1,
   };
   let limits = HeapLimits {
     max_heap_bytes: 16 * 1024 * 1024,
+    max_total_bytes: usize::MAX,
   };
 
   let mut heap = GcHeap::with_config(config, limits);

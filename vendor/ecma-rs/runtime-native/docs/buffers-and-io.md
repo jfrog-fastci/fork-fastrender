@@ -45,11 +45,36 @@ fresh aligned buffer and copy.
 Backing store bytes live outside the GC heap but still contribute to process memory pressure. Each
 allocator reports the total currently-owned backing store bytes via `BackingStoreAllocator::external_bytes()`.
 
+### External bytes and GC policy
+
+`runtime-native` tracks external (non-GC) bytes in [`gc::GcHeap::external_bytes()`]. These bytes are
+accounted for in two places:
+
+- **Major GC triggering:** [`gc::HeapConfig::major_gc_external_bytes_threshold`] causes a full
+  collection when external bytes exceed the threshold. This is additive with the existing Immix/LOS
+  triggers.
+- **Hard limit enforcement:** [`gc::HeapLimits::max_total_bytes`] is a hard cap on **GC heap
+  estimate + external bytes**. This is checked on GC-managed allocations to prevent unbounded memory
+  growth from `ArrayBuffer` backing stores.
+
+### Backing-store OOM: GC + retry
+
+`GcHeap::alloc_array_buffer_young_gc_aware(..)` is the GC-aware allocation path for `ArrayBuffer`
+headers. If the backing store allocator returns `BackingStoreAllocError::OutOfMemory`, the heap:
+
+1. runs a **major GC** (which includes a minor collection first), allowing finalizers for unreachable
+   `ArrayBuffer` headers to drop their backing stores, then
+2. retries the backing store allocation once.
+
+If backing stores are still not reclaimable after GC (e.g. because they are pinned), the allocation
+fails with `BackingStoreAllocError::OutOfMemory`.
+
 When an `ArrayBuffer` header becomes unreachable, its backing store handle must be released
 **exactly once**.
 
 `runtime-native` supports per-object finalizers via `GcHeap::register_finalizer`, and
-`GcHeap::alloc_array_buffer_young` registers a finalizer that calls `ArrayBuffer::finalize_in(..)`.
+`GcHeap::alloc_array_buffer_young_gc_aware(..)` registers a finalizer that calls
+`ArrayBuffer::finalize_in(..)`.
 Embeddings that allocate `ArrayBuffer` headers differently should similarly call `finalize_in(..)`
 from their GC finalizer path.
 

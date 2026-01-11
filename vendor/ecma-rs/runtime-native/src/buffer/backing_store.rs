@@ -549,21 +549,51 @@ pub trait BackingStoreAllocator {
 #[derive(Debug, Clone)]
 pub struct GlobalBackingStoreAllocator {
   external_bytes: Arc<AtomicUsize>,
+  max_external_bytes: Option<usize>,
 }
 
 impl Default for GlobalBackingStoreAllocator {
   fn default() -> Self {
     Self {
       external_bytes: Arc::new(AtomicUsize::new(0)),
+      max_external_bytes: None,
     }
   }
 }
 
 impl GlobalBackingStoreAllocator {
+  /// Construct an allocator with a fixed hard cap on externally allocated bytes.
+  ///
+  /// When the cap would be exceeded, allocation returns [`BackingStoreAllocError::OutOfMemory`]
+  /// without calling the underlying system allocator.
+  pub fn with_max_external_bytes(max_external_bytes: usize) -> Self {
+    Self {
+      external_bytes: Arc::new(AtomicUsize::new(0)),
+      max_external_bytes: Some(max_external_bytes),
+    }
+  }
+
+  #[inline]
+  fn check_external_bytes_budget(&self, additional: usize) -> Result<(), BackingStoreAllocError> {
+    let Some(max) = self.max_external_bytes else {
+      return Ok(());
+    };
+    if additional == 0 {
+      return Ok(());
+    }
+    let cur = self.external_bytes.load(Ordering::Relaxed);
+    if cur.saturating_add(additional) > max {
+      return Err(BackingStoreAllocError::OutOfMemory);
+    }
+    Ok(())
+  }
+
   fn alloc_raw(&self, len: usize, zeroed: bool) -> Result<BackingStore, BackingStoreAllocError> {
     if len == 0 {
       return Ok(BackingStore::empty());
     }
+
+    self.check_external_bytes_budget(len)?;
 
     let layout = Layout::from_size_align(len, BACKING_STORE_MIN_ALIGN)
       .map_err(|_| BackingStoreAllocError::InvalidLayout)?;
@@ -612,6 +642,7 @@ impl GlobalBackingStoreAllocator {
     }
 
     if BackingStore::is_ptr_min_aligned(ptr) {
+      self.check_external_bytes_budget(alloc_len)?;
       // SAFETY: caller guarantees `ptr` points to `alloc_len` bytes with alignment 1, and we've
       // checked the address meets our min alignment requirement.
       return unsafe {
