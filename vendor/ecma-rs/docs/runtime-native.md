@@ -657,7 +657,7 @@ They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE, anchored at `INSERT AFTER .text;`)
-- `runtime-native/link/stackmaps.ld` (lld-friendly PIE/DSO, anchored at `INSERT AFTER .data;`)
+- `runtime-native/link/stackmaps.ld` (lld-friendly PIE/DSO, anchored at `INSERT BEFORE .bss;` to stay outside RELRO)
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE/DSO hardening; avoids RWX text segments)
 
 ```ld
@@ -671,7 +671,7 @@ SECTIONS {
   }
 } INSERT AFTER .text;
 
-/* PIE (stackmaps.ld): keep `.data.rel.ro.llvm_stackmaps` inputs (after objcopy rewrite). */
+/* PIE (stackmaps.ld): keep `.data.rel.ro.llvm_stackmaps` inputs (after objcopy rewrite; inserted before `.bss`). */
 SECTIONS {
   .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     __start_llvm_stackmaps = .;
@@ -679,7 +679,7 @@ SECTIONS {
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     __stop_llvm_stackmaps = .;
   }
-} INSERT AFTER .data;
+} INSERT BEFORE .bss;
 ```
 
 Note: GNU ld PIE/shared-library links should use `runtime-native/link/stackmaps_gnuld.ld` to avoid
