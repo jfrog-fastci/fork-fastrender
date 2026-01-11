@@ -270,25 +270,8 @@ pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
   // Call `arch::capture_safepoint_context` directly from this helper (avoid
   // routing it through combinators like `unwrap_or_else`) so the capture
   // implementation can reliably walk out to the *outer* caller frame.
-  let ctx = match crate::stackmap::try_stackmaps()
-    .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
-  {
-    Some(cursor) => {
-      let sp_callsite = cursor.sp.unwrap_or(0);
-      #[cfg(target_arch = "x86_64")]
-      let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-      #[cfg(not(target_arch = "x86_64"))]
-      let sp_entry = sp_callsite;
-
-      crate::arch::SafepointContext {
-        sp_entry: sp_entry as usize,
-        sp: sp_callsite as usize,
-        fp: cursor.fp as usize,
-        ip: cursor.pc as usize,
-      }
-    }
-    None => arch::capture_safepoint_context(),
-  };
+  let mut ctx = arch::capture_safepoint_context();
+  ctx = threading::safepoint::fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
   threading::registry::set_current_thread_safepoint_context(ctx);
   threading::registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
   threading::safepoint::notify_state_change();
