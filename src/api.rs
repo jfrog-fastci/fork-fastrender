@@ -312,6 +312,7 @@ struct ImageIntrinsicProbeOutcome {
   intrinsic_size: Option<Size>,
   aspect_ratio: Option<f32>,
   explicit_no_ratio: bool,
+  is_placeholder: bool,
 }
 
 fn intrinsic_axis_is_known(value: f32) -> bool {
@@ -14683,9 +14684,11 @@ impl FastRender {
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
-      let meta = probe_result
-        .ok()
-        .filter(|meta| !image_cache.is_placeholder_metadata(meta));
+      let meta = probe_result.ok();
+      let is_placeholder = meta
+        .as_ref()
+        .is_some_and(|meta| image_cache.is_placeholder_metadata(meta));
+      let meta = meta.filter(|_| !is_placeholder);
       let mut outcomes = Vec::with_capacity(jobs.len());
 
       for job in jobs {
@@ -14693,6 +14696,7 @@ impl FastRender {
           intrinsic_size: None,
           aspect_ratio: None,
           explicit_no_ratio: false,
+          is_placeholder,
         };
 
         if let Some(meta) = meta.as_ref() {
@@ -14814,7 +14818,7 @@ impl FastRender {
     // HTML dimension attribute was provided (box generation encodes that as `(w, 0)` / `(0, h)`).
     if !needs_ratio_probe && !needs_size_probe {
       if let Some(outcome) = probe_results.get(&box_id) {
-        if outcome.explicit_no_ratio {
+        if outcome.is_placeholder || outcome.explicit_no_ratio {
           replaced_box.no_intrinsic_ratio = true;
           replaced_box.aspect_ratio = None;
         }
@@ -14893,63 +14897,72 @@ impl FastRender {
     };
 
     let mut explicit_no_ratio = false;
+    let mut is_placeholder = false;
     let mut have_resource_dimensions = replaced_box.intrinsic_size.is_some();
 
     if let Some(outcome) = probe_results.get(&box_id) {
-      explicit_no_ratio = outcome.explicit_no_ratio;
-      replaced_box.no_intrinsic_ratio = outcome.explicit_no_ratio;
-      if explicit_no_ratio {
+      is_placeholder = outcome.is_placeholder;
+      if is_placeholder {
+        // Treat missing/broken image placeholders as having no intrinsic ratio (Chromium's broken
+        // image UI does not scale to fill `width: 100%`).
+        replaced_box.no_intrinsic_ratio = true;
         replaced_box.aspect_ratio = None;
-      }
-      if needs_size_probe {
-        if let Some(size) = outcome.intrinsic_size {
-          replaced_box.intrinsic_size = Some(size);
-          have_resource_dimensions = true;
-          if !explicit_no_ratio {
-            if let Some(ratio) = outcome
-              .aspect_ratio
-              .filter(|ratio| aspect_ratio_is_usable(*ratio))
-            {
-              replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+      } else {
+        explicit_no_ratio = outcome.explicit_no_ratio;
+        replaced_box.no_intrinsic_ratio = outcome.explicit_no_ratio;
+        if explicit_no_ratio {
+          replaced_box.aspect_ratio = None;
+        }
+        if needs_size_probe {
+          if let Some(size) = outcome.intrinsic_size {
+            replaced_box.intrinsic_size = Some(size);
+            have_resource_dimensions = true;
+            if !explicit_no_ratio {
+              if let Some(ratio) = outcome
+                .aspect_ratio
+                .filter(|ratio| aspect_ratio_is_usable(*ratio))
+              {
+                replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+              }
             }
           }
-        }
-      } else if needs_ratio_probe && explicit_no_ratio {
-        // When the resource explicitly has no intrinsic ratio (e.g. an SVG with
-        // `preserveAspectRatio="none"`), we cannot complete the missing intrinsic axis using a
-        // ratio. If the probe returned full intrinsic dimensions, use the missing axis value from
-        // the resource while preserving any authored dimension attribute.
-        if let Some(size) = outcome.intrinsic_size {
-          if let Some(width) = authored_width {
-            if intrinsic_axis_is_known(size.height) {
-              replaced_box.intrinsic_size = Some(Size::new(width, size.height));
-              have_resource_dimensions = true;
-            }
-          } else if let Some(height) = authored_height {
-            if intrinsic_axis_is_known(size.width) {
-              replaced_box.intrinsic_size = Some(Size::new(size.width, height));
-              have_resource_dimensions = true;
+        } else if needs_ratio_probe && explicit_no_ratio {
+          // When the resource explicitly has no intrinsic ratio (e.g. an SVG with
+          // `preserveAspectRatio="none"`), we cannot complete the missing intrinsic axis using a
+          // ratio. If the probe returned full intrinsic dimensions, use the missing axis value from
+          // the resource while preserving any authored dimension attribute.
+          if let Some(size) = outcome.intrinsic_size {
+            if let Some(width) = authored_width {
+              if intrinsic_axis_is_known(size.height) {
+                replaced_box.intrinsic_size = Some(Size::new(width, size.height));
+                have_resource_dimensions = true;
+              }
+            } else if let Some(height) = authored_height {
+              if intrinsic_axis_is_known(size.width) {
+                replaced_box.intrinsic_size = Some(Size::new(size.width, height));
+                have_resource_dimensions = true;
+              }
             }
           }
-        }
-      } else if needs_ratio_probe && !explicit_no_ratio {
-        if let Some(ratio) = outcome
-          .aspect_ratio
-          .filter(|ratio| aspect_ratio_is_usable(*ratio))
-        {
-          if let Some(width) = authored_width {
-            let height = width / ratio;
-            if intrinsic_axis_is_known(height) {
-              replaced_box.intrinsic_size = Some(Size::new(width, height));
-              have_resource_dimensions = true;
-              replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
-            }
-          } else if let Some(height) = authored_height {
-            let width = height * ratio;
-            if intrinsic_axis_is_known(width) {
-              replaced_box.intrinsic_size = Some(Size::new(width, height));
-              have_resource_dimensions = true;
-              replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+        } else if needs_ratio_probe && !explicit_no_ratio {
+          if let Some(ratio) = outcome
+            .aspect_ratio
+            .filter(|ratio| aspect_ratio_is_usable(*ratio))
+          {
+            if let Some(width) = authored_width {
+              let height = width / ratio;
+              if intrinsic_axis_is_known(height) {
+                replaced_box.intrinsic_size = Some(Size::new(width, height));
+                have_resource_dimensions = true;
+                replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+              }
+            } else if let Some(height) = authored_height {
+              let width = height * ratio;
+              if intrinsic_axis_is_known(width) {
+                replaced_box.intrinsic_size = Some(Size::new(width, height));
+                have_resource_dimensions = true;
+                replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
+              }
             }
           }
         }
@@ -14969,6 +14982,10 @@ impl FastRender {
         {
           replaced_box.aspect_ratio = Some(size.width / size.height);
         }
+      } else if is_placeholder {
+        replaced_box
+          .intrinsic_size
+          .get_or_insert(Size::new(16.0, 16.0));
       }
     }
 
@@ -15332,6 +15349,7 @@ impl FastRender {
         }
 
         let mut have_resource_dimensions = replaced_box.intrinsic_size.is_some();
+        let mut is_placeholder = false;
 
         let has_image_source = !trim_ascii_whitespace(src).is_empty()
           || !srcset.is_empty()
@@ -15415,7 +15433,11 @@ impl FastRender {
             }
 
             if let Ok(image) = probe_result {
-              if !self.image_cache.is_placeholder_metadata(&image) {
+              if self.image_cache.is_placeholder_metadata(&image) {
+                is_placeholder = true;
+                replaced_box.no_intrinsic_ratio = true;
+                replaced_box.aspect_ratio = None;
+              } else {
                 let orientation = style.image_orientation.resolve(image.orientation, false);
                 explicit_no_ratio = image.aspect_ratio_none;
                 replaced_box.no_intrinsic_ratio = explicit_no_ratio;
@@ -15497,6 +15519,10 @@ impl FastRender {
             {
               replaced_box.aspect_ratio = Some(size.width / size.height);
             }
+          } else if is_placeholder {
+            replaced_box
+              .intrinsic_size
+              .get_or_insert(Size::new(16.0, 16.0));
           }
         }
 
