@@ -240,6 +240,19 @@ impl StatepointEmitter {
       LLVMTypeKind::LLVMFunctionTypeKind,
       "callee_fn_ty must be a function type"
     );
+
+    // Protect against catastrophic miscompiles: only `ptr addrspace(1)` values are allowed in the
+    // explicit `"gc-live"` list. Accidentally including raw/external pointers (ArrayBuffer backing
+    // stores, iovec buffers, etc.) can cause the GC to treat them as roots and overwrite them with
+    // relocated GC addresses.
+    for &v in gc_live {
+      let ty = LLVMTypeOf(v);
+      assert!(
+        LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
+          && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE,
+        "gc-live operand must be `ptr addrspace({GC_ADDR_SPACE})`"
+      );
+    }
     let callee_ret_ty = LLVMGetReturnType(callee_fn_ty);
     let callee_ret_kind = LLVMGetTypeKind(callee_ret_ty);
 
@@ -402,5 +415,157 @@ impl StatepointEmitter {
       "emit_statepoint_call_void used with non-void callee"
     );
     relocated
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use llvm_sys::analysis::{LLVMVerifyModule, LLVMVerifierFailureAction};
+  use llvm_sys::core::{
+    LLVMAppendBasicBlockInContext, LLVMBuildAlloca, LLVMBuildLoad2, LLVMBuildRetVoid,
+    LLVMBuildStore, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+    LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType, LLVMInt8TypeInContext,
+    LLVMModuleCreateWithNameInContext, LLVMPositionBuilderAtEnd, LLVMPrintModuleToString,
+    LLVMPointerType, LLVMSetGC, LLVMVoidTypeInContext,
+  };
+  use std::ffi::{CStr, CString};
+  use std::ptr;
+
+  use crate::llvm::gc::GC_STRATEGY;
+
+  unsafe fn llvm_get_or_add_fn(module: LLVMModuleRef, name: &str, ty: LLVMTypeRef) -> LLVMValueRef {
+    let cname = CString::new(name).unwrap();
+    let existing = llvm_sys::core::LLVMGetNamedFunction(module, cname.as_ptr());
+    if !existing.is_null() {
+      return existing;
+    }
+    llvm_sys::core::LLVMAddFunction(module, cname.as_ptr(), ty)
+  }
+
+  unsafe fn verify_module(module: LLVMModuleRef) {
+    let mut out = ptr::null_mut();
+    let ok = LLVMVerifyModule(
+      module,
+      LLVMVerifierFailureAction::LLVMReturnStatusAction,
+      &mut out,
+    );
+    if ok != 0 {
+      let msg = CStr::from_ptr(out).to_string_lossy().into_owned();
+      LLVMDisposeMessage(out);
+      panic!("LLVM module verification failed:\n{msg}");
+    }
+  }
+
+  #[test]
+  fn statepoint_emitter_gc_live_excludes_raw_ptr_call_args() {
+    unsafe {
+      let ctx = LLVMContextCreate();
+      let module = LLVMModuleCreateWithNameInContext(b"statepoint_test\0".as_ptr().cast(), ctx);
+      let builder = LLVMCreateBuilderInContext(ctx);
+
+      let void_ty = LLVMVoidTypeInContext(ctx);
+      let i8_ty = LLVMInt8TypeInContext(ctx);
+      let gc_ptr_ty = LLVMPointerType(i8_ty, GC_ADDR_SPACE);
+      let raw_ptr_ty = LLVMPointerType(i8_ty, 0);
+
+      // Declare `void @callee(ptr addrspace(1), ptr)`.
+      let mut callee_params = [gc_ptr_ty, raw_ptr_ty];
+      let callee_fn_ty = LLVMFunctionType(void_ty, callee_params.as_mut_ptr(), 2, 0);
+      let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
+
+      // Define `void @test()` with a statepointed call.
+      let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+      let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
+      let gc_name = CString::new(GC_STRATEGY).unwrap();
+      LLVMSetGC(test_fn, gc_name.as_ptr());
+
+      let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
+      LLVMPositionBuilderAtEnd(builder, entry);
+
+      // Create a named GC pointer SSA value `%gc` (via load from a slot).
+      let gc_slot = LLVMBuildAlloca(builder, gc_ptr_ty, b"gc_slot\0".as_ptr().cast());
+      let null_gc = llvm_sys::core::LLVMConstNull(gc_ptr_ty);
+      LLVMBuildStore(builder, null_gc, gc_slot);
+      let gc_val = LLVMBuildLoad2(builder, gc_ptr_ty, gc_slot, b"gc\0".as_ptr().cast());
+
+      // Create a named raw pointer SSA value `%raw` (an alloca pointer).
+      let raw_val = LLVMBuildAlloca(builder, i8_ty, b"raw\0".as_ptr().cast());
+
+      let mut sp = StatepointEmitter::new(ctx, module, gc_ptr_ty);
+      sp.emit_statepoint_call(builder, callee, &[gc_val, raw_val], &[]);
+      LLVMBuildRetVoid(builder);
+
+      verify_module(module);
+
+      let c_str = LLVMPrintModuleToString(module);
+      let ir = CStr::from_ptr(c_str).to_string_lossy().into_owned();
+      LLVMDisposeMessage(c_str);
+
+      let start = ir
+        .find("\"gc-live\"(")
+        .expect("module must contain a gc-live operand bundle");
+      // `addrspace(1)` contains parentheses, so we can't just search for the next `)`.
+      // The operand bundle ends with `) ]`.
+      let end = start
+        + ir[start..]
+          .find(") ]")
+          .expect("gc-live operand bundle must end with `) ]`");
+      let gc_live_bundle = &ir[start..end];
+
+      assert!(
+        gc_live_bundle.contains("%gc"),
+        "expected gc-live bundle to include %gc\n{ir}"
+      );
+      assert!(
+        !gc_live_bundle.contains("%raw"),
+        "raw pointer must not appear in gc-live bundle\n{ir}"
+      );
+
+      LLVMDisposeBuilder(builder);
+      LLVMDisposeModule(module);
+      LLVMContextDispose(ctx);
+    }
+  }
+
+  #[test]
+  #[should_panic(expected = "gc-live operand must be")]
+  fn statepoint_emitter_rejects_raw_ptr_in_explicit_gc_live() {
+    unsafe {
+      let ctx = LLVMContextCreate();
+      let module = LLVMModuleCreateWithNameInContext(b"statepoint_test_panic\0".as_ptr().cast(), ctx);
+      let builder = LLVMCreateBuilderInContext(ctx);
+
+      let void_ty = LLVMVoidTypeInContext(ctx);
+      let i8_ty = LLVMInt8TypeInContext(ctx);
+      let gc_ptr_ty = LLVMPointerType(i8_ty, GC_ADDR_SPACE);
+      let raw_ptr_ty = LLVMPointerType(i8_ty, 0);
+
+      // Declare `void @callee(ptr addrspace(1), ptr)`.
+      let mut callee_params = [gc_ptr_ty, raw_ptr_ty];
+      let callee_fn_ty = LLVMFunctionType(void_ty, callee_params.as_mut_ptr(), 2, 0);
+      let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
+
+      // Define `void @test()` in a GC-managed function.
+      let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+      let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
+      let gc_name = CString::new(GC_STRATEGY).unwrap();
+      LLVMSetGC(test_fn, gc_name.as_ptr());
+
+      let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
+      LLVMPositionBuilderAtEnd(builder, entry);
+
+      let null_gc = llvm_sys::core::LLVMConstNull(gc_ptr_ty);
+      let raw_val = LLVMBuildAlloca(builder, i8_ty, b"raw\0".as_ptr().cast());
+
+      let mut sp = StatepointEmitter::new(ctx, module, gc_ptr_ty);
+      // Should panic: explicit gc_live contains a raw pointer.
+      sp.emit_statepoint_call(builder, callee, &[null_gc, raw_val], &[raw_val]);
+
+      // Cleanup (never reached).
+      LLVMDisposeBuilder(builder);
+      LLVMDisposeModule(module);
+      LLVMContextDispose(ctx);
+    }
   }
 }
