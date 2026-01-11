@@ -17,7 +17,7 @@ fn find_c_compiler() -> Option<String> {
       .stdout(std::process::Stdio::null())
       .stderr(std::process::Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return Some(candidate.to_string());
     }

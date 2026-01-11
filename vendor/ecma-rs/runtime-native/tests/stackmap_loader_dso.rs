@@ -18,7 +18,7 @@ fn command_works(cmd: &str) -> bool {
     .stdout(Stdio::null())
     .stderr(Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
 }
 
 fn find_tool(candidates: &[&'static str]) -> Option<&'static str> {

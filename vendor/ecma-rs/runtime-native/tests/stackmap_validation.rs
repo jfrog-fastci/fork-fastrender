@@ -12,7 +12,7 @@ fn has_cmd(cmd: &str) -> bool {
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
 }
 
 fn run(cmd: &mut Command) {

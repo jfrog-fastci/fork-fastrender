@@ -5,11 +5,13 @@
 //! walking frames via frame pointers we typically only have FP, so we need the
 //! StackMap function record's `stack_size` to reconstruct that SP.
 
+#![cfg(target_os = "linux")]
+
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::{CallSite, StackMap, StackSize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Arch {
@@ -56,6 +58,19 @@ fn capture_stdout(cmd: &mut Command) -> String {
   String::from_utf8(out.stdout).expect("stdout was not valid UTF-8")
 }
 
+fn tool_available(tool: &str) -> bool {
+  Command::new(tool)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn find_tool<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+  candidates.iter().copied().find(|c| tool_available(c))
+}
+
 fn write_minimal_statepoint_input_ir(triple: &str) -> String {
   // Keep this IR tiny and stable:
   // - `rewrite-statepoints-for-gc` will turn the call into a gc.statepoint and emit stackmaps.
@@ -74,7 +89,7 @@ entry:
   )
 }
 
-fn build_obj(tmp: &Path, arch: Arch) -> PathBuf {
+fn build_obj(tmp: &Path, arch: Arch, opt: &str, llc: &str) -> PathBuf {
   let input_ll = tmp.join("input.ll");
   let rewritten_ll = tmp.join("rewritten.ll");
   let obj = tmp.join(format!("statepoint_{}.o", arch.triple()));
@@ -82,7 +97,7 @@ fn build_obj(tmp: &Path, arch: Arch) -> PathBuf {
   fs::write(&input_ll, write_minimal_statepoint_input_ir(arch.triple())).unwrap();
 
   run_success(
-    Command::new("opt-18")
+    Command::new(opt)
       .arg("-S")
       .arg(format!("-mtriple={}", arch.triple()))
       .arg("-passes=rewrite-statepoints-for-gc")
@@ -92,7 +107,7 @@ fn build_obj(tmp: &Path, arch: Arch) -> PathBuf {
   );
 
   run_success(
-    Command::new("llc-18")
+    Command::new(llc)
       .arg("-O0")
       .arg("-filetype=obj")
       .arg("-frame-pointer=all")
@@ -225,9 +240,9 @@ fn disasm_fp_relative_slot_offset(arch: Arch, disasm: &str) -> i32 {
   }
 }
 
-fn assert_stackmap_fp_offsets_match_disasm(arch: Arch) {
+fn assert_stackmap_fp_offsets_match_disasm(arch: Arch, opt: &str, llc: &str, objdump: &str) {
   let tmp = tempfile::tempdir().unwrap();
-  let obj_path = build_obj(tmp.path(), arch);
+  let obj_path = build_obj(tmp.path(), arch, opt, llc);
   let obj_bytes = fs::read(&obj_path).unwrap();
 
   let sm_bytes = stackmap_section_bytes(&obj_bytes);
@@ -280,7 +295,7 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch) {
 
   let (fp_off_from_stackmap, stack_size) = found.expect("failed to find a callsite with 1 root slot");
 
-  let mut objdump = Command::new("llvm-objdump-18");
+  let mut objdump = Command::new(objdump);
   objdump.arg("-d").arg("--no-show-raw-insn");
   if arch == Arch::X86_64 {
     objdump.arg("-M").arg("intel");
@@ -303,10 +318,34 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch) {
 
 #[test]
 fn statepoint_stackmap_sp_locations_resolve_via_stack_size_x86_64() {
-  assert_stackmap_fp_offsets_match_disasm(Arch::X86_64);
+  let Some(opt) = find_tool(&["opt-18", "opt"]) else {
+    eprintln!("skipping: unable to locate LLVM opt (`opt-18` or `opt`)");
+    return;
+  };
+  let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+    eprintln!("skipping: unable to locate LLVM llc (`llc-18` or `llc`)");
+    return;
+  };
+  let Some(objdump) = find_tool(&["llvm-objdump-18", "llvm-objdump"]) else {
+    eprintln!("skipping: unable to locate llvm-objdump (`llvm-objdump-18` or `llvm-objdump`)");
+    return;
+  };
+  assert_stackmap_fp_offsets_match_disasm(Arch::X86_64, opt, llc, objdump);
 }
 
 #[test]
 fn statepoint_stackmap_sp_locations_resolve_via_stack_size_aarch64() {
-  assert_stackmap_fp_offsets_match_disasm(Arch::Aarch64);
+  let Some(opt) = find_tool(&["opt-18", "opt"]) else {
+    eprintln!("skipping: unable to locate LLVM opt (`opt-18` or `opt`)");
+    return;
+  };
+  let Some(llc) = find_tool(&["llc-18", "llc"]) else {
+    eprintln!("skipping: unable to locate LLVM llc (`llc-18` or `llc`)");
+    return;
+  };
+  let Some(objdump) = find_tool(&["llvm-objdump-18", "llvm-objdump"]) else {
+    eprintln!("skipping: unable to locate llvm-objdump (`llvm-objdump-18` or `llvm-objdump`)");
+    return;
+  };
+  assert_stackmap_fp_offsets_match_disasm(Arch::Aarch64, opt, llc, objdump);
 }

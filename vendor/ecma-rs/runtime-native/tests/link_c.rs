@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn has_command(cmd: &str) -> bool {
-  Command::new(cmd).arg("--version").output().is_ok()
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
 }
 
 fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {

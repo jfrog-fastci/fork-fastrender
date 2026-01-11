@@ -3,10 +3,15 @@
 use anyhow::{bail, Context, Result};
 use runtime_native::stackmaps::{Location, StackMaps};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn have_tool(tool: &str) -> bool {
-  Command::new(tool).arg("--version").output().is_ok()
+  Command::new(tool)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
 }
 
 fn run(cmd: &mut Command) -> Result<()> {

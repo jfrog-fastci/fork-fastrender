@@ -16,7 +16,7 @@ fn find_clang() -> &'static str {
       .stdout(Stdio::null())
       .stderr(Stdio::null())
       .status()
-      .is_ok()
+      .is_ok_and(|s| s.success())
     {
       return cand;
     }
