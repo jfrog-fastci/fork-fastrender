@@ -190,8 +190,11 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
       };
 
       let mut host_ctx = host.vm_js_host_context();
-      let window_realm = host.window_realm();
       let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+      if let Some(bindings_host) = host.webidl_bindings_host() {
+        hooks.set_webidl_bindings_host(bindings_host);
+      }
+      let window_realm = host.window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -349,6 +352,7 @@ mod tests {
   use std::sync::Arc;
   use std::time::Duration;
   use vm_js::{PropertyDescriptor, PropertyKey, PropertyKind};
+  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
   const CALLBACK_JOB_KEY: &str = "__test_job_cb";
@@ -878,6 +882,139 @@ mod tests {
       read_log(heap, realm)
     };
     assert_eq!(log, vec!["sync", "raf", "job"]);
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_host_slot_available_in_request_animation_frame_callback() -> RenderResult<()> {
+    #[derive(Default)]
+    struct DispatchBindingsHost {
+      calls: usize,
+    }
+
+    impl WebIdlBindingsHost for DispatchBindingsHost {
+      fn call_operation(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _receiver: Option<Value>,
+        _interface: &'static str,
+        _operation: &'static str,
+        _overload: usize,
+        _args: &[Value],
+      ) -> VmResult<Value> {
+        self.calls += 1;
+        Ok(Value::Undefined)
+      }
+
+      fn call_constructor(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _interface: &'static str,
+        _overload: usize,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> VmResult<Value> {
+        Err(VmError::Unimplemented(
+          "constructor dispatch not implemented in DispatchBindingsHost",
+        ))
+      }
+    }
+
+    struct DispatchHost {
+      host_ctx: (),
+      bindings_host: DispatchBindingsHost,
+      window: WindowRealm,
+    }
+
+    impl DispatchHost {
+      fn new() -> Self {
+        let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+        Self {
+          host_ctx: (),
+          bindings_host: DispatchBindingsHost::default(),
+          window,
+        }
+      }
+    }
+
+    impl WindowRealmHost for DispatchHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        let DispatchHost { host_ctx, window, .. } = self;
+        (host_ctx, window)
+      }
+
+      fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+        Some(&mut self.bindings_host)
+      }
+    }
+
+    fn native_webidl_dispatch(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> VmResult<Value> {
+      let host = host_from_hooks(hooks)?;
+      let _ = host.call_operation(vm, scope, None, "TestInterface", "testOp", 0, &[])?;
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<DispatchHost>::with_clock(clock_for_loop);
+    let mut host = DispatchHost::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<DispatchHost>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+      let call_id = vm.register_native_call(native_webidl_dispatch).unwrap();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+
+      let name_s = scope.alloc_string("__webidl_dispatch").unwrap();
+      scope.push_root(Value::String(name_s)).unwrap();
+      let func = scope.alloc_native_function(call_id, None, name_s, 1).unwrap();
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+        .unwrap();
+      scope.push_root(Value::Object(func)).unwrap();
+
+      set_prop(&mut scope, global, "__webidl_dispatch", Value::Object(func));
+    }
+
+    // Schedule a rAF callback that calls the native binding wrapper; the wrapper should be able to
+    // retrieve the WebIDL bindings host via `host_from_hooks()` in the rAF execution boundary.
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> RenderResult<()> {
+        host
+          .window
+          .exec_script("requestAnimationFrame(globalThis.__webidl_dispatch);")
+          .map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    assert_eq!(host.bindings_host.calls, 1);
     Ok(())
   }
 }

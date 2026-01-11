@@ -429,6 +429,14 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     hooks
   }
 
+  /// Populate the WebIDL bindings host slot exposed via `VmHostHooks::as_any_mut`.
+  ///
+  /// This enables `webidl_vm_js::host_from_hooks()` for native call handlers running under these
+  /// hooks.
+  pub fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
+    self.any.webidl_bindings_host_slot_mut().set(host);
+  }
+
   pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
     if !self.pending_discard.is_empty() {
       let mut ctx = HeapRootContext { heap };

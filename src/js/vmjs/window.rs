@@ -216,6 +216,9 @@ impl WindowHost {
     with_event_loop(event_loop, || {
       let mut host_ctx = host.vm_js_host_context();
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new(&mut host_ctx);
+      if let Some(bindings_host) = host.webidl_bindings_host() {
+        hooks.set_webidl_bindings_host(bindings_host);
+      }
       let window = host.window_mut();
       let result = window.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source);
       if let Some(err) = hooks.finish(window.heap_mut()) {

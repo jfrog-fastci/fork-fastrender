@@ -3150,8 +3150,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut host_ctx = host.vm_js_host_context();
-          let window_realm = host.window_realm();
           let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+          if let Some(bindings_host) = host.webidl_bindings_host() {
+            hooks.set_webidl_bindings_host(bindings_host);
+          }
+          let window_realm = host.window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3233,8 +3236,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       if aborted.unwrap_or(false) {
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut host_ctx = host.vm_js_host_context();
-          let window_realm = host.window_realm();
           let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+          if let Some(bindings_host) = host.webidl_bindings_host() {
+            hooks.set_webidl_bindings_host(bindings_host);
+          }
+          let window_realm = host.window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3319,8 +3325,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             let message = format!("fetch failed: {err}");
             let queue_result = event_loop.queue_microtask(move |host, event_loop| {
               let mut host_ctx = host.vm_js_host_context();
-              let window_realm = host.window_realm();
               let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+              if let Some(bindings_host) = host.webidl_bindings_host() {
+                hooks.set_webidl_bindings_host(bindings_host);
+              }
+              let window_realm = host.window_realm();
               window_realm.reset_interrupt();
               let budget = window_realm.vm_budget_now();
               let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3379,8 +3388,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           // Resolve the promise with a JS Response wrapper.
           let mut host_ctx = host.vm_js_host_context();
-          let window_realm = host.window_realm();
           let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+          if let Some(bindings_host) = host.webidl_bindings_host() {
+            hooks.set_webidl_bindings_host(bindings_host);
+          }
+          let window_realm = host.window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3447,8 +3459,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut host_ctx = host.vm_js_host_context();
-          let window_realm = host.window_realm();
           let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
+          if let Some(bindings_host) = host.webidl_bindings_host() {
+            hooks.set_webidl_bindings_host(bindings_host);
+          }
+          let window_realm = host.window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -3988,7 +4003,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
-  use crate::js::event_loop::{EventLoop, RunLimits};
+  use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome};
   use crate::js::JsExecutionOptions;
   use crate::js::window_realm::WindowRealm;
   use crate::js::window_realm::WindowRealmConfig;
@@ -3999,6 +4014,7 @@ mod tests {
   use vm_js::{ExecutionContext, HeapLimits, RootId, VmOptions};
   use vm_js::{Job, RealmId, VmHostHooks};
   use vm_js::PromiseState;
+  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   struct DummyHost;
 
@@ -6530,6 +6546,143 @@ mod tests {
     );
 
     host.window.heap_mut().remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_host_slot_available_in_fetch_completion_thenable_assimilation() -> crate::error::Result<()> {
+    #[derive(Default)]
+    struct DispatchBindingsHost {
+      calls: usize,
+    }
+
+    impl WebIdlBindingsHost for DispatchBindingsHost {
+      fn call_operation(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _receiver: Option<Value>,
+        _interface: &'static str,
+        _operation: &'static str,
+        _overload: usize,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        self.calls += 1;
+        Ok(Value::Undefined)
+      }
+
+      fn call_constructor(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _interface: &'static str,
+        _overload: usize,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented(
+          "constructor dispatch not implemented in DispatchBindingsHost",
+        ))
+      }
+    }
+
+    struct DispatchEventLoopHost {
+      host_ctx: (),
+      bindings_host: DispatchBindingsHost,
+      window: WindowRealm,
+    }
+
+    impl DispatchEventLoopHost {
+      fn new() -> Self {
+        let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+        Self {
+          host_ctx: (),
+          bindings_host: DispatchBindingsHost::default(),
+          window,
+        }
+      }
+    }
+
+    impl WindowRealmHost for DispatchEventLoopHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+        let DispatchEventLoopHost { host_ctx, window, .. } = self;
+        (host_ctx, window)
+      }
+
+      fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+        Some(&mut self.bindings_host)
+      }
+    }
+
+    fn native_webidl_dispatch(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      _host: &mut dyn vm_js::VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let host = host_from_hooks(hooks)?;
+      let _ = host.call_operation(vm, scope, None, "TestInterface", "testOp", 0, &[])?;
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<DispatchEventLoopHost>::with_clock(clock);
+    let mut host = DispatchEventLoopHost::new();
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DispatchEventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let call_id = vm.register_native_call(native_webidl_dispatch).unwrap();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global)).expect("push root global");
+
+      let name_s = scope.alloc_string("__webidl_dispatch").unwrap();
+      scope.push_root(Value::String(name_s)).unwrap();
+      let func = scope.alloc_native_function(call_id, None, name_s, 0).unwrap();
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+        .unwrap();
+      scope.push_root(Value::Object(func)).unwrap();
+
+      let key = alloc_key(&mut scope, "__webidl_dispatch").unwrap();
+      scope
+        .define_property(global, key, data_desc(Value::Object(func), true))
+        .unwrap();
+    }
+
+    // Make `Response` objects thenable so resolving the fetch promise triggers thenable
+    // assimilation, which calls user code during the fetch completion microtask.
+    with_event_loop(&mut event_loop, || -> crate::error::Result<()> {
+      host
+        .window
+        .exec_script(
+          "Response.prototype.then = function(resolve, _reject) {\n\
+             globalThis.__webidl_dispatch();\n\
+             resolve(1);\n\
+           };\n\
+           fetch('https://example.invalid/ok');",
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.bindings_host.calls, 1);
     Ok(())
   }
 }
