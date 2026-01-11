@@ -10032,7 +10032,13 @@ impl FlexFormattingContext {
         }
       }
 
-      if !needs_intrinsic_main {
+      // Flex performs a measure pass before the container's final used size is known. When this
+      // flex container establishes a positioned/fixed containing block, nested abspos descendants
+      // inside its children must be re-laid out against the final padding box size instead of
+      // reusing the measure-pass fragment (which may have used an ancestor CB like the viewport).
+      if !needs_intrinsic_main
+        && !(is_positioned_sensitive && (establishes_abs_cb || establishes_fixed_cb))
+      {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
         let child_scroll = Point::new(
           parent_scroll.x - translated_origin_x,
