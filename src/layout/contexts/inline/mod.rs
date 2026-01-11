@@ -8819,36 +8819,6 @@ impl InlineFormattingContext {
         (text_item.advance_at_offset(segment_end) - text_item.advance_at_offset(segment_start))
           .max(0.0);
 
-      // Collapsible whitespace (e.g. the normal HTML/CSS " " space) is not supposed to contribute to
-      // the min-content width of the preceding segment.
-      //
-      // In real line layout, when a soft wrap happens at an "allowed" break opportunity that is
-      // *after* a collapsible space, that space becomes trailing whitespace for the line and is
-      // trimmed (see `LineBuilder::trim_soft_wrap_trailing_spaces`). Min-content width is defined
-      // in terms of the longest unbreakable segment, so we must exclude that trimmed space or we
-      // overestimate the width by ~1 space advance per segment.
-      //
-      // This surfaced on fandom.com where flexbox shrink-to-fit sizing uses min-content widths and
-      // the extra space width per word accumulates into large visual drift.
-      if matches!(
-        text_item.style.white_space,
-        WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
-      ) {
-        // Break opportunities are UTF-8 byte offsets between clusters. When a break happens after a
-        // space, the space is the last character in the segment `[last_break, brk.byte_offset)`.
-        if brk.byte_offset > last_break {
-          let prefix = &text_item.text[..brk.byte_offset.min(len)];
-          if let Some((space_start, ch)) = prefix.char_indices().next_back() {
-            if ch == ' ' {
-              let space_width =
-                (text_item.advance_at_offset(brk.byte_offset) - text_item.advance_at_offset(space_start))
-                  .max(0.0);
-              segment_width = (segment_width - space_width).max(0.0);
-            }
-          }
-        }
-      }
-
       if brk.adds_hyphen {
         let h = hyphen_width.get_or_insert_with(|| self.hyphen_advance(&text_item.style));
         segment_width += *h;
