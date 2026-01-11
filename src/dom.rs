@@ -6038,8 +6038,28 @@ impl<'a> ElementRef<'a> {
     if !self.is_html_element() {
       return false;
     }
-    if let Some(value) = self.node.get_attribute_ref("contenteditable") {
-      return value.is_empty() || value.eq_ignore_ascii_case("true");
+
+    // `contenteditable` is an inherited HTML attribute: a node is editable when its own attribute
+    // (or the nearest ancestor's) enables editing, unless a closer ancestor explicitly disables it.
+    //
+    // Notes:
+    // - `contenteditable="plaintext-only"` behaves like an editable host for the purposes of the
+    //   `:read-write` / `:read-only` pseudo-classes.
+    // - The HTML spec treats `contenteditable` as an enumerated attribute with `inherit` semantics;
+    //   in practice, browsers treat any value other than `false`/`inherit` as enabling editing, so
+    //   keep the parsing permissive here.
+    for node in std::iter::once(self.node).chain(self.all_ancestors.iter().rev().copied()) {
+      let Some(value) = node.get_attribute_ref("contenteditable") else {
+        continue;
+      };
+      if value.eq_ignore_ascii_case("false") {
+        return false;
+      }
+      if value.eq_ignore_ascii_case("inherit") {
+        continue;
+      }
+      // `""`, `"true"`, `"plaintext-only"`, and any other value should enable editing.
+      return true;
     }
     false
   }
@@ -15678,6 +15698,68 @@ mod tests {
     };
     assert!(matches(&editable_div, &[], &PseudoClass::ReadWrite));
     assert!(!matches(&editable_div, &[], &PseudoClass::ReadOnly));
+  }
+
+  #[test]
+  fn read_write_matches_contenteditable_inheritance() {
+    let editable_root = element_with_attrs(
+      "div",
+      vec![("contenteditable", "true")],
+      vec![
+        element("span", vec![]),
+        element_with_attrs(
+          "span",
+          vec![("contenteditable", "false")],
+          vec![
+            element("b", vec![]),
+            element_with_attrs("i", vec![("contenteditable", "true")], vec![]),
+          ],
+        ),
+        element_with_attrs("span", vec![("contenteditable", "inherit")], vec![]),
+        element_with_attrs("span", vec![("contenteditable", "plaintext-only")], vec![]),
+      ],
+    );
+
+    let inherit_from_root = &editable_root.children[0];
+    let disabled_subtree = &editable_root.children[1];
+    let disabled_descendant = &disabled_subtree.children[0];
+    let reenabled_descendant = &disabled_subtree.children[1];
+    let explicit_inherit = &editable_root.children[2];
+    let plaintext_only = &editable_root.children[3];
+
+    let root_ancestors: Vec<&DomNode> = vec![&editable_root];
+    assert!(matches(
+      inherit_from_root,
+      &root_ancestors,
+      &PseudoClass::ReadWrite
+    ));
+    assert!(matches(
+      explicit_inherit,
+      &root_ancestors,
+      &PseudoClass::ReadWrite
+    ));
+    assert!(matches(
+      plaintext_only,
+      &root_ancestors,
+      &PseudoClass::ReadWrite
+    ));
+    assert!(matches(
+      disabled_subtree,
+      &root_ancestors,
+      &PseudoClass::ReadOnly
+    ));
+
+    let disabled_ancestors: Vec<&DomNode> = vec![&editable_root, disabled_subtree];
+    assert!(matches(
+      disabled_descendant,
+      &disabled_ancestors,
+      &PseudoClass::ReadOnly
+    ));
+    assert!(matches(
+      reenabled_descendant,
+      &disabled_ancestors,
+      &PseudoClass::ReadWrite
+    ));
   }
 
   #[test]
