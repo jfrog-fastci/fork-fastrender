@@ -27864,6 +27864,26 @@ mod tests {
     assert_eq!(shadows[1].offset_y, Length::px(2.0));
     assert_eq!(shadows[1].blur_radius, Length::px(0.0));
     assert_eq!(shadows[1].color, None); // defaults to currentColor
+
+    // Real-world pages often use small `em` offsets and 3-digit hex colors for outline-style text
+    // shadows (e.g. HTML Dog link styling).
+    let outline = parse_property_value(
+      "text-shadow",
+      ".07em .03em #fff, -.07em .03em #fff, -.07em 0 #fff, -.07em -.03em #fff, 0 .03em #fff, 0 -.07em #fff",
+    )
+    .expect("valid outline-style multi-shadow");
+    let PropertyValue::TextShadow(shadows) = outline else {
+      panic!("expected text-shadow value");
+    };
+    assert_eq!(shadows.len(), 6);
+    assert_eq!(shadows[0].offset_x, Length::em(0.07));
+    assert_eq!(shadows[0].offset_y, Length::em(0.03));
+    assert_eq!(shadows[0].blur_radius, Length::px(0.0));
+    assert_eq!(shadows[0].color, Some(Color::Rgba(Rgba::WHITE)));
+
+    assert_eq!(shadows[2].offset_x, Length::em(-0.07));
+    assert_eq!(shadows[2].offset_y, Length::px(0.0));
+    assert_eq!(shadows[2].color, Some(Color::Rgba(Rgba::WHITE)));
   }
 
   #[test]
