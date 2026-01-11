@@ -73,6 +73,15 @@ pub struct TestRuntimeGuard {
 
 impl TestRuntimeGuard {
   pub fn new() -> Self {
+    // Integration tests run on a fixed pool of harness threads. If a previous
+    // test registered this thread (e.g. as `Main`) but didn't unregister, that
+    // registration can leak into the next test.
+    //
+    // Best-effort unregister *before* contending on `TEST_MUTEX` so a harness
+    // thread blocked waiting to enter the next test can't keep the world from
+    // stopping (stop-the-world waits for all registered mutator threads).
+    crate::threading::unregister_current_thread();
+
     let lock = TEST_MUTEX.lock();
     // Serialize with tests that mutate write barrier state (young range + remembered set).
     let gc_lock = GC_TEST_MUTEX.lock();
