@@ -186,3 +186,9 @@ fn span_map_smoke_for_semantic_ops_exprs() {
   assert_eq!(map.expr_at_offset(25), Some((body_id, ExprId(1))));
   assert_eq!(map.expr_span(body_id, ExprId(2)), Some(TextRange::new(0, 30)));
 }
+
+#[test]
+fn api_id_is_stable() {
+  // Keep this in sync with `knowledge-base`'s `ApiId` stability contract.
+  assert_eq!(ApiId::from_name("JSON.parse").raw(), 0xfb13ab6e4fa1910a);
+}
