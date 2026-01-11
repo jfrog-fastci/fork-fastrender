@@ -2,10 +2,12 @@
 mod common;
 
 use common::compile_source;
+use optimize_js::analysis::analyze_program_function;
 use optimize_js::analysis::driver::{analyze_program, annotate_program, FunctionKey};
 use optimize_js::cfg::cfg::Cfg;
-use optimize_js::il::inst::{Inst, InstTyp, StringEncoding};
+use optimize_js::il::inst::{Arg, Const, Inst, InstTyp, StringEncoding};
 use optimize_js::TopLevelMode;
+use optimize_js::{OptimizationStats, ProgramFunction};
 
 fn any_inst(cfg: &Cfg, pred: impl Fn(&Inst) -> bool) -> bool {
   for label in cfg.graph.labels_sorted() {
@@ -88,5 +90,47 @@ fn analysis_driver_smoke() {
   assert!(
     any_inst(cfg, |inst| inst.meta.result_type.string_encoding == Some(StringEncoding::Utf8)),
     "expected `annotate_program` to annotate at least one Utf8 string result (from `π` template literal)"
+  );
+}
+
+#[test]
+fn analyze_program_function_uses_analyzed_cfg() {
+  use optimize_js::cfg::cfg::{CfgBBlocks, CfgGraph};
+
+  fn cfg_with_string(s: &str) -> Cfg {
+    let mut graph = CfgGraph::default();
+    // Ensure the node exists even though the CFG has no edges.
+    graph.connect(0, 0);
+    graph.disconnect(0, 0);
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(
+      0,
+      vec![Inst::var_assign(
+        0,
+        Arg::Const(Const::Str(s.to_string())),
+      )],
+    );
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  // Make the deconstructed `body` and SSA `ssa_body` intentionally disagree so
+  // we can assert the wrapper uses `ProgramFunction::analyzed_cfg()`.
+  let func = ProgramFunction {
+    debug: None,
+    body: cfg_with_string("hello"),
+    params: Vec::new(),
+    ssa_body: Some(cfg_with_string("π")),
+    stats: OptimizationStats::default(),
+  };
+
+  let analyses = analyze_program_function(&func);
+  assert_eq!(
+    analyses.encoding.encoding_at_exit(0, 0),
+    StringEncoding::Utf8,
+    "expected analyze_program_function to analyze the SSA cfg when present"
   );
 }
