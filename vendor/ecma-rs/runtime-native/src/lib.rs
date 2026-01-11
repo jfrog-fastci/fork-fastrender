@@ -1440,6 +1440,242 @@ mod tests {
     }
   }
 
+  #[repr(C)]
+  struct TestPromiseU64 {
+    header: async_abi::PromiseHeader,
+    payload: u64,
+  }
+
+  #[repr(C)]
+  struct TestCoroAwaitThenFulfill {
+    header: async_abi::Coroutine,
+    state: *mut AtomicUsize,
+    awaited: async_abi::PromiseRef,
+  }
+
+  unsafe extern "C" fn test_coro_destroy(coro: async_abi::CoroutineRef) {
+    if coro.is_null() {
+      return;
+    }
+    drop(Box::from_raw(coro as *mut TestCoroAwaitThenFulfill));
+  }
+
+  unsafe extern "C" fn test_coro_resume_await_then_fulfill(
+    coro: *mut async_abi::Coroutine,
+  ) -> async_abi::CoroutineStep {
+    let coro = coro as *mut TestCoroAwaitThenFulfill;
+    if coro.is_null() {
+      return async_abi::CoroutineStep::complete();
+    }
+
+    let state = (*coro).state;
+    if state.is_null() {
+      std::process::abort();
+    }
+
+    let st = unsafe { &*state }.load(Ordering::Acquire);
+    if st == 0 {
+      unsafe { &*state }.store(1, Ordering::Release);
+      return async_abi::CoroutineStep::await_((*coro).awaited);
+    }
+
+    unsafe { &*state }.store(2, Ordering::Release);
+
+    let promise = (*coro).header.promise;
+    if promise.is_null() {
+      std::process::abort();
+    }
+
+    // Write the test payload directly after the `PromiseHeader`.
+    let payload_ptr = (promise as *mut u8).add(core::mem::size_of::<async_abi::PromiseHeader>()) as *mut u64;
+    unsafe {
+      *payload_ptr = 42;
+      rt_promise_fulfill(PromiseRef(promise.cast()));
+    }
+    async_abi::CoroutineStep::complete()
+  }
+
+  static TEST_CORO_VTABLE_U64: async_abi::CoroutineVTable = async_abi::CoroutineVTable {
+    resume: test_coro_resume_await_then_fulfill,
+    destroy: test_coro_destroy,
+    promise_size: core::mem::size_of::<TestPromiseU64>() as u32,
+    promise_align: core::mem::align_of::<TestPromiseU64>() as u32,
+    promise_shape_id: RtShapeId::INVALID,
+    abi_version: async_abi::RT_ASYNC_ABI_VERSION,
+    reserved: [0; 4],
+  };
+
+  #[test]
+  fn native_async_spawn_awaits_and_resumes_after_promise_fulfill() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let mut awaited = Box::new(TestPromiseU64 {
+      header: async_abi::PromiseHeader {
+        state: core::sync::atomic::AtomicU8::new(123),
+        reactions: core::sync::atomic::AtomicUsize::new(456),
+        flags: core::sync::atomic::AtomicU8::new(7),
+      },
+      payload: 0,
+    });
+    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+
+    // Ensure `rt_promise_init` resets the header to a clean pending state.
+    unsafe {
+      rt_promise_init(PromiseRef(awaited_ptr.cast()));
+    }
+    assert_eq!(
+      unsafe { &*awaited_ptr }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::PENDING
+    );
+    assert_eq!(unsafe { &*awaited_ptr }.reactions.load(Ordering::Acquire), 0);
+    assert_eq!(unsafe { &*awaited_ptr }.flags.load(Ordering::Acquire), 0);
+
+    let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
+    let coro = Box::new(TestCoroAwaitThenFulfill {
+      header: async_abi::Coroutine {
+        vtable: &TEST_CORO_VTABLE_U64,
+        promise: core::ptr::null_mut(),
+        next_waiter: core::ptr::null_mut(),
+        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+      state: state_ptr,
+      awaited: awaited_ptr,
+    });
+
+    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
+    let result = unsafe { rt_async_spawn(coro_ptr) };
+    assert!(!result.is_null());
+
+    // Coroutine should have suspended on the pending awaited promise.
+    assert_eq!(unsafe { &*state_ptr }.load(Ordering::Acquire), 1);
+
+    let result_header = result.0.cast::<async_abi::PromiseHeader>();
+    assert_eq!(
+      unsafe { &*result_header }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::PENDING
+    );
+
+    // Fulfill the awaited promise and run microtasks to resume the coroutine.
+    unsafe {
+      rt_promise_fulfill(PromiseRef(awaited_ptr.cast()));
+    }
+    assert!(rt_drain_microtasks());
+
+    // Coroutine should have completed and fulfilled its own result promise.
+    assert_eq!(unsafe { &*state_ptr }.load(Ordering::Acquire), 2);
+    assert_eq!(
+      unsafe { &*result_header }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::FULFILLED
+    );
+    let payload_ptr =
+      unsafe { (result_header as *mut u8).add(core::mem::size_of::<async_abi::PromiseHeader>()) as *mut u64 };
+    assert_eq!(unsafe { *payload_ptr }, 42);
+
+    unsafe {
+      drop(Box::from_raw(state_ptr));
+    }
+  }
+
+  #[test]
+  fn native_async_spawn_fastpath_await_settled_promise() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let mut awaited = Box::new(TestPromiseU64 {
+      header: async_abi::PromiseHeader {
+        state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
+        reactions: core::sync::atomic::AtomicUsize::new(0),
+        flags: core::sync::atomic::AtomicU8::new(0),
+      },
+      payload: 0,
+    });
+    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+
+    let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
+    let coro = Box::new(TestCoroAwaitThenFulfill {
+      header: async_abi::Coroutine {
+        vtable: &TEST_CORO_VTABLE_U64,
+        promise: core::ptr::null_mut(),
+        next_waiter: core::ptr::null_mut(),
+        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+      state: state_ptr,
+      awaited: awaited_ptr,
+    });
+
+    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
+    let result = unsafe { rt_async_spawn(coro_ptr) };
+    assert!(!result.is_null());
+
+    // With strict mode disabled by default, awaiting an already-fulfilled promise resumes
+    // synchronously, so the coroutine completes during `rt_async_spawn`.
+    assert_eq!(unsafe { &*state_ptr }.load(Ordering::Acquire), 2);
+
+    let result_header = result.0.cast::<async_abi::PromiseHeader>();
+    assert_eq!(
+      unsafe { &*result_header }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::FULFILLED
+    );
+    assert!(!rt_drain_microtasks());
+
+    unsafe {
+      drop(Box::from_raw(state_ptr));
+    }
+  }
+
+  #[test]
+  fn native_async_spawn_strict_await_yields_to_microtask() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    rt_async_set_strict_await_yields(true);
+
+    let mut awaited = Box::new(TestPromiseU64 {
+      header: async_abi::PromiseHeader {
+        state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
+        reactions: core::sync::atomic::AtomicUsize::new(0),
+        flags: core::sync::atomic::AtomicU8::new(0),
+      },
+      payload: 0,
+    });
+    let awaited_ptr = &mut awaited.header as *mut async_abi::PromiseHeader;
+
+    let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
+    let coro = Box::new(TestCoroAwaitThenFulfill {
+      header: async_abi::Coroutine {
+        vtable: &TEST_CORO_VTABLE_U64,
+        promise: core::ptr::null_mut(),
+        next_waiter: core::ptr::null_mut(),
+        flags: async_abi::CORO_FLAG_RUNTIME_OWNS_FRAME,
+      },
+      state: state_ptr,
+      awaited: awaited_ptr,
+    });
+
+    let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
+    let result = unsafe { rt_async_spawn(coro_ptr) };
+    assert!(!result.is_null());
+
+    // In strict mode, awaiting an already-settled promise schedules the resume as a microtask,
+    // so the coroutine does not complete during `rt_async_spawn`.
+    assert_eq!(unsafe { &*state_ptr }.load(Ordering::Acquire), 1);
+
+    let result_header = result.0.cast::<async_abi::PromiseHeader>();
+    assert_eq!(
+      unsafe { &*result_header }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::PENDING
+    );
+
+    assert!(rt_drain_microtasks());
+    assert_eq!(unsafe { &*state_ptr }.load(Ordering::Acquire), 2);
+    assert_eq!(
+      unsafe { &*result_header }.state.load(Ordering::Acquire),
+      async_abi::PromiseHeader::FULFILLED
+    );
+
+    unsafe {
+      drop(Box::from_raw(state_ptr));
+    }
+  }
+
   const CHILD_ENV: &str = "ECMA_RS_RUNTIME_NATIVE_PANIC_BOUNDARY_CHILD";
 
   #[test]
