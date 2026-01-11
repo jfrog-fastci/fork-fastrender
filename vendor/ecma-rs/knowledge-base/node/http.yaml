@@ -1,0 +1,37 @@
+schema_version: 1
+symbols:
+  - name: node:http.request
+    aliases:
+      - http.request
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: io
+      may_throw: true
+      io: true
+      network: true
+
+  - name: node:http.get
+    aliases:
+      - http.get
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: io
+      may_throw: true
+      io: true
+      network: true
+
+  - name: node:http.createServer
+    aliases:
+      - http.createServer
+    since: "v0.1.0"
+    purity:
+      template: impure
+    effects:
+      template: io
+      may_throw: true
+      io: true
+      network: true
