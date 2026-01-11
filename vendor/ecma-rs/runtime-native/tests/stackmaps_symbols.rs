@@ -11,6 +11,9 @@ global_asm!(
   .globl __fastr_stackmaps_start
   .globl __fastr_stackmaps_end
 __fastr_stackmaps_start:
+  // Simulate the output-section-level alignment padding that linkers can insert
+  // before the first input section payload.
+  .byte 0,0,0,0,0,0,0,0
   .byte 3
   .byte 0
   .short 0
@@ -22,6 +25,8 @@ __fastr_stackmaps_end:
 );
 
 const FIXTURE: &[u8] = &[
+  // Leading padding (8 bytes).
+  0, 0, 0, 0, 0, 0, 0, 0,
   3, 0, // Version, Reserved0
   0, 0, // Reserved1
   0, 0, 0, 0, // NumFunctions

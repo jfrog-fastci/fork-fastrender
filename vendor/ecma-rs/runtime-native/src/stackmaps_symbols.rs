@@ -59,7 +59,13 @@ pub fn stackmaps_from_exe() -> Result<StackMaps, StackMapError> {
   let bytes = stackmaps_bytes_from_exe();
 
   // Sanity check before parsing so failures are easier to interpret.
-  let version = bytes[0];
+  //
+  // Note: The linker may insert alignment padding *inside* the output section before the first
+  // input section payload (e.g. if the first `.llvm_stackmaps` input section has 16-byte
+  // alignment but the output section is only 8-byte aligned). That padding is typically
+  // zero-filled, so we skip leading zeros here rather than assuming the v3 header starts at
+  // `bytes[0]`.
+  let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
   if version != STACKMAP_VERSION {
     return Err(StackMapError::UnsupportedVersion(version));
   }
