@@ -184,7 +184,7 @@ def generate_baseline_json(criterion_dir, output_file):
         'profiling_insights': {
             'note': 'Flamegraph profiling requires perf which is not available',
             'top_functions_by_time': [],
-            'recommendation': 'Install perf and run: cargo flamegraph --bench baseline_performance'
+            'recommendation': 'Install perf and run: bash scripts/cargo_agent.sh flamegraph --bench baseline_performance'
         },
         'bottlenecks_identified': [
             {
