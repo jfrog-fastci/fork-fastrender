@@ -121,6 +121,29 @@ Query types/symbols by **byte offset** (UTF-8):
 cargo run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts --type-at fixtures/basic.ts:0
 ```
 
+#### Native LLVM CLI (`native-js-cli`)
+
+Experimental CLI that compiles a **single TypeScript file** to textual LLVM IR
+and runs it (TS → LLVM IR → `clang` → native executable). This currently uses a
+small `parse-js`-driven IR emitter (no typechecking yet).
+
+```bash
+cat > /tmp/native_js_cli_demo.ts <<'TS'
+console.log(1 + 2);
+TS
+
+# Prefer the LLVM wrapper (sets a higher memory limit and ensures LLVM tools are on PATH).
+bash scripts/cargo_llvm.sh run -p native-js-cli --locked -- /tmp/native_js_cli_demo.ts
+
+# Dump the generated IR for debugging.
+bash scripts/cargo_llvm.sh run -p native-js-cli --locked -- \
+  --emit-llvm /tmp/out.ll \
+  /tmp/native_js_cli_demo.ts
+```
+
+See [`native-js-cli/README.md`](./native-js-cli/README.md) for the current
+supported subset and flags.
+
 #### Harness (`typecheck-ts-harness`)
 
 Run the small “conformance-mini” suite used by CI (no submodule checkout required):
