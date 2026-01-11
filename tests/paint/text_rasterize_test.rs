@@ -1207,6 +1207,33 @@ fn test_render_empty_glyph_list() {
   assert_eq!(result.unwrap(), 0.0); // No advance for empty list
 }
 
+#[test]
+fn test_render_zero_font_size_is_noop() {
+  let font = match get_test_font() {
+    Some(f) => f,
+    None => return,
+  };
+
+  let face = font.as_ttf_face().unwrap();
+  let glyph_id = face.glyph_index('A').unwrap().0 as u32;
+  let glyphs = vec![GlyphPosition {
+    glyph_id,
+    cluster: 0,
+    x_offset: 0.0,
+    y_offset: 0.0,
+    x_advance: 10.0,
+    y_advance: 0.0,
+  }];
+  let mut pixmap = create_test_pixmap(50, 50);
+  let mut rasterizer = TextRasterizer::new();
+
+  let result = rasterizer.render_glyphs(&glyphs, &font, 0.0, 10.0, 30.0, Rgba::BLACK, &mut pixmap);
+
+  assert!(result.is_ok());
+  assert_eq!(result.unwrap(), 10.0);
+  assert!(!has_changed_pixels(&pixmap));
+}
+
 // ============================================================================
 // ShapedRun Rendering Tests
 // ============================================================================
