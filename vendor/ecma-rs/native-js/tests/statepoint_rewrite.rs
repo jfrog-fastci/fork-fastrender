@@ -314,6 +314,137 @@ entry:
 }
 
 #[test]
+fn gc_result_for_scalar_return_with_live_gc_pointer() {
+  // `gc.result` extraction must still work when the statepoint also carries a
+  // `"gc-live"` bundle and therefore emits relocations.
+  let before = r#"
+  declare i64 @bar()
+
+  define i64 @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    %v = call i64 @bar()
+    %isnull = icmp eq ptr addrspace(1) %obj, null
+    ret i64 %v
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(i64 ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line (not an assignment): {statepoint_line}"));
+
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%obj".to_string()],
+    "expected @bar statepoint gc-live to be exactly [%obj], got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let gc_result_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.result.i64"))
+    .unwrap_or_else(|| panic!("missing gc.result.i64 in function:\n{func}"));
+  assert!(
+    gc_result_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.result to reference statepoint token {statepoint_token}, got:\n{gc_result_line}\n\n{func}"
+  );
+  let result_ssa = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
+
+  let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  let relocated_obj =
+    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  assert!(
+    reloc_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.relocate to reference statepoint token {statepoint_token}, got:\n{reloc_line}\n\n{func}"
+  );
+
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %obj relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("icmp eq ptr addrspace(1) {relocated_obj}, null")),
+    "expected %obj use after safepoint to be rewritten to relocated value {relocated_obj}:\n{func}"
+  );
+  assert!(
+    func.contains(&format!("ret i64 {result_ssa}")),
+    "expected function to return gc.result value {result_ssa}:\n{func}"
+  );
+}
+
+#[test]
+fn gc_result_for_gc_pointer_return_with_live_gc_pointer() {
+  // `gc.result.p1` must still work when the statepoint also carries `"gc-live"`
+  // roots and emits relocations.
+  let before = r#"
+  declare ptr addrspace(1) @alloc()
+
+  define ptr addrspace(1) @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    %p = call ptr addrspace(1) @alloc()
+    %isnull = icmp eq ptr addrspace(1) %obj, null
+    ret ptr addrspace(1) %p
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  assert!(
+    !func.contains("call ptr addrspace(1) @alloc"),
+    "expected @alloc call to be rewritten (no direct call ptr addrspace(1) @alloc):\n{func}"
+  );
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(ptr addrspace(1) ()) @alloc"))
+    .unwrap_or_else(|| panic!("missing @alloc statepoint call in function:\n{func}"));
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line (not an assignment): {statepoint_line}"));
+
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%obj".to_string()],
+    "expected @alloc statepoint gc-live to be exactly [%obj], got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let gc_result_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.result.p1"))
+    .unwrap_or_else(|| panic!("missing gc.result.p1 in function:\n{func}"));
+  assert!(
+    gc_result_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.result to reference statepoint token {statepoint_token}, got:\n{gc_result_line}\n\n{func}"
+  );
+  let result_ssa = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
+
+  let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  let relocated_obj =
+    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  assert!(
+    func.contains(&format!("icmp eq ptr addrspace(1) {relocated_obj}, null")),
+    "expected %obj use after safepoint to be rewritten to relocated value {relocated_obj}:\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("ret ptr addrspace(1) {result_ssa}")),
+    "expected function to return addrspace(1) gc.result value {result_ssa}:\n{func}"
+  );
+}
+
+#[test]
 fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
   // Important real-world pattern: allocate an object (pointer result from a
   // statepoint) and then keep it live across a later safepoint call.
