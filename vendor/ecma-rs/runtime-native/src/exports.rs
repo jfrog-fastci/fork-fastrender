@@ -165,10 +165,10 @@ fn register_block_on_waker(p: PromiseRef) {
 
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {
-  // The async runtime is driven by the main thread/event loop. Register it on
-  // first use so GC can coordinate stop-the-world safepoints across all
-  // mutator threads.
-  crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+  // The legacy async runtime is driven by a single-consumer event loop. Ensure
+  // the calling thread is registered so stop-the-world GC coordination does not
+  // ignore its stack.
+  crate::async_rt::ensure_event_loop_thread();
 }
 
 fn thread_kind_from_abi(kind: u32) -> threading::ThreadKind {

@@ -464,6 +464,29 @@ queueMicrotask-style jobs directly via:
 
 See `docs/async_abi.md` for details.
 
+## Threading + GC safepoints
+
+The legacy async runtime is **single-consumer**: at most one OS thread may drive the event loop at
+a time by calling:
+
+* `rt_async_poll_legacy`
+* `rt_async_spawn_legacy` (runs the coroutine synchronously until its first suspension point)
+
+The **first** thread to call either API becomes the runtime's **event-loop thread**. The runtime
+registers it with `threading::register_current_thread(ThreadKind::Main)` so stop-the-world GC can
+wait for it and scan its roots.
+
+Subsequent `rt_async_poll_legacy` / `rt_async_spawn_legacy` calls from other OS threads are
+serialized but those threads are registered as `ThreadKind::External`. Other threads may enqueue
+tasks into the runtime (it is multi-producer); an `eventfd` wakeup is used to interrupt a blocking
+`epoll_wait`.
+
+`rt_async_poll_legacy` also polls the GC safepoint barrier:
+
+* at the start of each poll turn
+* immediately before entering `epoll_wait`
+* immediately after returning from `epoll_wait` (before running callbacks)
+
 ## Benchmarks
 
 From the repository root:

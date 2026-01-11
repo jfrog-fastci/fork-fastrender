@@ -149,6 +149,7 @@ fn alloc_await_reaction(coro: gc::Root) -> *mut crate::promise_reactions::Promis
 }
 
 pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  super::ensure_event_loop_thread();
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return PromiseRef::null();
@@ -166,6 +167,7 @@ pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
 }
 
 pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  super::ensure_event_loop_thread();
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return PromiseRef::null();

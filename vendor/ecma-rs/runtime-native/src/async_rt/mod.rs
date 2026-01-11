@@ -40,6 +40,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Once;
+use crate::threading;
+use crate::threading::ThreadKind;
 use std::sync::OnceLock;
 use std::sync::{Mutex as StdMutex};
 use std::time::Duration;
@@ -231,6 +233,94 @@ pub(crate) fn external_pending_dec() {
 
 pub type TaskFn = extern "C" fn(*mut u8);
 pub type TaskDropFn = extern "C" fn(*mut u8);
+
+// -----------------------------------------------------------------------------
+// Thread registry integration
+// -----------------------------------------------------------------------------
+//
+// The async runtime is conceptually single-threaded (JS ordering). The first
+// thread to call `rt_async_poll_legacy` / `rt_async_spawn_legacy` becomes the
+// event-loop thread and is registered as `ThreadKind::Main` so the GC can
+// stop/scan it.
+//
+// Other threads may call these entrypoints too (the call is serialized by an
+// internal mutex); those threads are registered as `ThreadKind::External`.
+
+static EVENT_LOOP_OS_THREAD_ID: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+extern "C" {
+  fn pthread_threadid_np(thread: libc::pthread_t, thread_id: *mut u64) -> libc::c_int;
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn fallback_thread_id_hash() -> u64 {
+  // `ThreadId` formatting is intentionally opaque, so we hash its Debug form.
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let tid = std::thread::current().id();
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  tid.hash(&mut hasher);
+  hasher.finish()
+}
+
+fn current_os_thread_id() -> u64 {
+  #[cfg(any(target_os = "linux", target_os = "android"))]
+  unsafe {
+    libc::syscall(libc::SYS_gettid) as u64
+  }
+
+  #[cfg(target_os = "macos")]
+  unsafe {
+    let mut tid: u64 = 0;
+    let rc = pthread_threadid_np(libc::pthread_self(), &mut tid as *mut u64);
+    if rc == 0 {
+      return tid;
+    }
+    fallback_thread_id_hash()
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+  {
+    // Fallback: stable but not OS-level.
+    fallback_thread_id_hash()
+  }
+}
+
+pub(crate) fn ensure_event_loop_thread() {
+  let current = current_os_thread_id();
+  let mut expected = EVENT_LOOP_OS_THREAD_ID.load(Ordering::Acquire);
+  if expected == 0 {
+    match EVENT_LOOP_OS_THREAD_ID.compare_exchange(0, current, Ordering::AcqRel, Ordering::Acquire) {
+      Ok(_) => expected = current,
+      Err(existing) => expected = existing,
+    }
+  }
+
+  // If the original event-loop thread has exited (or explicitly unregistered),
+  // allow a new thread to become the event loop. This keeps test harnesses and
+  // thread-pool based embeddings from permanently pinning the event loop to a
+  // short-lived thread.
+  if expected != current {
+    let expected_is_registered_main = threading::all_threads()
+      .iter()
+      .any(|t| t.kind() == ThreadKind::Main && t.os_thread_id() == expected);
+
+    if !expected_is_registered_main {
+      match EVENT_LOOP_OS_THREAD_ID.compare_exchange(expected, current, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => expected = current,
+        Err(existing) => expected = existing,
+      }
+    }
+  }
+
+  let kind = if expected == current {
+    ThreadKind::Main
+  } else {
+    ThreadKind::External
+  };
+  threading::register_current_thread(kind);
+}
 
 pub struct Task {
   callback: TaskFn,
@@ -497,6 +587,7 @@ pub(crate) fn poll() -> bool {
   with_driver_guard("rt_async_poll", || {
     // Serialize at the ABI boundary: the event loop itself is single-consumer.
     let _guard = POLL_LOCK.lock();
+    ensure_event_loop_thread();
     debug_maybe_hold_poll_lock();
     let pending = global().poll();
     // If the runtime is fully idle, yield the OS thread. Many embeddings drive the
