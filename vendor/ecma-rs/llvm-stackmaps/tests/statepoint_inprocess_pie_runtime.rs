@@ -53,7 +53,7 @@ entry:
 }
 "#;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[test]
 fn inprocess_loader_finds_statepoint_callsite_in_pie_binary() -> io::Result<()> {
     // Needs LLVM tools to produce a real stackmap table and patch it for PIE.
@@ -146,12 +146,21 @@ static LAST_RA: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn allocate(_size: i64) -> *mut u8 {
-    let ra: usize;
+    let mut ra: usize = 0;
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
             "mov {0}, [rbp + 8]",
             out(reg) ra,
             options(nostack, readonly, preserves_flags),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, x30",
+            out(reg) ra,
+            options(nostack, nomem, preserves_flags),
         );
     }
     LAST_RA.store(ra, Ordering::Relaxed);
@@ -252,7 +261,7 @@ fn main() {
     Ok(())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 #[test]
 fn inprocess_loader_finds_statepoint_callsite_in_pie_binary() -> io::Result<()> {
     Ok(())

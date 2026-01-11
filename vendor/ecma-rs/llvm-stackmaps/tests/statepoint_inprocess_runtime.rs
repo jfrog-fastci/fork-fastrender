@@ -45,7 +45,7 @@ entry:
 }
 "#;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[test]
 fn inprocess_loader_finds_statepoint_callsite_by_actual_return_address() -> io::Result<()> {
     // Needs LLVM tools to produce a real stackmap table.
@@ -113,7 +113,9 @@ llvm-stackmaps = {{ path = "{}" }}
 
     // Note: `use` is a Rust keyword; use a raw identifier so the exported symbol name is `use`.
     //
-    // The inline asm reads the return address from `[rbp + 8]` and requires frame pointers.
+    // Return address capture (ABI):
+    // - x86_64: read from `[rbp + 8]` (requires frame pointers in the Rust binary)
+    // - aarch64: read from `x30` (link register)
     fs::write(
         project_dir.join("src/main.rs"),
         r##"use std::sync::atomic::{AtomicUsize, Ordering};
@@ -125,12 +127,21 @@ static LAST_RA: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn allocate(_size: i64) -> *mut u8 {
-    let ra: usize;
+    let mut ra: usize = 0;
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
             "mov {0}, [rbp + 8]",
             out(reg) ra,
             options(nostack, readonly, preserves_flags),
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, x30",
+            out(reg) ra,
+            options(nostack, nomem, preserves_flags),
         );
     }
     LAST_RA.store(ra, Ordering::Relaxed);
@@ -179,8 +190,8 @@ fn main() {
      assert_eq!(sp.deopt_args[0].as_u64(), Some(1));
      assert_eq!(sp.deopt_args[1].as_u64(), Some(2));
      assert_eq!(sp.num_gc_roots(), 1);
- }
- "##,
+}
+"##,
     )?;
 
     let mut target_dir = std::env::var_os("CARGO_TARGET_DIR")
@@ -226,7 +237,7 @@ fn main() {
     Ok(())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
 #[test]
 fn inprocess_loader_finds_statepoint_callsite_by_actual_return_address() -> io::Result<()> {
     Ok(())
