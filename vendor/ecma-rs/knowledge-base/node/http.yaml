@@ -1,6 +1,4 @@
 - name: node:http.request
-  aliases:
-    - http.request
   since: "v0.1.0"
   effects:
     Custom:
@@ -9,8 +7,6 @@
   purity: Impure
 
 - name: node:http.get
-  aliases:
-    - http.get
   since: "v0.1.0"
   effects:
     Custom:
@@ -19,8 +15,6 @@
   purity: Impure
 
 - name: node:http.createServer
-  aliases:
-    - http.createServer
   since: "v0.1.0"
   effects:
     Custom:
