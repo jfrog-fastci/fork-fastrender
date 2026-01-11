@@ -1491,60 +1491,113 @@ mod tests {
   }
 
   #[test]
+  fn queue_microtask_callback_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      queueMicrotask(() => { globalThis.__host_ok = recordHost(); });
+      "#,
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
   fn set_timeout_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
- 
+
     host.exec_script(
       r#"
       globalThis.__host_ok = false;
       setTimeout(() => { globalThis.__host_ok = recordHost(); }, 0);
       "#,
     )?;
- 
+
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(false)
     ));
- 
+
     let _ = host.run_until_idle(RunLimits {
       max_tasks: 10,
       max_microtasks: 10,
       max_wall_time: Some(Duration::from_secs(5)),
     })?;
- 
+
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
     ));
     Ok(())
   }
- 
+
+  #[test]
+  fn set_interval_callback_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__calls = 0;
+      globalThis.__host_ok = false;
+      let id = setInterval(() => {
+        globalThis.__calls++;
+        globalThis.__host_ok = recordHost();
+        clearInterval(id);
+      }, 0);
+      "#,
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 10,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    Ok(())
+  }
+
   #[test]
   fn request_animation_frame_callback_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
     install_record_host(&mut host);
- 
+
     host.exec_script(
       r#"
       globalThis.__host_ok = false;
       requestAnimationFrame(() => { globalThis.__host_ok = recordHost(); });
       "#,
     )?;
- 
+
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(false)
     ));
- 
+
     // `requestAnimationFrame` callbacks are queued separately from task/microtask queues.
     {
       let WindowHost { host: host_state, event_loop } = &mut host;
       let _ = event_loop.run_animation_frame(host_state)?;
     }
- 
+
     assert!(matches!(
       get_global_prop(&mut host, "__host_ok"),
       Value::Bool(true)
