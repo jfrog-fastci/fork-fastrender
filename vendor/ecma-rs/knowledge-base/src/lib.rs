@@ -5,7 +5,7 @@ use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate, T
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApiSemantics {
   pub name: String,
 
@@ -14,6 +14,12 @@ pub struct ApiSemantics {
 
   #[serde(default)]
   pub effects: EffectTemplate,
+
+  /// A non-template summary of the API's effects.
+  ///
+  /// This preserves author-provided base effect flags (allocates/io/etc) even
+  /// when `effects` is a callback-dependent template.
+  pub effect_summary: EffectSummary,
 
   #[serde(default)]
   pub purity: PurityTemplate,
@@ -30,6 +36,25 @@ pub struct ApiSemantics {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub parallelizable: Option<bool>,
 
+  /// Free-form short semantics identifier (e.g. "Map", "Filter", "Debounce").
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub semantics: Option<String>,
+
+  /// Optional signature hint for downstream tooling.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub signature: Option<String>,
+
+  /// Version / availability metadata.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub since: Option<String>,
+
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub until: Option<String>,
+
+  /// Function / constructor / getter / setter / value (free-form).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub kind: Option<String>,
+
   /// Arbitrary key/value metadata for downstream analyses.
   ///
   /// `effect-js` uses this for optional string encoding semantics such as:
@@ -37,14 +62,112 @@ pub struct ApiSemantics {
   /// - `encoding.preserves_input_if: ascii`
   /// - `encoding.length_preserving_if: ascii`
   ///
-  /// Values are strings to keep the schema stable and easy to author.
+  /// Values are JSON so the knowledge base can preserve structured metadata
+  /// (booleans/numbers/arrays/maps) without losing author intent.
   #[serde(default)]
   pub properties: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiSemanticsDeserialize {
+  name: String,
+
+  #[serde(default)]
+  aliases: Vec<String>,
+
+  #[serde(default)]
+  effects: EffectTemplate,
+
+  #[serde(default)]
+  effect_summary: Option<EffectSummary>,
+
+  #[serde(default)]
+  purity: PurityTemplate,
+
+  #[serde(default, rename = "async")]
+  async_: Option<bool>,
+
+  #[serde(default)]
+  idempotent: Option<bool>,
+
+  #[serde(default)]
+  deterministic: Option<bool>,
+
+  #[serde(default)]
+  parallelizable: Option<bool>,
+
+  #[serde(default)]
+  semantics: Option<String>,
+
+  #[serde(default)]
+  signature: Option<String>,
+
+  #[serde(default)]
+  since: Option<String>,
+
+  #[serde(default)]
+  until: Option<String>,
+
+  #[serde(default)]
+  kind: Option<String>,
+
+  #[serde(default)]
+  properties: BTreeMap<String, JsonValue>,
+}
+
+impl<'de> Deserialize<'de> for ApiSemantics {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let raw = ApiSemanticsDeserialize::deserialize(deserializer)?;
+    let effect_summary = raw
+      .effect_summary
+      .unwrap_or_else(|| effect_template_to_summary(&raw.effects));
+
+    Ok(Self {
+      name: raw.name,
+      aliases: raw.aliases,
+      effects: raw.effects,
+      effect_summary,
+      purity: raw.purity,
+      async_: raw.async_,
+      idempotent: raw.idempotent,
+      deterministic: raw.deterministic,
+      parallelizable: raw.parallelizable,
+      semantics: raw.semantics,
+      signature: raw.signature,
+      since: raw.since,
+      until: raw.until,
+      kind: raw.kind,
+      properties: raw.properties,
+    })
+  }
+}
+
+fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
+  match template {
+    EffectTemplate::Pure => EffectSummary::PURE,
+    EffectTemplate::Io => EffectSummary {
+      flags: EffectFlags::IO,
+      throws: ThrowBehavior::Maybe,
+    },
+    EffectTemplate::DependsOnCallback => EffectSummary {
+      flags: EffectFlags::empty(),
+      throws: ThrowBehavior::Maybe,
+    },
+    EffectTemplate::Custom(summary) => *summary,
+    EffectTemplate::Unknown => EffectSummary {
+      flags: EffectFlags::all(),
+      throws: ThrowBehavior::Maybe,
+    },
+  }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApiDatabase {
   apis: BTreeMap<String, ApiSemantics>,
+  aliases: BTreeMap<String, String>,
 }
 
 /// Backwards-compatible alias used by analysis passes.
@@ -59,11 +182,20 @@ impl ApiDatabase {
     for api in entries {
       apis.insert(api.name.clone(), api);
     }
-    Self { apis }
+    let aliases = build_alias_map(&apis).unwrap_or_default();
+    Self { apis, aliases }
   }
 
-  pub fn get(&self, name: &str) -> Option<&ApiSemantics> {
-    self.apis.get(name)
+  pub fn get(&self, name_or_alias: &str) -> Option<&ApiSemantics> {
+    let canonical = self.canonical_name(name_or_alias)?;
+    self.apis.get(canonical)
+  }
+
+  pub fn canonical_name(&self, name_or_alias: &str) -> Option<&str> {
+    if let Some((key, _)) = self.apis.get_key_value(name_or_alias) {
+      return Some(key.as_str());
+    }
+    self.aliases.get(name_or_alias).map(|s| s.as_str())
   }
 
   pub fn iter(&self) -> impl Iterator<Item = (&str, &ApiSemantics)> {
@@ -96,7 +228,8 @@ impl ApiDatabase {
       }
     }
 
-    Ok(Self { apis })
+    let aliases = build_alias_map(&apis)?;
+    Ok(Self { apis, aliases })
   }
 
   pub fn validate(&self) -> Result<(), KnowledgeBaseError> {
@@ -195,6 +328,21 @@ struct ApiRaw {
   aliases: Vec<String>,
 
   #[serde(default)]
+  semantics: Option<String>,
+
+  #[serde(default)]
+  signature: Option<String>,
+
+  #[serde(default)]
+  since: Option<String>,
+
+  #[serde(default)]
+  until: Option<String>,
+
+  #[serde(default)]
+  kind: Option<String>,
+
+  #[serde(default)]
   effects: EffectsRaw,
 
   #[serde(default)]
@@ -223,6 +371,21 @@ struct ApiRaw {
 struct ApiBodyRaw {
   #[serde(default)]
   aliases: Vec<String>,
+
+  #[serde(default)]
+  semantics: Option<String>,
+
+  #[serde(default)]
+  signature: Option<String>,
+
+  #[serde(default)]
+  since: Option<String>,
+
+  #[serde(default)]
+  until: Option<String>,
+
+  #[serde(default)]
+  kind: Option<String>,
 
   #[serde(default)]
   effects: EffectsRaw,
@@ -303,33 +466,45 @@ struct PurityDetailsRaw {
 }
 
 fn normalize_api(raw: ApiRaw) -> ApiSemantics {
-  let effects = normalize_effects(raw.effects, raw.throws.as_deref());
+  let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
   let purity = normalize_purity(raw.purity);
   ApiSemantics {
     name: raw.name,
     aliases: raw.aliases,
     effects,
+    effect_summary,
     purity,
     async_: raw.async_,
     idempotent: raw.idempotent,
     deterministic: raw.deterministic,
     parallelizable: raw.parallelizable,
+    semantics: raw.semantics,
+    signature: raw.signature,
+    since: raw.since,
+    until: raw.until,
+    kind: raw.kind,
     properties: raw.properties,
   }
 }
 
 fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
-  let effects = normalize_effects(raw.effects, raw.throws.as_deref());
+  let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
   let purity = normalize_purity(raw.purity);
   ApiSemantics {
     name,
     aliases: raw.aliases,
     effects,
+    effect_summary,
     purity,
     async_: raw.async_,
     idempotent: raw.idempotent,
     deterministic: raw.deterministic,
     parallelizable: raw.parallelizable,
+    semantics: raw.semantics,
+    signature: raw.signature,
+    since: raw.since,
+    until: raw.until,
+    kind: raw.kind,
     properties: raw.properties,
   }
 }
@@ -356,22 +531,18 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
   }
 }
 
-fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> EffectTemplate {
+fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSummary) {
   match raw {
-    EffectsRaw::Template(t) => t,
+    EffectsRaw::Template(t) => {
+      let summary = effect_template_to_summary(&t);
+      (t, summary)
+    }
     EffectsRaw::Details(details) => {
       let template = details
         .template
         .as_deref()
         .map(normalize_ident)
         .unwrap_or_default();
-
-      // We can't encode "depends on callback + base effects" with the current
-      // `effect_model::EffectTemplate`, so preserve the template and conservatively
-      // drop the additional booleans.
-      if template == "depends_on_callback" {
-        return EffectTemplate::DependsOnCallback;
-      }
 
       let unknown_default = template == "unknown";
       let io_default = template == "io";
@@ -380,10 +551,7 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> EffectTemplate {
       if details.allocates.unwrap_or(unknown_default) {
         flags |= EffectFlags::ALLOCATES;
       }
-      if details
-        .io
-        .unwrap_or(io_default || unknown_default)
-      {
+      if details.io.unwrap_or(io_default || unknown_default) {
         flags |= EffectFlags::IO;
       }
       if details.network.unwrap_or(unknown_default) {
@@ -408,17 +576,22 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> EffectTemplate {
       };
 
       let summary = EffectSummary { flags, throws };
-      if summary.is_pure() {
-        return EffectTemplate::Pure;
-      }
-      if summary.flags == EffectFlags::IO && summary.throws == ThrowBehavior::Maybe {
-        return EffectTemplate::Io;
-      }
-      if summary.flags == EffectFlags::all() && summary.throws == ThrowBehavior::Maybe {
-        return EffectTemplate::Unknown;
+
+      if template == "depends_on_callback" {
+        return (EffectTemplate::DependsOnCallback, summary);
       }
 
-      EffectTemplate::Custom(summary)
+      if summary.is_pure() {
+        return (EffectTemplate::Pure, summary);
+      }
+      if summary.flags == EffectFlags::IO && summary.throws == ThrowBehavior::Maybe {
+        return (EffectTemplate::Io, summary);
+      }
+      if summary.flags == EffectFlags::all() && summary.throws == ThrowBehavior::Maybe {
+        return (EffectTemplate::Unknown, summary);
+      }
+
+      (EffectTemplate::Custom(summary), summary)
     }
   }
 }
@@ -523,12 +696,20 @@ fn parse_toml_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeB
   Ok(module.apis.into_iter().map(normalize_api).collect())
 }
 
-fn build_alias_map(apis: &BTreeMap<String, ApiSemantics>) -> Result<BTreeMap<String, String>, KnowledgeBaseError> {
+fn build_alias_map(
+  apis: &BTreeMap<String, ApiSemantics>,
+) -> Result<BTreeMap<String, String>, KnowledgeBaseError> {
   let mut aliases = BTreeMap::<String, String>::new();
 
   for api in apis.values() {
-    for alias in &api.aliases {
-      if alias.is_empty() || alias == &api.name {
+    let node_alias = api.name.strip_prefix("node:");
+    for alias in api
+      .aliases
+      .iter()
+      .map(|s| s.as_str())
+      .chain(node_alias)
+    {
+      if alias.is_empty() || alias == api.name {
         continue;
       }
 
@@ -539,35 +720,49 @@ fn build_alias_map(apis: &BTreeMap<String, ApiSemantics>) -> Result<BTreeMap<Str
         // When the semantics match, this is redundant but unambiguous: lookups can resolve the
         // alias directly via the entry, so we skip building an alias mapping rather than treating
         // it as an error.
-        if prev.effects == api.effects
-          && prev.purity == api.purity
-          && prev.async_ == api.async_
-          && prev.idempotent == api.idempotent
-          && prev.deterministic == api.deterministic
-          && prev.parallelizable == api.parallelizable
-          && prev.properties == api.properties
-        {
+        if semantics_match(prev, api) {
           continue;
         }
 
         return Err(KnowledgeBaseError::DuplicateAlias {
-          alias: alias.clone(),
+          alias: alias.to_string(),
           first: prev.name.clone(),
           second: api.name.clone(),
         });
       }
 
-      if let Some(prev) = aliases.insert(alias.clone(), api.name.clone()) {
-        return Err(KnowledgeBaseError::DuplicateAlias {
-          alias: alias.clone(),
-          first: prev,
-          second: api.name.clone(),
-        });
+      match aliases.get(alias) {
+        Some(prev) if prev == &api.name => continue,
+        Some(prev) => {
+          return Err(KnowledgeBaseError::DuplicateAlias {
+            alias: alias.to_string(),
+            first: prev.clone(),
+            second: api.name.clone(),
+          })
+        }
+        None => {}
       }
+      aliases.insert(alias.to_string(), api.name.clone());
     }
   }
 
   Ok(aliases)
+}
+
+fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
+  a.effects == b.effects
+    && a.effect_summary == b.effect_summary
+    && a.purity == b.purity
+    && a.async_ == b.async_
+    && a.idempotent == b.idempotent
+    && a.deterministic == b.deterministic
+    && a.parallelizable == b.parallelizable
+    && a.semantics == b.semantics
+    && a.signature == b.signature
+    && a.since == b.since
+    && a.until == b.until
+    && a.kind == b.kind
+    && a.properties == b.properties
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -598,6 +793,7 @@ mod tests {
 
   use super::*;
   use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+  use serde_json::Value as JsonValue;
 
   #[test]
   fn parse_yaml_file_single_and_list() {
@@ -641,11 +837,17 @@ purity: DependsOnCallback
       name: "x".to_string(),
       aliases: vec![],
       effects: EffectTemplate::Pure,
+      effect_summary: EffectSummary::PURE,
       purity: PurityTemplate::Pure,
       async_: None,
       idempotent: None,
       deterministic: None,
       parallelizable: None,
+      semantics: None,
+      signature: None,
+      since: None,
+      until: None,
+      kind: None,
       properties: BTreeMap::new(),
     }]);
 
@@ -710,51 +912,69 @@ purity: DependsOnCallback
 
     let slice = kb.get("String.prototype.slice").unwrap();
     assert_eq!(
-      slice.properties.get("encoding.output").map(|s| s.as_str()),
+      slice
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("same_as_input")
     );
 
     let concat = kb.get("String.prototype.concat").unwrap();
     assert_eq!(
-      concat.properties.get("encoding.output").map(|s| s.as_str()),
+      concat
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("unknown")
     );
 
     let lower = kb.get("String.prototype.toLowerCase").unwrap();
     assert_eq!(
-      lower.properties.get("encoding.output").map(|s| s.as_str()),
+      lower
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("same_as_input")
     );
     assert_eq!(
       lower
         .properties
         .get("encoding.preserves_input_if")
-        .map(|s| s.as_str()),
+        .and_then(|v| v.as_str()),
       Some("ascii")
     );
     assert_eq!(
       lower
         .properties
         .get("encoding.length_preserving_if")
-        .map(|s| s.as_str()),
+        .and_then(|v| v.as_str()),
       Some("ascii")
     );
 
     let split = kb.get("String.prototype.split").unwrap();
     assert_eq!(
-      split.properties.get("encoding.output").map(|s| s.as_str()),
+      split
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("unknown")
     );
 
     let iso = kb.get("Date.prototype.toISOString").unwrap();
     assert_eq!(
-      iso.properties.get("encoding.output").map(|s| s.as_str()),
+      iso
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("ascii")
     );
 
     let pathname = kb.get("URL.prototype.pathname").unwrap();
     assert_eq!(
-      pathname.properties.get("encoding.output").map(|s| s.as_str()),
+      pathname
+        .properties
+        .get("encoding.output")
+        .and_then(|v| v.as_str()),
       Some("ascii")
     );
   }
@@ -784,5 +1004,75 @@ purity: DependsOnCallback
 
     // This entry lives in `core/example.toml` and exercises the TOML loader.
     assert!(kb.get("Math.ceil").is_some());
+  }
+
+  #[test]
+  fn alias_lookup_resolves_node_prefix() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    kb.validate().expect("validate knowledge base");
+
+    let api = kb.get("fs.readFile").expect("fs.readFile resolves via alias");
+    assert_eq!(api.name, "node:fs.readFile");
+    assert_eq!(kb.canonical_name("fs.readFile"), Some("node:fs.readFile"));
+  }
+
+  #[test]
+  fn preserves_ecosystem_properties() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+
+    let api = kb
+      .get("lodash.debounce")
+      .expect("lodash.debounce exists in bundled knowledge base");
+    assert_eq!(
+      api.properties.get("timer_based").and_then(|v| v.as_str()),
+      Some("true")
+    );
+  }
+
+  #[test]
+  fn properties_support_non_string_values() {
+    let yaml = r#"
+name: x
+effects: Pure
+purity: Pure
+properties:
+  timer_based: true
+  retry_delays: [10, 20]
+  meta:
+    level: 1
+"#;
+
+    let parsed = parse_api_semantics_yaml_str(yaml).expect("parse YAML");
+    let api = parsed.first().expect("one entry");
+
+    assert_eq!(api.properties.get("timer_based"), Some(&JsonValue::Bool(true)));
+
+    let retry_delays = api
+      .properties
+      .get("retry_delays")
+      .and_then(|v| v.as_array())
+      .expect("retry_delays array");
+    assert_eq!(retry_delays.len(), 2);
+    assert_eq!(retry_delays[0].as_i64(), Some(10));
+    assert_eq!(retry_delays[1].as_i64(), Some(20));
+
+    let meta_level = api
+      .properties
+      .get("meta")
+      .and_then(|v| v.as_object())
+      .and_then(|obj| obj.get("level"))
+      .and_then(|v| v.as_i64());
+    assert_eq!(meta_level, Some(1));
+  }
+
+  #[test]
+  fn preserves_effect_summary_metadata() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+
+    let api = kb
+      .get("node:fs.existsSync")
+      .expect("node:fs.existsSync exists in bundled knowledge base");
+    assert!(api.effect_summary.flags.contains(EffectFlags::IO));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
   }
 }
