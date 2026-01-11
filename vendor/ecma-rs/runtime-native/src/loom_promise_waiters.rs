@@ -99,6 +99,10 @@ impl PromiseHeader {
     self.state.load(Ordering::Acquire) == PROMISE_SETTLED
   }
 
+  pub fn waiters_is_empty(&self) -> bool {
+    self.waiters.load(Ordering::Acquire).is_null()
+  }
+
   /// Register `waiter` in the waiter stack.
   ///
   /// This is intentionally written in the shape used by the runtime:

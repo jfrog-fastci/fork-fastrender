@@ -45,6 +45,8 @@ fn loom_lost_wakeup_race() {
     res_settle.unwrap();
 
     assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
+    assert!(promise.is_settled());
+    assert!(promise.waiters_is_empty());
 
     // SAFETY: all threads have finished and the promise has been settled, so the
     // waiter is no longer reachable from the waiter stack.
@@ -81,6 +83,7 @@ fn loom_double_settle_no_double_wake() {
 
     assert!(promise.is_settled());
     assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
+    assert!(promise.waiters_is_empty());
 
     unsafe {
       drop(Box::from_raw(waiter_ptr));
@@ -120,6 +123,8 @@ fn loom_two_waiters_no_loss() {
     r2.unwrap();
 
     assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1, 2]);
+    assert!(promise.is_settled());
+    assert!(promise.waiters_is_empty());
 
     unsafe {
       drop(Box::from_raw(w1_ptr));
