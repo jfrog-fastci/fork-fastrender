@@ -104,10 +104,16 @@ const MAX_FRAMES: usize = 100_000;
 /// - Managed code **must** be compiled with frame pointers enabled.
 ///   - LLVM: `-frame-pointer=all`
 ///   - Rust: `-C force-frame-pointers=yes`
+/// - Tail calls must be disabled for managed code (frame-pointer walking assumes
+///   a complete call chain).
+///   - LLVM: `disable-tail-calls="true"`
 /// - The stack grows downwards and FP values increase as we walk toward older
 ///   callers (Linux x86_64/AArch64).
 /// - GC roots are described by LLVM stackmaps statepoints as spilled stack slots
 ///   (i.e. `Indirect [SP + off]`).
+/// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`)
+///   are currently **rejected**. Codegen should ensure interior pointers are not
+///   live across statepoints.
 ///
 /// ## Statepoint-oriented walking
 ///

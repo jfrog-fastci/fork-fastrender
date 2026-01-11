@@ -9,17 +9,20 @@ Even with LLVM stack maps, the runtime still needs a way to:
 2. Recover each frame's **return address / instruction pointer**.
 3. Use that return address to locate the matching stack map record and enumerate GC roots.
 
-## Current strategy: frame-pointer chain (Linux x86_64)
+## Current strategy: frame-pointer chain (Linux x86_64 + AArch64)
 
 While bringing up statepoints and precise GC, we take the simplest and most deterministic approach:
-make the stack trivially walkable by following the platform frame chain.
+make the stack trivially walkable by following the platform frame chain:
+
+- x86_64: `rbp` (DWARF reg 6)
+- AArch64: `x29` (DWARF reg 29)
 
 To enforce that invariant, every `native-js` generated function has the following LLVM function
 attributes:
 
 - `frame-pointer="all"`
   - Forces LLVM to preserve frame pointers in **all** functions.
-  - Allows stack walking by following the `rbp` (frame pointer) chain.
+  - Allows stack walking by following the platform frame pointer chain.
 - `disable-tail-calls="true"`
   - Disables tail-call optimization so calls do not elide frames.
   - Prevents sibling-call and other tail-call lowering that would otherwise remove frames and
@@ -41,4 +44,3 @@ frame-pointer requirement, we would need to move to unwinding-based stack walkin
   stack map records.
 
 Until then, **frame pointers + no tail calls** are treated as a hard invariant.
-
