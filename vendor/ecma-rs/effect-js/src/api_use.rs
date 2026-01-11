@@ -655,7 +655,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate};
+  use effect_model::{EffectSummary, EffectTemplate, PurityTemplate};
   use hir_js::ExprKind;
   use knowledge_base::{ApiDatabase, ApiKind, ApiSemantics};
 
@@ -739,7 +739,7 @@ mod tests {
         kind: ApiKind::Constructor,
         aliases: vec![],
         effects: EffectTemplate::Unknown,
-        effect_summary: EffectSet::UNKNOWN_CALL.to_effect_summary(),
+        effect_summary: EffectSummary::UNKNOWN_CALL,
         purity: PurityTemplate::Unknown,
         async_: None,
         idempotent: None,
@@ -793,7 +793,7 @@ mod tests {
         kind: ApiKind::Value,
         aliases: vec![],
         effects: EffectTemplate::Unknown,
-        effect_summary: EffectSet::UNKNOWN_CALL.to_effect_summary(),
+        effect_summary: EffectSummary::UNKNOWN_CALL,
         purity: PurityTemplate::Unknown,
         async_: None,
         idempotent: None,

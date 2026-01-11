@@ -411,12 +411,38 @@ impl EffectSummary {
     throws: ThrowBehavior::Never,
   };
 
+  /// Conservative approximation for an "unknown call" at the summary layer.
+  ///
+  /// This corresponds to [`EffectSet::UNKNOWN_CALL`] converted into an
+  /// [`EffectSummary`]:
+  /// - sets the `UNKNOWN` flag
+  /// - sets `throws = Maybe`
+  ///
+  /// Note that we intentionally keep `MAY_THROW` out of `flags`; throwing is
+  /// tracked separately via [`ThrowBehavior`].
+  pub const UNKNOWN_CALL: Self = Self {
+    flags: EffectFlags::UNKNOWN,
+    throws: ThrowBehavior::Maybe,
+  };
+
   pub const UNKNOWN: Self = Self {
     flags: EffectFlags::from_bits_truncate(
       EffectFlags::all().bits() & !EffectSet::MAY_THROW.bits(),
     ),
     throws: ThrowBehavior::Maybe,
   };
+}
+
+impl From<EffectSet> for EffectSummary {
+  fn from(value: EffectSet) -> Self {
+    value.to_effect_summary()
+  }
+}
+
+impl From<EffectSummary> for EffectSet {
+  fn from(value: EffectSummary) -> Self {
+    value.to_effect_set()
+  }
 }
 
 /// An effect template used for API semantics where some effects may be
@@ -644,6 +670,11 @@ mod tests {
 
     assert_eq!(
       EffectSet::UNKNOWN_CALL.to_effect_summary().to_effect_set(),
+      EffectSet::UNKNOWN_CALL
+    );
+
+    assert_eq!(
+      EffectSummary::UNKNOWN_CALL.to_effect_set(),
       EffectSet::UNKNOWN_CALL
     );
   }
