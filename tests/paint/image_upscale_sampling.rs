@@ -151,3 +151,53 @@ fn image_src_rect_does_not_paint_outside_dest_rect() {
     );
   }
 }
+
+#[test]
+fn image_linear_downscale_with_fractional_src_rect_uses_mipmapped_sampling() {
+  // `ImageItem::src_rect` is used for `background-size: cover/contain`, and those code paths often
+  // produce fractional source rectangles. When downscaling, Chrome/Skia use mipmapped sampling,
+  // which behaves closer to an area filter. tiny-skia's draw-time bilinear sampling can instead
+  // behave like a single point sample, producing large "everything is off by 1" fixture diffs on
+  // big background images.
+  //
+  // Construct a 4px step function and downscale it to 1px. A pure bilinear sample from the full
+  // source image would hit the middle zeros and yield 0, while the mipmapped path should produce a
+  // non-zero average.
+  let pixels = vec![
+    // 3 black pixels...
+    0, 0, 0, 255, //
+    0, 0, 0, 255, //
+    0, 0, 0, 255, //
+    // ...then white.
+    255, 255, 255, 255, //
+  ];
+  let image = Arc::new(ImageData::new_pixels(4, 1, pixels));
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Image(ImageItem {
+    dest_rect: Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    // Use a fractional Y offset to force the src-rect transform path (no integer crop) without
+    // affecting the 1px-tall source image's horizontal sampling.
+    src_rect: Some(Rect::from_xywh(0.0, 0.25, 4.0, 1.0)),
+  }));
+
+  let pixmap = DisplayListRenderer::new(1, 1, Rgba::TRANSPARENT, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let px = pixmap.pixel(0, 0).expect("pixel inside viewport");
+  assert_eq!(px.alpha(), 255);
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (px.red(), px.red(), px.red()),
+    "expected grayscale output"
+  );
+  assert!(
+    px.red() >= 40 && px.red() <= 90,
+    "expected mipmapped downscale to yield a non-zero average; got {}",
+    px.red()
+  );
+}

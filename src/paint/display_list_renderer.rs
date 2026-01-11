@@ -16987,9 +16987,13 @@ impl DisplayListRenderer {
     if item.filter_quality != ImageFilterQuality::Linear {
       return Ok(None);
     }
-    if item.src_rect.is_some() {
-      return Ok(None);
-    }
+    let src_rect = item.src_rect;
+    let src_rect_is_fractional = src_rect.is_some_and(|src| {
+      !(Self::is_near_integer(src.x())
+        && Self::is_near_integer(src.y())
+        && Self::is_near_integer(src.width())
+        && Self::is_near_integer(src.height()))
+    });
 
     let transform = self.canvas.transform();
     if !Self::is_translation_only_transform(transform) {
@@ -17006,8 +17010,8 @@ impl DisplayListRenderer {
       return Ok(None);
     }
 
-    let (src_w, src_h) = (item.image.width, item.image.height);
-    if src_w == 0 || src_h == 0 {
+    let (full_src_w, full_src_h) = (item.image.width, item.image.height);
+    if full_src_w == 0 || full_src_h == 0 {
       return Ok(None);
     }
 
@@ -17057,21 +17061,75 @@ impl DisplayListRenderer {
       !Self::is_near_integer(phase_x) || !Self::is_near_integer(phase_y) || !Self::is_near_integer(dest_w)
         || !Self::is_near_integer(dest_h);
 
-    let src_pixels = u64::from(src_w).saturating_mul(u64::from(src_h));
+    // If we're drawing a sub-rect of the image (e.g. `background-size: cover`) and it includes
+    // fractional coordinates, we can't safely bake/crop to integer pixel bounds up-front without
+    // losing information that affects sampling. We still want to avoid tiny-skia's draw-time
+    // bilinear drift vs Chrome/Skia, so pre-rasterize onto the destination device-pixel grid and
+    // incorporate the source-rect transform into the sampler's destination mapping.
+    //
+    // For non-fractional `src_rect`, `image_to_pixmap` already has specialized crop/downscale paths
+    // (and caching), so keep those fast paths by only handling the fractional case here.
+    let (effective_src_w, effective_src_h) = if src_rect_is_fractional {
+      let Some(src) = src_rect else {
+        return Ok(None);
+      };
+      if !(src.width().is_finite()
+        && src.height().is_finite()
+        && src.width() > 0.0
+        && src.height() > 0.0
+        && src.x().is_finite()
+        && src.y().is_finite())
+      {
+        return Ok(None);
+      }
+      (src.width().ceil().max(0.0) as u32, src.height().ceil().max(0.0) as u32)
+    } else {
+      (full_src_w, full_src_h)
+    };
+
+    let src_pixels = u64::from(effective_src_w).saturating_mul(u64::from(effective_src_h));
     let target_pixels = u64::from(out_w).saturating_mul(u64::from(out_h));
-    let should_bake_downscale = Self::should_use_scaled_image_pixmap(item.filter_quality, src_w, src_h, out_w, out_h);
+    let should_bake_downscale = Self::should_use_scaled_image_pixmap(
+      item.filter_quality,
+      effective_src_w,
+      effective_src_h,
+      out_w,
+      out_h,
+    );
     let should_bake_upscale = target_pixels > src_pixels && src_pixels <= 64 && target_pixels <= 4096;
     if should_bake_downscale {
       // Keep integer-aligned downscales on the existing cached pixmap path; only bake when subpixel
       // translation/size would diverge.
-      if !needs_bake {
+      if !needs_bake && !src_rect_is_fractional {
         return Ok(None);
       }
     } else if !should_bake_upscale {
       return Ok(None);
     }
 
-    let dest_device = Rect::from_xywh(min_x, min_y, dest_w, dest_h);
+    let mut dest_device = Rect::from_xywh(min_x, min_y, dest_w, dest_h);
+    if src_rect_is_fractional {
+      let src = src_rect.expect("fractional src_rect implies Some");
+      let scale_x = dest_w / src.width();
+      let scale_y = dest_h / src.height();
+      if !scale_x.is_finite() || !scale_y.is_finite() {
+        return Ok(None);
+      }
+      let tx = min_x - src.x() * scale_x;
+      let ty = min_y - src.y() * scale_y;
+      let full_w = full_src_w as f32 * scale_x;
+      let full_h = full_src_h as f32 * scale_y;
+      if !(tx.is_finite()
+        && ty.is_finite()
+        && full_w.is_finite()
+        && full_h.is_finite()
+        && full_w > 0.0
+        && full_h > 0.0)
+      {
+        return Ok(None);
+      }
+      dest_device = Rect::from_xywh(tx, ty, full_w, full_h);
+    }
     let Some(pixmap) = image_data_to_scaled_pixmap_with_phase_inner(
       &item.image,
       dest_device,
