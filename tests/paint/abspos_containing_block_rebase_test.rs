@@ -56,3 +56,42 @@ fn abspos_descendant_does_not_double_apply_grid_item_offset() {
   assert_eq!(pixel(&pixmap, 160, 25), [255, 255, 255, 255]);
 }
 
+#[test]
+fn abspos_zero_insets_align_to_padding_edge() {
+  // Regression test: absolutely positioned elements are laid out relative to the *padding box* of
+  // their containing block (CSS 2.1 §10.1). When the containing block has non-zero padding, `top:0`
+  // and `left:0` must align with the padding edge, not the content edge.
+  //
+  // A previous bug rebased positioned fragments from the content coordinate space without also
+  // incorporating the containing block origin, causing `top:0; left:0` to be shifted by the
+  // containing block's padding (observed on ietf.org where the jumbotron `::before` overlay started
+  // at the content box instead of the section edge).
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      body { margin: 0; background: white; }
+      .cb {
+        position: relative;
+        width: 200px;
+        height: 200px;
+        padding: 64px 32px;
+        background: white;
+      }
+      .abs {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(51, 55, 65, 0.7);
+      }
+    </style>
+    <div class="cb"><div class="abs"></div></div>
+  "#;
+
+  let pixmap = renderer.render_html(html, 200, 200).expect("render");
+
+  // The absolute overlay should cover the padding area starting at the element edge.
+  // If it is incorrectly offset by the padding, this pixel stays white.
+  assert_eq!(pixel(&pixmap, 10, 10), [111, 114, 121, 255]);
+}
