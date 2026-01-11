@@ -8,3 +8,8 @@ repository.workspace = true
 [dependencies]
 libc = { workspace = true }
 
+[features]
+default = []
+# Optional runtime test that validates AArch64 SP/PC extraction using `getcontext` in a signal
+# handler. This is intended for running on real AArch64 hardware/CI.
+aarch64-signal-test = []

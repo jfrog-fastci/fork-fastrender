@@ -138,9 +138,15 @@ impl ThreadContext {
 
 #[cfg(test)]
 mod tests {
-  use super::ThreadContext;
+  use super::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
   use crate::context::UnsupportedDwarfRegister;
   use core::mem::MaybeUninit;
+
+  #[test]
+  fn constants_match_abi() {
+    assert_eq!(DWARF_REG_SP, 7);
+    assert_eq!(DWARF_REG_IP, 16);
+  }
 
   #[test]
   fn dwarf_register_mapping_round_trips() {
