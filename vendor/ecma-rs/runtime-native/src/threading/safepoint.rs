@@ -122,7 +122,7 @@ fn gc_wakers() -> &'static Mutex<Vec<fn()>> {
 /// stop-the-world safepoint.
 ///
 /// This is used to wake threads blocked in external wait primitives (e.g.
-/// the async reactor wait syscall inside `rt_async_poll_legacy` / `rt_async_wait`).
+/// the async reactor wait syscall inside `rt_async_poll` / `rt_async_wait`).
 pub fn register_gc_waker(waker: fn()) {
   // `gc_wakers` protects a best-effort list of wake callbacks; poisoning is not meaningful here
   // (a panic while registering wakers shouldn't permanently prevent GC coordination from waking

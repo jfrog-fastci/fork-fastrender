@@ -224,8 +224,9 @@ traced and reclaimed when unreachable, but are never relocated.
 
 ## Legacy async runtime GC roots
 
-The crate currently contains a **legacy** async runtime (`rt_async_spawn_legacy`,
-`rt_async_poll_legacy`) that is used by tests and older codegen prototypes.
+The crate currently contains a **legacy** async runtime (`rt_async_spawn_legacy`) that is used by
+tests and older codegen prototypes. The JS-shaped event loop is driven by `rt_async_poll`
+(`rt_async_poll_legacy` is a compatibility alias).
 
 That runtime stores coroutine pointers in runtime-owned queues (macrotasks/microtasks) and in
 promise reaction lists. When coroutine frames are allocated in the GC heap, these runtime-held
@@ -420,11 +421,12 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
   * `rt_promise_then_with_drop_legacy` (`data` is owned callback state; runtime invokes `drop_data` on discard)
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
-FIFO by calling `rt_async_poll_legacy()`.
+FIFO by driving the event loop (e.g. `rt_async_poll()`; `rt_async_poll_legacy()` is a compatibility
+alias).
 
 Note: `runtime-native` is migrating to a native Promise/Coroutine ABI based on a `PromiseHeader`
 prefix. The current event loop used by tests and legacy codegen is driven by
-`rt_async_poll_legacy()`.
+`rt_async_poll()` (`rt_async_poll_legacy()` is a compatibility alias).
 
 ## Microtask ABI (queueMicrotask)
 

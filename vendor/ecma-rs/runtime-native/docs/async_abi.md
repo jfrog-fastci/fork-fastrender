@@ -237,13 +237,16 @@ completion/cancellation (destroying the frame if `CORO_FLAG_RUNTIME_OWNS_FRAME` 
 
 ### `rt_async_poll() -> bool`
 
-Drains the runtime's **microtask queue** (a microtask checkpoint).
+Drive the runtime's async/event-loop queues for one turn.
 
-- This is a **non-blocking** poll: it does *not* wait for timers or I/O readiness.
-- Promise settlement and async/await wakeups schedule work onto the microtask queue; `rt_async_poll`
-  executes that ready work to completion.
-- Returns `true` if it executed at least one microtask; returns `false` if there was no runnable
-  work (or if called re-entrantly during an ongoing microtask checkpoint).
+- Runs at most one macrotask (after promoting due timers), then performs a microtask checkpoint.
+- May block waiting for timer deadlines or I/O readiness when the runtime has pending work but
+  nothing is immediately runnable.
+- Returns `true` iff there is still pending work after this turn (queued microtasks/macrotasks,
+  active timers, or I/O watchers). Returns `false` when the runtime is fully idle.
+
+`rt_async_poll_legacy` is a compatibility alias with identical behavior.
+For a non-blocking microtask-only checkpoint, use `rt_drain_microtasks`.
 
 ### `rt_async_wait()`
 
@@ -687,7 +690,8 @@ PromiseRef rt_async_spawn_deferred(CoroutineId coro);
   `promise` field (same as `rt_async_spawn`).
 - Enqueues the coroutine’s *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
-  a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
+  the runtime (e.g. `rt_async_poll`, or a microtask-only checkpoint via `rt_drain_microtasks` /
+  `rt_async_run_until_idle`).
 - The runtime **consumes** the coroutine handle and frees it when the coroutine completes (or is
   cancelled).
 
@@ -750,7 +754,8 @@ LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);
   `rt_async_spawn_legacy`).
 - Enqueues the coroutine's *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
-  a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll_legacy`).
+  the runtime (e.g. `rt_async_poll` / `rt_async_poll_legacy`, or a microtask-only checkpoint via
+  `rt_drain_microtasks` / `rt_async_run_until_idle`).
 
 This API exists for Web-standard semantics that require guaranteed asynchronous execution, including:
 
@@ -758,11 +763,14 @@ This API exists for Web-standard semantics that require guaranteed asynchronous 
 - Promise job scheduling (ECMA-262 `HostEnqueuePromiseJob`, HTML microtask queue)
 - Strict `await` semantics where reaching the first `await` must be asynchronous
 
-### Driving the runtime: `rt_async_poll_legacy`
+### Driving the runtime: `rt_async_poll` / `rt_async_poll_legacy`
 
 ```c
+bool rt_async_poll(void);
 bool rt_async_poll_legacy(void);
 ```
+
+`rt_async_poll_legacy` is a compatibility alias for `rt_async_poll` (identical behavior).
 
 Drives the full event loop for one turn:
 

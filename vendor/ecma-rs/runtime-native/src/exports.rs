@@ -1322,6 +1322,11 @@ pub extern "C" fn rt_async_cancel_all() {
 ///
 /// - Concurrent driving from another thread aborts (fail-fast).
 /// - Re-entrant calls on the same thread are treated as a no-op and return `false`.
+///
+/// Returns `true` if there is still pending work after this poll turn (queued tasks, active
+/// timers, or I/O watchers). Returns `false` when the runtime is quiescent.
+///
+/// Note: This is a compatibility alias for [`crate::rt_async_poll`].
 #[no_mangle]
 pub extern "C" fn rt_async_poll_legacy() -> bool {
   abort_on_panic(|| {
@@ -1483,8 +1488,8 @@ pub unsafe extern "C" fn rt_queue_microtask(task: Microtask) {
 
 /// Drain only the microtask queue.
 ///
-/// Unlike [`rt_async_poll_legacy`], this does *not* run macrotasks, timers, or
-/// reactor callbacks.
+/// Unlike [`crate::rt_async_poll`] / [`rt_async_poll_legacy`], this does *not*
+/// run macrotasks, timers, or reactor callbacks.
 ///
 /// Returns `true` if any microtasks were executed.
 ///

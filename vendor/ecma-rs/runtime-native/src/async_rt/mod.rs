@@ -8,7 +8,8 @@
 //! ordering. Other threads may enqueue work; a platform-specific waker (e.g. `eventfd` on Linux,
 //! `EVFILT_USER` on kqueue platforms) is used to wake a blocked reactor wait syscall.
 //!
-//! The C ABI entrypoint that drives this event loop is `rt_async_poll_legacy`.
+//! The C ABI entrypoint that drives this event loop is `rt_async_poll`
+//! (`rt_async_poll_legacy` is a compatibility alias).
 //!
 //! ## Concurrency
 //! The runtime is process-global (a singleton). Driving it is therefore **single-driver**:
@@ -51,7 +52,7 @@ static POLL_LOCK: Lazy<GcAwareMutex<()>> = Lazy::new(|| GcAwareMutex::new(()));
 
 // Test-only hook: allow integration tests to hold the global poll lock while the calling thread
 // is parked in a GC-safe region. This makes it possible to deterministically reproduce contention
-// on the async runtime's serialization lock (used by `rt_async_poll_legacy` / `rt_async_wait`)
+// on the async runtime's serialization lock (used by `rt_async_poll` / `rt_async_wait`)
 // without relying on `epoll_wait` timing.
 static DEBUG_HOLD_POLL_LOCK: AtomicBool = AtomicBool::new(false);
 static DEBUG_HOLD_POLL_LOCK_SYNC: OnceLock<(StdMutex<()>, Condvar)> = OnceLock::new();
@@ -201,7 +202,7 @@ static STRICT_AWAIT_YIELDS: AtomicBool = AtomicBool::new(false);
 /// microtask/macrotask/timer/fd.
 ///
 /// Today this is used by `rt_parallel_spawn_promise`:
-/// - after spawning a CPU task, the event loop should block in `rt_async_poll_legacy`/`rt_async_wait`
+/// - after spawning a CPU task, the event loop should block in `rt_async_poll`/`rt_async_wait`
 ///   even when the task queues are empty, and
 /// - completion on a worker thread must wake the event loop.
 static EXTERNAL_PENDING: AtomicUsize = AtomicUsize::new(0);

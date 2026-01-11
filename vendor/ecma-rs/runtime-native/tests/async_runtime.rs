@@ -131,7 +131,7 @@ fn async_spawn_then_wake_and_complete() {
     runtime_native::rt_promise_fulfill(promise_handle_from_ptr(awaited_ref));
   }
 
-  assert!(runtime_native::rt_async_poll());
+  let _ = runtime_native::rt_async_poll();
   assert_eq!(promise_state(result_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*result_hdr.cast::<TestPromise>()).value }, 42);
   assert!(

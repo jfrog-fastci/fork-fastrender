@@ -715,17 +715,25 @@ PromiseRef rt_async_spawn_deferred(CoroutineId coro);
 // Cancel all queued runtime-owned coroutine frames.
 void rt_async_cancel_all(void);
 
-// Drive the native async scheduler (microtasks).
+// Drive the runtime's async/event-loop queues for one turn.
 //
-// This is a **non-blocking** poll: it drains currently queued microtasks (promise reaction jobs,
-// `queueMicrotask`, deferred coroutine spawns, etc) but does not wait for timers or I/O readiness.
+// A single poll turn:
+// - drains queued microtasks
+// - promotes due timers into the macrotask queue
+// - runs at most one macrotask (timer callbacks, I/O readiness callbacks, etc)
+// - runs a microtask checkpoint
 //
-// Returns:
-// - true  if it executed at least one microtask
-// - false if there was no runnable microtask work
+// This call may block in the platform reactor wait syscall (`epoll_wait`/`kevent`) when there is no
+// ready work but there are pending timers or I/O watchers.
 //
-// To drive timers and I/O watchers, use `rt_async_poll_legacy` (JS-shaped event loop) or block in
-// `rt_async_wait`.
+// Return value:
+// - true  iff there is still pending work after this poll turn (queued microtasks/macrotasks,
+//          active timers, or I/O watchers).
+// - false when the runtime is fully idle.
+//
+// Note: `rt_async_poll_legacy` is a compatibility alias with identical behavior.
+// To drain only microtasks (non-blocking) without running timers/I/O/macrotasks, use
+// `rt_drain_microtasks`.
 bool rt_async_poll(void);
 
 // Block until at least one async task becomes ready.
@@ -797,6 +805,7 @@ LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);
 // Like rt_async_spawn_legacy, but enqueues the first resume as a microtask instead of running
 // synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
 LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);
+// Compatibility alias for `rt_async_poll` (identical behavior).
 bool rt_async_poll_legacy(void);
 LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);
 void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
@@ -821,7 +830,7 @@ void rt_async_free_c_string(char* s);
 // Resolve a promise after `delay_ms` milliseconds.
 PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
-// or during `rt_async_poll_legacy` when the event loop is otherwise idle).
+// or during `rt_async_poll`/`rt_async_poll_legacy` when the event loop is otherwise idle).
 //
 // Microtasks are executed FIFO in the same queue as promise reaction jobs (e.g. async/await
 // coroutine wakeups).
@@ -838,7 +847,7 @@ void rt_queue_microtask_rooted(void (*cb)(uint8_t*), uint8_t* data);
 // Returns true if any microtasks were executed.
 bool rt_drain_microtasks(void);
 
-// Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll_legacy` runs a
+// Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll`/`rt_async_poll_legacy` runs a
 // microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms
 // clamp) is handled at higher layers.
 TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);

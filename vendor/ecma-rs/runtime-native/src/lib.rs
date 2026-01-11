@@ -381,18 +381,32 @@ pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRe
 
 /// Drive the async scheduler/event loop.
 ///
-/// This is a **non-blocking** poll: it only drains currently queued microtasks (including promise
-/// reaction jobs that resume native async-ABI coroutines).
+/// This drives the process-global async runtime for one event-loop turn:
+/// - drains any queued microtasks
+/// - promotes due timers and executes at most one macrotask
+/// - may block waiting for I/O readiness or timer deadlines when work is pending but nothing is
+///   immediately runnable
 ///
-/// Returns `true` if it executed at least one microtask; returns `false` if there was no runnable
-/// work.
+/// Returns `true` if there is still pending work after this poll turn (queued tasks, active timers,
+/// or I/O watchers). Returns `false` when the runtime is fully idle.
+///
+/// Note: [`rt_async_poll_legacy`] is a compatibility alias with identical behavior.
+/// To drain only microtasks without running timers/I/O/macrotasks, use [`rt_drain_microtasks`].
 #[no_mangle]
 pub extern "C" fn rt_async_poll() -> bool {
   crate::ffi::abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
-    // The native async ABI is typically driven by the main thread/event loop.
+    // The async runtime is typically driven by the main thread/event loop.
     crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
-    crate::async_runtime::rt_drain_microtasks()
+    if crate::async_runtime::has_error() {
+      return false;
+    }
+    let pending = crate::async_rt::poll();
+    if crate::async_runtime::has_error() {
+      false
+    } else {
+      pending
+    }
   })
 }
 
