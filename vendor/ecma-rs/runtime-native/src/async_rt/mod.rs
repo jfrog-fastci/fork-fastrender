@@ -267,6 +267,7 @@ pub(crate) fn clear_state_for_tests() {
 
   let _guard = POLL_LOCK.lock();
   global().loop_.reset_for_tests();
+  crate::unhandled_rejection::clear_state_for_tests();
 
   // Tests should be isolated from configuration toggles.
   STRICT_AWAIT_YIELDS.store(false, Ordering::Release);

@@ -685,9 +685,11 @@ impl<'a> CallSite<'a> {
     let mut out: Vec<i32> = Vec::new();
     // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`.
     //
-    // Our codegen currently uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a convention, but LLVM does not
-    // contractually guarantee that value (and external/older stackmaps may differ). Misclassifying
-    // a statepoint as a generic patchpoint would cause us to treat deopt operands as GC roots.
+    // A statepoint record begins with the fixed-length LLVM 18 header prefix, which is a sequence
+    // of constant-like locations. Our codegen currently uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a
+    // convention, but LLVM does not contractually guarantee that value (and external/older
+    // stackmaps may differ). Misclassifying a statepoint as a generic patchpoint would cause us to
+    // treat deopt operands as GC roots.
     let looks_like_statepoint = self.record.locations.len()
       >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
@@ -723,32 +725,62 @@ impl<'a> CallSite<'a> {
     };
 
     if looks_like_statepoint {
-      let statepoint = crate::statepoints::StatepointRecord::new(self.record)?;
-      for pair in statepoint.gc_pairs() {
-        let base = &pair.base;
-        let derived = &pair.derived;
-
-        // Strict mode: even though we only return the base slot, validate the derived location too
-        // so callers catch unsupported register roots / base registers early.
-        match *derived {
-          Location::Indirect {
-            dwarf_reg, offset, ..
-          } => {
-            let _ = location_fp_offset(dwarf_reg, offset)?;
+      // If the record is marked with the (codegen-convention) statepoint patchpoint id, treat decode
+      // errors as fatal. Otherwise, fall back to the non-statepoint scanning path (some patchpoints
+      // may also start with constant operands).
+      let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
+        Ok(sp) => Some(sp),
+        Err(err) => {
+          if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+            return Err(err.into());
           }
-          _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
+          None
         }
+      };
 
-        let fp_off = match *base {
-          Location::Indirect {
-            dwarf_reg, offset, ..
-          } => location_fp_offset(dwarf_reg, offset)?,
+      if let Some(statepoint) = statepoint {
+        for pair in statepoint.gc_pairs() {
+          let base = &pair.base;
+          let derived = &pair.derived;
 
-          // Strict mode: reject roots in registers / direct expressions / constants.
-          _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
-        };
+          // Strict mode: even though we only return the base slot, validate the derived location too
+          // so callers catch unsupported register roots / base registers early.
+          match *derived {
+            Location::Indirect {
+              dwarf_reg, offset, ..
+            } => {
+              let _ = location_fp_offset(dwarf_reg, offset)?;
+            }
+            _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
+          }
 
-        out.push(fp_off);
+          let fp_off = match *base {
+            Location::Indirect {
+              dwarf_reg, offset, ..
+            } => location_fp_offset(dwarf_reg, offset)?,
+
+            // Strict mode: reject roots in registers / direct expressions / constants.
+            _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
+          };
+
+          out.push(fp_off);
+        }
+      } else {
+        for loc in &self.record.locations {
+          match *loc {
+            Location::Indirect {
+              dwarf_reg, offset, ..
+            } => {
+              out.push(location_fp_offset(dwarf_reg, offset)?);
+            }
+
+            // Ignore constants (used by statepoint headers and patchpoints).
+            Location::Constant { .. } | Location::ConstIndex { .. } => {}
+
+            // Strict mode: reject roots in registers / direct expressions.
+            _ => return Err(StackMapError::UnsupportedGcLocation { loc: loc.clone() }),
+          }
+        }
       }
     } else {
       for loc in &self.record.locations {
@@ -1125,8 +1157,8 @@ mod tests {
     align_to_8_with(&mut bytes, 0);
 
     // No liveouts.
-    push_u16(&mut bytes, 0);
-    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0); // padding
+    push_u16(&mut bytes, 0); // num_liveouts
     align_to_8_with(&mut bytes, 0);
 
     let sm = StackMaps::parse(&bytes).unwrap();
@@ -1341,8 +1373,8 @@ mod tests {
     // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
     align_to_8_with(&mut bytes, 0);
 
-    push_u16(&mut bytes, 0); // liveouts
-    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0); // padding
+    push_u16(&mut bytes, 0); // num_liveouts
     align_to_8_with(&mut bytes, 0);
 
     let sm = StackMap::parse(&bytes).unwrap();
@@ -1497,8 +1529,8 @@ mod tests {
     // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
     align_to_8_with(&mut bytes, 0);
 
-    push_u16(&mut bytes, 0);
-    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0); // padding
+    push_u16(&mut bytes, 0); // num_liveouts
     align_to_8_with(&mut bytes, 0);
 
     let err = StackMap::parse(&bytes).unwrap_err();

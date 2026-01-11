@@ -108,6 +108,7 @@ pub mod shape_table;
 mod alloc;
 #[cfg(feature = "gc_stats")]
 mod gc_stats;
+mod unhandled_rejection;
 mod blocking_pool;
 mod ffi;
 mod exports;

@@ -61,6 +61,7 @@ pub fn rt_drain_microtasks() -> bool {
   };
 
   let did_work = crate::async_rt::drain_microtasks_nonblocking();
+  crate::unhandled_rejection::microtask_checkpoint();
   run_microtask_checkpoint_end_hook();
   did_work
 }
@@ -71,6 +72,7 @@ pub fn rt_async_run_until_idle() -> bool {
   };
 
   let did_work = crate::async_rt::run_until_idle_nonblocking();
+  crate::unhandled_rejection::microtask_checkpoint();
   run_microtask_checkpoint_end_hook();
   did_work
 }

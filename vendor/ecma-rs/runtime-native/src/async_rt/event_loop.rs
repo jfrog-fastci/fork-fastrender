@@ -241,17 +241,22 @@ impl EventLoop {
 
         // 3. Microtask checkpoint.
         let _ = self.drain_microtasks_inner();
+        crate::unhandled_rejection::microtask_checkpoint();
         return self.has_pending_work();
       }
 
       // No macrotasks. If there are microtasks, run them without blocking.
       if self.has_microtasks() {
         let _ = self.drain_microtasks_inner();
+        crate::unhandled_rejection::microtask_checkpoint();
         return self.has_pending_work();
       }
 
       // No ready work.
       if !self.reactor.has_watchers() && !self.timers.has_timers() {
+        // Even when no microtasks were queued, a "microtask checkpoint" is still an observable
+        // boundary for promise rejection tracking.
+        crate::unhandled_rejection::microtask_checkpoint();
         return false;
       }
 

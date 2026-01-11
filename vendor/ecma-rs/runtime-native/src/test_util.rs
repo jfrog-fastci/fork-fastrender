@@ -19,13 +19,15 @@ use crate::time;
 
 static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+pub use crate::unhandled_rejection::PromiseRejectionEvent;
+
 /// Reset the global runtime singleton to a clean, idle state.
 ///
 /// This intentionally does *not* tear down any background threads (if/when they are introduced);
 /// it only clears per-process queues and registrations so each test starts from a blank slate.
 pub fn reset_runtime_state() {
   async_rt::clear_state_for_tests();
-  async_rt::promise::clear_unhandled_rejections_for_tests();
+  crate::unhandled_rejection::clear_state_for_tests();
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
   crate::roots::global_persistent_handle_table().clear_for_tests();
@@ -117,5 +119,10 @@ pub fn promise_waiters_is_empty(p: PromiseRef) -> bool {
 }
 
 pub fn unhandled_rejection_count() -> usize {
-  async_rt::promise::unhandled_rejection_count_for_tests()
+  crate::unhandled_rejection::unhandled_rejection_count_for_tests()
+}
+
+/// Drains and returns any promise rejection tracking events reported since the last call.
+pub fn drain_promise_rejection_events() -> Vec<PromiseRejectionEvent> {
+  crate::unhandled_rejection::drain_events_for_tests()
 }

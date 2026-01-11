@@ -239,6 +239,23 @@ Drives the full event loop for one turn:
 The return value indicates whether there is still pending work (timers, I/O watchers, microtasks,
 macrotasks) after the turn.
 
+## Unhandled promise rejections
+
+The runtime tracks unhandled rejections in a JS/HTML-shaped way:
+
+- When a promise is rejected while it has no rejection handlers, it is eligible to be reported as an
+  `unhandledrejection` at a microtask checkpoint.
+- If a previously-unhandled rejected promise later becomes handled, it is eligible to be reported as
+  `rejectionhandled`.
+
+Important: **`await` attaches a rejection handler**, even if the coroutine only propagates the error
+to its own returned promise. Therefore, awaiting a promise counts as making it “handled” for the
+purposes of unhandled-rejection detection.
+
+This must happen even when the runtime takes a fast-path for already-settled promises (synchronous
+resumption), because attaching `await` reactions after a rejection should still trigger
+`rejectionhandled` behavior.
+
 ## Ordering guarantees
 
 Microtasks are FIFO: coroutines enqueued earlier are resumed earlier (including those enqueued via

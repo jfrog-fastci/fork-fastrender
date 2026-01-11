@@ -9,8 +9,6 @@ use std::sync::{Condvar, Mutex};
 
 use super::queue_microtask;
 
-use once_cell::sync::Lazy;
-use parking_lot::Mutex as ParkingMutex;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Internal promise state used while a promise is being settled.
@@ -20,29 +18,14 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 const STATE_FULFILLING: u8 = 3;
 const STATE_REJECTING: u8 = 4;
 
-const FLAG_HANDLED: u8 = 0x1;
+const PROMISE_FLAG_HANDLED: u8 = 1 << 0;
 
 /// Promise header flag indicating the promise has an associated out-of-line payload buffer.
 ///
 /// Currently this is used by `rt_parallel_spawn_promise` promises: the worker writes its result into
 /// the payload returned by `rt_promise_payload_ptr` and then settles the promise via
 /// `rt_promise_fulfill` / `rt_promise_reject`.
-const FLAG_HAS_PAYLOAD: u8 = 0x2;
-
-// Minimal unhandled rejection tracking used by tests and await semantics.
-//
-// This intentionally does *not* attempt to mirror browsers' delayed reporting at microtask
-// checkpoints. It is a best-effort mechanism to avoid surprising "unhandled rejection" reports
-// when `await` or `then` has observed the rejection.
-static UNHANDLED_REJECTIONS: Lazy<ParkingMutex<Vec<PromiseRef>>> = Lazy::new(|| ParkingMutex::new(Vec::new()));
-
-pub(crate) fn clear_unhandled_rejections_for_tests() {
-  UNHANDLED_REJECTIONS.lock().clear();
-}
-
-pub(crate) fn unhandled_rejection_count_for_tests() -> usize {
-  UNHANDLED_REJECTIONS.lock().len()
-}
+const FLAG_HAS_PAYLOAD: u8 = 1 << 1;
 
 #[repr(C)]
 pub struct RtPromise {
@@ -223,18 +206,25 @@ fn drain_reactions(ptr: *mut RtPromise) {
   }
 }
 
+pub(crate) fn promise_is_handled(p: PromiseRef) -> bool {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    // Null is a "never settles" sentinel and is not eligible for rejection tracking.
+    return true;
+  }
+
+  (unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & PROMISE_FLAG_HANDLED) != 0
+}
+
 pub(crate) fn promise_mark_handled(p: PromiseRef) {
   let ptr = promise_ptr(p);
   if ptr.is_null() {
     return;
   }
 
-  unsafe { &(*ptr).header.flags }.fetch_or(FLAG_HANDLED, Ordering::Release);
-
-  // If the promise was previously rejected and recorded as unhandled, remove it now.
-  let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
-  if state == PromiseHeader::REJECTED {
-    UNHANDLED_REJECTIONS.lock().retain(|&pp| pp != p);
+  let prev = unsafe { &(*ptr).header.flags }.fetch_or(PROMISE_FLAG_HANDLED, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_HANDLED) == 0 {
+    crate::unhandled_rejection::on_handle(p);
   }
 }
 
@@ -266,15 +256,12 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
   }
 
   // Mark "handled" as soon as someone attaches a reaction (await/then).
-  unsafe { &(*ptr).header.flags }.fetch_or(FLAG_HANDLED, Ordering::Release);
+  promise_mark_handled(p);
 
   push_reaction(ptr, node);
 
   // If the promise is already settled, drain and schedule immediately.
   let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
-  if state == PromiseHeader::REJECTED {
-    UNHANDLED_REJECTIONS.lock().retain(|&pp| pp != p);
-  }
   if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
     drain_reactions(ptr);
   }
@@ -359,13 +346,10 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   unsafe { &(*ptr).value }.store(0, Ordering::Relaxed);
   state.store(PromiseHeader::REJECTED, Ordering::Release);
 
-  // If no one attached a handler yet, record as an unhandled rejection.
-  {
-    let mut unhandled = UNHANDLED_REJECTIONS.lock();
-    let handled = unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & FLAG_HANDLED != 0;
-    if !handled {
-      unhandled.push(p);
-    }
+  // If no one attached a handler yet, schedule unhandled-rejection tracking.
+  let handled = (unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & PROMISE_FLAG_HANDLED) != 0;
+  if !handled {
+    crate::unhandled_rejection::on_reject(p);
   }
 
   drain_reactions(ptr);

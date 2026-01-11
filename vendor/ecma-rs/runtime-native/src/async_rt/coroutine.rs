@@ -161,13 +161,18 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
     return;
   }
 
+  // `await` always attaches a rejection handler (even if it only propagates the error), so it
+  // counts as handling the awaited promise for unhandled-rejection tracking. This must happen even
+  // when we take the settled fast-path (synchronous resumption), because attaching handlers after
+  // rejection should trigger `rejectionhandled` behavior.
+  promise_mark_handled(awaited);
+
   // Fast-path: if the promise is already settled, resume the coroutine synchronously (unless strict
   // mode is requested).
   if !strict_await_yields() {
     match promise_outcome(awaited) {
       PromiseOutcome::Pending => {}
       PromiseOutcome::Fulfilled(v) => {
-        promise_mark_handled(awaited);
         unsafe {
           (*coro).await_is_error = 0;
           (*coro).await_value = v;
@@ -177,7 +182,6 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
         return;
       }
       PromiseOutcome::Rejected(e) => {
-        promise_mark_handled(awaited);
         unsafe {
           (*coro).await_is_error = 1;
           (*coro).await_value = core::ptr::null_mut();
