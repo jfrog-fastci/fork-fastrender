@@ -775,8 +775,9 @@ pub fn validate_native_strict_body(
               }
 
               // `Function.prototype.call.call(...)` and friends are a common way to indirectly
-              // invoke a function (bypassing direct `eval.call(...)` checks etc). Also covers the
-              // equivalent `Function.call.*` / `Function.apply.*` forms.
+              // invoke (or bind) a function (bypassing direct `eval.call(...)` / `eval.bind(...)`
+              // checks etc). Also covers the equivalent `Function.call.*` / `Function.apply.*` /
+              // `Function.bind.*` forms.
               if is_call_like {
                 let obj_is_call_invoker = expr_is_function_prototype_member(
                   body,
@@ -812,7 +813,24 @@ pub fn validate_native_strict_body(
                   apply_name,
                   "apply",
                 );
-                if obj_is_call_invoker || obj_is_apply_invoker {
+                let obj_is_bind_invoker = expr_is_function_prototype_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  prototype_name,
+                  bind_name,
+                  "bind",
+                ) || expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  function_name,
+                  "Function",
+                  bind_name,
+                  "bind",
+                );
+                if obj_is_call_invoker || obj_is_apply_invoker || obj_is_bind_invoker {
                   if let Some(target_arg) =
                     call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr)
                   {
@@ -952,6 +970,33 @@ pub fn validate_native_strict_body(
                         // `Function.prototype.apply.bind(target, thisArg, argsArray)`
                         if let Some(args_array) = call.args.get(2).map(|arg| arg.expr) {
                           if let Some(out) = array_literal_exprs(body, args_array) {
+                            args_for_target = Some(out);
+                          }
+                        }
+                      }
+                    } else if obj_is_bind_invoker {
+                      if prop_is_call {
+                        // `Function.prototype.bind.call(target, thisArg, ...args)`
+                        let mut out = Vec::new();
+                        for arg in call.args.iter().skip(2) {
+                          if arg.spread {
+                            out.clear();
+                            break;
+                          }
+                          out.push(arg.expr);
+                        }
+                        if !out.is_empty() || call.args.len() == 2 {
+                          args_for_target = Some(out);
+                        }
+                      } else if prop_is_apply {
+                        // `Function.prototype.bind.apply(target, [thisArg, ...args])`
+                        if let Some(args_array) =
+                          call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                        {
+                          if let Some(mut out) = array_literal_exprs(body, args_array) {
+                            if !out.is_empty() {
+                              out.remove(0);
+                            }
                             args_for_target = Some(out);
                           }
                         }
@@ -1261,6 +1306,261 @@ pub fn validate_native_strict_body(
                             "`Proxy` is forbidden when `native_strict` is enabled",
                             Span::new(file, target_span),
                           ));
+                        }
+
+                        // `Reflect.apply(Function.prototype.{call,apply,bind}, target, [...])` via
+                        // `Reflect.apply.call` / `Reflect.apply.apply` can be used to indirectly
+                        // invoke (or bind) a function.
+                        let target_is_call_invoker = expr_is_function_prototype_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          prototype_name,
+                          call_name,
+                          "call",
+                        ) || expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          "Function",
+                          call_name,
+                          "call",
+                        );
+                        let target_is_apply_invoker = expr_is_function_prototype_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          prototype_name,
+                          apply_name,
+                          "apply",
+                        ) || expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          "Function",
+                          apply_name,
+                          "apply",
+                        );
+                        let target_is_bind_invoker = expr_is_function_prototype_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          prototype_name,
+                          bind_name,
+                          "bind",
+                        ) || expr_is_builtin_member(
+                          body,
+                          target_arg,
+                          global_this_name,
+                          function_name,
+                          "Function",
+                          bind_name,
+                          "bind",
+                        );
+                        if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
+                          if let Some(called_target) = reflect_args.get(1).copied() {
+                            let called_target_span = result
+                              .expr_spans
+                              .get(called_target.0 as usize)
+                              .copied()
+                              .or_else(|| body.exprs.get(called_target.0 as usize).map(|expr| expr.span))
+                              .unwrap_or(target_span);
+ 
+                            if expr_is_ident_or_global_this_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              eval_name,
+                              "eval",
+                            ) {
+                              diagnostics.push(codes::NATIVE_STRICT_EVAL.error(
+                                "`eval` is forbidden when `native_strict` is enabled",
+                                Span::new(file, called_target_span),
+                              ));
+                            }
+                            if expr_is_ident_or_global_this_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              function_name,
+                              "Function",
+                            ) {
+                              diagnostics.push(codes::NATIVE_STRICT_NEW_FUNCTION.error(
+                                "`Function` constructor is forbidden when `native_strict` is enabled",
+                                Span::new(file, called_target_span),
+                              ));
+                            }
+                            if expr_is_ident_or_global_this_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              proxy_name,
+                              "Proxy",
+                            ) || expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              proxy_name,
+                              "Proxy",
+                              revocable_name,
+                              "revocable",
+                            ) {
+                              diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
+                                "`Proxy` is forbidden when `native_strict` is enabled",
+                                Span::new(file, called_target_span),
+                              ));
+                            }
+ 
+                            if expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              set_prototype_of_name,
+                              "setPrototypeOf",
+                            ) || expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              reflect_name,
+                              "Reflect",
+                              set_prototype_of_name,
+                              "setPrototypeOf",
+                            ) {
+                              let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                              diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                "prototype mutation is forbidden when `native_strict` is enabled",
+                                Span::new(file, span),
+                              ));
+                            }
+ 
+                            let called_target_is_object_define_property = expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              define_property_name,
+                              "defineProperty",
+                            );
+                            let called_target_is_reflect_define_property = expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              reflect_name,
+                              "Reflect",
+                              define_property_name,
+                              "defineProperty",
+                            );
+                            let called_target_is_object_define_properties = expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              define_properties_name,
+                              "defineProperties",
+                            );
+                            let called_target_is_object_assign = expr_is_builtin_member(
+                              body,
+                              called_target,
+                              global_this_name,
+                              object_name,
+                              "Object",
+                              assign_name,
+                              "assign",
+                            );
+                            if called_target_is_object_define_property
+                              || called_target_is_reflect_define_property
+                              || called_target_is_object_define_properties
+                              || called_target_is_object_assign
+                            {
+                              if let Some(args_list_expr) = reflect_args.get(2).copied() {
+                                let args_for_target =
+                                  if target_is_call_invoker || target_is_bind_invoker {
+                                    array_literal_exprs(body, args_list_expr).map(|mut args_list| {
+                                      if !args_list.is_empty() {
+                                        args_list.remove(0);
+                                      }
+                                      args_list
+                                    })
+                                  } else if target_is_apply_invoker {
+                                    array_literal_exprs(body, args_list_expr)
+                                      .and_then(|args_list| args_list.get(1).copied())
+                                      .and_then(|inner| array_literal_exprs(body, inner))
+                                  } else {
+                                    None
+                                  };
+                                if let Some(args_list) = args_for_target {
+                                  if let Some(target_obj) = args_list.first().copied() {
+                                    let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                                      body,
+                                      target_obj,
+                                      prototype_name,
+                                      proto_name,
+                                    );
+ 
+                                    if !is_proto_mutation
+                                      && (called_target_is_object_define_property
+                                        || called_target_is_reflect_define_property)
+                                    {
+                                      if let Some(key_arg) = args_list.get(1).copied() {
+                                        if expr_is_const_string(body, key_arg, "prototype")
+                                          || expr_is_const_string(body, key_arg, "__proto__")
+                                        {
+                                          is_proto_mutation = true;
+                                        }
+                                      }
+                                    }
+ 
+                                    if !is_proto_mutation && called_target_is_object_define_properties {
+                                      if let Some(props_arg) = args_list.get(1).copied() {
+                                        if expr_is_object_literal_with_proto_key(
+                                          body,
+                                          props_arg,
+                                          prototype_name,
+                                          proto_name,
+                                        ) {
+                                          is_proto_mutation = true;
+                                        }
+                                      }
+                                    }
+ 
+                                    if !is_proto_mutation && called_target_is_object_assign {
+                                      for source_arg in args_list.iter().skip(1).copied() {
+                                        if expr_is_object_literal_with_proto_key(
+                                          body,
+                                          source_arg,
+                                          prototype_name,
+                                          proto_name,
+                                        ) {
+                                          is_proto_mutation = true;
+                                          break;
+                                        }
+                                      }
+                                    }
+ 
+                                    if is_proto_mutation {
+                                      let span =
+                                        result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                                      diagnostics.push(
+                                        codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                          "prototype mutation is forbidden when `native_strict` is enabled",
+                                          Span::new(file, span),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
                         }
 
                         if expr_is_builtin_member(
@@ -2132,7 +2432,24 @@ pub fn validate_native_strict_body(
                     apply_name,
                     "apply",
                   );
-                  if target_is_call_invoker || target_is_apply_invoker {
+                  let target_is_bind_invoker = expr_is_function_prototype_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    prototype_name,
+                    bind_name,
+                    "bind",
+                  ) || expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    bind_name,
+                    "bind",
+                  );
+                  if target_is_call_invoker || target_is_apply_invoker || target_is_bind_invoker {
                     if let Some(called_target) =
                       call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
                     {
@@ -2337,7 +2654,7 @@ pub fn validate_native_strict_body(
                         if let Some(args_list_expr) =
                           call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
                         {
-                          let args_for_target = if target_is_call_invoker {
+                          let args_for_target = if target_is_call_invoker || target_is_bind_invoker {
                             array_literal_exprs(body, args_list_expr).map(|mut args_list| {
                               if !args_list.is_empty() {
                                 args_list.remove(0);

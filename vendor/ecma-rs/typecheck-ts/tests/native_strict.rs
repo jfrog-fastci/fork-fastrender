@@ -208,6 +208,22 @@ fn native_strict_bans_eval_via_function_prototype_call_bind_then_call() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_function_prototype_bind_call() {
+  let source = "Function.prototype.bind.call(eval, null, \"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_eval_via_reflect_apply() {
   let source = "Reflect.apply(eval, null, [\"1\"]);";
   let (diagnostics, file_id) = check(source, true);
@@ -240,8 +256,56 @@ fn native_strict_bans_eval_via_reflect_apply_bind() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_reflect_apply_function_prototype_bind() {
+  let source = "Reflect.apply(Function.prototype.bind, eval, [null, \"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_eval_via_reflect_apply_function_prototype_call() {
   let source = "Reflect.apply(Function.prototype.call, eval, [null, \"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_reflect_apply_call_function_prototype_call() {
+  let source = "Reflect.apply.call(Reflect, Function.prototype.call, eval, [null, \"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_reflect_apply_call_function_prototype_bind() {
+  let source = "Reflect.apply.call(Reflect, Function.prototype.bind, eval, [null, \"1\"]);";
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("eval").expect("eval") as u32;
   let span = TextRange::new(start, start + 4);
@@ -373,6 +437,22 @@ fn native_strict_bans_function_via_reflect_apply() {
   let source = "Reflect.apply(Function, null, [\"return 1\"]);";
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_apply_function_prototype_bind() {
+  let source = "Reflect.apply(Function.prototype.bind, Function, [null, \"return 1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function,").expect("Function") as u32;
   let span = TextRange::new(start, start + "Function".len() as u32);
   assert!(
     diagnostics.iter().any(|diag| {
