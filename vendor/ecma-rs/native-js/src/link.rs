@@ -194,6 +194,13 @@ pub fn link_elf_executable_with_options(
   let out_dir = output_path
     .parent()
     .context("output_path must have a parent directory")?;
+  // `Path::parent` of a relative filename like `out` is `Some("")`. Treat that as the current
+  // directory so `create_dir_all` and script emission work as expected.
+  let out_dir: &Path = if out_dir.as_os_str().is_empty() {
+    Path::new(".")
+  } else {
+    out_dir
+  };
 
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
@@ -423,6 +430,11 @@ pub fn link_elf_executable_lto(
   let out_dir = output_path
     .parent()
     .context("output_path must have a parent directory")?;
+  let out_dir: &Path = if out_dir.as_os_str().is_empty() {
+    Path::new(".")
+  } else {
+    out_dir
+  };
 
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
