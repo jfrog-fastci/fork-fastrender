@@ -16155,8 +16155,11 @@ impl DisplayListRenderer {
     // e.g. `background-size: cover`) intact so bilinear filtering matches browser behavior.
     let tx = dest_rect.x() - src_rect.x() * scale_x;
     let ty = dest_rect.y() - src_rect.y() * scale_y;
-
     let image_transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, tx, ty);
+    // When `src_rect` refers to a sub-rectangle of the image but we are still drawing from the full
+    // pixmap (i.e. `image_to_pixmap` didn't crop it), applying the transform directly can paint
+    // outside `dest_rect`. Rasterize via a pattern fill constrained to `dest_rect` to avoid image
+    // "bleed" into adjacent content.
     let needs_dest_clip = item.src_rect.is_some()
       && ((src_rect.x().abs() > 1e-6)
         || (src_rect.y().abs() > 1e-6)

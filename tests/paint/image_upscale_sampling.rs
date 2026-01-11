@@ -99,3 +99,54 @@ fn image_linear_upscale_with_fractional_src_rect_preserves_subpixel_offset() {
     "expected midpoint to stay near 50% gray; got {values:?}"
   );
 }
+
+#[test]
+fn image_src_rect_does_not_paint_outside_dest_rect() {
+  // When `ImageItem::src_rect` is specified, the renderer maps the image via a scale+translate
+  // transform (to preserve fractional offsets). The transformed full image can extend outside
+  // `dest_rect`, so the draw must still be clipped to the destination rectangle.
+  //
+  // Regression: hero background images rendered via `background-size: cover` were bleeding into
+  // fixed headers because the image draw wasn't clipped to `dest_rect`.
+  let pixels = vec![
+    0, 0, 0, 255, //
+    255, 255, 255, 255, //
+  ];
+  let image = Arc::new(ImageData::new_pixels(2, 1, pixels));
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Image(ImageItem {
+    // Draw into a sub-rect so any bleed is visible in the surrounding background.
+    dest_rect: Rect::from_xywh(10.0, 0.0, 9.0, 1.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    // A fractional source rect triggers the transform path (no pre-crop), which used to paint
+    // outside dest_rect.
+    src_rect: Some(Rect::from_xywh(0.5, 0.0, 1.0, 1.0)),
+  }));
+
+  let pixmap = DisplayListRenderer::new(30, 1, Rgba::TRANSPARENT, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  // Pixels before the destination rect should remain untouched.
+  for x in 0..10 {
+    let px = pixmap.pixel(x, 0).expect("pixel inside viewport");
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (0, 0, 0, 0),
+      "expected pixel x={x} (left of dest_rect) to remain transparent"
+    );
+  }
+
+  // Pixels after the destination rect should also remain untouched.
+  for x in 19..30 {
+    let px = pixmap.pixel(x, 0).expect("pixel inside viewport");
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (0, 0, 0, 0),
+      "expected pixel x={x} (right of dest_rect) to remain transparent"
+    );
+  }
+}
