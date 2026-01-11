@@ -269,9 +269,13 @@ pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
   // `rt_gc_collect`) we may be several runtime frames away from the nearest
   // managed callsite that has a stackmap record. Recover that callsite cursor by
   // walking the FP chain.
-  let ctx = crate::stackmap::try_stackmaps()
+  // Call `arch::capture_safepoint_context` directly from this helper (avoid
+  // routing it through combinators like `unwrap_or_else`) so the capture
+  // implementation can reliably walk out to the *outer* caller frame.
+  let ctx = match crate::stackmap::try_stackmaps()
     .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
-    .map(|cursor| {
+  {
+    Some(cursor) => {
       let sp_callsite = cursor.sp.unwrap_or(0);
       #[cfg(target_arch = "x86_64")]
       let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
@@ -284,8 +288,9 @@ pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
         fp: cursor.fp as usize,
         ip: cursor.pc as usize,
       }
-    })
-    .unwrap_or_else(arch::capture_safepoint_context);
+    }
+    None => arch::capture_safepoint_context(),
+  };
   threading::registry::set_current_thread_safepoint_context(ctx);
   threading::registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
   threading::safepoint::notify_state_change();
