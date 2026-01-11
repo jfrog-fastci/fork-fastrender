@@ -215,3 +215,63 @@ pub fn to_enum<'a>(
   Ok(Value::String(s))
 }
 
+/// Convert an ECMAScript value to a WebIDL callback function value.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-function>
+pub fn to_callback_function<'a>(
+  rt: &mut BindingsRuntime<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  let _ = (host, hooks);
+  if !rt.scope.heap().is_callable(value)? {
+    return Err(rt.throw_type_error("Value is not a callable callback function"));
+  }
+  Ok(value)
+}
+
+/// Convert an ECMAScript value to a WebIDL callback interface value.
+///
+/// A callback interface value is accepted if it is:
+/// - callable, or
+/// - an object with a callable `handleEvent` method.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-callback-interface>
+pub fn to_callback_interface<'a>(
+  rt: &mut BindingsRuntime<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  let v = value;
+  if rt.scope.heap().is_callable(v)? {
+    return Ok(v);
+  }
+
+  let Value::Object(obj) = v else {
+    return Err(rt.throw_type_error("Value is not a callable callback interface"));
+  };
+
+  // Root `v` across any allocations and user-code invoked by accessors.
+  rt.scope.push_root(v)?;
+  let key = rt.property_key("handleEvent")?;
+  let method = rt.scope.ordinary_get_with_host_and_hooks(
+    &mut *rt.vm,
+    host,
+    hooks,
+    obj,
+    key,
+    v,
+  )?;
+  if matches!(method, Value::Undefined | Value::Null) {
+    return Err(rt.throw_type_error(
+      "Callback interface object is missing a callable handleEvent method",
+    ));
+  }
+  if !rt.scope.heap().is_callable(method)? {
+    return Err(rt.throw_type_error("GetMethod: target is not callable"));
+  }
+
+  Ok(v)
+}

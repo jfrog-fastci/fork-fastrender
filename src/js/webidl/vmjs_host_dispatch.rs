@@ -875,9 +875,12 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         if matches!(callback, Value::Null | Value::Undefined) {
           return Ok(Value::Undefined);
         }
-        if matches!(callback, Value::String(_)) || !is_callable(scope, callback) {
+        // `EventListener` is a callback interface: the WebIDL binding layer validates that this is
+        // either callable or an object with a callable `handleEvent` method. We treat any object
+        // here as a valid listener and invoke it per callback-interface rules during dispatch.
+        let Value::Object(_) = callback else {
           return Err(VmError::TypeError("EventTarget listener is not callable"));
-        }
+        };
 
         let capture = get_capture_option(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
@@ -913,9 +916,9 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         if matches!(callback, Value::Null | Value::Undefined) {
           return Ok(Value::Undefined);
         }
-        if matches!(callback, Value::String(_)) || !is_callable(scope, callback) {
+        let Value::Object(_) = callback else {
           return Ok(Value::Undefined);
-        }
+        };
 
         let capture = get_capture_option(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
@@ -986,17 +989,48 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         //
         // NOTE: Calling into JS here can re-enter WebIDL dispatch through `host_from_hooks()`. This
         // implementation intentionally does not touch `self` after taking the snapshot above.
+        let handle_event_key = key_from_str(scope, "handleEvent")?;
         for listener in listeners_snapshot.into_iter() {
           if listener.event_type != event_type {
             continue;
           }
-          let _ = call_with_active_vm_host_and_hooks(
-            vm,
-            scope,
-            listener.callback.value,
-            Value::Object(obj),
-            &[event_val],
-          )?;
+          let callback = listener.callback.value;
+
+          // Callback-interface invocation:
+          // - If callable, call it with `this = event target`.
+          // - Otherwise, call `callback.handleEvent(event)` with `this = callback`.
+          if is_callable(scope, callback) {
+            let _ = call_with_active_vm_host_and_hooks(
+              vm,
+              scope,
+              callback,
+              Value::Object(obj),
+              &[event_val],
+            )?;
+            continue;
+          }
+
+          let Value::Object(callback_obj) = callback else {
+            return Err(VmError::TypeError(
+              "EventTarget.dispatchEvent: listener is not an object",
+            ));
+          };
+
+          // `GetMethod(callback, "handleEvent")`
+          let handle_event =
+            get_with_active_vm_host_and_hooks(vm, scope, callback_obj, handle_event_key)?;
+          if matches!(handle_event, Value::Undefined | Value::Null) {
+            return Err(VmError::TypeError(
+              "Callback interface object is missing a callable handleEvent method",
+            ));
+          }
+          if !is_callable(scope, handle_event) {
+            return Err(VmError::TypeError("GetMethod: target is not callable"));
+          }
+          scope.push_root(handle_event)?;
+
+          let _ =
+            call_with_active_vm_host_and_hooks(vm, scope, handle_event, callback, &[event_val])?;
         }
 
         Ok(Value::Bool(true))

@@ -250,6 +250,8 @@ fn page_loop_inspect_frag_defaults_web_font_wait_ms_to_500() {
       viewport: (1040, 1240),
       dpr: 1.0,
       media: "screen".to_string(),
+      compat_profile: None,
+      dom_compat: None,
       timeout: 60,
     },
   );

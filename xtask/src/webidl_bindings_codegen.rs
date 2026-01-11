@@ -6712,6 +6712,8 @@ fn emit_overload_call_vmjs(
     out.push_str("    let mut converted_args: Vec<Value> = Vec::new();\n");
   }
 
+  let timer_policy_op = interface == "Window" && matches!(operation, "setTimeout" | "setInterval");
+
   for (idx, arg) in arguments.iter().enumerate() {
     if arg.variadic {
       out.push_str(&format!(
@@ -6725,6 +6727,42 @@ fn emit_overload_call_vmjs(
       "    let v{idx} = if args.len() > {idx} {{ args[{idx}] }} else {{ Value::Undefined }};\n",
       idx = idx
     ));
+
+    // Project policy: HTML's `TimerHandler` (`setTimeout` / `setInterval`) accepts string handlers,
+    // but FastRender intentionally rejects them to avoid eval-like behaviour. The host dispatch also
+    // enforces this, but the vm-js bindings should reject before calling into the host.
+    //
+    // Additionally, we intentionally *avoid* WebIDL union conversion for `TimerHandler`, since that
+    // would convert non-callable primitives (like numbers) into strings, producing misleading
+    // "string handler" errors instead of the more appropriate "not callable".
+    if timer_policy_op && idx == 0 && arg.name == "handler" {
+      let (string_err, not_callable_err) = match operation {
+        "setTimeout" => (
+          "setTimeout does not currently support string handlers",
+          "setTimeout callback is not callable",
+        ),
+        "setInterval" => (
+          "setInterval does not currently support string handlers",
+          "setInterval callback is not callable",
+        ),
+        _ => unreachable!(),
+      };
+      out.push_str(&format!(
+        "    if matches!(v{idx}, Value::String(_)) {{\n      return Err(rt.throw_type_error({string_err}));\n    }}\n",
+        idx = idx,
+        string_err = rust_string_literal(string_err),
+      ));
+      out.push_str(&format!(
+        "    if !rt.scope.heap().is_callable(v{idx})? {{\n      return Err(rt.throw_type_error({not_callable_err}));\n    }}\n",
+        idx = idx,
+        not_callable_err = rust_string_literal(not_callable_err),
+      ));
+      out.push_str(&format!("    let converted = v{idx};\n", idx = idx));
+      out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
+      out.push_str("    converted_args.push(converted);\n");
+      continue;
+    }
+
     let expr = emit_conversion_expr_for_optional_vmjs(resolved, arg, &format!("v{idx}"), true);
     out.push_str(&format!("    let converted = {expr};\n"));
     out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
@@ -6765,6 +6803,14 @@ fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
       if resolved.dictionaries.contains_key(name) {
         true
       } else if resolved.enums.contains_key(name) {
+        true
+      } else if resolved.callbacks.contains_key(name) {
+        true
+      } else if resolved
+        .interfaces
+        .get(name)
+        .is_some_and(|iface| iface.callback)
+      {
         true
       } else if resolved.typedefs.contains_key(name) {
         resolved
@@ -7118,6 +7164,24 @@ fn emit_conversion_expr_vmjs(
           value_ident = value_ident,
           enum_name = rust_string_literal(name),
           allowed = allowed,
+        )
+      } else if resolved.callbacks.contains_key(name) {
+        let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+        format!(
+          "conversions::to_callback_function({rt_expr}, host, hooks, {value_ident})?",
+          rt_expr = rt_expr,
+          value_ident = value_ident
+        )
+      } else if resolved
+        .interfaces
+        .get(name)
+        .is_some_and(|iface| iface.callback)
+      {
+        let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+        format!(
+          "conversions::to_callback_interface({rt_expr}, host, hooks, {value_ident})?",
+          rt_expr = rt_expr,
+          value_ident = value_ident
         )
       } else if resolved.typedefs.contains_key(name) {
         match resolved.resolve_typedef(name) {

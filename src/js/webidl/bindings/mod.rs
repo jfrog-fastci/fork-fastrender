@@ -297,19 +297,99 @@ mod tests {
       Ok(scope.heap().get_string(s)?.to_utf8_lossy())
     }
 
-    fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, array: vm_js::GcObject) -> Result<usize, VmError> {
-      let length_key = alloc_key(scope, "length")?;
-      let len = vm.get(scope, array, length_key)?;
-      match len {
-        Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
-        _ => Err(VmError::TypeError("URLSearchParams init array length is not a number")),
-      }
-    }
+    fn init_to_params(&self, scope: &mut Scope<'_>, init: Value) -> Result<UrlSearchParams, VmError> {
+      match init {
+        Value::Undefined => Ok(UrlSearchParams::new(&self.limits)),
+        Value::String(_) => {
+          let init = Self::value_to_rust_string(scope, init)?;
+          if init.is_empty() {
+            Ok(UrlSearchParams::new(&self.limits))
+          } else {
+            UrlSearchParams::parse(&init, &self.limits)
+              .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))
+          }
+        }
+        Value::Object(obj) => {
+          if scope.heap().object_is_array(obj)? {
+            // Canonicalized `sequence<sequence<USVString>>` from the vm-js bindings.
+            let length_key_s = scope.alloc_string("length")?;
+            scope.push_root(Value::String(length_key_s))?;
+            let length_key = PropertyKey::from_string(length_key_s);
+            let length = match scope.heap().get(obj, &length_key)? {
+              Value::Number(n) if n.is_finite() && n >= 0.0 => n as u32,
+              _ => return Err(VmError::TypeError("URLSearchParams init array has invalid length")),
+            };
 
-    fn array_get(vm: &mut Vm, scope: &mut Scope<'_>, array: vm_js::GcObject, idx: usize) -> Result<Value, VmError> {
-      let idx_s = idx.to_string();
-      let key = alloc_key(scope, &idx_s)?;
-      vm.get(scope, array, key)
+            let params = UrlSearchParams::new(&self.limits);
+            for idx in 0..length {
+              let key_s = scope.alloc_string(&idx.to_string())?;
+              scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              let entry = scope.heap().get(obj, &key)?;
+              let Value::Object(pair_obj) = entry else {
+                return Err(VmError::TypeError(
+                  "URLSearchParams init sequence element is not an object",
+                ));
+              };
+              if !scope.heap().object_is_array(pair_obj)? {
+                return Err(VmError::TypeError(
+                  "URLSearchParams init pair is not an array",
+                ));
+              }
+
+              let name_key_s = scope.alloc_string("0")?;
+              scope.push_root(Value::String(name_key_s))?;
+              let value_key_s = scope.alloc_string("1")?;
+              scope.push_root(Value::String(value_key_s))?;
+              let name_key = PropertyKey::from_string(name_key_s);
+              let value_key = PropertyKey::from_string(value_key_s);
+              let name = scope.heap().get(pair_obj, &name_key)?;
+              let value = scope.heap().get(pair_obj, &value_key)?;
+              let name = Self::value_to_rust_string(scope, name)?;
+              let value = Self::value_to_rust_string(scope, value)?;
+              params
+                .append(&name, &value)
+                .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
+            }
+            Ok(params)
+          } else {
+            // Canonicalized `record<USVString, USVString>` from the vm-js bindings.
+            let params = UrlSearchParams::new(&self.limits);
+            let keys = scope.ordinary_own_property_keys(obj)?;
+            for key in keys {
+              let PropertyKey::String(key_s) = key else {
+                continue;
+              };
+
+              let Some(desc) = scope.heap().object_get_own_property(obj, &key)? else {
+                continue;
+              };
+              if !desc.enumerable {
+                continue;
+              }
+
+              let value = scope.heap().get(obj, &key)?;
+              let name = scope.heap().get_string(key_s)?.to_utf8_lossy();
+              let value = Self::value_to_rust_string(scope, value)?;
+              params
+                .append(&name, &value)
+                .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
+            }
+            Ok(params)
+          }
+        }
+        other => {
+          // The bindings should have already canonicalized to USVString/sequence/record. Be
+          // permissive and fall back to string parsing for unexpected values.
+          let init = Self::value_to_rust_string(scope, other)?;
+          if init.is_empty() {
+            Ok(UrlSearchParams::new(&self.limits))
+          } else {
+            UrlSearchParams::parse(&init, &self.limits)
+              .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))
+          }
+        }
+      }
     }
   }
 
@@ -331,78 +411,8 @@ mod tests {
               "URLSearchParams constructor called without wrapper object receiver",
             ));
           };
-
           let init = args.first().copied().unwrap_or(Value::Undefined);
-          let params = match init {
-            Value::Undefined => UrlSearchParams::new(&self.limits),
-            Value::Object(init_obj) => {
-              if scope.heap().object_is_array(init_obj)? {
-                // Treat arrays as the URLSearchParams "sequence of pairs" initializer.
-                let params = UrlSearchParams::new(&self.limits);
-                let len = Self::array_length(vm, scope, init_obj)?;
-                for idx in 0..len {
-                  let pair = Self::array_get(vm, scope, init_obj, idx)?;
-                  let Value::Object(pair_obj) = pair else {
-                    return Err(VmError::TypeError(
-                      "URLSearchParams init sequence contains a non-object element",
-                    ));
-                  };
-                  if !scope.heap().object_is_array(pair_obj)? {
-                    return Err(VmError::TypeError(
-                      "URLSearchParams init sequence contains a non-array pair",
-                    ));
-                  }
-                  let pair_len = Self::array_length(vm, scope, pair_obj)?;
-                  if pair_len < 2 {
-                    return Err(VmError::TypeError(
-                      "URLSearchParams init pair does not contain two elements",
-                    ));
-                  }
-                  let name = Self::array_get(vm, scope, pair_obj, 0)?;
-                  let value = Self::array_get(vm, scope, pair_obj, 1)?;
-                  let name = Self::value_to_rust_string(scope, name)?;
-                  let value = Self::value_to_rust_string(scope, value)?;
-                  params
-                    .append(&name, &value)
-                    .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
-                }
-                params
-              } else {
-                // Treat non-array objects as the URLSearchParams "record" initializer.
-                let params = UrlSearchParams::new(&self.limits);
-                let keys = scope.ordinary_own_property_keys(init_obj)?;
-                for key in keys {
-                  let vm_js::PropertyKey::String(key_s) = key else {
-                    continue;
-                  };
-                  let Some(desc) = scope.heap().object_get_own_property(init_obj, &key)? else {
-                    continue;
-                  };
-                  if !desc.enumerable {
-                    continue;
-                  }
-
-                  let name = scope.heap().get_string(key_s)?.to_utf8_lossy();
-                  let value = vm.get(scope, init_obj, key)?;
-                  let value = Self::value_to_rust_string(scope, value)?;
-                  params
-                    .append(&name, &value)
-                    .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
-                }
-                params
-              }
-            }
-            other => {
-              let init = Self::value_to_rust_string(scope, other)?;
-              if init.is_empty() {
-                UrlSearchParams::new(&self.limits)
-              } else {
-                UrlSearchParams::parse(&init, &self.limits)
-                  .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?
-              }
-            }
-          };
-
+          let params = self.init_to_params(scope, init)?;
           self.params.insert(WeakGcObject::from(obj), params);
           Ok(Value::Undefined)
         }
@@ -546,23 +556,19 @@ mod tests {
         scope.push_root(Value::Object(pair0))?;
         let x_str = scope.alloc_string("x")?;
         scope.push_root(Value::String(x_str))?;
-        let one_str = scope.alloc_string("1")?;
-        scope.push_root(Value::String(one_str))?;
         let idx0 = alloc_key(&mut scope, "0")?;
         let idx1 = alloc_key(&mut scope, "1")?;
         scope.create_data_property_or_throw(pair0, idx0, Value::String(x_str))?;
-        scope.create_data_property_or_throw(pair0, idx1, Value::String(one_str))?;
+        scope.create_data_property_or_throw(pair0, idx1, Value::Number(1.0))?;
 
         let pair1 = scope.alloc_array(0)?;
         scope.push_root(Value::Object(pair1))?;
         let y_str = scope.alloc_string("y")?;
         scope.push_root(Value::String(y_str))?;
-        let two_str = scope.alloc_string("2")?;
-        scope.push_root(Value::String(two_str))?;
         let idx0 = alloc_key(&mut scope, "0")?;
         let idx1 = alloc_key(&mut scope, "1")?;
         scope.create_data_property_or_throw(pair1, idx0, Value::String(y_str))?;
-        scope.create_data_property_or_throw(pair1, idx1, Value::String(two_str))?;
+        scope.create_data_property_or_throw(pair1, idx1, Value::Number(2.0))?;
 
         let outer0 = alloc_key(&mut scope, "0")?;
         let outer1 = alloc_key(&mut scope, "1")?;
@@ -590,13 +596,9 @@ mod tests {
         let rec_init_obj = scope.alloc_object()?;
         scope.push_root(Value::Object(rec_init_obj))?;
         let m_key = alloc_key(&mut scope, "m")?;
-        let three_str = scope.alloc_string("3")?;
-        scope.push_root(Value::String(three_str))?;
-        scope.create_data_property_or_throw(rec_init_obj, m_key, Value::String(three_str))?;
+        scope.create_data_property_or_throw(rec_init_obj, m_key, Value::Number(3.0))?;
         let n_key = alloc_key(&mut scope, "n")?;
-        let four_str = scope.alloc_string("4")?;
-        scope.push_root(Value::String(four_str))?;
-        scope.create_data_property_or_throw(rec_init_obj, n_key, Value::String(four_str))?;
+        scope.create_data_property_or_throw(rec_init_obj, n_key, Value::Number(4.0))?;
 
         let rec_params_val =
           vm.construct_with_host(&mut scope, &mut hooks, ctor, &[Value::Object(rec_init_obj)], ctor)?;
@@ -1246,6 +1248,340 @@ mod tests {
     assert!(recorder.this_matches.iter().all(|v| *v));
     assert!(recorder.receiver_matches.iter().all(|v| *v));
     Ok(())
+  }
+
+  #[derive(Default)]
+  struct CountingHost {
+    calls: usize,
+  }
+
+  impl WebIdlBindingsHost for CountingHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      self.calls += 1;
+      Ok(Value::Undefined)
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::TypeError("unimplemented host constructor"))
+    }
+  }
+
+  #[test]
+  fn vmjs_bindings_queue_microtask_rejects_non_callable_without_host_dispatch() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host_impl = CountingHost::default();
+        install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+        let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+        let mut dummy_host = ();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let key = alloc_key(&mut scope, "queueMicrotask")?;
+        let func = scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)?
+          .expect("globalThis.queueMicrotask should be defined");
+        scope.push_root(func)?;
+
+        let err = vm
+          .call_with_host_and_hooks(
+            &mut dummy_host,
+            &mut scope,
+            &mut hooks,
+            func,
+            Value::Undefined,
+            &[Value::Number(1.0)],
+          )
+          .expect_err("expected queueMicrotask to throw");
+        assert_thrown_type_error(
+          &mut vm,
+          &mut scope,
+          err,
+          "Value is not a callable callback function",
+        )?;
+        assert_eq!(host_impl.calls, 0, "host must not be called on conversion failure");
+        Ok(())
+      },
+    ));
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
+  #[test]
+  fn vmjs_bindings_add_event_listener_rejects_invalid_callback_without_host_dispatch(
+  ) -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host_impl = CountingHost::default();
+        install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+        let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+        let mut dummy_host = ();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = alloc_key(&mut scope, "EventTarget")?;
+        let ctor = scope
+          .heap()
+          .object_get_own_data_property_value(global, &ctor_key)?
+          .expect("globalThis.EventTarget should be defined");
+        scope.push_root(ctor)?;
+        let Value::Object(ctor_obj) = ctor else {
+          return Err(VmError::TypeError("EventTarget constructor should be an object"));
+        };
+
+        let proto_key = alloc_key(&mut scope, "prototype")?;
+        let proto = vm.get(&mut scope, ctor_obj, proto_key)?;
+        let Value::Object(proto_obj) = proto else {
+          return Err(VmError::TypeError("EventTarget.prototype should be an object"));
+        };
+        scope.push_root(Value::Object(proto_obj))?;
+
+        let add_key = alloc_key(&mut scope, "addEventListener")?;
+        let add = vm.get(&mut scope, proto_obj, add_key)?;
+        scope.push_root(add)?;
+
+        let this_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(this_obj))?;
+        let type_s = scope.alloc_string("x")?;
+        scope.push_root(Value::String(type_s))?;
+        let type_val = Value::String(type_s);
+
+        let err = vm
+          .call_with_host_and_hooks(
+            &mut dummy_host,
+            &mut scope,
+            &mut hooks,
+            add,
+            Value::Object(this_obj),
+            &[type_val, Value::Number(1.0)],
+          )
+          .expect_err("expected addEventListener to throw");
+        assert_thrown_type_error(
+          &mut vm,
+          &mut scope,
+          err,
+          "Value is not a callable callback interface",
+        )?;
+        assert_eq!(host_impl.calls, 0, "host must not be called on conversion failure");
+        Ok(())
+      },
+    ));
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
+  #[test]
+  fn vmjs_bindings_set_timeout_rejects_string_handler_without_host_dispatch() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host_impl = CountingHost::default();
+        install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+        let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+        let mut dummy_host = ();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let key = alloc_key(&mut scope, "setTimeout")?;
+        let func = scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)?
+          .expect("globalThis.setTimeout should be defined");
+        scope.push_root(func)?;
+
+        let handler_s = scope.alloc_string("alert(1)")?;
+        scope.push_root(Value::String(handler_s))?;
+        let handler = Value::String(handler_s);
+
+        let err = vm
+          .call_with_host_and_hooks(
+            &mut dummy_host,
+            &mut scope,
+            &mut hooks,
+            func,
+            Value::Undefined,
+            &[handler],
+          )
+          .expect_err("expected setTimeout to throw");
+        assert_thrown_type_error(
+          &mut vm,
+          &mut scope,
+          err,
+          "setTimeout does not currently support string handlers",
+        )?;
+        assert_eq!(host_impl.calls, 0, "host must not be called on conversion failure");
+        Ok(())
+      },
+    ));
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
+  }
+
+  #[test]
+  fn vmjs_bindings_set_timeout_flattens_variadic_args_before_host_dispatch() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    #[derive(Default)]
+    struct RecordingHost {
+      calls: usize,
+      last_interface: Option<&'static str>,
+      last_operation: Option<&'static str>,
+      last_args: Vec<Value>,
+    }
+
+    impl WebIdlBindingsHost for RecordingHost {
+      fn call_operation(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _receiver: Option<Value>,
+        interface: &'static str,
+        operation: &'static str,
+        _overload: usize,
+        args: &[Value],
+      ) -> Result<Value, VmError> {
+        self.calls += 1;
+        self.last_interface = Some(interface);
+        self.last_operation = Some(operation);
+        self.last_args = args.to_vec();
+        Ok(Value::Undefined)
+      }
+
+      fn call_constructor(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _interface: &'static str,
+        _overload: usize,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::TypeError("unimplemented host constructor"))
+      }
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+      || -> Result<(), VmError> {
+        let mut host_impl = RecordingHost::default();
+        install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+        let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+        let mut dummy_host = ();
+        let mut scope = heap.scope();
+
+        let global = realm.global_object();
+        scope.push_root(Value::Object(global))?;
+        let key = alloc_key(&mut scope, "setTimeout")?;
+        let func = scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)?
+          .expect("globalThis.setTimeout should be defined");
+        scope.push_root(func)?;
+
+        fn noop_cb(
+          _vm: &mut Vm,
+          _scope: &mut Scope<'_>,
+          _host: &mut dyn VmHost,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: GcObject,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Ok(Value::Undefined)
+        }
+
+        let cb_name = scope.alloc_string("cb")?;
+        scope.push_root(Value::String(cb_name))?;
+        let cb_id = vm.register_native_call(noop_cb)?;
+        let cb_obj = scope.alloc_native_function(cb_id, None, cb_name, 0)?;
+        scope.push_root(Value::Object(cb_obj))?;
+        let callback = Value::Object(cb_obj);
+
+        let a_s = scope.alloc_string("a")?;
+        scope.push_root(Value::String(a_s))?;
+        let b_s = scope.alloc_string("b")?;
+        scope.push_root(Value::String(b_s))?;
+
+        let out = vm.call_with_host_and_hooks(
+          &mut dummy_host,
+          &mut scope,
+          &mut hooks,
+          func,
+          Value::Undefined,
+          &[callback, Value::Number(0.0), Value::String(a_s), Value::String(b_s)],
+        )?;
+        assert_eq!(out, Value::Undefined);
+
+        assert_eq!(host_impl.calls, 1);
+        assert_eq!(host_impl.last_interface, Some("Window"));
+        assert_eq!(host_impl.last_operation, Some("setTimeout"));
+        assert_eq!(
+          host_impl.last_args.len(),
+          4,
+          "expected variadic args to be flattened for host dispatch"
+        );
+        assert_eq!(host_impl.last_args[0], callback);
+        assert_eq!(host_impl.last_args[1], Value::Number(0.0));
+        assert_eq!(host_impl.last_args[2], Value::String(a_s));
+        assert_eq!(host_impl.last_args[3], Value::String(b_s));
+        Ok(())
+      },
+    ));
+    realm.teardown(&mut heap);
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
   }
 
   #[derive(Default)]

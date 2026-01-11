@@ -148,7 +148,7 @@ pub mod window {
       let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
-        v1
+        conversions::to_callback_interface(rt, host, hooks, v1)?
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -262,7 +262,7 @@ pub mod window {
       let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
-        v1
+        conversions::to_callback_interface(rt, host, hooks, v1)?
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -1404,7 +1404,7 @@ pub mod window {
   fn window_queue_microtask(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
+    host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     _this: Value,
@@ -1420,7 +1420,7 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = v0;
+      let converted = conversions::to_callback_function(rt, host, hooks, v0)?;
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
       let bindings_host = host_from_hooks(hooks)?;
@@ -1456,18 +1456,13 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = {
-        let v = v0;
-        if false {
-          Value::Undefined
-        } else if let Value::Object(obj) = v {
-          v
-        } else if matches!(v, Value::String(_)) {
-          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-        } else {
-          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-        }
-      };
+      if matches!(v0, Value::String(_)) {
+        return Err(rt.throw_type_error("setInterval does not currently support string handlers"));
+      }
+      if !rt.scope.heap().is_callable(v0)? {
+        return Err(rt.throw_type_error("setInterval callback is not callable"));
+      }
+      let converted = v0;
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
       let v1 = if args.len() > 1 {
@@ -1520,18 +1515,13 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = {
-        let v = v0;
-        if false {
-          Value::Undefined
-        } else if let Value::Object(obj) = v {
-          v
-        } else if matches!(v, Value::String(_)) {
-          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-        } else {
-          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
-        }
-      };
+      if matches!(v0, Value::String(_)) {
+        return Err(rt.throw_type_error("setTimeout does not currently support string handlers"));
+      }
+      if !rt.scope.heap().is_callable(v0)? {
+        return Err(rt.throw_type_error("setTimeout callback is not callable"));
+      }
+      let converted = v0;
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
       let v1 = if args.len() > 1 {
@@ -2412,7 +2402,7 @@ pub mod worker {
       let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
-        v1
+        conversions::to_callback_interface(rt, host, hooks, v1)?
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -2526,7 +2516,7 @@ pub mod worker {
       let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
-        v1
+        conversions::to_callback_interface(rt, host, hooks, v1)?
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
