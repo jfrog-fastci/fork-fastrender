@@ -69,10 +69,7 @@ fn run_kb(command: KbCommand) {
       }
     }
     KbCommand::Show { name } => {
-      let Some(entry) = kb
-        .get(&name)
-        .or_else(|| kb.iter().find(|(_, entry)| entry.aliases.iter().any(|a| a == &name)).map(|(_, entry)| entry))
-      else {
+      let Some(entry) = kb.get(&name) else {
         eprintln!("unknown API entry: {name}");
         exit(2);
       };
@@ -84,12 +81,44 @@ fn run_kb(command: KbCommand) {
           println!("  - {alias}");
         }
       }
+      if let Some(semantics) = entry.semantics.as_deref() {
+        println!("semantics: {semantics}");
+      }
+      if let Some(signature) = entry.signature.as_deref() {
+        println!("signature: {signature}");
+      }
+      if let Some(since) = entry.since.as_deref() {
+        println!("since: {since}");
+      }
+      if let Some(until) = entry.until.as_deref() {
+        println!("until: {until}");
+      }
+      if let Some(kind) = entry.kind.as_deref() {
+        println!("kind: {kind}");
+      }
+      if let Some(async_) = entry.async_ {
+        println!("async: {async_}");
+      }
+      if let Some(idempotent) = entry.idempotent {
+        println!("idempotent: {idempotent}");
+      }
+      if let Some(deterministic) = entry.deterministic {
+        println!("deterministic: {deterministic}");
+      }
+      if let Some(parallelizable) = entry.parallelizable {
+        println!("parallelizable: {parallelizable}");
+      }
       println!("effects: {:?}", entry.effects);
+      println!("effect_summary: {:?}", entry.effect_summary);
       println!("purity: {:?}", entry.purity);
       if !entry.properties.is_empty() {
         println!("properties:");
         for (k, v) in entry.properties.iter() {
-          println!("  {k}: {v}");
+          if let Some(s) = v.as_str() {
+            println!("  {k}: {s}");
+          } else {
+            println!("  {k}: {v}");
+          }
         }
       }
     }
@@ -341,6 +370,62 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             text: format!(
               "[{}..{}] JsonParseTyped: call={} target_type={}",
               span.start, span.end, call.0, target.0
+            ),
+          });
+        }
+        RecognizedPattern::StringTemplate { template } => {
+          let span = body.exprs[template.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] StringTemplate: template={}",
+              span.start, span.end, template.0
+            ),
+          });
+        }
+        RecognizedPattern::ObjectSpread {
+          object,
+          spreads,
+          keys,
+        } => {
+          let span = body.exprs[object.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] ObjectSpread: object={} spreads={} keys={:?}",
+              span.start,
+              span.end,
+              object.0,
+              spreads.len(),
+              keys
+            ),
+          });
+        }
+        RecognizedPattern::ArrayDestructure {
+          source,
+          bindings,
+          has_rest,
+        } => {
+          let span = body.exprs[source.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] ArrayDestructure: source={} bindings={} has_rest={}",
+              span.start, span.end, source.0, bindings, has_rest
+            ),
+          });
+        }
+        RecognizedPattern::GuardClause {
+          test,
+          guard_kind,
+          subject,
+        } => {
+          let span = body.exprs[test.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] GuardClause: test={} kind={:?} subject={}",
+              span.start, span.end, test.0, guard_kind, subject.0
             ),
           });
         }
