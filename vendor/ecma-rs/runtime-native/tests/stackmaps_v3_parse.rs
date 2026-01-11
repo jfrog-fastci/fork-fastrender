@@ -214,3 +214,65 @@ fn parses_unaligned_live_out_header_with_entries_between_records() {
     .collect();
   assert_eq!(pcs, vec![(16, 1), (32, 2)]);
 }
+
+#[test]
+fn pc_index_supports_multiple_records_with_duplicate_patchpoint_id() {
+  let bytes = include_bytes!("fixtures/bin/stackmap_dup_id_two_records_x86_64.bin");
+
+  let stackmap = StackMap::parse(bytes).expect("fixture stackmap should parse");
+  assert_eq!(stackmap.version, 3);
+  assert_eq!(stackmap.functions.len(), 1);
+  assert_eq!(stackmap.records.len(), 2);
+
+  let func = &stackmap.functions[0];
+  assert_eq!(func.record_count, 2);
+
+  // LLVM does not guarantee `patchpoint_id` uniqueness. The PC index must still contain
+  // one entry per record/callsite.
+  assert_eq!(stackmap.records[0].patchpoint_id, stackmap.records[1].patchpoint_id);
+
+  let index = StackMaps::parse(bytes).expect("fixture stackmaps should parse + index");
+  assert_eq!(index.callsites().len(), 2);
+
+  for rec in &stackmap.records {
+    let pc = func.address + rec.instruction_offset as u64;
+    let callsite = index.lookup(pc).expect("missing callsite for record pc");
+    assert_eq!(callsite.record.patchpoint_id, rec.patchpoint_id);
+    assert_eq!(callsite.record.instruction_offset, rec.instruction_offset);
+  }
+}
+
+#[test]
+fn pc_index_uses_record_count_to_associate_records_to_functions() {
+  let bytes = include_bytes!("fixtures/bin/stackmap_dup_id_two_funcs_x86_64.bin");
+
+  let stackmap = StackMap::parse(bytes).expect("fixture stackmap should parse");
+  assert_eq!(stackmap.version, 3);
+  assert_eq!(stackmap.functions.len(), 2);
+  assert_eq!(stackmap.records.len(), 2);
+  assert_eq!(stackmap.functions[0].record_count, 1);
+  assert_eq!(stackmap.functions[1].record_count, 1);
+
+  // Ensure the fixture actually has two distinct functions; this is what lets the test detect
+  // record-to-function misassociation bugs.
+  assert_ne!(stackmap.functions[0].stack_size, stackmap.functions[1].stack_size);
+
+  // Both records intentionally share a patchpoint id to ensure parsers don't treat it as unique.
+  assert_eq!(stackmap.records[0].patchpoint_id, stackmap.records[1].patchpoint_id);
+
+  let index = StackMaps::parse(bytes).expect("fixture stackmaps should parse + index");
+  assert_eq!(index.callsites().len(), 2);
+
+  // Records are associated to functions purely by each `FunctionRecord.RecordCount` in order.
+  let expected = [
+    (&stackmap.functions[0], &stackmap.records[0]),
+    (&stackmap.functions[1], &stackmap.records[1]),
+  ];
+  for (func, rec) in expected {
+    let pc = func.address + rec.instruction_offset as u64;
+    let callsite = index.lookup(pc).expect("missing callsite for record pc");
+    assert_eq!(callsite.stack_size, func.stack_size);
+    assert_eq!(callsite.record.patchpoint_id, rec.patchpoint_id);
+    assert_eq!(callsite.record.instruction_offset, rec.instruction_offset);
+  }
+}

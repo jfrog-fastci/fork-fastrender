@@ -8,6 +8,10 @@
 //! - [`StackMaps`]: a runtime-friendly view indexed by absolute callsite return
 //!   address (PC).
 //!
+//! Note: do **not** assume the `patchpoint_id`/Record ID is unique. LLVM may emit
+//! multiple records with the same ID (notably for `gc.statepoint` when using the
+//! default statepoint ID), so the runtime index is keyed by callsite PC instead.
+//!
 //! Note: for LLVM `gc.statepoint`, the record key is the *return address* of the
 //! statepoint callsite. When `patch_bytes > 0`, LLVM 18 reserves a patchable
 //! region (x86_64: a NOP sled) and the recorded return address points to the end

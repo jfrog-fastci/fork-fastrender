@@ -57,6 +57,24 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_register_x86_64.bin" \
   "${TMP}/stackmap_register_x86_64.o"
 
+# stackmap_dup_id_two_records (x86_64) - two records with the same patchpoint id.
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/stackmap_dup_id_two_records.ll" \
+  -o "${TMP}/stackmap_dup_id_two_records_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_dup_id_two_records_x86_64.bin" \
+  "${TMP}/stackmap_dup_id_two_records_x86_64.o"
+
+# stackmap_dup_id_two_funcs (x86_64) - two functions in one stackmap blob, same patchpoint id.
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/stackmap_dup_id_two_funcs.ll" \
+  -o "${TMP}/stackmap_dup_id_two_funcs_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/stackmap_dup_id_two_funcs_x86_64.bin" \
+  "${TMP}/stackmap_dup_id_two_funcs_x86_64.o"
+
 # stackmaps_v3 (x86_64) - a multi-record fixture exercising all location kinds.
 llc-18 -O0 -filetype=obj \
   -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
