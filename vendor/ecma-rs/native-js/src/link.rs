@@ -14,12 +14,15 @@
 //!
 //! ## Supporting PIE safely
 //! PIE can be enabled via [`LinkOpts::pie`] **without** `DT_TEXTREL` by relocating LLVM stackmaps
-//! into a RELRO-friendly data section before the final link.
+//! (and faultmaps, if present) into a RELRO-friendly data section before the final link.
 //!
-//! Concretely, we rewrite input objects to rename `.llvm_stackmaps` →
-//! `.data.rel.ro.llvm_stackmaps` using `llvm-objcopy --rename-section ...`. This ensures the
-//! required relocations are applied to RW memory (as normal dynamic relocations) and avoids text
-//! relocations.
+//! Concretely, we rewrite input objects to rename:
+//!
+//! - `.llvm_stackmaps` → `.data.rel.ro.llvm_stackmaps`
+//! - `.llvm_faultmaps` → `.data.rel.ro.llvm_faultmaps`
+//!
+//! using `llvm-objcopy --rename-section ...`. This ensures any required relocations are applied to
+//! RW memory (as normal dynamic relocations) and avoids text relocations.
 //!
 //! The dynamic loader applies these relocations at startup, so the stackmap records contain the
 //! final relocated absolute PCs at runtime, and stackmap lookup continues to work by comparing
@@ -63,7 +66,8 @@ pub struct LinkOpts {
   /// function symbols.
   ///
   /// When producing PIE, we avoid `DT_TEXTREL` by rewriting input objects to rename
-  /// `.llvm_stackmaps` → `.data.rel.ro.llvm_stackmaps` before linking. This allows the dynamic
+  /// `.llvm_stackmaps` → `.data.rel.ro.llvm_stackmaps` (and `.llvm_faultmaps` →
+  /// `.data.rel.ro.llvm_faultmaps`) before linking. This allows the dynamic
   /// loader to apply relocations to RW memory and then protect it via RELRO.
   ///
   /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
@@ -188,8 +192,9 @@ pub fn link_elf_executable_with_options(
   let script_path = script_dir.path().join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
-  // If producing a PIE, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` in the input
-  // objects so lld can apply the required relocations without emitting DT_TEXTREL.
+  // If producing a PIE, relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
+  // `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` in the input objects so lld can
+  // apply the required relocations without emitting DT_TEXTREL.
   //
   // We copy objects into a tempdir to avoid mutating the caller's build artifacts in-place.
   let mut patched_obj_dir: Option<tempfile::TempDir> = None;
@@ -215,6 +220,8 @@ pub fn link_elf_executable_with_options(
         .args([
           "--rename-section",
           ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+          "--rename-section",
+          ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
         ])
         .arg(&dst)
         .status()
