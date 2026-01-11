@@ -55,6 +55,13 @@ jobs:
              ! command -v llvm-objdump-18 >/dev/null 2>&1; then
             pkgs+=(llvm-18)
           fi
+          # PIE stackmaps link regression scripts use clang+lnd/objcopy.
+          if ! command -v clang-18 >/dev/null 2>&1; then
+            pkgs+=(clang-18)
+          fi
+          if ! command -v ld.lld-18 >/dev/null 2>&1; then
+            pkgs+=(lld-18)
+          fi
           if [[ ${#pkgs[@]} -eq 0 ]]; then
             exit 0
           fi
@@ -64,7 +71,7 @@ jobs:
           fi
 
           # Fallback: some Ubuntu images don't ship `llvm-18` in the default apt repos.
-          if printf '%s\n' "${pkgs[@]}" | grep -qx 'llvm-18'; then
+          if printf '%s\n' "${pkgs[@]}" | grep -Eqx '(llvm-18|clang-18|lld-18)'; then
             echo "llvm-18 install failed; adding apt.llvm.org repo and retrying..." >&2
             sudo apt-get install -y wget lsb-release ca-certificates
             wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
@@ -112,6 +119,7 @@ jobs:
           set -euo pipefail
           bash vendor/ecma-rs/scripts/test_stackmap_abi.sh
           bash vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh
+          bash vendor/ecma-rs/scripts/test_stackmaps_pie_link.sh
 
       - name: typecheck-ts (strict-native groundwork)
         working-directory: vendor/ecma-rs
