@@ -52,8 +52,8 @@ Strict-native rejects (hard error, not warning):
 **Strict-native design** (see [`EXEC.plan.md`](../EXEC.plan.md) for rationale):
 
 - `any` (explicit or inferred)
-- Type assertions (`x as T`, `<T>x`)
-- Non-null assertions (`x!`)
+- Unsafe type assertions that bypass checking (`x as T`, `<T>x`)
+- Non-null assertions on values that might be null/undefined (`x!`)
 - Dynamic code execution: `eval()`, `Function()`, `new Function()`
 - `with`
 - `arguments`
@@ -103,12 +103,12 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 
 ## 2) Typecheck in strict-native mode
 
-### Command (inside the ecma-rs workspace)
+### Raw cargo command (inside the ecma-rs workspace)
 
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --native-strict path/to/file.ts
+cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -118,11 +118,11 @@ Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs works
 ```bash
 # From the repo root (recommended):
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -155,10 +155,10 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 - Run the JS under our deterministic interpreter, [`vm-js`](../vm-js/),
 - (Eventually) compare oracle behavior against the native pipeline output.
 
-### Command (inside the ecma-rs workspace)
+### Raw cargo command (inside the ecma-rs workspace)
 
 ```bash
-bash scripts/cargo_agent.sh test -p native-oracle-harness
+cargo test -p native-oracle-harness
 ```
 
 ### Recommended (agent-safe wrapper)
