@@ -32,6 +32,34 @@ fn erase_to_minified_js(src: &str, dialect: Dialect, source_type: SourceType) ->
   output
 }
 
+fn strict_erase_to_minified_js(src: &str, dialect: Dialect, source_type: SourceType) -> String {
+  let file = FileId(0);
+  let mut ast = parse_with_options(
+    src,
+    ParseOptions {
+      dialect,
+      source_type,
+    },
+  )
+  .expect("input should parse");
+
+  erase_types_strict_native(file, source_type, &mut ast).expect("strict-native erasure should succeed");
+
+  let output =
+    emit_top_level_diagnostic(file, &ast, EmitOptions::minified()).expect("emission should succeed");
+
+  parse_with_options(
+    &output,
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type,
+    },
+  )
+  .expect("erased output should parse as strict ECMAScript");
+
+  output
+}
+
 #[test]
 fn erases_ts_expression_wrappers() {
   let src = r#"
@@ -66,23 +94,47 @@ fn erases_type_only_imports_and_exports() {
 
 #[test]
 fn strict_native_mode_rejects_runtime_ts_constructs() {
-  let src = "enum E{A}";
+  let cases = [
+    ("enum E{A}", "enum"),
+    ("namespace N{export const x=1}", "namespace"),
+    ("module M{export const x=1}", "module"),
+    ("import x=require('y');", "import="),
+    ("export=1;", "export="),
+  ];
 
-  let file = FileId(0);
-  let mut ast = parse_with_options(
-    src,
-    ParseOptions {
-      dialect: Dialect::Ts,
-      source_type: SourceType::Module,
-    },
-  )
-  .expect("input should parse");
+  for (src, label) in cases {
+    let file = FileId(0);
+    let mut ast = parse_with_options(
+      src,
+      ParseOptions {
+        dialect: Dialect::Ts,
+        source_type: SourceType::Module,
+      },
+    )
+    .unwrap_or_else(|err| panic!("input should parse for {label}: {err}"));
 
-  let diagnostics = erase_types_strict_native(file, SourceType::Module, &mut ast)
-    .expect_err("enum should be rejected in strict native mode");
+    let diagnostics = match erase_types_strict_native(file, SourceType::Module, &mut ast) {
+      Ok(()) => panic!("expected {label} to be rejected in strict-native mode"),
+      Err(diags) => diags,
+    };
 
-  assert!(
-    diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
-    "expected MINIFYTS0001 diagnostic, got: {diagnostics:?}"
-  );
+    assert!(
+      diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+      "expected MINIFYTS0001 diagnostic for {label}, got: {diagnostics:?}"
+    );
+  }
+}
+
+#[test]
+fn strict_native_mode_erases_ambient_decls_and_this_params() {
+  let src = r#"
+    declare enum E { A }
+    declare namespace N { export const x: number }
+    export as namespace UMD;
+    function f(this: any, x: number) { return x; }
+    export const y = 1;
+  "#;
+
+  let output = strict_erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "function f(x){return x;}export const y=1;");
 }
