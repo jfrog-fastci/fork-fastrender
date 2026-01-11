@@ -3958,6 +3958,13 @@ pub static RT_GC_EPOCH: u64;
 pub fn rt_gc_poll() -> bool; // cheap leaf check (fast-path helper for runtime loops)
 pub fn rt_gc_safepoint_slow(epoch: u64); // slow path entered only when `RT_GC_EPOCH` is odd
 pub fn rt_gc_safepoint(); // convenience wrapper (inline poll + slow-path call)
+// Extend liveness of a GC reference until a specific program point.
+//
+// This is the native equivalent of Go's `runtime.KeepAlive`: generated/native code uses it when it
+// derives a raw (non-GC) pointer from a GC-managed object (e.g. an `ArrayBuffer` backing-store
+// `uint8_t*`) and needs to ensure the owning object cannot be collected/finalized before the last
+// raw-pointer use.
+pub fn rt_keep_alive_gc_ref(gc_ref: GcPtr);
 pub fn rt_write_barrier(obj: GcPtr, field: *mut u8);
 pub fn rt_gc_collect();
 
