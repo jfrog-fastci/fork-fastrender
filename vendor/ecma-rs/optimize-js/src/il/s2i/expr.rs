@@ -1269,13 +1269,16 @@ impl<'p> HirSourceToInst<'p> {
       ExprKind::AwaitExpr { value: expr, .. } => {
         let arg = self.compile_expr(*expr)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          vec![arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            vec![arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1283,13 +1286,16 @@ impl<'p> HirSourceToInst<'p> {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.map".to_string()),
-          this_arg,
-          vec![callback_arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.map".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1297,13 +1303,16 @@ impl<'p> HirSourceToInst<'p> {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.filter".to_string()),
-          this_arg,
-          vec![callback_arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.filter".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1319,13 +1328,16 @@ impl<'p> HirSourceToInst<'p> {
           args.push(self.compile_expr(*init)?);
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.reduce".to_string()),
-          this_arg,
-          args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.reduce".to_string()),
+            this_arg,
+            args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1333,13 +1345,16 @@ impl<'p> HirSourceToInst<'p> {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.find".to_string()),
-          this_arg,
-          vec![callback_arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.find".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1347,13 +1362,16 @@ impl<'p> HirSourceToInst<'p> {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.every".to_string()),
-          this_arg,
-          vec![callback_arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.every".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1361,19 +1379,22 @@ impl<'p> HirSourceToInst<'p> {
         let this_arg = self.compile_expr(*array)?;
         let callback_arg = self.compile_expr(*callback)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("Array.prototype.some".to_string()),
-          this_arg,
-          vec![callback_arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("Array.prototype.some".to_string()),
+            this_arg,
+            vec![callback_arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
       ExprKind::ArrayChain { array, ops } => {
         let mut current = self.compile_expr(*array)?;
-        for op in ops {
+        for (pos, op) in ops.iter().enumerate() {
           let (builtin, args) = match op {
             ArrayChainOp::Map(callback) => (
               "Array.prototype.map",
@@ -1404,13 +1425,18 @@ impl<'p> HirSourceToInst<'p> {
             }
           };
           let tmp = self.c_temp.bump();
-          self.out.push(Inst::call(
+          let inst = Inst::call(
             tmp,
             Arg::Builtin(builtin.to_string()),
             current,
             args,
             Vec::new(),
-          ));
+          );
+          if pos == ops.len().saturating_sub(1) {
+            self.push_value_inst(expr_id, inst);
+          } else {
+            self.out.push(inst);
+          }
           current = Arg::Var(tmp);
         }
         Ok(current)
@@ -1431,18 +1457,21 @@ impl<'p> HirSourceToInst<'p> {
         ));
 
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(match &expr.kind {
-            ExprKind::PromiseAll { .. } => "Promise.all",
-            ExprKind::PromiseRace { .. } => "Promise.race",
-            _ => unreachable!(),
-          }
-          .to_string()),
-          Arg::Const(Const::Undefined),
-          vec![Arg::Var(array_tmp)],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(match &expr.kind {
+              ExprKind::PromiseAll { .. } => "Promise.all",
+              ExprKind::PromiseRace { .. } => "Promise.race",
+              _ => unreachable!(),
+            }
+            .to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(array_tmp)],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1452,13 +1481,16 @@ impl<'p> HirSourceToInst<'p> {
           compiled_args.push(self.compile_expr(*arg)?);
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(format!("known_api:{}", api.0)),
-          Arg::Const(Const::Undefined),
-          compiled_args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(format!("known_api:{}", api.0)),
+            Arg::Const(Const::Undefined),
+            compiled_args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::Ident(name) => self.compile_id_expr(expr_id, *name),

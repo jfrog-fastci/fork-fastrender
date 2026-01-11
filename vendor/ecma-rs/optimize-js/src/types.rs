@@ -7,6 +7,26 @@ pub enum Truthiness {
   AlwaysFalsy,
 }
 
+/// Lightweight summary of the runtime value kind for an expression.
+///
+/// This intentionally avoids exposing `typecheck-ts` types in the optimizer's
+/// public surface area; it is derived from TypeScript types when the `typed`
+/// feature is enabled, and falls back to [`ValueTypeSummary::Unknown`]
+/// otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum ValueTypeSummary {
+  Unknown,
+  Boolean,
+  Number,
+  String,
+  BigInt,
+  Object,
+  Function,
+  Null,
+  Undefined,
+}
+
 /// Optional TypeScript type information for the optimizer.
 ///
 /// The optimizer is designed to compile without a dependency on `typecheck-ts`.
@@ -144,6 +164,25 @@ impl TypeContext {
     {
       let _ = (body, expr);
       false
+    }
+  }
+
+  /// Returns a conservative summary of the runtime value kind for `expr`.
+  pub fn expr_value_type_summary(&self, body: BodyId, expr: ExprId) -> ValueTypeSummary {
+    #[cfg(feature = "typed")]
+    {
+      let Some(program) = self.program.as_ref() else {
+        return ValueTypeSummary::Unknown;
+      };
+      let Some(ty) = self.expr_type(body, expr) else {
+        return ValueTypeSummary::Unknown;
+      };
+      type_value_type_summary(program, ty, 0)
+    }
+    #[cfg(not(feature = "typed"))]
+    {
+      let _ = (body, expr);
+      ValueTypeSummary::Unknown
     }
   }
 }
@@ -481,5 +520,73 @@ fn type_is_boolean(program: &typecheck_ts::Program, ty: typecheck_ts::TypeId, de
       _ => false,
     },
     _ => false,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn type_value_type_summary(
+  program: &typecheck_ts::Program,
+  ty: typecheck_ts::TypeId,
+  depth: u8,
+) -> ValueTypeSummary {
+  if depth >= 8 {
+    return ValueTypeSummary::Unknown;
+  }
+
+  use types_ts_interned::IntrinsicKind;
+  use types_ts_interned::TypeKind as K;
+
+  match program.interned_type_kind(ty) {
+    K::Boolean | K::BooleanLiteral(_) => ValueTypeSummary::Boolean,
+    K::Number | K::NumberLiteral(_) => ValueTypeSummary::Number,
+    K::String | K::StringLiteral(_) | K::TemplateLiteral(_) => ValueTypeSummary::String,
+    K::BigInt | K::BigIntLiteral(_) => ValueTypeSummary::BigInt,
+    K::Null => ValueTypeSummary::Null,
+    K::Undefined | K::Void => ValueTypeSummary::Undefined,
+    K::Callable { .. } => ValueTypeSummary::Function,
+    K::Tuple(_) | K::Array { .. } | K::Object(_) | K::EmptyObject => ValueTypeSummary::Object,
+    // `never` has no runtime values; treat it as unknown so it doesn't
+    // incorrectly "win" when summarizing unions or intersections.
+    K::Never => ValueTypeSummary::Unknown,
+    K::Ref { def, .. } => type_value_type_summary(
+      program,
+      program.declared_type_of_def_interned(def),
+      depth + 1,
+    ),
+    K::Union(members) => {
+      let mut acc: Option<ValueTypeSummary> = None;
+      for member in members {
+        if matches!(program.interned_type_kind(member), K::Never) {
+          continue;
+        }
+        let member_summary = type_value_type_summary(program, member, depth + 1);
+        match acc {
+          None => acc = Some(member_summary),
+          Some(existing) if existing == member_summary => {}
+          _ => return ValueTypeSummary::Unknown,
+        }
+      }
+      acc.unwrap_or(ValueTypeSummary::Unknown)
+    }
+    K::Intersection(members) => {
+      let mut acc: Option<ValueTypeSummary> = None;
+      for member in members {
+        if matches!(program.interned_type_kind(member), K::Never) {
+          continue;
+        }
+        let member_summary = type_value_type_summary(program, member, depth + 1);
+        match acc {
+          None => acc = Some(member_summary),
+          Some(existing) if existing == member_summary => {}
+          _ => return ValueTypeSummary::Unknown,
+        }
+      }
+      acc.unwrap_or(ValueTypeSummary::Unknown)
+    }
+    K::Intrinsic { kind, ty } => match kind {
+      IntrinsicKind::NoInfer => type_value_type_summary(program, ty, depth + 1),
+      _ => ValueTypeSummary::Unknown,
+    },
+    _ => ValueTypeSummary::Unknown,
   }
 }

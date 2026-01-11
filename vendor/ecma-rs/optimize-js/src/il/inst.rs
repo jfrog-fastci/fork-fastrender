@@ -1,7 +1,8 @@
 use crate::analysis::purity::Purity;
 use crate::symbol::semantics::SymbolId;
-use crate::types::TypeId;
+use crate::types::{TypeId, ValueTypeSummary};
 use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+use hir_js::ExprId;
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
 use std::collections::BTreeSet;
@@ -172,6 +173,22 @@ pub struct InstMeta {
   pub type_id: Option<TypeId>,
   #[cfg_attr(
     feature = "serde",
+    serde(
+      default,
+      skip_serializing_if = "Option::is_none",
+      serialize_with = "serialize_expr_id"
+    )
+  )]
+  pub hir_expr: Option<ExprId>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub type_summary: Option<ValueTypeSummary>,
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub excludes_nullish: bool,
+  #[cfg_attr(
+    feature = "serde",
     serde(default, skip_serializing_if = "OwnershipState::is_default")
   )]
   pub ownership: OwnershipState,
@@ -200,6 +217,9 @@ impl InstMeta {
     self.effects.is_default()
       && self.result_type.is_default()
       && self.type_id.is_none()
+      && self.hir_expr.is_none()
+      && self.type_summary.is_none()
+      && !self.excludes_nullish
       && self.ownership.is_default()
       && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
@@ -216,6 +236,9 @@ impl Default for InstMeta {
       effects: EffectSet::default(),
       result_type: TypeInfo::default(),
       type_id: None,
+      hir_expr: None,
+      type_summary: None,
+      excludes_nullish: false,
       ownership: OwnershipState::default(),
       callee_purity: Purity::Impure,
       nullability_narrowing: None,
@@ -237,6 +260,20 @@ where
   {
     value.serialize(serializer)
   }
+}
+
+#[cfg(feature = "serde")]
+fn serialize_expr_id<S>(value: &Option<ExprId>, serializer: S) -> Result<S::Ok, S::Error>
+where
+  S: serde::Serializer,
+{
+  use serde::Serialize;
+  value.map(|id| id.0).serialize(serializer)
+}
+
+#[cfg(feature = "serde")]
+fn is_false(value: &bool) -> bool {
+  !*value
 }
 
 // PartialOrd and Ord are for some arbitrary canonical order, even if semantics of ordering is opaque.

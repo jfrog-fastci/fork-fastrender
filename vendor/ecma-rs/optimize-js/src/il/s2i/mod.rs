@@ -142,6 +142,17 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn push_value_inst(&mut self, expr: ExprId, mut inst: Inst) {
     inst.meta.type_id = self.expr_type_id(expr);
+    #[cfg(feature = "typed")]
+    {
+      inst.meta.hir_expr = Some(expr);
+      inst.meta.type_summary = Some(
+        self
+          .program
+          .types
+          .expr_value_type_summary(self.body_id, expr),
+      );
+      inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
+    }
     self.out.push(inst);
   }
 
@@ -149,6 +160,17 @@ impl<'p> HirSourceToInst<'p> {
     let tgt = self.c_temp.bump();
     let mut inst = f(tgt);
     inst.meta.type_id = self.expr_type_id(expr);
+    #[cfg(feature = "typed")]
+    {
+      inst.meta.hir_expr = Some(expr);
+      inst.meta.type_summary = Some(
+        self
+          .program
+          .types
+          .expr_value_type_summary(self.body_id, expr),
+      );
+      inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
+    }
     self.out.push(inst);
     Arg::Var(tgt)
   }

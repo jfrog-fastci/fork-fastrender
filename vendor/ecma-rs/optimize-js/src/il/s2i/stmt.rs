@@ -235,7 +235,7 @@ impl<'p> HirSourceToInst<'p> {
         after_label_id,
       ));
       let dv_arg = self.compile_expr(dv)?;
-      self.out.push(Inst::var_assign(tmp_var, dv_arg));
+      self.push_value_inst(dv, Inst::var_assign(tmp_var, dv_arg));
       self.out.push(Inst::label(after_label_id));
     };
     self.compile_destructuring(target, Arg::Var(tmp_var))
