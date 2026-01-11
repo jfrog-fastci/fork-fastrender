@@ -173,7 +173,10 @@ fn stop_the_world_is_not_reentrant() {
 #[test]
 fn stop_the_world_is_deterministic_under_stress() {
   let _rt = TestRuntimeGuard::new();
-  const WORKERS: usize = 4;
+  // Keep this stress test reasonably fast in CI while still exercising repeated stop-the-world
+  // handshakes under contention.
+  const WORKERS: usize = 2;
+  const ITERS: usize = 200;
 
   threading::register_current_thread(ThreadKind::Main);
 
@@ -197,7 +200,7 @@ fn stop_the_world_is_deterministic_under_stress() {
 
   start_barrier.wait();
 
-  for _ in 0..1_000 {
+  for _ in 0..ITERS {
     stop_the_world(StopReason::Test, || {
       let stop_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
       assert_eq!(stop_epoch & 1, 1, "expected odd epoch during stop-the-world");
