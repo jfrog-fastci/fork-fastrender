@@ -3270,7 +3270,7 @@ pub(crate) fn normalize_fragment_margins(
   is_first_fragment: bool,
   is_last_fragment: bool,
   break_before_forced: bool,
-  break_after_forced: bool,
+  _break_after_forced: bool,
   axis: &FragmentAxis,
 ) {
   const EPSILON: f32 = 0.01;
@@ -3349,11 +3349,11 @@ pub(crate) fn normalize_fragment_margins(
 
   // Normalize the end edge (margin-bottom before the break).
   //
-  // CSS Break 3 truncates margins adjoining *unforced* breaks so fragmentainers don't end with an
-  // extra margin that conceptually belongs to the following fragmentainer. Forced breaks keep both
-  // sides' margins separate (they do not collapse across the break), so preserve the trailing
-  // margin in that case.
-  if !is_last_fragment && !break_after_forced {
+  // CSS Break 3 truncates margins *before* a break, regardless of whether the break is forced or
+  // unforced. Since this fragment is the one *preceding* the break, always shrink it to the last
+  // in-flow block end so it does not retain trailing margin space that conceptually belongs to the
+  // next fragmentainer.
+  if !is_last_fragment {
     if let Some(max_end) = fragment
       .children
       .iter()
@@ -3846,17 +3846,10 @@ fn collect_break_opportunities(
     // (notably column balancing) to choose a boundary inside the gap when the fragmentainer limit
     // falls there.
     let (pos, end) = if matches!(strength, BreakStrength::Forced) {
+      // CSS Break 3 §Adjoining Margins at Breaks: forced breaks truncate margins *before* the break.
+      // Anchor the forced boundary to the end edge of the preceding child's border box so the
+      // child's bottom margin does not become part of the previous fragmentainer slice.
       let mut boundary = child_abs_end;
-      if let Some(meta) = child.block_metadata.as_ref() {
-        let mut candidate = child_abs_end + meta.margin_bottom;
-        if candidate < child_abs_end {
-          candidate = child_abs_end;
-        }
-        if let Some(next_start) = next_abs_start {
-          candidate = candidate.min(next_start);
-        }
-        boundary = candidate;
-      }
       // Forced breaks after the last in-flow child propagate to the end edge of the containing
       // block. This mirrors the `break-before` propagation logic above and prevents fragmentation
       // from creating a trailing slice that contains only the parent's padding/align-content gaps
@@ -4234,20 +4227,10 @@ fn collect_forced_boundaries_with_axes_internal(
           current_is_flex || next_is_flex
         });
         if !break_from_grid && !break_from_flex {
+          // CSS Break 3 §Adjoining Margins at Breaks: forced breaks truncate margins *before* the
+          // break. Align the forced boundary to the preceding child's border-box end so its
+          // bottom margin does not become part of the previous page slice.
           let mut boundary = child_abs_end;
-          if let Some(meta) = child.block_metadata.as_ref() {
-            let mut candidate = child_abs_end + meta.margin_bottom;
-            if candidate < child_abs_end {
-              candidate = child_abs_end;
-            }
-            if let Some(next_child) = node.children.get(idx + 1) {
-              let next_start = axis
-                .flow_range(abs_start, parent_block_size, &next_child.bounds)
-                .0;
-              candidate = candidate.min(next_start);
-            }
-            boundary = candidate;
-          }
           // Forced breaks after the last in-flow child propagate to the end edge of the containing
           // block. This matches `collect_break_opportunities` so side constraints like
           // `break-after: left/right` are applied at the actual page boundary instead of the child's
@@ -5263,6 +5246,37 @@ mod tests {
     assert!(
       (fragment.bounds.height() - 84.0).abs() < 0.01,
       "expected trailing margins to be truncated at an unforced break (bounds={:?})",
+      fragment.bounds
+    );
+  }
+
+  #[test]
+  fn normalize_fragment_margins_truncates_trailing_margins_before_forced_break() {
+    let axis = axis_from_fragment_axes(default_axes());
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    let mut child =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 84.0), 1, vec![]);
+    child.style = Some(style.clone());
+    child.block_metadata = Some(BlockFragmentMetadata {
+      margin_top: 16.0,
+      margin_bottom: 16.0,
+      clipped_top: false,
+      clipped_bottom: false,
+    });
+
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      style,
+    );
+    normalize_fragment_margins(&mut fragment, true, false, false, true, &axis);
+
+    assert!(
+      (fragment.bounds.height() - 84.0).abs() < 0.01,
+      "expected trailing margins to be truncated even when the break is forced (bounds={:?})",
       fragment.bounds
     );
   }

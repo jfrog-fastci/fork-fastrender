@@ -1272,8 +1272,8 @@ fn pagination_keeps_fragment_boundary_margins_separate() {
   );
   let trailing_space = first_page.bounds.height() - first_block.bounds.max_y();
   assert!(
-    trailing_space + 0.1 >= 30.0,
-    "first page keeps the prior block's bottom margin instead of collapsing it away"
+    trailing_space.abs() < 0.1,
+    "forced breaks should truncate the prior block's bottom margin (trailing_space={trailing_space})"
   );
 }
 
