@@ -1406,8 +1406,31 @@ impl Canvas {
     self.set_clip_with_radii(rect, None)
   }
 
+  /// Sets a clip rectangle and always builds a per-pixel clip mask.
+  ///
+  /// The default [`Canvas::set_clip_with_radii`] path may choose to represent simple rectangular
+  /// clips using only [`CanvasState::clip_rect`] bounds (for performance on very large canvases).
+  /// Most paint code can use bounds-based scissoring, but some operations (e.g. tiny-skia image
+  /// draws with a destination clip) rely on a real mask.
+  pub(crate) fn set_clip_force_mask(&mut self, rect: Rect) -> Result<()> {
+    self.set_clip_with_radii_force_mask(rect, None)
+  }
+
   /// Sets a clip rectangle with optional corner radii.
   pub fn set_clip_with_radii(&mut self, rect: Rect, radii: Option<BorderRadii>) -> Result<()> {
+    self.set_clip_with_radii_impl(rect, radii.unwrap_or(BorderRadii::ZERO), false)
+  }
+
+  /// Like [`Canvas::set_clip_with_radii`], but always builds a per-pixel clip mask.
+  pub(crate) fn set_clip_with_radii_force_mask(
+    &mut self,
+    rect: Rect,
+    radii: Option<BorderRadii>,
+  ) -> Result<()> {
+    self.set_clip_with_radii_impl(rect, radii.unwrap_or(BorderRadii::ZERO), true)
+  }
+
+  fn set_clip_with_radii_impl(&mut self, rect: Rect, radii: BorderRadii, force_mask: bool) -> Result<()> {
     let transform = self.current_state.transform;
     let clip_bounds = if transform == Transform::identity() {
       rect
@@ -1415,16 +1438,36 @@ impl Canvas {
       Self::transform_rect_aabb(rect, transform)
     };
 
-    let base_clip = match self.current_state.clip_rect {
+    let prev_clip_rect = self.current_state.clip_rect;
+    let prev_clip_mask = self.current_state.clip_mask.take();
+    let base_clip = match prev_clip_rect {
       Some(existing) => existing.intersection(clip_bounds).unwrap_or(Rect::ZERO),
       None => clip_bounds,
     };
     self.current_state.clip_rect = Some(base_clip);
 
-    let radii = radii.unwrap_or(BorderRadii::ZERO);
+    // Performance fast path: the pageset renderer frequently pushes hundreds of rectangular clips
+    // (e.g. `overflow:hidden` wrappers) onto extremely tall canvases. Building a full-size mask for
+    // every clip is O(clips * canvas_pixels) and can dominate render time. For simple axis-aligned
+    // clips under the identity transform, track only the clip bounds rectangle and let higher-level
+    // paint code scissor work to those bounds.
+    //
+    // Callers that require a true per-pixel mask can use `*_force_mask`.
+    if !force_mask && radii.is_zero() && transform == Transform::identity() && prev_clip_mask.is_none() {
+      return Ok(());
+    }
 
-    let new_mask = self.build_clip_mask(rect, radii);
-    self.current_state.clip_mask = match (new_mask, self.current_state.clip_mask.take()) {
+    let mut new_mask = self.build_clip_mask(rect, radii);
+    // If we previously accumulated only bounds-based rectangular clips (no mask) and this clip
+    // creates a mask (rounded corners, transformed rect, etc.), make sure the mask still respects
+    // the current clip bounds intersection.
+    if prev_clip_mask.is_none() && prev_clip_rect.is_some() && base_clip != clip_bounds {
+      if let Some(mask) = new_mask.as_mut() {
+        scissor_mask_to_rect(mask, base_clip)?;
+      }
+    }
+
+    self.current_state.clip_mask = match (new_mask, prev_clip_mask) {
       (Some(mut next), Some(existing)) => {
         combine_masks(&mut next, existing.as_ref())?;
         Some(Rc::new(next))
@@ -4444,6 +4487,74 @@ fn combine_masks(into: &mut Mask, existing: &Mask) -> RenderResult<()> {
   Ok(())
 }
 
+fn scissor_mask_to_rect(mask: &mut Mask, rect: Rect) -> RenderResult<()> {
+  let w = mask.width();
+  let h = mask.height();
+  if w == 0 || h == 0 {
+    return Ok(());
+  }
+  if rect.width() <= 0.0
+    || rect.height() <= 0.0
+    || !rect.x().is_finite()
+    || !rect.y().is_finite()
+    || !rect.width().is_finite()
+    || !rect.height().is_finite()
+  {
+    mask.data_mut().fill(0);
+    return Ok(());
+  }
+
+  // Use a pixel-center rule consistent with `build_clip_mask_fast_rect`.
+  let x0 = (rect.min_x() - 0.5).ceil() as i64;
+  let y0 = (rect.min_y() - 0.5).ceil() as i64;
+  let x1 = (rect.max_x() - 0.5).floor() as i64 + 1;
+  let y1 = (rect.max_y() - 0.5).floor() as i64 + 1;
+
+  let w_i64 = w as i64;
+  let h_i64 = h as i64;
+  let x0 = x0.clamp(0, w_i64);
+  let y0 = y0.clamp(0, h_i64);
+  let x1 = x1.clamp(0, w_i64);
+  let y1 = y1.clamp(0, h_i64);
+  if x1 <= x0 || y1 <= y0 {
+    mask.data_mut().fill(0);
+    return Ok(());
+  }
+
+  check_active(RenderStage::Paint)?;
+  let stride = w as usize;
+  let data = mask.data_mut();
+
+  let y0 = y0 as usize;
+  let y1 = y1 as usize;
+  let x0 = x0 as usize;
+  let x1 = x1 as usize;
+
+  // Clear rows above/below the intersection. Use a single contiguous fill per region so this stays
+  // on the hot `memset` path.
+  if y0 > 0 {
+    data[..y0 * stride].fill(0);
+  }
+  if y1 < h as usize {
+    data[y1 * stride..].fill(0);
+  }
+
+  // Clear left/right segments where the clip rect is implicitly zero.
+  let mut deadline_counter = 0usize;
+  for row in y0..y1 {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+    let off = row * stride;
+    if x0 > 0 {
+      data[off..off + x0].fill(0);
+    }
+    if x1 < stride {
+      data[off + x1..off + stride].fill(0);
+    }
+  }
+
+  Ok(())
+}
+
 pub(crate) fn crop_mask(
   mask: &Mask,
   origin_x: u32,
@@ -5106,11 +5217,27 @@ mod tests {
     canvas
       .set_clip(Rect::from_xywh(2.0, 2.0, 4.0, 4.0))
       .unwrap();
+    assert!(
+      canvas.clip_mask().is_none(),
+      "expected simple rect clip under identity transform to be represented by bounds only"
+    );
     canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Rgba::rgb(255, 0, 0));
     let pixmap = canvas.into_pixmap();
 
     assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn clip_force_mask_builds_mask() {
+    let mut canvas = Canvas::new(10, 10, Rgba::WHITE).unwrap();
+    canvas
+      .set_clip_force_mask(Rect::from_xywh(2.0, 2.0, 4.0, 4.0))
+      .unwrap();
+    assert!(
+      canvas.clip_mask().is_some(),
+      "expected set_clip_force_mask to build a per-pixel mask"
+    );
   }
 
   #[test]

@@ -7522,7 +7522,7 @@ impl DisplayListRenderer {
 
     if wants_stroke_clip && !pushed_clip {
       self.canvas.save();
-      self.canvas.set_clip(rect)?;
+      self.canvas.set_clip_force_mask(rect)?;
       pushed_clip = true;
       clip = self.canvas.clip_mask_rc();
     }
@@ -16897,7 +16897,6 @@ impl DisplayListRenderer {
         || (src_rect.y().abs() > 1e-6)
         || ((src_rect.width() - full_src_rect.width()).abs() > 1e-6)
         || ((src_rect.height() - full_src_rect.height()).abs() > 1e-6));
-
     let clip_mask = self.canvas.clip_mask_rc();
     let clip = clip_mask.as_deref();
     let pixmap_ref = pixmap.as_ref();

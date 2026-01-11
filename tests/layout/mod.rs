@@ -9,6 +9,7 @@ mod abspos_intrinsic_sizing_keywords;
 mod abspos_inline_synthetic_container;
 mod abspos_inline_wrapper_vertical_writing_mode;
 mod abspos_padding_box_translation;
+mod abspos_nested_between_insets_auto_height_containing_block;
 mod abspos_percent_bases;
 mod abspos_percent_top_auto_height_inline_trailing_space;
 mod abspos_replaced_auto_height_between_insets;

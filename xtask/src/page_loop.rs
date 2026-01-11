@@ -11,7 +11,10 @@ const DEFAULT_OUT_BASE: &str = "target/page_loop";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
-const DEFAULT_DEBUG_TIMEOUT_SECS: u64 = 180;
+// Debug builds are substantially slower, and heavyweight fixtures (e.g. news homepages) can exceed
+// 3 minutes even without hangs. Keep the default high enough that `xtask page-loop --debug` is
+// usable out-of-the-box for pageset work.
+const DEFAULT_DEBUG_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_JOBS: usize = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -105,7 +108,7 @@ pub struct PageLoopArgs {
 
   /// Per-fixture hard timeout in seconds (forwarded to both FastRender and Chrome steps).
   ///
-  /// Defaults to 120s in release mode and 180s when `--debug` is set.
+  /// Defaults to 120s in release mode and 300s when `--debug` is set.
   #[arg(long, value_name = "SECS")]
   pub timeout: Option<u64>,
 
