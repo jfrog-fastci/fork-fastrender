@@ -1,10 +1,16 @@
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
-use crate::abi::{PromiseRef, ValueRef};
+use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use std::sync::{Condvar, Mutex};
+
+use super::queue_microtask;
+
+use once_cell::sync::Lazy;
+use parking_lot::Mutex as ParkingMutex;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Internal promise state used while a promise is being settled.
 ///
@@ -12,6 +18,23 @@ use std::sync::{Condvar, Mutex};
 /// `PromiseHeader::{PENDING,FULFILLED,REJECTED}`.
 const STATE_FULFILLING: u8 = 3;
 const STATE_REJECTING: u8 = 4;
+
+const FLAG_HANDLED: u8 = 0x1;
+
+// Minimal unhandled rejection tracking used by tests and await semantics.
+//
+// This intentionally does *not* attempt to mirror browsers' delayed reporting at microtask
+// checkpoints. It is a best-effort mechanism to avoid surprising "unhandled rejection" reports
+// when `await` or `then` has observed the rejection.
+static UNHANDLED_REJECTIONS: Lazy<ParkingMutex<Vec<PromiseRef>>> = Lazy::new(|| ParkingMutex::new(Vec::new()));
+
+pub(crate) fn clear_unhandled_rejections_for_tests() {
+  UNHANDLED_REJECTIONS.lock().clear();
+}
+
+pub(crate) fn unhandled_rejection_count_for_tests() -> usize {
+  UNHANDLED_REJECTIONS.lock().len()
+}
 
 #[repr(C)]
 pub struct RtPromise {
@@ -158,6 +181,21 @@ fn drain_reactions(ptr: *mut RtPromise) {
   }
 }
 
+pub(crate) fn promise_mark_handled(p: PromiseRef) {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return;
+  }
+
+  unsafe { &(*ptr).header.flags }.fetch_or(FLAG_HANDLED, Ordering::Release);
+
+  // If the promise was previously rejected and recorded as unhandled, remove it now.
+  let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
+  if state == PromiseHeader::REJECTED {
+    UNHANDLED_REJECTIONS.lock().retain(|&pp| pp != p);
+  }
+}
+
 /// Register a reaction node on a promise.
 ///
 /// This is the unified internal mechanism used by both `await` and `then`-style APIs.
@@ -185,14 +223,16 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
     }
   }
 
-  // Mark "handled" as soon as someone attaches a reaction (await/then). This is a placeholder for
-  // future unhandled rejection tracking.
-  unsafe { &(*ptr).header.flags }.fetch_or(0x1, Ordering::Release);
+  // Mark "handled" as soon as someone attaches a reaction (await/then).
+  unsafe { &(*ptr).header.flags }.fetch_or(FLAG_HANDLED, Ordering::Release);
 
   push_reaction(ptr, node);
 
   // If the promise is already settled, drain and schedule immediately.
   let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
+  if state == PromiseHeader::REJECTED {
+    UNHANDLED_REJECTIONS.lock().retain(|&pp| pp != p);
+  }
   if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
     drain_reactions(ptr);
   }
@@ -276,6 +316,15 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   unsafe { &(*ptr).error }.store(err as usize, Ordering::Relaxed);
   unsafe { &(*ptr).value }.store(0, Ordering::Relaxed);
   state.store(PromiseHeader::REJECTED, Ordering::Release);
+
+  // If no one attached a handler yet, record as an unhandled rejection.
+  {
+    let mut unhandled = UNHANDLED_REJECTIONS.lock();
+    let handled = unsafe { &(*ptr).header.flags }.load(Ordering::Acquire) & FLAG_HANDLED != 0;
+    if !handled {
+      unhandled.push(p);
+    }
+  }
 
   drain_reactions(ptr);
 
@@ -373,4 +422,182 @@ pub(crate) fn debug_waiters_is_empty(p: PromiseRef) -> bool {
     return true;
   }
   unsafe { &(*ptr).header.reactions }.load(Ordering::Acquire) == 0
+}
+
+// -----------------------------------------------------------------------------
+// Promise resolution procedure (PromiseResolve / thenable assimilation)
+// -----------------------------------------------------------------------------
+
+static SELF_RESOLUTION_TYPE_ERROR: u8 = 0;
+static THENABLE_CALL_PANICKED: u8 = 0;
+
+#[inline]
+fn self_resolution_error() -> ValueRef {
+  (&SELF_RESOLUTION_TYPE_ERROR as *const u8).cast_mut().cast()
+}
+
+#[inline]
+fn thenable_panic_error() -> ValueRef {
+  (&THENABLE_CALL_PANICKED as *const u8).cast_mut().cast()
+}
+
+fn promise_is_pending(p: PromiseRef) -> bool {
+  matches!(promise_outcome(p), PromiseOutcome::Pending)
+}
+
+pub(crate) fn promise_resolve_into(dst: PromiseRef, input: PromiseResolveInput) {
+  // Fast path: ignore if already settled.
+  if !promise_is_pending(dst) {
+    return;
+  }
+
+  match input.kind {
+    PromiseResolveKind::Value => {
+      let value = unsafe { input.payload.value };
+      promise_resolve(dst, value);
+    }
+    PromiseResolveKind::Promise => {
+      let src = unsafe { input.payload.promise };
+      promise_resolve_promise(dst, src);
+    }
+    PromiseResolveKind::Thenable => {
+      let thenable = unsafe { input.payload.thenable };
+      promise_resolve_thenable(dst, thenable);
+    }
+  }
+}
+
+pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
+  if dst.is_null() {
+    return;
+  }
+  if !promise_is_pending(dst) {
+    return;
+  }
+
+  if src == dst {
+    promise_reject(dst, self_resolution_error());
+    return;
+  }
+  if src.is_null() {
+    // Null promises are treated as "never settles" sentinels.
+    return;
+  }
+
+  struct AdoptContinuation {
+    dst: PromiseRef,
+    src: PromiseRef,
+  }
+
+  extern "C" fn adopt_on_settle(data: *mut u8) {
+    // Safety: allocated by `promise_resolve_promise`.
+    let cont = unsafe { Box::from_raw(data as *mut AdoptContinuation) };
+    match promise_outcome(cont.src) {
+      PromiseOutcome::Fulfilled(v) => promise_resolve(cont.dst, v),
+      PromiseOutcome::Rejected(e) => promise_reject(cont.dst, e),
+      PromiseOutcome::Pending => {
+        // Shouldn't happen (callback only runs after settlement) but be robust: resubscribe.
+        let cont = Box::new(AdoptContinuation {
+          dst: cont.dst,
+          src: cont.src,
+        });
+        promise_then(cont.src, adopt_on_settle, Box::into_raw(cont) as *mut u8);
+      }
+    }
+  }
+
+  let cont = Box::new(AdoptContinuation { dst, src });
+  promise_then(src, adopt_on_settle, Box::into_raw(cont) as *mut u8);
+}
+
+pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
+  if dst.is_null() {
+    return;
+  }
+  if !promise_is_pending(dst) {
+    return;
+  }
+
+  // Self-resolution check (thenable refers to the same object as the promise).
+  if thenable.ptr.cast::<core::ffi::c_void>() == dst.0 {
+    promise_reject(dst, self_resolution_error());
+    return;
+  }
+
+  #[repr(C)]
+  struct ThenableJob {
+    dst: PromiseRef,
+    thenable: ThenableRef,
+  }
+
+  struct ThenableResolver {
+    dst: PromiseRef,
+    called: AtomicBool,
+  }
+
+  extern "C" fn thenable_resolve(data: *mut u8, value: PromiseResolveInput) {
+    // Safety: resolver is intentionally leaked until process exit (promises are currently leaked as
+    // well).
+    let resolver = unsafe { &*(data as *const ThenableResolver) };
+    if resolver
+      .called
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+      .is_err()
+    {
+      return;
+    }
+
+    promise_resolve_into(resolver.dst, value);
+  }
+
+  extern "C" fn thenable_reject(data: *mut u8, reason: ValueRef) {
+    // Safety: resolver is intentionally leaked until process exit (promises are currently leaked as
+    // well).
+    let resolver = unsafe { &*(data as *const ThenableResolver) };
+    if resolver
+      .called
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+      .is_err()
+    {
+      return;
+    }
+
+    promise_reject(resolver.dst, reason);
+  }
+
+  extern "C" fn run_thenable_job(data: *mut u8) {
+    // Safety: allocated by `promise_resolve_thenable` and run as a microtask.
+    let job = unsafe { Box::from_raw(data as *mut ThenableJob) };
+
+    // If the destination promise was already settled by another path, do not invoke the thenable at
+    // all.
+    if !promise_is_pending(job.dst) {
+      return;
+    }
+
+    if job.thenable.vtable.is_null() {
+      promise_reject(job.dst, self_resolution_error());
+      return;
+    }
+
+    let resolver = Box::new(ThenableResolver {
+      dst: job.dst,
+      called: AtomicBool::new(false),
+    });
+    let resolver_ptr = Box::into_raw(resolver) as *mut u8;
+
+    let call_then = unsafe { (*job.thenable.vtable).call_then };
+
+    let thrown = catch_unwind(AssertUnwindSafe(|| unsafe {
+      (call_then)(job.thenable.ptr, thenable_resolve, thenable_reject, resolver_ptr)
+    }))
+    .unwrap_or_else(|_| thenable_panic_error());
+
+    if !thrown.is_null() {
+      thenable_reject(resolver_ptr, thrown);
+    }
+  }
+
+  let job = Box::new(ThenableJob { dst, thenable });
+  queue_microtask(run_thenable_job, Box::into_raw(job) as *mut u8);
 }

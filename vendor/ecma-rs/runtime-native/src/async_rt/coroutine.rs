@@ -1,8 +1,12 @@
 use crate::abi::PromiseRef;
+use crate::abi::PromiseResolveInput;
+use crate::abi::PromiseResolveKind;
 use crate::abi::RtCoroStatus;
 use crate::abi::RtCoroutineHeader;
 
-use super::promise::{promise_new, promise_outcome, promise_register_reaction, PromiseOutcome};
+use super::promise::{
+  promise_mark_handled, promise_new, promise_outcome, promise_register_reaction, promise_resolve_into, PromiseOutcome,
+};
 use super::strict_await_yields;
 use super::{queue_macrotask, queue_microtask, TaskFn};
 
@@ -163,6 +167,7 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
     match promise_outcome(awaited) {
       PromiseOutcome::Pending => {}
       PromiseOutcome::Fulfilled(v) => {
+        promise_mark_handled(awaited);
         unsafe {
           (*coro).await_is_error = 0;
           (*coro).await_value = v;
@@ -172,6 +177,7 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
         return;
       }
       PromiseOutcome::Rejected(e) => {
+        promise_mark_handled(awaited);
         unsafe {
           (*coro).await_is_error = 1;
           (*coro).await_value = core::ptr::null_mut();
@@ -185,4 +191,19 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
 
   let node = alloc_await_reaction(coro);
   promise_register_reaction(awaited, node);
+}
+
+pub(crate) fn coro_await_value(coro: *mut RtCoroutineHeader, awaited: PromiseResolveInput, next_state: u32) {
+  match awaited.kind {
+    PromiseResolveKind::Promise => {
+      let p = unsafe { awaited.payload.promise };
+      coro_await(coro, p, next_state);
+    }
+    PromiseResolveKind::Value | PromiseResolveKind::Thenable => {
+      // Await semantics are equivalent to `PromiseResolve` + `then`.
+      let p = promise_new();
+      promise_resolve_into(p, awaited);
+      coro_await(coro, p, next_state);
+    }
+  }
 }

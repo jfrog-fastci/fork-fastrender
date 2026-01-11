@@ -87,6 +87,7 @@ fn c_can_link_and_call_runtime_native() {
     r#"
 #include "runtime_native.h"
 #include <unistd.h>
+
 static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;

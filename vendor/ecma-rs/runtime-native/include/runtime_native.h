@@ -83,6 +83,49 @@ typedef PromiseHeader* PromiseRef;
 typedef struct RtPromise RtPromise;
 typedef RtPromise* LegacyPromiseRef;
 
+// -----------------------------------------------------------------------------
+// Promise resolution ABI (PromiseResolve / thenable assimilation)
+// -----------------------------------------------------------------------------
+
+// Tag for PromiseResolveInput.
+typedef uint8_t PromiseResolveKind;
+enum {
+  RT_PROMISE_RESOLVE_VALUE = 0,
+  RT_PROMISE_RESOLVE_PROMISE = 1,
+  RT_PROMISE_RESOLVE_THENABLE = 2,
+};
+
+typedef struct PromiseResolveInput PromiseResolveInput;
+
+// Thenable ("PromiseLike") vtable.
+typedef struct ThenableVTable {
+  // Call `thenable.then(on_fulfilled, on_rejected)`.
+  //
+  // Returns non-null ValueRef if calling `then` synchronously "throws".
+  ValueRef (*call_then)(
+    uint8_t* thenable,
+    void (*on_fulfilled)(uint8_t* data, PromiseResolveInput value),
+    void (*on_rejected)(uint8_t* data, ValueRef reason),
+    uint8_t* data
+  );
+} ThenableVTable;
+
+typedef struct ThenableRef {
+  const ThenableVTable* vtable;
+  uint8_t* ptr;
+} ThenableRef;
+
+typedef union PromiseResolvePayload {
+  ValueRef value;
+  LegacyPromiseRef promise;
+  ThenableRef thenable;
+} PromiseResolvePayload;
+
+struct PromiseResolveInput {
+  PromiseResolveKind kind;
+  PromiseResolvePayload payload;
+};
+
 // An FFI-friendly UTF-8 byte string reference.
 typedef struct StringRef {
   const uint8_t* ptr;
@@ -378,6 +421,9 @@ void rt_async_set_strict_await_yields(bool strict);
 // -----------------------------------------------------------------------------
 LegacyPromiseRef rt_promise_new_legacy(void);
 void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);
+void rt_promise_resolve_into_legacy(LegacyPromiseRef p, PromiseResolveInput value);
+void rt_promise_resolve_promise_legacy(LegacyPromiseRef p, LegacyPromiseRef other);
+void rt_promise_resolve_thenable_legacy(LegacyPromiseRef p, ThenableRef thenable);
 void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);
 void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
 
@@ -407,6 +453,7 @@ LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);
 bool rt_async_poll_legacy(void);
 LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);
 void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
+void rt_coro_await_value_legacy(RtCoroutineHeader* coro, PromiseResolveInput awaited, uint32_t next_state);
 
 // -----------------------------------------------------------------------------
 // Microtasks + timers (queueMicrotask/setTimeout/setInterval)

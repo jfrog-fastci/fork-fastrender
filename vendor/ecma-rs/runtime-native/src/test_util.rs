@@ -25,6 +25,7 @@ static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 /// it only clears per-process queues and registrations so each test starts from a blank slate.
 pub fn reset_runtime_state() {
   async_rt::clear_state_for_tests();
+  async_rt::promise::clear_unhandled_rejections_for_tests();
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
   time::debug_clear_state_for_tests();
@@ -112,4 +113,8 @@ impl Drop for PromiseWaiterRaceGuard {
 /// Debug/test helper: is the promise's reaction list currently empty?
 pub fn promise_waiters_is_empty(p: PromiseRef) -> bool {
   async_rt::promise::debug_waiters_is_empty(p)
+}
+
+pub fn unhandled_rejection_count() -> usize {
+  async_rt::promise::unhandled_rejection_count_for_tests()
 }

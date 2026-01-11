@@ -14,6 +14,109 @@ pub type TimerId = u64;
 /// payload.
 pub type ValueRef = *mut c_void;
 
+// -----------------------------------------------------------------------------
+// Promise resolution ABI (PromiseResolve / thenable assimilation)
+// -----------------------------------------------------------------------------
+
+/// Tag for [`PromiseResolveInput`].
+///
+/// This is the native runtime equivalent of ECMAScript's "promise resolution
+/// procedure" input, allowing codegen to explicitly represent:
+/// - an immediate value,
+/// - another runtime promise (adoption),
+/// - or a typed thenable (`PromiseLike`) that must be assimilated.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromiseResolveKind {
+  /// A non-thenable value.
+  Value = 0,
+  /// Another runtime-native promise that should be adopted.
+  Promise = 1,
+  /// A typed thenable that must be assimilated by calling its `then`.
+  Thenable = 2,
+}
+
+/// Callback passed to a typed thenable's `then` implementation.
+///
+/// This corresponds to the `resolve` function in the spec's
+/// `PromiseResolveThenableJob`.
+pub type ThenableResolveCallback = extern "C" fn(*mut u8, PromiseResolveInput);
+
+/// Callback passed to a typed thenable's `then` implementation.
+///
+/// This corresponds to the `reject` function in the spec's
+/// `PromiseResolveThenableJob`.
+pub type ThenableRejectCallback = extern "C" fn(*mut u8, ValueRef);
+
+/// VTable describing a typed thenable (`PromiseLike<T>`).
+///
+/// Generated code can represent any `T: PromiseLike<U>` as `(ptr, vtable)` and
+/// invoke the `then` method via [`ThenableVTable::call_then`], without dynamic
+/// property lookup.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ThenableVTable {
+  /// Call `thenable.then(on_fulfilled, on_rejected)`.
+  ///
+  /// Returns a non-null `ValueRef` if calling `then` synchronously "throws"
+  /// (represented in this milestone runtime as an error payload pointer).
+  pub call_then: unsafe extern "C" fn(
+    thenable: *mut u8,
+    on_fulfilled: ThenableResolveCallback,
+    on_rejected: ThenableRejectCallback,
+    data: *mut u8,
+  ) -> ValueRef,
+}
+
+/// ABI representation of a typed thenable value.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThenableRef {
+  pub vtable: *const ThenableVTable,
+  pub ptr: *mut u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union PromiseResolvePayload {
+  pub value: ValueRef,
+  pub promise: PromiseRef,
+  pub thenable: ThenableRef,
+}
+
+/// Input to the native runtime's promise resolution procedure.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PromiseResolveInput {
+  pub kind: PromiseResolveKind,
+  pub payload: PromiseResolvePayload,
+}
+
+impl PromiseResolveInput {
+  #[inline]
+  pub const fn value(value: ValueRef) -> Self {
+    Self {
+      kind: PromiseResolveKind::Value,
+      payload: PromiseResolvePayload { value },
+    }
+  }
+
+  #[inline]
+  pub const fn promise(promise: PromiseRef) -> Self {
+    Self {
+      kind: PromiseResolveKind::Promise,
+      payload: PromiseResolvePayload { promise },
+    }
+  }
+
+  #[inline]
+  pub const fn thenable(thenable: ThenableRef) -> Self {
+    Self {
+      kind: PromiseResolveKind::Thenable,
+      payload: PromiseResolvePayload { thenable },
+    }
+  }
+}
 /// Optional GC/runtime statistics snapshot exposed for debugging/benching.
 ///
 /// Enabled by the `gc_stats` Cargo feature.

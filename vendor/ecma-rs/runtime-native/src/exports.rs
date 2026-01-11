@@ -1,8 +1,10 @@
 use crate::abi::PromiseRef;
+use crate::abi::PromiseResolveInput;
 use crate::abi::RtCoroutineHeader;
 use crate::abi::RtShapeId;
 use crate::abi::TaskId;
 use crate::abi::TimerId;
+use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::alloc;
@@ -1056,6 +1058,24 @@ pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
 }
 
 #[no_mangle]
+pub extern "C" fn rt_promise_resolve_into_legacy(p: PromiseRef, value: PromiseResolveInput) {
+  ensure_event_loop_thread_registered();
+  async_rt::promise::promise_resolve_into(p, value)
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: PromiseRef) {
+  ensure_event_loop_thread_registered();
+  async_rt::promise::promise_resolve_promise(p, other)
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_resolve_thenable_legacy(p: PromiseRef, thenable: ThenableRef) {
+  ensure_event_loop_thread_registered();
+  async_rt::promise::promise_resolve_thenable(p, thenable)
+}
+
+#[no_mangle]
 pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
   abort_on_panic(|| {
     ensure_event_loop_thread_registered();
@@ -1069,6 +1089,12 @@ pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: Pr
     ensure_event_loop_thread_registered();
     async_rt::coroutine::coro_await(coro, awaited, next_state)
   })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_coro_await_value_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseResolveInput, next_state: u32) {
+  ensure_event_loop_thread_registered();
+  async_rt::coroutine::coro_await_value(coro, awaited, next_state)
 }
 
 // -----------------------------------------------------------------------------
