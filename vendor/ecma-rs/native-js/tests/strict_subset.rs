@@ -97,6 +97,60 @@ fn rejects_object_literal() {
 }
 
 #[test]
+fn rejects_array_literal() {
+  let err = validate("const xs = [1, 2];\nvoid xs;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_member_access() {
+  let err = validate("const x = Math.PI;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_eval() {
+  let err = validate("eval(\"1 + 1\");\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_new_function() {
+  let err = validate("new Function(\"return 1;\");\n", FileKind::Ts).unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_arguments_object() {
+  let err = validate(
+    r#"
+      function f() {
+        void arguments;
+      }
+      f();
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
+fn rejects_try_and_throw() {
+  let err = validate(
+    r#"
+      try {
+        throw 1;
+      } catch (e) {
+      }
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn accepts_basic_numeric_function() {
   let ok = validate(
     r#"
