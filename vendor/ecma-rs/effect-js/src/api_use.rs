@@ -212,7 +212,7 @@ fn resolve_member_path_segments(
   member: &MemberExpr,
   names: &NameInterner,
 ) -> Option<Vec<String>> {
-  let prop = object_key_to_string(&member.property, names)?;
+  let prop = object_key_to_string(body, &member.property, names)?;
 
   // Optional chaining is handled by callers (`resolve_api_use`) to avoid
   // reporting APIs that may not execute.
@@ -402,12 +402,23 @@ fn resolve_ident_base(
   Some(vec![name_str])
 }
 
-fn object_key_to_string(key: &ObjectKey, names: &NameInterner) -> Option<String> {
+fn object_key_to_string(body: &Body, key: &ObjectKey, names: &NameInterner) -> Option<String> {
   match key {
     ObjectKey::Ident(id) => Some(names.resolve(*id)?.to_string()),
     ObjectKey::String(s) => Some(s.clone()),
     ObjectKey::Number(n) => Some(n.clone()),
-    ObjectKey::Computed(_) => None,
+    ObjectKey::Computed(expr) => {
+      // Allow bracket access when the key is a literal (e.g. `obj["prop"]`).
+      // Non-literal keys remain unresolved.
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(Literal::String(lit)) => Some(lit.lossy.clone()),
+        ExprKind::Literal(Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(Literal::BigInt(n)) => Some(n.clone()),
+        _ => None,
+      }
+    }
   }
 }
 
@@ -463,7 +474,7 @@ fn extract_require_member_path(
   if mem.optional {
     return None;
   }
-  let prop = object_key_to_string(&mem.property, names)?;
+  let prop = object_key_to_string(body, &mem.property, names)?;
   let (module, mut path) = extract_require_member_path(body, mem.object, names)?;
   path.push(prop);
   Some((module, path))
@@ -511,7 +522,7 @@ fn resolve_require_binding(
             continue;
           };
           for prop in &obj.props {
-            let Some(key) = object_key_to_string(&prop.key, names) else {
+            let Some(key) = object_key_to_string(body, &prop.key, names) else {
               continue;
             };
             let PatKind::Ident(local) = &body.pats.get(prop.value.0 as usize)?.kind else {
@@ -862,6 +873,53 @@ mod tests {
   }
 
   #[test]
+  fn resolves_constructor_and_getter_via_computed_key() {
+    let source = r#"const p = new URL("https://example.com")["pathname"];"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let new_call = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("URL")
+          )
+      }
+      _ => false,
+    });
+
+    let pathname_member = find_expr(body, |kind| match kind {
+      ExprKind::Member(member) => match &member.property {
+        ObjectKey::Computed(prop) => matches!(
+          body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+          Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "pathname"
+        ),
+        _ => false,
+      },
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, new_call, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL"),
+        kind: ApiUseKind::Construct,
+      })
+    );
+    assert_eq!(
+      resolve_api_use(file, body, pathname_member, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL.prototype.pathname"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
   fn resolves_global_this_constructor_and_getter() {
     let source = r#"const p = new globalThis.URL("https://example.com").pathname;"#;
     let lowered = hir_js::lower_from_source(source).expect("lower");
@@ -911,6 +969,58 @@ mod tests {
   }
 
   #[test]
+  fn resolves_global_this_constructor_and_getter_via_computed_key() {
+    let source = r#"const p = new globalThis.URL("https://example.com")["pathname"];"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let new_call = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(mem))
+              if matches!(&mem.property, ObjectKey::Ident(id) if names.resolve(*id) == Some("URL"))
+                && matches!(
+                  body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
+                  Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("globalThis")
+                )
+          )
+      }
+      _ => false,
+    });
+
+    let pathname_member = find_expr(body, |kind| match kind {
+      ExprKind::Member(member) => match &member.property {
+        ObjectKey::Computed(prop) => matches!(
+          body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+          Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "pathname"
+        ),
+        _ => false,
+      },
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, new_call, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL"),
+        kind: ApiUseKind::Construct,
+      })
+    );
+    assert_eq!(
+      resolve_api_use(file, body, pathname_member, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL.prototype.pathname"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
   fn resolves_math_sqrt_call() {
     let source = r#"Math.sqrt(4);"#;
     let lowered = hir_js::lower_from_source(source).expect("lower");
@@ -919,6 +1029,43 @@ mod tests {
     let body = lowered.body(file.root_body).expect("root body");
 
     let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Math.sqrt"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_math_sqrt_call_via_computed_key() {
+    let source = r#"Math["sqrt"](4);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        !call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(member))
+              if matches!(
+                &member.property,
+                ObjectKey::Computed(prop)
+                  if matches!(
+                    body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+                    Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "sqrt"
+                  )
+              )
+          )
+      }
+      _ => false,
+    });
 
     let kb = kb_for_tests();
     assert_eq!(
@@ -966,6 +1113,35 @@ mod tests {
         &member.property,
         ObjectKey::Ident(id) if names.resolve(*id) == Some("PI")
       ),
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, pi_member, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Math.PI"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_value_property_read_as_get_via_computed_key() {
+    let source = r#"Math["PI"];"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let pi_member = find_expr(body, |kind| match kind {
+      ExprKind::Member(member) => match &member.property {
+        ObjectKey::Computed(prop) => matches!(
+          body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+          Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "PI"
+        ),
+        _ => false,
+      },
       _ => false,
     });
 
@@ -1062,6 +1238,46 @@ fs.readFile("x", () => {});
   }
 
   #[test]
+  fn resolves_require_namespace_call_via_computed_key() {
+    let source = r#"
+const fs = require("node:fs");
+fs["readFile"]("x", () => {});
+"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        !call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(member))
+              if matches!(
+                &member.property,
+                ObjectKey::Computed(prop)
+                  if matches!(
+                    body.exprs.get(prop.0 as usize).map(|e| &e.kind),
+                    Some(ExprKind::Literal(Literal::String(lit))) if lit.lossy == "readFile"
+                  )
+              )
+          )
+      }
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("node:fs.readFile"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
   fn resolves_default_import_namespace_call() {
     let source = r#"
 import fs from "node:fs";
@@ -1103,6 +1319,33 @@ fs.readFile("x", () => {});
     let source = r#"
 const resp = new Response();
 resp.json();
+"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => !call.is_new,
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Response.prototype.json"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[cfg(feature = "typed")]
+  #[test]
+  fn resolves_inferred_receiver_method_call_via_computed_key() {
+    let source = r#"
+const resp = new Response();
+resp["json"]();
 "#;
     let lowered = hir_js::lower_from_source(source).expect("lower");
     let file = lowered.hir.as_ref();
