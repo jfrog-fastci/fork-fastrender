@@ -42,6 +42,11 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 This works with both **GNU ld** and **lld** (for GNU ld PIE builds, prefer
 `runtime-native/link/stackmaps_gnuld.ld` or use `scripts/native_link.sh` to avoid RWX segments),
 and also defines stable boundary symbols for runtime discovery (see below).
+
+> Note: `runtime-native/link/stackmaps.ld` is injected via the GNU ld/LLD linker-script
+> `INSERT AFTER` mechanism. If you use a linker that doesn't support `INSERT` (some
+> alternative linkers do not), switch to GNU ld or lld (e.g. `clang -fuse-ld=lld`),
+> or avoid `--gc-sections`.
 The repository’s wrapper does this for you:
 
 ```bash

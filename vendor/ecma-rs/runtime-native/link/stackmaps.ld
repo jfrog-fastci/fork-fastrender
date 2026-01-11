@@ -27,6 +27,10 @@
  * fragment is used when the input objects don't contribute any `.rodata`
  * (common in minimal binaries/tests).
  *
+ * This fragment relies on the GNU ld/LLD `INSERT AFTER` mechanism so we can
+ * inject a small section definition without replacing the entire default linker
+ * script. If your linker does not support `INSERT`, switch to GNU ld or lld.
+ *
  * Note: GNU ld assigns an `INSERT AFTER .text` output section to the same LOAD
  * segment as `.text` by default. If stackmaps are made writable to avoid
  * `DT_TEXTREL` in PIE mode, that can produce an RWX segment. For GNU ld PIE
