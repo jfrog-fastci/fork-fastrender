@@ -548,12 +548,24 @@ mod imp {
             let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
 
             let addr = ConnectAddr::new(addr);
+            let connect_stability = crate::debug_stability::record(connect_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::SockAddr,
+                    addr.addr_ptr().cast::<u8>(),
+                );
+            });
             let connect_entry = opcode::Connect::new(types::Fd(fd), addr.addr_ptr(), addr.addr_len())
                 .build()
                 .flags(squeue::Flags::IO_LINK)
                 .user_data(connect_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -564,6 +576,12 @@ mod imp {
             self.in_flight().insert(
                 connect_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&connect_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::SockAddr,
+                            addr.addr_ptr().cast::<u8>(),
+                        );
+                    });
                     let _addr = addr;
                     if let Some(shared) = connect_weak.upgrade() {
                         shared.complete(result, ());
@@ -574,6 +592,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, connect_id);
@@ -614,6 +638,16 @@ mod imp {
             let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
 
             let mut addr = AcceptAddr::new();
+            let accept_stability = crate::debug_stability::record(accept_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::SockAddr,
+                    addr.addr_ptr_const().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::OutParam,
+                    addr.addr_len_ptr_const().cast::<u8>(),
+                );
+            });
             let accept_entry = opcode::Accept::new(
                 types::Fd(listener_fd),
                 addr.addr_ptr(),
@@ -625,6 +659,12 @@ mod imp {
             .user_data(accept_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -635,6 +675,16 @@ mod imp {
             self.in_flight().insert(
                 accept_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&accept_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::SockAddr,
+                            addr.addr_ptr_const().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::OutParam,
+                            addr.addr_len_ptr_const().cast::<u8>(),
+                        );
+                    });
                     let peer = if result < 0 { None } else { addr.peer_addr() };
                     if let Some(shared) = accept_weak.upgrade() {
                         shared.complete(result, peer);
@@ -645,6 +695,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, accept_id);
@@ -712,6 +768,12 @@ mod imp {
                 .user_data(read_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -743,6 +805,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, read_id);
@@ -810,6 +878,12 @@ mod imp {
                 .user_data(write_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -841,6 +915,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, write_id);
@@ -943,6 +1023,12 @@ mod imp {
                 .user_data(send_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -988,6 +1074,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, send_id);
@@ -1095,6 +1187,12 @@ mod imp {
                 .user_data(recv_id.0);
 
             let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_stability = crate::debug_stability::record(timeout_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::Timespec,
+                    (&*ts as *const types::Timespec).cast::<u8>(),
+                );
+            });
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.0);
@@ -1155,6 +1253,12 @@ mod imp {
             self.in_flight().insert(
                 timeout_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&timeout_stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::Timespec,
+                            (&*ts as *const types::Timespec).cast::<u8>(),
+                        );
+                    });
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, recv_id);
@@ -1700,6 +1804,12 @@ mod imp {
 
             // Heap-owned sockaddr buffer; must remain valid until the connect CQE.
             let addr = ConnectAddr::new(addr);
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::SockAddr,
+                    addr.addr_ptr().cast::<u8>(),
+                );
+            });
             let entry = opcode::Connect::new(types::Fd(fd), addr.addr_ptr(), addr.addr_len())
                 .build()
                 .user_data(id.0);
@@ -1709,6 +1819,12 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::SockAddr,
+                            addr.addr_ptr().cast::<u8>(),
+                        );
+                    });
                     // Keep the address buffer alive until the target CQE.
                     let _addr = addr;
                     if let Some(shared) = weak.upgrade() {
@@ -1733,6 +1849,16 @@ mod imp {
 
             // Heap-owned sockaddr + socklen buffers; must remain valid until the accept CQE.
             let mut addr = AcceptAddr::new();
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::SockAddr,
+                    addr.addr_ptr_const().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::OutParam,
+                    addr.addr_len_ptr_const().cast::<u8>(),
+                );
+            });
             let entry = opcode::Accept::new(types::Fd(listener_fd), addr.addr_ptr(), addr.addr_len_ptr())
                 .flags(flags)
                 .build()
@@ -1743,6 +1869,16 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::SockAddr,
+                            addr.addr_ptr_const().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::OutParam,
+                            addr.addr_len_ptr_const().cast::<u8>(),
+                        );
+                    });
                     let peer = addr.peer_addr();
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, peer);
