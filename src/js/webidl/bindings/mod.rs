@@ -508,6 +508,11 @@ mod tests {
 
         let mut hooks = HostHooksWithBindingsHost::new(&mut host);
         let mut scope = heap.scope();
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::InvariantViolation("missing intrinsics"))?;
+        let array_proto = intr.array_prototype();
+        scope.push_root(Value::Object(array_proto))?;
 
         // globalThis.URLSearchParams
         let global = realm.global_object();
@@ -551,9 +556,15 @@ mod tests {
         // new URLSearchParams([["x", "1"], ["y", "2"]])
         let seq_outer = scope.alloc_array(0)?;
         scope.push_root(Value::Object(seq_outer))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(seq_outer, Some(array_proto))?;
 
         let pair0 = scope.alloc_array(0)?;
         scope.push_root(Value::Object(pair0))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(pair0, Some(array_proto))?;
         let x_str = scope.alloc_string("x")?;
         scope.push_root(Value::String(x_str))?;
         let idx0 = alloc_key(&mut scope, "0")?;
@@ -563,6 +574,9 @@ mod tests {
 
         let pair1 = scope.alloc_array(0)?;
         scope.push_root(Value::Object(pair1))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(pair1, Some(array_proto))?;
         let y_str = scope.alloc_string("y")?;
         scope.push_root(Value::String(y_str))?;
         let idx0 = alloc_key(&mut scope, "0")?;
