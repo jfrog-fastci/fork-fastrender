@@ -66,6 +66,19 @@ impl SimpleRememberedSet {
     Self::default()
   }
 
+  /// Test-only helper: drop all remembered-set entries without touching the objects.
+  ///
+  /// Integration tests often allocate ad-hoc "fake" objects (plain `Box<T>` or raw `alloc_zeroed`)
+  /// and then call exported barriers on them. Those objects are freed by the test harness, so the
+  /// runtime must not dereference remembered-set pointers during global test cleanup.
+  ///
+  /// This method is intentionally *weaker* than [`RememberedSet::clear`]: it only forgets the
+  /// addresses and does **not** clear the per-object `REMEMBERED` header bit.
+  #[doc(hidden)]
+  pub fn clear_for_tests(&mut self) {
+    self.objs.clear();
+  }
+
   /// Record an old-generation object as potentially containing young-generation pointers.
   ///
   /// This is intended for use by write barriers. The object is added at most once; the per-object

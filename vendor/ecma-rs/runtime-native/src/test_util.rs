@@ -110,11 +110,13 @@ impl TestGcGuard {
 
 impl Drop for TestGcGuard {
   fn drop(&mut self) {
-    // Clear any remembered-set state so tests that call the write barrier do not leave dangling raw
-    // pointers behind (the remset stores `*mut u8` addresses).
-    //
-    // Note: this resets the young range too; we restore the previous range below.
+    // Clear any remembered-set entries created by write-barrier tests. Those tests typically
+    // allocate ad-hoc objects (plain boxes / raw allocations) which are freed at the end of the
+    // test, so the runtime must not retain their addresses across tests.
     crate::clear_write_barrier_state_for_tests();
+
+    // Note: `clear_write_barrier_state_for_tests` resets the young range too; restore the previous
+    // range below.
     YOUNG_SPACE
       .start
       .store(self.prev_young_start, Ordering::Release);

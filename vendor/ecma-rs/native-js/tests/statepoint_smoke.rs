@@ -101,9 +101,10 @@ fn statepoint_smoke() {
       )
     });
 
-  let has_indirect = record.locations.iter().any(|l| {
-    matches!(l, runtime_native::stackmaps::Location::Indirect { .. })
-  });
+  let has_indirect = record
+    .locations
+    .iter()
+    .any(|l| matches!(l, runtime_native::stackmaps::Location::Indirect { .. }));
   assert!(has_indirect, "expected at least one Indirect stack location");
 
   let nonconst = record
