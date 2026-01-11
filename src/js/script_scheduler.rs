@@ -2356,6 +2356,18 @@ mod state_machine_tests {
     }
   }
 
+  fn importmap_inline(text: &str) -> ScriptElementSpec {
+    let mut spec = classic_inline(text);
+    spec.script_type = ScriptType::ImportMap;
+    spec
+  }
+
+  fn importmap_inline_dynamic(text: &str) -> ScriptElementSpec {
+    let mut spec = classic_inline_dynamic(text);
+    spec.script_type = ScriptType::ImportMap;
+    spec
+  }
+
   fn with_nomodule(mut spec: ScriptElementSpec) -> ScriptElementSpec {
     spec.nomodule_attr = true;
     spec
@@ -3185,6 +3197,59 @@ mod state_machine_tests {
     assert!(
       h.blocked_parser_on.is_none(),
       "dynamic module scripts must not block parsing"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_importmap_executes_synchronously() -> Result<()> {
+    let mut h = Harness::new();
+    h.discover(importmap_inline("MAP"))?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:MAP".to_string(), "microtask:MAP".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_executes_as_task() -> Result<()> {
+    let mut h = Harness::new();
+    h.discover_dynamic(importmap_inline_dynamic("MAP"))?;
+    assert!(
+      h.host.log.is_empty(),
+      "dynamic import maps must not execute synchronously"
+    );
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:MAP".to_string(), "microtask:MAP".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_scripts_with_src_queue_error_and_do_not_execute_inline_fallback() -> Result<()> {
+    let mut h = Harness::new();
+
+    let mut spec = classic_external("https://example.com/importmap.json", false, false);
+    spec.script_type = ScriptType::ImportMap;
+    spec.inline_text = "INLINE".to_string();
+    h.discover(spec)?;
+
+    assert!(
+      h.started_fetches.is_empty(),
+      "import map scripts with a src attribute must not start fetch"
+    );
+    assert!(
+      h.started_module_graph_fetches.is_empty(),
+      "import map scripts with a src attribute must not start module graph fetch"
+    );
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["event:error".to_string()],
+      "import map scripts with a src attribute must not execute their inline contents"
     );
     Ok(())
   }
