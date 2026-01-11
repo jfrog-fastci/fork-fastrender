@@ -6,13 +6,31 @@ use crate::async_rt::TaskDropFn;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
 use crate::async_runtime;
+use crate::clock::{Clock, RealClock};
 use crate::sync::GcAwareMutex;
 use crate::threading;
+use arc_swap::ArcSwap;
 use std::collections::VecDeque;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+
+struct ClockState {
+  clock: Arc<dyn Clock>,
+  base: Instant,
+}
+
+impl ClockState {
+  #[inline]
+  fn now_std(&self) -> Instant {
+    self
+      .base
+      .checked_add(self.clock.now())
+      .unwrap_or_else(Instant::now)
+  }
+}
 
 pub struct EventLoop {
   poll_lock: GcAwareMutex<()>,
@@ -20,6 +38,7 @@ pub struct EventLoop {
   macrotasks: GcAwareMutex<VecDeque<Task>>,
   timers: Timers,
   reactor: Reactor,
+  clock: ArcSwap<ClockState>,
 }
 
 struct ParkedGuard;
@@ -51,13 +70,33 @@ const MAX_RUN_UNTIL_IDLE_TURNS: usize = 1_000_000;
 
 impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
+    let base = Instant::now();
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::with_start(base));
     Ok(Self {
       poll_lock: GcAwareMutex::new(()),
       microtasks: GcAwareMutex::new(VecDeque::new()),
       macrotasks: GcAwareMutex::new(VecDeque::new()),
       timers: Timers::new(),
       reactor: Reactor::new()?,
+      clock: ArcSwap::from_pointee(ClockState { clock, base }),
     })
+  }
+
+  #[inline]
+  pub(crate) fn now(&self) -> Instant {
+    self.clock.load().now_std()
+  }
+
+  pub(crate) fn set_clock_for_tests(&self, clock: Arc<dyn Clock>) {
+    let now = Instant::now();
+    let base = now.checked_sub(clock.now()).unwrap_or(now);
+    self.clock.store(Arc::new(ClockState { clock, base }));
+  }
+
+  pub(crate) fn reset_clock_for_tests(&self) {
+    let base = Instant::now();
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::with_start(base));
+    self.clock.store(Arc::new(ClockState { clock, base }));
   }
 
   pub fn enqueue_microtask(&self, task: Task) {
@@ -199,7 +238,7 @@ impl EventLoop {
   }
 
   fn flush_due_timers(&self) {
-    let now = Instant::now();
+    let now = self.now();
     let due = self.timers.drain_due(now);
     if due.is_empty() {
       return;
@@ -360,7 +399,7 @@ impl EventLoop {
       return -1;
     };
 
-    let now = Instant::now();
+    let now = self.now();
     if deadline <= now {
       return 0;
     }
@@ -451,6 +490,14 @@ impl EventLoop {
 
   pub(crate) fn debug_timers_count(&self) -> usize {
     self.timers.len()
+  }
+
+  pub(crate) fn is_idle_for_tests(&self) -> bool {
+    !self.reactor.has_watchers()
+      && !self.timers.has_timers()
+      && !crate::async_rt::has_external_pending()
+      && self.microtasks.lock().is_empty()
+      && self.macrotasks.lock().is_empty()
   }
 
   /// Block until at least one task becomes ready.

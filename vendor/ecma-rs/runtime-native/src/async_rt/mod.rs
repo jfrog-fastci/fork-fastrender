@@ -36,6 +36,7 @@ pub use timer::Timers;
 
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -318,6 +319,10 @@ impl AsyncRuntime {
     })
   }
 
+  pub fn now(&self) -> Instant {
+    self.loop_.now()
+  }
+
   pub fn poll(&self) -> bool {
     self.loop_.poll()
   }
@@ -343,7 +348,9 @@ impl AsyncRuntime {
   }
 
   pub fn schedule_timer_in(&self, delay: Duration, task: Task) -> TimerId {
-    self.schedule_timer(Instant::now() + delay, task)
+    let now = self.now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
+    self.schedule_timer(deadline, task)
   }
 
   pub fn cancel_timer(&self, id: TimerId) -> bool {
@@ -413,6 +420,41 @@ pub fn global() -> &'static AsyncRuntime {
   rt
 }
 
+/// Test-only helper: install a custom clock for the process-global async runtime.
+///
+/// Callers must ensure the runtime is idle (no queued tasks, timers, or I/O watchers) before
+/// swapping the clock; otherwise any existing timer deadlines (stored as `std::time::Instant`)
+/// would become inconsistent with the new clock's timebase.
+#[doc(hidden)]
+pub fn set_clock_for_tests(clock: Arc<dyn crate::clock::Clock>) {
+  let _guard = POLL_LOCK.lock();
+  if !global().loop_.is_idle_for_tests() {
+    panic!("async_rt::set_clock_for_tests requires an idle runtime; use TestRuntimeGuard");
+  }
+  global().loop_.set_clock_for_tests(clock);
+}
+
+/// Test-only helper: restore the default real clock for the process-global async runtime.
+#[doc(hidden)]
+pub fn reset_clock_for_tests() {
+  let _guard = POLL_LOCK.lock();
+  if !global().loop_.is_idle_for_tests() {
+    panic!("async_rt::reset_clock_for_tests requires an idle runtime; use TestRuntimeGuard");
+  }
+  global().loop_.reset_clock_for_tests();
+}
+
+// -----------------------------------------------------------------------------
+// Queueing helpers used by the promise/coroutine lowering.
+// -----------------------------------------------------------------------------
+
+pub(crate) fn queue_microtask(func: TaskFn, data: *mut u8) {
+  global().enqueue_microtask(Task::new(func, data));
+}
+
+pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
+  global().enqueue_macrotask(Task::new(func, data));
+}
 /// Drive the async runtime for one event-loop turn.
 ///
 /// Returns `true` if there is still pending work after the turn.

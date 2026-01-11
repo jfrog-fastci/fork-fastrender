@@ -42,6 +42,7 @@ pub fn reset_runtime_state() {
   crate::threading::unregister_current_thread();
 
   async_rt::clear_state_for_tests();
+  async_rt::reset_clock_for_tests();
   crate::unhandled_rejection::clear_state_for_tests();
   crate::async_runtime::clear_state_for_tests();
   crate::exports::clear_web_timers_for_tests();

@@ -19,13 +19,14 @@ use std::time::Instant;
 ///
 /// `sleep(Duration::ZERO)` completes immediately without registering a timer.
 pub fn sleep(duration: Duration) -> Sleep {
-  let deadline = Instant::now().checked_add(duration).unwrap_or_else(|| Instant::now());
+  let now = async_rt::global().now();
+  let deadline = now.checked_add(duration).unwrap_or(now);
   sleep_until(deadline)
 }
 
 /// Sleep until `deadline`.
 ///
-/// If `deadline <= Instant::now()`, the returned [`Sleep`] completes immediately without
+/// If `deadline <= async_rt::global().now()`, the returned [`Sleep`] completes immediately without
 /// registering a timer.
 pub fn sleep_until(deadline: Instant) -> Sleep {
   Sleep::new(deadline)
@@ -158,7 +159,7 @@ impl Future for Sleep {
       return Poll::Ready(());
     }
 
-    if Instant::now() >= this.deadline {
+    if async_rt::global().now() >= this.deadline {
       this.cancel();
       return Poll::Ready(());
     }

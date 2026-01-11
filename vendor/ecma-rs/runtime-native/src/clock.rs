@@ -15,9 +15,16 @@ pub struct RealClock {
 
 impl RealClock {
   pub fn new() -> Self {
-    Self {
-      start: std::time::Instant::now(),
-    }
+    Self::with_start(std::time::Instant::now())
+  }
+
+  pub fn with_start(start: std::time::Instant) -> Self {
+    Self { start }
+  }
+
+  /// Returns the clock's origin in `std::time::Instant` space.
+  pub fn origin(&self) -> std::time::Instant {
+    self.start
   }
 }
 
@@ -134,4 +141,3 @@ mod tests {
     assert_eq!(duration_to_nanos_saturating(huge), u64::MAX);
   }
 }
-

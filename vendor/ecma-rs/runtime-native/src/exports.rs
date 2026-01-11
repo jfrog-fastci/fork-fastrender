@@ -38,7 +38,7 @@ use std::io;
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[inline]
 fn promise_is_pending(p: PromiseRef) -> bool {
@@ -2025,7 +2025,8 @@ extern "C" fn web_timer_fire(data: *mut u8) {
 
   // HTML clamps nested timers to >= 4ms after a nesting depth of 5. The native runtime does not
   // currently track nesting; higher layers can implement clamping policy if needed.
-  let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+  let now = async_rt::global().now();
+  let deadline = now.checked_add(interval).unwrap_or(now);
   let task = async_rt::Task::new(web_timer_fire, data);
   {
     let mut timers = WEB_TIMERS.lock();
@@ -2086,7 +2087,8 @@ pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, dela
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let delay = Duration::from_millis(delay_ms);
-    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
@@ -2123,7 +2125,8 @@ pub extern "C" fn rt_set_timeout_rooted(
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let delay = Duration::from_millis(delay_ms);
-    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
@@ -2162,7 +2165,8 @@ pub extern "C" fn rt_set_timeout_with_drop(
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let delay = Duration::from_millis(delay_ms);
-    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(delay).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
@@ -2193,7 +2197,8 @@ pub extern "C" fn rt_set_interval(
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let interval = Duration::from_millis(interval_ms);
-    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
@@ -2230,7 +2235,8 @@ pub extern "C" fn rt_set_interval_rooted(
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let interval = Duration::from_millis(interval_ms);
-    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
@@ -2269,7 +2275,8 @@ pub extern "C" fn rt_set_interval_with_drop(
     ensure_event_loop_thread_registered();
     let id = alloc_web_timer_id();
     let interval = Duration::from_millis(interval_ms);
-    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let now = async_rt::global().now();
+    let deadline = now.checked_add(interval).unwrap_or(now);
     let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
     let internal_id = async_rt::global().schedule_timer(deadline, task);
 
