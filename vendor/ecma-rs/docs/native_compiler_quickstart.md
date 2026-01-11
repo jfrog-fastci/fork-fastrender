@@ -176,14 +176,15 @@ bash scripts/cargo_agent.sh test -p native-oracle-harness
 Expected output is standard test output.
 Today the harness runs:
 
-- **TypeScript fixtures**: erase TS→JS and execute them successfully in the oracle runtime, and
-- **JavaScript fixtures**: execute `.js` promise/microtask fixtures and assert on returned `string` / `Promise<string>` results.
+- **TypeScript/TSX fixtures**: erase TS→JS and execute them in the oracle runtime, then (for fixtures that declare an
+  expectation) compare `String(globalThis.__native_result)` against `// EXPECT:` (or a sibling `*.out` file).
+- **JavaScript fixtures**: execute `.js` promise/microtask fixtures directly under `vm-js` and assert on returned output.
 
 Native-vs-oracle comparison is expected to be added later.
 
 > Note: the oracle fixture corpus intentionally includes some **TypeScript-only expression wrappers**
 > (e.g. `as`, `!`, `satisfies`, instantiation/type arguments). These are useful for hardening the
-> TS→JS erasure pipeline even though the strict-native validator may reject them for native AOT.
+> TS→JS erasure pipeline even though the current native backend / strict-subset validator may reject them for native AOT.
 
 #### Optional: enable the `optimize-js` TS→JS fallback
 
@@ -250,7 +251,7 @@ The current `native-oracle-harness` crate provides the TS → JS erasure step as
 
 It:
 
-1. Parses the input as TypeScript (`parse-js`, `Dialect::Ts`, `SourceType::Script`).
+1. Parses the input as TypeScript/TSX (`parse-js`, `Dialect::Ts` with a `Dialect::Tsx` fallback, `SourceType::Script`).
    - This is a **syntax-only** parse (no `typecheck-ts` run).
 2. Erases TypeScript-only syntax using the shared `ts-erase` pipeline (`ts_erase::erase_types_strict_native` / `TsEraseMode::StrictNative`).
 3. Emits JavaScript using `emit-js` (`emit_js::emit_top_level_diagnostic`).
@@ -259,10 +260,10 @@ It:
 
 Today the harness includes:
 
-- a unit test that asserts `*.ts` fixtures successfully erase to JS and execute in the oracle runtime, and
-- integration tests (under `native-oracle-harness/tests/`) that run `*.js` promise fixtures and assert on their returned output.
+- a fixtures test (`native-oracle-harness/tests/fixtures.rs`) that runs `*.ts`/`*.tsx` fixtures with `// EXPECT:` (or `*.out`) and compares the observed output, and
+- promise/microtask tests (under `native-oracle-harness/tests/`) that run `*.js` fixtures directly.
 
-It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --native-strict` (or legacy `--strict-native`)
+It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --strict-native` (alias: `--native-strict`)
 as a separate step when you want strict-native enforcement.
 
 Native execution + result comparison is expected to be layered in as the native pipeline matures.
@@ -279,7 +280,7 @@ vendor/ecma-rs/fixtures/native_oracle/
 
 There are two kinds of fixtures:
 
-- `*.ts`: standalone **TypeScript scripts** (not modules) that should be erasable to JS and runnable under the oracle VM.
+- `*.ts` / `*.tsx`: standalone **TypeScript scripts** (not modules) that should be erasable to JS and runnable under the oracle VM.
 - `*.js`: standalone **JavaScript scripts** that are executed directly by `vm-js` (bypassing TS→JS erasure).
   This keeps some oracle tests (notably Promises/microtasks) independent of `emit-js` feature coverage.
 
@@ -287,17 +288,21 @@ Guidelines for fixtures:
 
 - Keep them **deterministic**: avoid real time, randomness, networking, and filesystem access unless explicitly mocked.
 - Avoid host APIs: `vm-js` does not provide browser/Node globals like `console` by default.
-- For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script evaluates to a
+- For `*.ts` / `*.tsx` fixtures that want output comparison, set `globalThis.__native_result` and declare the expected output:
+  - `// EXPECT: ...` anywhere in the file, or
+  - a sibling `*.out` file with the same basename.
+  The harness evaluates `String(globalThis.__native_result)` after a microtask checkpoint and compares it to the expected output.
+- For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script completion value is a
   `string` or `Promise<string>` (the harness does not currently provide a macro-task/event loop).
 
 To add a new fixture:
 
-1. Create a new `*.ts` (TS→JS erasure) or `*.js` (direct `vm-js`) file under `vendor/ecma-rs/fixtures/native_oracle/`.
+1. Create a new `*.ts`/`*.tsx` (TS→JS erasure) or `*.js` (direct `vm-js`) file under `vendor/ecma-rs/fixtures/native_oracle/`.
 2. Ensure it parses as a **script** (no top-level `import`/`export`).
 3. Run the harness tests (see section 3).
 
 For exact execution rules, see `native-oracle-harness/src/lib.rs` (TS→JS erasure + `run_fixture` logic) and
-`native-oracle-harness/tests/*.rs` for the promise/microtask fixture expectations.
+`native-oracle-harness/tests/*.rs` for fixture discovery and output expectations.
 
 ---
 
