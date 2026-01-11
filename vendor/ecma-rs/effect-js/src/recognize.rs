@@ -1,5 +1,5 @@
 use hir_js::{
-  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectKey, ObjectProperty, PatId, PatKind,
+  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind,
   StmtId, StmtKind, UnaryOp, VarDeclKind,
 };
 
