@@ -86,16 +86,13 @@ fn c_can_link_and_call_runtime_native() {
     &c_path,
     r#"
 #include "runtime_native.h"
-#include <unistd.h>
-
-static void on_settle(uint8_t* data) {
+static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;
 }
 
 static void blocking_task(uint8_t* data, PromiseRef promise) {
   (void)data;
-  usleep(1000);
   rt_promise_resolve(promise, (ValueRef)0);
 }
 
@@ -120,14 +117,25 @@ int main(void) {
 
   // Smoke test: resolve a promise from a blocking worker and run its continuation on the
   // event loop thread.
+  int timer_fired = 0;
+  TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 200);
+
   int settled = 0;
   PromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
-  rt_promise_then(p, on_settle, (uint8_t*)&settled);
-  for (int i = 0; i < 1000 && !settled; i++) {
+  rt_promise_then(p, set_int, (uint8_t*)&settled);
+
+  // `rt_async_poll` should block in epoll_wait due to the timer, but wake promptly when the
+  // blocking worker settles the promise.
+  for (int i = 0; i < 1000 && !settled && !timer_fired; i++) {
     rt_async_poll();
-    usleep(1000);
   }
+  rt_clear_timer(t);
   if (!settled) {
+    rt_thread_deinit();
+    return 1;
+  }
+  if (timer_fired) {
+    // Event loop did not wake promptly (likely blocked until timeout).
     rt_thread_deinit();
     return 1;
   }
