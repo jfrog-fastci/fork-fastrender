@@ -158,6 +158,11 @@ Notes:
   header location in each record (location `#2` in `llvm-readobj --stackmap`
   output). LLVM may encode it as either a `Constant` or `ConstIndex`/`ConstantIndex`
   location, but the value must match the IR `flags` immarg either way.
+* The first constant header location (location `#1` in `llvm-readobj --stackmap`
+  output) is the statepoint callsite **calling convention ID** (`callconv`).
+  Most statepoints are `ccc` and show `Constant 0`, but other calling conventions
+  are preserved (e.g. `fastcc` => 8). This is regression-tested in:
+  * `scripts/test_statepoint_flags_patchbytes.sh`
 * `<num_patch_bytes>` (2nd argument) controls whether LLVM emits a real call or a
   patchable region at the statepoint site:
   * `patch_bytes = 0`: emits a normal `call` instruction.

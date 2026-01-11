@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regression test for LLVM 18 `gc.statepoint`:
-# - `flags` (5th argument) is a 2-bit mask (0..3) and is recorded in the stackmap.
+# Regression test for LLVM 18 `gc.statepoint` stackmap encoding:
+# - Location #1 is the callsite calling convention ID ("callconv"; `ccc`=0, `fastcc`=8).
+# - Location #2 is `flags` (5th argument): a 2-bit mask (0..3) recorded in the stackmap.
 # - `patch_bytes` (2nd argument) controls whether LLVM emits an actual call
 #   (`patch_bytes=0`) or a patchable NOP region (`patch_bytes>0`) and shifts the
 #   stackmap instruction offset accordingly.
@@ -349,6 +350,48 @@ if [[ "${DEOPT_A_GOT}" != "0" || "${DEOPT_B_GOT}" != "0" ]]; then
   die "expected statepoint header deopt_count location (#3) to be 0; got A.deopt_count=${DEOPT_A_GOT}, B.deopt_count=${DEOPT_B_GOT}"
 fi
 
+CALLCONV_A_EXPECTED=0
+CALLCONV_B_EXPECTED=0
+CALLCONV_A_GOT="$(extract_location1_constant "${STACKMAP_A}")"
+if [[ "${CALLCONV_A_GOT}" != "${CALLCONV_A_EXPECTED}" ]]; then
+  echo "${STACKMAP_A}" >&2
+  die "stackmap constant #1 (callconv) mismatch for fixture A: expected ${CALLCONV_A_EXPECTED}, got ${CALLCONV_A_GOT}"
+fi
+
+CALLCONV_B_GOT="$(extract_location1_constant "${STACKMAP_B}")"
+if [[ "${CALLCONV_B_GOT}" != "${CALLCONV_B_EXPECTED}" ]]; then
+  echo "${STACKMAP_B}" >&2
+  die "stackmap constant #1 (callconv) mismatch for fixture B: expected ${CALLCONV_B_EXPECTED}, got ${CALLCONV_B_GOT}"
+fi
+
+# Non-zero callconv should also be preserved in the stackmap header constant.
+FASTCC_IR="${tmpdir}/fastcc.ll"
+cat >"${FASTCC_IR}" <<'EOF'
+target triple = "x86_64-pc-linux-gnu"
+
+declare void @callee()
+declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+
+define void @test_fastcc(ptr addrspace(1) %obj) gc "coreclr" {
+entry:
+  %tok = call fastcc token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+    i64 0, i32 0,
+    ptr elementtype(void ()) @callee,
+    i32 0, i32 0,
+    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
+  ret void
+}
+EOF
+OBJ_FASTCC="${tmpdir}/fastcc.o"
+run_llc "${FASTCC_IR}" "${OBJ_FASTCC}"
+STACKMAP_FASTCC="$("${LLVM_READOBJ}" --stackmap "${OBJ_FASTCC}")"
+CALLCONV_FASTCC_GOT="$(extract_location1_constant "${STACKMAP_FASTCC}")"
+CALLCONV_FASTCC_EXPECTED=8
+if [[ "${CALLCONV_FASTCC_GOT}" != "${CALLCONV_FASTCC_EXPECTED}" ]]; then
+  echo "${STACKMAP_FASTCC}" >&2
+  die "stackmap constant #1 (callconv) mismatch for fastcc snippet: expected ${CALLCONV_FASTCC_EXPECTED}, got ${CALLCONV_FASTCC_GOT}"
+fi
+
 CALLCONV_A_SIZE="$(extract_location_size "${STACKMAP_A}" 1)"
 CALLCONV_B_SIZE="$(extract_location_size "${STACKMAP_B}" 1)"
 FLAGS_A_SIZE="$(extract_location_size "${STACKMAP_A}" 2)"
@@ -487,4 +530,4 @@ else
   die "verifier failed for an unexpected reason while checking invalid flags snippet"
 fi
 
-echo "ok: gc.statepoint flags/patch_bytes behaviour matches LLVM 18 expectations (A_off=${OFF_A}, B_off=${OFF_B}, delta=${DELTA})"
+echo "ok: gc.statepoint callconv/flags/patch_bytes behaviour matches LLVM 18 expectations (A_off=${OFF_A}, B_off=${OFF_B}, delta=${DELTA})"
