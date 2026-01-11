@@ -4,6 +4,42 @@ use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use std::fmt;
 use std::fmt::Formatter;
 
+/// Two-bit nullishness summary (`null` / `undefined`) for consumers that do not
+/// care about non-nullish value tracking.
+///
+/// This is derived from [`NullabilityMask`], which additionally tracks whether a
+/// value may be *some other* non-nullish value (needed to prove branch
+/// unreachability for strict comparisons).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NullishFlags(u8);
+
+impl NullishFlags {
+  pub const NON_NULLISH: Self = Self(0);
+  pub const MAYBE_NULL: Self = Self(1 << 0);
+  pub const MAYBE_UNDEF: Self = Self(1 << 1);
+  pub const UNKNOWN: Self = Self(Self::MAYBE_NULL.0 | Self::MAYBE_UNDEF.0);
+
+  pub fn may_be_null(self) -> bool {
+    (self.0 & Self::MAYBE_NULL.0) != 0
+  }
+
+  pub fn may_be_undefined(self) -> bool {
+    (self.0 & Self::MAYBE_UNDEF.0) != 0
+  }
+}
+
+impl fmt::Debug for NullishFlags {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match *self {
+      Self::NON_NULLISH => write!(f, "NonNullish"),
+      Self::MAYBE_NULL => write!(f, "MaybeNull"),
+      Self::MAYBE_UNDEF => write!(f, "MaybeUndef"),
+      Self::UNKNOWN => write!(f, "MaybeNull|MaybeUndef"),
+      Self(bits) => write!(f, "NullishFlags({bits:#b})"),
+    }
+  }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct NullabilityMask(u8);
@@ -34,6 +70,19 @@ impl NullabilityMask {
 
   pub fn may_be_undefined(self) -> bool {
     self.contains(Self::UNDEF)
+  }
+}
+
+impl From<NullabilityMask> for NullishFlags {
+  fn from(mask: NullabilityMask) -> Self {
+    let mut bits = 0u8;
+    if mask.contains(NullabilityMask::NULL) {
+      bits |= NullishFlags::MAYBE_NULL.0;
+    }
+    if mask.contains(NullabilityMask::UNDEF) {
+      bits |= NullishFlags::MAYBE_UNDEF.0;
+    }
+    NullishFlags(bits)
   }
 }
 
@@ -150,6 +199,10 @@ impl NullabilityResult {
     &self.result.block_entry[&label]
   }
 
+  pub fn exit_state(&self, label: u32) -> &State {
+    &self.result.block_exit[&label]
+  }
+
   pub fn edge_state(&self, pred: u32, succ: u32) -> Option<&State> {
     self.result.edge_out.get(&(pred, succ))
   }
@@ -186,6 +239,21 @@ impl NullabilityResult {
       }
     }
     state.mask_of_var(var)
+  }
+
+  pub fn nullability_of_arg(&self, state: &State, arg: &Arg) -> NullishFlags {
+    let _ = self;
+    if !state.reachable {
+      return NullishFlags::UNKNOWN;
+    }
+    match arg {
+      Arg::Var(v) => state.mask_of_var(*v).into(),
+      Arg::Const(Const::Null) => NullishFlags::MAYBE_NULL,
+      Arg::Const(Const::Undefined) => NullishFlags::MAYBE_UNDEF,
+      Arg::Const(_) => NullishFlags::NON_NULLISH,
+      Arg::Fn(_) => NullishFlags::NON_NULLISH,
+      Arg::Builtin(_) => NullishFlags::UNKNOWN,
+    }
   }
 }
 
@@ -661,4 +729,3 @@ mod tests {
     assert_eq!(r1.result, r2.result);
   }
 }
-
