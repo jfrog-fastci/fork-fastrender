@@ -51,6 +51,14 @@ fn supports_declaration_matches() {
 }
 
 #[test]
+fn supports_container_type_scroll_state_matches() {
+  // Tailwind v4 (shopify.com pageset fixture) gates container scroll-state utilities behind
+  // `@supports (container-type: scroll-state)`.
+  let css = r"@supports (container-type: scroll-state) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
 fn supports_not_negates() {
   let css = r"@supports not (display: grid) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");

@@ -341,7 +341,7 @@ mod tests {
   #[test]
   fn supports_container_type_keywords_only() {
     assert!(supports_declaration("container-type", "inline-size"));
-    assert!(!supports_declaration("container-type", "scroll-state"));
+    assert!(supports_declaration("container-type", "scroll-state"));
   }
 
   #[test]
