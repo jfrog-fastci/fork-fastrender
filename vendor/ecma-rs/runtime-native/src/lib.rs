@@ -6,7 +6,7 @@
 //!
 //! Note: the current exported allocation/collection entrypoints (`rt_alloc`, `rt_gc_collect`) are
 //! still backed by `malloc` / stubs; the exported write barrier is implemented and performs
-//! young-range checks + sets the per-object remembered bit (see `docs/write_barrier.md`).
+//! young-range checks + remembered-set tracking (see `docs/write_barrier.md`).
 //!
 //! ## Pinned allocations
 //!

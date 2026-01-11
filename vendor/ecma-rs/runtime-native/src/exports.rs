@@ -15,7 +15,7 @@ use crate::async_runtime;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
-use crate::async_rt::promise::PromiseOutcome;
+use crate::async_abi::PromiseHeader;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
@@ -36,6 +36,137 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+#[inline]
+fn promise_is_pending(p: PromiseRef) -> bool {
+  if p.is_null() {
+    return true;
+  }
+
+  // `PromiseRef` is an opaque pointer in the stable ABI, but by contract it must point to a
+  // `PromiseHeader` at offset 0 of the allocation.
+  let header = p.0.cast::<PromiseHeader>();
+  if (header as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  // `PromiseHeader::state` stores both externally-visible states (PENDING/FULFILLED/REJECTED) and
+  // internal transient settling states. Treat any non-(FULFILLED|REJECTED) state as pending.
+  let state = unsafe { &(*header).state }.load(Ordering::Acquire);
+  state != PromiseHeader::FULFILLED && state != PromiseHeader::REJECTED
+}
+
+// Promise flag used by legacy promises for unhandled-rejection tracking.
+const PROMISE_FLAG_HANDLED: u8 = 1 << 0;
+
+#[repr(C)]
+struct BlockOnReaction {
+  node: crate::promise_reactions::PromiseReactionNode,
+}
+
+extern "C" fn block_on_reaction_run(
+  _node: *mut crate::promise_reactions::PromiseReactionNode,
+  _promise: crate::async_abi::PromiseRef,
+) {
+}
+
+extern "C" fn block_on_reaction_drop(node: *mut crate::promise_reactions::PromiseReactionNode) {
+  if node.is_null() {
+    return;
+  }
+  unsafe {
+    drop(Box::from_raw(node as *mut BlockOnReaction));
+  }
+}
+
+static BLOCK_ON_REACTION_VTABLE: crate::promise_reactions::PromiseReactionVTable =
+  crate::promise_reactions::PromiseReactionVTable {
+    run: block_on_reaction_run,
+    drop: block_on_reaction_drop,
+  };
+
+#[inline]
+fn alloc_block_on_reaction() -> *mut crate::promise_reactions::PromiseReactionNode {
+  let node = Box::new(BlockOnReaction {
+    node: crate::promise_reactions::PromiseReactionNode {
+      next: core::ptr::null_mut(),
+      vtable: &BLOCK_ON_REACTION_VTABLE,
+    },
+  });
+  Box::into_raw(node) as *mut crate::promise_reactions::PromiseReactionNode
+}
+
+#[inline]
+fn push_reaction(promise: *mut PromiseHeader, node: *mut crate::promise_reactions::PromiseReactionNode) {
+  if promise.is_null() || node.is_null() {
+    return;
+  }
+
+  let reactions = unsafe { &(*promise).reactions };
+  loop {
+    let head = reactions.load(Ordering::Acquire) as *mut crate::promise_reactions::PromiseReactionNode;
+    unsafe {
+      (*node).next = head;
+    }
+    if reactions
+      .compare_exchange(head as usize, node as usize, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+    {
+      break;
+    }
+  }
+}
+
+fn drain_reactions(promise: *mut PromiseHeader) {
+  if promise.is_null() {
+    return;
+  }
+
+  let reactions = unsafe { &(*promise).reactions };
+  let mut head = reactions.swap(0, Ordering::AcqRel) as *mut crate::promise_reactions::PromiseReactionNode;
+  if head.is_null() {
+    return;
+  }
+
+  // Preserve FIFO registration order.
+  head = unsafe { crate::promise_reactions::reverse_list(head) };
+
+  while !head.is_null() {
+    let next = unsafe { (*head).next };
+    unsafe {
+      (*head).next = core::ptr::null_mut();
+    }
+    crate::promise_reactions::enqueue_reaction_job(promise, head);
+    head = next;
+  }
+}
+
+fn register_block_on_waker(p: PromiseRef) {
+  if p.is_null() {
+    // Null promises are treated as "never settles": nothing can wake.
+    return;
+  }
+
+  let promise = p.0.cast::<PromiseHeader>();
+  if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+
+  // Mark "handled" to avoid reporting unhandled rejections while we are blocked waiting.
+  let prev = unsafe { &(*promise).flags }.fetch_or(PROMISE_FLAG_HANDLED, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_HANDLED) == 0 {
+    crate::unhandled_rejection::on_handle(p);
+  }
+
+  let node = alloc_block_on_reaction();
+  push_reaction(promise, node);
+
+  // If the promise is already settled, drain and schedule immediately.
+  let state = unsafe { &(*promise).state }.load(Ordering::Acquire);
+  if state == PromiseHeader::FULFILLED || state == PromiseHeader::REJECTED {
+    drain_reactions(promise);
+  }
+}
 
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {
@@ -1223,15 +1354,19 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
 
-    // Fast path: already settled (or null).
-    if !matches!(async_rt::promise::promise_outcome(p), PromiseOutcome::Pending) {
+    // Fast path: already settled.
+    if !promise_is_pending(p) {
       return;
     }
+
+    // Ensure the event loop is woken when `p` is settled even if nothing else is
+    // awaiting it. Without this, `rt_async_wait` can sleep indefinitely.
+    register_block_on_waker(p);
 
     loop {
       let _ = crate::async_runtime::rt_async_run_until_idle();
 
-      if !matches!(async_rt::promise::promise_outcome(p), PromiseOutcome::Pending) {
+      if !promise_is_pending(p) {
         return;
       }
 

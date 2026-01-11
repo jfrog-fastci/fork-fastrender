@@ -1,6 +1,7 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -188,4 +189,64 @@ fn block_on_returns_immediately_when_promise_already_settled() {
     elapsed < Duration::from_millis(100),
     "block_on should return immediately when promise is settled (elapsed={elapsed:?})"
   );
+}
+
+#[test]
+fn block_on_wakes_on_native_promise_settlement_without_payload() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Allocate a promise that is *only* a `PromiseHeader` (no extra payload). This
+  // models the native async ABI contract: promise payload begins immediately
+  // after the header and may be empty.
+  let header = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    reactions: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let p = PromiseRef(Box::into_raw(header).cast());
+
+  // Initialize to a clean pending state.
+  unsafe {
+    runtime_native::rt_promise_init(p);
+  }
+
+  // Fulfill from another thread after a short delay.
+  let fulfiller = std::thread::spawn(move || unsafe {
+    std::thread::sleep(Duration::from_millis(20));
+    runtime_native::rt_promise_fulfill(p);
+  });
+
+  // Watchdog: if `rt_async_block_on` fails to wake on settlement, it will sleep
+  // until some other event wakes the runtime. Use a bounded wake to prevent a
+  // hung test; also assert it returns *before* this fires.
+  let (tx, rx) = mpsc::channel::<()>();
+  let watchdog = std::thread::spawn(move || {
+    if rx.recv_timeout(Duration::from_millis(200)).is_err() {
+      runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+    }
+  });
+
+  let start = Instant::now();
+  unsafe {
+    runtime_native::rt_async_block_on(p);
+  }
+  let elapsed = start.elapsed();
+
+  let _ = tx.send(());
+  watchdog.join().unwrap();
+  fulfiller.join().unwrap();
+
+  assert!(
+    elapsed >= Duration::from_millis(5),
+    "block_on returned too quickly (elapsed={elapsed:?})"
+  );
+  assert!(
+    elapsed < Duration::from_millis(150),
+    "block_on did not wake promptly on promise settlement (elapsed={elapsed:?})"
+  );
+
+  // Safety: the promise is settled and `rt_async_block_on` has drained its reaction jobs.
+  unsafe {
+    drop(Box::from_raw(p.0.cast::<PromiseHeader>()));
+  }
 }
