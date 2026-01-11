@@ -160,14 +160,29 @@ pub(crate) fn alloc_card_table(obj_size: usize) -> *mut AtomicU64 {
   // does not rely on the Rust global allocator.
   #[cfg(unix)]
   let raw = unsafe {
-    libc::mmap(
-      core::ptr::null_mut(),
-      bytes,
-      libc::PROT_READ | libc::PROT_WRITE,
-      libc::MAP_PRIVATE | libc::MAP_ANON,
-      -1,
-      0,
-    )
+    loop {
+      let raw = libc::mmap(
+        core::ptr::null_mut(),
+        bytes,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_PRIVATE | libc::MAP_ANON,
+        -1,
+        0,
+      );
+      if raw == libc::MAP_FAILED {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+          continue;
+        }
+        break raw;
+      }
+      if raw.is_null() {
+        // Mapping at address 0 is unexpected; unmap and treat as OOM.
+        let _ = libc::munmap(raw, bytes);
+        break raw;
+      }
+      break raw;
+    }
   };
   #[cfg(unix)]
   let ptr = {

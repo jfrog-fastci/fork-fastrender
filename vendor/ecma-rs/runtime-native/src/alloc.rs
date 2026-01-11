@@ -96,6 +96,18 @@ mod imp {
             0,
           )
         };
+        if ptr == libc::MAP_FAILED {
+          let err = std::io::Error::last_os_error();
+          if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+          }
+        } else if ptr.is_null() {
+          // Mapping at address 0 is unexpected; unmap to avoid leaking the reservation before we
+          // fall back to a smaller arena.
+          unsafe {
+            let _ = libc::munmap(ptr, attempt);
+          }
+        }
         if ptr != libc::MAP_FAILED && !ptr.is_null() {
           arena_size = attempt;
           break ptr;

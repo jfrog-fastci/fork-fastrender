@@ -91,18 +91,28 @@ impl NurserySpace {
 
     #[cfg(unix)]
     unsafe {
-      let ptr = libc::mmap(
-        ptr::null_mut(),
-        size_bytes,
-        libc::PROT_READ | libc::PROT_WRITE,
-        libc::MAP_PRIVATE | libc::MAP_ANON,
-        -1,
-        0,
-      );
-      if ptr == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error());
-      }
+      let ptr = loop {
+        let ptr = libc::mmap(
+          ptr::null_mut(),
+          size_bytes,
+          libc::PROT_READ | libc::PROT_WRITE,
+          libc::MAP_PRIVATE | libc::MAP_ANON,
+          -1,
+          0,
+        );
+        if ptr != libc::MAP_FAILED {
+          break ptr;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
+      };
       if ptr.is_null() {
+        // `mmap` returning a null pointer would mean the kernel placed the mapping at address 0.
+        // Treat this as an error and unmap to avoid leaking the reservation.
+        let _ = libc::munmap(ptr, size_bytes);
         return Err(io::Error::new(io::ErrorKind::Other, "mmap returned null"));
       }
 
@@ -246,9 +256,16 @@ impl Drop for NurserySpace {
     unsafe {
       #[cfg(unix)]
       {
-        let rc = libc::munmap(self.start.cast::<libc::c_void>(), self.size_bytes);
-        if rc != 0 {
-          panic!("munmap failed: {}", io::Error::last_os_error());
+        loop {
+          let rc = libc::munmap(self.start.cast::<libc::c_void>(), self.size_bytes);
+          if rc == 0 {
+            break;
+          }
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          panic!("munmap failed: {err}");
         }
       }
 

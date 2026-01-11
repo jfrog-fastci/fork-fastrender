@@ -132,17 +132,29 @@ unsafe fn alloc_block_mmap() -> Option<NonNull<u8>> {
   }
 
   let size = BLOCK_SIZE * 2;
-  let base = libc::mmap(
-    std::ptr::null_mut(),
-    size,
-    libc::PROT_READ | libc::PROT_WRITE,
-    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-    -1,
-    0,
-  );
-  if base == libc::MAP_FAILED {
-    return None;
-  }
+  let base = loop {
+    let base = libc::mmap(
+      std::ptr::null_mut(),
+      size,
+      libc::PROT_READ | libc::PROT_WRITE,
+      libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+      -1,
+      0,
+    );
+    if base == libc::MAP_FAILED {
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return None;
+    }
+    if base.is_null() {
+      // Mapping at address 0 is unexpected; unmap and fall back to heap allocation.
+      let _ = libc::munmap(base, size);
+      return None;
+    }
+    break base;
+  };
 
   let base_addr = base as usize;
   let aligned_addr = (base_addr + (BLOCK_SIZE - 1)) & !(BLOCK_SIZE - 1);
@@ -150,16 +162,36 @@ unsafe fn alloc_block_mmap() -> Option<NonNull<u8>> {
 
   let prefix = aligned_addr - base_addr;
   if prefix > 0 {
-    let rc = libc::munmap(base, prefix);
-    debug_assert_eq!(rc, 0);
+    loop {
+      let rc = libc::munmap(base, prefix);
+      if rc == 0 {
+        break;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      debug_assert_eq!(rc, 0);
+      break;
+    }
   }
 
   let suffix_addr = aligned_addr + BLOCK_SIZE;
   let end_addr = base_addr + size;
   let suffix = end_addr - suffix_addr;
   if suffix > 0 {
-    let rc = libc::munmap(suffix_addr as *mut libc::c_void, suffix);
-    debug_assert_eq!(rc, 0);
+    loop {
+      let rc = libc::munmap(suffix_addr as *mut libc::c_void, suffix);
+      if rc == 0 {
+        break;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      debug_assert_eq!(rc, 0);
+      break;
+    }
   }
 
   Some(NonNull::new_unchecked(aligned_addr as *mut u8))
@@ -167,8 +199,18 @@ unsafe fn alloc_block_mmap() -> Option<NonNull<u8>> {
 
 #[cfg(unix)]
 unsafe fn free_block_mmap(ptr: NonNull<u8>) {
-  let rc = libc::munmap(ptr.as_ptr() as *mut libc::c_void, BLOCK_SIZE);
-  debug_assert_eq!(rc, 0);
+  loop {
+    let rc = libc::munmap(ptr.as_ptr() as *mut libc::c_void, BLOCK_SIZE);
+    if rc == 0 {
+      break;
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EINTR) {
+      continue;
+    }
+    debug_assert_eq!(rc, 0);
+    break;
+  }
 }
 
 #[cfg(not(unix))]

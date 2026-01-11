@@ -51,14 +51,29 @@ impl WorkStack {
 
     #[cfg(unix)]
     unsafe {
-      let ptr = libc::mmap(
-        ptr::null_mut(),
-        map_len,
-        libc::PROT_READ | libc::PROT_WRITE,
-        libc::MAP_PRIVATE | libc::MAP_ANON,
-        -1,
-        0,
-      );
+      let ptr = loop {
+        let ptr = libc::mmap(
+          ptr::null_mut(),
+          map_len,
+          libc::PROT_READ | libc::PROT_WRITE,
+          libc::MAP_PRIVATE | libc::MAP_ANON,
+          -1,
+          0,
+        );
+        if ptr == libc::MAP_FAILED {
+          let err = std::io::Error::last_os_error();
+          if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+          }
+          break ptr;
+        }
+        if ptr.is_null() {
+          // Mapping at address 0 is unexpected; unmap and treat as OOM.
+          let _ = libc::munmap(ptr, map_len);
+          break ptr;
+        }
+        break ptr;
+      };
       if ptr == libc::MAP_FAILED || ptr.is_null() {
         crate::trap::rt_trap_oom(map_len, "GC work stack mmap");
       }

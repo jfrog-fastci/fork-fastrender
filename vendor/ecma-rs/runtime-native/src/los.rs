@@ -166,25 +166,44 @@ fn page_size() -> usize {
 
 #[cfg(unix)]
 unsafe fn os_alloc(size: usize) -> *mut u8 {
-  let ptr = libc::mmap(
-    std::ptr::null_mut(),
-    size,
-    libc::PROT_READ | libc::PROT_WRITE,
-    libc::MAP_PRIVATE | libc::MAP_ANON,
-    -1,
-    0,
-  );
-  if ptr == libc::MAP_FAILED {
-    panic!("mmap failed: {}", std::io::Error::last_os_error());
-  }
+  let ptr = loop {
+    let ptr = libc::mmap(
+      std::ptr::null_mut(),
+      size,
+      libc::PROT_READ | libc::PROT_WRITE,
+      libc::MAP_PRIVATE | libc::MAP_ANON,
+      -1,
+      0,
+    );
+    if ptr == libc::MAP_FAILED {
+      let err = std::io::Error::last_os_error();
+      if err.kind() == std::io::ErrorKind::Interrupted {
+        continue;
+      }
+      panic!("mmap failed: {err}");
+    }
+    if ptr.is_null() {
+      // Mapping at address 0 is unexpected; unmap and treat as fatal.
+      let _ = libc::munmap(ptr, size);
+      panic!("mmap returned null");
+    }
+    break ptr;
+  };
   ptr as *mut u8
 }
 
 #[cfg(unix)]
 unsafe fn os_free(ptr: *mut u8, size: usize) {
-  let rc = libc::munmap(ptr as *mut c_void, size);
-  if rc != 0 {
-    panic!("munmap failed: {}", std::io::Error::last_os_error());
+  loop {
+    let rc = libc::munmap(ptr as *mut c_void, size);
+    if rc == 0 {
+      return;
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() == std::io::ErrorKind::Interrupted {
+      continue;
+    }
+    panic!("munmap failed: {err}");
   }
 }
 
