@@ -223,6 +223,9 @@ pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
 // GC
+pub static RT_GC_EPOCH: u64;
+pub fn rt_gc_poll() -> bool;
+pub fn rt_gc_safepoint_slow(epoch: u64);
 pub fn rt_gc_safepoint();
 pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
 pub fn rt_gc_collect();
@@ -276,7 +279,9 @@ generation strategy.
 |---|---|---|
 | `rt_alloc` | MayGC | Allocation slow-path may safepoint/collect in later milestones. |
 | `rt_alloc_array` | MayGC | Ditto. |
-| `rt_gc_safepoint` | MayGC | Explicit polling safepoint inserted at loop backedges. |
+| `rt_gc_poll` | NoGC | Cheap leaf poll used by backedge safepoints (codegen may also inline `RT_GC_EPOCH`). |
+| `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
+| `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint. |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer. |
@@ -384,7 +389,8 @@ guarantee `max(16, shape_align)` alignment for every allocation.
 1) Every runtime call that can safepoint/allocate (`MayGC`) is emitted as an LLVM
    **statepoint** so stackmaps record the exact live GC roots.
 2) Loop backedges (and similar long-running regions) include explicit polling
-   safepoints via an inline epoch poll that calls `rt_gc_safepoint` on mismatch.
+   safepoints via an inline `RT_GC_EPOCH` poll that calls
+   `rt_gc_safepoint_slow(epoch)` on mismatch.
 3) The `"gc-live"` operand bundle passed to each statepoint includes **only**
    GC references (pointers) and is in a stable, documented order.
 
@@ -635,7 +641,7 @@ Each registered mutator thread is in exactly one of:
 2) The runtime sets a global “GC requested” flag and signals other mutator
    threads (condition variable/futex) to reach a safepoint.
 3) Mutator threads reach safepoints via:
-   - explicit `rt_gc_safepoint` calls inserted by codegen, and/or
+   - explicit `rt_gc_safepoint_slow(epoch)` calls inserted by codegen, and/or
    - calls that are already statepoints (`rt_alloc`, etc.)
 4) When a mutator hits a safepoint, it transitions to **AtSafepoint** and parks.
 5) The GC enumerates roots for all parked threads using stackmaps, performs the
