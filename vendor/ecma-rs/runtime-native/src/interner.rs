@@ -14,6 +14,7 @@ use crate::gc;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::sync::GcAwareMutex;
+use crate::trap;
 
 /// Interned strings are represented by stable [`InternedId`]s.
 ///
@@ -66,12 +67,15 @@ fn interned_object_size_for_len(len: usize) -> usize {
   let cap = if len == 0 {
     0
   } else {
-    len.next_power_of_two().max(16)
+    len
+      .checked_next_power_of_two()
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string_intern: length overflow"))
+      .max(16)
   };
 
   let size = INTERNED_PREFIX_SIZE
     .checked_add(cap)
-    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("interned string size overflow"));
+    .unwrap_or_else(|| trap::rt_trap_invalid_arg("rt_string_intern: object size overflow"));
   gc::align_up(size, std::mem::align_of::<ObjHeader>())
 }
 
