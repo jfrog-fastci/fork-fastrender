@@ -327,7 +327,7 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
   let _ = spec;
 
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc_array(len, elem_size)));
+  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc_array(len, elem_size)));
   match res {
     Ok(ptr) => ptr,
     Err(_) => std::process::abort(),
