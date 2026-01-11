@@ -62,7 +62,7 @@ fn define_statepoint_function<'ctx>(
   let fn_ty = gc_ptr.fn_type(&[gc_ptr.into()], false);
   let f = module.add_function(name, fn_ty, None);
   // Use the same production GC strategy as `native-js` codegen.
-  f.set_gc("coreclr");
+  f.set_gc(gc::GC_STRATEGY);
   // Ensure LTO does not inline away the per-module functions; we want one StackMaps entry per
   // compilation unit in the merged table.
   let noinline = ctx.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"), 0);
