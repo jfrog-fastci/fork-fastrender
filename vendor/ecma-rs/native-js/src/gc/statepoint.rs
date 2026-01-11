@@ -132,6 +132,7 @@ impl StatepointEmitter {
     // the `"gc-live"` operand bundle.
     let mut sp_args = Vec::with_capacity(5 + call_args.len() + 2);
     sp_args.push(LLVMConstInt(self.i64_ty, 0, 0));
+    // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
     sp_args.push(callee);
     sp_args.push(LLVMConstInt(self.i32_ty, call_args.len() as u64, 0));
