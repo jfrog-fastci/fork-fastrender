@@ -164,7 +164,9 @@ or discard**.
 ```text
 // Types (conceptual):
 //   GcPtr<T>     - movable pointer to a GC object **base** (points at `ObjHeader`, not payload; invalid after a GC unless reloaded)
-//   HandleId     - stable ID for a handle table entry (safe to store in OS userdata)
+//   HandleId     - stable ID for a persistent-handle table entry (safe to store in OS userdata)
+//   CoroutineId  - stable ID for a coroutine frame (in the shipped native async ABI this is an ABI
+//                 type backed by the same handle table; allocated via `rt_handle_alloc`)
 //   Frame        - heap coroutine frame holding locals + state machine PC
 
 fn poll_frame(frame: GcPtr<Frame>) -> Poll<Result> {
@@ -248,13 +250,10 @@ Minimum operations:
   Allocates a persistent handle table entry that roots `obj`.
 * `rt_handle_free(id: HandleId)`  
   Releases the handle table entry (no longer roots the object).
-* `rt_handle_update(id: HandleId, new_obj: GcPtr<T>)` (or equivalent internal mechanism)  
-  Used by the GC to update handle referents after moving/forwarding.
-
-In practice, a usable ABI usually also needs:
-
 * `rt_handle_load(id: HandleId) -> GcPtr<T>`
+  Resolves the handle to the current (possibly relocated) object pointer.
 * `rt_handle_store(id: HandleId, obj: GcPtr<T>)`
+  Update the pointer stored in the handle slot. This is used by the GC during relocation/forwarding.
 
 ### Current implementation note
 
