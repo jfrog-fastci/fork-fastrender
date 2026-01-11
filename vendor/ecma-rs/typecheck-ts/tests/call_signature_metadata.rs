@@ -203,6 +203,44 @@ export const str = id(s);
 }
 
 #[test]
+fn program_check_body_does_not_drop_unreachable_call_signatures() {
+  let source = r#"
+declare function foo(x: string): string;
+declare function foo(x: number): number;
+
+export function f() {
+  return 1;
+  foo("hi");
+}
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let call_start = source.find("foo(\"hi\")").expect("call exists") as u32;
+  let call_offset = call_start + 3; // points at `(` in `foo("hi")`
+  let (body, _expr) = program.expr_at(file, call_offset).expect("call expr body");
+
+  // `Program::check_body` uses the DB-backed checker; ensure the flow merge does
+  // not clobber call signatures for unreachable expressions.
+  let body_result = program.check_body(body);
+  let (expr, _) = body_result.expr_at(call_offset).expect("call expr in body");
+  let sig_id = body_result.call_signature(expr).expect("call signature recorded");
+
+  let sig = program.signature(sig_id).expect("signature in store");
+  assert_eq!(sig.params.len(), 1);
+  assert_eq!(program.display_type(sig.params[0].ty).to_string(), "string");
+  assert_eq!(program.display_type(sig.ret).to_string(), "string");
+}
+
+#[test]
 fn new_expr_records_construct_signature() {
   let source = r#"const value = new Foo("hi");"#;
   let store = TypeStore::new();

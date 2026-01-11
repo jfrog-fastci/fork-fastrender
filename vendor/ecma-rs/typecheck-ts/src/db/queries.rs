@@ -535,7 +535,7 @@ pub mod body_check {
 
   use crate::check::caches::{CheckerCacheStats, CheckerCaches};
   use crate::check::hir_body::{
-    check_body_with_env_with_bindings_strict_native, check_body_with_expander, BindingTypeResolver,
+    check_body_with_env_tables_with_bindings, check_body_with_expander, BindingTypeResolver,
   };
   use crate::codes;
   use crate::db::expander::{DbTypeExpander, TypeExpanderDb};
@@ -1115,7 +1115,7 @@ pub mod body_check {
           flow_hooks,
           caches.relation.clone(),
         );
-        let flow_result = check_body_with_env_with_bindings_strict_native(
+        let flow_result = check_body_with_env_tables_with_bindings(
           body_id,
           body,
           &lowered.names,
@@ -1164,11 +1164,12 @@ pub mod body_check {
             }
           }
         }
-        if flow_result.call_signatures.len() == result.call_signatures.len() {
-          for (idx, sig) in flow_result.call_signatures.iter().enumerate() {
-            if matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_)) {
-              result.call_signatures[idx] = *sig;
-            }
+        for (expr_id, sig) in flow_result.call_signatures.iter() {
+          let idx = expr_id.0 as usize;
+          if idx < result.call_signatures.len()
+            && matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_))
+          {
+            result.call_signatures[idx] = *sig;
           }
         }
         if flow_result.pat_types.len() == result.pat_types.len() {
