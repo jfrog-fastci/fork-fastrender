@@ -111,6 +111,7 @@ mod blocking_pool;
 mod ffi;
 mod exports;
 mod interner;
+mod native_async;
 mod platform;
 mod rt_trace;
 mod string;
@@ -182,8 +183,20 @@ fn rt_ensure_init() -> &'static GlobalRuntime {
 /// # Safety
 /// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
 #[no_mangle]
-pub unsafe extern "C" fn rt_async_spawn(_coro: CoroutineRef) -> PromiseRef {
-  crate::ffi::abort_on_panic(|| todo!("rt_async_spawn is not implemented yet"))
+pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineRef) -> PromiseRef {
+  crate::ffi::abort_on_panic(|| crate::native_async::async_spawn(coro))
+}
+
+/// Like [`rt_async_spawn`], but enqueues the coroutine's first resume as a microtask instead of
+/// running it synchronously.
+///
+/// This is required for Web-style microtask semantics (e.g. `queueMicrotask`).
+///
+/// # Safety
+/// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
+#[no_mangle]
+pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef {
+  crate::ffi::abort_on_panic(|| crate::native_async::async_spawn_deferred(coro))
 }
 
 /// Drive the async scheduler/executor.
@@ -208,7 +221,7 @@ pub extern "C" fn rt_async_poll() -> bool {
 /// `p` must point to a valid [`PromiseHeader`] at offset 0 of a promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
-  crate::ffi::abort_on_panic(|| todo!("rt_promise_init is not implemented yet"))
+  crate::ffi::abort_on_panic(|| crate::native_async::promise_init(_p))
 }
 
 /// Mark a promise as fulfilled.
@@ -219,7 +232,7 @@ pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
 /// `p` must point to a valid promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
-  crate::ffi::abort_on_panic(|| todo!("rt_promise_fulfill is not implemented yet"))
+  crate::ffi::abort_on_panic(|| crate::native_async::promise_fulfill(_p))
 }
 
 /// Mark a promise as rejected.
@@ -228,7 +241,7 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
 /// `p` must point to a valid promise allocation.
 #[no_mangle]
 pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
-  crate::ffi::abort_on_panic(|| todo!("rt_promise_reject is not implemented yet"))
+  crate::ffi::abort_on_panic(|| crate::native_async::promise_reject(_p))
 }
 
 /// Request a stop-the-world GC safepoint.

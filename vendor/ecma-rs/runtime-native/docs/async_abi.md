@@ -30,6 +30,7 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_promise_fulfill(p: PromiseRef)`
 - `rt_promise_reject(p: PromiseRef)`
 - `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
+- `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
 - `rt_async_poll() -> bool`
 - `rt_async_set_strict_await_yields(strict: bool)`
 
@@ -73,6 +74,47 @@ attempting to unwind across the FFI boundary.
 
 Generated code must treat runtime panics as fatal and must not assume it can recover from panics or
 observe them as structured errors.
+
+## Native coroutine execution model
+
+### Core model (coroutines + promises)
+
+- A **coroutine** is a native-generated state machine. The native ABI interacts with it through a
+  `Coroutine` prefix placed at offset 0 of the coroutine frame.
+- A coroutine produces a **result promise** (`PromiseRef`) that is returned to the JS world. The
+  promise begins with a `PromiseHeader` at offset 0; the payload layout is owned by codegen.
+- A coroutine suspends by returning `Await(p)` from its `resume` function; the runtime registers a
+  microtask reaction on `p` to resume the coroutine when it settles.
+
+### Spawning APIs
+
+#### `rt_async_spawn`
+
+```c
+PromiseRef rt_async_spawn(CoroutineRef coro);
+```
+
+- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise`.
+- **Immediately resumes** the coroutine during the call (until it completes or reaches its first
+  `await`).
+
+#### `rt_async_spawn_deferred` (microtask-style)
+
+```c
+PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
+```
+
+- Allocates/initializes the coroutine’s result promise and writes it to `coro->promise` (same as
+  `rt_async_spawn`).
+- Enqueues the coroutine’s *first resume* as a **microtask**.
+- **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
+  a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
+
+This API exists for Web-standard semantics that require guaranteed asynchronous execution, including:
+
+- `queueMicrotask`
+- Promise job scheduling (ECMA-262 `HostEnqueuePromiseJob`, HTML microtask queue)
+- Strict `await` semantics where reaching the first `await` must be asynchronous
 
 ## Legacy coroutine execution model
 

@@ -406,6 +406,9 @@ struct Coroutine {
 };
 
 PromiseRef rt_async_spawn(CoroutineRef coro);
+// Like rt_async_spawn, but enqueues the coroutine's first resume as a microtask instead of running
+// synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
+PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
 
 // Drive the async runtime. Returns true if any work was performed.
 bool rt_async_poll(void);
