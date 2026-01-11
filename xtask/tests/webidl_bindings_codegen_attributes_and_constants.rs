@@ -58,3 +58,55 @@ fn generated_webidl_bindings_include_attributes_and_constants() {
     "expected constant to also be defined on the interface prototype object"
   );
 }
+
+#[test]
+fn generated_vmjs_webidl_bindings_include_attributes_and_constants() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      readonly attribute unsigned long size;
+      attribute DOMString href;
+      static readonly attribute boolean ok;
+      const unsigned short ANSWER = 42;
+      undefined doIt();
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  // `rustfmt` may choose to wrap long argument lists, so normalize whitespace before checking for
+  // key codegen constructs.
+  let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+
+  assert!(
+    compact.contains("define_accessor_property_str(proto_foo,\"size\""),
+    "expected instance attribute to define accessor property on prototype"
+  );
+  assert!(
+    compact.contains("define_data_property_str(ctor_foo,\"ANSWER\""),
+    "expected constant to be defined on the constructor object"
+  );
+  assert!(
+    compact.contains("define_data_property_str(proto_foo,\"ANSWER\""),
+    "expected constant to be defined on the interface prototype object"
+  );
+}

@@ -777,6 +777,33 @@ mod tests {
     assert_eq!(value, Value::Number(1.0));
     assert!(!writable, "constants must be non-writable");
 
+    // Constants should also be defined on the interface prototype object so instances can access
+    // them via the prototype chain (e.g. `node.ELEMENT_NODE`).
+    let node_proto_val = scope
+      .heap()
+      .object_get_own_data_property_value(node_ctor_obj, &proto_key)?
+      .expect("Node.prototype should be defined");
+    scope.push_root(node_proto_val)?;
+    let Value::Object(node_proto_obj) = node_proto_val else {
+      panic!("Node.prototype should be an object");
+    };
+    let Some(element_node_desc) = scope
+      .heap()
+      .object_get_own_property(node_proto_obj, &element_node_key)?
+    else {
+      panic!("Node.prototype.ELEMENT_NODE should be defined");
+    };
+    assert!(element_node_desc.enumerable, "constants must be enumerable");
+    assert!(
+      !element_node_desc.configurable,
+      "constants must be non-configurable"
+    );
+    let PropertyKind::Data { value, writable } = element_node_desc.kind else {
+      panic!("Node.prototype.ELEMENT_NODE should be a data property");
+    };
+    assert_eq!(value, Value::Number(1.0));
+    assert!(!writable, "constants must be non-writable");
+
     drop(scope);
     realm.teardown(&mut heap);
     Ok(())

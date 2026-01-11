@@ -1580,7 +1580,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "ATTRIBUTE_NODE",
+      Value::Number(2.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "CDATA_SECTION_NODE",
+      Value::Number(4.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "CDATA_SECTION_NODE",
       Value::Number(4.0),
       DataPropertyAttributes::CONST,
@@ -1592,7 +1604,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "COMMENT_NODE",
+      Value::Number(8.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "DOCUMENT_FRAGMENT_NODE",
+      Value::Number(11.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "DOCUMENT_FRAGMENT_NODE",
       Value::Number(11.0),
       DataPropertyAttributes::CONST,
@@ -1604,7 +1628,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "DOCUMENT_NODE",
+      Value::Number(9.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "DOCUMENT_POSITION_CONTAINED_BY",
+      Value::Number(16.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "DOCUMENT_POSITION_CONTAINED_BY",
       Value::Number(16.0),
       DataPropertyAttributes::CONST,
@@ -1616,7 +1652,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "DOCUMENT_POSITION_CONTAINS",
+      Value::Number(8.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "DOCUMENT_POSITION_DISCONNECTED",
+      Value::Number(1.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "DOCUMENT_POSITION_DISCONNECTED",
       Value::Number(1.0),
       DataPropertyAttributes::CONST,
@@ -1628,7 +1676,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "DOCUMENT_POSITION_FOLLOWING",
+      Value::Number(4.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+      Value::Number(32.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
       Value::Number(32.0),
       DataPropertyAttributes::CONST,
@@ -1640,7 +1700,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "DOCUMENT_POSITION_PRECEDING",
+      Value::Number(2.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "DOCUMENT_TYPE_NODE",
+      Value::Number(10.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "DOCUMENT_TYPE_NODE",
       Value::Number(10.0),
       DataPropertyAttributes::CONST,
@@ -1652,7 +1724,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "ELEMENT_NODE",
+      Value::Number(1.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "ENTITY_NODE",
+      Value::Number(6.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "ENTITY_NODE",
       Value::Number(6.0),
       DataPropertyAttributes::CONST,
@@ -1664,7 +1748,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "ENTITY_REFERENCE_NODE",
+      Value::Number(5.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "NOTATION_NODE",
+      Value::Number(12.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "NOTATION_NODE",
       Value::Number(12.0),
       DataPropertyAttributes::CONST,
@@ -1676,7 +1772,19 @@ pub mod window {
       DataPropertyAttributes::CONST,
     )?;
     rt.define_data_property_str(
+      proto_node,
+      "PROCESSING_INSTRUCTION_NODE",
+      Value::Number(7.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
       ctor_node,
+      "TEXT_NODE",
+      Value::Number(3.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
       "TEXT_NODE",
       Value::Number(3.0),
       DataPropertyAttributes::CONST,

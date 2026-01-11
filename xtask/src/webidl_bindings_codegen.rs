@@ -2079,6 +2079,7 @@ fn to_uint32_f64(n: f64) -> u32 {
       write_constant_define_vmjs(
         &mut out,
         &format!("ctor_{}", to_snake_ident(&iface.name)),
+        &proto_var,
         constant,
       );
     }
@@ -2090,7 +2091,7 @@ fn to_uint32_f64(n: f64) -> u32 {
   Ok(out)
 }
 
-fn write_constant_define_vmjs(out: &mut String, ctor_var: &str, constant: &ConstantSig) {
+fn write_constant_define_vmjs(out: &mut String, ctor_var: &str, proto_var: &str, constant: &ConstantSig) {
   match &constant.value {
     IdlLiteral::String(s) => {
       out.push_str(&format!(
@@ -2103,12 +2104,23 @@ fn write_constant_define_vmjs(out: &mut String, ctor_var: &str, constant: &Const
         ctor_var = ctor_var,
         name_lit = rust_string_literal(&constant.name)
       ));
+      out.push_str(&format!(
+        "  rt.define_data_property_str({proto_var}, {name_lit}, value, DataPropertyAttributes::CONST)?;\n",
+        proto_var = proto_var,
+        name_lit = rust_string_literal(&constant.name)
+      ));
     }
     _ => {
       let expr = emit_constant_value_expr_vmjs(&constant.value);
       out.push_str(&format!(
         "  rt.define_data_property_str({ctor_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
         ctor_var = ctor_var,
+        name_lit = rust_string_literal(&constant.name),
+        expr = expr,
+      ));
+      out.push_str(&format!(
+        "  rt.define_data_property_str({proto_var}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
+        proto_var = proto_var,
         name_lit = rust_string_literal(&constant.name),
         expr = expr,
       ));
