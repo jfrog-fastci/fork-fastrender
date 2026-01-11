@@ -11,6 +11,7 @@ use crate::array::RtArrayHeader;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::gc::ObjHeader;
+use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
@@ -224,6 +225,20 @@ pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end:
   }
 }
 
+static REMEMBERED_SET: Lazy<Mutex<SimpleRememberedSet>> = Lazy::new(|| Mutex::new(SimpleRememberedSet::new()));
+
+#[inline]
+unsafe fn remember_old_object(obj: *mut u8) {
+  debug_assert!(!obj.is_null());
+  // Avoid taking the mutex in the common case where the object was already
+  // recorded by a previous barrier hit.
+  let header = &*(obj as *const ObjHeader);
+  if header.is_remembered() {
+    return;
+  }
+  REMEMBERED_SET.lock().remember(obj);
+}
+
 /// Write barrier for GC.
 ///
 /// Records old→young pointer stores in the remembered set.
@@ -262,14 +277,8 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
     return;
   }
 
-  // Old → young store. Mark the object as remembered.
-  //
-  // TODO: Replace this with the real remembered-set / card-table update once
-  // runtime-native's GC is wired up to native codegen.
-  let header = &mut *(obj as *mut ObjHeader);
-  if !header.is_remembered() {
-    header.set_remembered(true);
-  }
+  // Old → young store. Record the base object so minor GC can rescan it.
+  remember_old_object(obj);
 }
 
 /// Range write barrier for GC.
@@ -292,7 +301,7 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
     return;
   }
 
-  let header = &mut *(obj as *mut ObjHeader);
+  let header = &*(obj as *const ObjHeader);
   if header.is_remembered() {
     return;
   }
@@ -306,9 +315,95 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
       continue;
     }
     if YOUNG_SPACE.contains(value as usize) {
-      header.set_remembered(true);
+      remember_old_object(obj);
       return;
     }
+  }
+}
+
+#[cfg(test)]
+mod write_barrier_tests {
+  use super::*;
+  use crate::gc::roots::RememberedSet;
+
+  #[repr(C)]
+  struct DummyObject {
+    header: ObjHeader,
+    field: *mut u8,
+  }
+
+  fn clear_for_test() {
+    REMEMBERED_SET.lock().clear();
+    rt_gc_set_young_range(std::ptr::null_mut(), std::ptr::null_mut());
+  }
+
+  #[test]
+  fn write_barrier_records_old_to_young_edges() {
+    clear_for_test();
+
+    let mut young_byte = Box::new(0u8);
+    let young_ptr = (&mut *young_byte) as *mut u8;
+    unsafe {
+      rt_gc_set_young_range(young_ptr, young_ptr.add(1));
+    }
+
+    let mut old = Box::new(DummyObject {
+      header: ObjHeader {
+        type_desc: std::ptr::null(),
+        meta: 0,
+      },
+      field: young_ptr,
+    });
+
+    let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+    let slot_ptr = (&mut old.field) as *mut *mut u8 as *mut u8;
+    unsafe {
+      rt_write_barrier(obj_ptr, slot_ptr);
+    }
+
+    assert!(old.header.is_remembered());
+    assert!(REMEMBERED_SET.lock().contains(obj_ptr));
+
+    clear_for_test();
+  }
+
+  #[test]
+  fn write_barrier_range_records_old_to_young_edges() {
+    clear_for_test();
+
+    let mut young_byte = Box::new(0u8);
+    let young_ptr = (&mut *young_byte) as *mut u8;
+    unsafe {
+      rt_gc_set_young_range(young_ptr, young_ptr.add(1));
+    }
+
+    #[repr(C)]
+    struct DummyArray {
+      header: ObjHeader,
+      slots: [*mut u8; 4],
+    }
+
+    let mut old = Box::new(DummyArray {
+      header: ObjHeader {
+        type_desc: std::ptr::null(),
+        meta: 0,
+      },
+      slots: [std::ptr::null_mut(); 4],
+    });
+
+    old.slots[2] = young_ptr;
+
+    let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+    let start_slot = old.slots.as_mut_ptr() as *mut u8;
+    let len = old.slots.len() * core::mem::size_of::<*mut u8>();
+    unsafe {
+      rt_write_barrier_range(obj_ptr, start_slot, len);
+    }
+
+    assert!(old.header.is_remembered());
+    assert!(REMEMBERED_SET.lock().contains(obj_ptr));
+
+    clear_for_test();
   }
 }
 

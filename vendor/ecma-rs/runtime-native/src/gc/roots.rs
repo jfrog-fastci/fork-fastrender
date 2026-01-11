@@ -51,9 +51,23 @@ pub struct SimpleRememberedSet {
   objs: Vec<*mut u8>,
 }
 
+// SAFETY: `SimpleRememberedSet` stores raw pointers which are treated as opaque
+// addresses. The set is intended to be used under stop-the-world GC or external
+// synchronization (e.g. a mutex in the exported write barrier). It does not
+// dereference the pointers except while the world is stopped.
+unsafe impl Send for SimpleRememberedSet {}
+
 impl SimpleRememberedSet {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Record an old-generation object as potentially containing young-generation pointers.
+  ///
+  /// This is intended for use by write barriers. The object is added at most once; the per-object
+  /// `REMEMBERED` header bit is used to deduplicate.
+  pub fn remember(&mut self, obj: *mut u8) {
+    self.add(obj);
   }
 
   pub fn contains(&self, obj: *mut u8) -> bool {

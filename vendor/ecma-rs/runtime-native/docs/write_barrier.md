@@ -16,7 +16,8 @@ It also records proposed policy defaults for **per-object card tables** intended
 
 - The exported symbol **`rt_write_barrier`** exists (see `src/exports.rs`).
   - It loads the pointer value from `slot` and performs the young-range fast-path checks described in this document.
-  - On an old→young store it currently only sets the `REMEMBERED` bit in the object header. It does **not** yet enqueue objects into an exported remembered set / card table.
+  - On an old→young store it sets the `REMEMBERED` bit in the object header and enqueues the base object into a process-global remembered set (used by future minor GC wiring).
+  - It does **not** yet implement per-object card tables for large pointer arrays.
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
 - The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc*` still use the system allocator).
 
@@ -150,7 +151,7 @@ In Rust, this is modeled by the [`RememberedSet`](../src/gc/roots.rs) trait; tes
 
 ### Exported barrier status (important)
 
-The exported `rt_write_barrier` currently only sets the header bit; it does **not** enqueue `obj` into any heap-level remembered set. Full remembered-set/card-table integration for the exported runtime is still TODO.
+The exported `rt_write_barrier` sets the header bit and enqueues `obj` into a process-global remembered set. Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
 
 ### Minor GC behavior (current `GcHeap`)
 

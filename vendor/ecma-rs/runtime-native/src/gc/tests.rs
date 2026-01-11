@@ -1,6 +1,7 @@
 use super::heap::GcHeap;
 use super::roots::RememberedSet;
 use super::roots::RootSet;
+use super::roots::SimpleRememberedSet;
 use super::TypeDescriptor;
 use super::OBJ_HEADER_SIZE;
 use crate::gc;
@@ -90,7 +91,7 @@ fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
   const PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
   static DESC_ONE_PTR: TypeDescriptor = TypeDescriptor::new(OBJ_HEADER_SIZE + std::mem::size_of::<*mut u8>(), &PTR_OFFSETS);
 
-  let mut remembered = VecRememberedSet::default();
+  let mut remembered = SimpleRememberedSet::new();
 
   // Root an old object with one pointer slot.
   let mut old = heap.alloc_old(&DESC_ONE_PTR);
@@ -140,31 +141,6 @@ impl RootSet for VecRootSet {
       f(slot);
     }
   }
-}
-
-#[derive(Default)]
-struct VecRememberedSet {
-  objs: Vec<*mut u8>,
-}
-
-impl VecRememberedSet {
-  fn remember(&mut self, obj: *mut u8) {
-    self.objs.push(obj);
-  }
-}
-
-impl RememberedSet for VecRememberedSet {
-  fn for_each_remembered_obj(&mut self, f: &mut dyn FnMut(*mut u8)) {
-    for &obj in &self.objs {
-      f(obj);
-    }
-  }
-
-  fn clear(&mut self) {
-    self.objs.clear();
-  }
-
-  fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
 
 struct EmptyRememberedSet;
