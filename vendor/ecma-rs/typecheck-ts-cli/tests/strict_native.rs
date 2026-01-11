@@ -137,3 +137,29 @@ dict[key];
       codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str(),
     ));
 }
+
+#[test]
+fn native_strict_tsconfig_enables_strict_diagnostics() {
+  let tmp = tempdir().expect("temp dir");
+  let tsconfig = tmp.path().join("tsconfig.json");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": { "nativeStrict": true },
+  "files": ["main.ts"]
+}
+"#,
+  )
+  .expect("write tsconfig.json");
+  fs::write(&entry, "eval(\"1+1\");\n").expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--project")
+    .arg(tsconfig.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
+}
