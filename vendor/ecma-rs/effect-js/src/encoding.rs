@@ -595,11 +595,15 @@ mod tests {
   #[test]
   fn to_lowercase_preserves_ascii() {
     use crate::typed::TypedProgram;
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
     use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
-    let mut host = MemoryHost::new();
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+      ..Default::default()
+    });
     host.insert(key.clone(), "\"ABC\".toLowerCase();");
 
     let program = Arc::new(Program::new(host, vec![key.clone()]));
@@ -628,11 +632,15 @@ mod tests {
   #[test]
   fn to_lowercase_on_any_is_unknown() {
     use crate::typed::TypedProgram;
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
     use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
-    let mut host = MemoryHost::new();
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+      ..Default::default()
+    });
     host.insert(key.clone(), "(\"ABC\" as any).toLowerCase();");
 
     let program = Arc::new(Program::new(host, vec![key.clone()]));
@@ -662,11 +670,15 @@ mod tests {
   fn trim_preserves_ascii_via_kb() {
     use crate::typed::TypedProgram;
     use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use std::sync::Arc;
     use typecheck_ts::{FileKey, MemoryHost, Program};
 
     let key = FileKey::new("index.ts");
-    let mut host = MemoryHost::new();
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+      ..Default::default()
+    });
     host.insert(key.clone(), "\"ABC\".trim();");
 
     let program = Arc::new(Program::new(host, vec![key.clone()]));

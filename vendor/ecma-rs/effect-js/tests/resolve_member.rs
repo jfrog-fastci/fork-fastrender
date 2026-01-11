@@ -5,6 +5,7 @@ use effect_js::load_default_api_database;
 use hir_js::{ExprId, ExprKind, ObjectKey};
 use std::sync::Arc;
 use effect_js::typed::TypedProgram;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
@@ -56,6 +57,13 @@ const xs: number[] = [1];
 xs["length"];
 "#;
 
+fn es2015_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
+
 fn find_member_expr(
   lowered: &hir_js::LowerResult,
   body: &hir_js::Body,
@@ -102,7 +110,7 @@ fn find_member_expr(
 fn resolves_known_member_reads_typed() {
   let index_key = FileKey::new("index.ts");
 
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));

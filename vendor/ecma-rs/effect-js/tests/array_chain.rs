@@ -4,6 +4,7 @@ use effect_js::typed::TypedProgram;
 use effect_js::{load_default_api_database, recognize_patterns_typed, ArrayChainOp, ArrayTerminal, RecognizedPattern};
 use hir_js::{ExprId, ExprKind, Literal};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
@@ -16,6 +17,13 @@ xs.map(f).map(g);
 xs.map(f).filter(g).reduce(h, 0);
 xs.filter(g);
 "#;
+
+fn es2015_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
 
 fn assert_ident(body: &hir_js::Body, lowered: &hir_js::LowerResult, expr: ExprId, expected: &str) {
   let expr = &body.exprs[expr.0 as usize];
@@ -32,7 +40,7 @@ fn assert_ident(body: &hir_js::Body, lowered: &hir_js::LowerResult, expr: ExprId
 #[test]
 fn detects_array_chains_typed() {
   let index_key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));

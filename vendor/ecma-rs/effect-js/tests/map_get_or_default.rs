@@ -4,6 +4,7 @@ use effect_js::{load_default_api_database, recognize_patterns_typed, RecognizedP
 use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
@@ -18,11 +19,18 @@ const k = "x";
 const v = m["has"](k) ? m["get"](k) : 123;
 "#;
 
+fn es2015_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
+
 #[test]
 fn recognizes_map_get_or_default_conditional() {
   let index_key = FileKey::new("index.ts");
 
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));
@@ -116,7 +124,7 @@ fn recognizes_map_get_or_default_conditional() {
 fn recognizes_map_get_or_default_conditional_via_computed_key() {
   let index_key = FileKey::new("index.ts");
 
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS_COMPUTED);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));

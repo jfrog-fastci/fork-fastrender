@@ -1,6 +1,17 @@
 use effect_js::{analyze_string_encodings, StringEncoding};
 use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, KnowledgeBase};
 
+#[cfg(feature = "typed")]
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
+
+#[cfg(feature = "typed")]
+fn es2015_host() -> typecheck_ts::MemoryHost {
+  typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
+
 fn find_first_expr(
   body: &hir_js::Body,
   pred: impl Fn(&hir_js::ExprKind) -> bool,
@@ -158,10 +169,10 @@ fn new_number_to_string_is_ascii_via_kb() {
 fn to_lowercase_preserves_ascii() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(key.clone(), "\"ABC\".toLowerCase();");
 
   let program = Arc::new(Program::new(host, vec![key.clone()]));
@@ -191,10 +202,10 @@ fn to_lowercase_preserves_ascii() {
 fn to_lowercase_preserves_ascii_via_computed_key() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(key.clone(), "\"ABC\"[\"toLowerCase\"]();");
 
   let program = Arc::new(Program::new(host, vec![key.clone()]));
@@ -224,10 +235,10 @@ fn to_lowercase_preserves_ascii_via_computed_key() {
 fn typed_url_pathname_is_ascii_via_member_resolution() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(
     key.clone(),
     r#"
@@ -277,10 +288,10 @@ u.pathname;
 fn number_to_string_is_ascii() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(key.clone(), "const n: number = 42; n.toString();");
 
   let program = Arc::new(Program::new(host, vec![key.clone()]));
@@ -312,10 +323,10 @@ fn number_to_string_is_ascii() {
 fn string_concat_ascii_is_ascii() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(key.clone(), "\"a\".concat(\"b\");");
 
   let program = Arc::new(Program::new(host, vec![key.clone()]));

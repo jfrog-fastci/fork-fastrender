@@ -7,6 +7,7 @@ use effect_js::{
 use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind, Literal, ObjectKey};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
@@ -77,11 +78,18 @@ anyVal.map((x: number) => x);
 const parsed: { x: number } = JSON.parse("{\"x\": 1}");
 "#;
 
+fn es2015_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
+
 #[test]
 fn typed_resolves_instance_apis_and_gates_patterns() {
   let index_key = FileKey::new("index.ts");
 
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), INDEX_TS);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));

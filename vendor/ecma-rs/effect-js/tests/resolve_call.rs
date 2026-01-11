@@ -2,6 +2,15 @@ use diagnostics::TextRange;
 use effect_js::{resolve_call, ApiId};
 use hir_js::{ExprId, ExprKind, FileKind};
 
+#[cfg(feature = "typed")]
+fn es2015_host() -> typecheck_ts::MemoryHost {
+  use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
+  typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
+
 fn range_of(source: &str, needle: &str) -> TextRange {
   let start = source.find(needle).expect("needle not found") as u32;
   TextRange::new(start, start + needle.len() as u32)
@@ -139,11 +148,11 @@ fn resolves_semantic_array_find_calls_untyped() {
 fn resolves_typed_array_prototype_methods() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let source = "const xs: number[] = [1];\nxs.map(x => x + 1);\nxs[\"map\"](x => x + 1);";
   let file = FileKey::new("file0.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(file.clone(), source);
   let program = Arc::new(Program::new(host, vec![file.clone()]));
   let diagnostics = program.check();
@@ -180,27 +189,27 @@ fn resolves_typed_array_prototype_methods() {
 fn resolves_typed_map_and_promise_instance_methods() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;
-  use typecheck_ts::{FileKey, MemoryHost, Program};
+  use typecheck_ts::{FileKey, Program};
 
   let source = r#"
-const m: Map<string, number> = new Map();
- m.has("a");
- m["has"]("a");
- m.get("a");
- m.set("a", 1);
-
-const s: string = "ABC";
-s.trim();
-
-const xs: number[] = [1];
-xs.find(x => x === 1);
-
- const p: Promise<number> = Promise.resolve(1);
- p.then(x => x + 1);
- p["then"](x => x + 1);
- "#;
+ const m: Map<string, number> = new Map();
+  m.has("a");
+  m["has"]("a");
+  m.get("a");
+  m.set("a", 1);
+ 
+ const s: string = "ABC";
+ s.trim();
+ 
+ const xs: number[] = [1];
+ xs.find(x => x === 1);
+ 
+  const p: Promise<number> = Promise.resolve(1);
+  p.then(x => x + 1);
+  p["then"](x => x + 1);
+  "#;
   let file = FileKey::new("file0.ts");
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(file.clone(), source);
   let program = Arc::new(Program::new(host, vec![file.clone()]));
   let diagnostics = program.check();

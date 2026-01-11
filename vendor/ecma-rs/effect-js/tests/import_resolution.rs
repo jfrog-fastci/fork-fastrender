@@ -4,7 +4,15 @@ use effect_js::typed::TypedProgram;
 use effect_js::{resolve_call, ApiDatabase};
 use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{DefKind, FileKey, ImportTarget, MemoryHost, Program};
+
+fn es2015_host() -> MemoryHost {
+  MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  })
+}
 
 fn resolve_single_call_opt(
   source: &str,
@@ -16,7 +24,7 @@ fn resolve_single_call_opt(
   // relies on the preserved import specifier string.
   let fs_key = FileKey::new("node_fs.ts");
 
-  let mut host = MemoryHost::new();
+  let mut host = es2015_host();
   host.insert(index_key.clone(), source);
   host.insert(
     fs_key.clone(),
