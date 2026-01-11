@@ -917,7 +917,7 @@ impl WindowRealm {
         }
       }
 
-      let mut host_ctx = VmJsHostContext::default();
+      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
 
       let mut first_err: Option<VmError> = None;
@@ -10431,9 +10431,6 @@ fn current_script_state_handle_from_vm_host(
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return Some(document.current_script_handle().clone());
     }
-    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
-      return ctx.current_script_state().cloned();
-    }
     None
   }
 
@@ -16426,6 +16423,20 @@ mod tests {
     }
 
     window.exec_script("__check_hooks_payload()")?;
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_perform_microtask_checkpoint_runs_promise_jobs() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // `WindowRealm` does not install the full HTML event loop / `queueMicrotask` bindings by
+    // default, but Promise jobs still enqueue microtasks into the VM-owned microtask queue.
+    realm.exec_script("globalThis.__x = 0; Promise.resolve().then(() => { globalThis.__x = 1; });")?;
+    assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(0.0));
+
+    realm.perform_microtask_checkpoint()?;
+    assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(1.0));
     Ok(())
   }
 
