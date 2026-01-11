@@ -8,6 +8,8 @@ pub enum IoLimitError {
   LimitExceeded(&'static str),
   #[error("invalid pin range")]
   InvalidRange,
+  #[error("buffer is detached or not alive")]
+  BufferNotAlive,
   #[error("buffer is in use by another in-flight I/O operation")]
   BufferBorrowed,
 }

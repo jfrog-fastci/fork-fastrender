@@ -256,13 +256,13 @@ fn pin_uint8_array_range_converts_view_relative_range_and_charges_alloc_len() {
   assert_eq!(alloc_len, 1024);
 
   let view = Uint8Array::view(&buf, 4, 8).unwrap();
+  let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4 + 2) } as *const u8;
   let op = IoOp::pin_uint8_array_range(&limiter, &view, 2..6).unwrap();
 
   assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
   assert_eq!(op.bufs().len(), 1);
   assert_eq!(op.bufs()[0].len(), 4);
 
-  let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4 + 2) } as *const u8;
   assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
 
   drop(op);
@@ -278,13 +278,13 @@ fn pin_array_buffer_range_produces_expected_kernel_ptr() {
   }));
 
   let buf = ArrayBuffer::new_zeroed(16).unwrap();
+  let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4) } as *const u8;
   let op = IoOp::pin_array_buffer_range(&limiter, &buf, 4..10).unwrap();
 
   assert_eq!(limiter.counters().pinned_bytes_current, 16);
   assert_eq!(op.bufs().len(), 1);
   assert_eq!(op.bufs()[0].len(), 6);
 
-  let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4) } as *const u8;
   assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
   drop(op);
 
@@ -312,4 +312,58 @@ fn pin_backing_store_range_produces_expected_kernel_ptr() {
 
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn pins_block_detach_and_transfer_until_drop() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 1024,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  let mut buf = ArrayBuffer::new_zeroed(8).unwrap();
+  let alloc_len = buf.backing_store_handle().unwrap().alloc_len();
+  let view = Uint8Array::view(&buf, 2, 4).unwrap();
+
+  let op = IoOp::pin_uint8_array(&limiter, &view).unwrap();
+  assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
+  assert_eq!(limiter.counters().inflight_ops_current, 1);
+
+  assert!(matches!(buf.detach(), Err(ArrayBufferError::Pinned)));
+  assert!(matches!(buf.transfer(), Err(ArrayBufferError::Pinned)));
+
+  drop(op);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+
+  // After dropping the IoOp guard, detach/transfer must be allowed again.
+  let _transferred = buf.transfer().unwrap();
+  assert!(buf.is_detached());
+}
+
+#[test]
+fn detached_buffers_return_buffer_not_alive() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+
+  let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+  let view = Uint8Array::view(&buf, 0, 4).unwrap();
+  buf.detach().unwrap();
+
+  assert!(matches!(
+    IoOp::pin_array_buffer_range(&limiter, &buf, 0..0).unwrap_err(),
+    IoLimitError::BufferNotAlive
+  ));
+  assert!(matches!(
+    IoOp::pin_uint8_array(&limiter, &view).unwrap_err(),
+    IoLimitError::BufferNotAlive
+  ));
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+  assert_eq!(limiter.counters().inflight_ops_current, 0);
+}
+
+#[test]
+fn io_op_is_send() {
+  fn assert_send<T: Send>() {}
+  assert_send::<IoOp>();
 }

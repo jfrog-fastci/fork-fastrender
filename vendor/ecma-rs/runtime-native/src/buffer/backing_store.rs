@@ -134,6 +134,12 @@ pub struct BackingStore {
   inner: *mut BackingStoreInner,
 }
 
+// SAFETY: `BackingStore` is a ref-counted handle to a stable, non-moving external allocation.
+// All lifetime state transitions (ref_count, pin_count, borrow_state) use atomics, so handles may be
+// cloned/dropped on any thread.
+unsafe impl Send for BackingStore {}
+unsafe impl Sync for BackingStore {}
+
 impl Clone for BackingStore {
   fn clone(&self) -> Self {
     let Some(inner) = NonNull::new(self.inner) else {

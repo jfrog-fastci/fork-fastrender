@@ -2,7 +2,10 @@ use super::iovec::PinnedIoVec;
 #[cfg(unix)]
 use super::iovec::PinnedMsgHdr;
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
-use crate::buffer::{ArrayBuffer, BackingStore, BorrowError, BorrowGuardRead, PinnedBackingStore, Uint8Array};
+use crate::buffer::{
+  ArrayBuffer, ArrayBufferError, BackingStore, BorrowError, BorrowGuardRead, PinnedBackingStore,
+  TypedArrayError, Uint8Array,
+};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -13,6 +16,12 @@ pub struct IoBuf {
   ptr: *const u8,
   len: usize,
 }
+
+// SAFETY: `IoBuf` is a raw kernel pointer view into a pinned backing store. The owning `IoOp`
+// keeps the backing store alive for the duration of the operation; dereferencing the pointer is
+// always unsafe.
+unsafe impl Send for IoBuf {}
+unsafe impl Sync for IoBuf {}
 
 impl IoBuf {
   #[inline]
@@ -62,12 +71,15 @@ impl IoOp {
     buf: &ArrayBuffer,
     range: Range<usize>,
   ) -> Result<Self, IoLimitError> {
+    if buf.is_detached() {
+      return Err(IoLimitError::BufferNotAlive);
+    }
     if range.start > range.end || range.end > buf.byte_len() {
       return Err(IoLimitError::InvalidRange);
     }
 
     let Some(store) = buf.backing_store_handle() else {
-      return Err(IoLimitError::InvalidRange);
+      return Err(IoLimitError::BufferNotAlive);
     };
     Self::pin_backing_store_range(limiter, store, range)
   }
@@ -80,13 +92,17 @@ impl IoOp {
     view: &Uint8Array,
     range: Range<usize>,
   ) -> Result<Self, IoLimitError> {
+    if view.is_detached() {
+      return Err(IoLimitError::BufferNotAlive);
+    }
     if range.start > range.end || range.end > view.length() {
       return Err(IoLimitError::InvalidRange);
     }
 
-    let store = view
-      .backing_store_handle()
-      .map_err(|_| IoLimitError::InvalidRange)?;
+    let store = view.backing_store_handle().map_err(|err| match err {
+      TypedArrayError::Buffer(ArrayBufferError::Detached) => IoLimitError::BufferNotAlive,
+      _ => IoLimitError::InvalidRange,
+    })?;
 
     let view_base = view.byte_offset();
     let abs_start = view_base
@@ -95,6 +111,11 @@ impl IoOp {
     let abs_end = view_base.checked_add(range.end).ok_or(IoLimitError::InvalidRange)?;
 
     Self::pin_backing_store_range(limiter, store, abs_start..abs_end)
+  }
+
+  /// Pins an entire [`Uint8Array`] view for an I/O operation.
+  pub fn pin_uint8_array(limiter: &Arc<IoLimiter>, view: &Uint8Array) -> Result<Self, IoLimitError> {
+    Self::pin_uint8_array_range(limiter, view, 0..view.length())
   }
 
   /// Pins multiple ranges for a single vectored I/O operation.
