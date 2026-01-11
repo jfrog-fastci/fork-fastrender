@@ -236,41 +236,42 @@ impl Cfg {
     }
     for i in 0..bblocks.len() {
       let parent = bblock_order[i];
-      if let Some(Inst {
-        t: InstTyp::_Goto,
-        labels,
-        ..
-      }) = bblocks[&parent].last()
-      {
-        let label = labels[0];
-        graph.connect(&parent, &label);
-        // We don't want Goto insts after this point.
-        bblocks.get_mut(&parent).unwrap().pop().unwrap();
-      } else if let Some(Inst {
-        t: InstTyp::CondGoto,
-        labels,
-        ..
-      }) = bblocks.get_mut(&parent).unwrap().last_mut()
-      {
-        for label in labels.iter_mut() {
-          // We use DUMMY_LABEL during source_to_inst for one branch of a CondGoto to indicate fallthrough.
-          // We must update the Inst label too.
-          if *label == DUMMY_LABEL {
-            *label = bblock_order[i + 1];
-          };
-          graph.connect(&parent, label);
+      let last_t = bblocks[&parent].last().map(|inst| inst.t.clone());
+      match last_t {
+        Some(InstTyp::_Goto) => {
+          let labels = bblocks[&parent]
+            .last()
+            .expect("checked by match")
+            .labels
+            .clone();
+          let label = labels[0];
+          graph.connect(&parent, &label);
+          // We don't want Goto insts after this point.
+          bblocks.get_mut(&parent).unwrap().pop().unwrap();
         }
-      } else if bblocks[&parent]
-        .last()
-        .is_some_and(|inst| matches!(inst.t, InstTyp::Return | InstTyp::Throw))
-      {
-        // Return and Throw have no outgoing edges.
-      } else if i == bblocks.len() - 1 {
-        // Last bblock, don't connect to anything.
-      } else {
-        // Implicit fallthrough.
-        graph.connect(&parent, &bblock_order[i + 1]);
-      };
+        Some(InstTyp::CondGoto) => {
+          let labels = &mut bblocks.get_mut(&parent).unwrap().last_mut().unwrap().labels;
+          for label in labels.iter_mut() {
+            // We use DUMMY_LABEL during source_to_inst for one branch of a CondGoto to indicate fallthrough.
+            // We must update the Inst label too.
+            if *label == DUMMY_LABEL {
+              *label = bblock_order[i + 1];
+            };
+            graph.connect(&parent, label);
+          }
+        }
+        Some(InstTyp::Return) | Some(InstTyp::Throw) => {
+          // Terminators with no outgoing edges.
+        }
+        _ => {
+          if i == bblocks.len() - 1 {
+            // Last bblock, don't connect to anything.
+          } else {
+            // Implicit fallthrough.
+            graph.connect(&parent, &bblock_order[i + 1]);
+          }
+        }
+      }
     }
     Self {
       graph: CfgGraph(graph),

@@ -13,8 +13,8 @@ use ahash::HashMap;
 use ahash::HashMapExt;
 
 use super::{
-  alias, consume, effect, encoding, escape, interproc_escape, nullability, ownership, purity,
-  range,
+  alias, call_summary, consume, effect, encoding, escape, interproc_escape, nullability, ownership,
+  purity, range,
 };
 
 /// Per-function analysis bundle.
@@ -282,6 +282,7 @@ fn annotate_cfg_nullability_narrowings(cfg: &mut Cfg) {
 pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   let keys = function_keys(program);
   let mut analyses = ProgramAnalyses::default();
+  let call_summaries = call_summary::summarize_program(program);
 
   // 1) effects
   let effects = effect::compute_program_effects(program);
@@ -321,6 +322,7 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
           cfg_for_key(program, key),
           params_for_key(program, key),
           Some(&escape_summaries),
+          Some(&call_summaries),
         ),
       );
   }
@@ -335,7 +337,15 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
       .expect("escape results should be populated before ownership");
     analyses
       .ownership
-      .insert(key, ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, escapes));
+      .insert(
+        key,
+        ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+          cfg,
+          params,
+          escapes,
+          Some(&call_summaries),
+        ),
+      );
   }
 
   // 6) nullability/range/encoding
@@ -361,6 +371,7 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
 /// scratch, so it is safe to call repeatedly.
 pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   let keys = function_keys(program);
+  let call_summaries = call_summary::summarize_program(program);
 
   // Clear any stale metadata before annotating.
   for &key in &keys {
@@ -415,6 +426,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       cfg_for_key(program, key),
       params_for_key(program, key),
       Some(&escape_summaries),
+      Some(&call_summaries),
     );
     annotate_cfg_escape_states(cfg_for_key_mut(program, key), &escapes);
     analyses.escape.insert(key, escapes);
@@ -429,7 +441,12 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
         .escape
         .get(&key)
         .expect("escape results should be populated before ownership");
-      ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, escapes)
+      ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+        cfg,
+        params,
+        escapes,
+        Some(&call_summaries),
+      )
     };
     ownership::annotate_cfg_ownership(cfg_for_key_mut(program, key), &ownership_result);
     consume::annotate_cfg_consumption(cfg_for_key_mut(program, key), &ownership_result);

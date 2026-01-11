@@ -1,5 +1,6 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, InstTyp};
+use crate::analysis::call_summary::{FnSummary, ReturnKind};
 use crate::analysis::interproc_escape::ProgramEscapeSummaries;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -212,7 +213,10 @@ struct LocalAllocFlowFacts {
   getprops: Vec<(u32, Arg)>,
 }
 
-fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
+fn collect_local_alloc_flow_facts(
+  cfg: &Cfg,
+  call_summaries: Option<&[FnSummary]>,
+) -> LocalAllocFlowFacts {
   let mut facts = LocalAllocFlowFacts::default();
 
   for label in cfg_labels_sorted(cfg) {
@@ -226,26 +230,38 @@ fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
           let Some(tgt) = tgt else {
             continue;
           };
-          let Some(marker) = marker_call(callee) else {
-            facts.external_defs.insert(tgt);
+          if let Some(marker) = marker_call(callee) {
+            facts.alloc_vars.insert(tgt);
+            match marker {
+              MarkerCall::Object => {
+                let init = object_alloc_init_values(args);
+                if !init.is_empty() {
+                  facts.alloc_inits.push((tgt, init));
+                }
+              }
+              MarkerCall::Array => {
+                let init = array_alloc_init_values(args, spreads);
+                if !init.is_empty() {
+                  facts.alloc_inits.push((tgt, init));
+                }
+              }
+              MarkerCall::Regex | MarkerCall::Template | MarkerCall::New => {}
+            }
             continue;
-          };
-          facts.alloc_vars.insert(tgt);
-          match marker {
-            MarkerCall::Object => {
-              let init = object_alloc_init_values(args);
-              if !init.is_empty() {
-                facts.alloc_inits.push((tgt, init));
-              }
-            }
-            MarkerCall::Array => {
-              let init = array_alloc_init_values(args, spreads);
-              if !init.is_empty() {
-                facts.alloc_inits.push((tgt, init));
-              }
-            }
-            MarkerCall::Regex | MarkerCall::Template | MarkerCall::New => {}
           }
+
+          if spreads.is_empty() {
+            if let (Some(call_summaries), Arg::Fn(id)) = (call_summaries, callee) {
+              if let Some(summary) = call_summaries.get(*id) {
+                if matches!(summary.return_kind, ReturnKind::FreshAlloc) {
+                  facts.alloc_vars.insert(tgt);
+                  continue;
+                }
+              }
+            }
+          }
+
+          facts.external_defs.insert(tgt);
         }
         InstTyp::VarAssign => {
           let (tgt, arg) = inst.as_var_assign();
@@ -335,19 +351,20 @@ fn join_escape(states: &mut BTreeMap<u32, EscapeState>, alloc: u32, esc: EscapeS
 pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
   let mut params: Vec<u32> = collect_param_vars(cfg).into_iter().collect();
   params.sort_unstable();
-  analyze_cfg_escapes_with_params_and_summaries(cfg, &params, None)
+  analyze_cfg_escapes_with_params_and_summaries(cfg, &params, None, None)
 }
 
 pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResult {
-  analyze_cfg_escapes_with_params_and_summaries(cfg, params, None)
+  analyze_cfg_escapes_with_params_and_summaries(cfg, params, None, None)
 }
 
 pub fn analyze_cfg_escapes_with_params_and_summaries(
   cfg: &Cfg,
   params: &[u32],
   summaries: Option<&ProgramEscapeSummaries>,
+  call_summaries: Option<&[FnSummary]>,
 ) -> EscapeResult {
-  let facts = collect_local_alloc_flow_facts(cfg);
+  let facts = collect_local_alloc_flow_facts(cfg, call_summaries);
   let alloc_vars = facts.alloc_vars.clone();
 
   // Infer which local allocations may flow through each SSA variable.
@@ -732,7 +749,7 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
 /// This is a stable public entry point that returns the escape state for each allocation-defining
 /// temp (as opposed to all temps that may alias an allocation).
 pub fn analyze_escape(cfg: &Cfg) -> EscapeResults {
-  let facts = collect_local_alloc_flow_facts(cfg);
+  let facts = collect_local_alloc_flow_facts(cfg, None);
   let all = analyze_cfg_escapes(cfg);
 
   let mut alloc_states = BTreeMap::new();

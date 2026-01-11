@@ -1,3 +1,4 @@
+pub mod call_summary;
 pub mod callsite;
 pub mod dataflow;
 pub mod dataflow_edge;

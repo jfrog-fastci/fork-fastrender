@@ -72,6 +72,7 @@ fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
     &program.functions[1].body,
     &program.functions[1].params,
     Some(&summaries),
+    None,
   );
   assert_eq!(escape_of(&caller_escape, 0), EscapeState::NoEscape);
 }
@@ -115,6 +116,7 @@ fn returning_helper_call_result_marks_alloc_as_return_escape() {
     &program.functions[1].body,
     &program.functions[1].params,
     Some(&summaries),
+    None,
   );
   assert_eq!(escape_of(&caller_escape, 0), EscapeState::ReturnEscape);
 }
@@ -164,6 +166,7 @@ fn helper_storing_param_to_global_forces_global_escape() {
     &program.functions[1].body,
     &program.functions[1].params,
     Some(&summaries),
+    None,
   );
   assert_eq!(escape_of(&caller_escape, 0), EscapeState::GlobalEscape);
 }
@@ -202,4 +205,3 @@ fn summaries_are_deterministic() {
   let b = interproc_escape::compute_program_escape_summaries(&program);
   assert_eq!(a, b);
 }
-

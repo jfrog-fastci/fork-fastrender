@@ -215,6 +215,10 @@ impl OptimizationStats {
 pub struct ProgramFunction {
   pub debug: Option<OptimizerDebug>,
   pub body: Cfg,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Vec::is_empty")
+  )]
   pub params: Vec<u32>,
   /// SSA-form CFG annotated with escape/ownership metadata.
   ///

@@ -42,6 +42,7 @@ pub struct HirSourceToInst<'p> {
   pub break_stack: Vec<u32>,
   pub continue_stack: Vec<u32>,
   pub label_stack: Vec<LabeledTarget>,
+  pub in_function: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +67,7 @@ impl<'p> HirSourceToInst<'p> {
       break_stack: Vec::new(),
       continue_stack: Vec::new(),
       label_stack: Vec::new(),
+      in_function: body.kind == hir_js::BodyKind::Function,
     }
   }
 

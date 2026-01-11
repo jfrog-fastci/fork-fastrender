@@ -1,3 +1,4 @@
+use crate::analysis::call_summary::{FnSummary, ReturnKind};
 use crate::analysis::escape::{analyze_cfg_escapes, EscapeResult, EscapeState};
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Inst, InstTyp, OwnershipState};
@@ -104,7 +105,12 @@ fn alloc_escape_to_ownership(esc: EscapeState) -> OwnershipState {
   }
 }
 
-fn infer_ownership_with_escapes(cfg: &Cfg, params: &[u32], escapes: &EscapeResult) -> OwnershipResult {
+fn infer_ownership_with_escapes_and_summaries(
+  cfg: &Cfg,
+  params: &[u32],
+  escapes: &EscapeResult,
+  call_summaries: Option<&[FnSummary]>,
+) -> OwnershipResult {
   let defs = collect_defined_vars(cfg);
   let uses = collect_used_vars(cfg);
   let inputs = collect_input_vars(cfg, &defs, &uses, params);
@@ -118,28 +124,57 @@ fn infer_ownership_with_escapes(cfg: &Cfg, params: &[u32], escapes: &EscapeResul
       continue;
     };
     for inst in block {
-      if is_allocation_inst(inst) {
-        if let Some(tgt) = inst_defines_value(inst) {
-          allocations.insert(tgt);
+      match inst.t {
+        InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
+          if let Some(tgt) = inst_defines_value(inst) {
+            borrowed_defs.insert(tgt);
+          }
         }
-      }
+        InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
+          if let Some(tgt) = inst_defines_value(inst) {
+            borrowed_defs.insert(tgt);
+          }
+        }
+        InstTyp::Call => {
+          let (tgt, callee, _this, args, spreads) = inst.as_call();
+          let Some(tgt) = tgt else {
+            continue;
+          };
 
-      if let Some(tgt) = inst_defines_value(inst) {
-        match inst.t {
-          InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
-            borrowed_defs.insert(tgt);
+          // Known allocation marker builtins always produce a fresh allocation.
+          if is_allocation_inst(inst) {
+            allocations.insert(tgt);
+            continue;
           }
-          InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
-            borrowed_defs.insert(tgt);
-          }
-          InstTyp::Call => {
-            if !is_allocation_inst(inst) {
+
+          // For direct nested-function calls, use call summaries to refine the result.
+          let summary_kind = spreads.is_empty().then(|| match (call_summaries, callee) {
+            (Some(summaries), Arg::Fn(id)) => summaries.get(*id).map(|s| s.return_kind),
+            _ => None,
+          });
+
+          match summary_kind.flatten().unwrap_or(ReturnKind::Unknown) {
+            ReturnKind::FreshAlloc => {
+              allocations.insert(tgt);
+            }
+            ReturnKind::AliasParam(i) => {
+              if let Some(Arg::Var(src)) = args.get(i) {
+                flow_edges.entry(*src).or_default().push(tgt);
+              } else {
+                // Either the arg is missing/constant or we can't track it; stay conservative.
+                borrowed_defs.insert(tgt);
+              }
+            }
+            ReturnKind::Const => {
+              // A constant result is not an external object; leave as a normal local value.
+            }
+            ReturnKind::Unknown => {
               // Unknown call results are treated as coming from outside the function.
               borrowed_defs.insert(tgt);
             }
           }
-          _ => {}
         }
+        _ => {}
       }
 
       // Propagate ownership through obvious aliasing operations.
@@ -218,7 +253,7 @@ pub fn analyze_cfg_ownership(cfg: &Cfg) -> OwnershipResult {
 /// This is useful for program-wide drivers that already computed escapes (e.g.
 /// to expose them via a side table) and want to avoid recomputing them.
 pub fn analyze_cfg_ownership_with_escapes(cfg: &Cfg, escapes: &EscapeResult) -> OwnershipResult {
-  infer_ownership_with_escapes(cfg, &[], escapes)
+  infer_ownership_with_escapes_and_summaries(cfg, &[], escapes, None)
 }
 
 pub fn analyze_cfg_ownership_with_escapes_and_params(
@@ -226,7 +261,16 @@ pub fn analyze_cfg_ownership_with_escapes_and_params(
   params: &[u32],
   escapes: &EscapeResult,
 ) -> OwnershipResult {
-  infer_ownership_with_escapes(cfg, params, escapes)
+  infer_ownership_with_escapes_and_summaries(cfg, params, escapes, None)
+}
+
+pub fn analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+  cfg: &Cfg,
+  params: &[u32],
+  escapes: &EscapeResult,
+  call_summaries: Option<&[FnSummary]>,
+) -> OwnershipResult {
+  infer_ownership_with_escapes_and_summaries(cfg, params, escapes, call_summaries)
 }
 
 pub fn annotate_cfg_ownership(cfg: &mut Cfg, ownership: &OwnershipResult) {
