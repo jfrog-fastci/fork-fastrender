@@ -614,6 +614,8 @@ fn is_allowed_global_member_root(name: &str) -> bool {
       | "self"
       | "global"
       | "console"
+      | "crypto"
+      | "performance"
       | "process"
       | "Buffer"
       | "Array"
@@ -754,6 +756,42 @@ mod tests {
       ApiSemantics {
         id: ApiId::from_name("Response.prototype.json"),
         name: "Response.prototype.json".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("performance.now"),
+        name: "performance.now".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("crypto.getRandomValues"),
+        name: "crypto.getRandomValues".to_string(),
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
@@ -1029,6 +1067,46 @@ mod tests {
       resolve_api_use(file, body, call_expr, names, &kb),
       Some(ResolvedApiUse {
         api: ApiId::from_name("Math.sqrt"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_performance_now_call() {
+    let source = r#"performance.now();"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("performance.now"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_crypto_get_random_values_call() {
+    let source = r#"crypto.getRandomValues(buf);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("crypto.getRandomValues"),
         kind: ApiUseKind::Call,
       })
     );
