@@ -4,10 +4,23 @@ use std::io::Write;
 pub(crate) fn abort_on_panic<T>(f: impl FnOnce() -> T) -> T {
   #[cfg(panic = "unwind")]
   {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-      Ok(value) => value,
-      Err(_) => std::process::abort(),
-    }
+    // Some runtime entrypoints run inside `catch_unwind` to avoid unwinding across
+    // the stable C ABI boundary.
+    //
+    // The sysroot's `catch_unwind` implementation is not guaranteed to maintain a
+    // valid frame-pointer chain (it may repurpose the frame-pointer register),
+    // which can break "walk outward to the nearest managed stackmap callsite"
+    // logic in the safepoint slow path.
+    //
+    // Provide the current frame pointer as a best-effort override starting point
+    // for safepoint-context fixups while `f` is executing.
+    let fp = crate::stackwalk::current_frame_pointer();
+    crate::threading::safepoint::with_safepoint_fixup_start_fp(fp, || {
+      match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => value,
+        Err(_) => std::process::abort(),
+      }
+    })
   }
 
   #[cfg(not(panic = "unwind"))]
@@ -29,10 +42,15 @@ fn abort_due_to_panic_in_callback() -> ! {
 pub(crate) fn abort_on_callback_panic<T>(f: impl FnOnce() -> T) -> T {
   #[cfg(panic = "unwind")]
   {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-      Ok(value) => value,
-      Err(_) => abort_due_to_panic_in_callback(),
-    }
+    // See `abort_on_panic` for the rationale for setting the safepoint fixup FP
+    // override while running inside `catch_unwind`.
+    let fp = crate::stackwalk::current_frame_pointer();
+    crate::threading::safepoint::with_safepoint_fixup_start_fp(fp, || {
+      match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => value,
+        Err(_) => abort_due_to_panic_in_callback(),
+      }
+    })
   }
 
   #[cfg(not(panic = "unwind"))]
