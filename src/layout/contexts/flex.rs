@@ -18947,6 +18947,7 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.content_visibility = crate::style::types::ContentVisibility::Auto;
     item_style.contain_intrinsic_height.length = Some(Length::px(30.0));
+    crate::style::properties::apply_container_type_implied_containment(&mut item_style);
     crate::style::properties::apply_content_visibility_implied_containment(&mut item_style);
     let item_style = Arc::new(item_style);
 

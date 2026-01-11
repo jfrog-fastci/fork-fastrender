@@ -86,6 +86,7 @@ use crate::style::media::RangeValue;
 use crate::style::normalize_language_tag;
 use crate::style::position::Position;
 use crate::style::position_try::PositionTryRegistry;
+use crate::style::properties::apply_container_type_implied_containment;
 use crate::style::properties::apply_content_visibility_implied_containment;
 use crate::style::properties::apply_declaration_with_base;
 use crate::style::properties::apply_declaration_with_base_and_custom_properties;
@@ -2299,6 +2300,7 @@ fn eval_plain_style_feature(
 
   resolve_pending_logical_properties(&mut expected);
   normalize_overflow_axes(&mut expected);
+  apply_container_type_implied_containment(&mut expected);
   apply_content_visibility_implied_containment(&mut expected);
   resolve_line_height_length(&mut expected, viewport);
   let expected_root_font_size = expected.root_font_size;
@@ -2400,6 +2402,7 @@ fn eval_boolean_style_feature(
 
   resolve_pending_logical_properties(&mut initial_style);
   normalize_overflow_axes(&mut initial_style);
+  apply_container_type_implied_containment(&mut initial_style);
   apply_content_visibility_implied_containment(&mut initial_style);
   resolve_line_height_length(&mut initial_style, viewport);
   let initial_root_font_size = initial_style.root_font_size;
@@ -35304,6 +35307,7 @@ fn apply_cascaded_declarations<'a, F>(
   if total_decls == 0 {
     resolve_pending_logical_properties(styles);
     normalize_overflow_axes(styles);
+    apply_container_type_implied_containment(styles);
     apply_content_visibility_implied_containment(styles);
     resolve_absolute_lengths(styles, root_font_size, viewport);
     return;
@@ -36326,6 +36330,7 @@ fn apply_cascaded_declarations<'a, F>(
   }
   resolve_pending_logical_properties(styles);
   normalize_overflow_axes(styles);
+  apply_container_type_implied_containment(styles);
   apply_content_visibility_implied_containment(styles);
 
   resolve_absolute_lengths(styles, root_font_size, viewport);

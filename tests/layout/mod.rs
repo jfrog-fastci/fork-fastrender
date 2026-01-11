@@ -33,6 +33,7 @@ mod br_linebreak;
 mod calc_size_test;
 mod complex_script_wrap_test;
 mod contain_layout;
+mod container_type_establishes_bfc;
 mod container_query_border_calc;
 mod container_query_percentage_padding;
 mod container_query_replaced_style_refresh;

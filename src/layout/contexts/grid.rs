@@ -14173,6 +14173,7 @@ mod tests {
   };
   use crate::layout::contexts::block::BlockFormattingContext;
   use crate::style::display::FormattingContextType;
+  use crate::style::properties::apply_container_type_implied_containment;
   use crate::style::properties::apply_content_visibility_implied_containment;
   use crate::style::types::AlignItems;
   use crate::style::types::AspectRatio;
@@ -14939,6 +14940,7 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.content_visibility = ContentVisibility::Auto;
     item_style.contain_intrinsic_height.length = Some(Length::px(30.0));
+    crate::style::properties::apply_container_type_implied_containment(&mut item_style);
     crate::style::properties::apply_content_visibility_implied_containment(&mut item_style);
     let item_style = Arc::new(item_style);
 
@@ -15006,6 +15008,7 @@ mod tests {
     auto_style.border_bottom_width = Length::px(border_bottom);
     auto_style.border_top_style = BorderStyle::Solid;
     auto_style.border_bottom_style = BorderStyle::Solid;
+    apply_container_type_implied_containment(&mut auto_style);
     apply_content_visibility_implied_containment(&mut auto_style);
     let auto_style = Arc::new(auto_style);
 
@@ -18846,6 +18849,7 @@ mod tests {
     subgrid_style.grid_row_subgrid = true;
     subgrid_style.grid_column_subgrid = true;
     subgrid_style.content_visibility = ContentVisibility::Auto;
+    apply_container_type_implied_containment(&mut subgrid_style);
     apply_content_visibility_implied_containment(&mut subgrid_style);
 
     let mut abs_style = ComputedStyle::default();

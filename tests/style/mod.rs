@@ -25,6 +25,7 @@ mod container_query_size_var_test;
 mod container_scroll_state_queries_test;
 mod container_query_units_inline_styles_test;
 mod container_name_parsing_test;
+mod container_type_implied_containment_test;
 mod container_query_self_selection_test;
 mod container_style_queries;
 mod content_generation_test;

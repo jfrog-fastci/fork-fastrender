@@ -9,7 +9,8 @@ use crate::style::cascade::inherit_styles;
 use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::properties::{
-  apply_content_visibility_implied_containment, apply_declaration_with_base,
+  apply_container_type_implied_containment, apply_content_visibility_implied_containment,
+  apply_declaration_with_base,
   resolve_pending_logical_properties,
 };
 use crate::style::types::TextAlign;
@@ -230,12 +231,14 @@ pub fn resolve_page_style(
 
   for style in margin_styles.values_mut() {
     resolve_pending_logical_properties(style);
+    apply_container_type_implied_containment(style);
     apply_content_visibility_implied_containment(style);
     // CSS Page 3: `display` and `position` do not apply to page-margin boxes.
     style.display = Display::Block;
     style.position = Position::Static;
   }
   resolve_pending_logical_properties(&mut page_style);
+  apply_container_type_implied_containment(&mut page_style);
   apply_content_visibility_implied_containment(&mut page_style);
   if matches!(page_style.display, Display::Inline) {
     page_style.display = Display::Block;

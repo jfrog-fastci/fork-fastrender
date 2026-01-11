@@ -8844,6 +8844,7 @@ impl ComputedStyle {
     // (e.g. via animations), we must mirror that finalization so logical properties like
     // `border-inline-end-width` actually update their physical counterparts and lengths stay in px.
     resolve_pending_logical_properties(self);
+    apply_container_type_implied_containment(self);
     apply_content_visibility_implied_containment(self);
 
     if let Some(ctx) = container_ctx.as_ref() {
@@ -8929,6 +8930,7 @@ impl ComputedStyle {
 
     // Mirror cascade finalization so logical properties and absolute lengths stay consistent.
     resolve_pending_logical_properties(self);
+    apply_container_type_implied_containment(self);
     apply_content_visibility_implied_containment(self);
     crate::style::cascade::resolve_line_height_length(self, viewport);
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
@@ -38081,4 +38083,27 @@ pub fn apply_content_visibility_implied_containment(styles: &mut ComputedStyle) 
   styles.containment.layout = true;
   styles.containment.style = true;
   styles.containment.paint = true;
+}
+
+/// Applies containment effects implied by `container-type`.
+///
+/// Per CSS Conditional Rules Level 5, `container-type:size` implies style containment plus size
+/// containment, while `container-type:inline-size` implies style containment plus inline-size
+/// containment. `scroll-state` does not imply containment.
+///
+/// FastRender stores containment as a single bitfield on `ComputedStyle`, so we fold these implied
+/// flags into the final computed style after cascade. This must OR flags so explicit `contain:`
+/// continues to apply.
+pub fn apply_container_type_implied_containment(styles: &mut ComputedStyle) {
+  match styles.container_type {
+    ContainerType::Size => {
+      styles.containment.style = true;
+      styles.containment.size = true;
+    }
+    ContainerType::InlineSize => {
+      styles.containment.style = true;
+      styles.containment.inline_size = true;
+    }
+    ContainerType::Normal => {}
+  }
 }
