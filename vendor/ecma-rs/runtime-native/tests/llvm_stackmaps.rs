@@ -73,6 +73,9 @@ fn parses_llvm18_statepoint_stackmaps_and_finds_reloc_pair_offsets() {
     Command::new("llc-18")
       .arg("-filetype=obj")
       .arg("-O0")
+      // runtime-native requires statepoint roots to be spilled to stack slots.
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg("-frame-pointer=all")
       .arg(&opt_bc)
       .arg("-o")

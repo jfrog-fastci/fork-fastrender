@@ -268,6 +268,9 @@ entry:
   try_run(
     Command::new(&llc)
       .arg("-filetype=obj")
+      // runtime-native requires statepoint roots to be spilled to stack slots.
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg(&rewritten_ll)
       .arg("-o")
       .arg(&obj),

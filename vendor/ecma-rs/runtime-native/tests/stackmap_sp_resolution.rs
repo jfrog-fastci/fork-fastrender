@@ -96,6 +96,9 @@ fn build_obj(tmp: &Path, arch: Arch) -> PathBuf {
       .arg("-O0")
       .arg("-filetype=obj")
       .arg("-frame-pointer=all")
+      // runtime-native requires statepoint roots to be spilled to stack slots.
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg(format!("-mtriple={}", arch.triple()))
       .arg(&rewritten_ll)
       .arg("-o")

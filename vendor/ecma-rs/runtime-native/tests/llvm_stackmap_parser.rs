@@ -139,6 +139,9 @@ fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
     Command::new("llc-18")
       .arg("-O0")
       .arg("--frame-pointer=all")
+      // runtime-native requires statepoint roots to be spilled to stack slots.
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg("-filetype=obj")
       .arg(&rewritten_ll)
       .arg("-o")
