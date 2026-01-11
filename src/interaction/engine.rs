@@ -2031,7 +2031,6 @@ fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option
   }
   fallback
 }
-
 fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;

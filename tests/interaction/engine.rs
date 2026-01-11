@@ -1688,6 +1688,89 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
 }
 
 #[test]
+fn arrow_left_uses_box_tree_direction_for_text_controls() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("input", vec![("id", "txt"), ("value", "••")], vec![])],
+    )],
+  )]);
+  let input_dom_id = node_id(&dom, "txt");
+
+  let mut rtl_style = ComputedStyle::default();
+  rtl_style.direction = fastrender::style::types::Direction::Rtl;
+
+  let mut input_box = BoxNode::new_block(Arc::new(rtl_style), FormattingContextType::Block, vec![]);
+  input_box.styled_node_id = Some(input_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![input_box],
+  ));
+
+  let input_box_id = find_box_id_for_styled_node(&box_tree, input_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      input_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (_changed, _action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://x/",
+    "https://x/",
+  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+
+  // Place the caret at the logical start. In RTL contexts that maps to the visually-rightmost stop,
+  // so a visual left-arrow move should advance the caret to the next character.
+  engine.key_action_with_box_tree(&mut dom, Some(&box_tree), KeyAction::Home);
+  let caret = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .expect("expected caret state")
+    .caret;
+  assert_eq!(caret, 0);
+
+  // Without a `BoxTree` snapshot, arrow-left falls back to inferred LTR direction.
+  engine.key_action(&mut dom, KeyAction::ArrowLeft);
+  let caret = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .expect("expected caret state")
+    .caret;
+  assert_eq!(caret, 0, "LTR fallback should keep caret at the start");
+
+  engine.key_action_with_box_tree(&mut dom, Some(&box_tree), KeyAction::ArrowLeft);
+  let caret = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .expect("expected caret state")
+    .caret;
+  assert_eq!(caret, 1, "RTL caret should advance when moving left");
+}
+
+#[test]
 fn submit_click_navigates_and_marks_user_validity() {
   let mut dom = doc(vec![el(
     "html",
