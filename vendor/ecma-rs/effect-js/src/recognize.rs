@@ -302,7 +302,7 @@ fn is_fetch_call(body: &hir_js::Body, lowered: &LowerResult, expr_id: ExprId) ->
 pub fn recognize_patterns_typed(
   lowered: &LowerResult,
   body: BodyId,
-  types: &impl crate::typed::TypeProvider,
+  types: &impl crate::types::TypeProvider,
 ) -> Vec<RecognizedPattern> {
   use crate::resolve::resolve_api_call_typed;
 

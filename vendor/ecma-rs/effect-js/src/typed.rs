@@ -1,66 +1,86 @@
-use hir_js::{BodyId, DefId, ExprId};
+use crate::types::{TypeId, TypeKindSummary, TypeProvider};
+use hir_js::{BodyId, ExprId, PatId};
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
-use types_ts_interned::{Store, TypeId};
-
-/// Abstract source of `types-ts-interned` types for HIR expressions.
+/// Cached `TypeProvider` backed by a `typecheck-ts` [`Program`].
 ///
-/// This keeps `effect-js` logic generic so it can be fed by `typecheck-ts` or
-/// other typing frontends.
-pub trait TypeProvider {
-  fn type_of_expr(&self, body: BodyId, expr: ExprId) -> TypeId;
-
-  fn store(&self) -> &Store;
-
-  /// Optional hook to resolve a `DefId` referenced by `TypeKind::Ref`.
-  ///
-  /// Some APIs (e.g. `Promise.prototype.then`) need nominal type identity, which
-  /// requires checking the referenced definition name. When the provider cannot
-  /// resolve `DefId`s (e.g. it only has a type store), it can return `None` and
-  /// `effect-js` will conservatively treat the type as unknown.
-  fn def_name(&self, _def: DefId) -> Option<String> {
-    None
-  }
+/// `typecheck-ts` stores expression/pattern types in per-body side tables.
+/// `TypedProgram` snapshots those tables into per-body vectors aligned to HIR
+/// `ExprId`/`PatId` indices so downstream passes can query types cheaply without
+/// repeatedly calling into the checker.
+pub struct TypedProgram {
+  program: Arc<typecheck_ts::Program>,
+  expr_types: HashMap<BodyId, Vec<Option<TypeId>>>,
+  pat_types: HashMap<BodyId, Vec<Option<TypeId>>>,
 }
 
-/// `TypeProvider` adapter for `typecheck-ts`.
-///
-/// `typecheck-ts::Program` owns the interned store behind a mutex, so we clone
-/// the `Arc<TypeStore>` once and retain it for cheap access in `store()`.
-pub struct TypecheckProgram<'a> {
-  program: &'a typecheck_ts::Program,
-  store: std::sync::Arc<Store>,
-}
-
-impl fmt::Debug for TypecheckProgram<'_> {
+impl fmt::Debug for TypedProgram {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     // Avoid requiring `typecheck_ts::Program: Debug`.
-    f.debug_struct("TypecheckProgram").finish_non_exhaustive()
+    f.debug_struct("TypedProgram")
+      .field("expr_types", &self.expr_types)
+      .field("pat_types", &self.pat_types)
+      .finish_non_exhaustive()
   }
 }
 
-impl<'a> TypecheckProgram<'a> {
-  pub fn new(program: &'a typecheck_ts::Program) -> Self {
+impl TypedProgram {
+  pub fn from_program(program: Arc<typecheck_ts::Program>, file: typecheck_ts::FileId) -> Self {
+    let mut expr_types: HashMap<BodyId, Vec<Option<TypeId>>> = HashMap::new();
+    let mut pat_types: HashMap<BodyId, Vec<Option<TypeId>>> = HashMap::new();
+
+    if let Some(lowered) = program.hir_lowered(file) {
+      for (body_id, idx) in lowered.body_index.iter() {
+        let body = &lowered.bodies[*idx];
+        let res = program.check_body(*body_id);
+
+        let mut expr_vec = Vec::with_capacity(body.exprs.len());
+        for expr_idx in 0..body.exprs.len() {
+          expr_vec.push(res.expr_type(ExprId(expr_idx as u32)));
+        }
+        expr_types.insert(*body_id, expr_vec);
+
+        let mut pat_vec = Vec::with_capacity(body.pats.len());
+        for pat_idx in 0..body.pats.len() {
+          pat_vec.push(res.pat_type(PatId(pat_idx as u32)));
+        }
+        pat_types.insert(*body_id, pat_vec);
+      }
+    }
+
     Self {
       program,
-      store: program.interned_type_store(),
+      expr_types,
+      pat_types,
     }
   }
-}
 
-impl TypeProvider for TypecheckProgram<'_> {
-  fn type_of_expr(&self, body: BodyId, expr: ExprId) -> TypeId {
-    let res = self.program.check_body(body);
-    res
-      .expr_type(expr)
-      .unwrap_or_else(|| self.store.primitive_ids().unknown)
-  }
-
-  fn store(&self) -> &Store {
-    &self.store
-  }
-
-  fn def_name(&self, def: DefId) -> Option<String> {
-    self.program.def_name(def)
+  pub fn program(&self) -> &Arc<typecheck_ts::Program> {
+    &self.program
   }
 }
+
+impl TypeProvider for TypedProgram {
+  fn expr_type(&self, body: BodyId, expr: ExprId) -> Option<TypeId> {
+    self
+      .expr_types
+      .get(&body)
+      .and_then(|types| types.get(expr.0 as usize).copied())
+      .flatten()
+  }
+
+  fn pat_type(&self, body: BodyId, pat: PatId) -> Option<TypeId> {
+    self
+      .pat_types
+      .get(&body)
+      .and_then(|types| types.get(pat.0 as usize).copied())
+      .flatten()
+  }
+
+  fn type_kind(&self, ty: TypeId) -> Option<TypeKindSummary> {
+    Some(self.program.type_kind(ty))
+  }
+}
+

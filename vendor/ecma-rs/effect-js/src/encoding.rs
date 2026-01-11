@@ -27,7 +27,7 @@ pub fn analyze_string_encodings(
 pub fn analyze_string_encodings_typed(
   result: &hir_js::LowerResult,
   kb: &KnowledgeBase,
-  types: &impl crate::typed::TypeProvider,
+  types: &impl crate::types::TypeProvider,
 ) -> HashMap<hir_js::BodyId, EncodingResult> {
   analyze_string_encodings_impl(result, kb, TypedOracle { types })
 }
@@ -86,7 +86,7 @@ impl TypeOracle for UntypedOracle {
 #[cfg(feature = "typed")]
 #[derive(Clone, Copy)]
 struct TypedOracle<'a> {
-  types: &'a dyn crate::typed::TypeProvider,
+  types: &'a dyn crate::types::TypeProvider,
 }
 
 #[cfg(feature = "typed")]
@@ -101,11 +101,8 @@ impl TypeOracle for TypedOracle<'_> {
 }
 
 #[cfg(feature = "typed")]
-fn type_is_string(types: &dyn crate::typed::TypeProvider, body: BodyId, expr: ExprId) -> bool {
-  use types_ts_interned::TypeKind;
-  let store = types.store();
-  let ty = store.canon(types.type_of_expr(body, expr));
-  matches!(store.type_kind(ty), TypeKind::String | TypeKind::StringLiteral(_))
+fn type_is_string(types: &dyn crate::types::TypeProvider, body: BodyId, expr: ExprId) -> bool {
+  types.expr_is_string(body, expr)
 }
 
 struct BodyAnalyzer<'a, O> {
@@ -388,14 +385,15 @@ mod tests {
   #[cfg(feature = "typed")]
   #[test]
   fn to_lowercase_preserves_ascii() {
-    use crate::typed::TypecheckProgram;
+    use crate::typed::TypedProgram;
     use typecheck_ts::{FileKey, MemoryHost, Program};
+    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::new();
     host.insert(key.clone(), "\"ABC\".toLowerCase();");
 
-    let program = Program::new(host, vec![key.clone()]);
+    let program = Arc::new(Program::new(host, vec![key.clone()]));
     let diagnostics = program.check();
     assert!(
       diagnostics.is_empty(),
@@ -409,7 +407,7 @@ mod tests {
 
     let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
-    let types = TypecheckProgram::new(&program);
+    let types = TypedProgram::from_program(Arc::clone(&program), file);
     let kb = KnowledgeBase::default();
     let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
     let root = results.get(&root_body_id).unwrap();
@@ -420,14 +418,15 @@ mod tests {
   #[cfg(feature = "typed")]
   #[test]
   fn to_lowercase_on_any_is_unknown() {
-    use crate::typed::TypecheckProgram;
+    use crate::typed::TypedProgram;
     use typecheck_ts::{FileKey, MemoryHost, Program};
+    use std::sync::Arc;
 
     let key = FileKey::new("index.ts");
     let mut host = MemoryHost::new();
     host.insert(key.clone(), "(\"ABC\" as any).toLowerCase();");
 
-    let program = Program::new(host, vec![key.clone()]);
+    let program = Arc::new(Program::new(host, vec![key.clone()]));
     let diagnostics = program.check();
     assert!(
       diagnostics.is_empty(),
@@ -441,7 +440,7 @@ mod tests {
 
     let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
-    let types = TypecheckProgram::new(&program);
+    let types = TypedProgram::from_program(Arc::clone(&program), file);
     let kb = KnowledgeBase::default();
     let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
     let root = results.get(&root_body_id).unwrap();

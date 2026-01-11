@@ -7,7 +7,7 @@ repository.workspace = true
 
 [features]
 default = []
-typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+typed = ["dep:typecheck-ts"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -16,4 +16,3 @@ knowledge-base = { workspace = true }
 hir-js = { workspace = true }
 
 typecheck-ts = { workspace = true, optional = true }
-types-ts-interned = { workspace = true, optional = true }

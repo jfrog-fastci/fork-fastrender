@@ -11,6 +11,7 @@ pub mod kb;
 pub mod resolver;
 pub mod db;
 pub mod meta;
+pub mod types;
 
 #[cfg(feature = "typed")]
 pub mod typed;

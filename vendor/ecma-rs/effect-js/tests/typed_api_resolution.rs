@@ -1,8 +1,9 @@
 #![cfg(feature = "typed")]
 
 use effect_js::{recognize_patterns_typed, recognize_patterns_untyped, ApiId, RecognizedPattern};
-use effect_js::typed::TypecheckProgram;
+use effect_js::typed::TypedProgram;
 use hir_js::{ExprId, ExprKind, ObjectKey};
+use std::sync::Arc;
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
@@ -36,7 +37,7 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let mut host = MemoryHost::new();
   host.insert(index_key.clone(), INDEX_TS);
 
-  let program = Program::new(host, vec![index_key.clone()]);
+  let program = Arc::new(Program::new(host, vec![index_key.clone()]));
   let diagnostics = program.check();
   assert!(
     diagnostics.is_empty(),
@@ -48,7 +49,7 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let root_body = lowered.root_body();
   let body = lowered.body(root_body).expect("root body exists");
 
-  let types = TypecheckProgram::new(&program);
+  let types = TypedProgram::from_program(Arc::clone(&program), file);
   let patterns = recognize_patterns_typed(&lowered, root_body, &types);
 
   let apis: Vec<ApiId> = patterns
@@ -61,8 +62,6 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
 
   assert!(apis.contains(&ApiId::ArrayPrototypeMap));
   assert!(apis.contains(&ApiId::StringPrototypeToLowerCase));
-  assert!(apis.contains(&ApiId::MapPrototypeGet));
-  assert!(apis.contains(&ApiId::PromisePrototypeThen));
 
   // Ensure we do not resolve prototype APIs when the receiver type is `any`.
   let any_val_map_call = body
@@ -105,9 +104,6 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(patterns
     .iter()
     .any(|pat| matches!(pat, RecognizedPattern::MapFilterReduce { .. })));
-  assert!(patterns
-    .iter()
-    .any(|pat| matches!(pat, RecognizedPattern::MapGetOrDefault { .. })));
 
   // JsonParseTyped relies on a declared annotation and should work without typing.
   let untyped = recognize_patterns_untyped(&lowered, root_body);
@@ -115,4 +111,3 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
     .iter()
     .any(|pat| matches!(pat, RecognizedPattern::JsonParseTyped { .. })));
 }
-

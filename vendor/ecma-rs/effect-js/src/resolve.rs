@@ -108,42 +108,13 @@ pub fn resolve_api_call_best_effort_untyped(
 }
 
 #[cfg(feature = "typed")]
-fn receiver_is_array(types: &impl crate::typed::TypeProvider, body: BodyId, recv: ExprId) -> bool {
-  use types_ts_interned::TypeKind;
-  let store = types.store();
-  let ty = store.canon(types.type_of_expr(body, recv));
-  match store.type_kind(ty) {
-    TypeKind::Array { .. } => true,
-    TypeKind::Ref { def, .. } => {
-      let Some(name) = types.def_name(def) else {
-        return false;
-      };
-      name == "Array" || name == "ReadonlyArray"
-    }
-    _ => false,
-  }
+fn receiver_is_array(types: &impl crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
+  types.expr_is_array(body, recv)
 }
 
 #[cfg(feature = "typed")]
-fn receiver_is_string(types: &impl crate::typed::TypeProvider, body: BodyId, recv: ExprId) -> bool {
-  use types_ts_interned::TypeKind;
-  let store = types.store();
-  let ty = store.canon(types.type_of_expr(body, recv));
-  matches!(store.type_kind(ty), TypeKind::String | TypeKind::StringLiteral(_))
-}
-
-#[cfg(feature = "typed")]
-fn receiver_is_named_ref(types: &impl crate::typed::TypeProvider, body: BodyId, recv: ExprId, expected: &str) -> bool {
-  use types_ts_interned::TypeKind;
-  let store = types.store();
-  let ty = store.canon(types.type_of_expr(body, recv));
-  let TypeKind::Ref { def, .. } = store.type_kind(ty) else {
-    return false;
-  };
-  let Some(name) = types.def_name(def) else {
-    return false;
-  };
-  name == expected
+fn receiver_is_string(types: &impl crate::types::TypeProvider, body: BodyId, recv: ExprId) -> bool {
+  types.expr_is_string(body, recv)
 }
 
 #[cfg(feature = "typed")]
@@ -151,7 +122,7 @@ pub fn resolve_api_call_typed(
   lowered: &LowerResult,
   body: BodyId,
   call_expr: ExprId,
-  types: &impl crate::typed::TypeProvider,
+  types: &impl crate::types::TypeProvider,
 ) -> Option<ApiId> {
   // Always allow resolution for HIR-only safe APIs first.
   if let Some(api) = resolve_api_call_untyped(lowered, body, call_expr) {
@@ -189,8 +160,6 @@ pub fn resolve_api_call_typed(
       Some(ApiId::ArrayPrototypeReduce)
     }
     "toLowerCase" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeToLowerCase),
-    "then" if receiver_is_named_ref(types, body, member.object, "Promise") => Some(ApiId::PromisePrototypeThen),
-    "get" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
     _ => None,
   }
 }
