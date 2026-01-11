@@ -9,6 +9,7 @@ Today the repo contains:
 - **Semantics**: `semantic-js` (scopes/symbols/exports; JS mode used by minifier/optimizer)
 - **TypeScript checker**: `typecheck-ts` (binder + checker + public `Program` API)
 - **Native codegen (in progress)**: `native-js` (strict TS subset → LLVM IR/object code)
+- **Native runtime (in progress)**: `runtime-native` (GC + async runtime ABI for `native-js`)
 - **Emitter/printer**: `emit-js` (AST → text, deterministic formatting)
 - **Minifier**: `minify-js` (+ `minify-js-cli`, + `minify-js-nodejs` package)
 - **Optimizer**: `optimize-js` (SSA-based optimizer and decompiler)
@@ -20,6 +21,7 @@ Today the repo contains:
 - **Local setup for conformance + difftsc**: [`docs/quickstart.md`](./docs/quickstart.md) (also links into [`typecheck-ts-harness/README.md`](./typecheck-ts-harness/README.md)).
 - **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `cargo run` examples for the core crate APIs.
 - **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (intended CLI surface).
+- **Native runtime ABI**: [`docs/runtime-native.md`](./docs/runtime-native.md) and [`runtime-native/README.md`](./runtime-native/README.md).
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
 
