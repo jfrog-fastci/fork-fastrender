@@ -388,7 +388,8 @@ fields are reserved for the eventual LLVM-backed backend.
   - `if (cond) { ... } else { ... }` (uses JS truthiness for supported primitive types)
   - `while (cond) { ... }` (uses JS truthiness for supported primitive types)
   - function declarations (top-level only; no nesting):
-    - cannot be named `main` (reserved for the native entrypoint)
+    - in `compile_typescript_to_llvm_ir`, cannot be named `main` (reserved for the native entrypoint wrapper)
+      - the multi-file project emitter (`compile_project_to_llvm_ir`) namespaces user functions in LLVM, so `main` is allowed
     - no `async` / generators
     - no optional/rest parameters
     - parameter patterns must be identifiers

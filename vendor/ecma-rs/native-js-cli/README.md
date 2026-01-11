@@ -260,10 +260,11 @@ future typechecked/HIR-based backend yet). Supported today:
   - `export function foo(...) { ... }`
   - `import { foo } from "./mod"` and `import { foo as bar } from "./mod"`
   - side-effect imports (`import "./mod"`) for module initialization ordering
+  - re-exports (`export { foo } from "./mod"`, `export * from "./mod"`) for module initialization ordering
 
 Limitations:
 
-- Default exports, namespace imports, and re-exports are not supported.
+- Default exports and namespace imports are not supported.
 - `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
   uses a Node-style resolver for the supported import forms.
 
