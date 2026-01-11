@@ -65,6 +65,36 @@ fn direct_fn_call_return_fresh_alloc_is_owned() {
 }
 
 #[test]
+fn direct_fn_call_return_fresh_alloc_through_phi_is_owned() {
+  let src = r#"
+    const make = () => {
+      let v;
+      if (unknown_cond()) {
+        v = {x:1};
+      } else {
+        v = {x:2};
+      }
+      return v;
+    };
+    const out = make();
+    // Ensure the call result is observed by an impure instruction so trivial DCE
+    // does not eliminate the call target.
+    out.x = 2;
+  "#;
+ 
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  annotate_program(&mut program);
+ 
+  let call = find_direct_fn_call(&program, 0);
+  assert_eq!(
+    call.meta.ownership,
+    OwnershipState::Owned,
+    "expected call result to be Owned when callee returns fresh alloc via Phi, got {:?}",
+    call.meta.ownership
+  );
+}
+
+#[test]
 fn direct_fn_call_param_escape_is_propagated() {
   let src = r#"
     const f = (a) => { globalSink(a); };

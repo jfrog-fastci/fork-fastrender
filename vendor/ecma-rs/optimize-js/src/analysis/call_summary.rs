@@ -85,8 +85,8 @@ enum VarDef {
   Alias(u32),
   Const,
   FreshAlloc,
-  Phi(Vec<Arg>),
   CallFn { id: usize, args: Vec<Arg> },
+  Phi(Vec<Arg>),
   Unknown,
 }
 
