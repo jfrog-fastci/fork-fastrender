@@ -12,9 +12,14 @@ pub struct FrameView {
   /// This is computed as `callee_fp + 16` on both x86_64 SysV and AArch64 when walking via frame
   /// pointers.
   ///
-  /// Note: LLVM StackMaps `Indirect [SP + off]` locations for statepoints are based on the caller's
-  /// stack pointer at the safepoint call site. When walking via frame pointers, this matches the
-  /// caller CFA value derived from the callee frame pointer.
+  /// Note: this is the DWARF call-frame address (CFA), i.e. the caller's stack pointer *at the call
+  /// boundary* that entered the current (callee) frame.
+  ///
+  /// LLVM StackMaps `Indirect [SP + off]` locations for `gc.statepoint` roots are based on the
+  /// caller function's stack pointer at the statepoint callsite. That SP is not generally
+  /// reconstructable from the callee's frame pointer alone; it must be reconstructed from the
+  /// caller frame pointer and the stackmap function record's `stack_size` (see
+  /// [`crate::stackwalk::compute_sp`]).
   pub caller_cfa: usize,
   /// The return address into the caller (saved at `[callee_fp + 8]`).
   pub return_address: usize,
