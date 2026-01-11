@@ -11,6 +11,9 @@ publish = false
 # integrating with a moving GC. When disabled, all instrumentation should compile away to
 # near-zero overhead.
 debug_stability = []
+# `IORING_OP_SEND_ZC` is intentionally feature-gated because it extends the buffer lifetime beyond
+# the main CQE; see crate docs.
+send_zc = []
 
 [dependencies]
 [target.'cfg(target_os = "linux")'.dependencies]

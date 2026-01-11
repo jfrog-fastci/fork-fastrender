@@ -162,6 +162,85 @@ mod imp {
         }
     }
 
+    enum InFlightOp {
+        Once(Box<dyn FnOnce(i32) + Send + 'static>),
+        #[cfg(feature = "send_zc")]
+        SendZc(Box<dyn SendZcInFlight>),
+    }
+
+    #[cfg(feature = "send_zc")]
+    trait SendZcInFlight: Send + 'static {
+        /// Handle a single CQE.
+        ///
+        /// Returns `true` if the op has completed and should be removed from the in-flight map.
+        fn on_cqe(&mut self, result: i32, flags: u32) -> bool;
+    }
+
+    #[cfg(feature = "send_zc")]
+    struct InFlightSendZc<B: IoBuf> {
+        weak: Weak<OpShared<crate::send_zc::SendZcResource<B>>>,
+        buf: Option<B>,
+        send_result: Option<i32>,
+        send_flags: Option<u32>,
+        notif: Option<crate::send_zc::SendZcNotif>,
+        stability: crate::debug_stability::OpStability,
+    }
+
+    #[cfg(feature = "send_zc")]
+    impl<B: IoBuf> InFlightSendZc<B> {
+        fn try_complete(&mut self) -> bool {
+            let Some(send_result) = self.send_result else {
+                return false;
+            };
+            let Some(send_flags) = self.send_flags else {
+                return false;
+            };
+
+            let notif_expected = (send_flags & crate::send_zc::IORING_CQE_F_MORE) != 0;
+            if notif_expected && self.notif.is_none() {
+                return false;
+            }
+
+            let buf = self
+                .buf
+                .take()
+                .expect("SEND_ZC completed twice (buffer already taken)");
+            let resource = crate::send_zc::SendZcResource {
+                buf,
+                notif: self.notif.take(),
+                send_flags,
+            };
+
+            if let Some(shared) = self.weak.upgrade() {
+                shared.complete(send_result, resource);
+            }
+            true
+        }
+    }
+
+    #[cfg(feature = "send_zc")]
+    impl<B: IoBuf> SendZcInFlight for InFlightSendZc<B> {
+        fn on_cqe(&mut self, result: i32, flags: u32) -> bool {
+            crate::debug_stability::assert_stable(&self.stability, |rec| {
+                // The buffer pointer must remain stable until the final notification CQE.
+                if let Some(ref buf) = self.buf {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                        buf.stable_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
+            if (flags & crate::send_zc::IORING_CQE_F_NOTIF) != 0 {
+                self.notif = Some(crate::send_zc::SendZcNotif { result, flags });
+            } else {
+                self.send_result = Some(result);
+                self.send_flags = Some(flags);
+            }
+            self.try_complete()
+        }
+    }
+
     /// Low-level `io_uring` driver.
     ///
     /// # Drop safety
@@ -171,7 +250,7 @@ mod imp {
     pub struct IoUringDriver {
         ring: Option<IoUring>,
         next_id: u64,
-        in_flight: Option<HashMap<u64, Box<dyn FnOnce(i32) + Send + 'static>>>,
+        in_flight: Option<HashMap<u64, InFlightOp>>,
     }
 
     impl IoUringDriver {
@@ -190,9 +269,7 @@ mod imp {
                 .expect("IoUringDriver used after drop (ring already taken)")
         }
 
-        fn in_flight(
-            &mut self,
-        ) -> &mut HashMap<u64, Box<dyn FnOnce(i32) + Send + 'static>> {
+        fn in_flight(&mut self) -> &mut HashMap<u64, InFlightOp> {
             self.in_flight
                 .as_mut()
                 .expect("IoUringDriver used after drop (in_flight already taken)")
@@ -295,21 +372,21 @@ mod imp {
 
             self.in_flight().insert(
                 read_id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     if let Some(shared) = read_weak.upgrade() {
                         shared.complete(result, buf);
                     }
-                }),
+                })),
             );
 
             self.in_flight().insert(
                 timeout_id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, read_id);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -363,21 +440,21 @@ mod imp {
 
             self.in_flight().insert(
                 write_id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     if let Some(shared) = write_weak.upgrade() {
                         shared.complete(result, buf);
                     }
-                }),
+                })),
             );
 
             self.in_flight().insert(
                 timeout_id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     let _ts = ts;
                     if let Some(shared) = timeout_weak.upgrade() {
                         shared.complete(result, write_id);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -446,7 +523,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::IoBufData { index: 0 },
@@ -456,7 +533,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, buf);
                     }
-                }),
+                })),
             );
 
             // Flush SQEs into the kernel.
@@ -497,7 +574,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::IoBufData { index: 0 },
@@ -507,7 +584,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, buf);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -554,7 +631,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::IovecArray,
@@ -570,7 +647,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -617,7 +694,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::IovecArray,
@@ -633,7 +710,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -718,7 +795,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::MsgHdr,
@@ -751,7 +828,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -841,7 +918,7 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     crate::debug_stability::assert_stable(&stability, |rec| {
                         rec.ptr(
                             crate::debug_stability::PtrKind::MsgHdr,
@@ -903,7 +980,7 @@ mod imp {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, resource);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -926,13 +1003,13 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     // Keep the address buffer alive until the target CQE.
                     let _addr = addr;
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, ());
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -960,12 +1037,12 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     let peer = addr.peer_addr();
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, peer);
                     }
-                }),
+                })),
             );
 
             self.submit_sqes()?;
@@ -989,11 +1066,51 @@ mod imp {
 
             self.in_flight().insert(
                 id.0,
-                Box::new(move |result| {
+                InFlightOp::Once(Box::new(move |result| {
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, ());
                     }
-                }),
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        /// Submit a zero-copy send (`IORING_OP_SEND_ZC`).
+        ///
+        /// The buffer is held until the final notification CQE (if any) indicates the kernel has
+        /// released pinned pages. This prevents moving/compacting GC hazards.
+        #[cfg(feature = "send_zc")]
+        pub fn submit_send_zc<B: IoBuf>(
+            &mut self,
+            fd: RawFd,
+            buf: B,
+            flags: crate::send_zc::SendZcFlags,
+        ) -> io::Result<IoOp<crate::send_zc::SendZcResource<B>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<crate::send_zc::SendZcResource<B>>> = Arc::downgrade(&shared);
+
+            let ptr = buf.stable_ptr().as_ptr() as *const u8;
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr);
+            });
+
+            let entry = crate::send_zc::build_sqe(fd, &buf, flags).user_data(id.0);
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                InFlightOp::SendZc(Box::new(InFlightSendZc {
+                    weak,
+                    buf: Some(buf),
+                    send_result: None,
+                    send_flags: None,
+                    notif: None,
+                    stability,
+                })),
             );
 
             self.submit_sqes()?;
@@ -1017,8 +1134,20 @@ mod imp {
             while let Some(cqe) = cq.next() {
                 let id = cqe.user_data();
                 let result = cqe.result();
-                if let Some(complete) = in_flight.remove(&id) {
-                    complete(result);
+                #[cfg(feature = "send_zc")]
+                let flags = cqe.flags();
+                if let Some(op) = in_flight.remove(&id) {
+                    match op {
+                        InFlightOp::Once(complete) => {
+                            complete(result);
+                        }
+                        #[cfg(feature = "send_zc")]
+                        InFlightOp::SendZc(mut zc) => {
+                            if !zc.on_cqe(result, flags) {
+                                in_flight.insert(id, InFlightOp::SendZc(zc));
+                            }
+                        }
+                    }
                 }
                 n += 1;
             }

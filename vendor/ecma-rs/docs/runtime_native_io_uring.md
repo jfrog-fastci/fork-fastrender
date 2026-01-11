@@ -14,7 +14,8 @@ dereference it.
 
 Non-goals (v1):
 
-- Zero-copy send (`SEND_ZC` / `SENDMSG_ZC`)
+- Zero-copy send (`SEND_ZC` / `SENDMSG_ZC`) (kept **disabled by default**; only enabled behind an
+  explicit feature gate with notification-driven buffer release)
 - Multi-shot ops (`ACCEPT`/`RECV`/`READ` multishot, etc.)
 - Any implicit buffer reuse API (buffer selection / provided buffers) without a
   dedicated lifetime model
@@ -49,6 +50,9 @@ that the referenced memory:
 
 **from the moment the SQE is submitted** until the moment the runtime
 **observes the CQE for that specific request** (success or failure).
+
+Exception: `IORING_OP_SEND_ZC` can keep user pages pinned *past* the initial CQE. Buffers must remain
+stable until the **notification CQE** (`IORING_CQE_F_NOTIF`) is observed.
 
 > “Observed” means: the CQE entry has been read from the completion queue and
 > dispatched to the owning `IoOp` (or equivalent op-tracking state). It is not
@@ -378,9 +382,10 @@ asynchronously via later notifications.
 
 Policy:
 
-- Do not use zerocopy send in v1.
-- Only enable once we have an explicit model for “buffer may outlive op CQE” and
-  a concrete notification-driven release mechanism.
+- Treat `SEND_ZC` as a separate lifetime class: the buffer must remain stable until the
+  **notification CQE** (`IORING_CQE_F_NOTIF`) is observed (not just the send CQE).
+- In `runtime-io-uring`, zerocopy send support is feature-gated (`send_zc`) and holds the buffer
+  until notification. Keep it disabled unless this extended lifetime is explicitly required.
 
 ### Multi-shot ops
 
