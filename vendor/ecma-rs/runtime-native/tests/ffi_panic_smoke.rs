@@ -42,3 +42,13 @@ fn parallel_callback_panic_aborts() {
 fn blocking_callback_panic_aborts() {
   assert_aborts_with_callback_diagnostic("blocking");
 }
+
+#[test]
+fn thenable_callback_panic_aborts() {
+  assert_aborts_with_callback_diagnostic("thenable");
+}
+
+#[test]
+fn native_async_resume_panic_aborts() {
+  assert_aborts_with_callback_diagnostic("native-async");
+}
