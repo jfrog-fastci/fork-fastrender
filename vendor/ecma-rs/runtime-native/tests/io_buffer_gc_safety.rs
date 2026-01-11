@@ -27,6 +27,28 @@ static UINT8_ARRAY_DESC: TypeDescriptor = TypeDescriptor::new(
 );
 static DUMMY_DESC: TypeDescriptor = TypeDescriptor::new(OBJ_HEADER_SIZE, &[]);
 
+fn is_uring_unavailable(err: &io::Error) -> bool {
+  matches!(
+    err.raw_os_error(),
+    Some(libc::ENOSYS)
+      | Some(libc::EINVAL)
+      | Some(libc::EPERM)
+      | Some(libc::EACCES)
+      | Some(libc::EOPNOTSUPP)
+  )
+}
+
+fn try_new_driver(entries: u32, limiter: Arc<IoLimiter>) -> Option<UringDriver> {
+  match UringDriver::new_with_limiter(entries, limiter) {
+    Ok(d) => Some(d),
+    Err(e) if is_uring_unavailable(&e) => {
+      eprintln!("skipping: io_uring unavailable ({e})");
+      None
+    }
+    Err(e) => panic!("failed to initialize io_uring driver: {e}"),
+  }
+}
+
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
   let mut fds = [0; 2];
   let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
@@ -146,7 +168,9 @@ fn read_survives_moving_gc_while_in_flight() {
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
   let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
-  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
+  let Some(driver) = try_new_driver(64, Arc::clone(&limiter)) else {
+    return;
+  };
   let (rfd, wfd) = pipe().unwrap();
 
   // Allocate GC-managed ArrayBuffer + Uint8Array headers (backing store lives outside the GC heap).
@@ -229,7 +253,9 @@ fn cancel_before_submission_never_submits() {
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
   let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
-  let driver = UringDriver::new_with_limiter(8, Arc::clone(&limiter)).unwrap();
+  let Some(driver) = try_new_driver(8, Arc::clone(&limiter)) else {
+    return;
+  };
   let (rfd, _wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
@@ -260,7 +286,9 @@ fn cancel_after_submission_cleans_up_pin() {
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
   let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
-  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
+  let Some(driver) = try_new_driver(64, Arc::clone(&limiter)) else {
+    return;
+  };
   let (rfd, _wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
@@ -298,7 +326,9 @@ fn typed_array_access_errors_while_kernel_write_borrowed() {
 
   let heap = Arc::new(Mutex::new(GcHeap::new()));
   let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
-  let driver = UringDriver::new_with_limiter(64, Arc::clone(&limiter)).unwrap();
+  let Some(driver) = try_new_driver(64, Arc::clone(&limiter)) else {
+    return;
+  };
   let (rfd, wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
@@ -344,7 +374,9 @@ fn limiter_rejects_submission_over_max_pinned_bytes() {
     max_inflight_ops: 16,
     max_pinned_bytes_per_op: None,
   }));
-  let driver = UringDriver::new_with_limiter(8, Arc::clone(&limiter)).unwrap();
+  let Some(driver) = try_new_driver(8, Arc::clone(&limiter)) else {
+    return;
+  };
   let (rfd, _wfd) = pipe().unwrap();
 
   let (array_obj, buffer_obj, promise_obj) = {
