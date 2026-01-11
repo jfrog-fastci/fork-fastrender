@@ -6698,7 +6698,10 @@ fn select_placeholder_label_option_index(control: &SelectControl, required: bool
 }
 
 fn input_label(node: &DomNode, input_type: &str) -> String {
-  if let Some(value) = node.get_attribute_ref("value").filter(|v| !v.is_empty()) {
+  // HTML: for button-like inputs (`type=submit|reset|button`), the `value` attribute is the label
+  // when present, even when the attribute value is the empty string. Only when the attribute is
+  // missing does the user agent default label apply.
+  if let Some(value) = node.get_attribute_ref("value") {
     return value.to_string();
   }
 
