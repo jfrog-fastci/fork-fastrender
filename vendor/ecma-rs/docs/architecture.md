@@ -21,11 +21,14 @@ flowchart TD
   sem[semantic-js<br/>Scopes/Symbols/Exports]
   types[types-ts-interned<br/>TypeStore + TypeId/ObjectId/ShapeId]
   check[typecheck-ts<br/>Program + queries + diagnostics]
+  native[native-js<br/>Strict TS subset + LLVM-backed codegen (in progress)]
+  rt[runtime-native<br/>Native runtime ABI (GC/async) (in progress)]
   emit[emit-js<br/>Emitter/EmitOptions]
   minify[minify-js<br/>JS minifier + renamer]
   optimize[optimize-js<br/>CFG/SSA optimizer]
   harness[typecheck-ts-harness<br/>conformance + difftsc runner]
   source --> parse --> hir --> sem --> check
+  check --> native --> rt
   parse --> emit
   sem --> minify
   sem --> optimize
@@ -125,6 +128,31 @@ other crates use this for structured errors and spans.
 - Internally splits work into coarse queries (parse → HIR → bind → check) to
   align with the incremental, deterministic principles in `AGENTS.md`. IDs and
   caches are opaque; outputs are copyable handles backed by immutable arenas.
+
+### native-js (in progress)
+
+- LLVM-backed native compilation crate.
+- Today:
+  - `native_js::CodeGen` provides a minimal façade over `inkwell` and enforces
+    stack-walking-related LLVM function attributes required for precise GC bring-up.
+  - `native_js::strict::validate` rejects unsafe TypeScript constructs (e.g.
+    `any`, `eval`, type assertions) even if `typecheck-ts` accepts them.
+- Eventually:
+  - lowers typechecked HIR into LLVM IR / object files and links with
+    `runtime-native`.
+
+See [`native-js/README.md`](../native-js/README.md) for LLVM 18 setup and API notes.
+
+### runtime-native (in progress)
+
+- Native runtime library intended to be linked with `native-js`-generated code.
+- Provides the runtime ABI surface for allocation/GC/statepoints plus a minimal
+  async runtime used by compiled coroutine state machines.
+
+See:
+
+- [`docs/runtime-native.md`](./runtime-native.md) (ABI + GC/statepoints design)
+- [`runtime-native/README.md`](../runtime-native/README.md)
 
 ### emit-js
 - Deterministic emitter from `parse-js` AST back to JS/TS source.
