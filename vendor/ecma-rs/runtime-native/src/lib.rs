@@ -154,6 +154,10 @@ mod tests {
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::time::{Duration, Instant};
 
+  extern "C" {
+    fn rt_gc_safepoint_slow(epoch: u64);
+  }
+
   #[test]
   fn interning_is_deduplicated() {
     crate::interner::with_test_lock(|| {
@@ -352,6 +356,7 @@ mod tests {
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
       "void rt_gc_safepoint(void);",
+      "void rt_gc_safepoint_slow(uint64_t epoch);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
       "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
@@ -407,6 +412,7 @@ mod tests {
     let _register_shape_table: unsafe extern "C" fn(*const abi::RtShapeDescriptor, usize) =
       crate::shape_table::rt_register_shape_table;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
+    let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) = rt_write_barrier_range;
     let _collect: extern "C" fn() = rt_gc_collect;
@@ -452,6 +458,7 @@ mod tests {
       _alloc_array,
       _register_shape_table,
       _safepoint,
+      _slow,
       _write_barrier,
       _write_barrier_range,
       _collect,

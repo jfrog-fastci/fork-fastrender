@@ -67,7 +67,7 @@ Some embeddings require stable object addresses (FFI / host references). The run
 Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
 wired up.
 
-## GC safepoints (polling)
+## Safepoint ABI
 
 The runtime coordinates stop-the-world GC using an exported global epoch,
 `RT_GC_EPOCH` (declared in `include/runtime_native.h`):
@@ -75,10 +75,24 @@ The runtime coordinates stop-the-world GC using an exported global epoch,
 * **even**: no stop-the-world requested
 * **odd**: stop-the-world requested
 
-Intended codegen fast path:
+The recommended safepoint poll pattern for compiler-generated code is:
 
-1. load `RT_GC_EPOCH`
-2. if the low bit is set (odd), call `rt_gc_safepoint()` (or `rt_gc_safepoint_slow` directly)
+1. Inline poll: load `RT_GC_EPOCH`.
+2. If the loaded epoch is odd, call `rt_gc_safepoint_slow(epoch)` (passing the **observed odd**
+   epoch value).
+
+In pseudocode:
+
+```c
+uint64_t epoch = RT_GC_EPOCH; // load (Acquire)
+if (epoch & 1) {
+  rt_gc_safepoint_slow(epoch);
+}
+```
+
+`rt_gc_safepoint()` is a convenience wrapper that performs the same poll + slow-path call; it is
+useful for embeddings/tests, but codegen should prefer the inline poll so the slow path captures
+the callsite context correctly.
 
 ## Parallel ABI (placeholder)
 

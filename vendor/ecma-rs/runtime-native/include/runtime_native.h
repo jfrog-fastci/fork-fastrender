@@ -121,8 +121,8 @@ void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 //   - even: no stop-the-world requested
 //   - odd:  stop-the-world requested
 //
-// Generated code can inline the fast safepoint poll as:
-//   load RT_GC_EPOCH; if (epoch & 1) rt_gc_safepoint();
+// Generated code should inline the fast safepoint poll as:
+//   epoch = RT_GC_EPOCH (load); if (epoch & 1) rt_gc_safepoint_slow(epoch);
 #if defined(__cplusplus)
 extern uint64_t RT_GC_EPOCH;
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
@@ -132,6 +132,10 @@ extern uint64_t RT_GC_EPOCH;
 #endif
 
 void rt_gc_safepoint(void);
+// Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
+// Callers should pass the observed odd epoch value.
+void rt_gc_safepoint_slow(uint64_t epoch);
+
 // Generational write barrier for an object field store.
 //
 // Contract: `obj` must be the same object base pointer that was returned from
