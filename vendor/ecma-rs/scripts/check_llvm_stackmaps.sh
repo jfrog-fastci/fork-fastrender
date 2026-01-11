@@ -410,21 +410,24 @@ must_have_faultmaps "${tmp}/a_ld_policy"
 must_have_faultmaps_symbols "${tmp}/a_ld_policy"
 
 echo "[stackmaps] link: native_link.sh (no-pie, --gc-sections + KEEP)"
-"${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
+# Invoke via `bash` instead of executing directly:
+# - some vendored scripts are checked in without the executable bit
+# - some CI/agent environments mount repositories with `noexec`
+bash "${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy"
 must_have_stackmaps_symbols "${tmp}/a_policy"
 must_have_faultmaps "${tmp}/a_policy"
 must_have_faultmaps_symbols "${tmp}/a_policy"
 
 echo "[stackmaps] link: native_link.sh (ld explicit)"
-ECMA_RS_NATIVE_LINKER=ld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
+ECMA_RS_NATIVE_LINKER=ld bash "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld"
 must_have_stackmaps_symbols "${tmp}/a_policy_ld"
 must_have_faultmaps "${tmp}/a_policy_ld"
 must_have_faultmaps_symbols "${tmp}/a_policy_ld"
 
 echo "[stackmaps] link: native_link.sh (ld + PIE; stackmaps patched via objcopy)"
-ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld_pie" "${objs[@]}"
+ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1 bash "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld_pie" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld_pie"
 must_have_stackmaps_symbols "${tmp}/a_policy_ld_pie"
 must_have_faultmaps "${tmp}/a_policy_ld_pie"
@@ -471,7 +474,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
   must_have_faultmaps_symbols "${tmp}/a_lld_policy"
 
   echo "[stackmaps] link: native_link.sh (lld explicit)"
-  ECMA_RS_NATIVE_LINKER=lld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"
+  ECMA_RS_NATIVE_LINKER=lld bash "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_policy_lld"
   must_have_stackmaps_symbols "${tmp}/a_policy_lld"
   must_have_faultmaps "${tmp}/a_policy_lld"
@@ -479,7 +482,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
 
   if [[ -n "${LLVM_OBJCOPY}" ]]; then
     echo "[stackmaps] link: native_link.sh (lld + PIE; stackmaps patched via llvm-objcopy)"
-    ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
+    ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 bash "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
     must_have_stackmaps "${tmp}/a_policy_lld_pie"
     must_have_stackmaps_symbols "${tmp}/a_policy_lld_pie"
     must_have_faultmaps "${tmp}/a_policy_lld_pie"
@@ -525,7 +528,7 @@ must_have_faultmaps "${tmp}/a_policy.objcopy_strip_unneeded"
 
 echo "[stackmaps] strip: native_strip.sh"
 cp "${tmp}/a_policy" "${tmp}/a_policy.native_strip"
-"${script_dir}/native_strip.sh" "${tmp}/a_policy.native_strip"
+bash "${script_dir}/native_strip.sh" "${tmp}/a_policy.native_strip"
 must_have_stackmaps "${tmp}/a_policy.native_strip"
 must_have_faultmaps "${tmp}/a_policy.native_strip"
 
