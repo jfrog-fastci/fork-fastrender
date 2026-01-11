@@ -263,7 +263,13 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
       break;
     }
 
-    if bytes[off] != STACKMAP_VERSION {
+    // StackMap v3 header prefix:
+    //   u8  Version (3)
+    //   u8  Reserved0 (0)
+    //   u16 Reserved1 (0)
+    let looks_like_header =
+      bytes[off] == STACKMAP_VERSION && bytes[off + 1] == 0 && bytes[off + 2] == 0 && bytes[off + 3] == 0;
+    if !looks_like_header {
       // If we land on non-zero padding, try to recover by searching for the
       // next plausible `version=3` header.
       //
@@ -1492,6 +1498,24 @@ mod tests {
     assert_eq!(sm.raws().len(), 2);
 
     // Ensure the callsite indexes are still correct.
+    assert!(sm.lookup(0x1010).is_some());
+    assert!(sm.lookup(0x2020).is_some());
+  }
+
+  #[test]
+  fn parse_all_stackmaps_recovers_when_padding_starts_with_version_byte() {
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x2000, 2, 0x20);
+    let mut concat = blob_a.clone();
+
+    // A pathological case: padding happens to start with the stackmap version byte (`3`), but is
+    // not a valid StackMap v3 header because the reserved bytes are non-zero. The parser should
+    // treat this as padding and still find the next header.
+    concat.extend_from_slice(&[super::STACKMAP_VERSION, 1, 2, 3, 0xAA, 0xAA, 0xAA, 0xAA]);
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
     assert!(sm.lookup(0x1010).is_some());
     assert!(sm.lookup(0x2020).is_some());
   }
