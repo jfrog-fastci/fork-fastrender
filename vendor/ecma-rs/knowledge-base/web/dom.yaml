@@ -4,7 +4,7 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ""
+      flags: READS_GLOBAL
       throws: Maybe
   purity: ReadOnly
 
@@ -14,7 +14,7 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES
+      flags: READS_GLOBAL | ALLOCATES
       throws: Maybe
   purity: ReadOnly
 
@@ -22,7 +22,10 @@
   aliases:
     - document.getElementById
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
   purity: ReadOnly
 
 - name: Element.prototype.querySelector
@@ -31,7 +34,7 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ""
+      flags: READS_GLOBAL
       throws: Maybe
   purity: ReadOnly
 
@@ -41,7 +44,7 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES
+      flags: READS_GLOBAL | ALLOCATES
       throws: Maybe
   purity: ReadOnly
 
@@ -51,7 +54,7 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES
+      flags: READS_GLOBAL | ALLOCATES
       throws: Never
   purity: ReadOnly
 
@@ -61,6 +64,6 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES
+      flags: WRITES_GLOBAL | ALLOCATES
       throws: Maybe
   purity: Impure
