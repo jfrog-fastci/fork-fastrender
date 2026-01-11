@@ -168,12 +168,24 @@ fn stackmaps_survive_lto_with_and_without_gc_sections() {
   let bitcode = native_js::llvm::emit_bitcode(&module, &tm);
 
   // Without `--gc-sections`.
-  let exe = native_js::link::link_bitcode_to_exe(&bitcode, LinkOpts { gc_sections: false })
+  let exe = native_js::link::link_bitcode_to_exe(
+    &bitcode,
+    LinkOpts {
+      gc_sections: false,
+      ..Default::default()
+    },
+  )
     .expect("LTO link (no GC sections) failed");
   assert_stackmaps_present(&exe);
 
   // With `--gc-sections` (regression test for `.llvm_stackmaps` being GC'd under LTO).
-  let exe_gc = native_js::link::link_bitcode_to_exe(&bitcode, LinkOpts { gc_sections: true })
+  let exe_gc = native_js::link::link_bitcode_to_exe(
+    &bitcode,
+    LinkOpts {
+      gc_sections: true,
+      ..Default::default()
+    },
+  )
     .expect("LTO link (--gc-sections) failed");
   assert_stackmaps_present(&exe_gc);
 }

@@ -8,6 +8,15 @@ pub const FASTR_STACKMAPS_START_SYM: &str = "__fastr_stackmaps_start";
 /// Symbol exported by the final ELF that points one byte past the end of `.llvm_stackmaps`.
 pub const FASTR_STACKMAPS_END_SYM: &str = "__fastr_stackmaps_end";
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum LinkerFlavor {
+  /// Use the system linker selected by `clang`.
+  System,
+  /// Use LLD via `clang -fuse-ld=lld`.
+  #[default]
+  Lld,
+}
+
 /// Options controlling how we link generated artifacts into an executable.
 #[derive(Clone, Copy, Debug)]
 pub struct LinkOpts {
@@ -16,11 +25,17 @@ pub struct LinkOpts {
   /// Note: `.llvm_stackmaps` is still retained via our linker script fragment
   /// (`KEEP(*(.llvm_stackmaps ...))`).
   pub gc_sections: bool,
+  pub linker: LinkerFlavor,
+  pub pie: bool,
 }
 
 impl Default for LinkOpts {
   fn default() -> Self {
-    Self { gc_sections: true }
+    Self {
+      gc_sections: true,
+      linker: LinkerFlavor::default(),
+      pie: false,
+    }
   }
 }
 
@@ -92,6 +107,14 @@ fn find_clang_18() -> Option<&'static str> {
 /// The resulting binary will export [`FASTR_STACKMAPS_START_SYM`] and [`FASTR_STACKMAPS_END_SYM`]
 /// that delimit the `.llvm_stackmaps` section in memory.
 pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyhow::Result<()> {
+  link_elf_executable_with_options(output_path, object_files, LinkOpts::default())
+}
+
+pub fn link_elf_executable_with_options(
+  output_path: &Path,
+  object_files: &[PathBuf],
+  opts: LinkOpts,
+) -> anyhow::Result<()> {
   let clang = find_clang().context("unable to locate clang (expected `clang-18` or `clang`)")?;
   let out_dir = output_path
     .parent()
@@ -103,20 +126,28 @@ pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyh
   let script_path = out_dir.join("fastr_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
-  // Keep link args intentionally minimal; native-js will grow its own flags as the pipeline is
-  // implemented. For this task we only care that `.llvm_stackmaps` is preserved and discoverable.
   let mut cmd = Command::new(clang);
   cmd.arg("-o").arg(output_path);
 
-  // Prefer lld for reproducibility in CI/agent environments, but the linker script is compatible
-  // with GNU ld as well.
-  cmd.arg("-fuse-ld=lld");
+  match opts.linker {
+    LinkerFlavor::System => {}
+    LinkerFlavor::Lld => {
+      cmd.arg("-fuse-ld=lld");
+    }
+  }
 
-  // Mimic the size-oriented native-js pipeline: drop unreferenced sections, but KEEP
-  // `.llvm_stackmaps` via the linker script fragment above.
-  cmd.arg("-Wl,--gc-sections");
+  if opts.pie {
+    if matches!(opts.linker, LinkerFlavor::Lld) {
+      cmd.arg("-Wl,-z,notext");
+    }
+  } else {
+    cmd.arg("-no-pie");
+  }
 
-  // Inject linker script fragment.
+  if opts.gc_sections {
+    cmd.arg("-Wl,--gc-sections");
+  }
+
   cmd.arg(format!("-Wl,-T,{}", script_path.display()));
 
   for obj in object_files {
@@ -161,13 +192,20 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
 
-  // Produce a non-PIE executable by default. This avoids PIE textrel warnings and makes the
-  // stackmap bounds test (symbol vs section address) deterministic.
-  cmd.arg("-no-pie");
+  if opts.pie {
+    if matches!(opts.linker, LinkerFlavor::Lld) {
+      cmd.arg("-Wl,-z,notext");
+    }
+  } else {
+    cmd.arg("-no-pie");
+  }
 
-  // Prefer lld for reproducibility in CI/agent environments, but the linker script is compatible
-  // with GNU ld as well.
-  cmd.arg("-fuse-ld=lld");
+  match opts.linker {
+    LinkerFlavor::System => {}
+    LinkerFlavor::Lld => {
+      cmd.arg("-fuse-ld=lld");
+    }
+  }
 
   if opts.gc_sections {
     cmd.arg("-Wl,--gc-sections");
@@ -203,3 +241,4 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 pub fn link_bitcode_to_exe(_bitcode: &[u8], _opts: LinkOpts) -> anyhow::Result<Vec<u8>> {
   anyhow::bail!("link_bitcode_to_exe is only supported on Linux for now")
 }
+
