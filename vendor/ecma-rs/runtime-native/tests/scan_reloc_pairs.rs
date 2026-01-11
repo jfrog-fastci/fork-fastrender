@@ -252,3 +252,88 @@ fn scan_reloc_pairs_skips_deopt_operands() {
     );
   }
 }
+
+#[test]
+fn invalid_statepoint_layout_yields_no_reloc_pairs_or_slots() {
+  // Build a record that starts with the statepoint-style 3-constant header, but has an invalid
+  // `deopt_count` so decoding as a `gc.statepoint` fails. Both `CallSite::reloc_pairs` and
+  // `scan_reloc_pairs` should treat it as a non-statepoint record and return nothing.
+  let mut bytes: Vec<u8> = Vec::new();
+
+  fn push_u8(out: &mut Vec<u8>, v: u8) {
+    out.push(v);
+  }
+  fn push_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn align_to_8(out: &mut Vec<u8>) {
+    while out.len() % 8 != 0 {
+      out.push(0);
+    }
+  }
+  fn push_loc(out: &mut Vec<u8>, kind: u8, size: u16, dwarf_reg: u16, offset_or_const: i32) {
+    push_u8(out, kind);
+    push_u8(out, 0); // reserved0
+    push_u16(out, size);
+    push_u16(out, dwarf_reg);
+    push_u16(out, 0); // reserved1
+    push_i32(out, offset_or_const);
+  }
+
+  // Header.
+  push_u8(&mut bytes, 3); // version
+  push_u8(&mut bytes, 0); // reserved0
+  push_u16(&mut bytes, 0); // reserved1
+  push_u32(&mut bytes, 1); // num_functions
+  push_u32(&mut bytes, 0); // num_constants
+  push_u32(&mut bytes, 1); // num_records
+
+  // Function record.
+  push_u64(&mut bytes, 0); // address
+  push_u64(&mut bytes, 32); // stack_size
+  push_u64(&mut bytes, 1); // record_count
+
+  // Record header.
+  push_u64(&mut bytes, 0x1234); // patchpoint_id (arbitrary)
+  push_u32(&mut bytes, 0x1234); // instruction_offset => callsite pc = 0x1234
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 5); // num_locations = 3 header consts + 2 extra locs
+
+  // 3 constant header locations (callconv, flags, deopt_count=100 (invalid)).
+  push_loc(&mut bytes, 4, 8, 0, 0); // callconv
+  push_loc(&mut bytes, 4, 8, 0, 0); // flags
+  push_loc(&mut bytes, 4, 8, 0, 100); // deopt_count (invalid: exceeds locations)
+
+  // Two Indirect locations (these are not real relocation pairs; they exist so the record looks
+  // plausible under non-statepoint scanning/validation paths).
+  push_loc(&mut bytes, 3, 8, DWARF_REG_SP, 0);
+  push_loc(&mut bytes, 3, 8, DWARF_REG_SP, 8);
+
+  // Live-out header.
+  align_to_8(&mut bytes);
+  push_u16(&mut bytes, 0); // padding
+  push_u16(&mut bytes, 0); // num_live_outs
+  align_to_8(&mut bytes);
+
+  let stackmaps = StackMaps::parse(&bytes).expect("parse StackMaps");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  assert_eq!(callsite.record.patchpoint_id, 0x1234);
+  assert_eq!(callsite_ra, 0x1234);
+
+  assert_eq!(callsite.reloc_pairs().count(), 0);
+
+  let mut ctx = ThreadContext::default();
+  ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
+  ctx.set_dwarf_reg_u64(DWARF_REG_SP, 0).unwrap();
+  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  assert!(pairs.is_empty());
+}
