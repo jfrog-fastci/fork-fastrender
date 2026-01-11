@@ -17,8 +17,8 @@ pub enum Direction {
 pub enum AnalysisBoundary {
   /// Start from an existing CFG entry block.
   Entry(u32),
-  /// Start from a synthetic exit that connects all terminal blocks (or sink SCCs
-  /// when no terminals exist) to a single node.
+  /// Start from a synthetic exit that connects all sink SCC nodes (including
+  /// ordinary terminal blocks) to a single node.
   VirtualExit,
 }
 
