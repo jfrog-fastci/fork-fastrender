@@ -200,8 +200,9 @@ pub struct Coroutine {
   /// Intrusive list pointer used by the runtime while the coroutine is suspended (e.g. awaiting a
   /// promise).
   ///
-  /// This is used when the coroutine is registered as a waiter on a [`PromiseHeader`] via
-  /// [`PromiseHeader::waiters`]. Generated code should initialize this to null.
+  /// Note: the current runtime represents awaiters as separate promise reaction nodes stored in
+  /// [`PromiseHeader::waiters`] (see `promise_reactions`), so this field is currently reserved for a
+  /// future lock-free waiter protocol. Generated code should still initialize it to null.
   pub next_waiter: CoroutineRef,
 
   /// Reserved for runtime flags (e.g. scheduled/running bits).
