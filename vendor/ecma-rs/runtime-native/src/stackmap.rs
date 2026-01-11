@@ -32,7 +32,7 @@ static STACKMAPS_INDEX: OnceLock<Option<crate::stackmaps::StackMaps>> = OnceLock
 pub fn stackmaps() -> &'static crate::stackmaps::StackMaps {
   try_stackmaps().unwrap_or_else(|| {
     panic!(
-      "missing .llvm_stackmaps section: on Linux, build with feature `llvm_stackmaps_linker`; on macOS, ensure LLVM emitted `__LLVM_STACKMAPS,__llvm_stackmaps`"
+      "missing LLVM stackmaps in the current process: on Linux, enable feature `llvm_stackmaps_linker` (preferred) or ensure the main executable contains a stackmap section (e.g. `.data.rel.ro.llvm_stackmaps` / `.llvm_stackmaps`); on macOS, ensure LLVM emitted `__LLVM_STACKMAPS,__llvm_stackmaps`"
     )
   })
 }
@@ -43,12 +43,23 @@ pub fn try_stackmaps() -> Option<&'static crate::stackmaps::StackMaps> {
   STACKMAPS_INDEX
     .get_or_init(|| {
       let bytes = crate::stackmaps_section();
-      if bytes.is_empty() {
-        return None;
+      if !bytes.is_empty() {
+        return Some(crate::stackmaps::StackMaps::parse(bytes).unwrap_or_else(|err| {
+          panic!("failed to parse .llvm_stackmaps section: {err}");
+        }));
       }
-      Some(crate::stackmaps::StackMaps::parse(bytes).unwrap_or_else(|err| {
-        panic!("failed to parse .llvm_stackmaps section: {err}");
-      }))
+
+      // Fallback for Linux x86_64 builds that don't use the linker-script based
+      // stackmap boundary symbols. This loads stackmaps from the mapped main
+      // executable (PIE/ASLR-safe).
+      #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+      {
+        crate::stackmaps::StackMaps::load_self().ok()
+      }
+      #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+      {
+        None
+      }
     })
     .as_ref()
 }

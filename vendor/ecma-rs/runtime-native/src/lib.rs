@@ -358,15 +358,22 @@ mod tests {
     if !was_registered {
       rt_thread_init(0);
     }
+    struct Deinit {
+      was_registered: bool,
+    }
+    impl Drop for Deinit {
+      fn drop(&mut self) {
+        if !self.was_registered {
+          rt_thread_deinit();
+        }
+      }
+    }
+    let _deinit = Deinit { was_registered };
 
     // Safety: the symbol is exported by this crate and is safe to call. When no
     // stop-the-world GC is requested, the fast path returns immediately.
     unsafe {
       gc_safepoint_poll();
-    }
-
-    if !was_registered {
-      rt_thread_deinit();
     }
   }
 

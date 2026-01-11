@@ -924,14 +924,29 @@ impl StackMaps {
       .with_context(|| format!("read ELF file {}", exe_path.display()))?;
 
     let elf = object::File::parse(&*exe_bytes).context("parse ELF")?;
-    let section = elf
-      .section_by_name(".data.rel.ro.llvm_stackmaps")
-      .or_else(|| elf.section_by_name(".llvm_stackmaps"))
-      .ok_or_else(|| anyhow::anyhow!("main executable is missing a stackmaps section"))?;
+    // runtime-native's linker script (`stackmaps.ld`) places stackmaps into
+    // `.data.rel.ro.llvm_stackmaps` to avoid DT_TEXTREL for PIE/DSO builds, but
+    // other link pipelines may leave the section as `.llvm_stackmaps`.
+    const STACKMAP_SECTION_NAMES: [&str; 3] = [
+      ".data.rel.ro.llvm_stackmaps",
+      ".llvm_stackmaps",
+      // Some linker scripts export an output section without the leading dot.
+      "llvm_stackmaps",
+    ];
+    let (section_name, section) = STACKMAP_SECTION_NAMES
+      .iter()
+      .find_map(|&name| elf.section_by_name(name).map(|section| (name, section)))
+      .ok_or_else(|| {
+        anyhow::anyhow!(
+          "main executable is missing LLVM stackmap section (tried {})",
+          STACKMAP_SECTION_NAMES.join(", ")
+        )
+      })?;
 
     let sh_addr = section.address();
     let sh_size = section.size();
-    let sh_size_usize = usize::try_from(sh_size).context("stackmaps section size overflows usize")?;
+    let sh_size_usize =
+      usize::try_from(sh_size).with_context(|| format!("{section_name} section size overflows usize"))?;
 
     let base = main_executable_base_addr().context("find main executable base address")?;
     let mapped_addr_u64 = (base as u64).checked_add(sh_addr).ok_or_else(|| {
@@ -942,7 +957,7 @@ impl StackMaps {
     // SAFETY: We trust the ELF metadata for the stackmaps section and assume it is mapped as a
     // readable segment in the current process.
     let bytes = unsafe { std::slice::from_raw_parts(mapped_addr as *const u8, sh_size_usize) };
-    Ok(Self::parse(bytes).context("parse stackmaps section")?)
+    Ok(Self::parse(bytes).with_context(|| format!("parse {section_name}"))?)
   }
 
   #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
