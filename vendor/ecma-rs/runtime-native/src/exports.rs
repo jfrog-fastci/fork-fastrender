@@ -1,3 +1,4 @@
+use crate::abi::Microtask;
 use crate::abi::PromiseRef;
 use crate::abi::PromiseResolveInput;
 use crate::abi::RtCoroutineHeader;
@@ -1360,6 +1361,53 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
   })
 }
 
+// -----------------------------------------------------------------------------
+// Microtasks (queueMicrotask-style jobs)
+// -----------------------------------------------------------------------------
+
+/// Enqueue a single microtask callback onto the async runtime's microtask queue.
+///
+/// This is a low-level primitive that can be used to implement Web-standard
+/// `queueMicrotask(cb)` without allocating a promise/coroutine frame.
+///
+/// # Safety
+/// - `task.func` must be a valid function pointer.
+/// - `task.data` must remain valid until the callback runs.
+#[no_mangle]
+pub unsafe extern "C" fn rt_queue_microtask(task: Microtask) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+
+    // Function pointers are non-null by construction in Rust, but this is an
+    // FFI-exposed ABI type and may be constructed from foreign code.
+    if (task.func as usize) == 0 {
+      std::process::abort();
+    }
+
+    async_rt::global().enqueue_microtask(async_rt::Task::new(task.func, task.data));
+  })
+}
+
+/// Drain only the microtask queue.
+///
+/// Unlike [`rt_async_poll_legacy`], this does *not* run macrotasks, timers, or
+/// reactor callbacks.
+///
+/// Returns `true` if any microtasks were executed.
+///
+/// Note: This is implemented as a thin C-ABI wrapper around
+/// [`crate::rt_drain_microtasks`] (the Rust API), which provides non-reentrant
+/// "microtask checkpoint" semantics.
+#[export_name = "rt_drain_microtasks"]
+pub extern "C" fn rt_drain_microtasks_abi() -> bool {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::async_runtime::rt_drain_microtasks()
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
   abort_on_panic(|| {
@@ -1542,7 +1590,7 @@ pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
 }
 
 // -----------------------------------------------------------------------------
-// Microtasks + timers (queueMicrotask/setTimeout/setInterval)
+// Timers (setTimeout/setInterval)
 // -----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1676,17 +1724,10 @@ extern "C" fn web_timer_fire(data: *mut u8) {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8) {
-  abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
-    async_rt::enqueue_microtask(cb, data);
-  })
-}
-
-#[no_mangle]
 pub extern "C" fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8) {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
     unsafe {
       async_rt::global().enqueue_microtask(async_rt::Task::new_gc_rooted(cb, data));
     }
@@ -1700,7 +1741,8 @@ pub extern "C" fn rt_queue_microtask_with_drop(
   drop_data: extern "C" fn(*mut u8),
 ) {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
     async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(cb, data, drop_data));
   })
 }

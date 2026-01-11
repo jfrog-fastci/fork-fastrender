@@ -8,6 +8,25 @@ pub use runtime_native_abi::{
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
 pub type TimerId = u64;
 
+// -----------------------------------------------------------------------------
+// Async microtasks (queueMicrotask-style jobs)
+// -----------------------------------------------------------------------------
+
+/// A single microtask callback (function pointer + opaque payload).
+///
+/// This is the low-level primitive used to implement Web-standard `queueMicrotask(cb)` without
+/// allocating a promise/coroutine frame.
+///
+/// ## Safety / contracts
+/// - `func` must be non-null.
+/// - `data` is an opaque pointer that must remain valid until `func(data)` runs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Microtask {
+  pub func: extern "C" fn(*mut u8),
+  pub data: *mut u8,
+}
+
 /// Opaque value reference.
 ///
 /// The full JS value/GC story is not implemented yet; compiled code can treat this as a pointer

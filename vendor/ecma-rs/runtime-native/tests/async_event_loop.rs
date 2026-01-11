@@ -1,3 +1,4 @@
+use runtime_native::abi::Microtask;
 use runtime_native::async_rt::Interest;
 use runtime_native::async_rt::Task;
 use runtime_native::test_util::TestRuntimeGuard;
@@ -165,10 +166,12 @@ fn wake_from_epoll_wait() {
     let ran_ref: &'static AtomicBool = ran;
     move || {
       std::thread::sleep(Duration::from_millis(20));
-      runtime_native::async_rt::global().enqueue_microtask(Task::new(
-        set_atomic_bool,
-        ran_ref as *const AtomicBool as *mut u8,
-      ));
+      unsafe {
+        runtime_native::rt_queue_microtask(Microtask {
+          func: set_atomic_bool,
+          data: ran_ref as *const AtomicBool as *mut u8,
+        });
+      }
     }
   });
 
@@ -210,7 +213,7 @@ fn idle_detection() {
   // scheduling slack for heavily loaded CI/agent environments.
   assert!(
     elapsed < Duration::from_secs(1),
-    "rt_async_poll should return quickly when idle (elapsed={elapsed:?})"
+    "rt_async_poll_legacy should return quickly when idle (elapsed={elapsed:?})"
   );
 
   threading::unregister_current_thread();
@@ -229,7 +232,7 @@ fn parked_event_loop_thread_counts_as_quiescent_for_stop_the_world() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
 
-  // Keep the runtime non-idle so `rt_async_poll` blocks in epoll_wait.
+  // Keep the runtime non-idle so `rt_async_poll_legacy` blocks in epoll_wait.
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer_id = runtime_native::async_rt::global().schedule_timer(
     Instant::now() + Duration::from_secs(5),

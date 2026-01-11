@@ -323,7 +323,7 @@ Pool sizing:
 - Override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` to a positive integer before first use
   (`RT_BLOCKING_THREADS` is also supported as a legacy alias).
 
-## Coroutine ABI
+## Legacy coroutine ABI (`RtCoroutineHeader`)
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is
 [`RtCoroutineHeader`](src/abi.rs). The runtime and generated code communicate only via this header.
@@ -333,7 +333,7 @@ Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefi
 ```c
 struct RtCoroutineHeader {
   RtCoroStatus (*resume)(struct RtCoroutineHeader*); // +0
-  PromiseRef promise;                                // +8
+  LegacyPromiseRef promise;                          // +8
   uint32_t state;                                    // +16
   uint32_t await_is_error;                            // +20 (0=value, 1=error)
   ValueRef await_value;                               // +24
@@ -365,7 +365,7 @@ async function f() { side_effect(); await 0; }
 f(); // side_effect happens immediately
 ```
 
-## Promise placeholder
+## Legacy promise placeholder
 
 The runtime provides a minimal `Promise` implementation sufficient for async/await:
 
@@ -375,6 +375,20 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
 FIFO by calling `rt_async_poll_legacy()`.
+
+Note: `runtime-native` is migrating to a native Promise/Coroutine ABI based on a `PromiseHeader`
+prefix. The current event loop used by tests and legacy codegen is driven by
+`rt_async_poll_legacy()`.
+
+## Microtask ABI (queueMicrotask)
+
+In addition to promise continuations, embedders and stdlib bindings can enqueue lightweight
+queueMicrotask-style jobs directly via:
+
+- `rt_queue_microtask(Microtask task)`
+- `rt_drain_microtasks() -> bool`
+
+See `docs/async_abi.md` for details.
 
 ## Benchmarks
 

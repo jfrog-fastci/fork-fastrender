@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::Mutex;
 
@@ -69,7 +69,12 @@ fn queue_microtask_then_promise_wakeup_runs_in_fifo_order() {
 
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
-  runtime_native::rt_queue_microtask(log_a, (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>());
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: log_a,
+      data: (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+    });
+  }
   runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut::<core::ffi::c_void>() as ValueRef);
 
   drain_until_idle();
@@ -100,7 +105,12 @@ fn promise_wakeup_then_queue_microtask_runs_in_fifo_order() {
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
   runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut::<core::ffi::c_void>() as ValueRef);
-  runtime_native::rt_queue_microtask(log_a, (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>());
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: log_a,
+      data: (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+    });
+  }
 
   drain_until_idle();
 
@@ -119,7 +129,12 @@ extern "C" fn microtask_a_resolve_promise_and_queue_c(data: *mut u8) {
 
   log.lock().unwrap().push(b'A');
   runtime_native::rt_promise_resolve_legacy(ctx.awaited, core::ptr::null_mut::<core::ffi::c_void>() as ValueRef);
-  runtime_native::rt_queue_microtask(log_c, (ctx.log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>());
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: log_c,
+      data: (ctx.log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+    });
+  }
 }
 
 #[test]
@@ -145,10 +160,12 @@ fn microtask_enqueues_coroutine_and_callback_in_fifo_order() {
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
   let ctx: &'static ResolveCtx = Box::leak(Box::new(ResolveCtx { log, awaited }));
-  runtime_native::rt_queue_microtask(
-    microtask_a_resolve_promise_and_queue_c,
-    (ctx as *const ResolveCtx).cast_mut().cast::<u8>(),
-  );
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: microtask_a_resolve_promise_and_queue_c,
+      data: (ctx as *const ResolveCtx).cast_mut().cast::<u8>(),
+    });
+  }
 
   drain_until_idle();
 

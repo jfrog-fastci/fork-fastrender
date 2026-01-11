@@ -1,3 +1,4 @@
+use runtime_native::abi::Microtask;
 use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_clear_timer, rt_queue_microtask, rt_set_interval, rt_set_timeout};
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -23,11 +24,21 @@ fn microtask_ordering() {
     shared.0.lock().unwrap().push("A");
 
     let b_data = Box::new(shared.as_ref().clone());
-    rt_queue_microtask(microtask_b, Box::into_raw(b_data).cast());
+    unsafe {
+      rt_queue_microtask(Microtask {
+        func: microtask_b,
+        data: Box::into_raw(b_data).cast(),
+      });
+    }
   }
 
   let shared = Shared(Arc::new(Mutex::new(Vec::new())));
-  rt_queue_microtask(microtask_a, Box::into_raw(Box::new(shared.clone())).cast());
+  unsafe {
+    rt_queue_microtask(Microtask {
+      func: microtask_a,
+      data: Box::into_raw(Box::new(shared.clone())).cast(),
+    });
+  }
 
   rt_async_poll();
   assert_eq!(&*shared.0.lock().unwrap(), &["A", "B"]);
@@ -52,7 +63,12 @@ fn timeout_runs_microtask_checkpoint_after_macrotask() {
     shared.0.lock().unwrap().push("timeout");
 
     let mt_data = Box::new(shared.as_ref().clone());
-    rt_queue_microtask(microtask, Box::into_raw(mt_data).cast());
+    unsafe {
+      rt_queue_microtask(Microtask {
+        func: microtask,
+        data: Box::into_raw(mt_data).cast(),
+      });
+    }
   }
 
   let shared = Shared(Arc::new(Mutex::new(Vec::new())));
@@ -144,7 +160,16 @@ fn thread_safe_microtask_wake_from_epoll() {
     "rt_async_poll returned early; expected it to block in epoll_wait"
   );
 
-  rt_queue_microtask(mark_ran, Box::into_raw(Box::new(ran.clone())).cast());
+  // Note: `rt_queue_microtask` is an `unsafe` ABI because it moves an opaque
+  // pointer through the runtime queues. The test upholds the contract by
+  // allocating the payload on the heap and transferring ownership to the
+  // microtask callback.
+  unsafe {
+    rt_queue_microtask(Microtask {
+      func: mark_ran,
+      data: Box::into_raw(Box::new(ran.clone())).cast(),
+    });
+  }
 
   // Wait for the poll thread to finish.
   while !returned.load(Ordering::SeqCst) {

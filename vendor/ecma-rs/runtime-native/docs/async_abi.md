@@ -282,6 +282,31 @@ Both functions are **non-reentrant** by design (HTML-style microtask checkpoint 
 either function is called while a drain is already in progress (directly or indirectly, e.g. from
 within a microtask), the nested call is treated as a **no-op** and returns `false`.
 
+### `rt_drain_microtasks` semantics
+
+`rt_drain_microtasks` runs *only* microtasks (no timers/reactor/macrotasks). Like the web platform,
+microtasks scheduled while microtasks are executing are appended and will run in the same drain call
+until the queue is empty (or runaway limits are hit).
+
+### Runaway limits
+
+JavaScript semantics drain microtasks "until empty", but embedders need a guardrail against unbounded
+microtask loops (e.g. a microtask that keeps re-queueing itself). The runtime enforces a fixed
+maximum number of microtasks per checkpoint (see `src/async_rt/event_loop.rs`). Exceeding this limit
+aborts the process with a diagnostic rather than livelocking forever.
+
+### Mapping `queueMicrotask(cb)` to the ABI
+
+Bindings should implement `queueMicrotask(cb)` by:
+
+1. Allocating a small payload containing whatever is needed to call `cb` (e.g. function handle +
+   realm/global).
+2. Calling `rt_queue_microtask(Microtask { func: <trampoline>, data: <payload> })`.
+3. Having the trampoline invoke `cb` and then free the payload (or otherwise manage its lifetime).
+
+This avoids allocating a promise/coroutine frame for simple callbacks while still integrating with
+the runtime's single-consumer microtask checkpoint semantics.
+
 ## Exported symbols (async)
 
 ### Native async/await ABI (PromiseHeader prefix)
@@ -318,8 +343,9 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 
 ### Microtasks + timers
 
-- `rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8)`
+- `rt_queue_microtask(task: Microtask)`
 - `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
+- `rt_drain_microtasks() -> bool`
 - `rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_timeout_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
 - `rt_set_interval(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`

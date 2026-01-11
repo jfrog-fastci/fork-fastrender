@@ -1,6 +1,6 @@
 use std::mem::{align_of, size_of};
 
-use runtime_native::abi::{PromiseRef, RtCoroutineHeader, RtCoroStatus, TaskId};
+use runtime_native::abi::{Microtask, PromiseRef, RtCoroutineHeader, RtCoroStatus, TaskId};
 
 #[test]
 fn abi_layout_smoke() {
@@ -15,6 +15,9 @@ fn abi_layout_smoke() {
 
   let ptr_size = size_of::<usize>();
   let ptr_align = align_of::<usize>();
+
+  assert_eq!(size_of::<Microtask>(), 2 * ptr_size);
+  assert_eq!(align_of::<Microtask>(), ptr_align);
 
   assert_eq!(align_of::<RtCoroutineHeader>(), ptr_align);
 

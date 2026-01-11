@@ -808,8 +808,9 @@ mod tests {
       "void rt_async_set_limits(size_t max_steps, size_t max_queue_len);",
       "char* rt_async_take_last_error(void);",
       "void rt_async_free_c_string(char* s);",
-      "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
+      "void rt_queue_microtask(Microtask task);",
       "void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
+      "bool rt_drain_microtasks(void);",
       "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
       "TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);",
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
@@ -915,9 +916,10 @@ mod tests {
     let _async_set_limits: extern "C" fn(usize, usize) = rt_async_set_limits;
     let _async_take_last_error: extern "C" fn() -> *mut core::ffi::c_char = rt_async_take_last_error;
     let _async_free_c_string: unsafe extern "C" fn(*mut core::ffi::c_char) = rt_async_free_c_string;
-    let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
+    let _queue_microtask: unsafe extern "C" fn(abi::Microtask) = rt_queue_microtask;
     let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
       rt_queue_microtask_with_drop;
+    let _drain_microtasks: extern "C" fn() -> bool = rt_drain_microtasks_abi;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
     let _set_timeout_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_timeout_with_drop;
@@ -1012,6 +1014,7 @@ mod tests {
       _async_sleep_legacy,
       _queue_microtask,
       _queue_microtask_with_drop,
+      _drain_microtasks,
       _set_timeout,
       _set_timeout_with_drop,
       _set_interval,

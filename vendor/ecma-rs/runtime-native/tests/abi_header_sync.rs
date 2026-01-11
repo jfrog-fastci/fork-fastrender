@@ -37,6 +37,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_keep_alive_gc_ref(",
     "rt_parallel_spawn_rooted(",
     "rt_queue_microtask_rooted(",
+    "rt_queue_microtask(",
+    "rt_drain_microtasks(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -74,6 +76,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
       "`runtime_native.h` is missing expected RtArrayHeader field: {field}"
     );
   }
+  assert!(
+    HEADER.contains("typedef struct Microtask"),
+    "`runtime_native.h` is missing the Microtask ABI type"
+  );
 
   // Stats APIs are feature-gated on the Rust side; the C header uses a macro
   // guard to avoid exposing unavailable symbols by default.
@@ -141,6 +147,13 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _handle_load: extern "C" fn(u64) -> *mut u8 = runtime_native::rt_handle_load;
   let _handle_store: extern "C" fn(u64, *mut u8) = runtime_native::rt_handle_store;
 
+  // Microtasks.
+  let _queue_microtask: unsafe extern "C" fn(runtime_native::abi::Microtask) =
+    runtime_native::rt_queue_microtask;
+  let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
+    runtime_native::rt_queue_microtask_with_drop;
+  let _drain_microtasks: extern "C" fn() -> bool = runtime_native::rt_drain_microtasks_abi;
+
   // Per-thread shadow stack root push/pop.
   let _root_push: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_push;
   let _root_pop: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_pop;
@@ -185,6 +198,9 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _handle_free,
     _handle_load,
     _handle_store,
+    _queue_microtask,
+    _queue_microtask_with_drop,
+    _drain_microtasks,
     _root_push,
     _root_pop,
     _parallel_spawn_rooted,

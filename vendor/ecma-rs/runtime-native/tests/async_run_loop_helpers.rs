@@ -1,4 +1,4 @@
-use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -175,7 +175,12 @@ fn block_on_returns_immediately_when_promise_already_settled() {
   let t = std::thread::spawn(move || {
     if rx.recv_timeout(Duration::from_secs(1)).is_err() {
       watchdog_fired2.store(true, Ordering::SeqCst);
-      runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+      unsafe {
+        runtime_native::rt_queue_microtask(Microtask {
+          func: noop,
+          data: core::ptr::null_mut(),
+        });
+      }
     }
   });
 
@@ -252,7 +257,12 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
   let watchdog = std::thread::spawn(move || {
     if rx.recv_timeout(Duration::from_secs(2)).is_err() {
       watchdog_fired2.store(true, Ordering::SeqCst);
-      runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+      unsafe {
+        runtime_native::rt_queue_microtask(Microtask {
+          func: noop,
+          data: core::ptr::null_mut(),
+        });
+      }
     }
   });
 
@@ -304,8 +314,16 @@ fn block_on_returns_when_executor_is_in_error_state() {
   // Put the async runtime into a known error state: restrict the ready queue to 1 entry, then
   // attempt to enqueue a second microtask.
   runtime_native::rt_async_set_limits(1, 1);
-  runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
-  runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: noop,
+      data: core::ptr::null_mut(),
+    });
+    runtime_native::rt_queue_microtask(Microtask {
+      func: noop,
+      data: core::ptr::null_mut(),
+    });
+  }
 
   // `rt_async_run_until_idle` should observe the error and return without spinning/aborting.
   unsafe {
@@ -332,7 +350,12 @@ fn block_on_returns_when_executor_is_in_error_state() {
   let watchdog = std::thread::spawn(move || {
     if rx.recv_timeout(Duration::from_secs(2)).is_err() {
       watchdog_fired2.store(true, Ordering::SeqCst);
-      runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+      unsafe {
+        runtime_native::rt_queue_microtask(Microtask {
+          func: noop,
+          data: core::ptr::null_mut(),
+        });
+      }
     }
   });
 

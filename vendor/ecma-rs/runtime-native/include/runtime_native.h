@@ -53,6 +53,16 @@ typedef uint64_t TimerId;
 // Stable persistent handle id (safe to store in OS event loop userdata like epoll_event.data.u64).
 typedef uint64_t HandleId;
 
+// Microtask callback scheduled onto the async runtime microtask queue.
+//
+// Contract:
+// - `func` must be non-null.
+// - `data` must remain valid until `func(data)` runs.
+typedef struct Microtask {
+  void (*func)(uint8_t* data);
+  uint8_t* data;
+} Microtask;
+
 // runtime-native does not yet implement a full JS value representation/GC.
 // For now, values are passed as opaque pointers.
 typedef void* ValueRef;
@@ -735,7 +745,7 @@ PromiseRef rt_async_sleep(uint64_t delay_ms);
 //
 // Microtasks are executed FIFO in the same queue as promise reaction jobs (e.g. async/await
 // coroutine wakeups).
-void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
+void rt_queue_microtask(Microtask task);
 void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 // Like `rt_queue_microtask`, but `data` is a GC-managed object that the runtime
 // will keep alive until `cb` runs.
@@ -744,6 +754,9 @@ void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*dr
 // - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
 // - The runtime registers a strong GC root for `data` until the microtask executes.
 void rt_queue_microtask_rooted(void (*cb)(uint8_t*), uint8_t* data);
+// Drain only the microtask queue (does not run timers/reactor/macrotasks).
+// Returns true if any microtasks were executed.
+bool rt_drain_microtasks(void);
 
 // Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll_legacy` runs a
 // microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms
