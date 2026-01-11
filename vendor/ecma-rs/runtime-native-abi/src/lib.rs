@@ -179,6 +179,10 @@ extern "C" {
   pub fn rt_thread_register(kind: u32) -> u64;
   pub fn rt_thread_unregister();
   pub fn rt_thread_set_parked(parked: bool);
+  pub fn rt_register_current_thread();
+  pub fn rt_unregister_current_thread();
+  pub fn rt_register_thread();
+  pub fn rt_unregister_thread();
 
   // Memory
   pub fn rt_alloc(size: usize, shape: RtShapeId) -> GcPtr;
@@ -195,9 +199,20 @@ extern "C" {
   pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> GcPtr;
   pub fn rt_gc_safepoint_slow(requested_epoch: u64);
   pub fn rt_gc_poll() -> bool;
+  pub fn rt_keep_alive_gc_ref(gc_ref: *mut u8);
   pub fn rt_write_barrier(obj: GcPtr, slot: *mut u8);
   pub fn rt_write_barrier_range(obj: GcPtr, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
+  pub fn rt_backing_store_external_bytes() -> usize;
+
+  // Global roots / handles
+  pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
+  pub fn rt_gc_unregister_root_slot(handle: u32);
+  pub fn rt_gc_pin(ptr: GcPtr) -> u32;
+  pub fn rt_gc_unpin(handle: u32);
+
+  pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
+  pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
 
   // Strings
   pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
@@ -291,6 +306,10 @@ mod tests {
       "rt_thread_register(",
       "rt_thread_unregister(",
       "rt_thread_set_parked(",
+      "rt_register_current_thread(",
+      "rt_unregister_current_thread(",
+      "rt_register_thread(",
+      "rt_unregister_thread(",
       "rt_alloc(",
       "rt_alloc_pinned(",
       "rt_alloc_array(",
@@ -300,9 +319,17 @@ mod tests {
       "rt_gc_safepoint_slow(",
       "rt_gc_poll(",
       "rt_gc_safepoint_relocate_h(",
+      "rt_keep_alive_gc_ref(",
       "rt_write_barrier(",
       "rt_write_barrier_range(",
       "rt_gc_collect(",
+      "rt_backing_store_external_bytes(",
+      "rt_gc_register_root_slot(",
+      "rt_gc_unregister_root_slot(",
+      "rt_gc_pin(",
+      "rt_gc_unpin(",
+      "rt_gc_set_young_range(",
+      "rt_gc_get_young_range(",
       "rt_string_concat(",
       "rt_string_intern(",
       "rt_string_pin_interned(",
