@@ -41,8 +41,12 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_drain_microtasks(",
     "rt_set_timeout_rooted(",
     "rt_set_interval_rooted(",
+    // I/O watchers.
+    "rt_io_register(",
     "rt_io_register_rooted(",
     "rt_io_register_with_drop(",
+    "rt_io_update(",
+    "rt_io_unregister(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -169,8 +173,24 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_set_timeout_rooted;
   let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_interval_rooted;
+  // I/O watchers.
+  let _io_register: extern "C" fn(
+    i32,
+    u32,
+    extern "C" fn(u32, *mut u8),
+    *mut u8,
+  ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register;
+  let _io_register_with_drop: extern "C" fn(
+    i32,
+    u32,
+    extern "C" fn(u32, *mut u8),
+    *mut u8,
+    extern "C" fn(*mut u8),
+  ) -> runtime_native::abi::IoWatcherId = runtime_native::rt_io_register_with_drop;
   let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> runtime_native::abi::IoWatcherId =
     runtime_native::rt_io_register_rooted;
+  let _io_update: extern "C" fn(runtime_native::abi::IoWatcherId, u32) = runtime_native::rt_io_update;
+  let _io_unregister: extern "C" fn(runtime_native::abi::IoWatcherId) = runtime_native::rt_io_unregister;
 
   #[cfg(feature = "gc_stats")]
   {
@@ -217,6 +237,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _queue_microtask_rooted,
     _set_timeout_rooted,
     _set_interval_rooted,
+    _io_register,
+    _io_register_with_drop,
     _io_register_rooted,
+    _io_update,
+    _io_unregister,
   );
 }

@@ -803,7 +803,7 @@ TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*dr
 void rt_clear_timer(TimerId id);
 
 // -----------------------------------------------------------------------------
-// I/O watchers (epoll-backed readiness notifications)
+// I/O watchers (reactor-backed readiness notifications)
 // -----------------------------------------------------------------------------
 //
 // Contract:
@@ -811,7 +811,7 @@ void rt_clear_timer(TimerId id);
 // - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
 // - Readiness notifications are edge-triggered; consumers must drain reads/writes
 //   until they return `EAGAIN`/`WouldBlock`.
-// - `rt_io_register` returns 0 on failure.
+// - `rt_io_register*` returns 0 on failure.
 IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
 IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 // Like `rt_io_register`, but `data` is a GC-managed object that the runtime will keep alive until
