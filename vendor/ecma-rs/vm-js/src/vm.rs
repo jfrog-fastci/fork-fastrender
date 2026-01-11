@@ -593,6 +593,26 @@ impl Vm {
     self.host_hooks_override
   }
 
+  /// Returns the currently active host hook implementation, if one is installed.
+  ///
+  /// This is primarily useful for embeddings that store per-call dynamic context inside their
+  /// [`VmHostHooks`] implementation. For example, FastRender stores an erased pointer to the active
+  /// HTML-like event loop so `setTimeout` / `queueMicrotask` can schedule work without relying on a
+  /// thread-local “current event loop”.
+  ///
+  /// The returned reference is only valid while the VM is executing under a host hooks override
+  /// (for example inside [`Vm::call_with_host_and_hooks`] or [`Vm::with_host_hooks_override`]).
+  #[inline]
+  pub fn active_host_hooks_mut(&mut self) -> Option<&mut dyn VmHostHooks> {
+    let Some(ptr) = self.host_hooks_override else {
+      return None;
+    };
+    // SAFETY: `host_hooks_override` is only set while a host hooks implementation is mutably
+    // borrowed by an embedder entry point, and is treated as a reborrow of that `&mut dyn
+    // VmHostHooks`.
+    Some(unsafe { &mut *ptr })
+  }
+
   /// Performs a microtask checkpoint, draining the VM's microtask queue.
   ///
   /// This is a convenience wrapper that uses a dummy host context (`()`), preserving

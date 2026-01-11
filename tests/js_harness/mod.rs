@@ -1,7 +1,6 @@
 use fastrender::dom::DomNode;
 use fastrender::dom2::{Document, NodeId, NodeKind};
 use fastrender::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion;
-use fastrender::js::runtime::with_event_loop;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   install_window_animation_frame_bindings, install_window_timers_bindings, ClassicScriptScheduler,
@@ -66,19 +65,18 @@ impl HostState {
     event_loop: &mut EventLoop<HostState>,
     source: &str,
   ) -> Result<Value> {
-    with_event_loop(event_loop, || {
-      let (vm_host, window) = self.vm_host_and_window_realm();
-      window.reset_interrupt();
-      let mut hooks = VmJsEventLoopHooks::<HostState>::new(&mut *vm_host);
-      let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
-      match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(Error::Other(format_vm_error(window.heap_mut(), err))),
-      }
-    })
+    let (vm_host, window) = self.vm_host_and_window_realm();
+    window.reset_interrupt();
+    let mut hooks = VmJsEventLoopHooks::<HostState>::new(&mut *vm_host);
+    hooks.set_event_loop(event_loop);
+    let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+    if let Some(err) = hooks.finish(window.heap_mut()) {
+      return Err(err);
+    }
+    match result {
+      Ok(value) => Ok(value),
+      Err(err) => Err(Error::Other(format_vm_error(window.heap_mut(), err))),
+    }
   }
 
   fn complete_external_script(&mut self, url: &str) -> Result<()> {
@@ -268,8 +266,8 @@ impl Harness {
     };
 
     // `WindowHostState` installs global bindings specialized for `WindowHostState`. Re-install the
-    // timer bindings for this harness's host type so `current_event_loop_mut::<HostState>()` is
-    // sound.
+    // timer bindings for this harness's host type so `event_loop_mut_from_hooks::<HostState>()`
+    // resolves to the correct `EventLoop<HostState>`.
     {
       let realm = host.window.window_mut();
       let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();

@@ -11,12 +11,11 @@
 //! embedding.
 
 use crate::js::event_loop::TaskSource;
-use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_form_data;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
-use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use crate::js::window_url;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
@@ -3906,7 +3905,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     }
   }
 
-  let Some(event_loop) = current_event_loop_mut::<Host>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(host_hooks) else {
     // Reject synchronously.
     scope.heap_mut().remove_root(resolve_root);
     scope.heap_mut().remove_root(reject_root);
@@ -3948,46 +3947,45 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          hooks.set_event_loop(event_loop);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
-          with_event_loop(event_loop, || {
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
-            let call_result = tick_result.and_then(|_| {
-              let reject = heap
-                .get_root(reject_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let mut scope = heap.scope();
-              let type_error =
-                create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                reject,
-                Value::Undefined,
-                &[type_error],
-              )?;
-              Ok(())
-            });
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
+          let call_result = tick_result.and_then(|_| {
+            let reject = heap
+              .get_root(reject_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let mut scope = heap.scope();
+            let type_error =
+              create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              reject,
+              Value::Undefined,
+              &[type_error],
+            )?;
+            Ok(())
+          });
 
-            // Remove roots even if the rejection throws/terminates.
-            heap.remove_root(resolve_root);
-            heap.remove_root(reject_root);
-            heap.remove_root(promise_root);
-            if let Some(signal_root) = signal_root {
-              heap.remove_root(signal_root);
-            }
-
-            if let Some(err) = hooks.finish(heap) {
-              return Err(err);
-            }
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
-          })
+          // Remove roots even if the rejection throws/terminates.
+          heap.remove_root(resolve_root);
+          heap.remove_root(reject_root);
+          heap.remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            heap.remove_root(signal_root);
+          }
+ 
+          if let Some(err) = hooks.finish(heap) {
+            return Err(err);
+          }
+          call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
         });
 
         if let Err(queue_err) = queue_result {
@@ -4030,51 +4028,50 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       if aborted.unwrap_or(false) {
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          hooks.set_event_loop(event_loop);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
-          with_event_loop(event_loop, || {
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
-            let call_result = tick_result.and_then(|_| {
-              let reject = heap
-                .get_root(reject_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let signal_value = heap
-                .get_root(signal_root_id)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let mut scope = heap.scope();
-              let reason = match signal_value {
-                Value::Object(signal_obj) => {
-                  let key = alloc_key(&mut scope, "reason")?;
-                  vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, key)?
-                }
-                _ => Value::Undefined,
-              };
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                reject,
-                Value::Undefined,
-                &[reason],
-              )?;
-              Ok(())
-            });
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
+          let call_result = tick_result.and_then(|_| {
+            let reject = heap
+              .get_root(reject_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let signal_value = heap
+              .get_root(signal_root_id)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let mut scope = heap.scope();
+            let reason = match signal_value {
+              Value::Object(signal_obj) => {
+                let key = alloc_key(&mut scope, "reason")?;
+                vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, key)?
+              }
+              _ => Value::Undefined,
+            };
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              reject,
+              Value::Undefined,
+              &[reason],
+            )?;
+            Ok(())
+          });
 
-            heap.remove_root(resolve_root);
-            heap.remove_root(reject_root);
-            heap.remove_root(promise_root);
-            heap.remove_root(signal_root_id);
+          heap.remove_root(resolve_root);
+          heap.remove_root(reject_root);
+          heap.remove_root(promise_root);
+          heap.remove_root(signal_root_id);
 
-            if let Some(err) = hooks.finish(heap) {
-              return Err(err);
-            }
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
-          })
+          if let Some(err) = hooks.finish(heap) {
+            return Err(err);
+          }
+          call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
         });
 
         if let Err(queue_err) = queue_result {
@@ -4105,55 +4102,54 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         // JS `Response.headers` for fetch() results is immutable in browsers.
         response.headers.set_guard(HeadersGuard::Immutable);
 
-        let response_id = match with_env_state_mut(env_id, |state| {
-          let id = state.alloc_id();
-          state.responses.insert(id, response);
-          Ok(id)
-        }) {
-          Ok(id) => id,
-          Err(err) => {
-            let message = format!("fetch failed: {err}");
-            let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-              let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-              let (vm_host, window_realm) = host.vm_host_and_window_realm();
-              window_realm.reset_interrupt();
-              let budget = window_realm.vm_budget_now();
-              let (vm, heap) = window_realm.vm_and_heap_mut();
-              with_event_loop(event_loop, || {
-                let mut vm = vm.push_budget(budget);
-                let tick_result = vm.tick();
-                let call_result = tick_result.and_then(|_| {
-                  let reject = heap
-                    .get_root(reject_root)
-                    .ok_or_else(|| VmError::invalid_handle())?;
-                  let mut scope = heap.scope();
-                  let type_error =
-                    create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
-                  vm.call_with_host_and_hooks(
-                    vm_host,
-                    &mut scope,
-                    &mut hooks,
-                    reject,
-                    Value::Undefined,
-                    &[type_error],
-                  )?;
-                  Ok(())
-                });
+            let response_id = match with_env_state_mut(env_id, |state| {
+              let id = state.alloc_id();
+              state.responses.insert(id, response);
+              Ok(id)
+            }) {
+              Ok(id) => id,
+              Err(err) => {
+                let message = format!("fetch failed: {err}");
+                let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+                  let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+                  hooks.set_event_loop(event_loop);
+                  let (vm_host, window_realm) = host.vm_host_and_window_realm();
+                  window_realm.reset_interrupt();
+                  let budget = window_realm.vm_budget_now();
+                  let (vm, heap) = window_realm.vm_and_heap_mut();
+                  let mut vm = vm.push_budget(budget);
+                  let tick_result = vm.tick();
+                  let call_result = tick_result.and_then(|_| {
+                    let reject = heap
+                      .get_root(reject_root)
+                      .ok_or_else(|| VmError::invalid_handle())?;
+                    let mut scope = heap.scope();
+                    let type_error =
+                      create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
+                    vm.call_with_host_and_hooks(
+                      vm_host,
+                      &mut scope,
+                      &mut hooks,
+                      reject,
+                      Value::Undefined,
+                      &[type_error],
+                    )?;
+                    Ok(())
+                  });
 
-                heap.remove_root(resolve_root);
-                heap.remove_root(reject_root);
-                heap.remove_root(promise_root);
-                if let Some(signal_root) = signal_root {
-                  heap.remove_root(signal_root);
-                }
+                  heap.remove_root(resolve_root);
+                  heap.remove_root(reject_root);
+                  heap.remove_root(promise_root);
+              if let Some(signal_root) = signal_root {
+                heap.remove_root(signal_root);
+              }
 
-                if let Some(err) = hooks.finish(heap) {
-                  return Err(err);
-                }
-                call_result
-                  .map_err(|err| vm_error_to_event_loop_error(heap, err))
-                  .map(|_| ())
-              })
+              if let Some(err) = hooks.finish(heap) {
+                return Err(err);
+              }
+              call_result
+                .map_err(|err| vm_error_to_event_loop_error(heap, err))
+                .map(|_| ())
             });
 
             if let Err(queue_err) = queue_result {
@@ -4175,50 +4171,49 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           // Resolve the promise with a JS Response wrapper.
           let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
+          hooks.set_event_loop(event_loop);
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
-          with_event_loop(event_loop, || {
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
 
-            let call_result = tick_result.and_then(|_| {
-              let resolve = heap
-                .get_root(resolve_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let mut scope = heap.scope();
+          let call_result = tick_result.and_then(|_| {
+            let resolve = heap
+              .get_root(resolve_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let mut scope = heap.scope();
 
-              let resp_obj =
-                make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
+            let resp_obj =
+              make_response_wrapper(&mut scope, env_id, headers_proto, response_proto, response_id)?;
 
-              // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
-              // EventLoop microtask queue.
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                resolve,
-                Value::Undefined,
-                &[Value::Object(resp_obj)],
-              )?;
-              Ok(())
-            });
+            // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
+            // EventLoop microtask queue.
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              resolve,
+              Value::Undefined,
+              &[Value::Object(resp_obj)],
+            )?;
+            Ok(())
+          });
 
-            // Remove roots even if resolution fails.
-            heap.remove_root(resolve_root);
-            heap.remove_root(reject_root);
-            heap.remove_root(promise_root);
-            if let Some(signal_root) = signal_root {
-              heap.remove_root(signal_root);
-            }
+          // Remove roots even if resolution fails.
+          heap.remove_root(resolve_root);
+          heap.remove_root(reject_root);
+          heap.remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            heap.remove_root(signal_root);
+          }
 
-            if let Some(err) = hooks.finish(heap) {
-              return Err(err);
-            }
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
-          })
+          if let Some(err) = hooks.finish(heap) {
+            return Err(err);
+          }
+          call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
         });
 
         if let Err(queue_err) = queue_result {
@@ -4241,45 +4236,44 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          hooks.set_event_loop(event_loop);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
           let (vm, heap) = window_realm.vm_and_heap_mut();
-          with_event_loop(event_loop, || {
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
-            let call_result = tick_result.and_then(|_| {
-              let reject = heap
-                .get_root(reject_root)
-                .ok_or_else(|| VmError::invalid_handle())?;
-              let mut scope = heap.scope();
-              let type_error =
-                create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                reject,
-                Value::Undefined,
-                &[type_error],
-              )?;
-              Ok(())
-            });
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
+          let call_result = tick_result.and_then(|_| {
+            let reject = heap
+              .get_root(reject_root)
+              .ok_or_else(|| VmError::invalid_handle())?;
+            let mut scope = heap.scope();
+            let type_error =
+              create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              reject,
+              Value::Undefined,
+              &[type_error],
+            )?;
+            Ok(())
+          });
 
-            heap.remove_root(resolve_root);
-            heap.remove_root(reject_root);
-            heap.remove_root(promise_root);
-            if let Some(signal_root) = signal_root {
-              heap.remove_root(signal_root);
-            }
+          heap.remove_root(resolve_root);
+          heap.remove_root(reject_root);
+          heap.remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            heap.remove_root(signal_root);
+          }
 
-            if let Some(err) = hooks.finish(heap) {
-              return Err(err);
-            }
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
-          })
+          if let Some(err) = hooks.finish(heap) {
+            return Err(err);
+          }
+          call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ())
         });
 
         if let Err(queue_err) = queue_result {
@@ -7806,14 +7800,16 @@ mod tests {
         .map_err(|e| crate::error::Error::Other(e.to_string()))?
     };
 
-    with_event_loop(&mut event_loop, || {
-      host
-        .window
-        .exec_script(
-          "fetch('https://example.invalid/upload', { method: 'POST', body: new Blob(['hi'], { type: 'text/plain' }) });",
-        )
-        .unwrap();
-    });
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        "fetch('https://example.invalid/upload', { method: 'POST', body: new Blob(['hi'], { type: 'text/plain' }) });",
+      ).unwrap();
+    }
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -7845,14 +7841,16 @@ mod tests {
         .map_err(|e| crate::error::Error::Other(e.to_string()))?
     };
 
-    with_event_loop(&mut event_loop, || {
-      host
-        .window
-        .exec_script(
-          "fetch('https://example.invalid/submit', { method: 'POST', body: new URLSearchParams('a=1&b=2') });",
-        )
-        .unwrap();
-    });
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        "fetch('https://example.invalid/submit', { method: 'POST', body: new URLSearchParams('a=1&b=2') });",
+      ).unwrap();
+    }
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -7884,19 +7882,21 @@ mod tests {
         .map_err(|e| crate::error::Error::Other(e.to_string()))?
     };
 
-    with_event_loop(&mut event_loop, || {
-      host
-        .window
-        .exec_script(
-          r#"
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        r#"
             const fd = new FormData();
             fd.append('a', 'b');
             fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');
             fetch('https://example.invalid/multipart', { method: 'POST', body: fd });
           "#,
-        )
-        .unwrap();
-    });
+      ).unwrap();
+    }
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
@@ -7948,44 +7948,59 @@ mod tests {
       install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
         .map_err(|e| crate::error::Error::Other(e.to_string()))?
     };
-
+ 
     // Create the fetch promise under an explicit unlimited VM budget so we can enqueue work even
     // when the realm's JsExecutionOptions fuel limit is 0 (the test case).
-    let promise_root: RootId = with_event_loop(&mut event_loop, || {
+    let promise_root: RootId = (|| -> crate::error::Result<RootId> {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let prev_budget = vm.swap_budget_state(vm_js::Budget::unlimited(100));
       vm.tick().expect("tick under unlimited budget");
 
-      let mut scope = heap.scope();
-      let global = realm.global_object();
-      scope
-        .push_root(Value::Object(global))
-        .expect("push root global");
+      let root: RootId = {
+        let mut scope = heap.scope();
+        let global = realm.global_object();
+        scope
+          .push_root(Value::Object(global))
+          .expect("push root global");
 
-      let fetch_key = alloc_key(&mut scope, "fetch").expect("alloc fetch key");
-      let fetch = vm
-        .get(&mut scope, global, fetch_key)
-        .expect("globalThis.fetch should be defined");
+        let fetch_key = alloc_key(&mut scope, "fetch").expect("alloc fetch key");
+        let fetch = vm
+          .get(&mut scope, global, fetch_key)
+          .expect("globalThis.fetch should be defined");
 
-      let url_s = scope
-        .alloc_string("https://example.invalid/ok")
-        .expect("alloc url string");
-      scope
-        .push_root(Value::String(url_s))
-        .expect("push root url string");
+        let url_s = scope
+          .alloc_string("https://example.invalid/ok")
+          .expect("alloc url string");
+        scope
+          .push_root(Value::String(url_s))
+          .expect("push root url string");
 
-      let promise = vm
-        .call_without_host(&mut scope, fetch, Value::Undefined, &[Value::String(url_s)])
-        .expect("fetch() should return a promise");
+        let promise = vm
+          .call_with_host_and_hooks(
+            &mut host.host_ctx,
+            &mut scope,
+            &mut hooks,
+            fetch,
+            Value::Undefined,
+            &[Value::String(url_s)],
+          )
+          .expect("fetch() should return a promise");
 
-      let root = scope
-        .heap_mut()
-        .add_root(promise)
-        .expect("root fetch promise");
+        scope
+          .heap_mut()
+          .add_root(promise)
+          .expect("root fetch promise")
+      };
 
       vm.restore_budget_state(prev_budget);
-      root
-    });
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      Ok(root)
+    })()?;
 
     let err = event_loop
       .run_until_idle(&mut host, RunLimits::unbounded())
@@ -8126,22 +8141,27 @@ mod tests {
         .define_property(global, key, data_desc(Value::Object(func), true))
         .unwrap();
     }
-
+ 
     // Make `Response` objects thenable so resolving the fetch promise triggers thenable
     // assimilation, which calls user code during the fetch completion microtask.
-    with_event_loop(&mut event_loop, || -> crate::error::Result<()> {
-      host
-        .window
-        .exec_script(
-          "Response.prototype.then = function(resolve, _reject) {\n\
-             globalThis.__webidl_dispatch();\n\
-             resolve(1);\n\
-           };\n\
-           fetch('https://example.invalid/ok');",
-        )
-        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
-      Ok(())
-    })?;
+    {
+      let mut hooks = VmJsEventLoopHooks::<DispatchEventLoopHost>::new_with_host(&mut host);
+      hooks.set_event_loop(&mut event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
+      let result = window_realm.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "Response.prototype.then = function(resolve, _reject) {\n\
+           globalThis.__webidl_dispatch();\n\
+           resolve(1);\n\
+         };\n\
+         fetch('https://example.invalid/ok');",
+      );
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result.map_err(|e| crate::error::Error::Other(e.to_string()))?;
+    }
 
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,

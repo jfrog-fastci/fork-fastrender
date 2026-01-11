@@ -3,7 +3,6 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::import_maps::{ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError};
 use crate::js::orchestrator::CurrentScriptHost;
-use crate::js::runtime::with_event_loop;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_realm::{
   WindowRealm, WindowRealmConfig, WindowRealmHost,
@@ -204,8 +203,8 @@ impl WindowHost {
 
   /// Execute a classic script in this window's JS realm.
   ///
-  /// This installs the accompanying [`EventLoop`] as the thread-local "current event loop" so Web
-  /// APIs like `queueMicrotask`, `setTimeout`, and `requestAnimationFrame` can schedule work.
+  /// This installs the accompanying [`EventLoop`] into the vm-js hook payload so Web APIs like
+  /// `queueMicrotask`, `setTimeout`, and `requestAnimationFrame` can schedule work.
   ///
   /// Note: this does **not** automatically run a microtask checkpoint. Call
   /// [`WindowHost::perform_microtask_checkpoint`] or drive the event loop as needed.
@@ -213,19 +212,19 @@ impl WindowHost {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    with_event_loop(event_loop, || {
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
-      let (vm_host, window) = host.vm_host_and_window_realm();
-      let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
+    hooks.set_event_loop(event_loop);
+    let (vm_host, window) = host.vm_host_and_window_realm();
+    let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
-      match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-      }
-    })
+    if let Some(err) = hooks.finish(window.heap_mut()) {
+      return Err(err);
+    }
+
+    match result {
+      Ok(value) => Ok(value),
+      Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+    }
   }
 }
 
@@ -584,20 +583,19 @@ impl WindowHostState {
   ) -> Result<vm_js::Value> {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
-    with_event_loop(event_loop, || {
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
-      let (vm_host, window) = self.vm_host_and_window_realm();
-      let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
+    hooks.set_event_loop(event_loop);
+    let (vm_host, window) = self.vm_host_and_window_realm();
+    let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
+    if let Some(err) = hooks.finish(window.heap_mut()) {
+      return Err(err);
+    }
 
-      match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-      }
-    })
+    match result {
+      Ok(value) => Ok(value),
+      Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+    }
   }
 
   /// Execute a classic script (with an explicit source name) while integrating Promise jobs into the
@@ -611,20 +609,19 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
-    with_event_loop(event_loop, || {
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
-      let (vm_host, window) = self.vm_host_and_window_realm();
-      let result = window.exec_script_source_with_host_and_hooks(vm_host, &mut hooks, source);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
+    hooks.set_event_loop(event_loop);
+    let (vm_host, window) = self.vm_host_and_window_realm();
+    let result = window.exec_script_source_with_host_and_hooks(vm_host, &mut hooks, source);
 
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
+    if let Some(err) = hooks.finish(window.heap_mut()) {
+      return Err(err);
+    }
 
-      match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-      }
-    })
+    match result {
+      Ok(value) => Ok(value),
+      Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+    }
   }
 }
 
@@ -1949,49 +1946,48 @@ mod tests {
       use crate::js::window_timers::VmJsEventLoopHooks;
 
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
-      with_event_loop(event_loop, || {
-        let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
-        let (vm_host, window) = host_state.vm_host_and_window_realm();
-        let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-        let mut scope = heap.scope();
-        let global = realm.global_object();
-        scope
-          .push_root(Value::Object(global))
-          .expect("push root global");
-        let key_s = scope.alloc_string("__ctor").expect("alloc __ctor");
-        scope
-          .push_root(Value::String(key_s))
-          .expect("push root __ctor");
-        let key = PropertyKey::from_string(key_s);
-        let ctor_val = scope
-          .heap()
-          .object_get_own_data_property_value(global, &key)
-          .expect("get __ctor")
-          .unwrap_or(Value::Undefined);
-        let Value::Object(ctor_obj) = ctor_val else {
-          return Err(Error::Other("missing __ctor".to_string()));
-        };
-        scope
-          .push_root(Value::Object(ctor_obj))
-          .expect("push root __ctor function");
-        let create_result = crate::js::window_realm::test_only_create_error(
-          vm,
-          &mut scope,
-          vm_host,
-          &mut hooks,
-          ctor_obj,
-          "boom",
-        );
-        drop(scope);
-        let create_result = match create_result {
-          Ok(_) => Ok(()),
-          Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-        };
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        create_result
-      })
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host_state);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host_state.vm_host_and_window_realm();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+      let key_s = scope.alloc_string("__ctor").expect("alloc __ctor");
+      scope
+        .push_root(Value::String(key_s))
+        .expect("push root __ctor");
+      let key = PropertyKey::from_string(key_s);
+      let ctor_val = scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)
+        .expect("get __ctor")
+        .unwrap_or(Value::Undefined);
+      let Value::Object(ctor_obj) = ctor_val else {
+        return Err(Error::Other("missing __ctor".to_string()));
+      };
+      scope
+        .push_root(Value::Object(ctor_obj))
+        .expect("push root __ctor function");
+      let create_result = crate::js::window_realm::test_only_create_error(
+        vm,
+        &mut scope,
+        vm_host,
+        &mut hooks,
+        ctor_obj,
+        "boom",
+      );
+      drop(scope);
+      let create_result = match create_result {
+        Ok(_) => Ok(()),
+        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+      };
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      create_result
     };
     create_error_result?;
 
@@ -2477,20 +2473,19 @@ mod tests {
       fn exec_script(&mut self, event_loop: &mut EventLoop<Self>, source: &str) -> Result<Value> {
         use crate::js::window_timers::VmJsEventLoopHooks;
 
-        with_event_loop(event_loop, || {
-          let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self);
-          let (vm_host, window) = self.vm_host_and_window_realm();
-          let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+        let mut hooks = VmJsEventLoopHooks::<Self>::new_with_host(self);
+        hooks.set_event_loop(event_loop);
+        let (vm_host, window) = self.vm_host_and_window_realm();
+        let result = window.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
 
-          if let Some(err) = hooks.finish(window.heap_mut()) {
-            return Err(err);
-          }
+        if let Some(err) = hooks.finish(window.heap_mut()) {
+          return Err(err);
+        }
 
-          match result {
-            Ok(value) => Ok(value),
-            Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-          }
-        })
+        match result {
+          Ok(value) => Ok(value),
+          Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+        }
       }
 
       fn get_global_prop(&mut self, name: &str) -> Value {

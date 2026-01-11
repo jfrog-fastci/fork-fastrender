@@ -6,10 +6,9 @@
 //! Like timers, string handlers are rejected to avoid string-eval and keep behavior deterministic.
 
 use crate::js::event_loop::AnimationFrameId;
-use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::{
-  vm_error_to_event_loop_error, VmJsEventLoopHooks,
+  event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
 use vm_js::{
   Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -147,7 +146,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -169,7 +168,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
 
   let registry = get_raf_registry(scope, global_obj)?;
 
-  let Some(event_loop) = current_event_loop_mut::<Host>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
     return Err(throw_type_error(
       "requestAnimationFrame called without an active EventLoop",
     ));
@@ -190,55 +189,53 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
       };
 
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
       let (vm_host, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
 
-      let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-        let mut vm = vm.push_budget(budget);
-        let tick_result = vm.tick();
+      let mut vm = vm.push_budget(budget);
+      let tick_result = vm.tick();
 
-        let call_result = tick_result.and_then(|_| {
-          let call_result: VmResult<()> = (|| {
-            let mut scope = heap.scope();
-            let callback_value = {
-              let key_s = scope.alloc_string(&id.to_string())?;
-              scope.push_root(Value::String(key_s))?;
-              let key = PropertyKey::from_string(key_s);
-              scope
-                .heap()
-                .object_get_own_data_property_value(registry, &key)?
-                .unwrap_or(Value::Undefined)
-            };
-            // The callback is invoked with the global object as `this` and the timestamp argument.
-            let _ = vm.call_with_host_and_hooks(
-              vm_host,
-              &mut scope,
-              &mut hooks,
-              callback_value,
-              Value::Object(global_obj),
-              &[Value::Number(ts)],
-            )?;
-            Ok(())
-          })();
-          call_result
-        });
-
-        if let Some(err) = hooks.finish(heap) {
-          return Err(err);
-        }
-
+      let call_result = tick_result.and_then(|_| {
+        let call_result: VmResult<()> = (|| {
+          let mut scope = heap.scope();
+          let callback_value = {
+            let key_s = scope.alloc_string(&id.to_string())?;
+            scope.push_root(Value::String(key_s))?;
+            let key = PropertyKey::from_string(key_s);
+            scope
+              .heap()
+              .object_get_own_data_property_value(registry, &key)?
+              .unwrap_or(Value::Undefined)
+          };
+          // The callback is invoked with the global object as `this` and the timestamp argument.
+          let _ = vm.call_with_host_and_hooks(
+            vm_host,
+            &mut scope,
+            &mut hooks,
+            callback_value,
+            Value::Object(global_obj),
+            &[Value::Number(ts)],
+          )?;
+          Ok(())
+        })();
         call_result
-          .map_err(|err| vm_error_to_event_loop_error(heap, err))
-          .map(|_| ())
       });
 
+      let result: crate::error::Result<()> = call_result
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+        .map(|_| ());
+
+      let finish_err = hooks.finish(heap);
       {
-        let heap = window_realm.heap_mut();
         let mut scope = heap.scope();
         // Always clear the registry entry after the callback runs, even if it throws.
         let _ = clear_registry_entry(&mut scope, registry, id);
+      }
+      if let Some(err) = finish_err {
+        return Err(err);
       }
 
       result
@@ -261,7 +258,7 @@ fn cancel_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -277,7 +274,7 @@ fn cancel_animation_frame_native<Host: WindowRealmHost + 'static>(
   let id_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let id = normalize_animation_frame_id(scope.heap_mut(), id_value)?;
 
-  if let Some(event_loop) = current_event_loop_mut::<Host>() {
+  if let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) {
     event_loop.cancel_animation_frame(id);
   }
 
@@ -595,17 +592,30 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
-      with_event_loop(event_loop, || -> RenderResult<()> {
+      let result: RenderResult<()> = (|| {
         let mut scope = heap.scope();
         let raf = get_prop(&mut scope, global, "requestAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
-        vm.call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          raf,
+          Value::Undefined,
+          &[Value::Object(cb)],
+        )
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
-      })
+      })();
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      result
     })?;
 
     assert_eq!(
@@ -669,18 +679,19 @@ mod tests {
 
     // Schedule an animation frame callback that would set `__ran = true` if it ran.
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> RenderResult<()> {
-        host
-          .window
-          .exec_script(
-            "requestAnimationFrame(() => {\n\
-               while (true) {}\n\
-               globalThis.__ran = true;\n\
-             });",
-          )
-          .map_err(|e| Error::Other(e.to_string()))?;
-        Ok(())
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let result = host.window.exec_script_with_hooks(
+        &mut hooks,
+        "requestAnimationFrame(() => {\n\
+           while (true) {}\n\
+           globalThis.__ran = true;\n\
+         });",
+      );
+      if let Some(err) = hooks.finish(host.window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| Error::Other(e.to_string()))
     })?;
 
     assert_eq!(
@@ -723,17 +734,18 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> RenderResult<()> {
-        host
-          .window
-          .exec_script(
-            "globalThis.__raf_called = false;\n\
-             globalThis.__raf_ts = undefined;\n\
-             requestAnimationFrame(function(ts){ globalThis.__raf_called = true; globalThis.__raf_ts = ts; });\n",
-          )
-          .map_err(|e| Error::Other(e.to_string()))?;
-        Ok(())
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let result = host.window.exec_script_with_hooks(
+        &mut hooks,
+        "globalThis.__raf_called = false;\n\
+         globalThis.__raf_ts = undefined;\n\
+         requestAnimationFrame(function(ts){ globalThis.__raf_called = true; globalThis.__raf_ts = ts; });\n",
+      );
+      if let Some(err) = hooks.finish(host.window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| Error::Other(e.to_string()))
     })?;
 
     assert_eq!(
@@ -774,21 +786,41 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
-      with_event_loop(event_loop, || -> RenderResult<()> {
+      let result: RenderResult<()> = (|| {
         let mut scope = heap.scope();
         let raf = get_prop(&mut scope, global, "requestAnimationFrame");
         let cancel = get_prop(&mut scope, global, "cancelAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
         let id = vm
-          .call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
+          .call_with_host_and_hooks(
+            &mut host.host_ctx,
+            &mut scope,
+            &mut hooks,
+            raf,
+            Value::Undefined,
+            &[Value::Object(cb)],
+          )
           .map_err(|e| Error::Other(e.to_string()))?;
-        vm.call_without_host(&mut scope, cancel, Value::Undefined, &[id])
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          cancel,
+          Value::Undefined,
+          &[id],
+        )
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
-      })
+      })();
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      result
     })?;
 
     assert_eq!(
@@ -823,19 +855,32 @@ mod tests {
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
-      with_event_loop(event_loop, || -> RenderResult<()> {
+      let result: RenderResult<()> = (|| {
         let mut scope = heap.scope();
         let raf = get_prop(&mut scope, global, "requestAnimationFrame");
         let job_cb = make_callback(vm, &mut scope, realm, global, "job_cb", cb_job);
         let raf_cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf_enqueue_job);
         set_prop(&mut scope, raf_cb, CALLBACK_JOB_KEY, Value::Object(job_cb));
-        vm.call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(raf_cb)])
+        vm.call_with_host_and_hooks(
+          &mut host.host_ctx,
+          &mut scope,
+          &mut hooks,
+          raf,
+          Value::Undefined,
+          &[Value::Object(raf_cb)],
+        )
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
-      })
+      })();
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      result
     })?;
 
     assert_eq!(
@@ -993,13 +1038,21 @@ mod tests {
     // Schedule a rAF callback that calls the native binding wrapper; the wrapper should be able to
     // retrieve the WebIDL bindings host via `host_from_hooks()` in the rAF execution boundary.
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> RenderResult<()> {
-        host
-          .window
-          .exec_script("requestAnimationFrame(globalThis.__webidl_dispatch);")
-          .map_err(|e| Error::Other(e.to_string()))?;
-        Ok(())
-      })
+      let mut hooks = VmJsEventLoopHooks::<DispatchHost>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+      window_realm.reset_interrupt();
+      let result = window_realm.exec_script_with_host_and_hooks(
+        host_ctx,
+        &mut hooks,
+        "requestAnimationFrame(globalThis.__webidl_dispatch);",
+      );
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| Error::Other(e.to_string()))
     })?;
 
     assert_eq!(

@@ -1,5 +1,4 @@
 use fastrender::error::Error;
-use fastrender::js::runtime::with_event_loop;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   install_window_timers_bindings, EventLoop, RunLimits, VirtualClock, VmJsModuleLoader,
@@ -180,18 +179,16 @@ fn webidl_dispatch_works_in_top_level_script() -> FrResult<()> {
   let mut host = HooksRegressionHost::new(clock.clone())?;
   let mut event_loop = EventLoop::<HooksRegressionHost>::with_clock(clock);
 
-  with_event_loop(&mut event_loop, || -> FrResult<()> {
-    let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
-    let (host_ctx, window) = host.vm_host_and_window_realm();
-    window.reset_interrupt();
-    window
-      .exec_script_with_host_and_hooks(host_ctx, &mut hooks, "__dispatch();")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    if let Some(err) = hooks.finish(window.heap_mut()) {
-      return Err(err);
-    }
-    Ok(())
-  })?;
+  let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
+  hooks.set_event_loop(&mut event_loop);
+  let (host_ctx, window) = host.vm_host_and_window_realm();
+  window.reset_interrupt();
+  window
+    .exec_script_with_host_and_hooks(host_ctx, &mut hooks, "__dispatch();")
+    .map_err(|err| Error::Other(err.to_string()))?;
+  if let Some(err) = hooks.finish(window.heap_mut()) {
+    return Err(err);
+  }
 
   assert_eq!(host.webidl.calls, 1);
   Ok(())
@@ -203,22 +200,20 @@ fn webidl_dispatch_works_in_promise_jobs() -> FrResult<()> {
   let mut host = HooksRegressionHost::new(clock.clone())?;
   let mut event_loop = EventLoop::<HooksRegressionHost>::with_clock(clock);
 
-  with_event_loop(&mut event_loop, || -> FrResult<()> {
-    let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
-    let (host_ctx, window) = host.vm_host_and_window_realm();
-    window.reset_interrupt();
-    window
-      .exec_script_with_host_and_hooks(
-        host_ctx,
-        &mut hooks,
-        "__dispatch(); Promise.resolve().then(() => { __dispatch(); });",
-      )
-      .map_err(|err| Error::Other(err.to_string()))?;
-    if let Some(err) = hooks.finish(window.heap_mut()) {
-      return Err(err);
-    }
-    Ok(())
-  })?;
+  let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
+  hooks.set_event_loop(&mut event_loop);
+  let (host_ctx, window) = host.vm_host_and_window_realm();
+  window.reset_interrupt();
+  window
+    .exec_script_with_host_and_hooks(
+      host_ctx,
+      &mut hooks,
+      "__dispatch(); Promise.resolve().then(() => { __dispatch(); });",
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+  if let Some(err) = hooks.finish(window.heap_mut()) {
+    return Err(err);
+  }
 
   event_loop.perform_microtask_checkpoint(&mut host)?;
   assert_eq!(host.webidl.calls, 2);
@@ -231,22 +226,20 @@ fn webidl_dispatch_works_in_timer_callbacks() -> FrResult<()> {
   let mut host = HooksRegressionHost::new(clock.clone())?;
   let mut event_loop = EventLoop::<HooksRegressionHost>::with_clock(clock.clone());
 
-  with_event_loop(&mut event_loop, || -> FrResult<()> {
-    let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
-    let (host_ctx, window) = host.vm_host_and_window_realm();
-    window.reset_interrupt();
-    window
-      .exec_script_with_host_and_hooks(
-        host_ctx,
-        &mut hooks,
-        "__dispatch(); setTimeout(() => { __dispatch(); }, 0);",
-      )
-      .map_err(|err| Error::Other(err.to_string()))?;
-    if let Some(err) = hooks.finish(window.heap_mut()) {
-      return Err(err);
-    }
-    Ok(())
-  })?;
+  let mut hooks = VmJsEventLoopHooks::<HooksRegressionHost>::new_with_host(&mut host);
+  hooks.set_event_loop(&mut event_loop);
+  let (host_ctx, window) = host.vm_host_and_window_realm();
+  window.reset_interrupt();
+  window
+    .exec_script_with_host_and_hooks(
+      host_ctx,
+      &mut hooks,
+      "__dispatch(); setTimeout(() => { __dispatch(); }, 0);",
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+  if let Some(err) = hooks.finish(window.heap_mut()) {
+    return Err(err);
+  }
 
   // Ensure the timeout is due.
   clock.advance(Duration::from_millis(1));

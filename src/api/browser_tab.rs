@@ -11,12 +11,11 @@ use crate::resource::ResourceFetcher;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DocumentWriteState, DomHost, EventLoop, JsDomEvents, JsExecutionOptions,
-  LoadBlockerKind, LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec,
-  HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptOrchestrator,
-  ScriptType, TaskSource,
+  HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, LoadBlockerKind,
+  LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason,
+  ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec, ScriptOrchestrator, ScriptType,
+  TaskSource,
 };
-use crate::js::runtime::with_event_loop;
 use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::css::encoding::decode_css_bytes_cow;
@@ -180,6 +179,7 @@ pub trait BrowserTabJsExecutor {
     target: EventTargetId,
     event: &Event,
     _document: &mut BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let _ = (target, event);
     Ok(())
@@ -548,6 +548,28 @@ impl BrowserTabHost {
     .map_err(|err| Error::Other(err.to_string()))
   }
 
+  fn dispatch_dom_event_in_event_loop(
+    &mut self,
+    target: EventTargetId,
+    mut event: Event,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<bool> {
+    let dom: &crate::dom2::Document = self.document.dom();
+    let event_invoker = &mut self.event_invoker;
+    if let Some(invoker) = event_invoker
+      .as_any_mut()
+      .and_then(|any| any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>())
+    {
+      return invoker.with_event_loop(event_loop, |invoker| {
+        crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
+          .map_err(|err| Error::Other(err.to_string()))
+      });
+    }
+
+    crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), event_invoker.as_mut())
+      .map_err(|err| Error::Other(err.to_string()))
+  }
+
   fn dispatch_script_event(&mut self, script_node_id: NodeId, type_: &str) -> Result<()> {
     let mut event = Event::new(
       type_,
@@ -568,9 +590,18 @@ impl BrowserTabHost {
     type_: &str,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    // Install the active event loop in TLS so `vm-js` Web APIs like `queueMicrotask`/`setTimeout`
-    // called from `<script>` load/error event listeners can schedule work.
-    with_event_loop(event_loop, || self.dispatch_script_event(script_node_id, type_))
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let _default_not_prevented =
+      self.dispatch_dom_event_in_event_loop(EventTargetId::Node(script_node_id), event, event_loop)?;
+    Ok(())
   }
 
   fn dispatch_script_error_event_in_event_loop(
@@ -2267,7 +2298,7 @@ impl BrowserTabHost {
           event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
             let mut ev = Event::new(type_str, EventInit::default());
             ev.is_trusted = true;
-            with_event_loop(event_loop, || host.dispatch_lifecycle_event(EventTargetId::Node(node_id), ev))?;
+            host.dispatch_lifecycle_event(event_loop, EventTargetId::Node(node_id), ev)?;
             Ok(())
           })?;
         }
@@ -3073,7 +3104,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
         },
       );
       event.is_trusted = true;
-      with_event_loop(event_loop, || self.dispatch_lifecycle_event(EventTargetId::Document, event))?;
+      self.dispatch_lifecycle_event(event_loop, EventTargetId::Document, event)?;
     }
 
     self.document_lifecycle_mut().parsing_completed(event_loop)?;
@@ -3089,6 +3120,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
 
   fn dispatch_lifecycle_event(
     &mut self,
+    event_loop: &mut EventLoop<Self>,
     target: crate::web::events::EventTargetId,
     mut event: crate::web::events::Event,
   ) -> Result<()> {
@@ -3096,12 +3128,14 @@ impl DocumentLifecycleHost for BrowserTabHost {
     let result = match target {
       EventTargetId::Document | EventTargetId::Window => {
         let (executor, document) = (&mut self.executor, &mut self.document);
-        executor.dispatch_lifecycle_event(target, &event, document.as_mut())
+        executor.dispatch_lifecycle_event(target, &event, document.as_mut(), event_loop)
       }
       // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
       // `load`/`error` events queued by the script scheduler).
       EventTargetId::Node(_) | EventTargetId::Opaque(_) => {
-        return self.dispatch_dom_event(target, event).map(|_| ());
+        return self
+          .dispatch_dom_event_in_event_loop(target, event, event_loop)
+          .map(|_| ());
       }
     };
     if let Some(req) = self.executor.take_navigation_request() {
@@ -3150,7 +3184,12 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
 }
 
 impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost {
-  fn dispatch_script_element_event(&mut self, script: NodeId, event_name: &'static str) -> Result<()> {
+  fn dispatch_script_element_event(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+    script: NodeId,
+    event_name: &'static str,
+  ) -> Result<()> {
     // HTML "fire an event" for `<script>` load/error is an element task on the DOM manipulation
     // task source. The task itself performs event dispatch synchronously.
     let mut event = Event::new(
@@ -3162,7 +3201,8 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
       },
     );
     event.is_trusted = true;
-    let _default_not_prevented = self.dispatch_dom_event(EventTargetId::Node(script).normalize(), event)?;
+    let _default_not_prevented = self
+      .dispatch_dom_event_in_event_loop(EventTargetId::Node(script).normalize(), event, event_loop)?;
     Ok(())
   }
 }
@@ -4174,12 +4214,8 @@ impl BrowserTab {
       },
     );
     event.is_trusted = true;
-    // Install the tab's event loop in TLS so JS Web APIs like `setTimeout` can schedule tasks
-    // during event listener invocation.
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    with_event_loop(event_loop, || {
-      host.dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
-    })
+    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
   }
 
   /// Dispatch a trusted `submit` DOM event to `node_id`.
@@ -4195,12 +4231,8 @@ impl BrowserTab {
       },
     );
     event.is_trusted = true;
-    // Install the tab's event loop in TLS so JS Web APIs like `setTimeout` can schedule tasks
-    // during event listener invocation.
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-    with_event_loop(event_loop, || {
-      host.dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
-    })
+    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
   }
 
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
@@ -4711,13 +4743,12 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  use crate::api::FastRender;
-  use crate::js::runtime::with_event_loop;
-  use crate::js::window_timers::VmJsEventLoopHooks;
-  use crate::js::{WindowRealm, WindowRealmConfig};
+  mod tests {
+    use super::*;
+ 
+    use crate::api::FastRender;
+  use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
+  use crate::js::{WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
 
   use std::cell::RefCell;
@@ -5040,14 +5071,24 @@ mod tests {
       }
     }
 
-    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(FailingFetcher);
-    let renderer = crate::FastRender::builder().fetcher(fetcher).build()?;
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
     let document = BrowserDocumentDom2::new(
       renderer,
       r#"<!doctype html>
-        <script type="module" src="https://example.com/m.js"></script>"#,
+        <div id="marker"></div>
+        <script type="module" src="https://example.com/m.js"></script>
+        <script>
+          const marker = document.getElementById('marker');
+          const mod = document.querySelector('script[type="module"]');
+          mod.addEventListener('error', () => {
+            marker.setAttribute('data-state', 'listener');
+            queueMicrotask(() => { marker.setAttribute('data-state', 'microtask'); });
+          });
+        </script>"#,
       RenderOptions::default(),
     )?;
 
@@ -5056,7 +5097,7 @@ mod tests {
 
     let mut host = BrowserTabHost::new(
       document,
-      Box::new(NoopExecutor::default()),
+      Box::new(crate::api::VmJsBrowserTabExecutor::default()),
       TraceHandle::default(),
       js_options,
     )?;
@@ -5067,57 +5108,24 @@ mod tests {
     let mut event_loop = EventLoop::new();
 
     let mut discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
-    assert_eq!(discovered.len(), 1);
-    let (node_id, spec) = discovered.pop().expect("missing discovered module script");
-    assert_eq!(spec.script_type, ScriptType::Module);
-
-    struct MicrotaskInvoker {
-      log: Rc<RefCell<Vec<String>>>,
+    assert_eq!(discovered.len(), 2);
+    // Ensure the classic script that registers the error handler runs before the module script
+    // fetch fails.
+    discovered.sort_by_key(|(_, spec)| matches!(spec.script_type, ScriptType::Module));
+    for (node_id, spec) in discovered.drain(..) {
+      let base_url_at_discovery = spec.base_url.clone();
+      host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
     }
-
-    impl EventListenerInvoker for MicrotaskInvoker {
-      fn invoke(
-        &mut self,
-        _listener_id: ListenerId,
-        event: &mut Event,
-      ) -> std::result::Result<(), DomError> {
-        self.log.borrow_mut().push("listener".to_string());
-        assert_eq!(event.type_, "error");
-
-        let Some(event_loop) = crate::js::runtime::current_event_loop_mut::<BrowserTabHost>() else {
-          self.log.borrow_mut().push("missing_event_loop".to_string());
-          return Ok(());
-        };
-
-        let log_for_task = Rc::clone(&self.log);
-        event_loop
-          .queue_microtask(move |_host, _event_loop| {
-            log_for_task.borrow_mut().push("microtask".to_string());
-            Ok(())
-          })
-          .map_err(|err| DomError::new(err.to_string()))?;
-        Ok(())
-      }
-    }
-
-    host.set_event_invoker(Box::new(MicrotaskInvoker {
-      log: Rc::clone(&log),
-    }));
-    host.dom_mut().events_mut().add_event_listener(
-      EventTargetId::Node(node_id),
-      "error",
-      ListenerId::new(1),
-      AddEventListenerOptions::default(),
-    );
-
-    let base_url_at_discovery = spec.base_url.clone();
-    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
+    let marker = host
+      .dom()
+      .get_element_by_id("marker")
+      .expect("expected marker element to exist");
     assert_eq!(
-      &*log.borrow(),
-      &["listener".to_string(), "microtask".to_string()],
-      "expected error listener to see a current event loop and schedule microtasks"
+      host.dom().get_attribute(marker, "data-state").expect("get data-state"),
+      Some("microtask"),
+      "expected module script error event listener to run with an active EventLoop (so queueMicrotask works)"
     );
     Ok(())
   }
@@ -5373,17 +5381,24 @@ mod tests {
       script_text: &str,
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
-      _document: &mut BrowserDocumentDom2,
+      document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
       self
         .log
         .borrow_mut()
         .push(format!("script:{script_text}"));
-      let result = with_event_loop(event_loop, || self.realm.exec_script(script_text));
-      result
-        .map(|_value| ())
-        .map_err(|err| Error::Other(err.to_string()))
+      let host_ctx: &mut dyn VmHost = document;
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+      hooks.set_event_loop(event_loop);
+      self
+        .realm
+        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, script_text)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(self.realm.heap_mut()) {
+        return Err(err);
+      }
+      Ok(())
     }
 
     fn execute_module_script(
@@ -5395,6 +5410,10 @@ mod tests {
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
       self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+    }
+
+    fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
+      Some(&mut self.realm)
     }
   }
 
@@ -6959,7 +6978,7 @@ mod tests {
     _vm: &mut Vm,
     scope: &mut vm_js::Scope<'_>,
     _host: &mut dyn VmHost,
-    _hooks: &mut dyn VmHostHooks,
+    hooks: &mut dyn VmHostHooks,
     callee: GcObject,
     _this: Value,
     _args: &[Value],
@@ -6977,7 +6996,7 @@ mod tests {
       .cloned()
       .ok_or(VmError::TypeError("__queueMicrotaskTest hook id not registered"))?;
 
-    let Some(event_loop) = crate::js::runtime::current_event_loop_mut::<BrowserTabHost>() else {
+    let Some(event_loop) = event_loop_mut_from_hooks::<BrowserTabHost>(hooks) else {
       return Err(VmError::TypeError(
         "__queueMicrotaskTest called without an active EventLoop",
       ));
@@ -7108,29 +7127,25 @@ mod tests {
 
     // Add a JS click handler that requires a real `BrowserDocumentDom2` VmHost context.
     {
-      let (host, event_loop) = (&mut tab.host, &mut tab.event_loop);
-      with_event_loop(event_loop, || {
-        let (document, executor) = (&mut host.document, &mut host.executor);
-        let realm = executor
-          .window_realm_mut()
-          .expect("vm-js executor should expose a WindowRealm");
-        let host_ctx: &mut dyn VmHost = document.as_mut();
-        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
-        realm
-          .exec_script_with_host_and_hooks(
-            host_ctx,
-            &mut hooks,
-            r#"
-            globalThis.__host_ok = false;
-            window.addEventListener('click', () => { globalThis.__host_ok = recordHost(); });
-            "#,
-          )
-          .map_err(|err| Error::Other(err.to_string()))?;
-        if let Some(err) = hooks.finish(realm.heap_mut()) {
-          return Err(err);
-        }
-        Ok(())
-      })?;
+      let host = &mut tab.host;
+      let event_loop = &mut tab.event_loop;
+
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (host_ctx, realm) = host.vm_host_and_window_realm();
+      realm
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+          globalThis.__host_ok = false;
+          window.addEventListener('click', () => { globalThis.__host_ok = recordHost(); });
+          "#,
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
     }
 
     // Host dispatch: should invoke the JS listener with a real vm-js `VmHost`.
@@ -7215,17 +7230,15 @@ mod tests {
     ) -> Result<()> {
       self.ensure_realm()?;
       let realm = self.realm.as_mut().expect("realm should be initialized");
-      with_event_loop(event_loop, || {
-        let host_ctx: &mut dyn VmHost = document;
-        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
-        realm
-          .exec_script_with_host_and_hooks(host_ctx, &mut hooks, script_text)
-          .map_err(|err| Error::Other(err.to_string()))?;
-        if let Some(err) = hooks.finish(realm.heap_mut()) {
-          return Err(err);
-        }
-        Ok(())
-      })?;
+      let host_ctx: &mut dyn VmHost = document;
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+      hooks.set_event_loop(event_loop);
+      realm
+        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, script_text)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
       Ok(())
     }
 
@@ -7248,6 +7261,7 @@ mod tests {
       target: EventTargetId,
       event: &Event,
       document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
       self.ensure_realm()?;
       let realm = self.realm.as_mut().expect("realm should be initialized");
@@ -7271,6 +7285,7 @@ mod tests {
 
       let host_ctx: &mut dyn VmHost = document;
       let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+      hooks.set_event_loop(event_loop);
       realm
         .exec_script_with_host_and_hooks(host_ctx, &mut hooks, &source)
         .map_err(|err| Error::Other(err.to_string()))?;
@@ -7278,6 +7293,10 @@ mod tests {
         return Err(err);
       }
       Ok(())
+    }
+
+    fn window_realm_mut(&mut self) -> Option<&mut crate::js::WindowRealm> {
+      self.realm.as_mut()
     }
   }
 
@@ -7298,17 +7317,15 @@ mod tests {
                                event_loop: &mut EventLoop<BrowserTabHost>,
                                realm: &mut WindowRealm|
      -> Result<String> {
-      let value = with_event_loop(event_loop, || {
-        let host_ctx: &mut dyn VmHost = host.document.as_mut();
-        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
-        let value = realm
-          .exec_script_with_host_and_hooks(host_ctx, &mut hooks, "document.readyState")
-          .map_err(|err| Error::Other(err.to_string()))?;
-        if let Some(err) = hooks.finish(realm.heap_mut()) {
-          return Err(err);
-        }
-        Ok(value)
-      })?;
+      let host_ctx: &mut dyn VmHost = host.document.as_mut();
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+      hooks.set_event_loop(event_loop);
+      let value = realm
+        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, "document.readyState")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
       Ok(value_to_string(realm, value))
     };
 
@@ -7675,17 +7692,15 @@ html, body { margin: 0; padding: 0; }
       WindowRealm::new(WindowRealmConfig::new("https://example.com/")).map_err(|err| Error::Other(err.to_string()))?;
 
     let (host, event_loop) = (&mut tab.host, &mut tab.event_loop);
-    with_event_loop(event_loop, || {
-      let host_ctx: &mut dyn VmHost = host.document.as_mut();
-      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
-      realm
-        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, source)
-        .map_err(|err| Error::Other(err.to_string()))?;
-      if let Some(err) = hooks.finish(realm.heap_mut()) {
-        return Err(err);
-      }
-      Ok(())
-    })?;
+    let host_ctx: &mut dyn VmHost = host.document.as_mut();
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+    hooks.set_event_loop(event_loop);
+    realm
+      .exec_script_with_host_and_hooks(host_ctx, &mut hooks, source)
+      .map_err(|err| Error::Other(err.to_string()))?;
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
     Ok(())
   }
 

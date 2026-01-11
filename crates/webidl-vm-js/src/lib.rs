@@ -10,7 +10,7 @@
 //! normal workspace member (and carry embedder-specific adjustments) without depending on the
 //! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::ptr::NonNull;
 use vm_js::{
   ExecutionContext, GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime,
@@ -197,6 +197,18 @@ pub struct VmJsHostHooksPayload {
   /// Storing this pointer enables small, test-only native hooks (like the offline WPT runner's
   /// import map registration shim) to reach host state without relying on global variables.
   embedder_state: Option<NonNull<dyn Any + 'static>>,
+  /// Erased pointer to per-call dynamic context owned by the embedding (FastRender's `EventLoop`).
+  ///
+  /// This is intentionally stored as an erased pointer so `webidl-vm-js` does not need to depend on
+  /// the embedder's event loop type.
+  ///
+  /// Safety invariants are enforced by the typed accessors:
+  /// - [`VmJsHostHooksPayload::set_event_loop`] stores a `&mut T` as an erased pointer plus
+  ///   `TypeId::of::<T>()`.
+  /// - [`VmJsHostHooksPayload::event_loop_mut`] validates the expected `T` before re-materializing a
+  ///   `&mut T`.
+  event_loop_ptr: Option<NonNull<()>>,
+  event_loop_type: Option<TypeId>,
 }
 
 impl VmJsHostHooksPayload {
@@ -263,6 +275,43 @@ impl VmJsHostHooksPayload {
   #[inline]
   pub fn webidl_bindings_host_slot_mut(&mut self) -> &mut WebIdlBindingsHostSlot {
     &mut self.webidl_bindings_host
+  }
+
+  /// Install a mutable pointer to an embedder-owned event loop for the duration of a single JS
+  /// call boundary.
+  ///
+  /// This is used by FastRender to expose the currently active `EventLoop<Host>` to Web APIs like
+  /// `queueMicrotask`, `setTimeout`, and Promise-job enqueueing via `VmHostHooks`.
+  #[inline]
+  pub fn set_event_loop<T: 'static>(&mut self, event_loop: &mut T) {
+    self.event_loop_ptr = Some(NonNull::from(event_loop).cast());
+    self.event_loop_type = Some(TypeId::of::<T>());
+  }
+
+  /// Clear the installed event loop pointer.
+  #[inline]
+  pub fn clear_event_loop(&mut self) {
+    self.event_loop_ptr = None;
+    self.event_loop_type = None;
+  }
+
+  /// Returns the installed event loop pointer, if it exists and matches `T`.
+  #[inline]
+  pub fn event_loop_mut<T: 'static>(&mut self) -> Option<&mut T> {
+    let ptr = self.event_loop_ptr?;
+    let ty = self.event_loop_type?;
+    if ty != TypeId::of::<T>() {
+      return None;
+    }
+    // SAFETY: `ptr` was produced by `set_event_loop::<T>` and is only expected to be used within
+    // the dynamic extent of that JS call boundary.
+    let mut ptr = ptr.cast::<T>();
+    Some(unsafe { ptr.as_mut() })
+  }
+
+  #[inline]
+  pub fn has_event_loop(&self) -> bool {
+    self.event_loop_ptr.is_some()
   }
 }
 

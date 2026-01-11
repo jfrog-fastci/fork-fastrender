@@ -602,6 +602,7 @@ where
 
   fn dispatch_lifecycle_event(
     &mut self,
+    _event_loop: &mut EventLoop<Self>,
     target: crate::web::events::EventTargetId,
     mut event: crate::web::events::Event,
   ) -> Result<()> {

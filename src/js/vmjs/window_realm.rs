@@ -12,11 +12,11 @@ use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
 use crate::js::{
-  runtime, CurrentScriptStateHandle, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource,
+  CurrentScriptStateHandle, DocumentHostState, EventLoop, ScriptOrchestrator, ScriptType, TaskSource,
   WindowHostState,
 };
 use crate::js::host_document::ActiveEventGuard;
-use crate::js::window_timers::VmJsEventLoopHooks;
+use crate::js::window_timers::{event_loop_mut_from_hooks, hooks_have_event_loop, VmJsEventLoopHooks};
 use crate::js::JsExecutionOptions;
 use crate::render_control;
 use crate::resource::{
@@ -4040,7 +4040,7 @@ fn queue_mutation_observer_microtask(
   hooks: &mut dyn VmHostHooks,
   document_obj: GcObject,
 ) -> Result<(), VmError> {
-  if !crate::js::runtime::has_current_event_loop() {
+  if !hooks_have_event_loop(hooks) {
     return Ok(());
   }
 
@@ -6496,6 +6496,14 @@ pub(crate) struct WindowRealmDomEventListenerInvoker<Host: WindowRealmHost + 'st
   /// This is used by host-driven DOM event dispatch paths that only have access to a `VmHost`
   /// context and therefore cannot populate the WebIDL slot via `WindowRealmHost`.
   webidl_bindings_host: *mut Option<NonNull<dyn WebIdlBindingsHost>>,
+  /// Optional active event loop for this dispatch.
+  ///
+  /// Host-driven DOM event dispatch (`BrowserTabHost::dispatch_dom_event_in_event_loop`) needs to
+  /// thread a `&mut EventLoop<Host>` through `web_events::dispatch_event`, which only provides
+  /// `&mut dyn EventListenerInvoker`. The embedding installs the event loop pointer via
+  /// [`WindowRealmDomEventListenerInvoker::with_event_loop`], and `invoke` forwards it into the
+  /// `VmJsEventLoopHooks` payload so Web APIs like `queueMicrotask` can enqueue work.
+  event_loop: Option<NonNull<EventLoop<Host>>>,
   _marker: PhantomData<fn() -> Host>,
 }
 
@@ -6509,8 +6517,36 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       realm,
       vm_host,
       webidl_bindings_host,
+      event_loop: None,
       _marker: PhantomData,
     }
+  }
+
+  pub(crate) fn with_event_loop<R>(
+    &mut self,
+    event_loop: &mut EventLoop<Host>,
+    f: impl FnOnce(&mut Self) -> R,
+  ) -> R {
+    struct EventLoopSwapGuard<'a, Host: WindowRealmHost + 'static> {
+      invoker: &'a mut WindowRealmDomEventListenerInvoker<Host>,
+      prev: Option<NonNull<EventLoop<Host>>>,
+    }
+
+    impl<Host: WindowRealmHost + 'static> Drop for EventLoopSwapGuard<'_, Host> {
+      fn drop(&mut self) {
+        self.invoker.event_loop = self.prev;
+      }
+    }
+
+    let prev = self.event_loop;
+    self.event_loop = Some(NonNull::from(event_loop));
+    let mut guard = EventLoopSwapGuard { invoker: self, prev };
+    f(&mut *guard.invoker)
+  }
+
+  fn current_event_loop_mut(&mut self) -> Option<&mut EventLoop<Host>> {
+    let mut ptr = self.event_loop?;
+    Some(unsafe { ptr.as_mut() })
   }
 
   fn js_value_for_target(
@@ -6695,6 +6731,10 @@ fn sync_rust_event_from_js_event_object(
 }
 
 impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for WindowRealmDomEventListenerInvoker<Host> {
+  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    Some(self)
+  }
+
   fn invoke(
     &mut self,
     listener_id: web_events::ListenerId,
@@ -6728,6 +6768,9 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
       realm,
       webidl_bindings_host,
     );
+    if let Some(event_loop) = self.current_event_loop_mut() {
+      host_hooks.set_event_loop(event_loop);
+    }
 
     // Host-driven dispatch is a "new turn" of JS execution: clear any prior termination state and
     // install the latest per-run budgets from `JsExecutionOptions` so hostile listeners cannot hang
@@ -9820,8 +9863,12 @@ fn execute_dynamic_inline_script(
   }
 }
 
-fn schedule_dynamic_script_via_browser_tab_host(script: NodeId, spec: crate::js::ScriptElementSpec) -> bool {
-  let Some(event_loop) = runtime::current_event_loop_mut::<crate::api::BrowserTabHost>() else {
+fn schedule_dynamic_script_via_browser_tab_host(
+  hooks: &mut dyn VmHostHooks,
+  script: NodeId,
+  spec: crate::js::ScriptElementSpec,
+) -> bool {
+  let Some(event_loop) = event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks) else {
     return false;
   };
   let base_url_at_discovery = spec.base_url.clone();
@@ -9936,8 +9983,8 @@ fn prepare_dynamic_script_element(
   }
 
   // Prefer scheduling via the BrowserTabHost pipeline when available.
-  if runtime::current_event_loop_mut::<crate::api::BrowserTabHost>().is_some() {
-    if schedule_dynamic_script_via_browser_tab_host(script, spec) {
+  if event_loop_mut_from_hooks::<crate::api::BrowserTabHost>(hooks).is_some() {
+    if schedule_dynamic_script_via_browser_tab_host(hooks, script, spec) {
       // Mark started only if we successfully queued the scheduling task.
       // SAFETY: `dom_ptr` points at the active `dom2::Document` for this JS call turn and is only used
       // within this function call.
@@ -9949,7 +9996,7 @@ fn prepare_dynamic_script_element(
 
   // When running inside the standalone `WindowHostState` harness, queue classic scripts as tasks.
   // Module scripts/import maps are currently ignored by this path (leave eligible for later support).
-  if runtime::current_event_loop_mut::<WindowHostState>().is_some() {
+  if event_loop_mut_from_hooks::<WindowHostState>(hooks).is_some() {
     let crate::js::ScriptElementSpec {
       src,
       src_attr_present,
@@ -9984,6 +10031,7 @@ fn prepare_dynamic_script_element(
         FetchDestination::Script
       };
       queue_dynamic_script_task_external(
+        hooks,
         script,
         url,
         destination,
@@ -9996,7 +10044,7 @@ fn prepare_dynamic_script_element(
       .is_ok()
     } else {
       let source_name = format!("<script {}>", script.index());
-      queue_dynamic_script_task_inline(script, source_name, inline_text, nomodule_attr).is_ok()
+      queue_dynamic_script_task_inline(hooks, script, source_name, inline_text, nomodule_attr).is_ok()
     };
 
     if scheduled {
@@ -10132,12 +10180,13 @@ fn node_root_is_shadow_root(dom: &dom2::Document, mut node: NodeId) -> bool {
 }
 
 fn queue_dynamic_script_task_inline(
+  hooks: &mut dyn VmHostHooks,
   script: NodeId,
   source_name: String,
   source_text: String,
   nomodule_attr: bool,
 ) -> Result<(), VmError> {
-  let Some(event_loop) = runtime::current_event_loop_mut::<WindowHostState>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) else {
     return Ok(());
   };
 
@@ -10174,6 +10223,7 @@ fn queue_dynamic_script_task_inline(
 }
 
 fn queue_dynamic_script_task_external(
+  hooks: &mut dyn VmHostHooks,
   script: NodeId,
   url: String,
   destination: FetchDestination,
@@ -10183,7 +10233,7 @@ fn queue_dynamic_script_task_external(
   integrity_attr_present: bool,
   integrity: Option<String>,
 ) -> Result<(), VmError> {
-  let Some(event_loop) = runtime::current_event_loop_mut::<WindowHostState>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) else {
     return Ok(());
   };
 
@@ -10290,7 +10340,12 @@ fn queue_dynamic_script_task_external(
   Ok(())
 }
 
-fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &Option<String>) -> Result<(), VmError> {
+fn prepare_dynamic_script(
+  dom: &mut dom2::Document,
+  script: NodeId,
+  base_url: &Option<String>,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<(), VmError> {
   if !is_html_script_element(dom, script) {
     return Ok(());
   }
@@ -10326,7 +10381,7 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
   // types used by some test harnesses), we cannot schedule the script task/fetch. In that case,
   // treat this as a no-op and do **not** set "already started" so another integration layer can
   // prepare the script later.
-  if runtime::current_event_loop_mut::<WindowHostState>().is_none() {
+  if event_loop_mut_from_hooks::<WindowHostState>(hooks).is_none() {
     return Ok(());
   }
 
@@ -10359,6 +10414,7 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
         FetchDestination::Script
       };
       return queue_dynamic_script_task_external(
+        hooks,
         script,
         url,
         destination,
@@ -10375,7 +10431,7 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
   // Inline script: queue as a task to keep DOM mutation calls non-reentrant.
   let source_name = format!("<script {}>", script.index());
   let source_text = spec.inline_text;
-  queue_dynamic_script_task_inline(script, source_name, source_text, spec.nomodule_attr)
+  queue_dynamic_script_task_inline(hooks, script, source_name, source_text, spec.nomodule_attr)
 }
 
 fn collect_html_script_elements(dom: &dom2::Document, node: NodeId, out: &mut Vec<NodeId>) {
@@ -10391,11 +10447,12 @@ fn prepare_dynamic_scripts_on_subtree_insertion(
   dom: &mut dom2::Document,
   inserted_root: NodeId,
   base_url: &Option<String>,
+  hooks: &mut dyn VmHostHooks,
 ) -> Result<(), VmError> {
   let mut scripts = Vec::new();
   collect_html_script_elements(dom, inserted_root, &mut scripts);
   for script in scripts {
-    prepare_dynamic_script(dom, script, base_url)?;
+    prepare_dynamic_script(dom, script, base_url, hooks)?;
   }
   Ok(())
 }

@@ -1,9 +1,7 @@
-use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_timers::{
-  vm_error_to_event_loop_error, VmJsEventLoopHooks, QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
-  QUEUE_MICROTASK_STRING_HANDLER_ERROR, SET_INTERVAL_NOT_CALLABLE_ERROR,
-  SET_INTERVAL_STRING_HANDLER_ERROR, SET_TIMEOUT_NOT_CALLABLE_ERROR,
-  SET_TIMEOUT_STRING_HANDLER_ERROR,
+  event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
+  QUEUE_MICROTASK_NOT_CALLABLE_ERROR, QUEUE_MICROTASK_STRING_HANDLER_ERROR, SET_INTERVAL_NOT_CALLABLE_ERROR,
+  SET_INTERVAL_STRING_HANDLER_ERROR, SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
 use std::cell::{Cell, RefCell};
@@ -477,7 +475,12 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(id)
   }
 
-  fn set_timeout_impl(&mut self, scope: &mut Scope<'_>, args: &[Value]) -> Result<Value, VmError> {
+  fn set_timeout_impl(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     let handler = args.get(0).copied().unwrap_or(Value::Undefined);
     if matches!(handler, Value::String(_)) {
       return Err(VmError::TypeError(SET_TIMEOUT_STRING_HANDLER_ERROR));
@@ -487,10 +490,11 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     }
     let delay_ms = normalize_delay_ms(args.get(1).copied().unwrap_or(Value::Number(0.0)));
 
-    let Some(event_loop) = current_event_loop_mut::<Host>() else {
-      return Err(VmError::TypeError(
-        "setTimeout called without an active EventLoop",
-      ));
+    let Some(event_loop) = vm
+      .active_host_hooks_mut()
+      .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
+    else {
+      return Err(VmError::TypeError("setTimeout called without an active EventLoop"));
     };
 
     // Keep the callback + extra args alive until the timer fires (or is cleared). Ensure roots are
@@ -539,6 +543,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         let arg_roots = entry.args;
 
         let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        hooks.set_event_loop(event_loop);
         let (vm_host, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
         let budget = window_realm.vm_budget_now();
@@ -557,26 +562,23 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
           }
         }
 
-        let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-          let mut vm = vm.push_budget(budget);
-          let tick_result = vm.tick();
-
-          let call_result = tick_result.and_then(|_| {
-            let mut scope = heap.scope();
-            vm.call_with_host_and_hooks(
-              vm_host,
-              &mut scope,
-              &mut hooks,
-              callback,
-              Value::Object(global),
-              &args,
-            )
-            .map(|_| ())
-          });
-          call_result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
+        let mut vm = vm.push_budget(budget);
+        let tick_result = vm.tick();
+        let call_result = tick_result.and_then(|_| {
+          let mut scope = heap.scope();
+          vm.call_with_host_and_hooks(
+            vm_host,
+            &mut scope,
+            &mut hooks,
+            callback,
+            Value::Object(global),
+            &args,
+          )
+          .map(|_| ())
         });
+        let result: crate::error::Result<()> = call_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ());
 
         let finish_err = hooks.finish(&mut *heap);
 
@@ -605,7 +607,12 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(Value::Number(id as f64))
   }
 
-  fn set_interval_impl(&mut self, scope: &mut Scope<'_>, args: &[Value]) -> Result<Value, VmError> {
+  fn set_interval_impl(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     let handler = args.get(0).copied().unwrap_or(Value::Undefined);
     if matches!(handler, Value::String(_)) {
       return Err(VmError::TypeError(SET_INTERVAL_STRING_HANDLER_ERROR));
@@ -615,10 +622,11 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     }
     let interval_ms = normalize_delay_ms(args.get(1).copied().unwrap_or(Value::Number(0.0)));
 
-    let Some(event_loop) = current_event_loop_mut::<Host>() else {
-      return Err(VmError::TypeError(
-        "setInterval called without an active EventLoop",
-      ));
+    let Some(event_loop) = vm
+      .active_host_hooks_mut()
+      .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
+    else {
+      return Err(VmError::TypeError("setInterval called without an active EventLoop"));
     };
 
     let callback_root = scope.heap_mut().add_root(handler)?;
@@ -663,6 +671,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
           };
 
           let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+          hooks.set_event_loop(event_loop);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
@@ -681,26 +690,24 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
             }
           }
 
-          let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-            let mut vm = vm.push_budget(budget);
-            let tick_result = vm.tick();
+          let mut vm = vm.push_budget(budget);
+          let tick_result = vm.tick();
 
-            let call_result = tick_result.and_then(|_| {
-              let mut scope = heap.scope();
-              vm.call_with_host_and_hooks(
-                vm_host,
-                &mut scope,
-                &mut hooks,
-                callback,
-                Value::Object(global),
-                &args,
-              )
-              .map(|_| ())
-            });
-            call_result
-              .map_err(|err| vm_error_to_event_loop_error(heap, err))
-              .map(|_| ())
+          let call_result = tick_result.and_then(|_| {
+            let mut scope = heap.scope();
+            vm.call_with_host_and_hooks(
+              vm_host,
+              &mut scope,
+              &mut hooks,
+              callback,
+              Value::Object(global),
+              &args,
+            )
+            .map(|_| ())
           });
+          let result: crate::error::Result<()> = call_result
+            .map_err(|err| vm_error_to_event_loop_error(heap, err))
+            .map(|_| ());
 
           let finish_err = hooks.finish(&mut *heap);
           if let Some(err) = finish_err {
@@ -745,11 +752,15 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
   fn clear_timer_impl(
     &mut self,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     id: TimerId,
     is_interval: bool,
   ) -> Result<Value, VmError> {
-    let Some(event_loop) = current_event_loop_mut::<Host>() else {
+    let Some(event_loop) = vm
+      .active_host_hooks_mut()
+      .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
+    else {
       return Err(VmError::TypeError(if is_interval {
         "clearInterval called without an active EventLoop"
       } else {
@@ -775,6 +786,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
   fn queue_microtask_impl(
     &mut self,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     callback: Value,
   ) -> Result<Value, VmError> {
@@ -785,7 +797,10 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       return Err(VmError::TypeError(QUEUE_MICROTASK_NOT_CALLABLE_ERROR));
     }
 
-    let Some(event_loop) = current_event_loop_mut::<Host>() else {
+    let Some(event_loop) = vm
+      .active_host_hooks_mut()
+      .and_then(|hooks| event_loop_mut_from_hooks::<Host>(hooks))
+    else {
       return Err(VmError::TypeError(
         "queueMicrotask called without an active EventLoop",
       ));
@@ -795,32 +810,33 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     event_loop
       .queue_microtask(move |host, event_loop| {
         let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        hooks.set_event_loop(event_loop);
         let (vm_host, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
         let budget = window_realm.vm_budget_now();
 
+        let global = window_realm.global_object();
+
         let (vm, heap) = window_realm.vm_and_heap_mut();
         let value = heap.get_root(root).unwrap_or(Value::Undefined);
 
-        let result: crate::error::Result<()> = with_event_loop(event_loop, || {
-          let mut vm = vm.push_budget(budget);
-          let tick_result = vm.tick();
-          let call_result = tick_result.and_then(|_| {
-            let mut scope = heap.scope();
-            vm.call_with_host_and_hooks(
-              vm_host,
-              &mut scope,
-              &mut hooks,
-              value,
-              Value::Undefined,
-              &[],
-            )
-            .map(|_| ())
-          });
-          call_result
-            .map_err(|err| vm_error_to_event_loop_error(heap, err))
-            .map(|_| ())
+        let mut vm = vm.push_budget(budget);
+        let tick_result = vm.tick();
+        let call_result = tick_result.and_then(|_| {
+          let mut scope = heap.scope();
+          vm.call_with_host_and_hooks(
+            vm_host,
+            &mut scope,
+            &mut hooks,
+            value,
+            Value::Object(global),
+            &[],
+          )
+          .map(|_| ())
         });
+        let result: crate::error::Result<()> = call_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ());
 
         let finish_err = hooks.finish(&mut *heap);
         heap.remove_root(root);
@@ -1464,17 +1480,17 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
       ("Window", "alert", _) => Ok(Value::Undefined),
       ("Window", "queueMicrotask", 0) => {
         let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-        self.queue_microtask_impl(scope, callback)
+        self.queue_microtask_impl(vm, scope, callback)
       }
-      ("Window", "setTimeout", 0) => self.set_timeout_impl(scope, args),
-      ("Window", "setInterval", 0) => self.set_interval_impl(scope, args),
+      ("Window", "setTimeout", 0) => self.set_timeout_impl(vm, scope, args),
+      ("Window", "setInterval", 0) => self.set_interval_impl(vm, scope, args),
       ("Window", "clearTimeout", 0) => {
         let id = normalize_timer_id(args.get(0).copied().unwrap_or(Value::Number(0.0)));
-        self.clear_timer_impl(scope, id, false)
+        self.clear_timer_impl(vm, scope, id, false)
       }
       ("Window", "clearInterval", 0) => {
         let id = normalize_timer_id(args.get(0).copied().unwrap_or(Value::Number(0.0)));
-        self.clear_timer_impl(scope, id, true)
+        self.clear_timer_impl(vm, scope, id, true)
       }
 
       _ => Err(VmError::Unimplemented(

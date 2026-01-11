@@ -12,10 +12,9 @@
 //! executing offline fixtures.
 
 use crate::js::event_loop::TaskSource;
-use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::resolve_url;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
-use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use crate::resource::web_fetch::WebFetchLimits;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
@@ -804,7 +803,6 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
   if body.as_ref().is_some_and(|b| b.len() > limits.max_request_body_bytes) {
     return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
   }
-
   // Snapshot request data and transition to "in-flight" under the env lock.
   let (request_seq, request, async_flag, credentials_mode) = with_env_state_mut(env_id, |state| {
     let xhr = state
@@ -918,7 +916,7 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     return Ok(Value::Undefined);
   }
 
-  let Some(event_loop) = current_event_loop_mut::<Host>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
     return Err(VmError::TypeError(
       "XMLHttpRequest.send called without an active EventLoop",
     ));
@@ -1079,14 +1077,14 @@ fn xhr_abort_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
 
-  let Some(event_loop) = current_event_loop_mut::<Host>() else {
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
     return Err(VmError::TypeError(
       "XMLHttpRequest.abort called without an active EventLoop",
     ));
@@ -1437,64 +1435,63 @@ fn dispatch_xhr_events<Host: WindowRealmHost + 'static>(
   finalize: bool,
 ) -> crate::error::Result<()> {
   let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+  hooks.set_event_loop(event_loop);
   let (vm_host, window_realm) = host.vm_host_and_window_realm();
   window_realm.reset_interrupt();
   let budget = window_realm.vm_budget_now();
   let (vm, heap) = window_realm.vm_and_heap_mut();
 
-  with_event_loop(event_loop, || {
-    let mut vm = vm.push_budget(budget);
-    let tick_result = vm.tick();
-    let call_result: Result<(), VmError> = tick_result.and_then(|_| {
-      // Take the keepalive root (for `send()`/`abort()` completion) up-front so it is always
-      // released, even if dispatch throws.
-      let (xhr_value, root_to_remove) = with_env_state_mut(env_id, |state| {
-        let xhr = state
-          .xhrs
-          .get_mut(&xhr_id)
-          .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-        if xhr.request_seq != request_seq {
-          return Ok((Value::Undefined, None));
-        }
-        let root = if finalize { xhr.root.take() } else { None };
-        let value = root
-          .and_then(|id| heap.get_root(id))
-          .unwrap_or(Value::Undefined);
-        Ok((value, root))
-      })?;
+  let mut vm = vm.push_budget(budget);
+  let tick_result = vm.tick();
+  let call_result: Result<(), VmError> = tick_result.and_then(|_| {
+    // Take the keepalive root (for `send()`/`abort()` completion) up-front so it is always
+    // released, even if dispatch throws.
+    let (xhr_value, root_to_remove) = with_env_state_mut(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      if xhr.request_seq != request_seq {
+        return Ok((Value::Undefined, None));
+      }
+      let root = if finalize { xhr.root.take() } else { None };
+      let value = root
+        .and_then(|id| heap.get_root(id))
+        .unwrap_or(Value::Undefined);
+      Ok((value, root))
+    })?;
 
-      let result = (|| {
-        let Value::Object(xhr_obj) = xhr_value else {
-          return Ok(());
-        };
+    let result = (|| {
+      let Value::Object(xhr_obj) = xhr_value else {
+        return Ok(());
+      };
 
-        // Root receiver during dispatch: the callbacks can allocate/GC.
-        let mut scope = heap.scope();
-        scope.push_root(Value::Object(xhr_obj))?;
+      // Root receiver during dispatch: the callbacks can allocate/GC.
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(xhr_obj))?;
 
-        for &event_type in events {
-          dispatch_xhr_event(&mut vm, &mut scope, vm_host, &mut hooks, xhr_obj, event_type)?;
-        }
-
-        Ok(())
-      })();
-
-      if let Some(root) = root_to_remove {
-        heap.remove_root(root);
+      for &event_type in events {
+        dispatch_xhr_event(&mut vm, &mut scope, vm_host, &mut hooks, xhr_obj, event_type)?;
       }
 
-      result
-    });
+      Ok(())
+    })();
 
-    let finish_err = hooks.finish(heap);
-    if let Some(err) = finish_err {
-      return Err(err);
+    if let Some(root) = root_to_remove {
+      heap.remove_root(root);
     }
 
-    call_result
-      .map_err(|err| vm_error_to_event_loop_error(heap, err))
-      .map(|_| ())
-  })
+    result
+  });
+
+  let finish_err = hooks.finish(heap);
+  if let Some(err) = finish_err {
+    return Err(err);
+  }
+
+  call_result
+    .map_err(|err| vm_error_to_event_loop_error(heap, err))
+    .map(|_| ())
 }
 
 /// Install XHR bindings onto the window global object.
@@ -1897,21 +1894,21 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> crate::Result<()> {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (_, window) = host.vm_host_and_window_realm();
-        window.reset_interrupt();
-        let result = window.exec_script_with_hooks(
-          &mut hooks,
-          "globalThis.__t = typeof XMLHttpRequest;\n\
-           globalThis.__u = XMLHttpRequest.UNSENT;\n\
-           globalThis.__d = XMLHttpRequest.DONE;",
-        );
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__t = typeof XMLHttpRequest;\n\
+         globalThis.__u = XMLHttpRequest.UNSENT;\n\
+         globalThis.__d = XMLHttpRequest.DONE;",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -1934,24 +1931,24 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> crate::Result<()> {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (_, window) = host.vm_host_and_window_realm();
-        window.reset_interrupt();
-        let result = window.exec_script_with_hooks(
-          &mut hooks,
-          "globalThis.__log = [];\n\
-           var xhr = new XMLHttpRequest();\n\
-           xhr.addEventListener('readystatechange', function(){ globalThis.__log.push('listener:' + xhr.readyState); });\n\
-           xhr.onreadystatechange = function(){ globalThis.__log.push('handler:' + xhr.readyState); };\n\
-           xhr.open('GET', '/ok', true);\n\
-           globalThis.__rs = xhr.readyState;",
-        );
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.addEventListener('readystatechange', function(){ globalThis.__log.push('listener:' + xhr.readyState); });\n\
+         xhr.onreadystatechange = function(){ globalThis.__log.push('handler:' + xhr.readyState); };\n\
+         xhr.open('GET', '/ok', true);\n\
+         globalThis.__rs = xhr.readyState;",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -1977,24 +1974,24 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> crate::Result<()> {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (_, window) = host.vm_host_and_window_realm();
-        window.reset_interrupt();
-        let result = window.exec_script_with_hooks(
-          &mut hooks,
-          "globalThis.__log = [];\n\
-           var xhr = new XMLHttpRequest();\n\
-           xhr.onload = function(){ globalThis.__log.push('load:' + xhr.status + ':' + xhr.responseText); };\n\
-           xhr.addEventListener('loadend', function(){ globalThis.__log.push('loadend'); });\n\
-           xhr.open('GET', '/ok', true);\n\
-           xhr.send();",
-        );
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.onload = function(){ globalThis.__log.push('load:' + xhr.status + ':' + xhr.responseText); };\n\
+         xhr.addEventListener('loadend', function(){ globalThis.__log.push('loadend'); });\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -2029,23 +2026,23 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> crate::Result<()> {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (_, window) = host.vm_host_and_window_realm();
-        window.reset_interrupt();
-        let result = window.exec_script_with_hooks(
-          &mut hooks,
-          "globalThis.__log = [];\n\
-           var xhr = new XMLHttpRequest();\n\
-           xhr.onerror = function(){ globalThis.__log.push('error:' + xhr.status); };\n\
-           xhr.open('GET', '/err', true);\n\
-           xhr.send();",
-        );
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.onerror = function(){ globalThis.__log.push('error:' + xhr.status); };\n\
+         xhr.open('GET', '/err', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -2069,26 +2066,26 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::new();
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-      with_event_loop(event_loop, || -> crate::Result<()> {
-        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
-        let (_, window) = host.vm_host_and_window_realm();
-        window.reset_interrupt();
-        let result = window.exec_script_with_hooks(
-          &mut hooks,
-          "globalThis.__log = [];\n\
-           var xhr = new XMLHttpRequest();\n\
-           function listener(){ globalThis.__log.push('listener'); }\n\
-           xhr.addEventListener('load', listener);\n\
-           xhr.removeEventListener('load', listener);\n\
-           xhr.onload = function(){ globalThis.__log.push('onload'); };\n\
-           xhr.open('GET', '/ok', true);\n\
-           xhr.send();",
-        );
-        if let Some(err) = hooks.finish(window.heap_mut()) {
-          return Err(err);
-        }
-        result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
-      })
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         function listener(){ globalThis.__log.push('listener'); }\n\
+         xhr.addEventListener('load', listener);\n\
+         xhr.removeEventListener('load', listener);\n\
+         xhr.onload = function(){ globalThis.__log.push('onload'); };\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
     })?;
 
     let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;

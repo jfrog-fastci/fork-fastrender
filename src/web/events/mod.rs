@@ -11,6 +11,7 @@
 
 use crate::dom2;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use thiserror::Error;
 use vm_js::{GcObject, Heap, WeakGcObject};
@@ -160,6 +161,17 @@ impl ListenerId {
 
 pub trait EventListenerInvoker {
   fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError>;
+
+  /// Optional downcasting hook for embeddings that need invoker-specific dynamic context.
+  ///
+  /// Most invokers are lightweight stack values (and may contain non-`'static` references), so the
+  /// default implementation returns `None`. Heap-owned invokers (like FastRender's `vm-js`
+  /// integration) can override this to allow the embedding to install per-dispatch dynamic context
+  /// without relying on thread-local storage.
+  #[inline]
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    None
+  }
 }
 
 #[derive(Debug)]

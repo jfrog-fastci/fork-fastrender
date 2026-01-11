@@ -1,12 +1,11 @@
 use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
-use fastrender::js::runtime::with_event_loop;
-use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator,
   ScriptType, TaskSource, VirtualClock, WindowFetchEnv, WindowHost, WindowHostState, WindowRealm,
   WindowRealmConfig, WindowRealmHost,
 };
+use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::resource::{
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
 };
@@ -20,34 +19,13 @@ use vm_js::{Heap, Job, PropertyKey, RealmId, Scope, TerminationReason, Value, Vm
 
 const ASSERT_VM_HOST_FN_NAME: &str = "__fastrender_assert_vm_host";
 
-#[derive(Default)]
-struct NoopVmHostHooks;
-
-impl VmHostHooks for NoopVmHostHooks {
-  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
-}
-
-fn exec_script_in_window_realm(realm: &mut WindowRealm, source: &str) -> std::result::Result<Value, VmError> {
-  let mut host_ctx = ();
-  let mut hooks = NoopVmHostHooks::default();
-  realm.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
-}
-
-fn exec_script_in_window_host(host: &mut WindowHostState, source: &str) -> std::result::Result<Value, VmError> {
-  let (vm_host, realm) = host.vm_host_and_window_realm();
-  let mut hooks = NoopVmHostHooks::default();
-  realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, source)
-}
-
 fn install_vm_js_microtask_checkpoint_hook<Host: WindowRealmHost>(event_loop: &mut EventLoop<Host>) {
-  fn drain<Host: WindowRealmHost>(host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
-    with_event_loop(event_loop, || {
-      let (vm_host, realm) = host.vm_host_and_window_realm();
-      let (vm, heap) = realm.vm_and_heap_mut();
-      vm.perform_microtask_checkpoint_with_host(vm_host, heap)
-        .map_err(|err| Error::Other(err.to_string()))?;
-      Ok(())
-    })
+  fn drain<Host: WindowRealmHost>(host: &mut Host, _event_loop: &mut EventLoop<Host>) -> Result<()> {
+    let realm = host.window_realm();
+    realm
+      .perform_microtask_checkpoint()
+      .map_err(|err| Error::Other(err.to_string()))?;
+    Ok(())
   }
 
   event_loop.set_microtask_checkpoint_hook(Some(drain::<Host>));
@@ -410,7 +388,8 @@ fn document_base_uri_falls_back_to_document_url() -> Result<()> {
   // Simulate an embedder that has not yet installed a base URL (or cleared it while navigating).
   realm.set_base_url(None);
 
-  let base_uri = exec_script_in_window_realm(&mut realm, "document.baseURI")
+  let base_uri = realm
+    .exec_script("document.baseURI")
     .map_err(|e| Error::Other(e.to_string()))?;
 
   let (_vm, heap) = realm.vm_and_heap_mut();
@@ -423,7 +402,8 @@ fn document_default_view_points_at_window() -> Result<()> {
   let url = "https://example.com/";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
-  let ok = exec_script_in_window_realm(&mut realm, "document.defaultView === window && document.defaultView === self")
+  let ok = realm
+    .exec_script("document.defaultView === window && document.defaultView === self")
     .map_err(|e| Error::Other(e.to_string()))?;
 
   assert_eq!(ok, Value::Bool(true));
@@ -435,11 +415,9 @@ fn document_charset_properties_are_exposed() -> Result<()> {
   let url = "https://example.com/";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
-  let value = exec_script_in_window_realm(
-    &mut realm,
-    "document.characterSet + '|' + document.charset + '|' + document.inputEncoding",
-  )
-  .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("document.characterSet + '|' + document.charset + '|' + document.inputEncoding")
+    .map_err(|e| Error::Other(e.to_string()))?;
 
   let (_vm, heap) = realm.vm_and_heap_mut();
   assert_eq!(get_string(heap, value), "UTF-8|UTF-8|UTF-8");
@@ -451,11 +429,9 @@ fn document_title_is_exposed_and_writable() -> Result<()> {
   let url = "https://example.com/";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
-  let ok = exec_script_in_window_realm(
-    &mut realm,
-    "document.title === '' && (document.title = 'hello') && document.title === 'hello'",
-  )
-  .map_err(|e| Error::Other(e.to_string()))?;
+  let ok = realm
+    .exec_script("document.title === '' && (document.title = 'hello') && document.title === 'hello'")
+    .map_err(|e| Error::Other(e.to_string()))?;
 
   assert_eq!(ok, Value::Bool(true));
   Ok(())
@@ -627,8 +603,9 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
     WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let err =
-    exec_script_in_window_realm(&mut realm, "location.assign('/a')").expect_err("expected assign() to interrupt execution");
+  let err = realm
+    .exec_script("location.assign('/a')")
+    .expect_err("expected assign() to interrupt execution");
   assert!(
     matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
     "unexpected error: {err:?}"
@@ -640,8 +617,9 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
   assert_eq!(req.url, "https://example.com/a");
   assert!(!req.replace);
 
-  let err =
-    exec_script_in_window_realm(&mut realm, "location.replace('/b')").expect_err("expected replace() to interrupt execution");
+  let err = realm
+    .exec_script("location.replace('/b')")
+    .expect_err("expected replace() to interrupt execution");
   assert!(
     matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
     "unexpected error: {err:?}"
@@ -661,8 +639,9 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
     WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let err =
-    exec_script_in_window_realm(&mut realm, "location = '/a'").expect_err("expected assignment to interrupt execution");
+  let err = realm
+    .exec_script("location = '/a'")
+    .expect_err("expected assignment to interrupt execution");
   assert!(
     matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
     "unexpected error: {err:?}"
@@ -674,7 +653,8 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
   assert_eq!(req.url, "https://example.com/a");
   assert!(!req.replace);
 
-  let err = exec_script_in_window_realm(&mut realm, "window.location = '/b'")
+  let err = realm
+    .exec_script("window.location = '/b'")
     .expect_err("expected assignment to interrupt execution");
   assert!(
     matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
@@ -687,7 +667,8 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
   assert_eq!(req.url, "https://example.com/b");
   assert!(!req.replace);
 
-  let err = exec_script_in_window_realm(&mut realm, "document.location = '/c'")
+  let err = realm
+    .exec_script("document.location = '/c'")
     .expect_err("expected assignment to interrupt execution");
   assert!(
     matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
@@ -708,11 +689,9 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let value = exec_script_in_window_realm(
-    &mut realm,
-    "history.pushState(null, '', '/next'); location.href + '|' + document.URL + '|' + document.baseURI",
-  )
-  .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("history.pushState(null, '', '/next'); location.href + '|' + document.URL + '|' + document.baseURI")
+    .map_err(|e| Error::Other(e.to_string()))?;
 
   assert_eq!(
     get_string(realm.heap(), value),
@@ -731,17 +710,19 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
   let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let value = exec_script_in_window_realm(
-    &mut realm,
-    "window === globalThis && self === window && top === window && parent === window",
-  )
-  .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("window === globalThis && self === window && top === window && parent === window")
+    .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(value, Value::Bool(true));
 
-  let value = exec_script_in_window_realm(&mut realm, "document.URL").map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("document.URL")
+    .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(get_string(realm.heap(), value), url);
 
-  let value = exec_script_in_window_realm(&mut realm, "location.href").map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("location.href")
+    .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(get_string(realm.heap(), value), url);
   Ok(())
 }
@@ -2167,11 +2148,11 @@ fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let mut realm = WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  let value = exec_script_in_window_realm(
-    &mut realm,
-    "location.protocol + '|' + location.host + '|' + location.hostname + '|' + location.port + '|' + location.pathname + '|' + location.search + '|' + location.hash + '|' + location.origin",
-  )
-  .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script(
+      "location.protocol + '|' + location.host + '|' + location.hostname + '|' + location.port + '|' + location.pathname + '|' + location.search + '|' + location.hash + '|' + location.origin",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
   assert_eq!(
     get_string(realm.heap(), value),
     "https:|example.com:8080|example.com|8080|/path/to/page|?query=1|#hash|https://example.com:8080"
@@ -2186,9 +2167,10 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
-    r#"
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
   globalThis.__head_id = document.head.id;
   globalThis.__body_id = document.body.id;
   globalThis.__head_same = document.head === document.head;
@@ -2196,10 +2178,11 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
   document.body.id = "new";
   globalThis.__body_id_after = document.body.id;
   "#,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
   }
 
   let (head_id, body_id, body_id_after, head_same, body_same) = {
@@ -2243,9 +2226,10 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
-    r#"
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
   globalThis.__missing = document.getElementById("missing") === null;
   globalThis.__empty = document.getElementById("") === null;
   const el = document.getElementById("x");
@@ -2257,10 +2241,11 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
   globalThis.__same_after = el === el2;
   globalThis.__id_after = el2.id;
   "#,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
   }
 
   let (missing, empty, same, old_missing, same_after, id_before, id_after) = {
@@ -2311,9 +2296,10 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
   )?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
-    r###"
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r###"
   const el = document.querySelector(".x");
   globalThis.__qs_found = (el !== null);
   globalThis.__qs_same = (el === document.querySelector(".x"));
@@ -2325,10 +2311,11 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
     globalThis.__qs_bad = e.name;
   }
   "###,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
   }
 
   let (qs_found, qs_same, qs_id, qs_bad) = {
@@ -2376,9 +2363,10 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
     opts,
   )?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
-    r###"
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r###"
   const a = document.getElementById("a");
   const inner = a.querySelector(".inner");
   globalThis.__el_qs_id = inner && inner.id;
@@ -2416,10 +2404,11 @@ fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
     globalThis.__bad_closest = e.name;
   }
   "###,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
   }
 
   let (
@@ -2496,9 +2485,10 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
-    r#"
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
   const el = document.createElement("div");
   el.setAttribute("id", "x");
   el.setAttribute("data-test", "1");
@@ -2508,10 +2498,11 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
   globalThis.__append_same = (ret === el);
   globalThis.__found_same = (document.getElementById("x") === el);
   "#,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
   }
 
   let (append_same, found_same, data_test, missing_attr) = {
@@ -2634,8 +2625,10 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
 
   // Outside execution, currentScript is null.
   {
-    let value =
-      exec_script_in_window_host(&mut host, "document.currentScript").map_err(|e| Error::Other(e.to_string()))?;
+    let realm = host.window_mut();
+    let value = realm
+      .exec_script("document.currentScript")
+      .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
 
@@ -3020,26 +3013,27 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  globalThis.__log = {};
  globalThis.__log_len = 0;
-   queueMicrotask(() => {
-     globalThis.__log[globalThis.__log_len] = "micro";
+  queueMicrotask(() => {
+    globalThis.__log[globalThis.__log_len] = "micro";
     globalThis.__log_len = globalThis.__log_len + 1;
   });
    fetch("https://example.com/x")
-     .then(r => r.text())
-     .then(t => {
-       globalThis.__log[globalThis.__log_len] = t;
-       globalThis.__log_len = globalThis.__log_len + 1;
-     });
-   globalThis.__log[globalThis.__log_len] = "sync";
-   globalThis.__log_len = globalThis.__log_len + 1;
+    .then(r => r.text())
+    .then(t => {
+      globalThis.__log[globalThis.__log_len] = t;
+      globalThis.__log_len = globalThis.__log_len + 1;
+    });
+  globalThis.__log[globalThis.__log_len] = "sync";
+  globalThis.__log_len = globalThis.__log_len + 1;
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3073,14 +3067,15 @@ fn window_fetch_forwards_request_headers() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  fetch("https://example.com/headers", { headers: { "x-test": "1" } })
    .then(() => {});
-  "#,
-    )?;
-    Ok(())
+ "#,
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3111,14 +3106,15 @@ fn window_fetch_accepts_request_object_input() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  const req = new Request("https://example.com/headers", { headers: { "x-test": "1" } });
  fetch(req).then(() => {});
-  "#,
-    )?;
-    Ok(())
+ "#,
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3149,16 +3145,17 @@ fn window_request_constructor_clones_request_input() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  const req1 = new Request("https://example.com/headers", { headers: { "x-test": "1" } });
  const req2 = new Request(req1);
  req2.headers.set("x-test", "2");
  fetch(req2).then(() => {});
-  "#,
-    )?;
-    Ok(())
+ "#,
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3189,13 +3186,14 @@ fn window_fetch_forwards_request_body() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  fetch("https://example.com/submit", { method: "POST", body: "payload" }).then(() => {});
-  "#,
-    )?;
-    Ok(())
+ "#,
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3224,14 +3222,15 @@ fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
  const req = new Request("https://example.com/submit", { method: "POST", body: "payload" });
  fetch(req).then(() => {});
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3260,13 +3259,14 @@ fn window_fetch_forwards_request_credentials_mode() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   fetch("https://example.com/creds", { credentials: "include" }).then(() => {});
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3295,14 +3295,15 @@ fn window_fetch_forwards_request_credentials_mode_from_request_object() -> Resul
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   const req = new Request("https://example.com/creds", { credentials: "omit" });
   fetch(req).then(() => {});
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3332,15 +3333,16 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   fetch("https://example.com/json")
     .then(r => r.json())
     .then(v => globalThis.__json_ok = v.ok);
  "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3375,9 +3377,10 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__bytes_err = null;
   globalThis.__ab_byte_length = -1;
   globalThis.__u_is_view = false;
@@ -3425,8 +3428,8 @@ fn window_fetch_response_array_buffer_returns_bytes() -> Result<()> {
     })
     .catch(function (e) { globalThis.__bytes_err = e && e.name; });
  "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3517,9 +3520,10 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__ab_first_len = -1;
   globalThis.__ab_first0 = -1;
   globalThis.__ab_second_err = "";
@@ -3536,8 +3540,8 @@ fn window_fetch_response_array_buffer_rejects_second_consumption() -> Result<()>
       });
     });
  "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3573,8 +3577,7 @@ fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
     WindowRealm::new_with_js_execution_options(WindowRealmConfig::new("https://example.com/"), js_opts_for_test())
     .map_err(|e| Error::Other(e.to_string()))?;
 
-  if let Err(err) = exec_script_in_window_realm(
-    &mut realm,
+  let res = realm.exec_script(
     r#"
   globalThis.__ab_byte_length = -1;
   globalThis.__is_view_u = false;
@@ -3642,7 +3645,8 @@ fn array_buffer_and_uint8_array_basic_semantics() -> Result<()> {
   globalThis.__u_slice1 = u_slice[1];
   globalThis.__u_slice_same_buffer = (u_slice.buffer === ab);
 "#,
-  ) {
+  );
+  if let Err(err) = res {
     let (_vm, heap) = realm.vm_and_heap_mut();
     return Err(Error::Other(format_vm_error(heap, err)));
   }
@@ -3744,16 +3748,17 @@ fn window_fetch_rejects_on_cors_failure() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__cors = "";
   fetch("https://other.example/res")
     .then(function () { globalThis.__cors = "resolved"; })
     .catch(function (e) { globalThis.__cors = e && e.name; });
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3810,13 +3815,14 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
   };
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    with_event_loop(event_loop, || {
-      let mut hooks = VmJsEventLoopHooks::<FetchOnlyHost>::new_with_host(host);
-      let (vm_host, realm) = host.vm_host_and_window_realm();
-      let res = realm.exec_script_with_host_and_hooks(
-        vm_host,
-        &mut hooks,
-        r#"
+    let mut hooks = VmJsEventLoopHooks::<FetchOnlyHost>::new_with_host(host);
+    hooks.set_event_loop(event_loop);
+    let (host_ctx, realm) = host.vm_host_and_window_realm();
+    realm.reset_interrupt();
+    let res = realm.exec_script_with_host_and_hooks(
+      host_ctx,
+      &mut hooks,
+      r#"
   globalThis.__size_err_name = "";
   globalThis.__size_err_msg = "";
   fetch("https://client.example/large")
@@ -3826,18 +3832,15 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
       globalThis.__size_err_msg = e && e.message;
     });
   "#,
-      );
-      if let Some(err) = hooks.finish(realm.heap_mut()) {
-        return Err(err);
-      }
-      match res {
-        Ok(_) => Ok(()),
-        Err(err) => {
-          let (_vm, heap) = realm.vm_and_heap_mut();
-          Err(Error::Other(format_vm_error(heap, err)))
-        }
-      }
-    })
+    );
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+    Ok(())
   })?;
 
   assert_eq!(
@@ -3878,9 +3881,10 @@ fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__text1 = "";
   globalThis.__text2_err = "";
   globalThis.__text_body_used = false;
@@ -3896,8 +3900,8 @@ fn window_fetch_response_text_rejects_second_consumption() -> Result<()> {
       });
     });
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3942,14 +3946,15 @@ fn window_fetch_accepts_request_object() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   let req = new Request("https://example.com/headers2", { headers: { "x-test": "2" } });
   fetch(req).then(() => {});
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -3978,9 +3983,10 @@ fn window_response_clone_duplicates_body() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__clone_text = "";
   let r = new Response("hello");
   let c = r.clone();
@@ -3990,8 +3996,8 @@ fn window_response_clone_duplicates_body() -> Result<()> {
     });
   });
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(
@@ -4024,9 +4030,10 @@ fn window_response_clone_throws_when_body_used() -> Result<()> {
   )?;
 
   event_loop.queue_task(TaskSource::Script, |host, event_loop| {
-    host.exec_script_in_event_loop(
-      event_loop,
-      r#"
+    host
+      .exec_script_in_event_loop(
+        event_loop,
+        r#"
   globalThis.__clone_error = "";
   let r = new Response("hello");
   r.text().then(() => {
@@ -4038,8 +4045,8 @@ fn window_response_clone_throws_when_body_used() -> Result<()> {
     }
   });
   "#,
-    )?;
-    Ok(())
+      )
+      .map(|_| ())
   })?;
 
   assert_eq!(

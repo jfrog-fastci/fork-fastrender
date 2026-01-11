@@ -440,7 +440,7 @@ where
             Some(TaskSource::DOMManipulation),
             "script element event tasks must run on the DOM manipulation task source"
           );
-          host.dispatch_script_element_event(node_id, event_name)?;
+          host.dispatch_script_element_event(event_loop, node_id, event_name)?;
           Ok(())
         })?;
       }
@@ -531,8 +531,8 @@ where
       ScriptType::Unknown => false,
     };
     if should_dispatch_error {
-      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
-        host.dispatch_script_element_event(inserted_node, "error")
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+        host.dispatch_script_element_event(event_loop, inserted_node, "error")
       })?;
     }
     return Ok(());
@@ -1266,6 +1266,7 @@ mod tests {
   impl crate::js::html_script_pipeline::ScriptElementEventHost for HtmlTestHost {
     fn dispatch_script_element_event(
       &mut self,
+      _event_loop: &mut EventLoop<Self>,
       script: crate::dom2::NodeId,
       event_name: &'static str,
     ) -> Result<()> {
@@ -1989,9 +1990,14 @@ mod dynamic_insertion_html_scheduler_tests {
       result
     }
   }
- 
+  
   impl ScriptElementEventHost for Host {
-    fn dispatch_script_element_event(&mut self, _script: NodeId, _event_name: &'static str) -> Result<()> {
+    fn dispatch_script_element_event(
+      &mut self,
+      _event_loop: &mut EventLoop<Self>,
+      _script: NodeId,
+      _event_name: &'static str,
+    ) -> Result<()> {
       Ok(())
     }
   }

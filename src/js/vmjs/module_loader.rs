@@ -2,7 +2,6 @@ use crate::error::{Error, Result};
 use crate::js::import_maps::{
   resolve_module_specifier as resolve_module_specifier_with_import_maps, ImportMapError, ImportMapState,
 };
-use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
@@ -173,26 +172,26 @@ impl VmJsModuleLoader {
     let module_url_by_id = &mut self.module_url_by_id;
     let module_base_url_by_id = &mut self.module_base_url_by_id;
 
-    with_event_loop(event_loop, move || {
-      let options = {
-        let (_, window_realm) = host.vm_host_and_window_realm();
-        window_realm.js_execution_options()
-      };
+    let options = {
+      let (_, window_realm) = host.vm_host_and_window_realm();
+      window_realm.js_execution_options()
+    };
 
-      let mut hooks = VmJsModuleHooks::<Host> {
-        inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
-        fetcher,
-        document_url: document_url.as_str(),
-        document_origin,
-        options,
-        loaded_modules: 0,
-        loaded_bytes: 0,
-        module_depths: HashMap::new(),
-        module_id_by_url,
-        module_url_by_id,
-        module_base_url_by_id,
-        import_map_state,
-      };
+    let mut hooks = VmJsModuleHooks::<Host> {
+      inner: VmJsEventLoopHooks::<Host>::new_with_host(host),
+      fetcher,
+      document_url: document_url.as_str(),
+      document_origin,
+      options,
+      loaded_modules: 0,
+      loaded_bytes: 0,
+      module_depths: HashMap::new(),
+      module_id_by_url,
+      module_url_by_id,
+      module_base_url_by_id,
+      import_map_state,
+    };
+    hooks.inner.set_event_loop(event_loop);
 
       // Attach the loader's module graph to the VM while we load + evaluate modules and while we
       // drain microtask checkpoints. This ensures dynamic `import()` works in Promise jobs queued
@@ -318,9 +317,7 @@ impl VmJsModuleLoader {
         if let (Some(load_promise_value), Some(load_root)) =
           (load_promise.take(), load_promise_root.take())
         {
-          let microtask_result = current_event_loop_mut::<Host>()
-            .expect("expected current event loop to be installed by with_event_loop")
-            .perform_microtask_checkpoint(host);
+          let microtask_result = event_loop.perform_microtask_checkpoint(host);
           if let Err(err) = microtask_result {
             outcome = Err(err);
           }
@@ -412,9 +409,7 @@ impl VmJsModuleLoader {
         ) {
           let mut abort_async_eval = false;
 
-          let microtask_result = current_event_loop_mut::<Host>()
-            .expect("expected current event loop to be installed by with_event_loop")
-            .perform_microtask_checkpoint(host);
+          let microtask_result = event_loop.perform_microtask_checkpoint(host);
           if let Err(err) = microtask_result {
             abort_async_eval = true;
             outcome = Err(err);
@@ -468,9 +463,7 @@ impl VmJsModuleLoader {
       };
 
       // HTML: after executing a script/module, perform a microtask checkpoint.
-      let microtask_result = current_event_loop_mut::<Host>()
-        .expect("expected current event loop to be installed by with_event_loop")
-        .perform_microtask_checkpoint(host);
+      let microtask_result = event_loop.perform_microtask_checkpoint(host);
 
       // Keep the module graph attached until after the checkpoint, then restore the previous VM
       // state as the function returns.
@@ -491,7 +484,6 @@ impl VmJsModuleLoader {
           Err(err)
         }
       }
-    })
   }
 }
 

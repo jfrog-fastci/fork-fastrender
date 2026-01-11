@@ -22,8 +22,6 @@ use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestr
 use super::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use super::{DomHost, ParseBudget, ScriptType};
 
-use super::runtime::with_event_loop;
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -54,7 +52,14 @@ impl Drop for JsExecutionGuard {
 ///
 /// HTML queues these as *element tasks* on the DOM manipulation task source.
 pub trait ScriptElementEventHost {
-  fn dispatch_script_element_event(&mut self, script: NodeId, event_name: &'static str) -> Result<()>;
+  fn dispatch_script_element_event(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+    script: NodeId,
+    event_name: &'static str,
+  ) -> Result<()>
+  where
+    Self: Sized + 'static;
 }
 
 /// Options used when fetching a module script's module graph.
@@ -277,7 +282,7 @@ impl HtmlScriptPipelineState {
       ScriptEventKind::Error => "error",
     };
     event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      with_event_loop(event_loop, || host.dispatch_script_element_event(node_id, event_name))?;
+      host.dispatch_script_element_event(event_loop, node_id, event_name)?;
       Ok(())
     })
   }
@@ -480,7 +485,7 @@ impl HtmlScriptPipelineState {
           ScriptEventKind::Error => "error",
         };
         event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-          with_event_loop(event_loop, || host.dispatch_script_element_event(script_node_id, event_name))?;
+          host.dispatch_script_element_event(event_loop, script_node_id, event_name)?;
           Ok(())
         })?;
       }
@@ -760,6 +765,7 @@ mod tests {
   impl ScriptElementEventHost for Host {
     fn dispatch_script_element_event(
       &mut self,
+      _event_loop: &mut EventLoop<Self>,
       script: NodeId,
       event_name: &'static str,
     ) -> Result<()> {

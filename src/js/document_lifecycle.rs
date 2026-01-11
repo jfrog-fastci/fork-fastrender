@@ -1,6 +1,5 @@
 use crate::error::{Error, Result};
 use crate::js::{EventLoop, TaskSource};
-use crate::js::runtime::with_event_loop;
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 pub use crate::web::dom::DocumentReadyState;
@@ -55,7 +54,7 @@ pub trait DocumentLifecycleHost {
     })?;
 
     if ready_state_changed {
-      with_event_loop(event_loop, || fire_ready_state_change(self))?;
+      fire_ready_state_change(self, event_loop)?;
     }
 
     // Queue DOMContentLoaded/load tasks (or mark parsing as complete so they can be queued once any
@@ -79,7 +78,14 @@ pub trait DocumentLifecycleHost {
   ///
   /// Hosts should implement this using the canonical event system:
   /// `crate::web::events::dispatch_event`.
-  fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: Event) -> Result<()>;
+  fn dispatch_lifecycle_event(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+    target: EventTargetId,
+    event: Event,
+  ) -> Result<()>
+  where
+    Self: Sized + 'static;
 
   /// Mutable access to the per-document lifecycle state machine.
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle;
@@ -249,7 +255,7 @@ impl DocumentLifecycle {
     event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
       // Dispatch DOMContentLoaded within the event loop runtime context, then decide whether `load`
       // can be queued (after listeners have had a chance to register load blockers).
-      with_event_loop(event_loop, || fire_dom_content_loaded(host))?;
+      fire_dom_content_loaded(host, event_loop)?;
       host.document_lifecycle_mut().maybe_queue_load_task(event_loop)?;
       Ok(())
     })?;
@@ -273,13 +279,16 @@ impl DocumentLifecycle {
 
     self.load_queued = true;
     event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
-      with_event_loop(event_loop, || maybe_fire_load(host))
+      maybe_fire_load(host, event_loop)
     })?;
     Ok(())
   }
 }
 
-fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+fn fire_dom_content_loaded<Host: DocumentLifecycleHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+) -> Result<()> {
   {
     let lifecycle = host.document_lifecycle_mut();
     if lifecycle.dom_content_loaded_fired {
@@ -304,7 +313,7 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
 
   // Fire `readystatechange` whenever `document.readyState` changes.
   if ready_state_changed {
-    fire_ready_state_change(host)?;
+    fire_ready_state_change(host, event_loop)?;
   }
 
   let mut event = Event::new(
@@ -316,11 +325,14 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
     },
   );
   event.is_trusted = true;
-  host.dispatch_lifecycle_event(EventTargetId::Document, event)?;
+  host.dispatch_lifecycle_event(event_loop, EventTargetId::Document, event)?;
   Ok(())
 }
 
-fn maybe_fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+fn maybe_fire_load<Host: DocumentLifecycleHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+) -> Result<()> {
   // The `load` task can be queued when the last load blocker reaches 0, but new blockers can still
   // be registered before that queued task runs (for example: scripts inserted from DOMContentLoaded
   // listeners). Re-check the current blocker count at dispatch time and no-op if still blocked.
@@ -348,7 +360,7 @@ fn maybe_fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
   })?;
 
   if ready_state_changed {
-    fire_ready_state_change(host)?;
+    fire_ready_state_change(host, event_loop)?;
   }
 
   let mut event = Event::new(
@@ -360,11 +372,14 @@ fn maybe_fire_load<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
     },
   );
   event.is_trusted = true;
-  host.dispatch_lifecycle_event(EventTargetId::Window, event)?;
+  host.dispatch_lifecycle_event(event_loop, EventTargetId::Window, event)?;
   Ok(())
 }
 
-fn fire_ready_state_change<Host: DocumentLifecycleHost>(host: &mut Host) -> Result<()> {
+fn fire_ready_state_change<Host: DocumentLifecycleHost + 'static>(
+  host: &mut Host,
+  event_loop: &mut EventLoop<Host>,
+) -> Result<()> {
   let mut event = Event::new(
     "readystatechange",
     EventInit {
@@ -374,7 +389,7 @@ fn fire_ready_state_change<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
     },
   );
   event.is_trusted = true;
-  host.dispatch_lifecycle_event(EventTargetId::Document, event)?;
+  host.dispatch_lifecycle_event(event_loop, EventTargetId::Document, event)?;
   Ok(())
 }
 
@@ -442,7 +457,12 @@ mod tests {
       Ok(f(&mut self.dom))
     }
 
-    fn dispatch_lifecycle_event(&mut self, target: EventTargetId, mut event: Event) -> Result<()> {
+    fn dispatch_lifecycle_event(
+      &mut self,
+      _event_loop: &mut EventLoop<Self>,
+      target: EventTargetId,
+      mut event: Event,
+    ) -> Result<()> {
       let dom: &crate::dom2::Document = &self.dom;
       dispatch_event(target, &mut event, dom, dom.events(), &mut self.invoker)
         .map(|_default_not_prevented| ())
@@ -973,7 +993,12 @@ mod tests {
       Ok(f(&mut dom_ref))
     }
 
-    fn dispatch_lifecycle_event(&mut self, target: EventTargetId, event: Event) -> Result<()> {
+    fn dispatch_lifecycle_event(
+      &mut self,
+      _event_loop: &mut EventLoop<Self>,
+      target: EventTargetId,
+      event: Event,
+    ) -> Result<()> {
       self
         .realm
         .dispatch_event_to_js(target, event)

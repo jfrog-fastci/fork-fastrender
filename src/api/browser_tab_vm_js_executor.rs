@@ -1,5 +1,4 @@
 use crate::error::{Error, Result};
-use crate::js::runtime::with_event_loop;
 use crate::js::time::update_time_bindings_clock;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
@@ -250,49 +249,49 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
     let js_execution_options = self.js_execution_options;
     let module_loader = realm.module_loader_handle();
-    let exec_result: Result<()> = with_event_loop(event_loop, || {
-      update_time_bindings_clock(realm.heap(), clock.clone())
-        .map_err(|err| Error::Other(err.to_string()))?;
-      realm.set_base_url(spec.base_url.clone());
-      realm.reset_interrupt();
 
-      // Classic scripts can evaluate dynamic `import()` expressions. If module loading is enabled
-      // for this realm, ensure the per-realm loader uses classic-script defaults.
-      if realm.vm().module_graph_ptr().is_some() {
-        let mut loader = module_loader.borrow_mut();
-        loader.set_fetcher(document.fetcher());
-        loader.set_cors_mode(CorsMode::Anonymous);
-        loader.set_js_execution_options(js_execution_options);
-      }
-      let webidl_bindings_host = match webidl_bindings_host {
-        Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
-        None => None,
-      };
-      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
-        document,
-        realm,
-        webidl_bindings_host,
-      );
-      let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source);
+    update_time_bindings_clock(realm.heap(), clock.clone())
+      .map_err(|err| Error::Other(err.to_string()))?;
+    realm.set_base_url(spec.base_url.clone());
+    realm.reset_interrupt();
 
-      if let Some(err) = hooks.finish(realm.heap_mut()) {
-        return Err(err);
-      }
+    // Classic scripts can evaluate dynamic `import()` expressions. If module loading is enabled for
+    // this realm, ensure the per-realm loader uses classic-script defaults.
+    if realm.vm().module_graph_ptr().is_some() {
+      let mut loader = module_loader.borrow_mut();
+      loader.set_fetcher(document.fetcher());
+      loader.set_cors_mode(CorsMode::Anonymous);
+      loader.set_js_execution_options(js_execution_options);
+    }
+    let webidl_bindings_host = match webidl_bindings_host {
+      Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+      None => None,
+    };
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+      document,
+      realm,
+      webidl_bindings_host,
+    );
+    hooks.set_event_loop(event_loop);
+    let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source);
 
-      match result {
-        Ok(_) => Ok(()),
-        Err(err) => {
-          if vm_error_format::vm_error_is_js_exception(&err) {
-            if let Some(diag) = diagnostics.as_ref() {
-              Self::record_js_exception(diag, realm, err);
-            }
-            Ok(())
-          } else {
-            Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
+    if let Some(err) = hooks.finish(realm.heap_mut()) {
+      return Err(err);
+    }
+
+    let exec_result: Result<()> = match result {
+      Ok(_) => Ok(()),
+      Err(err) => {
+        if vm_error_format::vm_error_is_js_exception(&err) {
+          if let Some(diag) = diagnostics.as_ref() {
+            Self::record_js_exception(diag, realm, err);
           }
+          Ok(())
+        } else {
+          Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err))
         }
       }
-    });
+    };
 
     if let Some(req) = realm.take_pending_navigation_request() {
       // Clear the interrupt flag so the realm can be reused if the embedding chooses to keep
@@ -348,10 +347,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
     let module_loader = realm.module_loader_handle();
 
-    let exec_result: Result<()> = with_event_loop(event_loop, || {
-      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
-      realm.set_base_url(spec.base_url.clone());
-      realm.reset_interrupt();
+    update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+    realm.set_base_url(spec.base_url.clone());
+    realm.reset_interrupt();
+
+    let exec_result: Result<()> = (|| {
 
       {
         let mut loader = module_loader.borrow_mut();
@@ -371,6 +371,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         realm,
         webidl_bindings_host,
       );
+      hooks.set_event_loop(event_loop);
 
       // Apply a fresh per-run VM budget so module graph loading is interruptible.
       let budget = realm.vm_budget_now();
@@ -439,7 +440,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       }
 
       Ok(())
-    });
+    })();
 
     if let Some(req) = realm.take_pending_navigation_request() {
       realm.reset_interrupt();
@@ -486,36 +487,36 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       attributes: Vec::new(),
     };
 
-    let exec_result: Result<Option<PendingModuleEvaluation>> = with_event_loop(event_loop, || {
-      let Some(realm) = self.realm.as_mut() else {
-        return Err(Error::Other(
-          "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
-        ));
-      };
-      let module_loader = realm.module_loader_handle();
+    let Some(realm) = self.realm.as_mut() else {
+      return Err(Error::Other(
+        "VmJsBrowserTabExecutor has no active WindowRealm; did reset_for_navigation run?".to_string(),
+      ));
+    };
+    let module_loader = realm.module_loader_handle();
 
-      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
-      realm.set_base_url(spec.base_url.clone());
-      {
-        let mut loader = module_loader.borrow_mut();
-        loader.set_fetcher(document.fetcher());
-        loader.set_cors_mode(cors_mode);
-        loader.set_js_execution_options(js_execution_options);
-      }
-      realm.reset_interrupt();
+    update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+    realm.set_base_url(spec.base_url.clone());
+    {
+      let mut loader = module_loader.borrow_mut();
+      loader.set_fetcher(document.fetcher());
+      loader.set_cors_mode(cors_mode);
+      loader.set_js_execution_options(js_execution_options);
+    }
+    realm.reset_interrupt();
 
-      // Route Promise jobs (including module-loading promise reactions) through FastRender's
-      // microtask queue.
-      let webidl_bindings_host = match webidl_bindings_host {
-        Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
-        None => None,
-      };
-      let inner_hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
-        document,
-        realm,
-        webidl_bindings_host,
-      );
+    // Route Promise jobs (including module-loading promise reactions) through FastRender's
+    // microtask queue.
+    let webidl_bindings_host = match webidl_bindings_host {
+      Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+      None => None,
+    };
+    let inner_hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+      document,
+      realm,
+      webidl_bindings_host,
+    );
 
+    let exec_result: Result<Option<PendingModuleEvaluation>> = (|| {
       // Apply a fresh per-run VM budget (fuel + deadline) for module parsing/loading/evaluation.
       //
       // Module scripts are executed from event loop tasks (like classic scripts) and must be
@@ -553,6 +554,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
 
       let mut hooks = inner_hooks;
+      hooks.set_event_loop(event_loop);
 
       let mut scope = heap.scope();
 
@@ -618,7 +620,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
           }
         }
       }
-    });
+    })();
 
     if let Some(realm) = self.realm.as_mut() {
       if let Some(req) = realm.take_pending_navigation_request() {
@@ -755,6 +757,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     target: EventTargetId,
     event: &Event,
     document: &mut BrowserDocumentDom2,
+    event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     let Some(realm) = self.realm.as_mut() else {
       return Ok(());
@@ -780,14 +783,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       "(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",
     );
 
-    let clock = {
-      let Some(event_loop) = crate::js::runtime::current_event_loop_mut::<BrowserTabHost>() else {
-        return Err(Error::Other(
-          "dispatch_lifecycle_event called without an active EventLoop".to_string(),
-        ));
-      };
-      event_loop.clock()
-    };
+    let clock = event_loop.clock();
 
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
@@ -800,6 +796,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       realm,
       webidl_bindings_host,
     );
+    hooks.set_event_loop(event_loop);
     let source_text = Arc::new(SourceText::new("<lifecycle>", Arc::from(source)));
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
     if let Some(err) = hooks.finish(realm.heap_mut()) {
