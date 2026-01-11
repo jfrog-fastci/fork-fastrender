@@ -43,6 +43,7 @@ f<T>(x);
 
 // TS `this` parameters are type-only and must be erased.
 function f(this: any, x: number) { return this; }
+class C { m(this: any, x: number) { return this; } }
 "#;
 
   let mut parsed = parse_ts(source);
