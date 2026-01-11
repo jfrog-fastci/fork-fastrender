@@ -36,7 +36,7 @@ use parse_js::ast::func::Func;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::error::SyntaxErrorType;
-use parse_js::{parse_with_options_cancellable_by, Dialect, ParseOptions, SourceType};
+use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1167,7 +1167,20 @@ impl Vm {
           wrapped.push_str(snippet);
           wrapped.push(')');
 
-          let parsed = match self.parse_top_level_with_budget(&wrapped, script_opts) {
+          // Parse function/arrow expression snippets in a permissive "enclosing function"
+          // meta-property context.
+          //
+          // `vm-js` reparses nested function expressions lazily by slicing and parsing their source
+          // spans. When the snippet is an arrow function, `new.target` / `super` expressions are
+          // syntactically valid only if provided by an enclosing non-arrow function or class
+          // element; that lexical context is not present when parsing the snippet as a standalone
+          // script.
+          //
+          // We conservatively allow these meta-properties here since the enclosing context was
+          // already validated by the original parse of the full source.
+          let parsed = match self
+            .parse_top_level_with_budget_allowing_enclosing_meta_properties(&wrapped, script_opts)
+          {
             Ok(top) => Ok(top),
             Err(script_err) => {
               // Propagate non-syntax errors (VM termination, OOM, etc).
@@ -1175,7 +1188,9 @@ impl Vm {
                 return Err(script_err);
               }
 
-              match self.parse_top_level_with_budget(&wrapped, module_opts) {
+              match self
+                .parse_top_level_with_budget_allowing_enclosing_meta_properties(&wrapped, module_opts)
+              {
                 Ok(top) => Ok(top),
                 Err(module_err) => {
                   if !matches!(module_err, VmError::Syntax(_)) {
@@ -1543,10 +1558,11 @@ impl Vm {
     Ok(())
   }
 
-  pub(crate) fn parse_top_level_with_budget(
+  fn parse_top_level_with_budget_impl(
     &mut self,
     source: &str,
     opts: ParseOptions,
+    allow_enclosing_meta_properties: bool,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
     // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
     self.tick()?;
@@ -1555,16 +1571,29 @@ impl Vm {
     let mut steps: u64 = 0;
     let mut tick_err: Option<VmError> = None;
 
-    let res = parse_with_options_cancellable_by(source, opts, || {
-      steps = steps.wrapping_add(1);
-      if steps % PARSE_TICK_EVERY == 0 {
-        if let Err(err) = self.tick() {
-          tick_err = Some(err);
-          return true;
+    let res = parse_with_options_cancellable_by_with_init(
+      source,
+      opts,
+      || {
+        steps = steps.wrapping_add(1);
+        if steps % PARSE_TICK_EVERY == 0 {
+          if let Err(err) = self.tick() {
+            tick_err = Some(err);
+            return true;
+          }
         }
-      }
-      false
-    });
+        false
+      },
+      |p| {
+        if allow_enclosing_meta_properties {
+          p.set_initial_meta_property_context(
+            /* allow_new_target */ true,
+            /* allow_super_property */ true,
+            /* allow_super_call */ true,
+          );
+        }
+      },
+    );
 
     match res {
       Ok(top) => Ok(top),
@@ -1573,6 +1602,22 @@ impl Vm {
       })),
       Err(err) => Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))])),
     }
+  }
+
+  pub(crate) fn parse_top_level_with_budget(
+    &mut self,
+    source: &str,
+    opts: ParseOptions,
+  ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+    self.parse_top_level_with_budget_impl(source, opts, false)
+  }
+
+  fn parse_top_level_with_budget_allowing_enclosing_meta_properties(
+    &mut self,
+    source: &str,
+    opts: ParseOptions,
+  ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+    self.parse_top_level_with_budget_impl(source, opts, true)
   }
 
   /// Calls `callee` with the provided `this` value and arguments.

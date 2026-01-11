@@ -234,6 +234,29 @@ impl<'a> Parser<'a> {
     }
   }
 
+  /// Overrides the parser's initial grammar context for `new.target` and `super` expressions.
+  ///
+  /// `new.target` and `super` are only syntactically valid when the surrounding lexical context
+  /// provides the corresponding bindings (ECMA-262 grammar parameters `AllowNewTarget`,
+  /// `AllowSuperProperty`, and `AllowSuperCall`).
+  ///
+  /// This hook exists primarily for embeddings that parse source **snippets** extracted from a
+  /// larger program (for example, `vm-js` lazy function parsing). In such cases the snippet itself
+  /// may start with an arrow function, which does *not* introduce its own `new.target` or `super`
+  /// bindings and instead inherits them from its enclosing scope.
+  ///
+  /// Callers should only use this to widen the initial grammar context *before* parsing begins.
+  pub fn set_initial_meta_property_context(
+    &mut self,
+    allow_new_target: bool,
+    allow_super_property: bool,
+    allow_super_call: bool,
+  ) {
+    self.new_target_allowed = allow_new_target as u32;
+    self.super_prop_allowed = allow_super_property as u32;
+    self.super_call_allowed = allow_super_call as u32;
+  }
+
   pub fn options(&self) -> ParseOptions {
     self.options
   }

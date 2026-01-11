@@ -147,8 +147,24 @@ pub fn parse_with_options_cancellable_by<'a>(
   opts: ParseOptions,
   cancel_check: impl FnMut() -> bool + 'a,
 ) -> SyntaxResult<Node<TopLevel>> {
+  parse_with_options_cancellable_by_with_init(source, opts, cancel_check, |_| {})
+}
+
+/// Parse JavaScript or TypeScript source with explicit [`ParseOptions`], allowing cooperative
+/// cancellation via `cancel_check` and an optional parser initialization hook.
+///
+/// This is a variant of [`parse_with_options_cancellable_by`] intended for embedders that need to
+/// mutate the parser's initial state before parsing begins (for example, when parsing source
+/// snippets extracted from a larger program).
+pub fn parse_with_options_cancellable_by_with_init<'a>(
+  source: &'a str,
+  opts: ParseOptions,
+  cancel_check: impl FnMut() -> bool + 'a,
+  init: impl FnOnce(&mut Parser<'a>),
+) -> SyntaxResult<Node<TopLevel>> {
   let lexer = Lexer::new(source);
   let mut parser = Parser::new_cancellable_by(lexer, opts, Box::new(cancel_check));
+  init(&mut parser);
 
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.parse_top_level()));
   match result {
