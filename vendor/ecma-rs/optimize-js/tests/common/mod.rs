@@ -3,6 +3,7 @@ use optimize_js::compile_source_typed as compile_hir_typed;
 use optimize_js::{compile_source as compile_hir, TopLevelMode};
 
 /// Compile using the HIR pipeline used by the optimizer.
+#[allow(dead_code)]
 pub fn compile_source(source: &str, mode: TopLevelMode, debug: bool) -> optimize_js::Program {
   compile_hir(source, mode, debug).expect("compile source")
 }
