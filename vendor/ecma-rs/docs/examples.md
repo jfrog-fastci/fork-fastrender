@@ -113,6 +113,9 @@ This example parses a small TypeScript module, erases TypeScript-only syntax via
 ```bash
 # From the ecma-rs workspace root:
 bash scripts/cargo_llvm.sh run -p native-js --example compile_and_run
+
+# Or, from the FastRender repo root (when ecma-rs is vendored under vendor/ecma-rs/):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js --example compile_and_run
 ```
 
 This example compiles an in-memory TypeScript snippet to LLVM IR using
