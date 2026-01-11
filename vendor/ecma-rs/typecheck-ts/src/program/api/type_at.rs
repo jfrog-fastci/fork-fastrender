@@ -378,7 +378,55 @@ impl Program {
     offset: u32,
   ) -> Result<Option<tti::SignatureId>, FatalError> {
     self.with_interned_state(|state| {
-      let Some((body, expr)) = state.expr_at(file, offset) else {
+      const CALL_SIGNATURE_AT_TRIVIA_LOOKAROUND: usize = 32;
+
+      let mut offset = offset;
+      let mut expr_at = state.expr_at(file, offset);
+
+      if expr_at.is_none() {
+        if let Ok(text) = state.load_text(file, &self.host) {
+          let bytes = text.as_bytes();
+          let start = (offset as usize).min(bytes.len());
+
+          let mut found = None;
+          for step in 1..=CALL_SIGNATURE_AT_TRIVIA_LOOKAROUND {
+            if start < step {
+              break;
+            }
+            let cand = start - step;
+            let Ok(cand_u32) = cand.try_into() else {
+              break;
+            };
+            if state.expr_at(file, cand_u32).is_some() {
+              found = Some(cand_u32);
+              break;
+            }
+          }
+
+          if found.is_none() {
+            for step in 1..=CALL_SIGNATURE_AT_TRIVIA_LOOKAROUND {
+              let cand = start + step;
+              if cand >= bytes.len() {
+                break;
+              }
+              let Ok(cand_u32) = cand.try_into() else {
+                break;
+              };
+              if state.expr_at(file, cand_u32).is_some() {
+                found = Some(cand_u32);
+                break;
+              }
+            }
+          }
+
+          if let Some(adj) = found {
+            offset = adj;
+            expr_at = state.expr_at(file, offset);
+          }
+        }
+      }
+
+      let Some((body, expr)) = expr_at else {
         return Ok(None);
       };
       let result = state.check_body(body)?;

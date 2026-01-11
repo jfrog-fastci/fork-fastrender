@@ -241,6 +241,36 @@ export function f() {
 }
 
 #[test]
+fn call_signature_at_skips_trivia_like_type_at() {
+  let source = r#"
+declare function foo(x: string): string;
+export const value = foo("hi");
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let semi_offset = source
+    .rfind(";")
+    .expect("semicolon after call") as u32;
+
+  let sig_id = program
+    .call_signature_at(file, semi_offset)
+    .expect("call signature recorded near semicolon");
+  let sig = program.signature(sig_id).expect("signature in store");
+  assert_eq!(sig.params.len(), 1);
+  assert_eq!(program.display_type(sig.params[0].ty).to_string(), "string");
+  assert_eq!(program.display_type(sig.ret).to_string(), "string");
+}
+
+#[test]
 fn new_expr_records_construct_signature() {
   let source = r#"const value = new Foo("hi");"#;
   let store = TypeStore::new();
