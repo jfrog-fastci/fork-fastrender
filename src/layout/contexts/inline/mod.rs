@@ -11023,7 +11023,11 @@ impl InlineFormattingContext {
       subsequent_line_width
     };
 
-    let needs_rebalance = use_first_line_width && matches!(text_wrap, TextWrap::Balance | TextWrap::Stable);
+    let needs_rebalance = use_first_line_width
+      && matches!(
+        text_wrap,
+        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
+      );
 
     if !needs_rebalance {
       return self.build_lines(
@@ -25606,22 +25610,42 @@ mod tests {
 
   #[test]
   fn text_wrap_pretty_softens_short_last_line() {
-    let ifc = InlineFormattingContext::new();
-    let mut style = ComputedStyle::default();
-    style.text_wrap = TextWrap::Pretty;
-    let text = "pretty wrapping nudges earlier breaks to avoid stubby ends";
-    let node = BoxNode::new_text(Arc::new(style.clone()), text.to_string());
-    let items = ifc
-      .create_inline_items_for_text(&node, text, false)
-      .expect("pretty items");
-    let strut = ifc.compute_strut_metrics(&style);
+    // Use a deterministic font so line breaking is stable across environments.
+    let mut db = FontDatabase::empty();
+    let roboto_flex = std::fs::read(
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/RobotoFlex-VF.ttf"),
+    )
+    .expect("expected RobotoFlex font fixture");
+    db.load_font_data(roboto_flex)
+      .expect("RobotoFlex font should parse");
+    db.refresh_generic_fallbacks();
+    let font_ctx = FontContext::with_database(Arc::new(db));
+    let ifc = InlineFormattingContext::with_font_context(font_ctx)
+      .with_parallelism(LayoutParallelism::disabled());
 
-    let pretty = ifc
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["RobotoFlex".to_string()].into();
+    style.font_size = 70.0;
+    style.font_weight = crate::style::types::FontWeight::Number(330);
+    style.text_wrap = TextWrap::Auto;
+
+    // Matches the Shopify hero heading that regressed: the unbreakable NBSP makes the greedy
+    // wrap leave a very short last line. `text-wrap: pretty` should move one word from the first
+    // line to soften the orphan.
+    let text = format!("The one commerce platform behind it\u{00A0}all");
+    let width = 940.0;
+
+    let auto_node = BoxNode::new_text(Arc::new(style.clone()), text.clone());
+    let auto_items = ifc
+      .create_inline_items_for_text(&auto_node, &text, false)
+      .expect("auto items");
+    let strut = ifc.compute_strut_metrics(&style);
+    let auto = ifc
       .layout_segment_lines(
-        items.clone(),
+        auto_items,
         true,
-        180.0,
-        180.0,
+        width,
+        width,
         style.text_wrap,
         0.0,
         false,
@@ -25638,22 +25662,26 @@ mod tests {
       .unwrap()
       .lines;
 
-    let mut auto_style = style.clone();
-    auto_style.text_wrap = TextWrap::Auto;
-    let auto = ifc
+    let mut pretty_style = style.clone();
+    pretty_style.text_wrap = TextWrap::Pretty;
+    let pretty_node = BoxNode::new_text(Arc::new(pretty_style.clone()), text.clone());
+    let pretty_items = ifc
+      .create_inline_items_for_text(&pretty_node, &text, false)
+      .expect("pretty items");
+    let pretty = ifc
       .layout_segment_lines(
-        items,
+        pretty_items,
         true,
-        180.0,
-        180.0,
-        auto_style.text_wrap,
+        width,
+        width,
+        pretty_style.text_wrap,
         0.0,
         false,
         false,
         &strut,
         Some(unicode_bidi::Level::ltr()),
-        auto_style.direction,
-        auto_style.unicode_bidi,
+        pretty_style.direction,
+        pretty_style.unicode_bidi,
         None,
         0.0,
         0.0,
@@ -25662,12 +25690,19 @@ mod tests {
       .unwrap()
       .lines;
 
-    assert_eq!(pretty.len(), auto.len());
-    let pretty_penalty = paragraph_short_last_penalty(&pretty);
-    let auto_penalty = paragraph_short_last_penalty(&auto);
-    assert!(
-      pretty_penalty <= auto_penalty,
-      "pretty wrapping should not have a worse short-line penalty"
+    assert_eq!(
+      line_texts(&auto),
+      vec![
+        "The one commerce platform behind".to_string(),
+        format!("it\u{00A0}all"),
+      ]
+    );
+    assert_eq!(
+      line_texts(&pretty),
+      vec![
+        "The one commerce platform".to_string(),
+        format!("behind it\u{00A0}all"),
+      ]
     );
   }
 
