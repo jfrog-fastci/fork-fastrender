@@ -880,6 +880,7 @@ impl CallbackAnalyzer<'_> {
           }
         }
         if let Some(rest) = array.rest {
+          self.effects |= EffectSet::ALLOCATES;
           self.visit_binding_pat(body, rest);
         }
       }
@@ -894,10 +895,14 @@ impl CallbackAnalyzer<'_> {
           }
         }
         if let Some(rest) = obj.rest {
+          self.effects |= EffectSet::ALLOCATES;
           self.visit_binding_pat(body, rest);
         }
       }
-      PatKind::Rest(rest) => self.visit_binding_pat(body, **rest),
+      PatKind::Rest(rest) => {
+        self.effects |= EffectSet::ALLOCATES;
+        self.visit_binding_pat(body, **rest)
+      }
       PatKind::Assign {
         target,
         default_value,
@@ -1510,6 +1515,40 @@ mod tests {
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(true));
     assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_object_rest_param_is_allocating() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(({ ...rest }) => rest);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Allocating);
+    assert!(cb.effects.contains(EffectSet::ALLOCATES));
+  }
+
+  #[test]
+  fn callback_array_rest_param_is_allocating() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(([x, ...rest]) => rest);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Allocating);
+    assert!(cb.effects.contains(EffectSet::ALLOCATES));
   }
 
   #[test]
