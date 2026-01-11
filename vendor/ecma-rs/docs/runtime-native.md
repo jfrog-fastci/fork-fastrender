@@ -588,22 +588,25 @@ Therefore the runtime must not rely on LLVM’s local symbol; it must locate the
 stackmap bytes some other way.
 
 ### 5.3 Linker-symbol based discovery (preferred)
-Instead of parsing `/proc/self/exe`, the `native-js` link step exports two
-**global** symbols that delimit the in-memory `.llvm_stackmaps` byte range
-(which may include multiple concatenated StackMap v3 blobs):
+Instead of parsing `/proc/self/exe`, the final link step exports two **global**
+symbols that delimit the in-memory `.llvm_stackmaps` byte range (which may
+include multiple concatenated StackMap v3 blobs):
 
-- `__fastr_stackmaps_start`
-- `__fastr_stackmaps_end`
+- `__start_llvm_stackmaps`
+- `__stop_llvm_stackmaps`
 
-For compatibility, the linker script also defines aliases:
+For convenience/compatibility, the linker script also defines aliases that point
+at the same range:
 
-- `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
-- `__llvm_stackmaps_start` / `__llvm_stackmaps_end`
+- `__stackmaps_start` / `__stackmaps_end` (generic alias used by tooling like `llvm-stackmaps`)
+- `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (legacy project alias)
+- `__llvm_stackmaps_start` / `__llvm_stackmaps_end` (legacy alias)
 
 They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
-- `runtime-native/link/stackmaps.ld`
+- `runtime-native/link/stackmaps.ld` (lld-friendly, inserted `AFTER .text`)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening; avoids RWX text segments)
 
 ```ld
 SECTIONS {

@@ -348,8 +348,8 @@ const MAIN_C: &str = r#"
 extern int64_t sp_a(void* p1, void* p2);
 extern int64_t sp_b(void* p1, void* p2);
 
-// Ensure the linked executable has a `.data` output section even under `--gc-sections`:
-// `link/stackmaps.ld` uses `INSERT BEFORE .data` as its anchor.
+// Keep at least one writable data symbol in the final executable even under
+// aggressive dead-section elimination (`--gc-sections`).
 volatile int64_t g_data = 1;
 
 int main(void) {

@@ -1,10 +1,14 @@
-/* Linker script fragment for retaining and exposing LLVM stack map sections.
+/* (Legacy) linker script fragment for retaining and exposing LLVM stack map sections.
+ *
+ * NOTE: Prefer:
+ * - `runtime-native/link/stackmaps.ld` (lld-friendly)
+ * - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
  *
  * Why this exists:
  * - `.llvm_stackmaps` is SHF_ALLOC but has no inbound references, so link-time
  *   section GC (`--gc-sections`) will drop it unless explicitly `KEEP`'d.
  *
- * Notes:
+ * Placement:
  * - The output section is writable (to allow PIE/DSO relocations).
  * - We anchor the fragment at `INSERT AFTER .text;` because `.text` is always
  *   present (while `.rodata`/`.data` can be absent in minimal links and cause
