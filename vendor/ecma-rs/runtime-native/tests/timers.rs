@@ -91,7 +91,7 @@ fn sleep_short_completes_after_time_advances() {
   assert_eq!(runtime_native::async_rt::debug_timer_count(), 1);
   assert_eq!(runtime_native::time::debug_registration_count(), 1);
 
-  runtime_native::rt_async_poll();
+  runtime_native::rt_async_poll_legacy();
 
   assert!(poll_once(sleep.as_mut(), &mut cx).is_ready());
   assert_eq!(runtime_native::async_rt::debug_timer_count(), 0);
@@ -133,7 +133,7 @@ fn timeout_cancels_timer_when_inner_future_completes_first() {
           start.elapsed() < Duration::from_secs(2),
           "timeout test took too long (possible timer leak)"
         );
-        runtime_native::rt_async_poll();
+        runtime_native::rt_async_poll_legacy();
       }
     }
   }
@@ -166,6 +166,6 @@ fn dropping_sleep_cancels_and_does_not_spuriously_wake() {
 
   // Even if the timer was already promoted into a runnable task before cancellation,
   // the callback must become a no-op once the Sleep is dropped.
-  runtime_native::rt_async_poll();
+  runtime_native::rt_async_poll_legacy();
   assert_eq!(counter.load(Ordering::SeqCst), 0, "dropped Sleep must not wake");
 }

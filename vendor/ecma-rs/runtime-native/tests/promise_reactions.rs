@@ -18,13 +18,16 @@ extern "C" fn log_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
   unsafe {
     match (*coro).header.state {
       0 => {
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
         let log = &*(*coro).log;
         log.lock().unwrap().push((*coro).id);
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy(
+          (*coro).header.promise,
+          core::ptr::null_mut::<core::ffi::c_void>(),
+        );
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -48,7 +51,7 @@ extern "C" fn push_log(data: *mut u8) {
 fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
   let _rt = TestRuntimeGuard::new();
 
-  let awaited = runtime_native::rt_promise_new();
+  let awaited = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
   let mut coro = Box::new(LogCoroutine {
@@ -66,14 +69,14 @@ fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
   });
 
   // Register the await reaction first (via spawning the coroutine).
-  runtime_native::rt_async_spawn(&mut coro.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
 
   // Then register an explicit `then` callback.
   let then_ctx: &'static LogCtx = Box::leak(Box::new(LogCtx { log, id: 2 }));
-  runtime_native::rt_promise_then(awaited, push_log, then_ctx as *const LogCtx as *mut u8);
+  runtime_native::rt_promise_then_legacy(awaited, push_log, then_ctx as *const LogCtx as *mut u8);
 
-  runtime_native::rt_promise_resolve(awaited, 0x1234usize as ValueRef);
-  while runtime_native::rt_async_poll() {}
+  runtime_native::rt_promise_resolve_legacy(awaited, 0x1234usize as ValueRef);
+  while runtime_native::rt_async_poll_legacy() {}
 
   assert_eq!(&*log.lock().unwrap(), &[1, 2]);
 }
@@ -82,7 +85,7 @@ fn await_and_then_share_single_reaction_list_with_fifo_ordering() {
 fn concurrent_registrations_do_not_lose_reactions() {
   let _rt = TestRuntimeGuard::new();
 
-  let promise = runtime_native::rt_promise_new();
+  let promise = runtime_native::rt_promise_new_legacy();
   let fired: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
 
   extern "C" fn inc(data: *mut u8) {
@@ -100,7 +103,7 @@ fn concurrent_registrations_do_not_lose_reactions() {
     joins.push(std::thread::spawn(move || {
       b.wait();
       for i in 0..PER_THREAD {
-        runtime_native::rt_promise_then(promise, inc, fired as *const AtomicUsize as *mut u8);
+        runtime_native::rt_promise_then_legacy(promise, inc, fired as *const AtomicUsize as *mut u8);
         if i % 17 == 0 {
           std::thread::yield_now();
         }
@@ -111,13 +114,13 @@ fn concurrent_registrations_do_not_lose_reactions() {
   // Start the registrars and resolve mid-flight to cover both pending + already-settled paths.
   barrier.wait();
   std::thread::sleep(std::time::Duration::from_millis(5));
-  runtime_native::rt_promise_resolve(promise, core::ptr::null_mut());
+  runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
 
   for j in joins {
     j.join().unwrap();
   }
 
-  while runtime_native::rt_async_poll() {}
+  while runtime_native::rt_async_poll_legacy() {}
 
   assert_eq!(fired.load(Ordering::SeqCst), THREADS * PER_THREAD);
 }
@@ -126,7 +129,7 @@ fn concurrent_registrations_do_not_lose_reactions() {
 fn reentrant_then_handlers_observe_microtask_checkpoint_ordering() {
   let _rt = TestRuntimeGuard::new();
 
-  let promise = runtime_native::rt_promise_new();
+  let promise = runtime_native::rt_promise_new_legacy();
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
   #[repr(C)]
@@ -144,20 +147,19 @@ fn reentrant_then_handlers_observe_microtask_checkpoint_ordering() {
       log: ctx.log,
       id: 3,
     }));
-    runtime_native::rt_promise_then(ctx.promise, push_log, b_ctx as *const LogCtx as *mut u8);
+    runtime_native::rt_promise_then_legacy(ctx.promise, push_log, b_ctx as *const LogCtx as *mut u8);
   }
 
   let ctx: &'static ReentrantCtx = Box::leak(Box::new(ReentrantCtx { promise, log }));
   let c_ctx: &'static LogCtx = Box::leak(Box::new(LogCtx { log, id: 2 }));
 
-  runtime_native::rt_promise_then(promise, first, ctx as *const ReentrantCtx as *mut u8);
-  runtime_native::rt_promise_then(promise, push_log, c_ctx as *const LogCtx as *mut u8);
+  runtime_native::rt_promise_then_legacy(promise, first, ctx as *const ReentrantCtx as *mut u8);
+  runtime_native::rt_promise_then_legacy(promise, push_log, c_ctx as *const LogCtx as *mut u8);
 
-  runtime_native::rt_promise_resolve(promise, core::ptr::null_mut());
-  while runtime_native::rt_async_poll() {}
+  runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+  while runtime_native::rt_async_poll_legacy() {}
 
   // `first` runs, queues a new microtask (id=3). The second handler (id=2) was already queued and
   // must run before the newly-queued handler.
   assert_eq!(&*log.lock().unwrap(), &[1, 2, 3]);
 }
-

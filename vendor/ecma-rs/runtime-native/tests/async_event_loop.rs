@@ -147,7 +147,7 @@ fn idle_detection() {
   threading::register_current_thread(ThreadKind::Main);
 
   // Warm up once to ensure the global runtime is initialized.
-  let _ = runtime_native::rt_async_poll();
+  let _ = runtime_native::rt_async_poll_legacy();
 
   let start = Instant::now();
   let pending = runtime_native::rt_async_poll_legacy();

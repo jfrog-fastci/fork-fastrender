@@ -91,9 +91,9 @@ static void set_int(uint8_t* data) {
   *flag = 1;
 }
 
-static void blocking_task(uint8_t* data, PromiseRef promise) {
+static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   (void)data;
-  rt_promise_resolve(promise, (ValueRef)0);
+  rt_promise_resolve_legacy(promise, (ValueRef)0);
 }
 
 static void par_for_body(size_t i, uint8_t* data) {
@@ -126,13 +126,13 @@ int main(void) {
   TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 200);
 
   int settled = 0;
-  PromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
-  rt_promise_then(p, set_int, (uint8_t*)&settled);
+  LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
+  rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
 
-  // `rt_async_poll` should block in epoll_wait due to the timer, but wake promptly when the
+  // `rt_async_poll_legacy` should block in epoll_wait due to the timer, but wake promptly when the
   // blocking worker settles the promise.
   for (int i = 0; i < 1000 && !settled && !timer_fired; i++) {
-    rt_async_poll();
+    rt_async_poll_legacy();
   }
   rt_clear_timer(t);
   if (!settled) {
