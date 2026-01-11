@@ -1,4 +1,5 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::OnceLock;
 
 use crate::abi::TaskId;
 use crate::threading::{self, ThreadKind};
@@ -10,15 +11,18 @@ use super::WorkEstimate;
 pub(crate) type ParForBody = extern "C" fn(usize, *mut u8);
 
 pub(super) fn min_grain() -> usize {
-  const DEFAULT: usize = 1024;
+  static MIN_GRAIN: OnceLock<usize> = OnceLock::new();
+  *MIN_GRAIN.get_or_init(|| {
+    const DEFAULT: usize = 1024;
 
-  match std::env::var("RT_PAR_FOR_MIN_GRAIN") {
-    Ok(v) => match v.parse::<usize>() {
-      Ok(0) | Err(_) => DEFAULT,
-      Ok(n) => n,
-    },
-    Err(_) => DEFAULT,
-  }
+    match std::env::var("RT_PAR_FOR_MIN_GRAIN") {
+      Ok(v) => match v.parse::<usize>() {
+        Ok(0) | Err(_) => DEFAULT,
+        Ok(n) => n,
+      },
+      Err(_) => DEFAULT,
+    }
+  })
 }
 
 fn call_body(body: ParForBody, i: usize, data: *mut u8) {
