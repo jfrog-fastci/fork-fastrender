@@ -6,6 +6,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
   for sym in [
     "rt_write_barrier(",
     "rt_write_barrier_range(",
+    "rt_backing_store_external_bytes(",
     "rt_gc_register_root_slot(",
     "rt_gc_unregister_root_slot(",
     "rt_gc_pin(",
@@ -53,6 +54,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = runtime_native::rt_write_barrier;
   let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) =
     runtime_native::rt_write_barrier_range;
+  let _backing_store_external_bytes: extern "C" fn() -> usize = runtime_native::rt_backing_store_external_bytes;
 
   // Global root registration.
   let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 = runtime_native::rt_gc_register_root_slot;
@@ -76,6 +78,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _gc_poll,
     _write_barrier,
     _write_barrier_range,
+    _backing_store_external_bytes,
     _register_root_slot,
     _unregister_root_slot,
     _pin,

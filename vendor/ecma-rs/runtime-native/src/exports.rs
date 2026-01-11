@@ -15,6 +15,7 @@ use crate::gc::SimpleRememberedSet;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
+use crate::BackingStoreAllocator;
 use crate::shape_table;
 use crate::threading;
 use crate::threading::registry;
@@ -454,6 +455,16 @@ pub extern "C" fn rt_gc_collect() {
   if res.is_err() {
     std::process::abort();
   }
+}
+
+/// Returns the total number of bytes currently held in non-moving backing stores (e.g. `ArrayBuffer`
+/// bytes) allocated outside the GC heap.
+///
+/// This value is intended for memory-pressure heuristics: large external buffers should contribute
+/// to GC trigger decisions even though they are not part of the moving heap.
+#[no_mangle]
+pub extern "C" fn rt_backing_store_external_bytes() -> usize {
+  crate::buffer::backing_store::global_backing_store_allocator().external_bytes()
 }
 
 // -----------------------------------------------------------------------------

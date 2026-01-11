@@ -166,6 +166,9 @@ void rt_gc_safepoint_slow(uint64_t epoch);
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
+// Bytes currently owned by non-moving `ArrayBuffer`/`TypedArray` backing stores (allocated outside
+// the GC heap).
+size_t rt_backing_store_external_bytes(void);
 
 // -----------------------------------------------------------------------------
 // GC roots / handles (non-stack roots)

@@ -475,6 +475,7 @@ mod tests {
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
       "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
+      "size_t rt_backing_store_external_bytes(void);",
       "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
       "void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);",
       "uint64_t rt_weak_add(uint8_t* value);",
