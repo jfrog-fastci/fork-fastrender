@@ -10,6 +10,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use typecheck_ts::lib_support::{LibName, ScriptTarget};
 use typecheck_ts::Program;
 
 const STRICT_NATIVE_BASELINE_SCHEMA_VERSION: u32 = 1;
@@ -20,6 +21,22 @@ fn default_jobs() -> usize {
     .map(|count| count.get())
     .unwrap_or(1)
     .min(4)
+}
+
+fn es_lib_for_target(target: ScriptTarget) -> LibName {
+  let name = match target {
+    ScriptTarget::Es3 | ScriptTarget::Es5 => "es5",
+    ScriptTarget::Es2015 => "es2015",
+    ScriptTarget::Es2016 => "es2016",
+    ScriptTarget::Es2017 => "es2017",
+    ScriptTarget::Es2018 => "es2018",
+    ScriptTarget::Es2019 => "es2019",
+    ScriptTarget::Es2020 => "es2020",
+    ScriptTarget::Es2021 => "es2021",
+    ScriptTarget::Es2022 => "es2022",
+    ScriptTarget::EsNext => "esnext",
+  };
+  LibName::parse(name).expect("known lib name")
 }
 
 #[derive(Debug, Clone, Args)]
@@ -327,6 +344,17 @@ fn run_case(
   let file_set = HarnessFileSet::new(&test.files);
   let mut compiler_options = test.options.to_compiler_options();
   compiler_options.native_strict = true;
+  // The default lib set includes `dom`, which is extremely expensive to load in
+  // debug builds and isn't needed by this suite. Restrict to the ES lib implied
+  // by the target unless the test explicitly specifies a `// @lib:` list.
+  if compiler_options.libs.is_empty() && !compiler_options.no_default_lib {
+    compiler_options.libs = vec![es_lib_for_target(compiler_options.target)];
+    if matches!(compiler_options.target, ScriptTarget::EsNext) {
+      compiler_options
+        .libs
+        .push(LibName::parse("esnext.disposable").expect("known lib name"));
+    }
+  }
   let host = HarnessHost::new(file_set.clone(), compiler_options);
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));

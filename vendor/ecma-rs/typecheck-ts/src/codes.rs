@@ -676,21 +676,49 @@ pub const IMPLICIT_ANY: Code = Code::new(
   &[],
 );
 
-/// TC4000: `any` is forbidden when `native_strict` / `strict_native` is enabled.
+/// TN0001: `any` types are forbidden when `strict_native` is enabled.
 ///
-/// Alias retained for older call sites; see [`NATIVE_STRICT_ANY`].
-pub const FORBIDDEN_ANY: Code = NATIVE_STRICT_ANY;
-
-/// TC4005: Unsafe type assertions are forbidden when `native_strict` / `strict_native` is enabled.
+/// These diagnostics come from the strict-native type-soundness checks (distinct
+/// from the `native_strict` AOT subset diagnostics like [`NATIVE_STRICT_ANY`]).
 ///
-/// Alias retained for older call sites; see [`NATIVE_STRICT_UNSAFE_ASSERTION`].
-pub const UNSAFE_TYPE_ASSERTION: Code = NATIVE_STRICT_UNSAFE_ASSERTION;
+/// - Primary span: the `any` keyword (explicit) or the expression/binding whose
+///   type contains `any` (inferred).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const FORBIDDEN_ANY: Code = Code::new(
+  "TN0001",
+  "forbidden any type",
+  "`any` keyword or expression/binding with an `any` type",
+  &["primary: `any` keyword or expression/binding with an `any` type"],
+  &[],
+);
 
-/// TC4006: Non-null assertions on maybe-nullish values are forbidden when `native_strict` /
+/// TN0002: Unsafe type assertions are forbidden when `strict_native` is enabled.
+///
+/// - Primary span: the type assertion expression (`expr as T` / `<T>expr`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const UNSAFE_TYPE_ASSERTION: Code = Code::new(
+  "TN0002",
+  "unsafe type assertion",
+  "type assertion expression",
+  &["primary: type assertion expression"],
+  &[],
+);
+
+/// TN0003: Non-null assertions on maybe-nullish values are forbidden when
 /// `strict_native` is enabled.
 ///
-/// Alias retained for older call sites; see [`NATIVE_STRICT_NONNULL_ASSERTION`].
-pub const INVALID_NON_NULL_ASSERTION: Code = NATIVE_STRICT_NONNULL_ASSERTION;
+/// - Primary span: the non-null assertion expression (`expr!`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const INVALID_NON_NULL_ASSERTION: Code = Code::new(
+  "TN0003",
+  "non-null assertion discards nullish",
+  "non-null assertion expression",
+  &["primary: non-null assertion expression"],
+  &[],
+);
 
 /// TC3001: JSX syntax is present but the compiler is not configured to allow it.
 ///
