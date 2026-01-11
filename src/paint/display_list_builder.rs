@@ -11077,6 +11077,100 @@ impl DisplayListBuilder {
     Some(runs.iter().map(|run| run.advance).sum())
   }
 
+  fn emit_video_controls_placeholder_ui(&mut self, content_rect: Rect) {
+    let w = content_rect.width().max(0.0);
+    let h = content_rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    // Place the controls just above the bottom control bar. This matches common UA behaviour where
+    // the scrubber and icons sit within a shadowed region that extends upward from the bar.
+    let bar_h = 32.0_f32.min(h);
+    let overlay_bottom = content_rect.max_y() - bar_h;
+
+    let inset = 8.0;
+    let icon_size = 12.0;
+    let icon_gap = 8.0;
+    let progress_h = 4.0;
+    let progress_gap = 4.0;
+    let knob_r = 4.0;
+
+    let icon_y = overlay_bottom - inset - icon_size;
+    let progress_y = icon_y - progress_gap - progress_h;
+
+    // Ensure we have enough vertical space for the UI elements (avoid cluttering tiny videos).
+    if progress_y < content_rect.y() + inset {
+      return;
+    }
+
+    let track_x = content_rect.x() + inset;
+    let track_w = (w - inset * 2.0).max(0.0);
+    if track_w <= 0.0 {
+      return;
+    }
+
+    // Scrubber track + knob (0% progress).
+    self.list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(track_x, progress_y, track_w, progress_h),
+      color: Rgba::WHITE.with_alpha(0.35),
+    }));
+    self.list.push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+      rect: Rect::from_xywh(
+        track_x - knob_r,
+        progress_y + progress_h * 0.5 - knob_r,
+        knob_r * 2.0,
+        knob_r * 2.0,
+      ),
+      color: Rgba::WHITE.with_alpha(0.9),
+      radii: BorderRadii::uniform(knob_r),
+    }));
+
+    // Play icon (triangle built from vertical strips so we don't need a path primitive).
+    let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
+    self.emit_play_triangle_icon(play_rect, Rgba::WHITE.with_alpha(0.85));
+
+    // A few simple right-aligned icon placeholders (volume/settings/fullscreen).
+    let icon_count = 3;
+    let total_w = icon_count as f32 * icon_size + (icon_count as f32 - 1.0) * icon_gap;
+    let start_x = content_rect.max_x() - inset - total_w;
+    if start_x.is_finite() && start_x >= play_rect.max_x() + icon_gap {
+      for i in 0..icon_count {
+        let x = start_x + i as f32 * (icon_size + icon_gap);
+        self.list.push(DisplayItem::FillRect(FillRectItem {
+          rect: Rect::from_xywh(x, icon_y, icon_size, icon_size),
+          color: Rgba::WHITE.with_alpha(0.6),
+        }));
+      }
+    }
+  }
+
+  fn emit_play_triangle_icon(&mut self, rect: Rect, color: Rgba) {
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    // Approximate a triangle with vertical strips.
+    let cols = 6usize;
+    let col_w = (w / cols as f32).max(0.0);
+    if col_w <= 0.0 {
+      return;
+    }
+
+    for i in 0..cols {
+      let t = (i + 1) as f32 / cols as f32;
+      let col_h = (h * t).max(0.0);
+      let x = rect.x() + col_w * i as f32;
+      let y = rect.y() + (h - col_h) * 0.5;
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(x, y, col_w, col_h),
+        color,
+      }));
+    }
+  }
+
   fn emit_replaced_placeholder(
     &mut self,
     replaced_type: &ReplacedType,
@@ -11170,6 +11264,8 @@ impl DisplayListBuilder {
           spread: GradientSpread::Pad,
         }));
       }
+
+      self.emit_video_controls_placeholder_ui(content_rect);
 
       if clip_contents.is_some() {
         self.list.push(DisplayItem::PopClip);
@@ -19407,6 +19503,41 @@ mod tests {
         .iter()
         .any(|item| matches!(item, DisplayItem::LinearGradient(_))),
       "expected control shadow gradient"
+    );
+  }
+
+  #[test]
+  fn video_controls_without_poster_emits_controls_ui() {
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      ReplacedType::Video {
+        src: String::new(),
+        poster: None,
+        controls: true,
+      },
+    );
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    assert!(
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill)
+            if fill.rect == Rect::from_xywh(8.0, 140.0, 184.0, 4.0)
+        )
+      }),
+      "expected a progress-bar track in the video controls placeholder"
+    );
+    assert!(
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRoundedRect(fill)
+            if fill.rect == Rect::from_xywh(4.0, 138.0, 8.0, 8.0)
+        )
+      }),
+      "expected a progress-bar knob in the video controls placeholder"
     );
   }
 

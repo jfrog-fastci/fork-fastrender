@@ -12821,6 +12821,129 @@ impl Painter {
     true
   }
 
+  fn paint_solid_rect_simple(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return;
+    }
+    let device_rect = self.device_rect(rect);
+    let Some(sk_rect) = SkiaRect::from_xywh(
+      device_rect.x(),
+      device_rect.y(),
+      device_rect.width(),
+      device_rect.height(),
+    ) else {
+      return;
+    };
+    let path = PathBuilder::from_rect(sk_rect);
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+    paint.anti_alias = true;
+    self.pixmap.fill_path(
+      &path,
+      &paint,
+      tiny_skia::FillRule::Winding,
+      Transform::identity(),
+      clip_mask,
+    );
+  }
+
+  fn paint_play_triangle_icon(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+    let cols = 6usize;
+    let col_w = (w / cols as f32).max(0.0);
+    if col_w <= 0.0 {
+      return;
+    }
+    for i in 0..cols {
+      let t = (i + 1) as f32 / cols as f32;
+      let col_h = (h * t).max(0.0);
+      let x = rect.x() + col_w * i as f32;
+      let y = rect.y() + (h - col_h) * 0.5;
+      self.paint_solid_rect_simple(Rect::from_xywh(x, y, col_w, col_h), color, clip_mask);
+    }
+  }
+
+  fn paint_video_controls_placeholder_ui(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
+    let w = content_rect.width().max(0.0);
+    let h = content_rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 {
+      return;
+    }
+
+    let bar_h = 32.0_f32.min(h);
+    let overlay_bottom = content_rect.max_y() - bar_h;
+
+    let inset = 8.0;
+    let icon_size = 12.0;
+    let icon_gap = 8.0;
+    let progress_h = 4.0;
+    let progress_gap = 4.0;
+    let knob_r = 4.0;
+
+    let icon_y = overlay_bottom - inset - icon_size;
+    let progress_y = icon_y - progress_gap - progress_h;
+    if progress_y < content_rect.y() + inset {
+      return;
+    }
+
+    let track_x = content_rect.x() + inset;
+    let track_w = (w - inset * 2.0).max(0.0);
+    if track_w <= 0.0 {
+      return;
+    }
+
+    self.paint_solid_rect_simple(
+      Rect::from_xywh(track_x, progress_y, track_w, progress_h),
+      Rgba::WHITE.with_alpha(0.35),
+      clip_mask,
+    );
+
+    // 0% progress knob.
+    let knob_center_x = track_x;
+    let knob_center_y = progress_y + progress_h * 0.5;
+    let radius = self.device_length(knob_r);
+    if radius > 0.0 {
+      if let Some(path) = PathBuilder::from_circle(
+        self.device_x(knob_center_x),
+        self.device_y(knob_center_y),
+        radius,
+      ) {
+        let mut paint = Paint::default();
+        let color = Rgba::WHITE.with_alpha(0.9);
+        paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+        paint.anti_alias = true;
+        self.pixmap.fill_path(
+          &path,
+          &paint,
+          tiny_skia::FillRule::Winding,
+          Transform::identity(),
+          clip_mask,
+        );
+      }
+    }
+
+    let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
+    self.paint_play_triangle_icon(play_rect, Rgba::WHITE.with_alpha(0.85), clip_mask);
+
+    let icon_count = 3;
+    let total_w = icon_count as f32 * icon_size + (icon_count as f32 - 1.0) * icon_gap;
+    let start_x = content_rect.max_x() - inset - total_w;
+    if start_x.is_finite() && start_x >= play_rect.max_x() + icon_gap {
+      for i in 0..icon_count {
+        let x = start_x + i as f32 * (icon_size + icon_gap);
+        self.paint_solid_rect_simple(
+          Rect::from_xywh(x, icon_y, icon_size, icon_size),
+          Rgba::WHITE.with_alpha(0.6),
+          clip_mask,
+        );
+      }
+    }
+  }
+
   fn paint_replaced_placeholder(
     &mut self,
     replaced_type: &ReplacedType,
@@ -12911,6 +13034,8 @@ impl Painter {
               MixBlendMode::Normal,
             );
           }
+
+          self.paint_video_controls_placeholder_ui(rect, clip_mask);
         }
       }
       return;
@@ -22252,6 +22377,33 @@ mod tests {
     assert!(
       bottom.0 < top.0,
       "expected native control shadow to darken near the bottom (top={top:?} bottom={bottom:?})"
+    );
+  }
+
+  #[test]
+  fn paints_video_controls_placeholder_controls_ui() {
+    let style = Arc::new(ComputedStyle::default());
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Video {
+          src: String::new(),
+          poster: None,
+          controls: true,
+        },
+        box_id: None,
+      },
+      vec![],
+      style,
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![fragment]);
+    let tree = FragmentTree::new(root);
+    let pixmap = paint_tree(&tree, 200, 200, Rgba::WHITE).expect("paint video placeholder");
+
+    let progress = color_at(&pixmap, 100, 142);
+    assert!(
+      progress.0 > 80,
+      "expected a visible progress track in the controls UI (got {progress:?})"
     );
   }
 
