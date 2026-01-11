@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use runtime_native::abi::RtShapeId;
 use runtime_native::rt_alloc;
 use runtime_native::rt_alloc_array;
 
@@ -10,7 +11,7 @@ fn round_up_16(n: usize) -> usize {
 #[test]
 fn alloc_alignment() {
   for _ in 0..128 {
-    let ptr = rt_alloc(1, 0);
+    let ptr = rt_alloc(1, RtShapeId(0));
     assert_eq!((ptr as usize) & 15, 0);
   }
 }
@@ -19,8 +20,8 @@ fn alloc_alignment() {
 fn alloc_distinct() {
   let a_size = 24;
   let b_size = 40;
-  let a = rt_alloc(a_size, 0) as usize;
-  let b = rt_alloc(b_size, 0) as usize;
+  let a = rt_alloc(a_size, RtShapeId(0)) as usize;
+  let b = rt_alloc(b_size, RtShapeId(0)) as usize;
 
   let a_end = a + round_up_16(a_size);
   let b_end = b + round_up_16(b_size);
@@ -63,7 +64,7 @@ fn thread_local_fast_path() {
     handles.push(std::thread::spawn(|| {
       let mut ranges = Vec::with_capacity(ITERS);
       for _ in 0..ITERS {
-        let ptr = rt_alloc(SIZE, 0) as usize;
+        let ptr = rt_alloc(SIZE, RtShapeId(0)) as usize;
         let end = ptr.checked_add(round_up_16(SIZE)).expect("ptr overflow");
         ranges.push((ptr, end));
       }
@@ -83,4 +84,3 @@ fn thread_local_fast_path() {
     assert!(a_end <= b_start, "overlapping allocations across threads");
   }
 }
-

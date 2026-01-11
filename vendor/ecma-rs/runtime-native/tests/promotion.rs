@@ -14,7 +14,7 @@ struct Node {
   next: *mut u8,
 }
 
-static NODE_PTR_OFFSETS: [usize; 1] = [mem::offset_of!(Node, next)];
+static NODE_PTR_OFFSETS: [u32; 1] = [mem::offset_of!(Node, next) as u32];
 static NODE_DESC: TypeDescriptor = TypeDescriptor::new(mem::size_of::<Node>(), &NODE_PTR_OFFSETS);
 
 #[test]

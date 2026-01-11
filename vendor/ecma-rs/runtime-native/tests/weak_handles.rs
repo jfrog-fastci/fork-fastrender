@@ -6,7 +6,7 @@ use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
 
-static NO_PTR_OFFSETS: [usize; 0] = [];
+static NO_PTR_OFFSETS: [u32; 0] = [];
 
 #[repr(C)]
 struct BoxedUsize {

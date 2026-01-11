@@ -84,19 +84,20 @@ impl DescCache {
     let ptr_size = mem::size_of::<*mut u8>();
     let align = mem::align_of::<*mut u8>();
 
-    let (size, ptr_offsets): (usize, Vec<usize>) = match kind {
+    let (size, ptr_offsets): (usize, Vec<u32>) = match kind {
       ObjKind::Fixed | ObjKind::PtrArray => {
         let size = align_up(PAYLOAD_OFFSET + len * ptr_size, align);
         let mut offsets = Vec::with_capacity(len);
         for i in 0..len {
-          offsets.push(PAYLOAD_OFFSET + i * ptr_size);
+          let off = PAYLOAD_OFFSET + i * ptr_size;
+          offsets.push(u32::try_from(off).expect("pointer offset must fit in u32"));
         }
         (size, offsets)
       }
       ObjKind::Bytes => (align_up(PAYLOAD_OFFSET + len, align), Vec::new()),
     };
 
-    let offsets: &'static [usize] = Box::leak(ptr_offsets.into_boxed_slice());
+    let offsets: &'static [u32] = Box::leak(ptr_offsets.into_boxed_slice());
     let desc: &'static TypeDescriptor = Box::leak(Box::new(TypeDescriptor::new(size, offsets)));
     self.map.insert((kind, len), desc);
     desc
