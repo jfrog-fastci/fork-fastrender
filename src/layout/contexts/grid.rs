@@ -16947,6 +16947,94 @@ mod tests {
   }
 
   #[test]
+  fn measure_grid_item_ignores_stretched_known_height_when_override_not_allowed() {
+    use taffy::style::AvailableSpace;
+
+    let gc = GridFormattingContext::new();
+    let factory = gc.factory.clone();
+
+    let width = 200.0;
+    let stretched_height = 500.0;
+
+    let mut style = ComputedStyle::default();
+    style.padding_top = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    node.id = 1;
+    let node_ptr = &node as *const _;
+
+    let mut taffy_style: taffy::style::Style = taffy::style::Style::default();
+    taffy_style.align_self = Some(taffy::style::AlignItems::Stretch);
+
+    let baseline = {
+      let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+        FxHashMap::default();
+      let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+      let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+      gc.measure_grid_item(
+        node_ptr,
+        TaffyNodeId::from(1u64),
+        taffy::geometry::Size {
+          width: Some(width),
+          height: None,
+        },
+        taffy::geometry::Size {
+          width: AvailableSpace::Definite(width),
+          height: AvailableSpace::Definite(stretched_height),
+        },
+        Some(width),
+        false,
+        &taffy_style,
+        &FxHashSet::default(),
+        &factory,
+        &mut measure_cache,
+        &mut measured_fragments,
+        &mut measured_node_keys,
+      )
+    };
+
+    assert!(
+      baseline.size.height > 0.0 && baseline.size.height < 100.0,
+      "expected auto-height grid item to remain content-sized, got {:.2}px",
+      baseline.size.height
+    );
+
+    let stretched = {
+      let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+        FxHashMap::default();
+      let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+      let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+      gc.measure_grid_item(
+        node_ptr,
+        TaffyNodeId::from(1u64),
+        taffy::geometry::Size {
+          width: Some(width),
+          height: Some(stretched_height),
+        },
+        taffy::geometry::Size {
+          width: AvailableSpace::Definite(width),
+          height: AvailableSpace::Definite(stretched_height),
+        },
+        Some(width),
+        false,
+        &taffy_style,
+        &FxHashSet::default(),
+        &factory,
+        &mut measure_cache,
+        &mut measured_fragments,
+        &mut measured_node_keys,
+      )
+    };
+
+    assert!(
+      (stretched.size.height - baseline.size.height).abs() < 1e-6,
+      "stretched known height should not change measurement when overrides are disabled (baseline={:.2}px, stretched={:.2}px)",
+      baseline.size.height,
+      stretched.size.height
+    );
+  }
+
+  #[test]
   fn grid_auto_rows_min_and_max_content_measure_text_height() {
     let gc = GridFormattingContext::new();
     let constraints = LayoutConstraints::definite_width(320.0);
