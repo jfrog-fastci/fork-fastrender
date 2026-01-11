@@ -8,6 +8,8 @@ use std::ffi::{CStr, CString};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PassError {
+  #[error(transparent)]
+  GcLint(#[from] super::LintError),
   #[error("LLVMRunPasses failed for pipeline `{pipeline}`: {message}")]
   RunPasses { pipeline: String, message: String },
 }
@@ -21,13 +23,18 @@ pub enum PassError {
 /// In debug builds we also run `verify<safepoint-ir>` to catch invalid safepoint
 /// IR early.
 pub fn rewrite_statepoints_for_gc(module: &Module<'_>, target_machine: &TargetMachine) -> Result<(), PassError> {
+  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+
   let pipeline = if cfg!(debug_assertions) {
     "rewrite-statepoints-for-gc,verify<safepoint-ir>"
   } else {
     "rewrite-statepoints-for-gc"
   };
 
-  run_pass_pipeline(module, target_machine, pipeline)
+  run_pass_pipeline(module, target_machine, pipeline)?;
+
+  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  Ok(())
 }
 
 fn run_pass_pipeline(
@@ -64,4 +71,3 @@ fn run_pass_pipeline(
 
   Ok(())
 }
-

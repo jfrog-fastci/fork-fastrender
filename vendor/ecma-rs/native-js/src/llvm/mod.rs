@@ -14,13 +14,31 @@
 //! - rewrite plain calls into `llvm.experimental.gc.statepoint.*`
 //! - attach the required `"gc-live"` operand bundle
 //! - insert `llvm.experimental.gc.relocate.*` / `gc.result.*` and rewrite uses
-
+ 
 use inkwell::module::Module;
 use inkwell::targets::{FileType, TargetMachine};
+use llvm_sys::prelude::LLVMModuleRef;
 
 pub mod gc;
+pub mod gc_lint;
 pub mod passes;
 pub mod statepoint_directives;
+
+pub use gc_lint::{lint_gc_pointer_discipline, LintError, LintRule, LintViolation};
+
+/// Run the GC pointer discipline lint in debug builds/tests.
+///
+/// In release builds this is a no-op unless the `gc-lint` feature is enabled.
+#[cfg(any(debug_assertions, feature = "gc-lint"))]
+pub fn debug_lint_gc_pointer_discipline(module: LLVMModuleRef) -> Result<(), LintError> {
+  lint_gc_pointer_discipline(module)
+}
+
+/// Release builds omit GC IR lint by default for compile-time performance.
+#[cfg(not(any(debug_assertions, feature = "gc-lint")))]
+pub fn debug_lint_gc_pointer_discipline(_module: LLVMModuleRef) -> Result<(), LintError> {
+  Ok(())
+}
 
 /// Apply the target triple + data layout from `target_machine` onto `module`.
 ///

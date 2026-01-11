@@ -10,6 +10,8 @@ description = "Native (LLVM-backed) code generation for a strict TypeScript subs
 default = []
 # Optional helper to assign sequential/deterministic `"statepoint-id"` callsite attributes.
 statepoint-directives = []
+# Enable the GC IR lint in non-debug builds. Debug builds/tests always run it.
+gc-lint = []
 
 [dependencies]
 anyhow = { workspace = true }
