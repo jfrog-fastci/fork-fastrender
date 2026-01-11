@@ -506,6 +506,11 @@ fn worker_loop(
 
   let mut spins = 0usize;
   'work: loop {
+    // Poll the GC safepoint barrier on every loop iteration so stop-the-world
+    // requests are observed promptly even while the worker is idle/spinning or
+    // retrying steals.
+    threading::safepoint_poll();
+
     if let Some(task) = local.pop() {
       spins = 0;
       // Before running mutator code, poll the GC safepoint.
