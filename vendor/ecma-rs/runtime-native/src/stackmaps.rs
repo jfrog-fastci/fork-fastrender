@@ -136,8 +136,8 @@ impl StackMap {
       let mut live_outs = Vec::with_capacity(num_live_outs);
       for _ in 0..num_live_outs {
         let dwarf_reg = c.read_u16()?;
-        let _reserved = c.read_u8()?;
         let size = c.read_u8()?;
+        let _reserved = c.read_u8()?;
         live_outs.push(LiveOut { dwarf_reg, size });
       }
 
@@ -777,8 +777,8 @@ mod tests {
 
     // LiveOut: reg=0,reserved=0,size=8.
     push_u16(&mut bytes, 0);
-    push_u8(&mut bytes, 0);
     push_u8(&mut bytes, 8);
+    push_u8(&mut bytes, 0);
 
     // Pad with non-zero to validate we skip, not validate content.
     align_to_8_with(&mut bytes, 0xCD);
