@@ -2,31 +2,27 @@
 
 use core::arch::global_asm;
 
-// Define a tiny but valid StackMap v3 section (0 functions / 0 records) and export the same symbol
-// names that `native-js`'s linker script provides in real executables.
+// Define a tiny but valid StackMap v3 blob (0 functions / 0 records).
+//
+// Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which defines
+// `__fastr_stackmaps_start/end` at the output-section boundaries and keeps all `.llvm_stackmaps`
+// input sections under `--gc-sections`. This blob ensures the section is non-empty even in minimal
+// environments that don't have LLVM tools installed (and therefore don't build the stackmap test
+// artifact).
 global_asm!(
   r#"
   .section .llvm_stackmaps,"a",@progbits
   .p2align 3
-  .globl __fastr_stackmaps_start
-  .globl __fastr_stackmaps_end
-__fastr_stackmaps_start:
-  // Simulate the output-section-level alignment padding that linkers can insert
-  // before the first input section payload.
-  .byte 0,0,0,0,0,0,0,0
   .byte 3
   .byte 0
   .short 0
   .long 0
   .long 0
   .long 0
-__fastr_stackmaps_end:
 "#
 );
 
 const FIXTURE: &[u8] = &[
-  // Leading padding (8 bytes).
-  0, 0, 0, 0, 0, 0, 0, 0,
   3, 0, // Version, Reserved0
   0, 0, // Reserved1
   0, 0, 0, 0, // NumFunctions
@@ -37,6 +33,11 @@ const FIXTURE: &[u8] = &[
 #[test]
 fn stackmaps_discovered_via_exported_symbols() {
   let bytes = runtime_native::stackmaps_symbols::stackmaps_bytes_from_exe();
+  assert!(!bytes.is_empty());
+  // Linkers may insert alignment padding before the first blob. The runtime helper should tolerate
+  // that, so check the first non-zero byte is the stackmap version.
+  let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
+  assert_eq!(version, runtime_native::stackmaps::STACKMAP_VERSION);
   // `runtime-native`'s test build links an additional `.llvm_stackmaps` object (see `build.rs`) so
   // the symbol range may contain multiple concatenated StackMap v3 blobs.
   //
