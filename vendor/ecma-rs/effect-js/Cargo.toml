@@ -8,7 +8,11 @@ repository.workspace = true
 [features]
 default = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+# Enables the `hir-js/semantic-ops` feature and extends `effect-js` analyses to
+# understand the extra HIR expression variants.
 hir-semantic-ops = ["hir-js/semantic-ops", "typecheck-ts?/semantic-ops"]
+# Backwards-compatible alias (most crates use `semantic-ops` as the feature name).
+semantic-ops = ["hir-semantic-ops"]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -536,6 +536,13 @@ impl CallbackAnalyzer<'_> {
 
       ExprKind::Ident(name) => self.record_ident(*name),
 
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => {
+        // Awaiting is currently treated as a transparent wrapper around the
+        // awaited expression. Downstream phases may want to model this as
+        // nondeterministic + may_throw.
+        self.visit_expr(body, *expr);
+      }
       ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::NonNull { expr } => {
         self.visit_expr(body, *expr);
       }
@@ -588,6 +595,70 @@ impl CallbackAnalyzer<'_> {
               self.merge_purity(sem.purity);
             }
           }
+        }
+      }
+
+      // Semantic ops are higher-level "call-like" expressions introduced by
+      // `hir-js/semantic-ops`. Until we have full modeling for them in `effect-js`,
+      // treat them conservatively as unknown effects while still visiting their
+      // child expressions for identifier tracking.
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+        if let Some(init) = init {
+          self.visit_expr(body, *init);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        for op in ops {
+          match op {
+            ArrayChainOp::Map(callback)
+            | ArrayChainOp::Filter(callback)
+            | ArrayChainOp::Find(callback)
+            | ArrayChainOp::Every(callback)
+            | ArrayChainOp::Some(callback) => {
+              self.visit_expr(body, *callback);
+            }
+            ArrayChainOp::Reduce(callback, init) => {
+              self.visit_expr(body, *callback);
+              if let Some(init) = init {
+                self.visit_expr(body, *init);
+              }
+            }
+          }
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        self.mark_unknown();
+        for promise in promises {
+          self.visit_expr(body, *promise);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        self.mark_unknown();
+        for arg in args {
+          self.visit_expr(body, *arg);
         }
       }
 
@@ -743,6 +814,16 @@ impl CallbackAnalyzer<'_> {
 
       ExprKind::Jsx(_) => {
         self.effects |= EffectSet::ALLOCATES;
+      }
+
+      // Future-proofing: if `hir-js` grows new expression variants that `effect-js`
+      // does not understand, keep analysis conservative rather than failing to
+      // compile (or worse, under-approximating effects).
+      #[allow(unreachable_patterns)]
+      _ => {
+        self.mark_unknown();
+        self.uses_index = true;
+        self.uses_array = true;
       }
     }
   }
