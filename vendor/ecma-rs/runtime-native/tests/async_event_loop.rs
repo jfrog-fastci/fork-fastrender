@@ -199,18 +199,22 @@ fn parked_event_loop_thread_counts_as_quiescent_for_stop_the_world() {
 
   let poll_thread_id = rx_id.recv().unwrap();
 
-  // Wait until the poll thread has parked itself.
+  // Wait until the poll thread has entered a GC-safe/parked state while blocked
+  // in `epoll_wait`.
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
-    let parked = threading::all_threads()
+    let quiescent = threading::all_threads()
       .into_iter()
       .find(|t| t.id() == poll_thread_id)
-      .map(|t| t.is_parked())
+      .map(|t| t.is_parked() || t.is_native_safe())
       .unwrap_or(false);
-    if parked {
+    if quiescent {
       break;
     }
-    assert!(Instant::now() < deadline, "poll thread did not park in time");
+    assert!(
+      Instant::now() < deadline,
+      "poll thread did not enter a GC-safe state in time"
+    );
     std::thread::yield_now();
   }
 

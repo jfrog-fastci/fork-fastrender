@@ -380,6 +380,13 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: std::time::Duration) -> boo
   threading::safepoint::rt_gc_wait_for_world_stopped_timeout(timeout)
 }
 
+/// Like [`rt_gc_wait_for_world_stopped_timeout`], but waits for all threads to observe the current
+/// resumed (even) epoch after a stop-the-world cycle.
+#[doc(hidden)]
+pub fn rt_gc_wait_for_world_resumed_timeout(timeout: std::time::Duration) -> bool {
+  threading::safepoint::rt_gc_wait_for_world_resumed_timeout(timeout)
+}
+
 /// Resume all threads after a stop-the-world GC safepoint.
 ///
 /// Internal runtime hook; not a stable public API.

@@ -37,25 +37,29 @@ fn stop_the_world_does_not_wait_for_async_poll_thread_blocked_in_epoll() {
 
   let poller_id = rx_id.recv().unwrap();
 
-  // Wait until the poller thread is actually blocked in epoll_wait and has marked itself parked.
+  // Wait until the poller thread is actually blocked in epoll_wait and has
+  // entered a GC-safe/parked state.
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
-    let parked = threading::all_threads()
+    let quiescent = threading::all_threads()
       .into_iter()
       .find(|t| t.id().get() == poller_id)
-      .map(|t| t.is_parked())
+      .map(|t| t.is_parked() || t.is_native_safe())
       .unwrap_or(false);
-    if parked {
+    if quiescent {
       break;
     }
-    assert!(Instant::now() < deadline, "poll thread did not park in time");
+    assert!(
+      Instant::now() < deadline,
+      "poll thread did not enter a GC-safe state in time"
+    );
     std::thread::yield_now();
   }
 
   runtime_native::rt_gc_request_stop_the_world();
   assert!(
     runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200)),
-    "world did not stop while async poll thread was parked"
+    "world did not stop while async poll thread was GC-safe"
   );
   runtime_native::rt_gc_resume_world();
 

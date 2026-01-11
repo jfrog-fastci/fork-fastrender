@@ -151,6 +151,17 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   let _ = roots;
 
   f();
+
+  // Ensure all threads have observed the resumed epoch before allowing another
+  // stop-the-world request. Without this post-resume barrier, a rapid sequence
+  // of `rt_gc_collect` calls can start a new stop-the-world epoch before some
+  // threads have returned from the previous safepoint slow path, causing them to
+  // miss the brief resumed epoch and remain blocked across requests.
+  let resume_epoch = crate::rt_gc_resume_world();
+  assert!(
+    crate::rt_gc_wait_for_world_resumed_timeout(timeout),
+    "world did not resume safepoint in time (timeout={timeout:?}, epoch={resume_epoch})"
+  );
 }
 
 /// Stop the world, enumerate roots, run `f`, and resume.

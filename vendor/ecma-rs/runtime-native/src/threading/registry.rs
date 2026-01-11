@@ -81,6 +81,8 @@ pub struct ThreadState {
   /// Whether this thread is currently parked/idle inside the runtime.
   parked: AtomicBool,
 
+  detached: AtomicBool,
+
   /// The last GC safepoint epoch observed by this thread.
   safepoint_epoch_observed: AtomicU64,
 
@@ -119,6 +121,10 @@ impl ThreadState {
 
   pub fn is_parked(&self) -> bool {
     self.parked.load(Ordering::Acquire)
+  }
+
+  pub fn is_detached(&self) -> bool {
+    self.detached.load(Ordering::Acquire)
   }
 
   pub fn safepoint_epoch_observed(&self) -> u64 {
@@ -236,6 +242,7 @@ impl ThreadRegistry {
       os_thread_id: current_os_thread_id(),
       native_safe_depth: AtomicUsize::new(0),
       parked: AtomicBool::new(false),
+      detached: AtomicBool::new(false),
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
       safepoint_context: Mutex::new(None),
       stack_bounds: Mutex::new(current_stack_bounds()),
@@ -252,7 +259,11 @@ impl ThreadRegistry {
 
     // If a GC is already in progress, immediately park at the safepoint before
     // running mutator code.
-    if global_epoch & 1 == 1 {
+    //
+    // Re-read the epoch after registering to avoid a race where we observed an
+    // even epoch, then blocked on the registry lock while another thread
+    // requested stop-the-world.
+    if safepoint::current_epoch() & 1 == 1 {
       safepoint::rt_gc_safepoint();
     }
 
@@ -301,6 +312,10 @@ struct ThreadRegistration {
 
 impl Drop for ThreadRegistration {
   fn drop(&mut self) {
+    self
+      .state
+      .detached
+      .store(true, Ordering::Release);
     registry().unregister_thread(self.state.id);
     safepoint::notify_state_change();
   }
@@ -388,6 +403,10 @@ pub fn thread_counts() -> ThreadCounts {
 pub fn set_current_thread_parked(parked: bool) {
   TLS_THREAD_REGISTRATION.with(|cell| {
     if let Some(reg) = cell.borrow().as_ref() {
+      if parked {
+        let ctx = crate::arch::capture_safepoint_context();
+        set_current_thread_safepoint_context(ctx);
+      }
       reg.state.parked.store(parked, Ordering::Release);
       safepoint::notify_state_change();
     }

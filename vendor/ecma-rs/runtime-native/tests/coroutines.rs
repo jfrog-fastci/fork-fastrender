@@ -357,7 +357,6 @@ fn coroutine_can_await_spawn_blocking_rejection() {
     completed: &mut completed,
     awaited: PromiseRef::null(),
   });
-
   runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed);
 
