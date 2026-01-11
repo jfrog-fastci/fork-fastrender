@@ -9370,11 +9370,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let origin_x = if run.direction.is_rtl() {
-        pen_x + run.advance
-      } else {
-        pen_x
-      };
+      let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
       let variations: Vec<FontVariation> = run
@@ -9490,11 +9486,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let run_origin_inline = if run.direction.is_rtl() {
-        pen_inline + run.advance
-      } else {
-        pen_inline
-      };
+      let run_origin_inline = pen_inline;
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
