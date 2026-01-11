@@ -299,16 +299,12 @@ struct Scheduler {
 
 impl Scheduler {
   fn new() -> Self {
-    let worker_count = std::env::var("RT_NUM_THREADS")
+    // Prefer the namespaced env var but accept `RT_NUM_THREADS` as a legacy alias.
+    let worker_count = std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
       .ok()
+      .or_else(|| std::env::var("RT_NUM_THREADS").ok())
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&n| n > 0)
-      .or_else(|| {
-        std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
-          .ok()
-          .and_then(|v| v.parse::<usize>().ok())
-          .filter(|&n| n > 0)
-      })
       .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
     let mut workers: Vec<Worker<Arc<TaskState>>> = Vec::with_capacity(worker_count);
