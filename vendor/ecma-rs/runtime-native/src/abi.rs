@@ -9,6 +9,17 @@ pub use runtime_native_abi::{
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
 pub type TimerId = u64;
 
+/// Class of runtime thread for registration via the stable C ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum RtThreadKind {
+  RT_THREAD_MAIN = 0,
+  RT_THREAD_WORKER = 1,
+  RT_THREAD_IO = 2,
+  RT_THREAD_EXTERNAL = 3,
+}
+
 /// Opaque value reference.
 ///
 /// The full JS value/GC story is not implemented yet; compiled code can treat this as a pointer

@@ -30,12 +30,30 @@ fn write_barrier_uses_updateable_young_range() {
   let _gc = TestGcGuard::new();
   runtime_native::clear_write_barrier_state_for_tests();
   let mut young_a = new_fake_obj();
-  let (start_a, end_a) = ptr_range_for_obj(&mut young_a);
-  runtime_native::rt_gc_set_young_range(start_a, end_a);
-
+  let mut young_b = new_fake_obj();
   let mut old_obj_a = new_fake_obj();
+  let mut old_obj_b = new_fake_obj();
+  let mut old_obj2 = new_fake_obj();
+ 
+  struct ClearWriteBarrierOnDrop;
+  impl Drop for ClearWriteBarrierOnDrop {
+    fn drop(&mut self) {
+      runtime_native::clear_write_barrier_state_for_tests();
+    }
+  }
+  let _clear = ClearWriteBarrierOnDrop;
+ 
+  let (start_a, end_a) = ptr_range_for_obj(&mut young_a);
+  let (start_b, end_b) = ptr_range_for_obj(&mut young_b);
+  assert!(
+    end_a <= start_b || end_b <= start_a,
+    "test requires disjoint young ranges"
+  );
+ 
+  runtime_native::rt_gc_set_young_range(start_a, end_a);
+ 
   let old_a_ptr = old_obj_a.as_mut() as *mut FakeObj as *mut u8;
-
+ 
   // Under range A, a store from old_obj -> young_a should trigger the barrier.
   old_obj_a.slot = young_a.as_mut() as *mut FakeObj as *mut u8;
   let old_a_slot_ptr = (&mut old_obj_a.slot as *mut *mut u8).cast::<u8>();
@@ -52,18 +70,11 @@ fn write_barrier_uses_updateable_young_range() {
     runtime_native::rt_write_barrier(young_a_ptr, young_slot_ptr);
   }
   assert!(!young_a.header.is_remembered());
-
+ 
   // Flip to a disjoint range B: young_a is no longer considered young, but young_b is.
-  let mut young_b = new_fake_obj();
-  let (start_b, end_b) = ptr_range_for_obj(&mut young_b);
-  assert!(
-    end_a <= start_b || end_b <= start_a,
-    "test requires disjoint young ranges"
-  );
   runtime_native::rt_gc_set_young_range(start_b, end_b);
-
+ 
   // Under range B, storing young_b into an old object should still trigger.
-  let mut old_obj_b = new_fake_obj();
   let old_b_ptr = old_obj_b.as_mut() as *mut FakeObj as *mut u8;
   old_obj_b.slot = young_b.as_mut() as *mut FakeObj as *mut u8;
   let old_b_slot_ptr = (&mut old_obj_b.slot as *mut *mut u8).cast::<u8>();
@@ -71,9 +82,8 @@ fn write_barrier_uses_updateable_young_range() {
     runtime_native::rt_write_barrier(old_b_ptr, old_b_slot_ptr);
   }
   assert!(old_obj_b.header.is_remembered());
-
+ 
   // Under range B, storing young_a (now "old") should not trigger.
-  let mut old_obj2 = new_fake_obj();
   let old2_ptr = old_obj2.as_mut() as *mut FakeObj as *mut u8;
   old_obj2.slot = young_a.as_mut() as *mut FakeObj as *mut u8;
   let slot_ptr2 = (&mut old_obj2.slot as *mut *mut u8).cast::<u8>();

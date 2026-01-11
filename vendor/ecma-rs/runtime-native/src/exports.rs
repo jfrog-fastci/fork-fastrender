@@ -3,6 +3,7 @@ use crate::abi::PromiseRef;
 use crate::abi::PromiseResolveInput;
 use crate::abi::RtCoroutineHeader;
 use crate::abi::RtShapeId;
+use crate::abi::RtThreadKind;
 use crate::abi::TaskId;
 use crate::abi::TimerId;
 use crate::abi::ThenableRef;
@@ -403,19 +404,21 @@ pub extern "C" fn rt_thread_deinit() {
 
 /// Register the current OS thread with the runtime thread registry.
 ///
-/// This is a stable compiler/runtime ABI entrypoint used by LLVM-generated code.
-///
-/// `kind` mapping:
-/// - 0: Main
-/// - 1: Worker
-/// - 2: Io
-/// - 3: External
+/// This is a stable compiler/runtime ABI entrypoint used by native codegen and
+/// embedders. Returns a runtime-assigned thread id (stable for the lifetime of
+/// the registration).
 #[no_mangle]
-pub extern "C" fn rt_thread_register(kind: u32) -> u64 {
+pub extern "C" fn rt_thread_register(kind: RtThreadKind) -> u64 {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_thread_init();
 
-  threading::register_current_thread(thread_kind_from_abi(kind)).get()
+  let kind = match kind {
+    RtThreadKind::RT_THREAD_MAIN => threading::ThreadKind::Main,
+    RtThreadKind::RT_THREAD_WORKER => threading::ThreadKind::Worker,
+    RtThreadKind::RT_THREAD_IO => threading::ThreadKind::Io,
+    RtThreadKind::RT_THREAD_EXTERNAL => threading::ThreadKind::External,
+  };
+  threading::register_current_thread(kind).get()
 }
 
 /// Unregister the current OS thread from the runtime thread registry.

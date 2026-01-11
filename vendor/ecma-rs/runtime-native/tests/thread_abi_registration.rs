@@ -1,21 +1,32 @@
 use runtime_native::threading;
+use runtime_native::abi::RtThreadKind;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::time::Duration;
 
 extern "C" {
-  fn rt_thread_register(kind: u32) -> u64;
+  fn rt_thread_register(kind: RtThreadKind) -> u64;
   fn rt_thread_unregister();
 }
 
 #[test]
 fn rt_thread_register_and_unregister_update_registry_counts() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Ensure the test thread starts from a clean, unregistered state even if other
+  // tests previously registered it.
+  unsafe { rt_thread_unregister() };
   let baseline = threading::thread_counts();
 
   // Register the test harness thread as "Main" via the stable C ABI.
-  let main_id = unsafe { rt_thread_register(0) };
+  let main_id = unsafe { rt_thread_register(RtThreadKind::RT_THREAD_MAIN) };
   assert_ne!(main_id, 0);
-  assert_eq!(unsafe { rt_thread_register(0) }, main_id, "registration should be idempotent");
+  assert_eq!(
+    unsafe { rt_thread_register(RtThreadKind::RT_THREAD_MAIN) },
+    main_id,
+    "registration should be idempotent"
+  );
 
   const THREADS: usize = 12;
 
@@ -30,9 +41,9 @@ fn rt_thread_register_and_unregister_update_registry_counts() {
     handles.push(std::thread::spawn(move || {
       // Cycle through Worker/Io/External kinds to exercise the ABI mapping.
       let kind = match i % 3 {
-        0 => 1, // Worker
-        1 => 2, // Io
-        _ => 3, // External
+        0 => RtThreadKind::RT_THREAD_WORKER,
+        1 => RtThreadKind::RT_THREAD_IO,
+        _ => RtThreadKind::RT_THREAD_EXTERNAL,
       };
 
       let id = unsafe { rt_thread_register(kind) };
@@ -84,4 +95,3 @@ fn rt_thread_register_and_unregister_update_registry_counts() {
     std::thread::yield_now();
   }
 }
-

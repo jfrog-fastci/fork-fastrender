@@ -7,8 +7,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+use runtime_native::abi::RtThreadKind;
+use runtime_native::test_util::TestRuntimeGuard;
+
 extern "C" {
-  fn rt_thread_register(kind: u32) -> u64;
+  fn rt_thread_register(kind: RtThreadKind) -> u64;
   fn rt_thread_unregister();
   fn rt_thread_set_parked(parked: bool);
 }
@@ -25,10 +28,11 @@ impl Drop for ResumeWorldOnDrop {
 
 #[test]
 fn unparking_during_stw_blocks_at_safepoint_until_resumed() {
+  let _rt = TestRuntimeGuard::new();
   let _resume_guard = ResumeWorldOnDrop;
 
   // Register the test harness thread as the runtime "main" thread via the stable ABI.
-  unsafe { rt_thread_register(0) };
+  unsafe { rt_thread_register(RtThreadKind::RT_THREAD_MAIN) };
 
   let parked = Arc::new(AtomicBool::new(false));
   let unpark_started = Arc::new(AtomicBool::new(false));
@@ -46,7 +50,7 @@ fn unparking_during_stw_blocks_at_safepoint_until_resumed() {
   let cv_worker = cv.clone();
 
   let handle = std::thread::spawn(move || {
-    unsafe { rt_thread_register(1) };
+    unsafe { rt_thread_register(RtThreadKind::RT_THREAD_WORKER) };
 
     // Park and block on the condvar.
     unsafe { rt_thread_set_parked(true) };
@@ -144,4 +148,3 @@ fn unparking_during_stw_blocks_at_safepoint_until_resumed() {
   handle.join().unwrap();
   unsafe { rt_thread_unregister() };
 }
-

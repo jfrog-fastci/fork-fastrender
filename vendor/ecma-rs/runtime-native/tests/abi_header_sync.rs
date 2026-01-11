@@ -32,6 +32,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_poll(",
     "rt_thread_init(",
     "rt_thread_deinit(",
+    "rt_thread_register(",
+    "rt_thread_unregister(",
     "rt_register_current_thread(",
     "rt_unregister_current_thread(",
     "rt_register_thread(",
@@ -120,6 +122,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   // Thread registration.
   let _thread_init: extern "C" fn(u32) = runtime_native::rt_thread_init;
   let _thread_deinit: extern "C" fn() = runtime_native::rt_thread_deinit;
+  let _thread_register: extern "C" fn(runtime_native::abi::RtThreadKind) -> u64 = runtime_native::rt_thread_register;
+  let _thread_unregister: extern "C" fn() = runtime_native::rt_thread_unregister;
   let _register_current: extern "C" fn() = runtime_native::rt_register_current_thread;
   let _unregister_current: extern "C" fn() = runtime_native::rt_unregister_current_thread;
   let _register_thread: extern "C" fn() = runtime_native::rt_register_thread;
@@ -207,6 +211,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _ = (
     _thread_init,
     _thread_deinit,
+    _thread_register,
+    _thread_unregister,
     _register_current,
     _unregister_current,
     _stackmaps_register,

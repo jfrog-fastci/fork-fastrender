@@ -166,11 +166,15 @@ typedef struct StringRef {
 // must call `rt_thread_init` before running mutator code, and `rt_thread_deinit`
 // before exiting.
 //
-// `kind` is a best-effort hint used for diagnostics only:
-//   0 = main
-//   1 = worker
-//   2 = io
-//   3 = external/unknown
+// `kind` is a best-effort hint used for diagnostics only. Prefer passing a
+// `RtThreadKind` value and use `rt_thread_register` when possible.
+typedef enum RtThreadKind {
+  RT_THREAD_MAIN = 0,
+  RT_THREAD_WORKER = 1,
+  RT_THREAD_IO = 2,
+  RT_THREAD_EXTERNAL = 3,
+} RtThreadKind;
+
 void rt_thread_init(uint32_t kind);
 void rt_thread_deinit(void);
 // Convenience registration API: equivalent to `rt_thread_init(1 /* worker */)`.
@@ -179,6 +183,11 @@ void rt_unregister_current_thread(void);
 // Compatibility aliases for earlier codegen prototypes.
 void rt_register_thread(void);
 void rt_unregister_thread(void);
+
+// Register the current OS thread with the runtime and return a runtime-assigned
+// thread id (stable for the lifetime of the registration).
+uint64_t rt_thread_register(RtThreadKind kind);
+void rt_thread_unregister(void);
 
 // -----------------------------------------------------------------------------
 // Thread attach/detach (per-runtime thread registry)
@@ -521,7 +530,7 @@ void rt_weak_remove(uint64_t handle);
 // Threading / safepoints
 // -----------------------------------------------------------------------------
 
-// Runtime thread kind values for rt_thread_register(uint32_t kind).
+// Legacy numeric thread kind values (kept for compatibility).
 //
 // These are part of the stable compiler/runtime ABI contract:
 // - 0: Main
@@ -532,13 +541,6 @@ void rt_weak_remove(uint64_t handle);
 #define RT_THREAD_KIND_WORKER 1u
 #define RT_THREAD_KIND_IO 2u
 #define RT_THREAD_KIND_EXTERNAL 3u
-
-// Register the current OS thread with the runtime thread registry (idempotent).
-// Returns a stable runtime-assigned thread id.
-uint64_t rt_thread_register(uint32_t kind);
-
-// Unregister the current OS thread from the runtime thread registry.
-void rt_thread_unregister(void);
 
 // Mark/unmark the current thread as parked (idle) inside the runtime.
 //

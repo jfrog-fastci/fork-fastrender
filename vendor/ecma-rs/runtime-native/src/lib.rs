@@ -766,6 +766,8 @@ mod tests {
       "typedef uint8_t** GcHandle;",
       "void rt_thread_init(uint32_t kind);",
       "void rt_thread_deinit(void);",
+      "uint64_t rt_thread_register(RtThreadKind kind);",
+      "void rt_thread_unregister(void);",
       "void rt_register_current_thread(void);",
       "void rt_unregister_current_thread(void);",
       "Thread* rt_thread_attach(Runtime* runtime);",
@@ -774,7 +776,6 @@ mod tests {
       "GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);",
       "GcPtr rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
-      "bool rt_gc_poll(void);",
       "uint8_t* rt_alloc_ptr_array(size_t len);",
       "size_t rt_array_len(uint8_t* obj);",
       "uint8_t* rt_array_data(uint8_t* obj);",
@@ -799,8 +800,6 @@ mod tests {
       "uint64_t rt_weak_add(GcPtr value);",
       "GcPtr rt_weak_get(uint64_t handle);",
       "void rt_weak_remove(uint64_t handle);",
-      "uint64_t rt_thread_register(uint32_t kind);",
-      "void rt_thread_unregister(void);",
       "void rt_thread_set_parked(bool parked);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
@@ -898,7 +897,8 @@ mod tests {
     let _array_data: extern "C" fn(*mut u8) -> *mut u8 = rt_array_data;
     let _register_shape_table: unsafe extern "C" fn(*const abi::RtShapeDescriptor, usize) =
       crate::shape_table::rt_register_shape_table;
-    let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
+    let _thread_register: extern "C" fn(abi::RtThreadKind) -> u64 = rt_thread_register;
+    let _thread_unregister: extern "C" fn() = rt_thread_unregister;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
     let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
@@ -914,8 +914,6 @@ mod tests {
     let _weak_remove: extern "C" fn(u64) = rt_weak_remove;
     let _root_push: unsafe extern "C" fn(crate::roots::GcHandle) = rt_root_push;
     let _root_pop: unsafe extern "C" fn(crate::roots::GcHandle) = rt_root_pop;
-    let _thread_register: extern "C" fn(u32) -> u64 = rt_thread_register;
-    let _thread_unregister: extern "C" fn() = rt_thread_unregister;
     let _thread_set_parked: extern "C" fn(bool) = rt_thread_set_parked;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
@@ -1019,7 +1017,8 @@ mod tests {
       _array_len,
       _array_data,
       _register_shape_table,
-      _gc_poll,
+      _thread_register,
+      _thread_unregister,
       _safepoint,
       _slow,
       _gc_poll,

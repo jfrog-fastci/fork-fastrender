@@ -102,7 +102,7 @@ fn c_can_link_and_call_runtime_native() {
   let c_path = tmp.path().join("smoke.c");
   let bin_path = tmp.path().join("smoke");
 
-  fs::write(
+ fs::write(
     &c_path,
     r#"
 #define _POSIX_C_SOURCE 200809L
