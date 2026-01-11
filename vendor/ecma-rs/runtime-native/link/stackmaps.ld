@@ -1,5 +1,5 @@
 /* Linker script fragment (Linux/ELF) for retaining and exposing LLVM stack maps
- * in **PIE/DSO-style** builds.
+ * in **PIE/DSO-style** builds (lld-oriented).
  *
  * Why a linker script at all?
  * - LLVM emits stackmap metadata into a `.llvm_stackmaps` section.
@@ -19,30 +19,28 @@
  * `native-js` rewrites `.llvm_stackmaps` / `.llvm_faultmaps` input sections to
  * `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` (via
  * `llvm-objcopy --rename-section ...`) before linking. This makes the sections
- * writable during relocation without requiring text relocations.
+ * writable during relocation without requiring text relocations (DT_TEXTREL).
  *
- * lld enforces that RELRO sections are contiguous in the final layout; inserting
- * a custom, non-RELRO output section inside the RELRO range can trigger:
- *   "section: .dynamic is not contiguous with other relro sections"
+ * RELRO + lld constraints:
+ * - lld enforces that RELRO sections are contiguous in the final layout; custom
+ *   output sections placed within the RELRO range can trigger:
+ *     "section: .dynamic is not contiguous with other relro sections"
+ * - To remain lld-friendly while still keeping stackmaps under `PT_GNU_RELRO`,
+ *   we place stackmaps/faultmaps into the standard `.data.rel.ro` output
+ *   section, anchored before `.dynamic`.
  *
- * To keep the dedicated `.data.rel.ro.llvm_stackmaps` section name **and** avoid
- * lld's RELRO contiguity errors, we insert these sections immediately before
- * `.bss` (outside the RELRO range) instead of before `.dynamic`.
+ * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
+ * small section definition without replacing the entire default linker script.
  *
- * Notes:
- * - `.bss` must exist for this fragment to be usable. lld can omit empty output
- *   sections like `.data` for minimal links, but it still defines `.bss`, making
- *   it a more reliable `INSERT` anchor.
- * - Avoid defining a second `.data.rel.ro` output section here: even outside
- *   the RELRO range, duplicating `.data.rel.ro` can still lead to confusing
- *   layout differences across linkers.
- * - This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
- *   small section definition without replacing the entire default linker script.
- *   If your linker does not support `INSERT`, switch to GNU ld or lld.
+ * Use:
+ * - non-PIE output: `runtime-native/link/stackmaps_nopie.ld`
+ * - GNU ld PIE:     `runtime-native/link/stackmaps_gnuld.ld`
  */
 
 SECTIONS {
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  /* Keep stackmaps/faultmaps in RELRO-friendly data (writable during relocation,
+   * then protected by `PT_GNU_RELRO`). */
+  .data.rel.ro : ALIGN(8) {
     . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
@@ -51,6 +49,9 @@ SECTIONS {
 
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
+    /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
+    KEEP(*(.llvm_stackmaps))
+    KEEP(*(.llvm_stackmaps.*))
 
     /* StackMap v3 uses 64-bit fields and is 8-byte aligned; keep the exported
      * symbol range 8-byte aligned even if the linker inserts padding between
@@ -60,13 +61,17 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-  }
 
-  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
+    /* Faultmaps are emitted by some patchpoint configurations. Keep them for
+     * parity with `.llvm_stackmaps` and to avoid accidental removal under
+     * `--gc-sections`. */
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
+    /* Legacy: older LLVM/object files may still emit `.llvm_faultmaps`. */
+    KEEP(*(.llvm_faultmaps))
+    KEEP(*(.llvm_faultmaps.*))
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-} INSERT BEFORE .bss;
+} INSERT BEFORE .dynamic;

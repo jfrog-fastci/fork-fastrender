@@ -430,6 +430,47 @@ must_not_have_rwx_segment() {
   fi
 }
 
+must_have_stackmaps_in_relro() {
+  local bin="$1"
+
+  local start_hex stop_hex
+  start_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__start_llvm_stackmaps" { print $2; exit }')"
+  stop_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__stop_llvm_stackmaps" { print $2; exit }')"
+  if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
+    echo "expected __start_llvm_stackmaps/__stop_llvm_stackmaps for RELRO coverage check in: ${bin}" >&2
+    "${READELF}" -W -s "${bin}" >&2 || true
+    exit 1
+  fi
+
+  local start_dec=$((16#${start_hex}))
+  local stop_dec=$((16#${stop_hex}))
+
+  local segments
+  segments="$("${READELF}" -W -l "${bin}")"
+
+  local relro_vaddr_hex relro_memsz_hex
+  read -r relro_vaddr_hex relro_memsz_hex < <(printf '%s\n' "${segments}" | awk '$1=="GNU_RELRO" { print $3, $6; exit }')
+  if [[ -z "${relro_vaddr_hex}" || -z "${relro_memsz_hex}" ]]; then
+    echo "expected a GNU_RELRO program header for RELRO coverage check in: ${bin}" >&2
+    echo "${segments}" >&2
+    exit 1
+  fi
+
+  relro_vaddr_hex="${relro_vaddr_hex#0x}"
+  relro_memsz_hex="${relro_memsz_hex#0x}"
+  local relro_vaddr_dec=$((16#${relro_vaddr_hex}))
+  local relro_memsz_dec=$((16#${relro_memsz_hex}))
+  local relro_end_dec=$((relro_vaddr_dec + relro_memsz_dec))
+
+  if (( start_dec < relro_vaddr_dec || stop_dec > relro_end_dec )); then
+    echo "expected stackmaps range to be covered by PT_GNU_RELRO in: ${bin}" >&2
+    echo "  stackmaps: start=0x${start_hex} stop=0x${stop_hex}" >&2
+    echo "  relro:     vaddr=0x${relro_vaddr_hex} memsz=0x${relro_memsz_hex}" >&2
+    echo "${segments}" >&2
+    exit 1
+  fi
+}
+
 echo "[stackmaps] link: ld (no-pie, no gc-sections)"
 "${CLANG}" -no-pie -o "${tmp}/a_ld_nogc" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_nogc"
@@ -495,6 +536,7 @@ must_have_faultmaps "${tmp}/a_policy_ld_pie"
 must_have_faultmaps_symbols "${tmp}/a_policy_ld_pie"
 must_not_have_textrel "${tmp}/a_policy_ld_pie"
 must_not_have_rwx_segment "${tmp}/a_policy_ld_pie"
+must_have_stackmaps_in_relro "${tmp}/a_policy_ld_pie"
 
 if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, no gc-sections)"
@@ -550,6 +592,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
     must_not_have_rwx_segment "${tmp}/a_policy_lld_pie"
+    must_have_stackmaps_in_relro "${tmp}/a_policy_lld_pie"
 
     echo "[stackmaps] link: lld (pie, full RELRO) => EXPECTED OK"
     # Rust's default Linux hardening flags include full RELRO (`-z relro -z now`).
@@ -568,6 +611,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps_symbols "${tmp}/a_lld_pie_relro_now"
     must_not_have_textrel "${tmp}/a_lld_pie_relro_now"
     must_not_have_rwx_segment "${tmp}/a_lld_pie_relro_now"
+    must_have_stackmaps_in_relro "${tmp}/a_lld_pie_relro_now"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
   fi
