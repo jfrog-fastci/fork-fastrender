@@ -1,10 +1,15 @@
 use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
+use llvm_sys::core::{
+  LLVMAddFunction, LLVMCountParamTypes, LLVMFunctionType, LLVMGetElementType, LLVMGetModuleContext,
+  LLVMGetNamedFunction, LLVMGetReturnType, LLVMGetTypeKind, LLVMTypeOf, LLVMVoidTypeInContext,
+};
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::transforms::pass_builder::{
   LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses,
 };
 use std::ffi::{CStr, CString};
+use std::ptr;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PassError {
@@ -12,6 +17,8 @@ pub enum PassError {
   GcLint(#[from] super::LintError),
   #[error("LLVMRunPasses failed for pipeline `{pipeline}`: {message}")]
   RunPasses { pipeline: String, message: String },
+  #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
+  IncompatibleSafepointPollSignature { name: String },
 }
 
 /// Runs LLVM's `rewrite-statepoints-for-gc` pass on `module`.
@@ -34,6 +41,61 @@ pub fn rewrite_statepoints_for_gc(module: &Module<'_>, target_machine: &TargetMa
   run_pass_pipeline(module, target_machine, pipeline)?;
 
   super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  Ok(())
+}
+
+/// Runs `place-safepoints` + `rewrite-statepoints-for-gc` on `module`.
+///
+/// This is the "easy correctness" path for making GC-managed functions safe:
+/// - `place-safepoints` inserts poll calls (`@gc.safepoint_poll`) at entry and
+///   loop backedges (for unknown-trip loops).
+/// - `rewrite-statepoints-for-gc` converts those calls (and any other calls) into
+///   `llvm.experimental.gc.statepoint.*` so stack maps/relocations are emitted.
+///
+/// On LLVM 18.1.3, `place-safepoints` can segfault unless the module already
+/// declares `declare void @gc.safepoint_poll()`. This helper applies that
+/// workaround before running the pass pipeline.
+pub fn place_safepoints_and_rewrite_for_gc(
+  module: &Module<'_>,
+  target_machine: &TargetMachine,
+) -> Result<(), PassError> {
+  ensure_gc_safepoint_poll_decl(module)?;
+
+  let pipeline = if cfg!(debug_assertions) {
+    "function(place-safepoints),rewrite-statepoints-for-gc,verify<safepoint-ir>"
+  } else {
+    "function(place-safepoints),rewrite-statepoints-for-gc"
+  };
+
+  run_pass_pipeline(module, target_machine, pipeline)
+}
+
+fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassError> {
+  // Hardcoded name used by LLVM's statepoint safepointing scheme.
+  let name = CString::new("gc.safepoint_poll").expect("gc.safepoint_poll contains NUL");
+
+  unsafe {
+    let existing = LLVMGetNamedFunction(module.as_mut_ptr(), name.as_ptr());
+    if !existing.is_null() {
+      // Ensure the signature matches `declare void @gc.safepoint_poll()`.
+      let existing_ty = LLVMGetElementType(LLVMTypeOf(existing));
+      let ret_ty = LLVMGetReturnType(existing_ty);
+      let param_count = LLVMCountParamTypes(existing_ty);
+      if LLVMGetTypeKind(ret_ty) != llvm_sys::LLVMTypeKind::LLVMVoidTypeKind || param_count != 0 {
+        return Err(PassError::IncompatibleSafepointPollSignature {
+          name: "gc.safepoint_poll".to_string(),
+        });
+      }
+
+      return Ok(());
+    }
+
+    let ctx = LLVMGetModuleContext(module.as_mut_ptr());
+    let void_ty = LLVMVoidTypeInContext(ctx);
+    let fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+    LLVMAddFunction(module.as_mut_ptr(), name.as_ptr(), fn_ty);
+  }
+
   Ok(())
 }
 
