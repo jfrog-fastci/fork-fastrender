@@ -100,8 +100,8 @@ impl Default for LinkOpts {
 /// - non-PIE: `stackmaps_nopie.ld`, anchored after `.text` (always present) and emitting a
 ///   dedicated `.llvm_stackmaps` output section.
 /// - PIE (lld): `stackmaps.ld` keeps `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
-///   but inserts them **after `.data`** to avoid lld's RELRO contiguity checks for custom output
-///   sections.
+///   in dedicated output sections inserted before `.bss` (outside the RELRO range) to avoid lld's
+///   RELRO contiguity checks for custom `.data.rel.ro.*` output sections.
 /// - PIE (GNU ld): `stackmaps_gnuld.ld`, to avoid producing an RWX LOAD segment when placing
 ///   writable stackmaps/faultmaps.
 ///
