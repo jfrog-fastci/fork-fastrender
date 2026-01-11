@@ -286,6 +286,35 @@ fn is_evfilt_user_unsupported(err: &io::Error) -> bool {
 }
 
 fn create_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+  // Fast path: some BSDs support `pipe2` (atomic O_NONBLOCK|O_CLOEXEC).
+  #[cfg(any(
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+  ))]
+  {
+    loop {
+      let mut fds = [-1, -1];
+      let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) };
+      if rc == 0 {
+        // SAFETY: `pipe2` returns new, owned fds on success.
+        return Ok((
+          unsafe { OwnedFd::from_raw_fd(fds[0]) },
+          unsafe { OwnedFd::from_raw_fd(fds[1]) },
+        ));
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      if err.raw_os_error() != Some(libc::ENOSYS) {
+        return Err(err);
+      }
+      break;
+    }
+  }
+
   let (read_fd, write_fd) = loop {
     let mut fds = [-1, -1];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
@@ -311,25 +340,53 @@ fn create_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-  let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-  if flags == -1 {
-    return Err(io::Error::last_os_error());
-  }
-  let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-  if rc == -1 {
-    return Err(io::Error::last_os_error());
+  let flags = loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if rc != -1 {
+      break rc;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc != -1 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
   }
   Ok(())
 }
 
 fn set_cloexec(fd: RawFd) -> io::Result<()> {
-  let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-  if flags == -1 {
-    return Err(io::Error::last_os_error());
-  }
-  let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-  if rc == -1 {
-    return Err(io::Error::last_os_error());
+  let flags = loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if rc != -1 {
+      break rc;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if rc != -1 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
   }
   Ok(())
 }
