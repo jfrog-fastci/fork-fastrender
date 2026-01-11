@@ -138,11 +138,22 @@ On Linux, linkers may discard `.llvm_stackmaps` under `--gc-sections` unless it 
 
 The final link step should apply `runtime-native/link/stackmaps.ld` (or the compatibility alias
 `runtime-native/stackmaps.ld`) to:
-
+ 
 * `KEEP` the stackmap section
 * and define stable in-memory boundary symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
 
 This allows the runtime to load stackmaps without scanning memory or parsing `/proc/self/exe`.
+
+Hardening notes:
+
+* `runtime-native/link/stackmaps.ld` is written for lld/GNU ld linker scripts (it uses `SECTIONS` +
+  `INSERT`). Linkers like **mold** do not support these scripts; use GNU ld or lld (`-fuse-ld=lld`)
+  when injecting the fragment.
+* For **GNU ld** in **PIE/DSO** mode, inserting the stackmaps output section “after `.text`” can
+  place it in the same LOAD segment as `.text`, producing an RWX segment once the stackmaps need to
+  be writable for relocations. Use `runtime-native/link/stackmaps_gnuld.ld` (or the
+  `scripts/native_link.sh` helper, which selects the appropriate fragment) to keep stackmaps in the
+  RELRO/data region without RWX.
 
 Notes:
 
