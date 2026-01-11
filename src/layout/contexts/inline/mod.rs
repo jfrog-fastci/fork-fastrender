@@ -4885,12 +4885,19 @@ impl InlineFormattingContext {
       ),
     };
 
-    let mut metrics = TextItem::metrics_from_runs(
-      &self.font_context,
-      &shaped_runs,
-      line_height,
-      style.font_size,
-    );
+    let mut metrics = match &style.line_height {
+      crate::style::types::LineHeight::Normal => TextItem::metrics_from_runs(
+        &self.font_context,
+        &shaped_runs,
+        line_height,
+        style.font_size,
+      ),
+      _ => TextItem::metrics_from_first_available_font(
+        primary_metrics.as_ref(),
+        line_height,
+        style.font_size,
+      ),
+    };
     TextItem::apply_text_emphasis_metrics(&mut metrics, style);
 
     // Find break opportunities and filter based on white-space handling
@@ -6046,6 +6053,9 @@ impl InlineFormattingContext {
     style: &ComputedStyle,
     items: &[InlineItem],
   ) -> BaselineMetrics {
+    if !matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+      return self.compute_strut_metrics(style);
+    }
     // The CSS "strut" is an imaginary inline box that establishes a minimum line box height.
     //
     // If the authored `font-family` resolves to a face that lacks glyph coverage, text shaping can
@@ -6093,6 +6103,9 @@ impl InlineFormattingContext {
     style: &ComputedStyle,
     segments: &[InlineFlowSegment],
   ) -> BaselineMetrics {
+    if !matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+      return self.compute_strut_metrics(style);
+    }
     // The CSS "strut" is an imaginary inline box that establishes a minimum line box height. When
     // the authored `font-family` resolves to a face that lacks glyph coverage, text shaping will
     // fall back to later families even though `get_font_full` can still return the missing face.
@@ -20064,6 +20077,119 @@ mod tests {
     assert_eq!(
       collected, "אבגabc",
       "vertical upright text should preserve logical order (no paragraph bidi swapping)"
+    );
+  }
+
+  #[test]
+  fn authored_line_height_does_not_inflate_from_fallback_font_metrics() {
+    let mut db = FontDatabase::empty();
+    for font in [
+      "tests/fixtures/fonts/NotoSans-subset.ttf",
+      "tests/fixtures/fonts/NotoSansArabic-subset.ttf",
+    ] {
+      let data = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(font))
+        .expect("fixture font should load");
+      db.load_font_data(data).expect("fixture font should parse");
+    }
+    db.refresh_generic_fallbacks();
+    let font_ctx = FontContext::with_database(Arc::new(db));
+    let ifc = InlineFormattingContext::with_font_context(font_ctx.clone())
+      .with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.font_size = 13.0;
+    style.line_height = crate::style::types::LineHeight::Number(1.4);
+    style.font_family = vec!["Noto Sans".to_string(), "Noto Sans Arabic".to_string()].into();
+    style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
+    let root_style = Arc::new(style);
+
+    let mut child_style = (*root_style).clone();
+    child_style.display = Display::Inline;
+    let child_style = Arc::new(child_style);
+
+    let latin = BoxNode::new_inline(
+      child_style.clone(),
+      vec![BoxNode::new_text(child_style.clone(), "English".to_string())],
+    );
+    let arabic = BoxNode::new_inline(
+      child_style.clone(),
+      vec![BoxNode::new_text(child_style.clone(), "العربية".to_string())],
+    );
+    let root = BoxNode::new_block(
+      root_style.clone(),
+      FormattingContextType::Inline,
+      vec![latin, arabic],
+    );
+    let constraints = LayoutConstraints::definite(400.0, 200.0);
+
+    let items = ifc
+      .collect_inline_items(&root, constraints.width().unwrap(), constraints.height())
+      .expect("collect items");
+    let strut = ifc.compute_strut_metrics(&root.style);
+    let lines = ifc
+      .build_lines(
+        items,
+        constraints.width().unwrap(),
+        constraints.width().unwrap(),
+        true,
+        root.style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        root.style.direction,
+        root.style.unicode_bidi,
+        None,
+        0.0,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+
+    assert_eq!(lines.len(), 1);
+    let expected_line_height = baseline::compute_line_height(root_style.as_ref());
+    assert!(
+      (lines[0].height - expected_line_height).abs() < 1e-3,
+      "expected inline line height to match authored line-height even with script fallback: got {}, expected {}",
+      lines[0].height,
+      expected_line_height
+    );
+
+    let shaper = crate::text::pipeline::ShapingPipeline::new();
+    let latin_runs = shaper
+      .shape("English", &child_style, &font_ctx)
+      .expect("shape latin");
+    let arabic_runs = shaper
+      .shape("العربية", &child_style, &font_ctx)
+      .expect("shape arabic");
+    let latin_font = latin_runs
+      .first()
+      .map(|run| run.font.family.as_str())
+      .unwrap_or_default();
+    let arabic_font = arabic_runs
+      .first()
+      .map(|run| run.font.family.as_str())
+      .unwrap_or_default();
+    assert_ne!(
+      latin_font, arabic_font,
+      "expected shaping to use different fonts for latin and arabic text"
+    );
+
+    let metrics_latin =
+      TextItem::metrics_from_runs(&font_ctx, &latin_runs, expected_line_height, child_style.font_size);
+    let metrics_arabic =
+      TextItem::metrics_from_runs(&font_ctx, &arabic_runs, expected_line_height, child_style.font_size);
+    let mut acc = baseline::LineBaselineAccumulator::new(&strut);
+    acc.add_baseline_relative(&metrics_latin, baseline::VerticalAlign::Baseline, Some(&strut));
+    acc.add_baseline_relative(&metrics_arabic, baseline::VerticalAlign::Baseline, Some(&strut));
+    assert!(
+      acc.line_height() > expected_line_height + 0.1,
+      "expected fallback font metrics to enlarge baseline-aligned line box; got {}",
+      acc.line_height()
     );
   }
 

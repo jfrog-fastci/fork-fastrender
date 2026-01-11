@@ -1097,6 +1097,34 @@ impl TextItem {
     }
   }
 
+  pub fn metrics_from_first_available_font(
+    primary_metrics: Option<&crate::text::font_db::ScaledMetrics>,
+    line_height: f32,
+    fallback_font_size: f32,
+  ) -> BaselineMetrics {
+    let (ascent, descent, line_gap, x_height) = if let Some(primary) = primary_metrics {
+      (primary.ascent, primary.descent, primary.line_gap, primary.x_height)
+    } else {
+      (
+        fallback_font_size * 0.8,
+        fallback_font_size * 0.2,
+        0.0,
+        Some(fallback_font_size * 0.4),
+      )
+    };
+    let half_leading = (line_height - (ascent + descent)) / 2.0;
+
+    BaselineMetrics {
+      baseline_offset: ascent + half_leading,
+      height: line_height,
+      ascent,
+      descent,
+      line_gap,
+      line_height,
+      x_height,
+    }
+  }
+
   /// Sets the vertical alignment
   pub fn with_vertical_align(mut self, align: VerticalAlign) -> Self {
     self.vertical_align = align;
@@ -1193,12 +1221,20 @@ impl TextItem {
     };
 
     let line_height = self.metrics.line_height;
-    let mut before_metrics =
-      TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
-    TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
-    let mut after_metrics =
-      TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
-    TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
+    let (before_metrics, after_metrics) = if matches!(
+      self.style.line_height,
+      crate::style::types::LineHeight::Normal
+    ) {
+      let mut before_metrics =
+        TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
+      TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
+      let mut after_metrics =
+        TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
+      TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
+      (before_metrics, after_metrics)
+    } else {
+      (self.metrics, self.metrics)
+    };
 
     let mut before_item = TextItem::new(
       before_runs,
@@ -1265,12 +1301,20 @@ impl TextItem {
     if before_item.advance <= 0.0 || after_item.advance <= 0.0 {
       let before_runs = reshape_cache.shape(self, 0..split_offset, shaper, font_context)?;
       let after_runs = reshape_cache.shape(self, split_offset..text_len, shaper, font_context)?;
-      let mut before_metrics =
-        TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
-      TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
-      let mut after_metrics =
-        TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
-      TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
+      let (before_metrics, after_metrics) = if matches!(
+        self.style.line_height,
+        crate::style::types::LineHeight::Normal
+      ) {
+        let mut before_metrics =
+          TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
+        TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
+        let mut after_metrics =
+          TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
+        TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
+        (before_metrics, after_metrics)
+      } else {
+        (self.metrics, self.metrics)
+      };
       before_item = TextItem::new(
         before_runs,
         before_text_owned.unwrap_or_else(|| before_text.to_string()),
@@ -6376,13 +6420,14 @@ fn slice_text_item(
     item.style.word_spacing,
   );
 
-  let mut metrics = TextItem::metrics_from_runs(
-    font_context,
-    &runs,
-    item.metrics.line_height,
-    item.font_size,
-  );
-  TextItem::apply_text_emphasis_metrics(&mut metrics, &item.style);
+  let metrics = if matches!(item.style.line_height, crate::style::types::LineHeight::Normal) {
+    let mut metrics =
+      TextItem::metrics_from_runs(font_context, &runs, item.metrics.line_height, item.font_size);
+    TextItem::apply_text_emphasis_metrics(&mut metrics, &item.style);
+    metrics
+  } else {
+    item.metrics
+  };
   let breaks = item
     .break_opportunities
     .iter()
