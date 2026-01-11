@@ -358,7 +358,8 @@ pub fn resolve_call(
 
       // Rule A: fully-static member path like `JSON.parse` or `Promise.all`.
       if let Some((path, receiver)) = static_member_path(lower, body, callee) {
-        if let Some(api) = db.get(&path) {
+        let canonical = strip_global_prefixes(&path).unwrap_or(path.as_str());
+        if let Some(api) = db.get(canonical) {
           return Some(ResolvedCall {
             call: call_expr,
             api: api.name.clone(),
@@ -684,6 +685,25 @@ fn static_object_key_name<'a>(lower: &'a LowerResult, key: &'a ObjectKey) -> Opt
   }
 }
 
+fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
+  let mut changed = false;
+  loop {
+    let mut did_strip = false;
+    for prefix in ["globalThis.", "window.", "self.", "global."] {
+      if let Some(rest) = path.strip_prefix(prefix) {
+        path = rest;
+        did_strip = true;
+        changed = true;
+        break;
+      }
+    }
+    if !did_strip {
+      break;
+    }
+  }
+  changed.then_some(path)
+}
+
 /// If `expr` is a member expression chain with a root identifier and only static
 /// identifier/string properties (and no optional chaining), return the canonical
 /// dotted path plus the call receiver expression.
@@ -772,4 +792,37 @@ pub fn resolve_member(
     api,
     receiver: member.object,
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use hir_js::{FileKind, StmtKind};
+
+  fn first_stmt_expr(lowered: &hir_js::LowerResult) -> (BodyId, ExprId) {
+    let root = lowered.root_body();
+    let root_body = lowered.body(root).expect("root body");
+    let first_stmt = *root_body.root_stmts.first().expect("root stmt");
+    let stmt = &root_body.stmts[first_stmt.0 as usize];
+    match stmt.kind {
+      StmtKind::Expr(expr) => (root, expr),
+      _ => panic!("expected expression statement"),
+    }
+  }
+
+  #[test]
+  fn resolves_global_this_member_call_via_prefix_stripping() {
+    let db = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      FileKind::Js,
+      r#"globalThis.fetch("https://example.com");"#,
+    )
+    .unwrap();
+    let (body_id, call_expr) = first_stmt_expr(&lowered);
+    let body = lowered.body(body_id).expect("body");
+
+    let resolved = resolve_call(&lowered, body_id, body, call_expr, &db, None).expect("resolved");
+    assert_eq!(resolved.api, "fetch");
+    assert_eq!(resolved.api_id, Some(ApiId::Fetch));
+  }
 }
