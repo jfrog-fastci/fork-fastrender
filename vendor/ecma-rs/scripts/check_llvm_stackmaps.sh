@@ -7,7 +7,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # The native toolchain uses LLVM's production GC strategy name: `gc "coreclr"`.
 # This script's minimal IR fixtures use `coreclr` on purpose, but the wider repo
-# may also contain the LLVM reference strategy name (`statepoint-example`) in
+# may also contain the LLVM reference strategy name (`statepoint-` + `example`) in
 # tests/experiments. That is not a stackmaps retention concern, so we do not
 # enforce a repository-wide policy here.
 
