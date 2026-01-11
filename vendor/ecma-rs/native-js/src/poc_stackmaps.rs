@@ -11,7 +11,6 @@
 
 use crate::gc::roots::GcFrame;
 use crate::gc::statepoint::StatepointEmitter;
-use crate::llvm::gc::GC_STRATEGY;
 use crate::NativeJsError;
 use inkwell::context::AsContextRef as _;
 use inkwell::context::Context;
@@ -23,6 +22,8 @@ use inkwell::types::AsTypeRef as _;
 use inkwell::values::AsValueRef as _;
 use inkwell::{AddressSpace, OptimizationLevel};
 use llvm_sys::core::{LLVMBuildRet, LLVMBuildStore, LLVMBuildStructGEP2, LLVMGetInsertBlock};
+
+use crate::llvm::gc;
 
 /// Builds the PoC module and returns an ELF object file as bytes.
 pub fn compile_poc_object() -> Result<Vec<u8>, NativeJsError> {
@@ -58,10 +59,10 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
   let rt_alloc_ty = gc_ptr_ty.fn_type(&[i64_ty.into()], false);
   let rt_alloc = module.add_function("rt_alloc", rt_alloc_ty, None);
 
-  // define ptr addrspace(1) @poc_make_pair(ptr addrspace(1), ptr addrspace(1)) gc "statepoint-example"
+  // define ptr addrspace(1) @poc_make_pair(ptr addrspace(1), ptr addrspace(1)) gc "coreclr"
   let make_pair_ty = gc_ptr_ty.fn_type(&[gc_ptr_ty.into(), gc_ptr_ty.into()], false);
   let make_pair = module.add_function("poc_make_pair", make_pair_ty, None);
-  make_pair.set_gc(GC_STRATEGY);
+  gc::set_default_gc_strategy(&make_pair).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
 
   let entry = context.append_basic_block(make_pair, "entry");
   builder.position_at_end(entry);

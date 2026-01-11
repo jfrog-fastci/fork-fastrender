@@ -20,7 +20,7 @@ fn statepoint_nonvoid_call_emits_gc_result_and_relocates_ptrs() {
     // Test function: `define ptr addrspace(1) @test(ptr addrspace(1) %a, ptr addrspace(1) %b)`.
     let test_fn_ty = LLVMFunctionType(gc_ptr_ty, [gc_ptr_ty, gc_ptr_ty].as_ptr().cast_mut(), 2, 0);
     let test_fn = LLVMAddFunction(module, c"test".as_ptr(), test_fn_ty);
-    LLVMSetGC(test_fn, c"statepoint-example".as_ptr());
+    LLVMSetGC(test_fn, c"coreclr".as_ptr());
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, c"entry".as_ptr());
     LLVMPositionBuilderAtEnd(builder, entry);

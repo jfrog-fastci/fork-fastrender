@@ -126,7 +126,8 @@ workaround.
 applies the `@gc.safepoint_poll()` predeclaration workaround:
 
 - `native-js/src/llvm/passes.rs`:
-  - `place_safepoints_and_rewrite_for_gc`
+  - `ensure_gc_safepoint_poll_decl`
+  - `place_safepoints_and_rewrite_statepoints_for_gc`
   - `rewrite_statepoints_for_gc`
 
 ## Legacy pass manager routes

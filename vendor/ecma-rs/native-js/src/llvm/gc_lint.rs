@@ -373,8 +373,8 @@ mod tests {
   };
   use llvm_sys::ir_reader::LLVMParseIRInContext;
   use llvm_sys::prelude::LLVMContextRef;
-  use std::os::raw::c_char;
   use std::ffi::CString;
+  use std::os::raw::c_char;
   use std::ptr;
 
   struct ParsedModule {

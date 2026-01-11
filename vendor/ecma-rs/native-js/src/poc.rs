@@ -30,10 +30,10 @@ pub fn demo_gc_root_slots_ir() -> String {
     let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
     let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
 
-    // Define `void @test() gc "statepoint-example"`.
+    // Define `void @test() gc "coreclr"`.
     let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
     let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
-    LLVMSetGC(test_fn, b"statepoint-example\0".as_ptr().cast());
+    LLVMSetGC(test_fn, b"coreclr\0".as_ptr().cast());
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);

@@ -33,9 +33,23 @@ This behavior is the same for both `coreclr` and `statepoint-example`.
 ### Safepoint polls and lowering
 
 `rewrite-statepoints-for-gc` rewrites **existing calls** into statepoints; it does not insert loop
-polls. On Ubuntu LLVM **18.1.3**, the `place-safepoints` pass currently segfaults when it needs to
-insert entry/backedge polls, so `native-js` emits explicit polling IR instead (see
-`vendor/ecma-rs/docs/llvm_place_safepoints_llvm18.md`).
+polls.
+
+To insert entry/backedge polls, LLVM provides the `place-safepoints` pass. On Ubuntu LLVM
+**18.1.3**, `place-safepoints` can segfault if it needs to materialize the poll function
+declaration itself; predeclaring the poll function avoids the crash:
+
+```llvm
+declare void @gc.safepoint_poll()
+```
+
+`native-js` supports running the combined pipeline
+`function(place-safepoints),rewrite-statepoints-for-gc` and applies this predeclaration workaround
+automatically.
+
+For performance, we still prefer compiler-emitted “fast polls” (load+branch with a slow-path call
+into the runtime) so the common case is ~1-2 instructions when GC is inactive. See
+`vendor/ecma-rs/docs/llvm_place_safepoints_llvm18.md`.
 
 This is independent of the chosen strategy name.
 

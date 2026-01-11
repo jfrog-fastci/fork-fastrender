@@ -44,9 +44,8 @@ fn rewrite_statepoints_honors_callsite_directives() {
 
   let foo_ty = void_ty.fn_type(&[], false);
   let foo = module.add_function("foo", foo_ty, None);
-  // Use LLVM's built-in example strategy for deterministic tests:
   // `rewrite-statepoints-for-gc` only rewrites callsites in functions marked with a GC strategy.
-  gc::set_gc_strategy(&foo, "statepoint-example").expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&foo).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);
@@ -107,7 +106,7 @@ fn rewrite_statepoints_uses_default_statepoint_id_when_unset() {
 
   let foo_ty = void_ty.fn_type(&[], false);
   let foo = module.add_function("foo", foo_ty, None);
-  gc::set_gc_strategy(&foo, "statepoint-example").expect("GC strategy contains NUL byte");
+  gc::set_default_gc_strategy(&foo).expect("GC strategy contains NUL byte");
 
   let entry = context.append_basic_block(foo, "entry");
   builder.position_at_end(entry);
