@@ -474,12 +474,14 @@ fn clear_tls_thread_registration() {
 
 /// Return this thread's registered [`ThreadState`], if any.
 pub fn current_thread_state() -> Option<Arc<ThreadState>> {
-  TLS_THREAD_REGISTRATION.with(|cell| {
-    cell
-      .borrow()
-      .as_ref()
-      .map(|reg| reg.state.clone())
-  })
+  // `current_thread_state` can be called from `Drop` paths during thread-local destruction (e.g. via
+  // `GcAwareMutex`). Accessing a TLS value at that point would panic with `AccessError` and abort
+  // the process (TLS dtors are `abort_on_dtor_unwind`). Treat an inaccessible TLS key as
+  // "unregistered" instead so cleanup paths can complete without panicking.
+  TLS_THREAD_REGISTRATION
+    .try_with(|cell| cell.borrow().as_ref().map(|reg| reg.state.clone()))
+    .ok()
+    .flatten()
 }
 
 /// Fast-path access to the current thread's [`ThreadState`] without cloning an
@@ -487,12 +489,17 @@ pub fn current_thread_state() -> Option<Arc<ThreadState>> {
 ///
 /// Returns null if the current thread is not registered.
 pub(crate) fn current_thread_state_ptr() -> *const ThreadState {
-  TLS_THREAD_STATE_PTR.with(|cell| cell.get())
+  TLS_THREAD_STATE_PTR
+    .try_with(|cell| cell.get())
+    .unwrap_or(std::ptr::null())
 }
 
 /// Return this thread's registered [`ThreadId`], if any.
 pub fn current_thread_id() -> Option<ThreadId> {
-  TLS_THREAD_REGISTRATION.with(|cell| cell.borrow().as_ref().map(|reg| reg.state.id))
+  TLS_THREAD_REGISTRATION
+    .try_with(|cell| cell.borrow().as_ref().map(|reg| reg.state.id))
+    .ok()
+    .flatten()
 }
 
 /// Register the current thread with the global registry.

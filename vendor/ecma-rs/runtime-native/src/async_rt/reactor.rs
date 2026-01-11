@@ -2,8 +2,7 @@ use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
 use crate::async_rt::gc;
 use crate::async_rt::{Task, TaskDropFn};
 use crate::reactor::{
-  Event as ReactorEvent, Interest as ReactorInterest, Reactor as SysReactor, Token as ReactorToken,
-  Waker,
+  Event as ReactorEvent, Interest as ReactorInterest, SysReactor, Token as ReactorToken, Waker,
 };
 use crate::sync::GcAwareMutex;
 use crate::threading;
