@@ -316,4 +316,111 @@ mod unix {
 
     Ok(())
   }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn uring_sendmsg_recvmsg_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    use io_uring::{opcode, types, IoUring};
+
+    let ring = IoUring::new(8);
+    let mut ring = match ring {
+      Ok(r) => r,
+      Err(err) => {
+        eprintln!("skipping: failed to create io_uring instance: {err}");
+        return Ok(());
+      }
+    };
+
+    let (sock_a, sock_b) = socketpair()?;
+
+    let a = ArrayBuffer::from_bytes(b"hello ".to_vec()).unwrap();
+    let b = ArrayBuffer::from_bytes(b"world".to_vec()).unwrap();
+    let total_len = a.byte_len() + b.byte_len();
+
+    let send_ranges = vec![
+      IoVecRange::whole_array_buffer(&a),
+      IoVecRange::whole_array_buffer(&b),
+    ];
+    let send_iov = PinnedIoVec::try_from_ranges(&send_ranges).unwrap();
+    let send_hdr = PinnedMsgHdr::new(send_iov);
+
+    let sqe = opcode::SendMsg::new(types::Fd(sock_a.0), send_hdr.as_msghdr_ptr())
+      .flags(0)
+      .build()
+      .user_data(1);
+    unsafe {
+      ring
+        .submission()
+        .push(&sqe)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full"))?;
+    }
+    ring.submit_and_wait(1)?;
+
+    let mut send_res = None;
+    for cqe in ring.completion() {
+      if cqe.user_data() == 1 {
+        send_res = Some(cqe.result());
+      }
+    }
+    let send_res =
+      send_res.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing sendmsg cqe"))?;
+    if send_res < 0 {
+      if send_res == -libc::EINVAL || send_res == -libc::EOPNOTSUPP {
+        eprintln!("skipping: IORING_OP_SENDMSG not supported by kernel");
+        return Ok(());
+      }
+      return Err(io::Error::from_raw_os_error(-send_res).into());
+    }
+    assert_eq!(send_res as usize, total_len);
+
+    let out_a = ArrayBuffer::new_zeroed(a.byte_len()).unwrap();
+    let out_b = ArrayBuffer::new_zeroed(b.byte_len()).unwrap();
+    let recv_ranges = vec![
+      IoVecRange::whole_array_buffer(&out_a),
+      IoVecRange::whole_array_buffer(&out_b),
+    ];
+    let recv_iov = PinnedIoVec::try_from_ranges(&recv_ranges).unwrap();
+    let mut recv_hdr = PinnedMsgHdr::new(recv_iov);
+
+    let sqe = opcode::RecvMsg::new(types::Fd(sock_b.0), recv_hdr.as_msghdr_mut_ptr())
+      .flags(0)
+      .build()
+      .user_data(2);
+    unsafe {
+      ring
+        .submission()
+        .push(&sqe)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full"))?;
+    }
+    ring.submit_and_wait(1)?;
+
+    let mut recv_res = None;
+    for cqe in ring.completion() {
+      if cqe.user_data() == 2 {
+        recv_res = Some(cqe.result());
+      }
+    }
+    let recv_res =
+      recv_res.ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing recvmsg cqe"))?;
+    if recv_res < 0 {
+      if recv_res == -libc::EINVAL || recv_res == -libc::EOPNOTSUPP {
+        eprintln!("skipping: IORING_OP_RECVMSG not supported by kernel");
+        return Ok(());
+      }
+      return Err(io::Error::from_raw_os_error(-recv_res).into());
+    }
+    assert_eq!(recv_res as usize, total_len);
+
+    let out_a_bytes = unsafe { out_a.pin().unwrap().as_slice().to_vec() };
+    let out_b_bytes = unsafe { out_b.pin().unwrap().as_slice().to_vec() };
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&out_a_bytes);
+    out.extend_from_slice(&out_b_bytes);
+    assert_eq!(&out, b"hello world");
+
+    // Ensure we still have access to the output metadata after completion.
+    let _ = recv_hdr.msg_flags();
+
+    Ok(())
+  }
 }

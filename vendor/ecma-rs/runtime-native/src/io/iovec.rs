@@ -215,21 +215,30 @@ impl PinnedMsgHdr {
   }
 
   fn new_inner(mut iovecs: PinnedIoVec, name: Option<Vec<u8>>, control: Option<Vec<u8>>) -> Self {
+    // NOTE: `msghdr` field types vary across Unix platforms (`msg_iovlen`/`msg_controllen` can be
+    // `size_t` or `socklen_t`). Use `as _` casts where needed so this compiles everywhere.
+
     let (msg_name, msg_namelen) = match &name {
       None => (core::ptr::null_mut(), 0 as libc::socklen_t),
+      Some(buf) if buf.is_empty() => (core::ptr::null_mut(), 0 as libc::socklen_t),
       Some(buf) => (
         buf.as_ptr() as *mut libc::c_void,
         buf.len() as libc::socklen_t,
       ),
     };
 
-    let (msg_control, msg_controllen) = match &control {
-      None => (core::ptr::null_mut(), 0usize),
-      Some(buf) => (buf.as_ptr() as *mut libc::c_void, buf.len()),
+    let msg_control = match &control {
+      None => core::ptr::null_mut(),
+      Some(buf) if buf.is_empty() => core::ptr::null_mut(),
+      Some(buf) => buf.as_ptr() as *mut libc::c_void,
     };
+    let msg_controllen = match &control {
+      None => 0usize,
+      Some(buf) => buf.len(),
+    } as _;
 
     let msg_iov = iovecs.as_iovec_mut_ptr();
-    let msg_iovlen = iovecs.len();
+    let msg_iovlen = iovecs.len() as _;
 
     let hdr = Box::new(libc::msghdr {
       msg_name,
@@ -276,7 +285,7 @@ impl PinnedMsgHdr {
   }
 
   pub fn control_len(&self) -> usize {
-    self.hdr.msg_controllen
+    self.hdr.msg_controllen as usize
   }
 
   pub fn control(&self) -> Option<&[u8]> {
