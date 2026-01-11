@@ -765,8 +765,9 @@ impl GradientLut {
     Self::quantize_round(self.sample_mapped_f32(t))
   }
 
+  /// Samples the LUT using its configured spread mode.
   #[inline(always)]
-  fn sample(&self, t: f32) -> PremultipliedColorU8 {
+  pub(crate) fn sample(&self, t: f32) -> PremultipliedColorU8 {
     match self.spread {
       SpreadModeKey::Pad => self.sample_pad(t),
       SpreadModeKey::Repeat => self.sample_repeat(t),
@@ -993,6 +994,17 @@ pub fn gradient_bucket(max_dim: u32) -> u16 {
     }
   }
   bucket as u16
+}
+
+pub fn get_gradient_lut(
+  cache: &GradientLutCache,
+  stops: &[(f32, Rgba)],
+  spread: SpreadMode,
+  bucket: u16,
+) -> Arc<GradientLut> {
+  let span = gradient_period(stops);
+  let key = GradientCacheKey::new(stops, spread, span, bucket);
+  cache.get_or_build(key, || build_gradient_lut(stops, spread, span, bucket))
 }
 
 pub fn rasterize_linear_gradient(
@@ -1804,6 +1816,121 @@ pub fn rasterize_conic_gradient_scaled_cached(
   })
 }
 
+pub fn rasterize_radial_gradient(
+  width: u32,
+  height: u32,
+  center: Point,
+  radii: Point,
+  spread: SpreadMode,
+  stops: &[(f32, Rgba)],
+  cache: &GradientLutCache,
+  bucket: u16,
+) -> Result<Option<Pixmap>, RenderError> {
+  check_active(RenderStage::Paint)?;
+  if width == 0 || height == 0 || stops.is_empty() {
+    return Ok(None);
+  }
+  if !center.x.is_finite()
+    || !center.y.is_finite()
+    || !radii.x.is_finite()
+    || !radii.y.is_finite()
+    || radii.x <= 0.0
+    || radii.y <= 0.0
+  {
+    return Ok(None);
+  }
+
+  let period = gradient_period(stops);
+  let key = GradientCacheKey::new(stops, spread, period, bucket);
+  let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
+
+  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
+    return Ok(None);
+  };
+
+  let inv_rx = 1.0 / radii.x;
+  let inv_ry = 1.0 / radii.y;
+  if !inv_rx.is_finite() || !inv_ry.is_finite() {
+    return Ok(None);
+  }
+
+  // Precompute X^2 terms for the row loops; this avoids recomputing `(dx / rx)^2` per pixel.
+  let mut dx2: Vec<f32> = Vec::with_capacity(width as usize);
+  let dx0 = (0.5 - center.x) * inv_rx;
+  for x in 0..width as usize {
+    let dx = dx0 + x as f32 * inv_rx;
+    dx2.push(dx * dx);
+  }
+
+  let stride = width as usize;
+  let pixels = pixmap.pixels_mut();
+  let total_pixels = width as usize * height as usize;
+  let spread_key: SpreadModeKey = spread.into();
+
+  let sample_row = |y: usize, row: &mut [PremultipliedColorU8]| -> Result<(), RenderError> {
+    let dy = (y as f32 + 0.5 - center.y) * inv_ry;
+    let dy2 = dy * dy;
+    let mut deadline_counter = 0usize;
+    match spread_key {
+      SpreadModeKey::Pad => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let chunk_len = chunk.len();
+          for (idx, pixel) in chunk.iter_mut().enumerate() {
+            let t = (dx2[x + idx] + dy2).sqrt();
+            *pixel = lut.sample_pad(t);
+          }
+          x += chunk_len;
+        }
+      }
+      SpreadModeKey::Repeat => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let chunk_len = chunk.len();
+          for (idx, pixel) in chunk.iter_mut().enumerate() {
+            let t = (dx2[x + idx] + dy2).sqrt();
+            *pixel = lut.sample_repeat(t);
+          }
+          x += chunk_len;
+        }
+      }
+      SpreadModeKey::Reflect => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let chunk_len = chunk.len();
+          for (idx, pixel) in chunk.iter_mut().enumerate() {
+            let t = (dx2[x + idx] + dy2).sqrt();
+            *pixel = lut.sample_reflect(t);
+          }
+          x += chunk_len;
+        }
+      }
+    };
+    Ok(())
+  };
+
+  let deadline = active_deadline();
+  if total_pixels >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  {
+    crate::rayon_init::ensure_global_rayon_pool();
+    pixels
+      .par_chunks_mut(stride)
+      .enumerate()
+      .try_for_each(|(y, row)| {
+        with_deadline(deadline.as_ref(), || -> Result<(), RenderError> { sample_row(y, row) })
+      })?;
+  } else {
+    for (y, row) in pixels.chunks_mut(stride).enumerate() {
+      sample_row(y, row)?;
+    }
+  }
+
+  Ok(Some(pixmap))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1938,6 +2065,36 @@ mod tests {
     let expected =
       PremultipliedColorU8::from_rgba(255, 255, 255, 255).expect("valid premultiplied color");
     assert_eq!(mid, expected);
+  }
+
+  #[test]
+  fn radial_gradient_samples_match_expected() {
+    let stops = &[(0.0, Rgba::BLACK), (1.0, Rgba::WHITE)];
+    let cache = GradientLutCache::default();
+    let pixmap = rasterize_radial_gradient(
+      3,
+      3,
+      Point::new(1.5, 1.5),
+      Point::new(2.0, 2.0),
+      SpreadMode::Pad,
+      stops,
+      &cache,
+      4096,
+    )
+    .expect("rasterize")
+    .expect("pixmap");
+    let pixels = pixmap.pixels();
+    let stride = 3usize;
+    let px = |x: usize, y: usize| pixels[y * stride + x];
+
+    let center = PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap();
+    assert_eq!(px(1, 1), center);
+
+    let half = PremultipliedColorU8::from_rgba(128, 128, 128, 255).unwrap();
+    assert_eq!(px(0, 1), half);
+
+    let corner = PremultipliedColorU8::from_rgba(180, 180, 180, 255).unwrap();
+    assert_eq!(px(0, 0), corner);
   }
 
   fn naive_conic(

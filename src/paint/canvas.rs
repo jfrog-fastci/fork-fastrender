@@ -1316,7 +1316,9 @@ impl Canvas {
     };
     self.current_state.clip_rect = Some(base_clip);
 
-    let new_mask = self.build_clip_mask(rect, radii.unwrap_or(BorderRadii::ZERO));
+    let radii = radii.unwrap_or(BorderRadii::ZERO);
+
+    let new_mask = self.build_clip_mask(rect, radii);
     self.current_state.clip_mask = match (new_mask, self.current_state.clip_mask.take()) {
       (Some(mut next), Some(existing)) => {
         combine_masks(&mut next, existing.as_ref())?;
@@ -3460,9 +3462,6 @@ impl Canvas {
   /// Applies the current clip to a rectangle
   /// Applies the current clip to a rectangle.
   pub(crate) fn apply_clip(&self, rect: Rect) -> Option<Rect> {
-    if self.current_state.clip_mask.is_some() && !self.current_state.transform.is_identity() {
-      return Some(rect);
-    }
     if let Some(clip) = self.current_state.clip_rect {
       if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return None;

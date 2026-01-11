@@ -74,9 +74,9 @@ use crate::paint::filter_outset::filter_outset;
 use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
-  gradient_bucket, rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
-  rasterize_linear_gradient_cached, paint_linear_gradient_src_over, GradientLutCache,
-  GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
+  get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over, rasterize_conic_gradient_cached,
+  rasterize_conic_gradient_scaled_cached, rasterize_linear_gradient_cached, rasterize_radial_gradient,
+  GradientLutCache, GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
 };
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
@@ -158,7 +158,6 @@ use tiny_skia::Pixmap;
 use tiny_skia::PixmapPaint;
 use tiny_skia::Point as SkiaPoint;
 use tiny_skia::PremultipliedColorU8;
-use tiny_skia::RadialGradient;
 use tiny_skia::SpreadMode;
 use tiny_skia::Stroke;
 use tiny_skia::StrokeDash;
@@ -5496,7 +5495,7 @@ impl DisplayListRenderer {
       },
     };
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(canvas_transform);
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(
         dest_x,
@@ -5504,7 +5503,7 @@ impl DisplayListRenderer {
         pix.as_ref().as_ref(),
         &paint,
         transform,
-        clip.as_ref(),
+        clip.as_deref(),
       );
     });
     self.record_background_paint(background_timer);
@@ -5729,7 +5728,7 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
-    let clip_mask = self.canvas.clip_mask().cloned();
+    let clip_mask = self.canvas.clip_mask_rc();
 
     let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
     let can_invert = canvas_transform.sx.is_finite()
@@ -5784,7 +5783,7 @@ impl DisplayListRenderer {
           return Ok(());
         };
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+          pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_deref());
         });
         self.record_background_paint(background_timer);
         return Ok(());
@@ -5866,7 +5865,7 @@ impl DisplayListRenderer {
             tmp.as_ref(),
             &paint,
             Transform::identity(),
-            clip_mask.as_ref(),
+            clip_mask.as_deref(),
           );
         });
 
@@ -5924,14 +5923,14 @@ impl DisplayListRenderer {
       let scratch_h_i64 = y1 - y0;
       let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
-        });
-        self.record_background_paint(background_timer);
-        return Ok(());
-      };
+        pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
+      });
+      self.record_background_paint(background_timer);
+      return Ok(());
+    };
       let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
         });
         self.record_background_paint(background_timer);
         return Ok(());
@@ -5954,7 +5953,7 @@ impl DisplayListRenderer {
 
       let Some(mut tmp) = new_pixmap(scratch_w, scratch_h) else {
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+          pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
         });
         self.record_background_paint(background_timer);
         return Ok(());
@@ -5982,7 +5981,7 @@ impl DisplayListRenderer {
       }
 
       let mut tmp_mask: Option<Mask> = None;
-      let tmp_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask.as_ref() {
+      let tmp_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask.as_deref() {
         let Some(mut mask) = Mask::new(scratch_w, scratch_h) else {
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
             pixmap.fill_rect(skia_rect, &paint, transform, Some(clip_mask));
@@ -6048,7 +6047,7 @@ impl DisplayListRenderer {
     }
 
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
     });
 
     self.record_background_paint(background_timer);
@@ -6096,44 +6095,18 @@ impl DisplayListRenderer {
       .map(|_| Instant::now());
     let timer = self.diagnostics_enabled.then(Instant::now);
 
+    let bucket = gradient_bucket(width.max(height));
     let Some(pix) = self.gradient_pixmap_cache.get_or_insert(key, || {
-      let Some(stops) = self.convert_stops(&item.stops) else {
-        return Ok(None);
-      };
-      let center = SkiaPoint::from_xy(center.x, center.y);
-      let radii = SkiaPoint::from_xy(radii.x, radii.y);
-      let transform = Transform::from_translate(center.x, center.y).pre_scale(radii.x, radii.y);
-      let Some(shader) = RadialGradient::new(
-        SkiaPoint::from_xy(0.0, 0.0),
-        SkiaPoint::from_xy(0.0, 0.0),
-        1.0,
-        stops,
+      rasterize_radial_gradient(
+        width,
+        height,
+        center,
+        radii,
         spread,
-        transform,
-      ) else {
-        return Ok(None);
-      };
-
-      let Some(mut pixmap) = new_pixmap(width, height) else {
-        return Ok(None);
-      };
-      let Some(skia_rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
-      else {
-        return Ok(None);
-      };
-      let path = PathBuilder::from_rect(skia_rect);
-      let mut paint = tiny_skia::Paint::default();
-      paint.shader = shader;
-      paint.anti_alias = true;
-      paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-      pixmap.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Transform::identity(),
-        None,
-      );
-      Ok(Some(pixmap))
+        &stops_rgba,
+        &self.gradient_cache,
+        bucket,
+      )
     })?
     else {
       return Ok(());
@@ -6166,7 +6139,7 @@ impl DisplayListRenderer {
       },
     };
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(canvas_transform);
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(
         dest_x,
@@ -6174,7 +6147,7 @@ impl DisplayListRenderer {
         pix.as_ref().as_ref(),
         &paint,
         transform,
-        clip.as_ref(),
+        clip.as_deref(),
       );
     });
 
@@ -6233,11 +6206,6 @@ impl DisplayListRenderer {
     };
     let center_key = Point::new(center.x, center.y);
     let radii_key = Point::new(radii.x, radii.y);
-    let Some(key) =
-      GradientPixmapCacheKey::radial(width, height, center_key, radii_key, spread, &stops_rgba)
-    else {
-      return Ok(());
-    };
 
     let background_timer = self
       .background_paint_diagnostics
@@ -6245,59 +6213,205 @@ impl DisplayListRenderer {
       .map(|_| Instant::now());
     let timer = self.diagnostics_enabled.then(Instant::now);
 
-    let Some(tile) = self.gradient_pixmap_cache.get_or_insert(key, || {
-      let Some(stops) = self.convert_stops(&item.stops) else {
-        return Ok(None);
-      };
-      let transform = Transform::from_translate(center.x, center.y).pre_scale(radii.x, radii.y);
-      let Some(shader) = RadialGradient::new(
-        SkiaPoint::from_xy(0.0, 0.0),
-        SkiaPoint::from_xy(0.0, 0.0),
-        1.0,
-        stops,
-        spread,
-        transform,
-      ) else {
-        return Ok(None);
-      };
-      let Some(mut tile) = new_pixmap(width, height) else {
-        return Ok(None);
-      };
+    let origin = self.ds_point(item.origin);
 
-      let Some(tile_rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
-      else {
-        return Ok(None);
+    let canvas_transform = self.canvas.transform();
+    let clip_mask = self.canvas.clip_mask_rc();
+    let clip_bounds = self.canvas.clip_bounds();
+
+    let mut bounds = transform_rect(dest_rect, &canvas_transform);
+    if let Some(clip) = clip_bounds {
+      let Some(intersection) = bounds.intersection(clip) else {
+        self.record_background_paint(background_timer);
+        return Ok(());
       };
-      let path = PathBuilder::from_rect(tile_rect);
-      let mut paint = tiny_skia::Paint::default();
-      paint.shader = shader;
-      paint.anti_alias = true;
-      paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-      tile.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Transform::identity(),
-        None,
-      );
-      Ok(Some(tile))
+      bounds = intersection;
+    }
+
+    let mut x0 = bounds.min_x().floor();
+    let mut y0 = bounds.min_y().floor();
+    let mut x1 = bounds.max_x().ceil();
+    let mut y1 = bounds.max_y().ceil();
+
+    x0 = x0.clamp(0.0, self.canvas.width() as f32);
+    y0 = y0.clamp(0.0, self.canvas.height() as f32);
+    x1 = x1.clamp(0.0, self.canvas.width() as f32);
+    y1 = y1.clamp(0.0, self.canvas.height() as f32);
+
+    let x0_u32 = x0 as u32;
+    let y0_u32 = y0 as u32;
+    let x1_u32 = x1 as u32;
+    let y1_u32 = y1 as u32;
+    if x0_u32 >= x1_u32 || y0_u32 >= y1_u32 {
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
+    let tmp_w = x1_u32 - x0_u32;
+    let tmp_h = y1_u32 - y0_u32;
+    let visible_pixels = u64::from(tmp_w).saturating_mul(u64::from(tmp_h));
+    let tile_pixels = u64::from(width).saturating_mul(u64::from(height));
+    let bucket = gradient_bucket(width.max(height));
+
+    // Avoid rasterizing huge gradient tiles when only a small clipped region is actually visible.
+    // This comes up on ebay.com, where a large rotated radial-gradient background is clipped down to
+    // the hero viewport. Rasterizing the full tile dominates paint time and can trigger timeouts.
+    const DIRECT_SAMPLE_MIN_TILE_PIXELS: u64 = 1_000_000;
+    const DIRECT_SAMPLE_TILE_TO_VISIBLE_RATIO: u64 = 4;
+    let use_direct = tile_pixels >= DIRECT_SAMPLE_MIN_TILE_PIXELS
+      && tile_pixels > visible_pixels.saturating_mul(DIRECT_SAMPLE_TILE_TO_VISIBLE_RATIO);
+
+    if use_direct {
+      if let Some(inv_transform) = invert_transform(canvas_transform) {
+        if let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) {
+          let inv_sx = inv_transform.sx as f64;
+          let inv_kx = inv_transform.kx as f64;
+          let inv_ky = inv_transform.ky as f64;
+          let inv_sy = inv_transform.sy as f64;
+          let inv_tx = inv_transform.tx as f64;
+          let inv_ty = inv_transform.ty as f64;
+          if inv_sx.is_finite()
+            && inv_kx.is_finite()
+            && inv_ky.is_finite()
+            && inv_sy.is_finite()
+            && inv_tx.is_finite()
+            && inv_ty.is_finite()
+          {
+            let origin_x = origin.x as f64;
+            let origin_y = origin.y as f64;
+            let raster_scale_x = raster_scale_x as f64;
+            let raster_scale_y = raster_scale_y as f64;
+            if raster_scale_x.is_finite()
+              && raster_scale_y.is_finite()
+              && raster_scale_x.abs() > 1e-9
+              && raster_scale_y.abs() > 1e-9
+            {
+              let center_x = center_key.x as f64;
+              let center_y = center_key.y as f64;
+              let radii_x = radii_key.x as f64;
+              let radii_y = radii_key.y as f64;
+              let inv_rx = 1.0 / radii_x;
+              let inv_ry = 1.0 / radii_y;
+              if radii_x.is_finite()
+                && radii_y.is_finite()
+                && radii_x > 0.0
+                && radii_y > 0.0
+                && inv_rx.is_finite()
+                && inv_ry.is_finite()
+              {
+                let tile_w_f64 = width as f64;
+                let tile_h_f64 = height as f64;
+
+                let dest_min_x = dest_rect.min_x() as f64;
+                let dest_min_y = dest_rect.min_y() as f64;
+                let dest_max_x = dest_rect.max_x() as f64;
+                let dest_max_y = dest_rect.max_y() as f64;
+
+                let lut = get_gradient_lut(&self.gradient_cache, &stops_rgba, spread, bucket);
+                let dst = tmp.pixels_mut();
+                let stride = tmp_w as usize;
+
+                let base_device_x = x0_u32 as f64 + 0.5;
+                let base_device_y = y0_u32 as f64 + 0.5;
+                let base_local_x = base_device_x * inv_sx + base_device_y * inv_kx + inv_tx;
+                let base_local_y = base_device_x * inv_ky + base_device_y * inv_sy + inv_ty;
+
+                let step_x_local_x = inv_sx;
+                let step_x_local_y = inv_ky;
+                let step_y_local_x = inv_kx;
+                let step_y_local_y = inv_sy;
+
+                let mut deadline_counter = 0usize;
+                for y in 0..tmp_h as usize {
+                  check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)
+                    .map_err(Error::Render)?;
+                  let mut local_x = base_local_x + y as f64 * step_y_local_x;
+                  let mut local_y = base_local_y + y as f64 * step_y_local_y;
+                  let row_off = y * stride;
+                  for x in 0..tmp_w as usize {
+                    if local_x.is_finite()
+                      && local_y.is_finite()
+                      && local_x >= dest_min_x
+                      && local_x < dest_max_x
+                      && local_y >= dest_min_y
+                      && local_y < dest_max_y
+                    {
+                      let mut tx = (local_x - origin_x) * raster_scale_x;
+                      let mut ty = (local_y - origin_y) * raster_scale_y;
+                      tx = tx.rem_euclid(tile_w_f64);
+                      ty = ty.rem_euclid(tile_h_f64);
+                      let dx = (tx - center_x) * inv_rx;
+                      let dy = (ty - center_y) * inv_ry;
+                      let t = (dx * dx + dy * dy).sqrt() as f32;
+                      dst[row_off + x] = lut.sample(t);
+                    }
+                    local_x += step_x_local_x;
+                    local_y += step_x_local_y;
+                  }
+                }
+
+                let paint = PixmapPaint {
+                  opacity,
+                  blend_mode: self.canvas.blend_mode(),
+                  quality: tiny_skia::FilterQuality::Nearest,
+                };
+                self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+                  pixmap.draw_pixmap(
+                    x0_u32 as i32,
+                    y0_u32 as i32,
+                    tmp.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    clip_mask.as_deref(),
+                  );
+                });
+
+                if let Some(start) = timer {
+                  self.record_gradient_usage(visible_pixels, start);
+                }
+                self.record_background_paint(background_timer);
+                return Ok(());
+              }
+            }
+          }
+        }
+      }
+    }
+
+    let Some(key) =
+      GradientPixmapCacheKey::radial(width, height, center_key, radii_key, spread, &stops_rgba)
+    else {
+      self.record_background_paint(background_timer);
+      return Ok(());
+    };
+
+    let Some(tile) = self.gradient_pixmap_cache.get_or_insert(key, || {
+      rasterize_radial_gradient(
+        width,
+        height,
+        center_key,
+        radii_key,
+        spread,
+        &stops_rgba,
+        &self.gradient_cache,
+        bucket,
+      )
     })?
     else {
+      self.record_background_paint(background_timer);
       return Ok(());
     };
     if let Some(start) = timer {
-      self.record_gradient_usage((width * height) as u64, start);
+      self.record_gradient_usage(tile_pixels, start);
     }
 
-    let origin = self.ds_point(item.origin);
     let scale_x = tile_w / tile.width() as f32;
     let scale_y = tile_h / tile.height() as f32;
     if !scale_x.is_finite() || !scale_y.is_finite() {
+      self.record_background_paint(background_timer);
       return Ok(());
     }
 
-    let canvas_transform = self.canvas.transform();
-    let clip_mask = self.canvas.clip_mask().cloned();
     let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
     let can_invert = canvas_transform.sx.is_finite()
       && canvas_transform.sy.is_finite()
@@ -6305,28 +6419,6 @@ impl DisplayListRenderer {
       && canvas_transform.sy.abs() > 1e-6;
 
     if axis_aligned && can_invert {
-      let bounds = transform_rect(dest_rect, &canvas_transform);
-      let mut x0 = bounds.min_x().floor();
-      let mut y0 = bounds.min_y().floor();
-      let mut x1 = bounds.max_x().ceil();
-      let mut y1 = bounds.max_y().ceil();
-
-      x0 = x0.clamp(0.0, self.canvas.width() as f32);
-      y0 = y0.clamp(0.0, self.canvas.height() as f32);
-      x1 = x1.clamp(0.0, self.canvas.width() as f32);
-      y1 = y1.clamp(0.0, self.canvas.height() as f32);
-
-      let x0_u32 = x0 as u32;
-      let y0_u32 = y0 as u32;
-      let x1_u32 = x1 as u32;
-      let y1_u32 = y1 as u32;
-      if x0_u32 >= x1_u32 || y0_u32 >= y1_u32 {
-        self.record_background_paint(background_timer);
-        return Ok(());
-      }
-
-      let tmp_w = x1_u32 - x0_u32;
-      let tmp_h = y1_u32 - y0_u32;
       if let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) {
         let src_w = tile.width();
         let src_h = tile.height();
@@ -6402,7 +6494,7 @@ impl DisplayListRenderer {
               tmp.as_ref(),
               &paint,
               Transform::identity(),
-              clip_mask.as_ref(),
+              clip_mask.as_deref(),
             );
           });
 
@@ -6412,6 +6504,111 @@ impl DisplayListRenderer {
       }
 
       // Allocation failed; fall back to tiny-skia's pattern fill below.
+    }
+
+    if let Some(inv_transform) = invert_transform(canvas_transform) {
+      if let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) {
+        let src_w = tile.width();
+        let src_h = tile.height();
+        if src_w == 0 || src_h == 0 {
+          self.record_background_paint(background_timer);
+          return Ok(());
+        }
+
+        let src_w_i64 = src_w as i64;
+        let src_h_i64 = src_h as i64;
+        let inv_sx = inv_transform.sx as f64;
+        let inv_kx = inv_transform.kx as f64;
+        let inv_ky = inv_transform.ky as f64;
+        let inv_sy = inv_transform.sy as f64;
+        let inv_tx = inv_transform.tx as f64;
+        let inv_ty = inv_transform.ty as f64;
+        if !inv_sx.is_finite()
+          || !inv_kx.is_finite()
+          || !inv_ky.is_finite()
+          || !inv_sy.is_finite()
+          || !inv_tx.is_finite()
+          || !inv_ty.is_finite()
+        {
+          self.record_background_paint(background_timer);
+          return Ok(());
+        }
+
+        let origin_x = origin.x as f64;
+        let origin_y = origin.y as f64;
+        let pattern_scale_x = scale_x as f64;
+        let pattern_scale_y = scale_y as f64;
+        if !pattern_scale_x.is_finite()
+          || !pattern_scale_y.is_finite()
+          || pattern_scale_x.abs() < 1e-9
+          || pattern_scale_y.abs() < 1e-9
+        {
+          self.record_background_paint(background_timer);
+          return Ok(());
+        }
+
+        let dest_min_x = dest_rect.min_x() as f64;
+        let dest_min_y = dest_rect.min_y() as f64;
+        let dest_max_x = dest_rect.max_x() as f64;
+        let dest_max_y = dest_rect.max_y() as f64;
+
+        let src = tile.data();
+        let dst = tmp.data_mut();
+        let src_stride = src_w as usize * 4;
+        let dst_stride = tmp_w as usize * 4;
+        let mut deadline_counter = 0usize;
+
+        for y in 0..tmp_h as usize {
+          check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint)
+            .map_err(Error::Render)?;
+          let device_y = y0_u32 as f64 + y as f64 + 0.5;
+          let row_off = y * dst_stride;
+          for x in 0..tmp_w as usize {
+            let device_x = x0_u32 as f64 + x as f64 + 0.5;
+            let local_x = device_x * inv_sx + device_y * inv_kx + inv_tx;
+            let local_y = device_x * inv_ky + device_y * inv_sy + inv_ty;
+            if !(local_x.is_finite() && local_y.is_finite()) {
+              continue;
+            }
+            if local_x < dest_min_x
+              || local_x >= dest_max_x
+              || local_y < dest_min_y
+              || local_y >= dest_max_y
+            {
+              continue;
+            }
+
+            let rel_x = local_x - origin_x;
+            let rel_y = local_y - origin_y;
+            let sx = (rel_x / pattern_scale_x).floor() as i64;
+            let sy = (rel_y / pattern_scale_y).floor() as i64;
+            let sx = sx.rem_euclid(src_w_i64) as usize;
+            let sy = sy.rem_euclid(src_h_i64) as usize;
+            let src_idx = sy * src_stride + sx * 4;
+            let dst_idx = row_off + x * 4;
+            dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+          }
+        }
+
+        let paint = PixmapPaint {
+          opacity,
+          blend_mode: self.canvas.blend_mode(),
+          quality: tiny_skia::FilterQuality::Nearest,
+        };
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.draw_pixmap(
+            x0_u32 as i32,
+            y0_u32 as i32,
+            tmp.as_ref(),
+            &paint,
+            Transform::identity(),
+            clip_mask.as_deref(),
+          );
+        });
+
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
     }
 
     let mut paint = tiny_skia::Paint::default();
@@ -6434,7 +6631,7 @@ impl DisplayListRenderer {
       return Ok(());
     };
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_deref());
     });
 
     self.record_background_paint(background_timer);
@@ -6503,7 +6700,7 @@ impl DisplayListRenderer {
     let frac_x = visible_rect.x() - dest_x as f32;
     let frac_y = visible_rect.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(
         dest_x,
@@ -6511,7 +6708,7 @@ impl DisplayListRenderer {
         pix.as_ref().as_ref(),
         &paint,
         transform,
-        clip.as_ref(),
+        clip.as_deref(),
       );
     });
     self.record_background_paint(background_timer);
@@ -6611,9 +6808,9 @@ impl DisplayListRenderer {
       return Ok(());
     };
     let transform = self.canvas.transform();
-    let clip_mask = self.canvas.clip_mask().cloned();
+    let clip_mask = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+      pixmap.fill_rect(skia_rect, &paint, transform, clip_mask.as_deref());
     });
 
     self.record_background_paint(background_timer);
@@ -9272,7 +9469,7 @@ impl DisplayListRenderer {
     let frac_x = clipped_bounds.x() - dest_x as f32;
     let frac_y = clipped_bounds.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(
         dest_x,
@@ -9280,7 +9477,7 @@ impl DisplayListRenderer {
         temp.as_ref(),
         &paint,
         transform,
-        clip.as_ref(),
+        clip.as_deref(),
       );
     });
     Ok(())
@@ -14333,9 +14530,9 @@ impl DisplayListRenderer {
                 });
               }
             } else if let Some(mode) = record.manual_blend {
-              if let Some(mask) = self.canvas.clip_mask().cloned() {
+              if let Some(mask) = self.canvas.clip_mask_rc() {
                 let Some(cropped) = crop_mask(
-                  &mask,
+                  mask.as_ref(),
                   origin.0 as u32,
                   origin.1 as u32,
                   layer.width(),
@@ -14366,9 +14563,9 @@ impl DisplayListRenderer {
               self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
             }
           } else if let Some(mode) = record.manual_blend {
-            if let Some(mask) = self.canvas.clip_mask().cloned() {
+            if let Some(mask) = self.canvas.clip_mask_rc() {
               let Some(cropped) = crop_mask(
-                &mask,
+                mask.as_ref(),
                 origin.0 as u32,
                 origin.1 as u32,
                 layer.width(),
@@ -14673,7 +14870,7 @@ impl DisplayListRenderer {
     let inline_vertical = item.inline_vertical;
     let inline_start = item.line_start;
     let inline_len = item.line_width;
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
     let transform = self.canvas.transform();
     let blend_mode = self.canvas.blend_mode();
 
@@ -14698,7 +14895,7 @@ impl DisplayListRenderer {
           paint,
           tiny_skia::FillRule::Winding,
           transform,
-          clip.as_ref(),
+          clip.as_deref(),
         );
       }
     };
@@ -14734,7 +14931,7 @@ impl DisplayListRenderer {
         stroke.dash = tiny_skia::StrokeDash::new(arr, offset);
       }
 
-      pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_ref());
+      pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_deref());
     };
 
     let draw_wavy_line = |pixmap: &mut Pixmap,
@@ -14862,7 +15059,7 @@ impl DisplayListRenderer {
         let mut stroke = Stroke::default();
         stroke.width = thickness.max(0.5);
         stroke.line_cap = tiny_skia::LineCap::Round;
-        pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_ref());
+        pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_deref());
       }
     };
 
@@ -15349,7 +15546,7 @@ impl DisplayListRenderer {
         blend_mode: self.canvas.blend_mode(),
         ..Default::default()
       };
-      let clip = self.canvas.clip_mask().cloned();
+      let clip = self.canvas.clip_mask_rc();
       let transform =
         Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
       self.canvas.with_mirrored_pixmap_mut(|pixmap| {
@@ -15359,7 +15556,7 @@ impl DisplayListRenderer {
           shadow_pixmap.as_ref(),
           &pixmap_paint,
           transform,
-          clip.as_ref(),
+          clip.as_deref(),
         );
       });
     }
@@ -15433,7 +15630,7 @@ impl DisplayListRenderer {
     paint.set_color_rgba8(emphasis.color.r, emphasis.color.g, emphasis.color.b, alpha);
     paint.blend_mode = self.canvas.blend_mode();
     let transform = self.canvas.transform();
-    let clip = self.canvas.clip_mask().cloned();
+    let clip = self.canvas.clip_mask_rc();
 
     let (fill, shape) = match &emphasis.style {
       TextEmphasisStyle::Mark { fill, shape } => {
@@ -15464,7 +15661,7 @@ impl DisplayListRenderer {
                     &paint,
                     tiny_skia::FillRule::EvenOdd,
                     transform,
-                    clip.as_ref(),
+                    clip.as_deref(),
                   );
                 });
               }
@@ -15472,7 +15669,7 @@ impl DisplayListRenderer {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
                 self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_deref());
                 });
               }
             }
@@ -15491,7 +15688,7 @@ impl DisplayListRenderer {
                     &paint,
                     tiny_skia::FillRule::EvenOdd,
                     transform,
-                    clip.as_ref(),
+                    clip.as_deref(),
                   );
                 });
               }
@@ -15499,7 +15696,7 @@ impl DisplayListRenderer {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
                 self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_deref());
                 });
               }
             }
@@ -15514,7 +15711,7 @@ impl DisplayListRenderer {
               tiny_skia::PathBuilder::from_circle(mark.center.x, mark.center.y, radius)
             {
               self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_deref());
               });
             }
           }
@@ -15538,7 +15735,7 @@ impl DisplayListRenderer {
                     &paint,
                     tiny_skia::FillRule::EvenOdd,
                     transform,
-                    clip.as_ref(),
+                    clip.as_deref(),
                   );
                 });
               }
@@ -15546,7 +15743,7 @@ impl DisplayListRenderer {
                 let mut stroke = tiny_skia::Stroke::default();
                 stroke.width = (emphasis.size * 0.18).max(0.5);
                 self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+                  pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_deref());
                 });
               }
             }
@@ -15564,7 +15761,7 @@ impl DisplayListRenderer {
             stroke.width = (emphasis.size * 0.2).max(0.6);
             stroke.line_cap = tiny_skia::LineCap::Round;
             self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-              pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+              pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_deref());
             });
           }
         }
@@ -15861,7 +16058,6 @@ impl DisplayListRenderer {
         return Err(err);
       }
     }
-
     let clip_mask = self.canvas.clip_mask_rc();
     let pixmap_ref = pixmap.as_ref();
     self.canvas.with_mirrored_pixmap_mut(|dest| {
@@ -15932,7 +16128,7 @@ impl DisplayListRenderer {
       ImagePatternRepeat::Repeat => SpreadMode::Repeat,
     };
 
-    let clip_mask = self.canvas.clip_mask().cloned();
+    let clip_mask = self.canvas.clip_mask_rc();
 
     let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
     let can_invert = canvas_transform.sx.is_finite()
@@ -15984,7 +16180,7 @@ impl DisplayListRenderer {
           dest_rect.height(),
         ) {
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-            pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+            pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_deref());
           });
         }
         self.record_background_paint(background_timer);
@@ -16161,7 +16357,7 @@ impl DisplayListRenderer {
             tmp.as_ref(),
             &paint,
             Transform::identity(),
-            clip_mask.as_ref(),
+            clip_mask.as_deref(),
           );
         });
 
@@ -16194,7 +16390,7 @@ impl DisplayListRenderer {
       return Ok(());
     };
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_deref());
     });
 
     self.record_background_paint(background_timer);
@@ -18146,46 +18342,23 @@ fn render_generated_border_image_subrect(
       if resolved.is_empty() {
         return None;
       }
-      let skia_stops = gradient_stops(&resolved);
       let center = Point::new(cx - crop_x, cy - crop_y);
       let radii = Point::new(radius_x, radius_y);
       let key =
         GradientPixmapCacheKey::radial(width, height, center, radii, SpreadMode::Pad, &resolved)?;
+      let bucket = gradient_bucket(full_width.max(full_height));
       pixmap_cache
         .get_or_insert(key, || {
-          let transform =
-            Transform::from_translate(cx - crop_x, cy - crop_y).pre_scale(radius_x, radius_y);
-          let shader = RadialGradient::new(
-            tiny_skia::Point::from_xy(0.0, 0.0),
-            tiny_skia::Point::from_xy(0.0, 0.0),
-            1.0,
-            skia_stops,
+          rasterize_radial_gradient(
+            width,
+            height,
+            center,
+            radii,
             SpreadMode::Pad,
-            transform,
+            &resolved,
+            cache,
+            bucket,
           )
-          .ok_or(RenderError::RasterizationFailed {
-            reason: "Unable to build radial gradient shader".into(),
-          })?;
-
-          let Some(mut pixmap) = new_pixmap(width, height) else {
-            return Ok(None);
-          };
-          let Some(skia_rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
-          else {
-            return Ok(None);
-          };
-          let path = PathBuilder::from_rect(skia_rect);
-          let mut paint = tiny_skia::Paint::default();
-          paint.shader = shader;
-          paint.anti_alias = true;
-          pixmap.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            Transform::identity(),
-            None,
-          );
-          Ok(Some(pixmap))
         })
         .ok()
         .flatten()
@@ -18218,7 +18391,6 @@ fn render_generated_border_image_subrect(
       if resolved.is_empty() {
         return None;
       }
-      let skia_stops = gradient_stops(&resolved);
       let center = Point::new(cx - crop_x, cy - crop_y);
       let radii = Point::new(radius_x, radius_y);
       let key = GradientPixmapCacheKey::radial(
@@ -18229,41 +18401,19 @@ fn render_generated_border_image_subrect(
         SpreadMode::Repeat,
         &resolved,
       )?;
+      let bucket = gradient_bucket(full_width.max(full_height));
       pixmap_cache
         .get_or_insert(key, || {
-          let transform =
-            Transform::from_translate(cx - crop_x, cy - crop_y).pre_scale(radius_x, radius_y);
-          let shader = RadialGradient::new(
-            tiny_skia::Point::from_xy(0.0, 0.0),
-            tiny_skia::Point::from_xy(0.0, 0.0),
-            1.0,
-            skia_stops,
+          rasterize_radial_gradient(
+            width,
+            height,
+            center,
+            radii,
             SpreadMode::Repeat,
-            transform,
+            &resolved,
+            cache,
+            bucket,
           )
-          .ok_or(RenderError::RasterizationFailed {
-            reason: "Unable to build radial gradient shader".into(),
-          })?;
-
-          let Some(mut pixmap) = new_pixmap(width, height) else {
-            return Ok(None);
-          };
-          let Some(skia_rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, width as f32, height as f32)
-          else {
-            return Ok(None);
-          };
-          let path = PathBuilder::from_rect(skia_rect);
-          let mut paint = tiny_skia::Paint::default();
-          paint.shader = shader;
-          paint.anti_alias = true;
-          pixmap.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            Transform::identity(),
-            None,
-          );
-          Ok(Some(pixmap))
         })
         .ok()
         .flatten()
@@ -22913,10 +23063,10 @@ mod tests {
       blend_mode: renderer.canvas.blend_mode(),
       ..Default::default()
     };
-    let clip = renderer.canvas.clip_mask().cloned();
+    let clip = renderer.canvas.clip_mask_rc();
     let transform = renderer.canvas.transform();
     renderer.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_ref());
+      pixmap.draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_deref());
     });
     Ok(())
   }

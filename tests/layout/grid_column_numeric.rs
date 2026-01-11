@@ -106,3 +106,89 @@ fn grid_column_accepts_numeric_values() {
   );
 }
 
+#[test]
+fn grid_column_start_end_accept_numeric_tokens() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  // `grid-column-start`/`grid-column-end` accept integers. The generic CSS value parser stores
+  // these as numeric tokens, so they must not be ignored at computed-value time.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #grid {
+        display: grid;
+        grid-template-columns: 50px 50px 50px 50px;
+        grid-template-rows: 10px 10px;
+      }
+      #item {
+        grid-row-start: 2;
+        grid-row-end: 3;
+        grid-column-start: 1;
+        grid-column-end: 5;
+        height: 10px;
+      }
+    </style>
+    <div id="grid">
+      <div id="item">A</div>
+    </div>
+  "#;
+
+  let tree = layout_html(&mut renderer, html, 400, 100);
+  let bounds = find_block_bounds_for_text(&tree.root, "A").expect("find A");
+
+  assert!(
+    (bounds.x() - 0.0).abs() <= EPS,
+    "expected #item to start in column 1 at x=0, got {}",
+    bounds.x()
+  );
+  assert!(
+    (bounds.y() - 10.0).abs() <= EPS,
+    "expected #item to start in row 2 at y=10, got {}",
+    bounds.y()
+  );
+  assert!(
+    (bounds.width() - 200.0).abs() <= EPS,
+    "expected #item to span four 50px tracks, got width={}",
+    bounds.width()
+  );
+}
+
+#[test]
+fn grid_column_start_numeric_longhand_overrides_shorthand() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  // Tailwind-style patterns commonly combine a `grid-column` span shorthand (e.g. `col-span-*`)
+  // with an explicit numeric `grid-column-start` (e.g. `col-start-*`). The longhand must override
+  // the shorthand's start component, preserving the span in the end component.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #grid { display: grid; grid-template-columns: 100px 100px 100px; }
+      #grid > * { grid-row: 1; grid-column: span 2 / span 2; height: 10px; }
+      #item { grid-column-start: 2; }
+    </style>
+    <div id="grid">
+      <div id="item">A</div>
+    </div>
+  "#;
+
+  let tree = layout_html(&mut renderer, html, 400, 100);
+  let bounds = find_block_bounds_for_text(&tree.root, "A").expect("find A");
+
+  assert!(
+    (bounds.x() - 100.0).abs() <= EPS,
+    "expected #item to start in column 2 at x=100, got {}",
+    bounds.x()
+  );
+  assert!(
+    (bounds.width() - 200.0).abs() <= EPS,
+    "expected #item to preserve the `span 2` end component, got width={}",
+    bounds.width()
+  );
+}
