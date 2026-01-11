@@ -216,8 +216,9 @@ These are the guarantees codegen is allowed to rely on.
 
 ### `rt_async_spawn(coro: CoroutineId) -> PromiseRef`
 
-- Takes ownership of the coroutine handle (`CoroutineId`). The runtime consumes the handle and frees
-  it when the coroutine completes.
+- Takes ownership of the coroutine handle (`CoroutineId`), allocated via the persistent handle ABI
+  (`rt_handle_alloc`). The runtime consumes the handle and frees it when the coroutine completes (or
+  is cancelled).
 - Allocates the result promise described by the coroutine frame's
   `CoroutineVTable.{promise_size,promise_align,promise_shape_id}`.
 - Stores the promise pointer into the coroutine frame's `promise` field.
@@ -704,6 +705,9 @@ statepoints/stackmaps and therefore cannot have its raw pointers auto-relocated 
 Instead the ABI uses a stable `CoroutineId` (`u64`) handle. The runtime resolves the ID to the
 current coroutine pointer each time it needs to resume, and treats invalid/stale IDs as a no-op
 resume (never UB).
+
+`CoroutineId` is currently backed by the same persistent handle table as `HandleId`, allocated via
+`rt_handle_alloc` and freed via `rt_handle_free`.
 
 ## Legacy coroutine execution model
 

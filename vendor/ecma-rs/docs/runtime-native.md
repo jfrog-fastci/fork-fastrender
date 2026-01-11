@@ -226,7 +226,14 @@ pub struct TaskId(pub u64);
 pub struct HandleId(pub u64);
 
 /// Stable identifier for an async coroutine frame.
-pub type CoroutineId = HandleId;
+///
+/// This is an ABI-stable `u64` handle backed by the persistent handle table.
+///
+/// - Allocate by calling `rt_handle_alloc(coro_ptr as *mut u8)` and wrapping the returned `u64`.
+/// - The runtime **consumes** the handle passed to `rt_async_spawn*` and frees it when the coroutine
+///   completes (or is cancelled).
+#[repr(transparent)]
+pub struct CoroutineId(pub u64);
 
 /// An FFI-friendly UTF-8 byte string reference.
 ///
@@ -296,7 +303,7 @@ pub fn rt_parallel_for(
 // pointers across turns. Use a stable generational handle id (u64) that indexes a
 // pinned handle-table cell; the GC updates the cell's pointer when the coroutine
 // relocates.
-pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
+pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
 ```
 

@@ -635,6 +635,9 @@ typedef Coroutine* CoroutineRef;
 // Coroutines may be relocated by a moving/compacting GC, and coroutine IDs may be stored in host
 // queues / OS event-loop userdata across async boundaries. As a result, the native async ABI uses a
 // `CoroutineId` handle instead of a raw `Coroutine*` pointer.
+//
+// `CoroutineId` values are allocated via the persistent handle ABI:
+//   CoroutineId id = rt_handle_alloc((GcPtr)coro_ptr);
 typedef uint64_t CoroutineId;
 
 typedef enum CoroutineStepTag {
