@@ -307,9 +307,26 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
 
   let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
   let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+  let (script_done_tx, script_done_rx) = std::sync::mpsc::channel::<()>();
 
   let doc_thread = std::thread::spawn(move || {
-    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    use std::time::{Duration, Instant};
+
+    doc_listener.set_nonblocking(true).expect("doc nonblocking");
+    let start = Instant::now();
+    let (mut stream, _) = loop {
+      match doc_listener.accept() {
+        Ok(pair) => break pair,
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+          assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "timed out waiting for document request"
+          );
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(err) => panic!("accept doc: {err}"),
+      }
+    };
     let (_path, _headers) = read_http_request(&mut stream);
     let body = format!(
       r#"<!doctype html><html><head>
@@ -321,18 +338,39 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
   });
 
   let script_thread = std::thread::spawn(move || {
-    let (mut stream, _) = script_listener.accept().expect("accept script");
-    let (_path, headers) = read_http_request(&mut stream);
-    *captured_script_headers_for_thread
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
-    write_http_response(stream, "200 OK", "application/javascript", script_body, &[]);
+    use std::time::Duration;
+
+    // The HTML + SRI processing model requires a CORS-enabled fetch for cross-origin resources when
+    // the `integrity` attribute is present. Our implementation rejects scripts that are cross-origin
+    // + integrity + missing `crossorigin` **before fetching**, so we should not see any request to
+    // the script server.
+    script_listener.set_nonblocking(true).expect("script nonblocking");
+    loop {
+      if matches!(script_done_rx.try_recv(), Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected)) {
+        return;
+      }
+      match script_listener.accept() {
+        Ok((mut stream, _)) => {
+          let (_path, headers) = read_http_request(&mut stream);
+          *captured_script_headers_for_thread
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
+          write_http_response(stream, "200 OK", "application/javascript", script_body, &[]);
+          return;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(_) => return,
+      }
+    }
   });
 
   let executor = LogExecutor::default();
   let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
   tab.navigate_to_url(&doc_url, RenderOptions::default())?;
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+  let _ = script_done_tx.send(());
 
   doc_thread.join().expect("join doc thread");
   script_thread.join().expect("join script thread");
@@ -346,16 +384,10 @@ fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> 
   let headers = captured_script_headers
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
-    .clone()
-    .unwrap_or_default();
-  assert_eq!(
-    headers.get("sec-fetch-mode").map(String::as_str),
-    Some("no-cors"),
-    "expected cross-origin scripts without crossorigin to use no-cors mode; headers={headers:?}"
-  );
+    .clone();
   assert!(
-    headers.get("origin").is_none(),
-    "expected no Origin header for no-cors script requests; headers={headers:?}"
+    headers.is_none(),
+    "expected no network request for blocked cross-origin SRI script; got headers={headers:?}"
   );
 
   Ok(())
