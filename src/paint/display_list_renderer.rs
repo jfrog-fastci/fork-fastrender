@@ -4919,7 +4919,7 @@ impl DisplayListRenderer {
   }
 
   #[inline]
-  fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect, radii: Option<BorderRadii>) -> Rect {
+  fn maybe_snap_axis_aligned_clip_rect(&self, rect: Rect) -> Rect {
     // tiny-skia uses floating-point transforms for `draw_pixmap` / mask rasterization. For
     // axis-aligned integer-sized clips, snapping near-integer edges to device pixels tends to
     // align better with Chrome's pixel grid behavior.
@@ -4934,9 +4934,6 @@ impl DisplayListRenderer {
         || !Self::is_near_integer(transform.tx)
         || !Self::is_near_integer(transform.ty))
     {
-      return rect;
-    }
-    if radii.is_some_and(|r| !r.is_zero()) {
       return rect;
     }
     if rect.width() <= 0.0
@@ -17670,7 +17667,7 @@ impl DisplayListRenderer {
     match &clip.shape {
       ClipShape::Rect { rect, radii } => {
         let radii = radii.map(|r| self.ds_radii(r));
-        let rect = self.maybe_snap_axis_aligned_clip_rect(self.ds_rect(*rect), radii);
+        let rect = self.maybe_snap_axis_aligned_clip_rect(self.ds_rect(*rect));
         self.canvas.set_clip_with_radii(rect, radii)?;
       }
       ClipShape::Path { path } => {
