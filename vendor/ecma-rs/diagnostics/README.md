@@ -32,12 +32,17 @@ repo-wide policy and registry):
 - `LOWER####`: `hir-js` lowering
 - `TC####`: `typecheck-ts` type checker
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)
+- `EFFECT####`: `effect-js` effect inference
 - `OPT####`: `optimize-js`
+- `NATIVE####`: `native-js` native codegen
+- `RTNATIVE####`: `runtime-native` native runtime library
 - `MINIFYTS####`: `minify-js` TypeScript erasure/minification
 - `MINIFY####`: minify tooling (e.g. benchmarks)
 - `EMIT####`: `emit-js` emitter
+- `KB####`: `knowledge-base` tooling
 - `CONF####`: parser conformance tooling
 - `T262####`: test262 tooling
+- `VMJS####`: `vm-js` runtime
 - `HOST####`: Host/environment failures
 - `ICE####`: Internal compiler errors
 - `CANCEL####`: Cancellation

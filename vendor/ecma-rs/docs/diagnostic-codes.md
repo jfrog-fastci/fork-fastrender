@@ -35,8 +35,8 @@ identifiers.
 
 ## Prefix registry (repo-wide)
 
-This table lists the prefixes currently used in this workspace and where they
-come from.
+This table lists the prefixes currently used in this workspace (plus reserved
+prefixes for planned crates) and where they come from.
 
 | Prefix / format | Owner / source | Notes |
 | --- | --- | --- |
@@ -45,12 +45,17 @@ come from.
 | `LOWER####` | `hir-js` | AST→HIR lowering warnings. |
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
+| `EFFECT####` | `effect-js` | Effect inference diagnostics (analysis + semantic knowledge). |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
+| `NATIVE####` | `native-js` | Native codegen diagnostics (LLVM IR generation + lowering). |
+| `RTNATIVE####` | `runtime-native` | Native runtime library diagnostics (GC/runtime integration). |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
 | `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
 | `MINIFY####` | `minify-js` tooling | Currently used by the benchmark harness (`bench/minify-js`). |
+| `KB####` | `knowledge-base` tooling | Knowledge base schema/consistency validation diagnostics. |
 | `CONF####` | `parse-js` tooling | Parser conformance runner diagnostics. |
 | `T262####` | `test262` tooling | test262 runner diagnostics. |
+| `VMJS####` | `vm-js` | VM runtime diagnostics (syntax + module loading). |
 | `HOST####` | `diagnostics` | Host/environment failures (`diagnostics::host_error`). Shared across crates. |
 | `ICE####` | `diagnostics` | Internal compiler errors (`diagnostics::ice`). Shared across crates. |
 | `CANCEL####` | `typecheck-ts` | Cancellation diagnostics (currently typechecker-specific). |
@@ -83,4 +88,3 @@ just diagnostic-codes
 
 CI runs the same check and will fail on malformed prefixes or cross-crate
 collisions.
-
