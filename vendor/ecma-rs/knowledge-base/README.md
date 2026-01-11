@@ -22,6 +22,15 @@ The default (bundled) knowledge base is built from files under:
 - `web/`
 - `ecosystem/`
 
+The `web/` directory may optionally contain platform-specific subdirectories:
+
+- `web/chrome/`
+- `web/firefox/`
+- `web/safari/`
+
+When using `ApiDatabase::api_for_target` with `TargetEnv::Web { platform: ... }`, platform-specific
+entries are preferred over `web/`'s generic entries.
+
 Supported formats:
 
 - YAML (`.yaml`, `.yml`)
