@@ -245,3 +245,45 @@ fn void_main_allows_return_without_value() {
   );
   assert_eq!(value, 0);
 }
+
+#[test]
+fn labeled_break_exits_outer_loop() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let count = 0;
+      outer: for (let i = 0; i < 5; i = i + 1) {
+        for (let j = 0; j < 5; j = j + 1) {
+          if (j == 2) {
+            break outer;
+          }
+          count = count + 1;
+        }
+      }
+      return count;
+    }
+    "#,
+  );
+  assert_eq!(value, 2);
+}
+
+#[test]
+fn labeled_continue_jumps_outer_loop() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let count = 0;
+      outer: for (let i = 0; i < 3; i = i + 1) {
+        for (let j = 0; j < 3; j = j + 1) {
+          if (j == 1) {
+            continue outer;
+          }
+          count = count + 1;
+        }
+      }
+      return count;
+    }
+    "#,
+  );
+  assert_eq!(value, 3);
+}
