@@ -493,8 +493,8 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
       Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError(msg)))
         if msg.contains("call to unknown function") =>
       {
-        // Likely calls an imported function; fall back to the project compiler which supports
-        // multi-file module linking.
+        // The single-file emitter has no module graph, so imports show up as unknown functions.
+        // Fall back to the project compiler which supports multi-file module linking.
       }
       Err(err) => {
         eprintln!("{err}");
