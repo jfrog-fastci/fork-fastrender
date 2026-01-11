@@ -895,6 +895,21 @@ fn rt_io_update_rejects_empty_interests_and_reports_error() {
 }
 
 #[test]
+fn rt_io_update_invalid_id_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+
+  rt_io_update(0, RT_IO_READABLE);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UPDATE_FAILED,
+    "expected rt_io_update(0, ...) to report failure for an invalid watcher id"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should remain idle after updating an invalid watcher id");
+}
+
+#[test]
 fn rt_io_update_detects_nonblocking_contract_violation() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
