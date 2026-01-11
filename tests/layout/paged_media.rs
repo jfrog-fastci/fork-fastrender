@@ -3222,13 +3222,14 @@ fn multicol_break_after_left_inserts_blank_page_when_break_occurs_on_left_page()
           @page :blank { @top-center { content: "Blank"; } }
           body { margin: 0; }
           .multi { column-count: 2; column-gap: 0; }
-          .pre { height: 200px; margin: 0; }
+          .pre { height: 100px; margin: 0; }
           .a, .b { height: 60px; margin: 0; }
           .a { break-after: left; }
         </style>
       </head>
       <body>
         <div class="multi">
+          <div class="pre"></div>
           <div class="pre"></div>
           <div class="a">A</div>
           <div class="b">B</div>
@@ -3266,7 +3267,7 @@ fn multicol_break_after_left_inserts_blank_page_when_break_occurs_on_left_page()
     "blank page should use the :blank page rule"
   );
   assert!(find_text(page3, "A").is_none());
-  assert!(find_text(page3, "B").is_none());
+  assert!(find_text_eq(page3, "B").is_none());
 
   assert!(find_text(page4, "B").is_some());
   let pos_b = find_text_position(page4, "B", (0.0, 0.0)).expect("B position");
@@ -3288,12 +3289,14 @@ fn multicol_break_before_left_inserts_blank_page_when_break_starts_on_right_page
           @page :blank { @top-center { content: "Blank"; } }
           body { margin: 0; }
           .multi { column-count: 2; column-gap: 0; }
-          .pre { height: 200px; margin: 0; }
+          .pre { height: 100px; margin: 0; }
           .b { height: 60px; margin: 0; break-before: left; }
         </style>
       </head>
       <body>
         <div class="multi">
+          <div class="pre"></div>
+          <div class="pre"></div>
           <div class="pre"></div>
           <div class="pre"></div>
           <div class="b">B</div>
@@ -3322,7 +3325,7 @@ fn multicol_break_before_left_inserts_blank_page_when_break_starts_on_right_page
     margin_boxes_contain_text(page3, "Blank"),
     "blank page should use the :blank page rule"
   );
-  assert!(find_text(page3, "B").is_none());
+  assert!(find_text_eq(page3, "B").is_none());
 
   assert!(find_text(page4, "B").is_some());
   let pos_b = find_text_position(page4, "B", (0.0, 0.0)).expect("B position");
@@ -3444,7 +3447,7 @@ fn multicol_break_before_recto_uses_root_page_progression() {
     "blank page should use the :blank page rule"
   );
   assert!(find_text(page2, "A").is_none());
-  assert!(find_text(page2, "B").is_none());
+  assert!(find_text_eq(page2, "B").is_none());
 
   assert!(find_text(page3, "B").is_some());
   let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B position");
