@@ -1061,7 +1061,7 @@ mod tests {
       )],
       &[],
     );
-
+ 
     let escape = analyze_cfg_escapes(&cfg);
     assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(0));
   }

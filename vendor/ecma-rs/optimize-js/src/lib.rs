@@ -634,8 +634,9 @@ pub(crate) fn build_program_function_with_options(
   // deconstructed CFG; consumers should use `ProgramFunction::analyzed_cfg()` when they need
   // ownership/escape results.
   let mut ssa_cfg = cfg.clone();
-  let escapes = analysis::escape::analyze_cfg_escapes(&ssa_cfg);
-  let ownership = analysis::ownership::analyze_cfg_ownership_with_escapes(&ssa_cfg, &escapes);
+  let escapes = analysis::escape::analyze_cfg_escapes_with_params(&ssa_cfg, &params);
+  let ownership =
+    analysis::ownership::analyze_cfg_ownership_with_escapes_and_params(&ssa_cfg, &params, &escapes);
   analysis::ownership::annotate_cfg_ownership(&mut ssa_cfg, &ownership);
   for (_label, insts) in ssa_cfg.bblocks.all_mut() {
     for inst in insts {
