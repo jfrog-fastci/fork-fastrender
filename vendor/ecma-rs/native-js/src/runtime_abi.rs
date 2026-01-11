@@ -93,23 +93,23 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
 
   fn rt_alloc_raw(&self) -> FunctionValue<'ctx> {
     // `runtime-native` exports:
-    //   `rt_alloc(size: usize, shape: u128) -> *mut u8`
+    //   `rt_alloc(size: usize, shape: RtShapeId) -> *mut u8`
     let i64_ty = self.context.i64_type();
-    let i128_ty = self.context.i128_type();
+    let i32_ty = self.context.i32_type();
     let fn_ty = self
       .ptr_raw()
-      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
     self.get_or_declare("rt_alloc", fn_ty)
   }
 
   fn rt_alloc_pinned_raw(&self) -> FunctionValue<'ctx> {
     // `runtime-native` exports:
-    //   `rt_alloc_pinned(size: usize, shape: u128) -> *mut u8`
+    //   `rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8`
     let i64_ty = self.context.i64_type();
-    let i128_ty = self.context.i128_type();
+    let i32_ty = self.context.i32_type();
     let fn_ty = self
       .ptr_raw()
-      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
     self.get_or_declare("rt_alloc_pinned", fn_ty)
   }
 
@@ -132,10 +132,10 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
 
   fn rt_alloc_gc(&self) -> FunctionValue<'ctx> {
     let i64_ty = self.context.i64_type();
-    let i128_ty = self.context.i128_type();
+    let i32_ty = self.context.i32_type();
     let fn_ty = self
       .ptr_gc()
-      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
 
     self.get_or_define_internal("rt_alloc_gc", fn_ty, |func| {
       let raw = self.rt_alloc_raw();
@@ -168,10 +168,10 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
 
   fn rt_alloc_pinned_gc(&self) -> FunctionValue<'ctx> {
     let i64_ty = self.context.i64_type();
-    let i128_ty = self.context.i128_type();
+    let i32_ty = self.context.i32_type();
     let fn_ty = self
       .ptr_gc()
-      .fn_type(&[i64_ty.into(), i128_ty.into()], false);
+      .fn_type(&[i64_ty.into(), i32_ty.into()], false);
 
     self.get_or_define_internal("rt_alloc_pinned_gc", fn_ty, |func| {
       let raw = self.rt_alloc_pinned_raw();

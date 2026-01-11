@@ -10,7 +10,19 @@ static int check(int cond) {
 }
 
 int main(void) {
-  ShapeId shape = (ShapeId)0;
+  static const RtShapeDescriptor kShapes[1] = {
+    {
+      .size = 16,
+      .align = 16,
+      .flags = 0,
+      .ptr_offsets = (const uint32_t*)0,
+      .ptr_offsets_len = 0,
+      .reserved = 0,
+    },
+  };
+  rt_register_shape_table(kShapes, 1);
+
+  RtShapeId shape = (RtShapeId)1;
   uint8_t* pinned = rt_alloc_pinned(16, shape);
   (void)pinned;
   rt_gc_safepoint();

@@ -1,8 +1,53 @@
 use std::process::Command;
+use std::sync::Once;
 
-use runtime_native::abi::RtShapeId;
+use runtime_native::abi::{RtShapeDescriptor, RtShapeId};
 use runtime_native::rt_alloc;
 use runtime_native::rt_alloc_array;
+use runtime_native::shape_table;
+
+static SHAPE_TABLE_ONCE: Once = Once::new();
+static EMPTY_PTR_OFFSETS: [u32; 0] = [];
+static SHAPES: [RtShapeDescriptor; 4] = [
+  RtShapeDescriptor {
+    size: 16,
+    align: 16,
+    flags: 0,
+    ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: 0,
+    reserved: 0,
+  },
+  RtShapeDescriptor {
+    size: 24,
+    align: 16,
+    flags: 0,
+    ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: 0,
+    reserved: 0,
+  },
+  RtShapeDescriptor {
+    size: 40,
+    align: 16,
+    flags: 0,
+    ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: 0,
+    reserved: 0,
+  },
+  RtShapeDescriptor {
+    size: 256,
+    align: 16,
+    flags: 0,
+    ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+    ptr_offsets_len: 0,
+    reserved: 0,
+  },
+];
+
+fn ensure_shape_table() {
+  SHAPE_TABLE_ONCE.call_once(|| unsafe {
+    shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
+  });
+}
 
 fn round_up_16(n: usize) -> usize {
   (n + 15) & !15
@@ -10,18 +55,20 @@ fn round_up_16(n: usize) -> usize {
 
 #[test]
 fn alloc_alignment() {
+  ensure_shape_table();
   for _ in 0..128 {
-    let ptr = rt_alloc(1, RtShapeId(0));
+    let ptr = rt_alloc(1, RtShapeId(1));
     assert_eq!((ptr as usize) & 15, 0);
   }
 }
 
 #[test]
 fn alloc_distinct() {
+  ensure_shape_table();
   let a_size = 24;
   let b_size = 40;
-  let a = rt_alloc(a_size, RtShapeId(0)) as usize;
-  let b = rt_alloc(b_size, RtShapeId(0)) as usize;
+  let a = rt_alloc(a_size, RtShapeId(2)) as usize;
+  let b = rt_alloc(b_size, RtShapeId(3)) as usize;
 
   let a_end = a + round_up_16(a_size);
   let b_end = b + round_up_16(b_size);
@@ -55,6 +102,7 @@ fn alloc_array_overflow_aborts_or_panics() {
 
 #[test]
 fn thread_local_fast_path() {
+  ensure_shape_table();
   const THREADS: usize = 8;
   const ITERS: usize = 10_000;
   const SIZE: usize = 256;
@@ -62,9 +110,10 @@ fn thread_local_fast_path() {
   let mut handles = Vec::with_capacity(THREADS);
   for _ in 0..THREADS {
     handles.push(std::thread::spawn(|| {
+      ensure_shape_table();
       let mut ranges = Vec::with_capacity(ITERS);
       for _ in 0..ITERS {
-        let ptr = rt_alloc(SIZE, RtShapeId(0)) as usize;
+        let ptr = rt_alloc(SIZE, RtShapeId(4)) as usize;
         let end = ptr.checked_add(round_up_16(SIZE)).expect("ptr overflow");
         ranges.push((ptr, end));
       }

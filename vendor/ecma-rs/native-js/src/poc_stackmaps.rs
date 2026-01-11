@@ -45,6 +45,7 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
   let builder = context.create_builder();
 
   let i64_ty = context.i64_type();
+  let i32_ty = context.i32_type();
 
   // Use a dedicated address space to mark GC-managed pointers.
   //
@@ -55,8 +56,8 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
 
   let pair_ty = context.struct_type(&[gc_ptr_ty.into(), gc_ptr_ty.into()], false);
 
-  // declare ptr addrspace(1) @rt_alloc(i64)
-  let rt_alloc_ty = gc_ptr_ty.fn_type(&[i64_ty.into()], false);
+  // declare ptr addrspace(1) @rt_alloc(i64, i32)
+  let rt_alloc_ty = gc_ptr_ty.fn_type(&[i64_ty.into(), i32_ty.into()], false);
   let rt_alloc = module.add_function("rt_alloc", rt_alloc_ty, None);
 
   // define ptr addrspace(1) @poc_make_pair(ptr addrspace(1), ptr addrspace(1)) gc "coreclr"
@@ -92,8 +93,14 @@ fn build_poc_module<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Resu
     let mut statepoints = StatepointEmitter::new(context.as_ctx_ref(), module.as_mut_ptr(), gc_ptr_ty.as_type_ref());
 
     let alloc_size = i64_ty.const_int(16, false).as_value_ref();
+    let shape_id = i32_ty.const_int(1, false).as_value_ref();
     let pair_ptr = frame
-      .safepoint_call(builder_ref, &mut statepoints, rt_alloc.as_value_ref(), &[alloc_size])
+      .safepoint_call(
+        builder_ref,
+        &mut statepoints,
+        rt_alloc.as_value_ref(),
+        &[alloc_size, shape_id],
+      )
       .expect("rt_alloc returns a GC pointer so gc.result must exist");
 
     let a_relocated = frame.load(builder_ref, a_slot, "a.relocated");
