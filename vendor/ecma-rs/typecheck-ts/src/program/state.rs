@@ -553,6 +553,7 @@ impl ProgramState {
     best.map(|(_, id)| id)
   }
 
+  #[cfg(feature = "serde")]
   fn update_typecheck_roots(&mut self, roots: &[FileId]) {
     let mut keys: Vec<FileKey> = roots
       .iter()
@@ -566,6 +567,7 @@ impl ProgramState {
       .set_roots(Arc::from(keys.into_boxed_slice()));
   }
 
+  #[cfg(feature = "serde")]
   fn sync_typecheck_roots(&mut self) {
     let roots = self.root_ids.clone();
     self.update_typecheck_roots(&roots);
@@ -574,6 +576,7 @@ impl ProgramState {
   fn recompute_global_bindings(&mut self) {
     self.global_bindings = crate::db::global_bindings(self);
   }
+  #[cfg(feature = "serde")]
   fn ensure_body_map_from_defs(&mut self) {
     for (file, state) in self.files.iter() {
       if let Some(body) = state.top_body {

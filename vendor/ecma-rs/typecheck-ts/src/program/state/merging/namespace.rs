@@ -1,6 +1,7 @@
 use super::*;
 
 impl ProgramState {
+  #[cfg(feature = "serde")]
   pub(in super::super) fn find_namespace_def(&self, file: FileId, name: &str) -> Option<DefId> {
     self
       .def_data
