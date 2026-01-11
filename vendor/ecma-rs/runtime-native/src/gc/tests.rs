@@ -422,6 +422,36 @@ fn handle_id_round_trip_u64() {
   assert_eq!(id.generation(), 456);
 }
 
+#[test]
+fn clear_for_tests_invalidates_stale_handle_ids() {
+  let table = HandleTable::<u8>::new();
+
+  let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
+  let id1 = table.alloc(p1);
+  assert_eq!(table.get(id1), Some(p1));
+
+  table.clear_for_tests();
+
+  let p2 = NonNull::new(Box::into_raw(Box::new(2u8))).unwrap();
+  let id2 = table.alloc(p2);
+  assert_eq!(table.get(id2), Some(p2));
+
+  // The old handle must not "resurrect" after a test reset.
+  assert_eq!(table.get(id1), None);
+  assert_eq!(table.free(id1), None);
+  assert_eq!(table.get(id2), Some(p2));
+
+  // Slots are expected to be reused, but with a bumped generation.
+  assert_eq!(id1.index(), id2.index());
+  assert_ne!(id1.generation(), id2.generation());
+
+  assert_eq!(table.free(id2), Some(p2));
+  unsafe {
+    drop(Box::from_raw(p1.as_ptr()));
+    drop(Box::from_raw(p2.as_ptr()));
+  }
+}
+
 use std::sync::{Arc, Barrier};
 use std::thread;
 

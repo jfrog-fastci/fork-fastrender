@@ -317,8 +317,38 @@ impl<T> HandleTable<T> {
 
   pub(crate) fn clear_for_tests(&self) {
     let mut inner = self.inner.write();
-    inner.slots.clear();
-    inner.free_head = None;
+    // Important: do *not* truncate `slots` here.
+    //
+    // Some tests reset global runtime state while other threads are still unwinding/dropping old
+    // handle IDs (e.g. async work being torn down). If we were to drop the `slots` vector, handle
+    // IDs could be immediately reusable from index 0 again with generation 1, allowing a stale
+    // `free` call from a previous test to accidentally free a new entry in the next test.
+    //
+    // Instead, clear entries in-place and bump each slot's generation to invalidate any previously
+    // issued handles.
+    let mut next_free: Option<u32> = None;
+    for index in (0..inner.slots.len()).rev() {
+      let slot = &mut inner.slots[index];
+      let generation = match slot {
+        Slot::Free { generation, .. } | Slot::Live { generation, .. } => *generation,
+      };
+
+      // Bump generation to invalidate stale IDs.
+      let mut new_generation = generation.wrapping_add(1);
+      if new_generation == 0 {
+        // Keep 0 reserved for sentinel use.
+        new_generation = 1;
+      }
+
+      *slot = Slot::Free {
+        next_free,
+        generation: new_generation,
+      };
+      next_free = Some(
+        u32::try_from(index).expect("HandleTable index overflow (more than u32::MAX slots)"),
+      );
+    }
+    inner.free_head = next_free;
   }
 }
 

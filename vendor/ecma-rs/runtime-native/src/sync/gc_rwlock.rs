@@ -61,6 +61,13 @@ impl<T> GcAwareRwLock<T> {
       return g;
     }
 
+    // Unregistered threads are not part of stop-the-world coordination. Treat this as a plain
+    // lock acquisition so GC coordinator threads (or other external callers) can still acquire
+    // GC-aware locks while the world is stopped.
+    if threading::registry::current_thread_state().is_none() {
+      return self.inner.read();
+    }
+
     loop {
       let gc_safe = threading::enter_gc_safe_region();
       let guard = self.inner.read();
@@ -93,6 +100,13 @@ impl<T> GcAwareRwLock<T> {
   pub fn write(&self) -> RwLockWriteGuard<'_, T> {
     if let Some(g) = self.inner.try_write() {
       return g;
+    }
+
+    // Unregistered threads are not part of stop-the-world coordination. Treat this as a plain
+    // lock acquisition so GC coordinator threads (or other external callers) can still acquire
+    // GC-aware locks while the world is stopped.
+    if threading::registry::current_thread_state().is_none() {
+      return self.inner.write();
     }
 
     loop {
