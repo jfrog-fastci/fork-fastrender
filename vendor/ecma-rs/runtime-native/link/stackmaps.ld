@@ -37,6 +37,9 @@
  *   stackmaps/faultmaps into the standard `.data.rel.ro` output section and
  *   anchors the insertion point at `INSERT BEFORE .dynamic;`.
  *
+ * Note: `.dynamic` must exist for this fragment to be usable. This is true for
+ * the dynamically-linked PIE/non-PIE binaries produced by our toolchain.
+ *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.
  * If your linker does not support `INSERT`, switch to GNU ld or lld.

@@ -655,15 +655,30 @@ impl<T> TimerWheel<T> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::clock::VirtualClock;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
   use std::task::{RawWaker, RawWakerVTable, Waker};
   use std::time::Duration;
 
   #[test]
+  fn timers_fire_in_deadline_order() {
+    let base = Instant::now();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
+
+    wheel.schedule(base + Duration::from_millis(10), 10);
+    wheel.schedule(base + Duration::from_millis(1), 1);
+    wheel.schedule(base + Duration::from_millis(5), 5);
+
+    let mut fired = Vec::new();
+    wheel.poll_expired(base + Duration::from_millis(10), |p| fired.push(p));
+    assert_eq!(fired, vec![1, 5, 10]);
+  }
+
+  #[test]
   fn cancel_is_idempotent_and_removes_from_next_deadline() {
     let base = Instant::now();
-    let mut wheel = TimerWheel::<u64>::new();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
 
     let k1 = wheel.schedule(base + Duration::from_millis(10), 1);
     let k2 = wheel.schedule(base + Duration::from_millis(5), 2);
@@ -684,7 +699,7 @@ mod tests {
   #[test]
   fn multiple_timers_same_deadline_all_fire() {
     let base = Instant::now();
-    let mut wheel = TimerWheel::<u64>::new();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
 
     let d = base + Duration::from_millis(7);
     wheel.schedule(d, 1);
@@ -703,7 +718,7 @@ mod tests {
   #[test]
   fn stale_key_cancel_does_not_cancel_reused_entry() {
     let base = Instant::now();
-    let mut wheel = TimerWheel::<u64>::new();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
 
     let k1 = wheel.schedule(base + Duration::from_millis(1), 1);
     assert_eq!(wheel.cancel(k1), Some(1));
@@ -724,7 +739,7 @@ mod tests {
   #[test]
   fn large_jump_advancement_fires_without_iterating_every_tick() {
     let base = Instant::now();
-    let mut wheel = TimerWheel::<u64>::new();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
 
     let delay_ms = (1u64 << 31) - 1;
     let deadline = base + Duration::from_millis(delay_ms);
@@ -737,13 +752,50 @@ mod tests {
   }
 
   #[test]
+  fn tick_rounding_does_not_fire_before_deadline() {
+    let base = Instant::now();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
+
+    wheel.schedule(base + Duration::from_nanos(1), 1);
+
+    let mut fired = Vec::new();
+    wheel.poll_expired(base, |p| fired.push(p));
+    assert!(fired.is_empty());
+
+    wheel.poll_expired(base + Duration::from_millis(1), |p| fired.push(p));
+    assert_eq!(fired, vec![1]);
+  }
+
+  #[test]
+  fn deterministic_stepping_works_with_virtual_clock() {
+    let clock = VirtualClock::new();
+    let base = Instant::now();
+    let mut wheel = TimerWheel::<u64>::new_at(base);
+
+    wheel.schedule(base + Duration::from_millis(10), 1);
+
+    let mut fired = Vec::new();
+    wheel.poll_expired(base + clock.now(), |p| fired.push(p));
+    assert!(fired.is_empty());
+
+    clock.advance(Duration::from_millis(9));
+    wheel.poll_expired(base + clock.now(), |p| fired.push(p));
+    assert!(fired.is_empty());
+
+    clock.advance(Duration::from_millis(1));
+    wheel.poll_expired(base + clock.now(), |p| fired.push(p));
+    assert_eq!(fired, vec![1]);
+  }
+
+  #[test]
   fn fast_forward_single_max_i32_ms_timer_is_not_o_delta_ticks() {
-    let mut wheel: TimerWheel<Box<dyn FnOnce() + Send>> = TimerWheel::new();
+    let base = Instant::now();
+    let mut wheel: TimerWheel<Box<dyn FnOnce() + Send>> = TimerWheel::new_at(base);
 
     let fired = Arc::new(AtomicUsize::new(0));
     let fired_clone = Arc::clone(&fired);
 
-    let deadline = Instant::now()
+    let deadline = base
       .checked_add(Duration::from_millis(2_147_483_647))
       .expect("deadline should fit in Instant range");
     wheel.schedule(deadline, Box::new(move || {
@@ -762,7 +814,8 @@ mod tests {
 
   #[test]
   fn fast_forward_multiple_far_future_timers_is_not_o_delta_ticks() {
-    let mut wheel: TimerWheel<Box<dyn FnOnce() + Send>> = TimerWheel::new();
+    let base = Instant::now();
+    let mut wheel: TimerWheel<Box<dyn FnOnce() + Send>> = TimerWheel::new_at(base);
 
     let fired = Arc::new(AtomicUsize::new(0));
     let add = |wheel: &mut TimerWheel<Box<dyn FnOnce() + Send>>,
@@ -777,8 +830,6 @@ mod tests {
         fired.fetch_add(1, Ordering::Relaxed);
       }));
     };
-
-    let base = Instant::now();
 
     // Spread across multiple wheel levels:
     // - ~16 minutes (level 3)

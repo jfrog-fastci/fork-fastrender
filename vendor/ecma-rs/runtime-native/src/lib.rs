@@ -185,7 +185,7 @@ pub use rt_trace::rt_debug_snapshot_counters;
 pub use rt_trace::RtDebugCountersSnapshot;
 pub use stack_walk::{FrameView, StackWalker};
 pub use string::*;
-pub use timer_wheel::{TimerKey, TimerWheel};
+pub use timer_wheel::{TimerKey, TimerWheel, WakeTask};
 pub use reactor_driver::{PollOutcome, ReactorDriver};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section, try_load_via_linker_symbols};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};
