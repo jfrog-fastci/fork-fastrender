@@ -4,9 +4,11 @@ use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
+use fastrender::style::types::AlignContent;
 use fastrender::style::types::FilterFunction;
 use fastrender::style::types::UserSelect;
 use fastrender::ComputedStyle;
+use fastrender::Length;
 use std::sync::Arc;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
@@ -110,4 +112,31 @@ fn vendor_prefixed_user_select_applies() {
     UserSelect::None,
     "expected -webkit-user-select to alias to user-select"
   );
+}
+
+#[test]
+fn vendor_prefixed_webkit_logical_margin_start_applies() {
+  let styles = div_styles("<div></div>", "div { -webkit-margin-start: 10px; }");
+  assert_eq!(styles.margin_left, Some(Length::px(10.0)));
+}
+
+#[test]
+fn vendor_prefixed_webkit_logical_margin_start_respects_direction() {
+  let styles = div_styles(
+    "<div></div>",
+    "div { direction: rtl; -webkit-margin-start: 10px; }",
+  );
+  assert_eq!(styles.margin_right, Some(Length::px(10.0)));
+}
+
+#[test]
+fn vendor_prefixed_webkit_logical_padding_end_applies() {
+  let styles = div_styles("<div></div>", "div { -webkit-padding-end: 7px; }");
+  assert_eq!(styles.padding_right, Length::px(7.0));
+}
+
+#[test]
+fn vendor_prefixed_ms_flex_line_pack_maps_to_align_content() {
+  let styles = div_styles("<div></div>", "div { -ms-flex-line-pack: justify; }");
+  assert_eq!(styles.align_content, AlignContent::SpaceBetween);
 }

@@ -12010,6 +12010,19 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
+    "-ms-flex-line-pack" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.align_content = match kw.to_ascii_lowercase().as_str() {
+          "start" => AlignContent::FlexStart,
+          "end" => AlignContent::FlexEnd,
+          "center" => AlignContent::Center,
+          "justify" => AlignContent::SpaceBetween,
+          "distribute" => AlignContent::SpaceAround,
+          "stretch" | "normal" => AlignContent::Stretch,
+          _ => styles.align_content,
+        };
+      }
+    }
     "-ms-flex-align" => {
       // Legacy IE10 `-ms-flex-align` maps to modern `align-items`.
       if let PropertyValue::Keyword(kw) = resolved_value {

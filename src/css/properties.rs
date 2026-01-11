@@ -573,6 +573,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "writing-mode",
   "z-index",
   "-ms-flex-align",
+  "-ms-flex-line-pack",
   "-ms-flex-item-align",
   "-ms-flex-negative",
   "-ms-flex-order",
@@ -689,6 +690,31 @@ pub(crate) fn vendor_prefixed_property_alias(property: &str) -> Option<&'static 
   }
   if property == "-webkit-mask-box-image-mode" {
     return Some("mask-border-mode");
+  }
+
+  if property == "-webkit-margin-start" {
+    return Some("margin-inline-start");
+  }
+  if property == "-webkit-margin-end" {
+    return Some("margin-inline-end");
+  }
+  if property == "-webkit-margin-before" {
+    return Some("margin-block-start");
+  }
+  if property == "-webkit-margin-after" {
+    return Some("margin-block-end");
+  }
+  if property == "-webkit-padding-start" {
+    return Some("padding-inline-start");
+  }
+  if property == "-webkit-padding-end" {
+    return Some("padding-inline-end");
+  }
+  if property == "-webkit-padding-before" {
+    return Some("padding-block-start");
+  }
+  if property == "-webkit-padding-after" {
+    return Some("padding-block-end");
   }
 
   let stripped = strip_vendor_prefix(property)?;
@@ -3365,6 +3391,20 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "-ms-flex-pack" => {
       return keyword_in_list(parsed, &["start", "end", "center", "justify", "distribute", "stretch"])
+    }
+    "-ms-flex-line-pack" => {
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "center",
+          "justify",
+          "distribute",
+          "stretch",
+          "normal",
+        ],
+      )
     }
     "-ms-flex-align" => {
       return keyword_in_list(parsed, &["start", "end", "center", "baseline", "stretch"])

@@ -115,6 +115,24 @@ fn supports_vendor_prefixed_properties_match_when_unprefixed_supported() {
 }
 
 #[test]
+fn supports_webkit_logical_margin_start_and_padding_end_are_supported() {
+  let css = r"@supports (-webkit-margin-start: 10px) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+
+  let css = r"@supports (-webkit-padding-end: 5px) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_ms_flex_line_pack_is_supported_and_rejects_invalid_keywords() {
+  let css = r"@supports (-ms-flex-line-pack: justify) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+
+  let css = r"@supports (-ms-flex-line-pack: bogus) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
 fn supports_vendor_prefixed_unknown_properties_are_unsupported() {
   let css = r"@supports (-webkit-not-a-property: 1) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
