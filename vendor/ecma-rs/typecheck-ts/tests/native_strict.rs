@@ -119,6 +119,23 @@ fn native_strict_bans_new_function() {
 }
 
 #[test]
+fn native_strict_bans_global_this_function() {
+  let source = "globalThis.Function(\"return 1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis.Function";
+  let start = source.find(needle).expect(needle) as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict globalThis.Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_with_statement() {
   let source = "with ({}) { }";
   let (diagnostics, file_id) = check(source, true);
