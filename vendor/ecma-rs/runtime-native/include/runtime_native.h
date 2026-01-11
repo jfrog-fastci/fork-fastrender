@@ -816,12 +816,7 @@ IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t e
 IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 // Like `rt_io_register`, but `data` is a GC-managed object that the runtime will keep alive until
 // the watcher is unregistered.
-IoWatcherId rt_io_register_rooted(
-  int32_t fd,
-  uint32_t interests,
-  void (*cb)(uint32_t events, uint8_t* data),
-  uint8_t* data
-);
+IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
 void rt_io_update(IoWatcherId id, uint32_t interests);
 void rt_io_unregister(IoWatcherId id);
 

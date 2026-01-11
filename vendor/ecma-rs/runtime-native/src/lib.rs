@@ -782,6 +782,7 @@ mod tests {
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "void rt_string_pin_interned(InternedId id);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
+      "TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
       "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
@@ -821,14 +822,18 @@ mod tests {
       "void rt_async_free_c_string(char* s);",
       "void rt_queue_microtask(Microtask task);",
       "void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));",
+      "void rt_queue_microtask_rooted(void (*cb)(uint8_t*), uint8_t* data);",
       "bool rt_drain_microtasks(void);",
       "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
+      "TimerId rt_set_timeout_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
       "TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);",
       "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
+      "TimerId rt_set_interval_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
       "TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);",
       "void rt_clear_timer(TimerId id);",
       "IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
       "IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));",
+      "IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);",
       "void rt_io_update(IoWatcherId id, uint32_t interests);",
       "void rt_io_unregister(IoWatcherId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
@@ -889,6 +894,7 @@ mod tests {
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _pin_interned: extern "C" fn(abi::InternedId) = rt_string_pin_interned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
+    let _spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn_rooted;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
     let _spawn_promise: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8, PromiseLayout) -> abi::PromiseRef =
@@ -936,11 +942,14 @@ mod tests {
     let _queue_microtask: unsafe extern "C" fn(abi::Microtask) = rt_queue_microtask;
     let _queue_microtask_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8)) =
       rt_queue_microtask_with_drop;
+    let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask_rooted;
     let _drain_microtasks: extern "C" fn() -> bool = rt_drain_microtasks_abi;
     let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
+    let _set_timeout_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout_rooted;
     let _set_timeout_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_timeout_with_drop;
     let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
+    let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval_rooted;
     let _set_interval_with_drop: extern "C" fn(extern "C" fn(*mut u8), *mut u8, extern "C" fn(*mut u8), u64) -> abi::TimerId =
       rt_set_interval_with_drop;
     let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
@@ -952,6 +961,7 @@ mod tests {
       *mut u8,
       extern "C" fn(*mut u8),
     ) -> abi::IoWatcherId = rt_io_register_with_drop;
+    let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> abi::IoWatcherId = rt_io_register_rooted;
     let _io_update: extern "C" fn(abi::IoWatcherId, u32) = rt_io_update;
     let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
