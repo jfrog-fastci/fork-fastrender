@@ -12,6 +12,7 @@ static RIP_CTX: AtomicU64 = AtomicU64::new(0);
 static RAX_CTX: AtomicU64 = AtomicU64::new(0);
 
 const MAGIC_RAX: u64 = 0x0123_4567_89ab_cdef;
+const UD2_OPCODE: u16 = 0x0b0f;
 
 fn trigger_sigill() {
   unsafe {
@@ -36,12 +37,28 @@ unsafe extern "C" fn sigill_handler(
     let rip_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap_or(0);
     let rax_ctx = ctx.get_dwarf_reg_u64(0).unwrap_or(0);
 
+    // `rip` should point at the faulting `ud2`, but some environments may report the PC
+    // *after* the trapping instruction. Normalize using the instruction bytes so we can
+    // reliably skip exactly the trap.
+    let mut trap_rip = rip_ctx;
+    if trap_rip != 0 {
+      // SAFETY: `trap_rip` should point within this process' executable text mapping.
+      let instr_at_pc = (trap_rip as *const u16).read_unaligned();
+      if instr_at_pc != UD2_OPCODE {
+        let prev = trap_rip.wrapping_sub(2);
+        let instr_prev = (prev as *const u16).read_unaligned();
+        if instr_prev == UD2_OPCODE {
+          trap_rip = prev;
+        }
+      }
+    }
+
     // Skip the `ud2` instruction (2 bytes) so execution can resume.
-    let _ = ctx.set_dwarf_reg_u64(DWARF_REG_IP, rip_ctx.wrapping_add(2));
+    let _ = ctx.set_dwarf_reg_u64(DWARF_REG_IP, trap_rip.wrapping_add(2));
     ctx.write_to_ucontext(uc);
 
     RSP_CTX.store(rsp_ctx, Ordering::Relaxed);
-    RIP_CTX.store(rip_ctx, Ordering::Relaxed);
+    RIP_CTX.store(trap_rip, Ordering::Relaxed);
     RAX_CTX.store(rax_ctx, Ordering::Relaxed);
     READY.store(true, Ordering::Release);
   }
