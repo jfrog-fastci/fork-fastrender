@@ -627,17 +627,18 @@ ld.lld: error: relocation R_X86_64_64 cannot be used against symbol '...'; recom
 - **If PIE is required:** use Option C (relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps`) to avoid `DT_TEXTREL`.
 
 When producing a PIE, native-js AOT output must:
-
-1. Rewrite any input object containing `.llvm_stackmaps` to relocate it into a RELRO-friendly data section:
-
+ 
+1. Rewrite any input object containing `.llvm_stackmaps` (and `.llvm_faultmaps`, if present) to relocate it into a RELRO-friendly data section:
+ 
    ```bash
    llvm-objcopy-18 \
       --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+      --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       input.o
    ```
 
 2. Link with a linker script fragment that:
-   - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can’t discard it
+   - `KEEP`s `.llvm_stackmaps` / `.llvm_faultmaps` so `--gc-sections` can’t discard them
    - defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` symbols
 
    The script lives at:
@@ -711,7 +712,10 @@ clang-18 -fuse-ld=lld -no-pie \
 
 ```bash
 # (Optional) relocate stackmaps into a RELRO-friendly section if present:
-llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents codegen.o
+llvm-objcopy-18 \
+  --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+  --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
+  codegen.o
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--script=runtime-native/link/stackmaps.ld \
@@ -722,7 +726,10 @@ clang-18 -fuse-ld=lld -pie \
 ### PIE (Option C): release (`--gc-sections`)
 
 ```bash
-llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents codegen.o
+llvm-objcopy-18 \
+  --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+  --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
+  codegen.o
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--gc-sections \

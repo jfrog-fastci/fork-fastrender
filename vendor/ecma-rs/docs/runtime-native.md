@@ -20,9 +20,10 @@ without having to reverse-engineer assumptions from codegen.
 >   dynamic loader must apply text relocations (`DT_TEXTREL`), which hardened
 >   toolchains may reject.
 > - Our preferred approach is to keep PIE **without** `DT_TEXTREL` by relocating
->   stackmaps into a RELRO-friendly data section:
->   - rewrite input objects to rename `.llvm_stackmaps` →
->     `.data.rel.ro.llvm_stackmaps` (via `llvm-objcopy --rename-section ...`)
+>   stackmaps (and faultmaps, if present) into a RELRO-friendly data section:
+>   - rewrite input objects to rename `.llvm_stackmaps` / `.llvm_faultmaps` →
+>     `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
+>     (via `llvm-objcopy --rename-section ...`)
 >   - retain the section + export `__fastr_stackmaps_start/__fastr_stackmaps_end`
 >     via a tiny linker-script fragment.
 >

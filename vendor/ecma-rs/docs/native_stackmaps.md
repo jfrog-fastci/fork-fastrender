@@ -85,12 +85,13 @@ To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **wri
 relocation**.
 
 The recommended approach (used by `native_js::link` and `scripts/native_js_link_linux.sh`) is to
-relocate stackmaps into a RELRO-friendly section in the *input objects* using
-`llvm-objcopy --rename-section`:
+relocate stackmaps (and faultmaps, if present) into RELRO-friendly sections in the *input objects*
+using `llvm-objcopy --rename-section`:
 
 ```bash
-llvm-objcopy --rename-section \
-  .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+llvm-objcopy \
+  --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+  --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
   <obj>
 ```
 
