@@ -172,6 +172,41 @@ mod tests {
   use super::*;
 
   #[repr(C)]
+  struct ObservePromiseNode {
+    header: PromiseReactionNode,
+    observed_promise: *const AtomicUsize,
+  }
+
+  extern "C" fn observe_promise_run(node: *mut PromiseReactionNode, promise: PromiseRef) {
+    let node = node.cast::<ObservePromiseNode>();
+    unsafe {
+      (*(*node).observed_promise).store(promise as usize, Ordering::SeqCst);
+    }
+  }
+
+  extern "C" fn observe_promise_drop(node: *mut PromiseReactionNode) {
+    unsafe {
+      drop(Box::from_raw(node.cast::<ObservePromiseNode>()));
+    }
+  }
+
+  static OBSERVE_PROMISE_VTABLE: PromiseReactionVTable = PromiseReactionVTable {
+    run: observe_promise_run,
+    drop: observe_promise_drop,
+  };
+
+  fn make_observe_promise_node(observed_promise: *const AtomicUsize) -> *mut PromiseReactionNode {
+    Box::into_raw(Box::new(ObservePromiseNode {
+      header: PromiseReactionNode {
+        next: null_mut(),
+        vtable: &OBSERVE_PROMISE_VTABLE,
+      },
+      observed_promise,
+    }))
+    .cast::<PromiseReactionNode>()
+  }
+
+  #[repr(C)]
   struct TestNode {
     header: PromiseReactionNode,
     drops: *const AtomicUsize,
@@ -229,5 +264,43 @@ mod tests {
 
     assert_eq!(drops.load(Ordering::SeqCst), 3);
     assert_eq!(bad_next.load(Ordering::SeqCst), 0);
+  }
+
+  #[test]
+  fn reaction_job_uses_root_ptr_when_promise_relocates() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let observed = AtomicUsize::new(0);
+    let node = make_observe_promise_node(&observed);
+
+    // Use stable, non-null, correctly-aligned addresses as dummy "promise" pointers; the reaction
+    // job treats them as opaque.
+    let promise1_alloc = Box::into_raw(Box::new(1u64));
+    let promise2_alloc = Box::into_raw(Box::new(2u64));
+    let promise1: PromiseRef = promise1_alloc.cast();
+    let promise2: PromiseRef = promise2_alloc.cast();
+
+    let promise_root = unsafe { gc::Root::new_unchecked(promise1.cast::<u8>()) };
+    let id = promise_root.id();
+
+    // Simulate a moving GC relocating the promise object by rewriting the persistent handle table
+    // entry. `run_promise_reaction_job` must read from the root handle and observe `promise2`.
+    assert!(crate::roots::global_persistent_handle_table().set(id, promise2.cast::<u8>()));
+
+    let job = Box::new(PromiseReactionJob {
+      node,
+      promise: promise_root,
+    });
+    let job_ptr = Box::into_raw(job).cast::<u8>();
+    run_promise_reaction_job(job_ptr);
+    drop_promise_reaction_job(job_ptr);
+
+    assert_eq!(observed.load(Ordering::SeqCst), promise2 as usize);
+
+    // The async GC root only keeps the address alive; free our dummy allocations explicitly.
+    unsafe {
+      drop(Box::from_raw(promise1_alloc));
+      drop(Box::from_raw(promise2_alloc));
+    }
   }
 }
