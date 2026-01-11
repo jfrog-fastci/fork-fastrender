@@ -385,7 +385,30 @@ impl CallbackAnalyzer<'_> {
         self.visit_assign_pat(body, *target);
         self.visit_expr(body, *default_value);
       }
-      PatKind::AssignTarget(expr) => self.visit_expr(body, *expr),
+      PatKind::AssignTarget(expr) => self.visit_assign_target_expr(body, *expr),
+    }
+  }
+
+  fn visit_assign_target_expr(&mut self, body: &Body, expr_id: ExprId) {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return;
+    };
+
+    match &expr.kind {
+      ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::NonNull { expr }
+      | ExprKind::Satisfies { expr, .. } => self.visit_assign_target_expr(body, *expr),
+
+      ExprKind::Ident(name) => self.record_ident(*name),
+
+      ExprKind::Member(mem) => {
+        self.visit_expr(body, mem.object);
+        if let ObjectKey::Computed(expr) = &mem.property {
+          self.visit_expr(body, *expr);
+        }
+      }
+
+      _ => self.visit_expr(body, expr_id),
     }
   }
 
@@ -440,6 +463,22 @@ impl CallbackAnalyzer<'_> {
         self.visit_expr(body, mem.object);
         if let ObjectKey::Computed(expr) = &mem.property {
           self.visit_expr(body, *expr);
+        }
+
+        if let Some(resolved) = resolve_api_use(
+          self.lowered.hir.as_ref(),
+          body,
+          expr_id,
+          self.lowered.names.as_ref(),
+          self.kb,
+        ) {
+          if resolved.kind == ApiUseKind::Get {
+            if let Some(api) = self.kb.get_by_id(resolved.api) {
+              let sem = eval_api_call(api, &crate::eval::CallSiteInfo::default());
+              self.merge_effects(sem.effects);
+              self.merge_purity(sem.purity);
+            }
+          }
         }
       }
 
@@ -691,6 +730,64 @@ mod tests {
 
     assert_eq!(cb.purity, Purity::Pure);
     assert!(cb.effects.contains(EffectSet::MAY_THROW));
+  }
+
+  #[test]
+  fn callback_models_kb_getter_effects() {
+    use effect_model::{EffectTemplate, PurityTemplate};
+    use knowledge_base::{ApiDatabase, ApiId, ApiKind, ApiSemantics};
+    use std::collections::BTreeMap;
+
+    let kb = ApiDatabase::from_entries([
+      ApiSemantics {
+        id: ApiId::from_name("Foo"),
+        name: "Foo".to_string(),
+        aliases: Vec::new(),
+        effects: EffectTemplate::Custom(EffectSet::ALLOCATES),
+        effect_summary: EffectSet::ALLOCATES,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        kind: ApiKind::Constructor,
+        properties: BTreeMap::new(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("Foo.prototype.bar"),
+        name: "Foo.prototype.bar".to_string(),
+        aliases: Vec::new(),
+        effects: EffectTemplate::Custom(EffectSet::IO),
+        effect_summary: EffectSet::IO,
+        purity: PurityTemplate::Impure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        kind: ApiKind::Getter,
+        properties: BTreeMap::new(),
+      },
+    ]);
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(() => new Foo().bar);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(cb.effects.contains(EffectSet::IO));
   }
 
   #[test]
