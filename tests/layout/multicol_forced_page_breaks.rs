@@ -87,9 +87,11 @@ fn multicol_break_before_page_promotes_to_next_column_set() {
   let page1 = page_roots[0];
   let page2 = page_roots[1];
 
-  assert!(find_text(page1, "A").is_some());
-  assert!(find_text(page1, "B").is_none());
-  assert!(find_text(page2, "B").is_some());
+  let content1 = page_content(page1);
+  let content2 = page_content(page2);
+  assert!(find_text(content1, "A").is_some());
+  assert!(find_text(content1, "B").is_none());
+  assert!(find_text(content2, "B").is_some());
 
   let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B on page 2");
   assert!(
@@ -178,14 +180,16 @@ fn multicol_break_after_recto_inserts_blank_page_rtl_progression() {
   let blank_page = page_roots[1];
   let page3 = page_roots[2];
 
-  assert!(find_text(page1, "A").is_some());
-  assert!(find_text(page1, "B").is_none());
+  let page1_content = page_content(page1);
+  assert!(find_text(page1_content, "A").is_some());
+  assert!(find_text(page1_content, "B").is_none());
 
   assert!(find_text(blank_page, "Blank").is_some());
   assert!(find_text(page_content(blank_page), "A").is_none());
   assert!(find_text(page_content(blank_page), "B").is_none());
 
-  assert!(find_text(page3, "B").is_some());
+  let page3_content = page_content(page3);
+  assert!(find_text(page3_content, "B").is_some());
   let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B on page 3");
   assert!(
     pos_b.1 <= page_content_start_y(page3) + 1.0,
