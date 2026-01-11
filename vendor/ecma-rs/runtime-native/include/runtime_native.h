@@ -208,7 +208,6 @@ extern uint64_t RT_GC_EPOCH;
 // Cheap leaf poll used by compiler-inserted loop backedge safepoints.
 // Returns true if a stop-the-world GC is currently requested.
 bool rt_gc_poll(void);
-
 void rt_gc_safepoint(void);
 // Enter a safepoint and return the (possibly relocated) pointer stored in `slot`.
 //
@@ -218,6 +217,13 @@ GcPtr rt_gc_safepoint_relocate_h(GcHandle slot);
 // Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
 // Callers should pass the observed odd epoch value.
 void rt_gc_safepoint_slow(uint64_t epoch);
+// Prevent the compiler from considering `gc_ref` dead before a raw pointer derived
+// from it is finished being used.
+//
+// This is used when generated/native code derives a non-GC pointer (e.g. an
+// ArrayBuffer backing-store `uint8_t*`) from a GC-managed object header and then
+// may hit a safepoint/GC before its last use.
+void rt_keep_alive_gc_ref(uint8_t* gc_ref);
 // Generational write barrier for an object field store.
 //
 // Contract: `obj` must be the same object base pointer that was returned from

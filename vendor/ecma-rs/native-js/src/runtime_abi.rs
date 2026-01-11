@@ -61,6 +61,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_gc_safepoint_gc: self.rt_gc_safepoint_gc(),
       rt_gc_collect_gc: self.rt_gc_collect_gc(),
       rt_write_barrier_gc: self.rt_write_barrier_gc(),
+      rt_keep_alive_gc_ref_gc: self.rt_keep_alive_gc_ref_gc(),
       rt_parallel_spawn_raw: self.rt_parallel_spawn_raw(),
       rt_parallel_join_raw: self.rt_parallel_join_raw(),
       rt_parallel_for_raw: self.rt_parallel_for_raw(),
@@ -145,6 +146,14 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       .void_type()
       .fn_type(&[self.ptr_raw().into(), self.ptr_raw().into()], false);
     self.get_or_declare("rt_write_barrier", fn_ty)
+  }
+
+  fn rt_keep_alive_gc_ref_raw(&self) -> FunctionValue<'ctx> {
+    let fn_ty = self
+      .context
+      .void_type()
+      .fn_type(&[self.ptr_raw().into()], false);
+    self.get_or_declare("rt_keep_alive_gc_ref", fn_ty)
   }
 
   fn rt_parallel_spawn_raw(&self) -> FunctionValue<'ctx> {
@@ -354,6 +363,45 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       self.builder.build_return(None).expect("return void");
     })
   }
+
+  fn rt_keep_alive_gc_ref_gc(&self) -> FunctionValue<'ctx> {
+    let fn_ty = self
+      .context
+      .void_type()
+      .fn_type(&[self.ptr_gc().into()], false);
+
+    self.get_or_define_internal("rt_keep_alive_gc_ref_gc", fn_ty, |func| {
+      let raw = self.rt_keep_alive_gc_ref_raw();
+      let entry = self.context.append_basic_block(func, "entry");
+      self.builder.position_at_end(entry);
+
+      let gc_ref = func.get_nth_param(0).expect("gc_ref").into_pointer_value();
+
+      // Avoid addrspacecasting the GC pointer back to addrspace(0); call the raw runtime symbol via
+      // an indirect call using the addrspace(1) signature.
+      let fn_ptr_ty = self.ptr_raw();
+      let fp_slot = self
+        .builder
+        .build_alloca(fn_ptr_ty, "rt_keep_alive_gc_ref_fp")
+        .expect("alloca rt_keep_alive_gc_ref fp");
+      self
+        .builder
+        .build_store(fp_slot, raw.as_global_value().as_pointer_value())
+        .expect("store rt_keep_alive_gc_ref fp");
+      let fp = self
+        .builder
+        .build_load(fn_ptr_ty, fp_slot, "rt_keep_alive_gc_ref_fp")
+        .expect("load rt_keep_alive_gc_ref fp")
+        .into_pointer_value();
+
+      let _ = self
+        .builder
+        .build_indirect_call(fn_ty, fp, &[gc_ref.into()], "")
+        .expect("call rt_keep_alive_gc_ref via indirect call");
+
+      self.builder.build_return(None).expect("return void");
+    })
+  }
 }
 
 /// Handles to the runtime wrapper functions defined in an LLVM module.
@@ -364,6 +412,7 @@ pub struct RuntimeFns<'ctx> {
   pub rt_gc_safepoint_gc: FunctionValue<'ctx>,
   pub rt_gc_collect_gc: FunctionValue<'ctx>,
   pub rt_write_barrier_gc: FunctionValue<'ctx>,
+  pub rt_keep_alive_gc_ref_gc: FunctionValue<'ctx>,
   pub rt_parallel_spawn_raw: FunctionValue<'ctx>,
   pub rt_parallel_join_raw: FunctionValue<'ctx>,
   pub rt_parallel_for_raw: FunctionValue<'ctx>,
