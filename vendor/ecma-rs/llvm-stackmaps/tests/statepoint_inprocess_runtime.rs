@@ -57,9 +57,20 @@ fn inprocess_loader_finds_statepoint_callsite_by_actual_return_address() -> io::
     };
 
     // Needs clang + lld to link with our stackmaps linker script fragment.
-    if !has_cmd("clang-18") || !has_cmd("ld.lld-18") {
+    let Some(clang) = find_tool(&["clang-18", "clang"]) else {
+        eprintln!("skipping: clang not found in PATH (need clang-18 or clang)");
         return Ok(());
-    }
+    };
+    let Some(lld_fuse) = (if has_cmd("ld.lld-18") {
+        Some("lld-18")
+    } else if has_cmd("ld.lld") {
+        Some("lld")
+    } else {
+        None
+    }) else {
+        eprintln!("skipping: lld not found in PATH (need ld.lld-18 or ld.lld)");
+        return Ok(());
+    };
 
     let ws_root = workspace_root();
     let stackmaps_ld = ws_root.join("runtime-native").join("link").join("stackmaps.ld");
@@ -212,8 +223,8 @@ fn main() {
     // Force non-PIE output to avoid needing object section flag rewriting for `.llvm_stackmaps`.
     let rustflags = format!(
         "-C debuginfo=0 \
-         -C linker=clang-18 \
-         -C link-arg=-fuse-ld=lld-18 \
+         -C linker={clang} \
+         -C link-arg=-fuse-ld={lld_fuse} \
          -C link-arg=-Wl,-no-pie \
          -C link-arg=-Wl,-T,{} \
          -C link-arg=-Wl,--gc-sections \
