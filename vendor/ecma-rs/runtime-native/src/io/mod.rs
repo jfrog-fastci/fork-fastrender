@@ -3,6 +3,7 @@ pub mod limits;
 pub mod iovec;
 pub mod op;
 pub mod uring;
+pub mod uring_read;
 pub mod op_registry;
 pub mod runtime;
 
@@ -14,3 +15,4 @@ pub use limits::{IoCounters, IoLimitError, IoLimits, IoLimiter};
 pub use op::{IoBuf, IoOp};
 pub use op_registry::IoOpDebugHooks;
 pub use runtime::IoRuntime;
+pub use uring_read::{CancellationToken as UringCancellationToken, IoError as UringIoError, UringDriver};
