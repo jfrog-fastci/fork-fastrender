@@ -3,6 +3,7 @@ use core::mem::MaybeUninit;
 use runtime_native::{ArrayBuffer, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array};
 use runtime_native::{GcHeap, RootStack};
 use runtime_native::gc::SimpleRememberedSet;
+use runtime_native::gc::OBJ_HEADER_SIZE;
 use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
@@ -118,6 +119,71 @@ fn gc_finalizer_not_called_on_promotion_and_runs_once() {
   assert_eq!(heap.external_bytes(), 0);
 
   // Subsequent collections must not run it again.
+  heap.collect_major(&mut empty_roots, &mut remembered);
+  assert_eq!(heap.external_bytes(), 0);
+}
+
+#[test]
+fn gc_finalizer_delays_backing_store_free_until_unpinned() {
+  let _rt = TestRuntimeGuard::new();
+  let mut heap = GcHeap::new();
+
+  let size = 1024 * 1024;
+  let buf_obj = heap.alloc_array_buffer_young(size).expect("alloc array buffer");
+
+  let pinned = {
+    // Pin the backing store pointer without rooting the ArrayBuffer header.
+    let buf = unsafe { &*(buf_obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+    buf.pin().expect("pin")
+  };
+
+  let mut roots = RootStack::new();
+  let mut remembered = SimpleRememberedSet::new();
+  heap.collect_minor(&mut roots, &mut remembered);
+
+  // The header is unreachable so the GC finalizer should have run, but the backing store is still
+  // pinned and must remain allocated until the pin guard is dropped.
+  assert_eq!(heap.external_bytes(), size);
+
+  drop(pinned);
+  assert_eq!(heap.external_bytes(), 0);
+}
+
+#[test]
+fn gc_finalizer_survives_major_compaction_relocation() {
+  let _rt = TestRuntimeGuard::new();
+  let mut heap = GcHeap::new();
+
+  // Promote an ArrayBuffer header to old-gen first so the major-GC compactor can move it.
+  let size = 128 * 1024;
+  let mut root = heap.alloc_array_buffer_young(size).expect("alloc array buffer");
+  let mut roots = RootStack::new();
+  roots.push(&mut root as *mut *mut u8);
+  let mut remembered = SimpleRememberedSet::new();
+
+  heap.collect_minor(&mut roots, &mut remembered);
+  assert!(!heap.is_in_nursery(root));
+  let promoted = root;
+
+  // Force compaction candidates to include sparsely-occupied blocks.
+  {
+    let cfg = heap.major_compaction_config_mut();
+    cfg.enabled = true;
+    cfg.max_live_ratio_percent = 100;
+    cfg.min_live_lines = 1;
+  }
+
+  heap.collect_major(&mut roots, &mut remembered);
+  assert_ne!(
+    root, promoted,
+    "expected major compaction to relocate the ArrayBuffer header"
+  );
+  assert_eq!(heap.external_bytes(), size);
+
+  // Once unreachable, the finalizer should run and free the backing store exactly once.
+  let mut empty_roots = RootStack::new();
+  heap.collect_major(&mut empty_roots, &mut remembered);
+  assert_eq!(heap.external_bytes(), 0);
   heap.collect_major(&mut empty_roots, &mut remembered);
   assert_eq!(heap.external_bytes(), 0);
 }

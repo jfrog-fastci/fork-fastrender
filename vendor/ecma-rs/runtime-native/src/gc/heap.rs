@@ -80,7 +80,7 @@ pub struct GcHeap {
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
   weak_handles: WeakHandles,
-  backing_store_alloc: GlobalBackingStoreAllocator,
+  backing_store_alloc: Box<GlobalBackingStoreAllocator>,
   external_bytes: usize,
   finalizers: Vec<FinalizerEntry>,
 
@@ -183,7 +183,12 @@ impl GcHeap {
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
-      backing_store_alloc: GlobalBackingStoreAllocator::default(),
+      // `BackingStore` embeds a pointer to its allocator's `external_bytes` counter inside the
+      // stable `BackingStoreCtl` (used for pinned/free-pending buffers).
+      //
+      // Keep the allocator behind a `Box` so its address remains stable even if the `GcHeap` is
+      // moved (e.g. passed between threads or stored in a `Box`/`Mutex`).
+      backing_store_alloc: Box::new(GlobalBackingStoreAllocator::default()),
       external_bytes: 0,
       finalizers: Vec::new(),
       mark_epoch: 0,
@@ -490,7 +495,7 @@ impl GcHeap {
 
   #[inline]
   pub(crate) fn backing_store_allocator(&self) -> &GlobalBackingStoreAllocator {
-    &self.backing_store_alloc
+    &*self.backing_store_alloc
   }
 
   #[inline]
