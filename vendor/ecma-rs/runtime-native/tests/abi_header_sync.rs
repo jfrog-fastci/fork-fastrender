@@ -57,6 +57,11 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_io_register_with_drop(",
     "rt_io_update(",
     "rt_io_unregister(",
+    // Legacy promise resolution ABI.
+    "rt_promise_resolve_into_legacy(",
+    "rt_promise_resolve_promise_legacy(",
+    "rt_promise_resolve_thenable_legacy(",
+    "rt_coro_await_value_legacy(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -219,6 +224,19 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _io_update: extern "C" fn(runtime_native::abi::IoWatcherId, u32) = runtime_native::rt_io_update;
   let _io_unregister: extern "C" fn(runtime_native::abi::IoWatcherId) = runtime_native::rt_io_unregister;
 
+  // Promise resolution helpers (legacy promises).
+  let _promise_resolve_into_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::PromiseResolveInput) =
+    runtime_native::rt_promise_resolve_into_legacy;
+  let _promise_resolve_promise_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::PromiseRef) =
+    runtime_native::rt_promise_resolve_promise_legacy;
+  let _promise_resolve_thenable_legacy: extern "C" fn(runtime_native::abi::PromiseRef, runtime_native::abi::ThenableRef) =
+    runtime_native::rt_promise_resolve_thenable_legacy;
+  let _coro_await_value_legacy: extern "C" fn(
+    *mut runtime_native::abi::RtCoroutineHeader,
+    runtime_native::abi::PromiseResolveInput,
+    u32,
+  ) = runtime_native::rt_coro_await_value_legacy;
+
   #[cfg(feature = "gc_stats")]
   {
     let _stats_snapshot: unsafe extern "C" fn(*mut runtime_native::abi::RtGcStatsSnapshot) =
@@ -272,6 +290,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _io_register_rooted,
     _io_update,
     _io_unregister,
+    _promise_resolve_into_legacy,
+    _promise_resolve_promise_legacy,
+    _promise_resolve_thenable_legacy,
+    _coro_await_value_legacy,
   );
 }
 
