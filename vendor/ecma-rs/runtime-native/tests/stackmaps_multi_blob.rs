@@ -66,12 +66,17 @@ fn parse_all_supports_concatenated_blobs() {
   // between input sections even when both payloads are already 8-byte aligned
   // (e.g. due to stricter-than-8 alignment on one input section). Ensure we
   // tolerate it.
-  fixture_multi.extend_from_slice(&[0u8; 8]);
+  //
+  // Additionally, some toolchains have been observed to leave short non-zero
+  // padding bytes between blobs. `parse_all_stackmaps` attempts to recover by
+  // scanning forward for the next plausible StackMap v3 header.
+  fixture_multi.extend_from_slice(&[0xa5u8; 8]);
 
   fixture_multi.extend_from_slice(&fixture_b);
 
-  // Trailing padding at end-of-section should be ignored.
-  fixture_multi.extend_from_slice(&[0u8; 8]);
+  // Trailing padding at end-of-section should be ignored. Some toolchains may
+  // also leave short non-zero noise (< header size), so ensure we tolerate it.
+  fixture_multi.extend_from_slice(&[0x5au8; 8]);
 
   let stackmaps = parse_all_stackmaps(&fixture_multi).unwrap();
   assert_eq!(stackmaps.len(), 2);
