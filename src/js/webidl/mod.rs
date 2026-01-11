@@ -16,11 +16,14 @@ pub use webidl_vm_js::VmJsWebIdlCx;
 pub use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 
 pub mod conversions;
+pub mod vmjs_host_dispatch;
 
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.
 pub use crate::js::webidl_runtime_vmjs::{
   IteratorRecord, NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,
 };
+
+pub use vmjs_host_dispatch::VmJsWebIdlBindingsHostDispatch;
 
 #[deprecated(note = "Use fastrender::js::webidl::legacy::VmJsRuntime instead.")]
 pub use legacy::VmJsRuntime;

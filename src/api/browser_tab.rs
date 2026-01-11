@@ -22,6 +22,7 @@ use crate::css::parser::parse_stylesheet_with_media;
 use crate::css::types::CssImportLoader;
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
+use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::events::{Event, EventInit, EventTargetId};
@@ -406,7 +407,7 @@ pub struct BrowserTabHost {
   document_write_state: DocumentWriteState,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
-  webidl_bindings_host: Box<BrowserTabWebIdlBindingsHost>,
+  webidl_bindings_host: Box<VmJsWebIdlBindingsHostDispatch<BrowserTabHost>>,
   last_dynamic_script_discovery_generation: u64,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
@@ -422,40 +423,6 @@ pub struct BrowserTabHost {
   pending_parser_blocking_script: Option<PendingParserBlockingScript>,
 }
 
-#[derive(Debug, Default)]
-struct BrowserTabWebIdlBindingsHost;
-
-impl webidl_vm_js::WebIdlBindingsHost for BrowserTabWebIdlBindingsHost {
-  fn call_operation(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<vm_js::Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserTab does not implement WebIDL binding dispatch",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserTab does not implement WebIDL binding dispatch",
-    ))
-  }
-}
-
 impl BrowserTabHost {
   fn new(
     document: BrowserDocumentDom2,
@@ -463,7 +430,8 @@ impl BrowserTabHost {
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
-    let mut webidl_bindings_host = Box::new(BrowserTabWebIdlBindingsHost::default());
+    let mut webidl_bindings_host =
+      Box::new(VmJsWebIdlBindingsHostDispatch::<BrowserTabHost>::new_without_global());
     executor.set_webidl_bindings_host(webidl_bindings_host.as_mut());
     let event_invoker = executor
       .event_listener_invoker()
@@ -654,6 +622,11 @@ impl BrowserTabHost {
       &self.current_script,
       self.js_execution_options,
     )?;
+    if let Some(realm) = self.executor.window_realm_mut() {
+      self
+        .webidl_bindings_host
+        .reset_for_new_realm(realm.global_object());
+    }
     // Ensure the executor's JS realm starts with a base URL consistent with the new navigation
     // (document URL by default, unless later updated by `<base href>`).
     self
@@ -4688,6 +4661,81 @@ mod tests {
     let digest = Sha256::digest(bytes);
     let b64 = BASE64_STANDARD.encode(digest);
     format!("sha256-{b64}")
+  }
+
+  #[test]
+  fn vmjs_executor_supports_webidl_url_search_params() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+
+    // Install generated vm-js bindings so URLSearchParams dispatches through
+    // `webidl_vm_js::host_from_hooks()`.
+    {
+      let BrowserTab { host, .. } = &mut tab;
+      let Some(realm) = host.executor.window_realm_mut() else {
+        return Err(Error::Other("expected vm-js WindowRealm to be active".to_string()));
+      };
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm_ref)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    {
+      let BrowserTab { host, event_loop, .. } = &mut tab;
+      let spec = ScriptElementSpec {
+        base_url: host.base_url.clone(),
+        src: None,
+        src_attr_present: false,
+        inline_text: String::new(),
+        async_attr: false,
+        force_async: false,
+        defer_attr: false,
+        nomodule_attr: false,
+        crossorigin: None,
+        integrity_attr_present: false,
+        integrity: None,
+        referrer_policy: None,
+        parser_inserted: false,
+        node_id: None,
+        script_type: ScriptType::Classic,
+      };
+      host.executor.execute_classic_script(
+        "globalThis.__got = new URLSearchParams('a=1').get('a');",
+        &spec,
+        None,
+        host.document.as_mut(),
+        event_loop,
+      )?;
+    }
+
+    let got = {
+      let BrowserTab { host, .. } = &mut tab;
+      let Some(realm) = host.executor.window_realm_mut() else {
+        return Err(Error::Other("expected vm-js WindowRealm to be active".to_string()));
+      };
+      let (_vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm_ref.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+      let key_s = scope.alloc_string("__got").expect("alloc __got");
+      scope
+        .push_root(Value::String(key_s))
+        .expect("push root __got key");
+      let key = PropertyKey::from_string(key_s);
+      let value = scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)
+        .expect("get __got")
+        .unwrap_or(Value::Undefined);
+      let Value::String(s) = value else {
+        return Err(Error::Other(format!("expected __got to be a string, got {value:?}")));
+      };
+      scope.heap().get_string(s).expect("get string").to_utf8_lossy()
+    };
+
+    assert_eq!(got, "1");
+    Ok(())
   }
 
   #[test]

@@ -4,6 +4,7 @@ use crate::js::host_document::DocumentHostState;
 use crate::js::import_maps::{ImportMapError, ImportMapState, ImportMapWarning, ModuleResolutionError};
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
+use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_realm::{
   register_dom_host_source, register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
   WindowRealmHost, WindowRealmUserData,
@@ -248,42 +249,8 @@ pub struct WindowHostState {
   window: WindowRealm,
   fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
-  webidl_bindings_host: WindowWebIdlBindingsHost,
+  webidl_bindings_host: VmJsWebIdlBindingsHostDispatch<WindowHostState>,
   js_execution_options: JsExecutionOptions,
-}
-
-#[derive(Debug, Default)]
-struct WindowWebIdlBindingsHost;
-
-impl webidl_vm_js::WebIdlBindingsHost for WindowWebIdlBindingsHost {
-  fn call_operation(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<vm_js::Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "WindowHost does not implement WebIDL binding dispatch",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "WindowHost does not implement WebIDL binding dispatch",
-    ))
-  }
 }
 
 impl WindowHostState {
@@ -405,6 +372,8 @@ impl WindowHostState {
       }
     };
 
+    let webidl_bindings_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
@@ -416,7 +385,7 @@ impl WindowHostState {
       window,
       fetcher: host_fetcher,
       _fetch_bindings: fetch_bindings,
-      webidl_bindings_host: WindowWebIdlBindingsHost::default(),
+      webidl_bindings_host,
       js_execution_options,
     })
   }
@@ -1024,30 +993,87 @@ mod tests {
         .map_err(|err| Error::Other(err.to_string()))?;
     }
 
-    let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
-
-    let assert_webidl_host_slot_present = |err: Error| {
-      let msg = err.to_string();
-      assert!(
-        !msg.contains(webidl_vm_js::WEBIDL_BINDINGS_HOST_NOT_AVAILABLE),
-        "expected WebIDL host slot to be installed (got: {msg})"
-      );
-      assert!(
-        msg.contains("WindowHost does not implement WebIDL binding dispatch"),
-        "expected URLSearchParams constructor to reach WindowHost's WebIDL dispatch (got: {msg})"
-      );
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(event_loop, "new URLSearchParams('a=1').get('a')")?
     };
+    assert_eq!(value_to_string(&host, got), "1");
 
-    let err = host_state
-      .exec_script_in_event_loop(event_loop, "new URLSearchParams();")
-      .expect_err("expected URLSearchParams constructor to call into host dispatch");
-    assert_webidl_host_slot_present(err);
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(event_loop, "URL.canParse('https://example.com/')")?
+    };
+    assert_eq!(got, Value::Bool(true));
 
-    let err = host_state
-      .exec_script_with_name_in_event_loop(event_loop, "<test>", "new URLSearchParams();")
-      .expect_err("expected URLSearchParams constructor to call into host dispatch");
-    assert_webidl_host_slot_present(err);
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(event_loop, "URL.parse('nope')")?
+    };
+    assert_eq!(got, Value::Null);
 
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_with_name_in_event_loop(
+        event_loop,
+        "<test>",
+        "new URLSearchParams('a=1').get('a')",
+      )?
+    };
+    assert_eq!(value_to_string(&host, got), "1");
+
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_window_timers_and_queue_microtask_run_via_event_loop() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    host.exec_script(
+      r#"
+      globalThis.__micro = 0;
+      globalThis.__timeout = 0;
+      queueMicrotask(() => { globalThis.__micro = 1; });
+      setTimeout(() => { globalThis.__timeout = 1; }, 0);
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__micro"),
+      Value::Number(n) if n == 0.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout"),
+      Value::Number(n) if n == 0.0
+    ));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__micro"),
+      Value::Number(n) if n == 1.0
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout"),
+      Value::Number(n) if n == 0.0
+    ));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout"),
+      Value::Number(n) if n == 1.0
+    ));
     Ok(())
   }
 
