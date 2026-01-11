@@ -182,13 +182,18 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let bytes = fs::read(&exe).unwrap();
   let file = object::File::parse(&*bytes).unwrap();
 
+  // The lld-oriented fragment (`link/stackmaps.ld`) places stackmaps into the
+  // standard `.data.rel.ro` output section (RELRO-friendly) instead of creating
+  // a dedicated `.data.rel.ro.llvm_stackmaps` output section. GNU ld variants
+  // can still use the dedicated name, so accept either.
   let section = file
     .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .expect("missing .data.rel.ro.llvm_stackmaps section (was stackmaps GC'd?)");
+    .or_else(|| file.section_by_name(".data.rel.ro"))
+    .expect("missing stackmaps output section (.data.rel.ro.llvm_stackmaps or .data.rel.ro)");
 
   let section_addr = section.address();
   let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty .data.rel.ro.llvm_stackmaps");
+  assert!(section_size > 0, "expected non-empty stackmaps output section");
 
   let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __start_llvm_stackmaps");
   let (stop, stop_scope) = find_symbol(&file, STOP_SYM).expect("missing __stop_llvm_stackmaps");
@@ -251,7 +256,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   );
   assert!(
     section_addr <= start && stop <= section_addr + section_size,
-    "stackmaps symbol range must be contained in .data.rel.ro.llvm_stackmaps (section_addr=0x{section_addr:x} size=0x{section_size:x} start=0x{start:x} stop=0x{stop:x})"
+    "stackmaps symbol range must be contained in the stackmaps output section (section_addr=0x{section_addr:x} size=0x{section_size:x} start=0x{start:x} stop=0x{stop:x})"
   );
 
   assert_eq!(generic_start, start, "generic start symbol must match");
@@ -262,13 +267,13 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   assert_eq!(fastr_end, stop, "fastr end symbol must match");
 
   // Ensure the linker script actually retained our bytes (not just the symbols).
-  let data = section.data().expect("read .data.rel.ro.llvm_stackmaps bytes");
+  let data = section.data().expect("read stackmaps output section bytes");
   let off = usize::try_from(start - section_addr).expect("offset fits usize");
   let len = usize::try_from(stop - start).expect("len fits usize");
   assert!(off + len <= data.len(), "stackmaps range out of bounds");
   assert!(
     data[off..].starts_with(&[1, 2, 3, 4]),
-    "expected .data.rel.ro.llvm_stackmaps payload to be preserved"
+    "expected stackmaps payload to be preserved"
   );
 
   // Ensure the section is backed by a readable load segment so the runtime can
