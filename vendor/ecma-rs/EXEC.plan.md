@@ -3943,7 +3943,18 @@ pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> GcPtr;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> GcPtr;
 
 // GC
-pub fn rt_gc_safepoint();
+// Exported global GC epoch (monotonically increasing).
+//
+// Semantics:
+// - even: no stop-the-world GC requested
+// - odd:  stop-the-world GC requested
+//
+// Compiler-generated code should inline a fast-path poll:
+//   epoch = RT_GC_EPOCH (atomic load, Acquire); if (epoch & 1) rt_gc_safepoint_slow(epoch);
+pub static RT_GC_EPOCH: u64;
+pub fn rt_gc_poll() -> bool; // cheap leaf check (fast-path helper for runtime loops)
+pub fn rt_gc_safepoint_slow(epoch: u64); // slow path entered only when `RT_GC_EPOCH` is odd
+pub fn rt_gc_safepoint(); // convenience wrapper (inline poll + slow-path call)
 pub fn rt_write_barrier(obj: GcPtr, field: *mut u8);
 pub fn rt_gc_collect();
 
