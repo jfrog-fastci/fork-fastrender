@@ -188,9 +188,8 @@ pub fn detect_signals(file: &HirFile, body: &Body, names: &NameInterner) -> Vec<
     match &expr.kind {
       #[cfg(feature = "hir-semantic-ops")]
       ExprKind::PromiseAll { .. } => {
-        // `hir-js` lowers `Promise.all([..])` into a dedicated node when the input
-        // is an array literal without holes/spreads. Treat it as the same semantic
-        // cue.
+        // When `hir-js/semantic-ops` is enabled, `Promise.all([..])` may be lowered into a
+        // dedicated node rather than a `Call` expression.
         signals.push(SemanticSignal::PromiseAll { expr: expr_id });
       }
       ExprKind::Call(call) => {

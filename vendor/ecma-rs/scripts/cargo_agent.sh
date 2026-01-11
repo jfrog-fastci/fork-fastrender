@@ -19,19 +19,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MONOREPO_ROOT="$(cd "${ECMA_RS_ROOT}/../.." && pwd)"
 
-# `runtime-native` contains an FP-based stack walker / GC root enumerator that assumes
-# a stable frame-pointer chain. Its build script enforces `-C force-frame-pointers=yes`.
-#
-# Ensure this wrapper always injects the flag so `bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native`
-# works out of the box.
-if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
-  if [[ -z "${RUSTFLAGS:-}" ]]; then
-    export RUSTFLAGS="-C force-frame-pointers=yes"
-  else
-    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
-  fi
-fi
-
 MONOREPO_WRAPPER="${MONOREPO_ROOT}/scripts/cargo_agent.sh"
 if [[ ! -f "${MONOREPO_WRAPPER}" ]]; then
   echo "error: expected cargo wrapper at ${MONOREPO_WRAPPER}" >&2
