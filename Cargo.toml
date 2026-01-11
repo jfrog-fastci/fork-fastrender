@@ -168,6 +168,27 @@ usvg = "0.43"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
 
+[profile.dev]
+# `xtask page-loop --debug` intentionally uses the dev profile to keep iteration quick, but pages
+# like `tests/pages/fixtures/go.dev` are layout/text hotspots and can time out when critical
+# dependencies are left completely unoptimized.
+#
+# Keep the root crate lightly optimized for a good dev experience while compiling dependencies at
+# higher opt levels so the debug workflow remains usable on large fixtures.
+opt-level = 1
+
+[profile.dev.package.taffy]
+opt-level = 3
+
+[profile.dev.package.rustybuzz]
+opt-level = 3
+
+[profile.dev.package.ttf-parser]
+opt-level = 3
+
+[profile.dev.package.fontdb]
+opt-level = 3
+
 [[test]]
 name = "wpt_tests"
 path = "tests/bin/wpt_tests.rs"

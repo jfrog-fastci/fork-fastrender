@@ -1609,6 +1609,11 @@ impl FormattingContext for FlexFormattingContext {
             container_inner_main_size,
             &mut resolved_style,
           );
+          if container_inner_main_size.is_none()
+            && resolved_style.flex_basis.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.flex_basis = Dimension::auto();
+          }
           self.apply_calc_sizing_properties(
             child.style.as_ref(),
             Some(container_inner_size),
@@ -4322,6 +4327,11 @@ impl FormattingContext for FlexFormattingContext {
           container_inner_main_size,
           &mut resolved_style,
         );
+        if container_inner_main_size.is_none()
+          && resolved_style.flex_basis.tag() == taffy::style::CompactLength::PERCENT_TAG
+        {
+          resolved_style.flex_basis = Dimension::auto();
+        }
         self.apply_calc_sizing_properties(
           child.style.as_ref(),
           Some(container_inner_size),
@@ -6397,6 +6407,18 @@ impl FlexFormattingContext {
         container_inner_main_size,
         &mut resolved_style,
       );
+      // CSS Flexible Box Layout §7.2.2: Percentage flex-basis values resolve against the flex
+      // container's inner main size; if that size is indefinite, the used value becomes `auto`.
+      //
+      // Taffy resolves percentage flex-basis values against the available space it receives, which
+      // can be a viewport-derived fallback even when the flex container's main size is actually
+      // content-based (indefinite). Normalize unresolvable percentage flex-basis values to `auto`
+      // so flex base sizing becomes content-based.
+      if container_inner_main_size.is_none()
+        && resolved_style.flex_basis.tag() == taffy::style::CompactLength::PERCENT_TAG
+      {
+        resolved_style.flex_basis = Dimension::auto();
+      }
       self.apply_calc_sizing_properties(
         child.style.as_ref(),
         Some(container_inner_size),
@@ -16354,6 +16376,62 @@ mod tests {
     assert!(
       super::height_depends_on_available_height(&style, false),
       "column-like flex containers should treat percentage flex-basis as a height dependency"
+    );
+  }
+
+  #[test]
+  fn percent_flex_basis_is_auto_when_container_main_size_is_indefinite() {
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    item_style.flex_basis = FlexBasis::Length(Length::percent(50.0));
+    item_style.height = Some(Length::px(10.0));
+    item_style.height_keyword = None;
+    // Override the flex-item automatic minimum size so an incorrect 0px percentage resolution does
+    // not get clamped back up to the authored height.
+    item_style.min_height = Some(Length::px(0.0));
+    item_style.min_height_keyword = None;
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    item.id = 2;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::FlexStart;
+    container_style.width = Some(Length::px(100.0));
+    container_style.width_keyword = None;
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+    container.id = 1;
+
+    let fc = FlexFormattingContext::new();
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite_width(100.0))
+      .expect("flex layout should succeed");
+
+    fn find_fragment<'a>(node: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+      if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == box_id) {
+        return Some(node);
+      }
+      for child in &node.children {
+        if let Some(found) = find_fragment(child, box_id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let item_fragment = find_fragment(&fragment, 2).expect("inner flex item fragment");
+    assert!(
+      (item_fragment.bounds.height() - 10.0).abs() < 0.1,
+      "expected percentage flex-basis in an indefinite column flex container to behave as `auto` (height ≈10px), got {:.2}",
+      item_fragment.bounds.height()
     );
   }
 

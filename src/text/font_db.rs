@@ -2172,6 +2172,10 @@ impl FontDatabase {
   /// Finds emoji fonts in the database.
   ///
   /// Returns font IDs for fonts that are likely to contain emoji glyphs.
+  ///
+  /// Prefer fast family-name heuristics (e.g. "Noto Color Emoji") and only fall back to
+  /// table-based color font detection when no such candidates exist, to avoid parsing every font
+  /// file in large system installations.
   pub fn find_emoji_fonts(&self) -> Vec<ID> {
     if let Ok(cache) = self.emoji_fonts.read() {
       if let Some(list) = &*cache {
@@ -2179,16 +2183,23 @@ impl FontDatabase {
       }
     }
 
-    let mut emoji_fonts = Vec::new();
+    let mut emoji_fonts: Vec<ID> = self
+      .db
+      .faces()
+      .filter(|face| {
+        face
+          .families
+          .iter()
+          .any(|(name, _)| Self::family_name_is_emoji_font(name))
+      })
+      .map(|face| face.id)
+      .collect();
 
-    for face in self.db.faces() {
-      if face
-        .families
-        .iter()
-        .any(|(name, _)| Self::family_name_is_emoji_font(name))
-        || matches!(self.is_color_capable_font(face.id), Some(true))
-      {
-        emoji_fonts.push(face.id);
+    if emoji_fonts.is_empty() {
+      for face in self.db.faces() {
+        if matches!(self.is_color_capable_font(face.id), Some(true)) {
+          emoji_fonts.push(face.id);
+        }
       }
     }
 
@@ -3001,6 +3012,33 @@ mod tests {
     assert!(FontDatabase::family_name_is_emoji_font("SEGOE UI EMOJI"));
     assert!(FontDatabase::family_name_is_emoji_font("Twemoji Mozilla"));
     assert!(!FontDatabase::family_name_is_emoji_font("Noto Sans"));
+  }
+
+  #[test]
+  #[cfg(debug_assertions)]
+  fn find_emoji_fonts_prefers_name_heuristics_without_parsing_faces() {
+    reset_face_parse_counter_for_tests();
+    let _guard = FaceParseCountGuard::start();
+
+    let noto_sans = include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf");
+    let emoji = include_bytes!("../../tests/fixtures/fonts/FastRenderEmoji.ttf");
+
+    let mut db = FontDatabase::empty();
+    db.load_font_data(noto_sans.to_vec())
+      .expect("load Noto Sans subset");
+    db.load_font_data(emoji.to_vec())
+      .expect("load FastRender emoji font");
+
+    let emoji_ids = db.find_emoji_fonts();
+    assert!(
+      !emoji_ids.is_empty(),
+      "expected find_emoji_fonts to return at least one candidate"
+    );
+    assert_eq!(
+      face_parse_count(),
+      0,
+      "expected find_emoji_fonts name-heuristic path to avoid parsing font files"
+    );
   }
 
   #[test]
