@@ -212,13 +212,9 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::gc_stats::record_safepoint();
 
   // `rt_gc_safepoint` is only meaningful for threads that have been registered
-  // with `rt_thread_init`. For non-attached threads we treat this as a no-op in
-  // release builds (and assert in debug builds).
+  // with `rt_thread_init`. For non-attached threads this is a no-op: they do not
+  // participate in stop-the-world coordination.
   if registry::current_thread_id().is_none() {
-    debug_assert!(
-      false,
-      "rt_gc_safepoint called from a thread that is not registered (rt_thread_init was not called)"
-    );
     return;
   }
 
@@ -380,6 +376,13 @@ mod write_barrier_tests {
   use super::*;
   use crate::gc::roots::RememberedSet;
 
+  static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+  fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _g = TEST_LOCK.lock();
+    f()
+  }
+
   #[repr(C)]
   struct DummyObject {
     header: ObjHeader,
@@ -393,71 +396,75 @@ mod write_barrier_tests {
 
   #[test]
   fn write_barrier_records_old_to_young_edges() {
-    clear_for_test();
+    with_test_lock(|| {
+      clear_for_test();
 
-    let mut young_byte = Box::new(0u8);
-    let young_ptr = (&mut *young_byte) as *mut u8;
-    unsafe {
-      rt_gc_set_young_range(young_ptr, young_ptr.add(1));
-    }
+      let mut young_byte = Box::new(0u8);
+      let young_ptr = (&mut *young_byte) as *mut u8;
+      unsafe {
+        rt_gc_set_young_range(young_ptr, young_ptr.add(1));
+      }
 
-    let mut old = Box::new(DummyObject {
-      header: ObjHeader {
-        type_desc: std::ptr::null(),
-        meta: 0,
-      },
-      field: young_ptr,
+      let mut old = Box::new(DummyObject {
+        header: ObjHeader {
+          type_desc: std::ptr::null(),
+          meta: 0,
+        },
+        field: young_ptr,
+      });
+
+      let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+      let slot_ptr = (&mut old.field) as *mut *mut u8 as *mut u8;
+      unsafe {
+        rt_write_barrier(obj_ptr, slot_ptr);
+      }
+
+      assert!(old.header.is_remembered());
+      assert!(REMEMBERED_SET.lock().contains(obj_ptr));
+
+      clear_for_test();
     });
-
-    let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
-    let slot_ptr = (&mut old.field) as *mut *mut u8 as *mut u8;
-    unsafe {
-      rt_write_barrier(obj_ptr, slot_ptr);
-    }
-
-    assert!(old.header.is_remembered());
-    assert!(REMEMBERED_SET.lock().contains(obj_ptr));
-
-    clear_for_test();
   }
 
   #[test]
   fn write_barrier_range_records_old_to_young_edges() {
-    clear_for_test();
+    with_test_lock(|| {
+      clear_for_test();
 
-    let mut young_byte = Box::new(0u8);
-    let young_ptr = (&mut *young_byte) as *mut u8;
-    unsafe {
-      rt_gc_set_young_range(young_ptr, young_ptr.add(1));
-    }
+      let mut young_byte = Box::new(0u8);
+      let young_ptr = (&mut *young_byte) as *mut u8;
+      unsafe {
+        rt_gc_set_young_range(young_ptr, young_ptr.add(1));
+      }
 
-    #[repr(C)]
-    struct DummyArray {
-      header: ObjHeader,
-      slots: [*mut u8; 4],
-    }
+      #[repr(C)]
+      struct DummyArray {
+        header: ObjHeader,
+        slots: [*mut u8; 4],
+      }
 
-    let mut old = Box::new(DummyArray {
-      header: ObjHeader {
-        type_desc: std::ptr::null(),
-        meta: 0,
-      },
-      slots: [std::ptr::null_mut(); 4],
+      let mut old = Box::new(DummyArray {
+        header: ObjHeader {
+          type_desc: std::ptr::null(),
+          meta: 0,
+        },
+        slots: [std::ptr::null_mut(); 4],
+      });
+
+      old.slots[2] = young_ptr;
+
+      let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+      let start_slot = old.slots.as_mut_ptr() as *mut u8;
+      let len = old.slots.len() * core::mem::size_of::<*mut u8>();
+      unsafe {
+        rt_write_barrier_range(obj_ptr, start_slot, len);
+      }
+
+      assert!(old.header.is_remembered());
+      assert!(REMEMBERED_SET.lock().contains(obj_ptr));
+
+      clear_for_test();
     });
-
-    old.slots[2] = young_ptr;
-
-    let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
-    let start_slot = old.slots.as_mut_ptr() as *mut u8;
-    let len = old.slots.len() * core::mem::size_of::<*mut u8>();
-    unsafe {
-      rt_write_barrier_range(obj_ptr, start_slot, len);
-    }
-
-    assert!(old.header.is_remembered());
-    assert!(REMEMBERED_SET.lock().contains(obj_ptr));
-
-    clear_for_test();
   }
 }
 

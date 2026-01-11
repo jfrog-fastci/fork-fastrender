@@ -269,7 +269,8 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     out.push(map);
     off = off.checked_add(len).ok_or(StackMapError::UnexpectedEof)?;
 
-    // Linkers align concatenated input sections; `.llvm_stackmaps` uses 8-byte alignment.
+    // Linkers align concatenated input sections; `.llvm_stackmaps` uses (at least) 8-byte
+    // alignment.
     let aligned = off.checked_add(7).ok_or(StackMapError::UnexpectedEof)? & !7;
     if aligned > bytes.len() {
       return Err(StackMapError::UnexpectedEof);
@@ -1268,7 +1269,7 @@ mod tests {
     push_u64(&mut bytes, 16);
     push_u64(&mut bytes, 2);
 
-    // Record 0: include liveouts so the record requires trailing padding (exercise padding skip).
+    // Record 0: include an even number of liveouts so the record-end padding path is exercised.
     push_u64(&mut bytes, 100);
     push_u32(&mut bytes, 0x10);
     push_u16(&mut bytes, 0);
@@ -1291,7 +1292,6 @@ mod tests {
     //   u16 NumLiveOuts;
     //
     // Keep the padding field non-zero to validate the parser ignores its content.
-    // Include an even number of liveouts so the record-end padding path is exercised.
     push_u16(&mut bytes, 0xABAB); // padding (ignored)
     push_u16(&mut bytes, 2); // num_liveouts
 
