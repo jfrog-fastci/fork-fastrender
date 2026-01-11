@@ -683,6 +683,7 @@ mod tests {
   use crate::resource::{origin_from_url, FetchedResource, HttpFetcher, HttpRetryPolicy};
   use std::io::{Read, Write};
   use std::net::TcpListener;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
   use std::thread;
   use std::time::{Duration, Instant};

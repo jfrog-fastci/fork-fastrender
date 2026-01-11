@@ -12115,6 +12115,9 @@ fn apply_declaration_with_base_internal_with_order(
           "space-evenly" => AlignContent::SpaceEvenly,
           "space-around" => AlignContent::SpaceAround,
           "stretch" => AlignContent::Stretch,
+          // Legacy aliases. See CSS Box Alignment (legacy alignment keywords).
+          "left" => AlignContent::Start,
+          "right" => AlignContent::End,
           _ => styles.align_content,
         };
       }
@@ -17388,6 +17391,9 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
       "space-between" => Some(AlignContent::SpaceBetween),
       "space-around" => Some(AlignContent::SpaceAround),
       "space-evenly" => Some(AlignContent::SpaceEvenly),
+      // Legacy aliases. See CSS Box Alignment (legacy alignment keywords).
+      "left" => Some(AlignContent::Start),
+      "right" => Some(AlignContent::End),
       _ => None,
     }
   }
@@ -17434,6 +17440,41 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
   let first = to_align_content(&tokens[0])?;
   let second = to_justify_content(&tokens[1])?;
   Some((first, second))
+}
+
+#[cfg(test)]
+mod align_content_legacy_keyword_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn align_content_left_right_keywords_update_computed_style() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("align-content: left;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_content, AlignContent::Start);
+
+    let decls = parse_declarations("align-content: right;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_content, AlignContent::End);
+  }
+
+  #[test]
+  fn place_content_left_keyword_sets_align_and_justify_content() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("place-content: left;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_content, AlignContent::Start);
+    assert_eq!(styles.justify_content, JustifyContent::Start);
+  }
 }
 
 fn parse_spacing_value(

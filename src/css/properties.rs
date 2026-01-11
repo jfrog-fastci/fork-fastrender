@@ -3370,6 +3370,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "space-evenly",
           "stretch",
           "normal",
+          // Legacy aliases that our computed-style parser maps to start/end.
+          "left",
+          "right",
         ],
       );
     }

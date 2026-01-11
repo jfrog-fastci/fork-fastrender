@@ -378,6 +378,14 @@ mod tests {
   }
 
   #[test]
+  fn supports_align_content_legacy_left_right_keywords() {
+    assert!(supports_declaration("align-content", "left"));
+    assert!(supports_declaration("align-content", "right"));
+    assert!(supports_declaration("-webkit-align-content", "left"));
+    assert!(supports_declaration("-webkit-align-content", "right"));
+  }
+
+  #[test]
   fn supports_env_and_constant_in_calc_lengths() {
     assert!(supports_declaration(
       "padding-left",
