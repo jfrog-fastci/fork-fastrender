@@ -109,6 +109,29 @@ For stackmaps created from `gc.statepoint` (including `rewrite-statepoints-for-g
 | next `n` | The deopt operands themselves (`"deopt"(... )`) | one `Location` per operand |
 | remaining | GC roots (`"gc-live"`) | encoded as base/derived pairs |
 
+### Parsing GC roots from the record
+
+After consuming the 3 meta locations and `n` deopt locations, the remaining
+locations are the GC root list encoded as **base/derived pairs**.
+
+For a non-derived root, LLVM encodes it as a pair where **base == derived**,
+which is why `llvm-readobj --stackmap` output often shows duplicated entries.
+
+To parse:
+
+```text
+deopt_count = Locations[2] (meta #3)
+gc_pair_count = (NumLocations - 3 - deopt_count) / 2
+```
+
+### Notes on statepoint operand bundles
+
+In LLVM 18 `rewrite-statepoints-for-gc` output, the `gc.statepoint` intrinsic
+uses operand bundles (`"deopt"`, `"gc-live"`, `"gc-transition"`). Even though
+the intrinsic call itself still contains two trailing `i32 0` placeholder
+arguments, **the stackmap record is derived from the operand bundles**, and
+the deopt count in meta location `#3` reflects the `"deopt"` bundle length.
+
 ### Verifying meta location `#1` (calling convention)
 
 Example: `investigation/llvm_stackmaps/statepoint_meta_callconv_fastcc.ll`
