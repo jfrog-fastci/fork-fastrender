@@ -73,7 +73,7 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
 /// In debug builds we also run `verify<safepoint-ir>` to catch invalid safepoint
 /// IR early.
 pub fn rewrite_statepoints_for_gc(module: &Module<'_>, target_machine: &TargetMachine) -> Result<(), PassError> {
-  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  super::debug_lint_module_gc_pointer_discipline(module)?;
 
   let pipeline = if cfg!(debug_assertions) {
     "rewrite-statepoints-for-gc,verify<safepoint-ir>"
@@ -83,7 +83,7 @@ pub fn rewrite_statepoints_for_gc(module: &Module<'_>, target_machine: &TargetMa
 
   run_pass_pipeline(module, target_machine, pipeline)?;
 
-  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  super::debug_lint_module_gc_pointer_discipline(module)?;
   Ok(())
 }
 
@@ -105,7 +105,7 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   module: &Module<'_>,
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
-  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  super::debug_lint_module_gc_pointer_discipline(module)?;
 
   ensure_gc_safepoint_poll_decl(module)?;
 
@@ -117,7 +117,7 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
 
   run_pass_pipeline(module, target_machine, pipeline)?;
 
-  super::debug_lint_gc_pointer_discipline(module.as_mut_ptr())?;
+  super::debug_lint_module_gc_pointer_discipline(module)?;
   Ok(())
 }
 

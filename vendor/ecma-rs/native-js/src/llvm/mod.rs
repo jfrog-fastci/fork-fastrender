@@ -28,7 +28,6 @@ use inkwell::targets::{
 };
 use inkwell::values::FunctionValue;
 use inkwell::{module::Linkage, OptimizationLevel};
-use llvm_sys::prelude::LLVMModuleRef;
 use target_lexicon::Triple;
 
 pub mod gc;
@@ -38,20 +37,20 @@ pub mod statepoints;
 pub mod statepoint_directives;
 pub mod types;
 
-pub use gc_lint::{lint_gc_pointer_discipline, LintError, LintRule, LintViolation};
+pub use gc_lint::{lint_module_gc_pointer_discipline, LintError, LintRule, LintViolation};
 pub use types::{classify_type, llvm_type, NativeType};
 
 /// Run the GC pointer discipline lint in debug builds/tests.
 ///
 /// In release builds this is a no-op unless the `gc-lint` feature is enabled.
 #[cfg(any(debug_assertions, feature = "gc-lint"))]
-pub fn debug_lint_gc_pointer_discipline(module: LLVMModuleRef) -> Result<(), LintError> {
-  lint_gc_pointer_discipline(module)
+pub fn debug_lint_module_gc_pointer_discipline(module: &Module<'_>) -> Result<(), LintError> {
+  lint_module_gc_pointer_discipline(module)
 }
 
 /// Release builds omit GC IR lint by default for compile-time performance.
 #[cfg(not(any(debug_assertions, feature = "gc-lint")))]
-pub fn debug_lint_gc_pointer_discipline(_module: LLVMModuleRef) -> Result<(), LintError> {
+pub fn debug_lint_module_gc_pointer_discipline(_module: &Module<'_>) -> Result<(), LintError> {
   Ok(())
 }
 

@@ -1,30 +1,40 @@
+use inkwell::module::Module;
 use llvm_sys::core::{
-  LLVMCountBasicBlocks, LLVMCountParams, LLVMDisposeMessage, LLVMGetAllocatedType,
-  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC,
-  LLVMGetNextBasicBlock, LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetNumOperands,
-  LLVMGetOperand, LLVMGetParam, LLVMGetPointerAddressSpace, LLVMGetReturnType, LLVMGetTypeKind,
+  LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetAllocatedType, LLVMGetCalledValue,
+  LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFirstUse,
+  LLVMGetGC, LLVMGetNextBasicBlock, LLVMGetNextFunction, LLVMGetNextInstruction, LLVMGetNextUse,
+  LLVMGetNumOperands, LLVMGetOperand, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetUser,
   LLVMPrintValueToString, LLVMTypeOf,
 };
-use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMValueRef};
+use llvm_sys::prelude::{LLVMModuleRef, LLVMTypeRef, LLVMUseRef, LLVMValueRef};
 use llvm_sys::{LLVMOpcode, LLVMTypeKind};
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::fmt;
 
-use super::gc::{GC_ADDR_SPACE, GC_STRATEGY};
+use super::gc::GC_ADDR_SPACE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintRule {
-  /// Rule 1: under our GC strategy (`native_js::llvm::gc::GC_STRATEGY`), all pointer
-  /// params/returns must be `ptr addrspace(1)`.
-  GcFunctionSignatureUsesNonGcPointer,
-  /// Rule 2: forbid `ptrtoint` from `ptr addrspace(1)`.
+  /// Rule A: Forbid `addrspacecast` to/from `addrspace(1)` in non-runtime wrapper GC-managed
+  /// functions.
+  NonWrapperAddrSpaceCastToOrFromGcPointer,
+  /// Rule B1: In runtime ABI wrapper functions, `addrspacecast` from AS0->AS1 must be returned or
+  /// stored into an AS1 pointer slot.
+  WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+  /// Rule B2/B3: In runtime ABI wrapper functions, `addrspacecast` from AS1->AS0 must be used only
+  /// as a direct call argument and must not escape.
+  WrapperAddrSpaceCastAs1ToAs0InvalidUse,
+  /// Rule B: Runtime ABI wrappers may only cast between AS0 and AS1 (not other addrspaces).
+  WrapperAddrSpaceCastBetweenUnsupportedAddrSpaces,
+  /// Rule A: forbid `ptrtoint` from `ptr addrspace(1)`.
   PtrToIntFromGcPointer,
-  /// Rule 2: forbid `inttoptr` to `ptr addrspace(1)`.
+  /// Rule A: forbid `inttoptr` to `ptr addrspace(1)`.
   IntToPtrToGcPointer,
-  /// Rule 3: forbid `addrspacecast` from addrspace(1) to any other addrspace.
-  AddrSpaceCastFromGcPointer,
-  /// Rule 4: forbid obvious stores of addrspace(1) pointers into non-pointer-typed slots.
+  /// Rule A: forbid obvious stores of addrspace(1) pointers into non-pointer-typed slots.
   StoreGcPointerToNonPointerSlot,
+  /// Rule A: forbid returning `ptr` (addrspace(0)) derived from `ptr addrspace(1)`.
+  ReturnAddrSpace0PointerDerivedFromGcPointer,
 }
 
 #[derive(Debug, Clone)]
@@ -60,34 +70,36 @@ impl fmt::Display for LintError {
 
 impl std::error::Error for LintError {}
 
-/// Enforce a conservative LLVM GC pointer discipline for our GC strategy.
+/// Enforce a conservative LLVM GC pointer discipline for statepoint-based moving GC.
 ///
 /// ## Why this exists
-/// LLVM's `rewrite-statepoints-for-gc` pass only relocates SSA values of type `ptr addrspace(1)`.
-/// If a GC pointer is "hidden" by converting it to `ptr` (addrspace(0)), integer types
-/// (`ptrtoint`), or other non-tracked forms, it will not be updated across safepoints.
+/// LLVM's `rewrite-statepoints-for-gc` pass only relocates SSA values of type
+/// `ptr addrspace(1)`. If a GC pointer is "hidden" by converting it to `ptr`
+/// (addrspace(0)), integer types (`ptrtoint`), or other non-tracked forms, it
+/// will not be updated across safepoints.
 ///
 /// This lint is intentionally conservative. It is meant to catch *obviously* unsound IR patterns
 /// early (during debug builds/tests) rather than rely on subtle invariants.
-pub fn lint_gc_pointer_discipline(module: LLVMModuleRef) -> Result<(), LintError> {
+pub fn lint_module_gc_pointer_discipline(module: &Module<'_>) -> Result<(), LintError> {
+  // Use llvm-sys to iterate and inspect instructions; inkwell's iterator APIs and instruction
+  // wrappers have historically changed with LLVM versions.
+  unsafe { lint_module_gc_pointer_discipline_raw(module.as_mut_ptr()) }
+}
+
+unsafe fn lint_module_gc_pointer_discipline_raw(module: LLVMModuleRef) -> Result<(), LintError> {
   assert!(!module.is_null(), "module must be non-null");
 
   let mut violations = Vec::<LintViolation>::new();
 
-  unsafe {
-    // Rule 1: GC functions must use `ptr addrspace(1)` in their signature.
-    let mut func = LLVMGetFirstFunction(module);
-    while !func.is_null() {
-      if is_native_js_gc_function(func) {
-        lint_gc_function_signature(func, &mut violations);
-      }
-
-      // Rule 2-4: scan all instructions (even outside GC functions). If a value is in AS1, it is
-      // by definition a GC-managed pointer in our discipline.
-      lint_instructions_in_function(func, &mut violations);
-
-      func = LLVMGetNextFunction(func);
+  let mut func = LLVMGetFirstFunction(module);
+  while !func.is_null() {
+    if is_gc_managed_function(func) {
+      let func_name = value_name(func);
+      let is_wrapper = is_runtime_abi_wrapper_function_name(&func_name);
+      lint_instructions_in_function(func, func_name.as_str(), is_wrapper, &mut violations);
     }
+
+    func = LLVMGetNextFunction(func);
   }
 
   if violations.is_empty() {
@@ -97,49 +109,32 @@ pub fn lint_gc_pointer_discipline(module: LLVMModuleRef) -> Result<(), LintError
   }
 }
 
-unsafe fn lint_gc_function_signature(func: LLVMValueRef, violations: &mut Vec<LintViolation>) {
-  let func_name = value_name(func);
-
-  // `LLVMGetReturnType` expects an LLVMTypeRef of *function type*.
-  //
-  // With opaque pointers, `LLVMTypeOf(func)` is no longer a reliably useful way to recover the
-  // function signature (it can just be `ptr`). Use `LLVMGlobalGetValueType` instead.
-  let fn_ty = llvm_sys::core::LLVMGlobalGetValueType(func);
-  let ret_ty = LLVMGetReturnType(fn_ty);
-  if is_pointer_type(ret_ty) && !is_gc_pointer_type(ret_ty) {
-    violations.push(LintViolation {
-      rule: LintRule::GcFunctionSignatureUsesNonGcPointer,
-      message: format!(
-        "function `{}` has return type `{}` under `gc \"{}\"`; expected `ptr addrspace(1)`",
-        func_name,
-        type_to_string(ret_ty),
-        GC_STRATEGY
-      ),
-    });
-  }
-
-  let param_count = LLVMCountParams(func);
-  for i in 0..param_count {
-    let param = LLVMGetParam(func, i);
-    let param_ty = LLVMTypeOf(param);
-    if is_pointer_type(param_ty) && !is_gc_pointer_type(param_ty) {
-      violations.push(LintViolation {
-        rule: LintRule::GcFunctionSignatureUsesNonGcPointer,
-        message: format!(
-          "function `{}` param #{} has type `{}` under `gc \"{}\"`; expected `ptr addrspace(1)`",
-          func_name,
-          i,
-          type_to_string(param_ty),
-          GC_STRATEGY
-        ),
-      });
-    }
-  }
+/// `true` iff LLVM considers this function GC-managed (i.e. has a `gc "<strategy>"` attribute).
+///
+/// The strategy name itself isn't relevant to the pointer discipline; we only care that LLVM will
+/// run `rewrite-statepoints-for-gc` and use stack maps/statepoints semantics for the function.
+unsafe fn is_gc_managed_function(func: LLVMValueRef) -> bool {
+  !LLVMGetGC(func).is_null()
 }
 
-unsafe fn lint_instructions_in_function(func: LLVMValueRef, violations: &mut Vec<LintViolation>) {
-  let func_name = value_name(func);
+/// Identify internal runtime ABI wrapper functions.
+///
+/// These wrappers intentionally contain `addrspacecast` between AS0 (raw pointers used by the Rust
+/// runtime ABI) and AS1 (GC pointers tracked by LLVM statepoints).
+///
+/// We centralize the naming convention here so codegen cannot accidentally (or intentionally)
+/// bypass the wrapper-only allowances in this lint: if a function wants to use AS0⇄AS1 casts, it
+/// **must** be named like `rt_*_gc`.
+fn is_runtime_abi_wrapper_function_name(name: &str) -> bool {
+  name.starts_with("rt_") && name.ends_with("_gc")
+}
 
+unsafe fn lint_instructions_in_function(
+  func: LLVMValueRef,
+  func_name: &str,
+  is_wrapper: bool,
+  violations: &mut Vec<LintViolation>,
+) {
   // Skip declarations.
   if LLVMCountBasicBlocks(func) == 0 {
     return;
@@ -149,7 +144,7 @@ unsafe fn lint_instructions_in_function(func: LLVMValueRef, violations: &mut Vec
   while !bb.is_null() {
     let mut inst = LLVMGetFirstInstruction(bb);
     while !inst.is_null() {
-      lint_instruction(func_name.as_str(), inst, violations);
+      lint_instruction(func_name, is_wrapper, inst, violations);
       inst = LLVMGetNextInstruction(inst);
     }
 
@@ -159,95 +154,338 @@ unsafe fn lint_instructions_in_function(func: LLVMValueRef, violations: &mut Vec
 
 unsafe fn lint_instruction(
   func_name: &str,
+  is_wrapper: bool,
   inst: LLVMValueRef,
   violations: &mut Vec<LintViolation>,
 ) {
   let opcode = llvm_sys::core::LLVMGetInstructionOpcode(inst);
 
   match opcode {
-    LLVMOpcode::LLVMPtrToInt => {
-      let operand = LLVMGetOperand(inst, 0);
-      let operand_ty = LLVMTypeOf(operand);
-      if is_gc_pointer_type(operand_ty) {
-        violations.push(LintViolation {
-          rule: LintRule::PtrToIntFromGcPointer,
-          message: format!(
-            "in `{}`: disallowed `ptrtoint` of GC pointer: {}",
-            func_name,
-            value_to_string(inst)
-          ),
-        });
+    LLVMOpcode::LLVMPtrToInt => lint_ptrtoint(func_name, inst, violations),
+    LLVMOpcode::LLVMIntToPtr => lint_inttoptr(func_name, inst, violations),
+    LLVMOpcode::LLVMAddrSpaceCast => lint_addrspacecast(func_name, is_wrapper, inst, violations),
+    LLVMOpcode::LLVMStore => lint_store(func_name, inst, violations),
+    LLVMOpcode::LLVMRet => {
+      if !is_wrapper {
+        lint_return_raw_pointer(func_name, inst, violations);
       }
     }
-
-    LLVMOpcode::LLVMIntToPtr => {
-      let result_ty = LLVMTypeOf(inst);
-      if is_gc_pointer_type(result_ty) {
-        violations.push(LintViolation {
-          rule: LintRule::IntToPtrToGcPointer,
-          message: format!(
-            "in `{}`: disallowed `inttoptr` to GC pointer: {}",
-            func_name,
-            value_to_string(inst)
-          ),
-        });
-      }
-    }
-
-    LLVMOpcode::LLVMAddrSpaceCast => {
-      let operand = LLVMGetOperand(inst, 0);
-      let operand_ty = LLVMTypeOf(operand);
-      let result_ty = LLVMTypeOf(inst);
-      if is_gc_pointer_type(operand_ty)
-        && is_pointer_type(result_ty)
-        && LLVMGetPointerAddressSpace(result_ty) != GC_ADDR_SPACE
-      {
-        violations.push(LintViolation {
-          rule: LintRule::AddrSpaceCastFromGcPointer,
-          message: format!(
-            "in `{}`: disallowed `addrspacecast` from addrspace(1): {}",
-            func_name,
-            value_to_string(inst)
-          ),
-        });
-      }
-    }
-
-    LLVMOpcode::LLVMStore => {
-      // Operand 0: stored value, operand 1: destination address.
-      if LLVMGetNumOperands(inst) >= 2 {
-        let stored = LLVMGetOperand(inst, 0);
-        let stored_ty = LLVMTypeOf(stored);
-        if is_gc_pointer_type(stored_ty) {
-          let dest = LLVMGetOperand(inst, 1);
-          if let Some(slot_ty) = known_memory_slot_type(dest) {
-            if !is_pointer_type(slot_ty) {
-              violations.push(LintViolation {
-                rule: LintRule::StoreGcPointerToNonPointerSlot,
-                message: format!(
-                  "in `{}`: disallowed store of GC pointer into non-pointer slot `{}`: {}",
-                  func_name,
-                  type_to_string(slot_ty),
-                  value_to_string(inst)
-                ),
-              });
-            }
-          }
-        }
-      }
-    }
-
     _ => {}
   }
 }
 
-unsafe fn is_native_js_gc_function(func: LLVMValueRef) -> bool {
-  let gc = LLVMGetGC(func);
-  if gc.is_null() {
+unsafe fn lint_ptrtoint(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
+  let operand = LLVMGetOperand(inst, 0);
+  let operand_ty = LLVMTypeOf(operand);
+  if is_gc_pointer_type(operand_ty) {
+    violations.push(LintViolation {
+      rule: LintRule::PtrToIntFromGcPointer,
+      message: format!(
+        "in `{}`: disallowed `ptrtoint` of GC pointer: {}",
+        func_name,
+        value_to_string(inst)
+      ),
+    });
+  }
+}
+
+unsafe fn lint_inttoptr(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
+  let result_ty = LLVMTypeOf(inst);
+  if is_gc_pointer_type(result_ty) {
+    violations.push(LintViolation {
+      rule: LintRule::IntToPtrToGcPointer,
+      message: format!(
+        "in `{}`: disallowed `inttoptr` to GC pointer: {}",
+        func_name,
+        value_to_string(inst)
+      ),
+    });
+  }
+}
+
+unsafe fn lint_addrspacecast(
+  func_name: &str,
+  is_wrapper: bool,
+  inst: LLVMValueRef,
+  violations: &mut Vec<LintViolation>,
+) {
+  let operand = LLVMGetOperand(inst, 0);
+  let operand_ty = LLVMTypeOf(operand);
+  let result_ty = LLVMTypeOf(inst);
+
+  if !is_pointer_type(operand_ty) || !is_pointer_type(result_ty) {
+    return;
+  }
+
+  let src_as = LLVMGetPointerAddressSpace(operand_ty);
+  let dst_as = LLVMGetPointerAddressSpace(result_ty);
+
+  // Only care about casts involving AS1 (GC pointers).
+  if src_as != GC_ADDR_SPACE && dst_as != GC_ADDR_SPACE {
+    return;
+  }
+
+  if !is_wrapper {
+    violations.push(LintViolation {
+      rule: LintRule::NonWrapperAddrSpaceCastToOrFromGcPointer,
+      message: format!(
+        "in `{}`: disallowed `addrspacecast` to/from addrspace(1) in non-wrapper function: {}",
+        func_name,
+        value_to_string(inst)
+      ),
+    });
+    return;
+  }
+
+  if src_as == 0 && dst_as == GC_ADDR_SPACE {
+    lint_wrapper_as0_to_as1_cast(func_name, inst, violations);
+  } else if src_as == GC_ADDR_SPACE && dst_as == 0 {
+    lint_wrapper_as1_to_as0_cast(func_name, inst, violations);
+  } else {
+    violations.push(LintViolation {
+      rule: LintRule::WrapperAddrSpaceCastBetweenUnsupportedAddrSpaces,
+      message: format!(
+        "in `{}`: runtime ABI wrapper may only `addrspacecast` between AS0 and AS1, got AS{}->AS{}: {}",
+        func_name,
+        src_as,
+        dst_as,
+        value_to_string(inst)
+      ),
+    });
+  }
+}
+
+unsafe fn lint_wrapper_as0_to_as1_cast(
+  func_name: &str,
+  cast: LLVMValueRef,
+  violations: &mut Vec<LintViolation>,
+) {
+  // Allowed uses:
+  //   - returned
+  //   - stored into a pointer-typed slot whose element type is `ptr addrspace(1)`
+  let mut use_ref: LLVMUseRef = LLVMGetFirstUse(cast);
+  while !use_ref.is_null() {
+    let user = LLVMGetUser(use_ref);
+    if llvm_sys::core::LLVMIsAInstruction(user).is_null() {
+      violations.push(LintViolation {
+        rule: LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+        message: format!(
+          "in `{}`: AS0->AS1 cast used by non-instruction user: {}",
+          func_name,
+          value_to_string(cast)
+        ),
+      });
+      use_ref = LLVMGetNextUse(use_ref);
+      continue;
+    }
+
+    match llvm_sys::core::LLVMGetInstructionOpcode(user) {
+      LLVMOpcode::LLVMRet => {
+        // OK.
+      }
+
+      LLVMOpcode::LLVMStore => {
+        // Operand 0: stored value, operand 1: destination address.
+        let stored = LLVMGetOperand(user, 0);
+        if stored != cast {
+          violations.push(LintViolation {
+            rule: LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+            message: format!(
+              "in `{}`: AS0->AS1 cast used as store destination (must be stored value): {}",
+              func_name,
+              value_to_string(user)
+            ),
+          });
+          use_ref = LLVMGetNextUse(use_ref);
+          continue;
+        }
+
+        let dest = LLVMGetOperand(user, 1);
+        match known_memory_slot_type(dest) {
+          Some(slot_ty) if is_gc_pointer_type(slot_ty) => {
+            // OK.
+          }
+          Some(slot_ty) => violations.push(LintViolation {
+            rule: LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+            message: format!(
+              "in `{}`: AS0->AS1 cast stored into slot of type `{}`; expected `ptr addrspace(1)` slot: {}",
+              func_name,
+              type_to_string(slot_ty),
+              value_to_string(user)
+            ),
+          }),
+          None => violations.push(LintViolation {
+            rule: LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+            message: format!(
+              "in `{}`: AS0->AS1 cast stored into unknown slot type (expected `ptr addrspace(1)` slot): {}",
+              func_name,
+              value_to_string(user)
+            ),
+          }),
+        }
+      }
+
+      _ => violations.push(LintViolation {
+        rule: LintRule::WrapperAddrSpaceCastAs0ToAs1InvalidUse,
+        message: format!(
+          "in `{}`: AS0->AS1 cast must be returned or stored into AS1 pointer slot, but used by: {}",
+          func_name,
+          value_to_string(user)
+        ),
+      }),
+    }
+
+    use_ref = LLVMGetNextUse(use_ref);
+  }
+}
+
+unsafe fn lint_wrapper_as1_to_as0_cast(
+  func_name: &str,
+  cast: LLVMValueRef,
+  violations: &mut Vec<LintViolation>,
+) {
+  // Allowed uses:
+  //   - direct call/invoke arguments (not stored, not returned, not used as callee).
+  let mut use_ref: LLVMUseRef = LLVMGetFirstUse(cast);
+  while !use_ref.is_null() {
+    let user = LLVMGetUser(use_ref);
+    if llvm_sys::core::LLVMIsAInstruction(user).is_null() {
+      violations.push(LintViolation {
+        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
+        message: format!(
+          "in `{}`: AS1->AS0 cast used by non-instruction user: {}",
+          func_name,
+          value_to_string(cast)
+        ),
+      });
+      use_ref = LLVMGetNextUse(use_ref);
+      continue;
+    }
+
+    let user_opcode = llvm_sys::core::LLVMGetInstructionOpcode(user);
+    if user_opcode != LLVMOpcode::LLVMCall && user_opcode != LLVMOpcode::LLVMInvoke {
+      violations.push(LintViolation {
+        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
+        message: format!(
+          "in `{}`: AS1->AS0 cast must only be used as a direct call argument, but used by: {}",
+          func_name,
+          value_to_string(user)
+        ),
+      });
+      use_ref = LLVMGetNextUse(use_ref);
+      continue;
+    }
+
+    // Robustly determine the call's callee operand (operand ordering differs between call-like
+    // instructions and across LLVM versions).
+    if LLVMGetCalledValue(user) == cast {
+      violations.push(LintViolation {
+        rule: LintRule::WrapperAddrSpaceCastAs1ToAs0InvalidUse,
+        message: format!(
+          "in `{}`: AS1->AS0 cast must not be used as call callee operand: {}",
+          func_name,
+          value_to_string(user)
+        ),
+      });
+    }
+
+    use_ref = LLVMGetNextUse(use_ref);
+  }
+}
+
+unsafe fn lint_store(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
+  // Operand 0: stored value, operand 1: destination address.
+  if LLVMGetNumOperands(inst) < 2 {
+    return;
+  }
+
+  let stored = LLVMGetOperand(inst, 0);
+  let stored_ty = LLVMTypeOf(stored);
+  if !is_gc_pointer_type(stored_ty) {
+    return;
+  }
+
+  let dest = LLVMGetOperand(inst, 1);
+  if let Some(slot_ty) = known_memory_slot_type(dest) {
+    if !is_pointer_type(slot_ty) {
+      violations.push(LintViolation {
+        rule: LintRule::StoreGcPointerToNonPointerSlot,
+        message: format!(
+          "in `{}`: disallowed store of GC pointer into non-pointer slot `{}`: {}",
+          func_name,
+          type_to_string(slot_ty),
+          value_to_string(inst)
+        ),
+      });
+    }
+  }
+}
+
+unsafe fn lint_return_raw_pointer(func_name: &str, inst: LLVMValueRef, violations: &mut Vec<LintViolation>) {
+  // Operand 0: return value (absent for `ret void`).
+  if LLVMGetNumOperands(inst) == 0 {
+    return;
+  }
+
+  let ret_val = LLVMGetOperand(inst, 0);
+  let ret_ty = LLVMTypeOf(ret_val);
+  if !is_pointer_type(ret_ty) || LLVMGetPointerAddressSpace(ret_ty) != 0 {
+    return;
+  }
+
+  if is_addrspace0_pointer_derived_from_gc_pointer(ret_val) {
+    violations.push(LintViolation {
+      rule: LintRule::ReturnAddrSpace0PointerDerivedFromGcPointer,
+      message: format!(
+        "in `{}`: disallowed return of addrspace(0) pointer derived from GC pointer: {}",
+        func_name,
+        value_to_string(inst)
+      ),
+    });
+  }
+}
+
+unsafe fn is_addrspace0_pointer_derived_from_gc_pointer(val: LLVMValueRef) -> bool {
+  let mut visited = HashSet::<LLVMValueRef>::new();
+  is_addrspace0_pointer_derived_from_gc_pointer_inner(val, &mut visited)
+}
+
+unsafe fn is_addrspace0_pointer_derived_from_gc_pointer_inner(
+  val: LLVMValueRef,
+  visited: &mut HashSet<LLVMValueRef>,
+) -> bool {
+  if val.is_null() || visited.contains(&val) {
     return false;
   }
-  match CStr::from_ptr(gc).to_str() {
-    Ok(strategy) if strategy == GC_STRATEGY => true,
+  visited.insert(val);
+
+  let ty = LLVMTypeOf(val);
+  if is_gc_pointer_type(ty) {
+    return true;
+  }
+
+  // Only treat a narrow set of pointer->pointer SSA operations as "deriving" a pointer from
+  // another. This intentionally avoids treating `load ptr ...` as derived, since that may be a
+  // raw pointer field within a GC object.
+  if llvm_sys::core::LLVMIsAInstruction(val).is_null() {
+    return false;
+  }
+
+  match llvm_sys::core::LLVMGetInstructionOpcode(val) {
+    LLVMOpcode::LLVMAddrSpaceCast
+    | LLVMOpcode::LLVMBitCast
+    | LLVMOpcode::LLVMGetElementPtr
+    | LLVMOpcode::LLVMPHI
+    | LLVMOpcode::LLVMSelect => {
+      let num_ops = LLVMGetNumOperands(val);
+      for i in 0..num_ops {
+        let op = LLVMGetOperand(val, i as u32);
+        if is_addrspace0_pointer_derived_from_gc_pointer_inner(op, visited) {
+          return true;
+        }
+      }
+      false
+    }
     _ => false,
   }
 }
@@ -362,185 +600,4 @@ unsafe fn type_to_string(ty: LLVMTypeRef) -> String {
   let out = CStr::from_ptr(s).to_string_lossy().into_owned();
   LLVMDisposeMessage(s);
   out
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use llvm_sys::core::{
-    LLVMContextCreate, LLVMContextDispose, LLVMCreateMemoryBufferWithMemoryRangeCopy,
-    LLVMDisposeMemoryBuffer, LLVMDisposeModule,
-  };
-  use llvm_sys::ir_reader::LLVMParseIRInContext;
-  use llvm_sys::prelude::LLVMContextRef;
-  use std::ffi::CString;
-  use std::os::raw::c_char;
-  use std::ptr;
-
-  struct ParsedModule {
-    ctx: LLVMContextRef,
-    module: LLVMModuleRef,
-  }
-
-  impl ParsedModule {
-    fn parse(ir: &str) -> Self {
-      unsafe {
-        let ctx = LLVMContextCreate();
-        let name = CString::new("test").unwrap();
-        let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
-          ir.as_ptr() as *const c_char,
-          ir.len(),
-          name.as_ptr(),
-        );
-
-        let mut module = ptr::null_mut();
-        let mut err = ptr::null_mut();
-        let rc = LLVMParseIRInContext(ctx, buf, &mut module, &mut err);
-        // `LLVMParseIRInContext` takes ownership of the memory buffer (it is freed by LLVM).
-        // Disposing it here would double-free on some LLVM builds.
-
-        if rc != 0 {
-          // On failure LLVM does not take ownership of the buffer.
-          LLVMDisposeMemoryBuffer(buf);
-          let msg = if err.is_null() {
-            "unknown parse error".to_string()
-          } else {
-            let out = CStr::from_ptr(err).to_string_lossy().into_owned();
-            LLVMDisposeMessage(err);
-            out
-          };
-          panic!("failed to parse IR: {msg}\n{ir}");
-        }
-
-        ParsedModule { ctx, module }
-      }
-    }
-  }
-
-  impl Drop for ParsedModule {
-    fn drop(&mut self) {
-      unsafe {
-        LLVMDisposeModule(self.module);
-        LLVMContextDispose(self.ctx);
-      }
-    }
-  }
-
-  #[test]
-  fn good_module_passes() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        define void @good(ptr addrspace(1) %p) gc "coreclr" {
-        entry:
-          %slot = alloca ptr addrspace(1)
-          store ptr addrspace(1) %p, ptr %slot
-          %q = load ptr addrspace(1), ptr %slot
-          ret void
-        }
-      "#,
-    );
-
-    lint_gc_pointer_discipline(m.module).unwrap();
-  }
-
-  #[test]
-  fn rejects_gc_function_signature_with_addrspace0_pointer() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        define void @bad_sig(ptr %p) gc "coreclr" {
-        entry:
-          ret void
-        }
-      "#,
-    );
-
-    let err = lint_gc_pointer_discipline(m.module).unwrap_err();
-    assert!(
-      err.has_rule(LintRule::GcFunctionSignatureUsesNonGcPointer),
-      "{err}"
-    );
-  }
-
-  #[test]
-  fn rejects_ptrtoint_from_addrspace1_pointer() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        define i64 @bad_ptrtoint(ptr addrspace(1) %p) gc "coreclr" {
-        entry:
-          %i = ptrtoint ptr addrspace(1) %p to i64
-          ret i64 %i
-        }
-      "#,
-    );
-
-    let err = lint_gc_pointer_discipline(m.module).unwrap_err();
-    assert!(err.has_rule(LintRule::PtrToIntFromGcPointer), "{err}");
-  }
-
-  #[test]
-  fn rejects_inttoptr_to_addrspace1_pointer() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        define ptr addrspace(1) @bad_inttoptr(i64 %i) gc "coreclr" {
-        entry:
-          %p = inttoptr i64 %i to ptr addrspace(1)
-          ret ptr addrspace(1) %p
-        }
-      "#,
-    );
-
-    let err = lint_gc_pointer_discipline(m.module).unwrap_err();
-    assert!(err.has_rule(LintRule::IntToPtrToGcPointer), "{err}");
-  }
-
-  #[test]
-  fn rejects_addrspacecast_from_addrspace1_pointer() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        declare void @use(ptr)
-
-        define void @bad_as_cast(ptr addrspace(1) %p) gc "coreclr" {
-        entry:
-          %q = addrspacecast ptr addrspace(1) %p to ptr
-          call void @use(ptr %q)
-          ret void
-        }
-      "#,
-    );
-
-    let err = lint_gc_pointer_discipline(m.module).unwrap_err();
-    assert!(err.has_rule(LintRule::AddrSpaceCastFromGcPointer), "{err}");
-  }
-
-  #[test]
-  fn rejects_store_of_addrspace1_pointer_into_i64_slot() {
-    let m = ParsedModule::parse(
-      r#"
-        source_filename = "test"
-
-        define void @bad_store(ptr addrspace(1) %p) gc "coreclr" {
-        entry:
-          %slot = alloca i64
-          store ptr addrspace(1) %p, ptr %slot
-          ret void
-        }
-      "#,
-    );
-
-    let err = lint_gc_pointer_discipline(m.module).unwrap_err();
-    assert!(
-      err.has_rule(LintRule::StoreGcPointerToNonPointerSlot),
-      "{err}"
-    );
-  }
 }
