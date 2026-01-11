@@ -45,9 +45,11 @@ fn main() -> Result<()> {
       let source = read_source(&fixture.path)?;
       let cur_source_sha256 = source_sha256(&source);
 
-      let should_recompute_for_filter = update_filter
-        .as_deref()
-        .is_some_and(|filter| fixture.name.contains(filter));
+      let should_recompute_for_filter = match update_filter.as_deref() {
+        // Full regeneration when no filter is provided.
+        None => true,
+        Some(filter) => fixture.name.contains(filter),
+      };
       let existing_entry = existing
         .as_ref()
         .and_then(|baseline| baseline.files.get(&fixture.name))
