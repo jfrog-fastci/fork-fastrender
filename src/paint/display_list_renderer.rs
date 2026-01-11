@@ -1984,8 +1984,10 @@ where
     return Ok(());
   }
 
+  // `filtered_width`/`filtered_height` are derived from the filtered pixmap we will blit into the
+  // destination. Keep them in `usize` for indexing; derive `u32`/`i64` views as needed.
   let filtered_width_i64 = filtered_width as i64;
-  let filtered_height_u32 = filtered_height as u32;
+  let filtered_height_u32 = (filtered_height.min(u32::MAX as usize)) as u32;
   let filtered_height_i64 = i64::from(filtered_height_u32);
 
   // `bounds_in_src` can extend outside `src_size` (e.g. when a tile renderer translates the canvas
