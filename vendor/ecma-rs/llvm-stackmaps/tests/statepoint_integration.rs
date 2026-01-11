@@ -50,7 +50,12 @@ fn integration_statepoint_stackmap_lookup() {
     assert!(status.success(), "opt failed");
 
     let status = Command::new("llc")
-        .args(["-O0", "-filetype=obj"])
+        .args([
+            "-O0",
+            "--fixup-allow-gcptr-in-csr=false",
+            "--fixup-max-csr-statepoints=0",
+            "-filetype=obj",
+        ])
         .arg(&rewritten_ll)
         .arg("-o")
         .arg(&obj)

@@ -50,6 +50,7 @@ gen_linked_stackmaps() {
     -o "${TMP}/${name}.rewritten.ll"
 
   llc-18 -O0 -filetype=obj \
+    --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 \
     -mtriple="${TRIPLE}" -mcpu="${CPU}" \
     "${TMP}/${name}.rewritten.ll" \
     -o "${TMP}/${name}.o"

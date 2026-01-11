@@ -94,7 +94,13 @@ fn inprocess_loader_finds_statepoint_callsite_in_pie_binary() -> io::Result<()> 
     assert!(status.success(), "opt failed");
 
     let status = Command::new(llc)
-        .args(["-O0", "-relocation-model=pic", "-filetype=obj"])
+        .args([
+            "-O0",
+            "--fixup-allow-gcptr-in-csr=false",
+            "--fixup-max-csr-statepoints=0",
+            "-relocation-model=pic",
+            "-filetype=obj",
+        ])
         .arg(&rewritten_ll)
         .arg("-o")
         .arg(&obj)
