@@ -1,7 +1,6 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
 use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use tempfile::tempdir;
@@ -167,42 +166,19 @@ fn cmd_build(
   emit_ir: Option<&Path>,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  if let Some(parent) = output_exe.parent() {
-    if !parent.as_os_str().is_empty() {
-      if let Err(err) = fs::create_dir_all(parent) {
-        return exit_internal_without_program(
-          cli.json,
-          format!("failed to create output directory {}: {err}", parent.display()),
-        );
-      }
-    }
-  }
-
   let (program, entry_file) = match load_program(cli, entry) {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
 
-  // Typecheck + strict validation + entrypoint diagnostics.
-  let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
-  let exit_code = exit_code_for_diagnostics(&diagnostics);
-  if exit_code != ExitCode::SUCCESS {
-    let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
-    return exit_code;
-  }
-
-  if let Some(path) = emit_ir {
-    if let Some(parent) = path.parent() {
-      if !parent.as_os_str().is_empty() {
-        if let Err(err) = fs::create_dir_all(parent) {
-          return exit_internal(
-            &program,
-            cli.json,
-            render,
-            format!("failed to create output directory {}: {err}", parent.display()),
-          );
-        }
-      }
+  // `compile_program` already runs typechecking, strict-subset validation, and entrypoint checks.
+  // We only pre-run the legacy strict validator when explicitly requested.
+  if cli.extra_strict {
+    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+    let exit_code = exit_code_for_diagnostics(&diagnostics);
+    if exit_code != ExitCode::SUCCESS {
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
     }
   }
 
@@ -238,27 +214,18 @@ fn cmd_emit_ir(
   output_ll: &Path,
   render: diagnostics::render::RenderOptions,
 ) -> ExitCode {
-  if let Some(parent) = output_ll.parent() {
-    if !parent.as_os_str().is_empty() {
-      if let Err(err) = fs::create_dir_all(parent) {
-        return exit_internal_without_program(
-          cli.json,
-          format!("failed to create output directory {}: {err}", parent.display()),
-        );
-      }
-    }
-  }
-
   let (program, entry_file) = match load_program(cli, entry) {
     Ok(res) => res,
     Err(err) => return exit_internal_without_program(cli.json, err),
   };
 
-  let diagnostics = collect_check_diagnostics(&program, entry_file, cli.extra_strict);
-  let exit_code = exit_code_for_diagnostics(&diagnostics);
-  if exit_code != ExitCode::SUCCESS {
-    let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
-    return exit_code;
+  if cli.extra_strict {
+    let diagnostics = collect_check_diagnostics(&program, entry_file, true);
+    let exit_code = exit_code_for_diagnostics(&diagnostics);
+    if exit_code != ExitCode::SUCCESS {
+      let _ = output::emit_diagnostics(&program, diagnostics, cli.json, render);
+      return exit_code;
+    }
   }
 
   let mut opts = native_js::CompilerOptions::default();
