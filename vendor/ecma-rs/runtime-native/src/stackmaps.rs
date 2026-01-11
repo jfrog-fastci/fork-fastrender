@@ -15,7 +15,7 @@
 //!
 //! Format reference: LLVM `StackMaps` / `StackMaps.cpp` (version 3).
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 use anyhow::Context;
 use thiserror::Error;
 
@@ -996,11 +996,11 @@ impl StackMaps {
     Self::parse(bytes)
   }
 
-  /// Load the stackmaps section for the current process (Linux x86_64).
+  /// Load the stackmaps section for the current process (Linux 64-bit little-endian).
   ///
   /// This is PIE/ASLR-safe because it reads from *mapped memory* (relocations already applied)
   /// rather than from the on-disk bytes.
-  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
   pub fn load_self() -> anyhow::Result<Self> {
     let bytes = crate::stackmaps_loader::stackmaps_section();
     if bytes.is_empty() {
@@ -1009,9 +1009,9 @@ impl StackMaps {
     Ok(Self::parse(bytes).context("parse stackmaps section")?)
   }
 
-  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  #[cfg(not(all(target_os = "linux", target_pointer_width = "64", target_endian = "little")))]
   pub fn load_self() -> anyhow::Result<Self> {
-    anyhow::bail!("StackMaps::load_self is only supported on Linux x86_64");
+    anyhow::bail!("StackMaps::load_self is only supported on Linux 64-bit little-endian");
   }
 }
 
@@ -1026,8 +1026,6 @@ mod tests {
   use super::StackMap;
   use super::StackMapError;
   use super::StackMaps;
-  use super::X86_64_DWARF_REG_RSP;
-
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
   }
@@ -1158,7 +1156,7 @@ mod tests {
     push_u8(&mut bytes, 3); // kind = Indirect
     push_u8(&mut bytes, 0);
     push_u16(&mut bytes, 8);
-    push_u16(&mut bytes, X86_64_DWARF_REG_RSP);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
@@ -1166,7 +1164,7 @@ mod tests {
     push_u8(&mut bytes, 3); // kind = Indirect
     push_u8(&mut bytes, 0);
     push_u16(&mut bytes, 8);
-    push_u16(&mut bytes, X86_64_DWARF_REG_RSP);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 8);
 
@@ -1180,8 +1178,11 @@ mod tests {
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
-    // base rbp_off = 8 - stack_size + rsp_off = 8 - 40 + 0 = -32
-    assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-32]);
+    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    assert_eq!(
+      callsite.gc_root_rbp_offsets_strict().unwrap(),
+      vec![fp_to_entry_sp - 40]
+    );
   }
 
   #[test]
@@ -1239,7 +1240,7 @@ mod tests {
     push_u8(&mut bytes, 3); // kind = Indirect
     push_u8(&mut bytes, 0); // reserved
     push_u16(&mut bytes, 8); // size
-    push_u16(&mut bytes, X86_64_DWARF_REG_RSP); // dwarf_reg
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG); // dwarf_reg
     push_u16(&mut bytes, 0); // reserved2
     push_i32(&mut bytes, 16); // offset
 
