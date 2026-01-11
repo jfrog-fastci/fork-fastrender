@@ -3,6 +3,20 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Guardrail: this repo standardizes on LLVM's production GC strategy name (`coreclr`).
+# LLVM's demo/reference GC strategy ("statepoint-" + "example") is intentionally *not* used here;
+# allowing it to creep back into non-doc fixtures makes it easy to accidentally generate
+# inconsistent IR.
+#
+# Keep this check in the lightweight CI path (it runs before any LLVM work below).
+gc_demo_strategy="statepoint-"
+gc_demo_strategy="${gc_demo_strategy}example"
+if grep -R --line-number --exclude='*.md' --binary-files=without-match "${gc_demo_strategy}" "${script_dir}/.."; then
+  echo "error: found disallowed LLVM GC strategy name \"${gc_demo_strategy}\" in non-markdown files under vendor/ecma-rs" >&2
+  echo "note: this repo standardizes on gc \"coreclr\"; see vendor/ecma-rs/native-js/docs/llvm_gc_strategy.md" >&2
+  exit 1
+fi
+
 pick_cmd() {
   for c in "$@"; do
     if command -v "${c}" >/dev/null 2>&1; then
