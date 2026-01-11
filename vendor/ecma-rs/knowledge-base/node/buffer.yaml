@@ -1,25 +1,21 @@
-node:buffer.Buffer.from:
+- name: node:buffer.Buffer.from
   aliases:
     - buffer.Buffer.from
     - Buffer.from
   since: "v5.10.0"
-  purity:
-    template: allocating
-  throws: maybe
   effects:
-    template: unknown
-    io: false
-    network: false
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Impure
 
-node:buffer.Buffer.alloc:
+- name: node:buffer.Buffer.alloc
   aliases:
     - buffer.Buffer.alloc
     - Buffer.alloc
   since: "v5.10.0"
-  purity:
-    template: allocating
-  throws: maybe
   effects:
-    template: unknown
-    io: false
-    network: false
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Impure

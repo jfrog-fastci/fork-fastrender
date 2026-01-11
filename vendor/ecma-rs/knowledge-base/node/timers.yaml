@@ -1,71 +1,41 @@
-node:timers.setTimeout:
+- name: node:timers.setTimeout
   aliases:
     - timers.setTimeout
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure
 
-node:timers.clearTimeout:
+- name: node:timers.clearTimeout
   aliases:
     - timers.clearTimeout
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure
 
-node:timers.setInterval:
+- name: node:timers.setInterval
   aliases:
     - timers.setInterval
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure
 
-node:timers.clearInterval:
+- name: node:timers.clearInterval
   aliases:
     - timers.clearInterval
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure
 
-node:timers.setImmediate:
+- name: node:timers.setImmediate
   aliases:
     - timers.setImmediate
   since: "v0.9.1"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure
 
-node:timers.clearImmediate:
+- name: node:timers.clearImmediate
   aliases:
     - timers.clearImmediate
   since: "v0.9.1"
-  purity:
-    template: impure
-  throws: maybe
-  effects:
-    template: unknown
-    io: false
-    network: false
+  effects: Unknown
+  purity: Impure

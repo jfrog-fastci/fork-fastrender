@@ -1,59 +1,34 @@
-node:path.join:
+- name: node:path.join
   aliases:
     - path.join
   since: "v0.1.0"
-  purity:
-    template: pure
-  throws: maybe
-  effects:
-    template: pure
-    io: false
-    network: false
+  effects: Pure
+  purity: Pure
 
-node:path.resolve:
+- name: node:path.resolve
   aliases:
     - path.resolve
   since: "v0.1.0"
-  purity:
-    template: pure
-  throws: maybe
-  effects:
-    template: pure
-    io: false
-    network: false
+  effects: Pure
+  purity: Pure
 
-node:path.basename:
+- name: node:path.basename
   aliases:
     - path.basename
   since: "v0.1.0"
-  purity:
-    template: pure
-  throws: maybe
-  effects:
-    template: pure
-    io: false
-    network: false
+  effects: Pure
+  purity: Pure
 
-node:path.dirname:
+- name: node:path.dirname
   aliases:
     - path.dirname
   since: "v0.1.0"
-  purity:
-    template: pure
-  throws: maybe
-  effects:
-    template: pure
-    io: false
-    network: false
+  effects: Pure
+  purity: Pure
 
-node:path.extname:
+- name: node:path.extname
   aliases:
     - path.extname
   since: "v0.1.0"
-  purity:
-    template: pure
-  throws: maybe
-  effects:
-    template: pure
-    io: false
-    network: false
+  effects: Pure
+  purity: Pure

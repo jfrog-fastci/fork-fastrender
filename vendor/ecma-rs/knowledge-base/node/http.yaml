@@ -1,35 +1,29 @@
-node:http.request:
+- name: node:http.request
   aliases:
     - http.request
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
   effects:
-    template: io
-    io: true
-    network: true
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
 
-node:http.get:
+- name: node:http.get
   aliases:
     - http.get
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
   effects:
-    template: io
-    io: true
-    network: true
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
 
-node:http.createServer:
+- name: node:http.createServer
   aliases:
     - http.createServer
   since: "v0.1.0"
-  purity:
-    template: impure
-  throws: maybe
   effects:
-    template: io
-    io: true
-    network: true
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
