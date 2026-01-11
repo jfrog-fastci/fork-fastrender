@@ -99,8 +99,13 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
 
   // Await registration order is defined by program order: coro1 then coro2.
   unsafe {
-    let _p1 = runtime_native::rt_async_spawn(Box::into_raw(coro1) as CoroutineRef);
-    let _p2 = runtime_native::rt_async_spawn(Box::into_raw(coro2) as CoroutineRef);
+    let coro1_ptr = Box::into_raw(coro1) as CoroutineRef;
+    let h1 = runtime_native::rt_handle_alloc(coro1_ptr.cast::<u8>());
+    let _p1 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h1));
+
+    let coro2_ptr = Box::into_raw(coro2) as CoroutineRef;
+    let h2 = runtime_native::rt_handle_alloc(coro2_ptr.cast::<u8>());
+    let _p2 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h2));
   }
 
   unsafe {
@@ -186,7 +191,9 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
   });
 
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(Box::into_raw(coro) as CoroutineRef);
+    let coro_ptr = Box::into_raw(coro) as CoroutineRef;
+    let h = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h));
   }
 
   assert!(
@@ -235,7 +242,9 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
   });
 
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(Box::into_raw(coro) as CoroutineRef);
+    let coro_ptr = Box::into_raw(coro) as CoroutineRef;
+    let h = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h));
   }
 
   assert!(

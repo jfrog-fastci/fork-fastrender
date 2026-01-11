@@ -81,8 +81,9 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(coro_ref);
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
@@ -109,7 +110,9 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
   };
 
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(&mut coro.header as *mut Coroutine);
+    let coro_ptr = &mut coro.header as *mut Coroutine;
+    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
@@ -136,8 +139,9 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn_deferred(coro_ref);
+    let _promise = runtime_native::rt_async_spawn_deferred(runtime_native::CoroutineId(handle));
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
@@ -177,8 +181,9 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
   });
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   unsafe {
-    let _promise = runtime_native::rt_async_spawn(coro_ref);
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 

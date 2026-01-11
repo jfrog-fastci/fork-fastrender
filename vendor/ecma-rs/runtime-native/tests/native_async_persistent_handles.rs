@@ -88,7 +88,9 @@ fn deferred_spawn_reloads_coroutine_ptr_from_persistent_handle() {
   let coro1_ref = Box::into_raw(coro1);
 
   // Enqueue the first resume as a microtask.
-  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut (*coro1_ref).header) };
+  let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
+  let coro_id = runtime_native::CoroutineId(handle);
+  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
 
   // Allocate an alternate coroutine and point it at the same promise so the microtask can fulfill
   // the promise when it runs.
@@ -217,7 +219,9 @@ fn await_reaction_reloads_coroutine_ptr_from_persistent_handle() {
   let coro1_ref = Box::into_raw(coro1);
 
   // Enqueue and run once so the coroutine registers its await reaction.
-  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut (*coro1_ref).header) };
+  let handle = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
+  let coro_id = runtime_native::CoroutineId(handle);
+  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
   while runtime_native::rt_async_poll() {}
   assert!(started);
   assert!(!completed);

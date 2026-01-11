@@ -118,7 +118,8 @@ fn async_spawn_then_wake_and_complete() {
     return_value: 42,
   }));
 
-  let result_promise = unsafe { runtime_native::rt_async_spawn(coro.cast::<Coroutine>()) };
+  let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
+  let result_promise = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
   let result_hdr = promise_header_ptr(result_promise);
   assert_eq!(promise_state(result_hdr), PromiseHeader::PENDING);
 
@@ -168,8 +169,10 @@ fn multi_waiter_wakes_all() {
   let c1 = mk_coro(1);
   let c2 = mk_coro(2);
 
-  let p1 = unsafe { runtime_native::rt_async_spawn(c1.cast::<Coroutine>()) };
-  let p2 = unsafe { runtime_native::rt_async_spawn(c2.cast::<Coroutine>()) };
+  let h1 = runtime_native::rt_handle_alloc(c1.cast::<u8>());
+  let h2 = runtime_native::rt_handle_alloc(c2.cast::<u8>());
+  let p1 = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(h1)) };
+  let p2 = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(h2)) };
   let p1_hdr = promise_header_ptr(p1);
   let p2_hdr = promise_header_ptr(p2);
 
@@ -220,7 +223,8 @@ fn fast_path_already_fulfilled_promise_completes_in_spawn() {
     return_value: 7,
   }));
 
-  let result_promise = unsafe { runtime_native::rt_async_spawn(coro.cast::<Coroutine>()) };
+  let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
+  let result_promise = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
   let result_hdr = promise_header_ptr(result_promise);
   assert_eq!(promise_state(result_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*result_hdr.cast::<TestPromise>()).value }, 7);

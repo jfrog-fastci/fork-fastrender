@@ -301,7 +301,8 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
     awaited: (&mut *p as *mut PromiseHeader),
   });
   let coro_ref = Box::into_raw(coro) as *mut Coroutine;
-  let _ = unsafe { runtime_native::rt_async_spawn(coro_ref) };
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
+  let _ = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
 
   while runtime_native::rt_async_poll() {}
   assert_eq!(

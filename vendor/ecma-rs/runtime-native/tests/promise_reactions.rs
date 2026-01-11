@@ -336,7 +336,9 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
   });
   let coro_ptr = Box::into_raw(coro);
 
-  let result_promise = unsafe { runtime_native::rt_async_spawn(coro_ptr.cast()) };
+  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
+  let coro_id = runtime_native::CoroutineId(handle);
+  let result_promise = unsafe { runtime_native::rt_async_spawn(coro_id) };
   assert!(!completed.load(Ordering::SeqCst));
 
   extern "C" fn set_then(data: *mut u8) {
