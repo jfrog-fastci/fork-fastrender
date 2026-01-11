@@ -605,7 +605,7 @@ When producing a PIE, native-js AOT output must:
 
    The script lives at:
    - `runtime-native/link/stackmaps.ld` (preferred)
-   - `runtime-native/stackmaps.ld` (compat; used by `scripts/native_js_link_linux.sh`)
+   - `runtime-native/stackmaps.ld` (compat)
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
