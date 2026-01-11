@@ -226,8 +226,8 @@ fn parse_stackmap_offsets(obj_path: &Path) -> Result<(u32, i32), String> {
     let loc_type = cur.read_u8()?;
     let _loc_reserved = cur.read_u8()?;
     let _loc_size = cur.read_u16()?;
-    let dwarf_reg = cur.read_i16()?;
-    let _loc_reserved2 = cur.read_i16()?;
+    let dwarf_reg = cur.read_u16()?;
+    let _loc_reserved2 = cur.read_u16()?;
     let offset_or_const = cur.read_i32()?;
 
     // Location type 3 = Indirect.
@@ -237,13 +237,16 @@ fn parse_stackmap_offsets(obj_path: &Path) -> Result<(u32, i32), String> {
     }
   }
 
-  // Padding / live-outs.
+  // The live-out header is 8-byte aligned after the locations array:
+  //   u16 Padding;
+  //   u16 NumLiveOuts;
+  cur.align_to(8)?;
   let _padding = cur.read_u16()?;
   let num_live_outs = cur.read_u16()?;
   for _ in 0..num_live_outs {
     cur.read_u16()?; // reg
-    cur.read_u8()?; // size
     cur.read_u8()?; // reserved
+    cur.read_u8()?; // size
   }
   cur.align_to(8)?;
 
@@ -303,10 +306,6 @@ impl<'a> Cursor<'a> {
 
   fn read_u64(&mut self) -> Result<u64, String> {
     Ok(u64::from_le_bytes(self.read_exact::<8>()?))
-  }
-
-  fn read_i16(&mut self) -> Result<i16, String> {
-    Ok(i16::from_le_bytes(self.read_exact::<2>()?))
   }
 
   fn read_i32(&mut self) -> Result<i32, String> {
