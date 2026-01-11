@@ -1045,9 +1045,9 @@ fn handle_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<
 pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<Stmt>>> {
   let cfg = &func.body;
   let all_labels = cfg.graph.sorted_labels();
-  if !all_labels.contains(&0) {
+  if !all_labels.contains(&cfg.entry) {
     return Err(DecompileError::Unsupported(
-      "CFG missing entry block".to_string(),
+      format!("CFG missing entry block {}", cfg.entry),
     ));
   }
 
@@ -1055,7 +1055,7 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
   let mut stmts = Vec::new();
   let mut visited = BTreeSet::<u32>::new();
 
-  let mut label = 0u32;
+  let mut label = cfg.entry;
   loop {
     if !visited.insert(label) {
       return Err(DecompileError::Unsupported(
