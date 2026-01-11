@@ -781,6 +781,9 @@ struct ApiRaw {
   effects: EffectsRaw,
 
   #[serde(default)]
+  effect_summary: Option<EffectSummary>,
+
+  #[serde(default)]
   purity: PurityRaw,
 
   #[serde(default)]
@@ -824,6 +827,9 @@ struct ApiBodyRaw {
 
   #[serde(default)]
   effects: EffectsRaw,
+
+  #[serde(default)]
+  effect_summary: Option<EffectSummary>,
 
   #[serde(default)]
   purity: PurityRaw,
@@ -1006,6 +1012,7 @@ struct PurityDetailsRaw {
 fn normalize_api(raw: ApiRaw) -> ApiSemantics {
   let (effects, effect_summary, effects_base, effects_depends_on_args) =
     normalize_effects(raw.effects, raw.throws.as_deref());
+  let effect_summary = raw.effect_summary.unwrap_or(effect_summary);
   let (purity, purity_kind) = normalize_purity(raw.purity);
   let name = raw.name;
   let mut properties = raw.properties;
@@ -1034,6 +1041,7 @@ fn normalize_api(raw: ApiRaw) -> ApiSemantics {
 fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
   let (effects, effect_summary, effects_base, effects_depends_on_args) =
     normalize_effects(raw.effects, raw.throws.as_deref());
+  let effect_summary = raw.effect_summary.unwrap_or(effect_summary);
   let (purity, purity_kind) = normalize_purity(raw.purity);
   let mut properties = raw.properties;
   store_effect_metadata(&mut properties, effects_base, effects_depends_on_args);
@@ -1692,7 +1700,8 @@ purity:
   fn effect_summary_accepts_effect_set_shorthand() {
     let yaml = r#"
 name: x
-effects: Pure
+effects:
+  template: pure
 effect_summary: "IO | MAY_THROW"
 purity: Impure
 "#;
