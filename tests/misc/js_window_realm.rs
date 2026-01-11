@@ -15,7 +15,7 @@ use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vm_js::{Heap, PropertyKey, Scope, TerminationReason, Value, Vm, VmError, VmHost};
+use vm_js::{Heap, Job, PropertyKey, RealmId, Scope, TerminationReason, Value, Vm, VmError, VmHost, VmHostHooks};
 
 const ASSERT_VM_HOST_FN_NAME: &str = "__fastrender_assert_vm_host";
 
@@ -445,6 +445,13 @@ fn document_title_is_exposed_and_writable() -> Result<()> {
 #[test]
 fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
   #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+  }
+
+  #[derive(Default)]
   struct RecordingExecutor {
     observed: Vec<usize>,
   }
@@ -457,23 +464,28 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
+      let mut host_ctx = host.vm_js_host_context();
       let realm = host.window_mut();
-      let global = realm.global_object();
-      let (vm, heap) = realm.vm_and_heap_mut();
-      let document_obj = {
-        let mut scope = heap.scope();
-        let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
-          return Err(Error::Other("document is not an object".to_string()));
-        };
-        doc
+      let mut hooks = NoopHostHooks::default();
+      let value = realm
+        .exec_script_with_host_and_hooks(
+          &mut host_ctx,
+          &mut hooks,
+          "document.currentScript.__fastrender_node_id",
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let Value::Number(n) = value else {
+        return Err(Error::Other(
+          "expected document.currentScript.__fastrender_node_id to be a number".to_string(),
+        ));
       };
-
-      let value = get_current_script(vm, heap, document_obj)?;
-      let Value::Object(wrapper) = value else {
-        return Err(Error::Other("expected document.currentScript to be an object".to_string()));
-      };
-      let node_id = get_wrapper_node_id(vm, heap, wrapper)?;
-      self.observed.push(node_id);
+      let as_usize = n as usize;
+      if (as_usize as f64) != n {
+        return Err(Error::Other(format!(
+          "expected document.currentScript.__fastrender_node_id to be an integer, got {n:?}"
+        )));
+      }
+      self.observed.push(as_usize);
       Ok(())
     }
   }
@@ -489,17 +501,12 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   // Outside execution, currentScript should be null.
   {
+    let mut host_ctx = host.vm_js_host_context();
     let realm = host.window_mut();
-    let global = realm.global_object();
-    let (vm, heap) = realm.vm_and_heap_mut();
-    let document_obj = {
-      let mut scope = heap.scope();
-      let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
-        return Err(Error::Other("document is not an object".to_string()));
-      };
-      doc
-    };
-    let value = get_current_script(vm, heap, document_obj)?;
+    let mut hooks = NoopHostHooks::default();
+    let value = realm
+      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
 
@@ -510,17 +517,12 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
+    let mut host_ctx = host.vm_js_host_context();
     let realm = host.window_mut();
-    let global = realm.global_object();
-    let (vm, heap) = realm.vm_and_heap_mut();
-    let document_obj = {
-      let mut scope = heap.scope();
-      let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
-        return Err(Error::Other("document is not an object".to_string()));
-      };
-      doc
-    };
-    let value = get_current_script(vm, heap, document_obj)?;
+    let mut hooks = NoopHostHooks::default();
+    let value = realm
+      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
 
@@ -531,17 +533,12 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
+    let mut host_ctx = host.vm_js_host_context();
     let realm = host.window_mut();
-    let global = realm.global_object();
-    let (vm, heap) = realm.vm_and_heap_mut();
-    let document_obj = {
-      let mut scope = heap.scope();
-      let Value::Object(doc) = get_data_prop(&mut scope, global, "document") else {
-        return Err(Error::Other("document is not an object".to_string()));
-      };
-      doc
-    };
-    let value = get_current_script(vm, heap, document_obj)?;
+    let mut hooks = NoopHostHooks::default();
+    let value = realm
+      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
 
@@ -2295,6 +2292,13 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
 #[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+  }
+
+  #[derive(Default)]
   struct JsExecutor {
     observed: Vec<usize>,
     wrapper_identity_ok: Vec<bool>,
@@ -2308,11 +2312,18 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
-      let realm = host.window_mut();
-
-      let stable = realm
-        .exec_script("document.currentScript === document.currentScript")
-        .map_err(|e| Error::Other(e.to_string()))?;
+      let stable = {
+        let mut host_ctx = host.vm_js_host_context();
+        let mut hooks = NoopHostHooks::default();
+        let realm = host.window_mut();
+        realm
+          .exec_script_with_host_and_hooks(
+            &mut host_ctx,
+            &mut hooks,
+            "document.currentScript === document.currentScript",
+          )
+          .map_err(|e| Error::Other(e.to_string()))?
+      };
       let Value::Bool(stable) = stable else {
         return Err(Error::Other(
           "expected document.currentScript identity check to return a bool".to_string(),
@@ -2320,9 +2331,18 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       };
       self.wrapper_identity_ok.push(stable);
 
-      let node_id = realm
-        .exec_script("document.currentScript.__fastrender_node_id")
-        .map_err(|e| Error::Other(e.to_string()))?;
+      let node_id = {
+        let mut host_ctx = host.vm_js_host_context();
+        let mut hooks = NoopHostHooks::default();
+        let realm = host.window_mut();
+        realm
+          .exec_script_with_host_and_hooks(
+            &mut host_ctx,
+            &mut hooks,
+            "document.currentScript.__fastrender_node_id",
+          )
+          .map_err(|e| Error::Other(e.to_string()))?
+      };
       let Value::Number(n) = node_id else {
         return Err(Error::Other(
           "expected document.currentScript.__fastrender_node_id to be a number".to_string(),

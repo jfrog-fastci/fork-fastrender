@@ -55,6 +55,7 @@ pub struct VmJsBrowserTabExecutor {
   document_url: String,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
+  current_script_state: Option<CurrentScriptStateHandle>,
   /// Cached `vm-js` host context for Rust-driven event dispatch.
   ///
   /// `BrowserTabHost` owns the `BrowserDocumentDom2` for the lifetime of this executor, so we can
@@ -79,6 +80,7 @@ impl VmJsBrowserTabExecutor {
       document_url: "about:blank".to_string(),
       pending_navigation: None,
       diagnostics: None,
+      current_script_state: None,
       vm_host: None,
       webidl_bindings_host: None,
     }
@@ -149,6 +151,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
   ) -> Result<()> {
     self.pending_navigation = None;
     self.diagnostics = document.shared_diagnostics();
+    self.current_script_state = Some(current_script.clone());
     self.vm_host = Some(NonNull::from(document as &mut dyn VmHost));
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.
@@ -181,8 +184,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let mut config = WindowRealmConfig::new(url)
       .with_media_context(media)
-      .with_dom_source_id(dom_source_id)
-      .with_current_script_state(current_script.clone());
+      .with_dom_source_id(dom_source_id);
 
     if let Some(diag) = self.diagnostics.clone() {
       let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {
@@ -256,6 +258,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let options = self.js_execution_options;
     let document_origin = self.document_origin.clone();
     let document_url = self.document_url.clone();
+    let current_script_state = self.current_script_state.clone();
     let module_map = &mut self.module_map;
     let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
@@ -270,7 +273,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       // Classic scripts can evaluate dynamic `import()` expressions, which require module loading
       // hooks and an attached `ModuleGraph`. Use the same hook implementation as module scripts so
       // `import()` resolves through import maps and fetches modules via the document fetcher.
-      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
+      let dom_ptr = document.dom_non_null();
+      let mut host_ctx = crate::js::VmJsHostContext::new(Some(dom_ptr), current_script_state.clone());
+      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host_ctx);
       if let Some(mut host_ptr) = webidl_bindings_host {
         // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
         // executor.

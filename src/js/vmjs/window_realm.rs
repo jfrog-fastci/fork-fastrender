@@ -13,7 +13,6 @@ use crate::js::window_env::{
 use crate::js::{runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, VmJsHostContext, WindowHostState};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::window_timers::VmJsEventLoopHooks;
-use crate::js::CurrentScriptStateHandle;
 use crate::js::DomHostVmJs;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
@@ -66,8 +65,6 @@ pub struct WindowRealmConfig {
   /// keeps `vm-js` native call signatures simple: they cannot borrow the Rust host state directly,
   /// so the JS objects store an integer handle instead.
   pub dom_source_id: Option<u64>,
-  /// Host-owned `Document.currentScript` state handle to expose via `document.currentScript`.
-  pub current_script_state: Option<CurrentScriptStateHandle>,
   pub console_sink: Option<ConsoleSink>,
   /// Memory limits for the embedded `vm-js` heap.
   ///
@@ -100,7 +97,6 @@ impl WindowRealmConfig {
       document_url: document_url.into(),
       media: MediaContext::screen(800.0, 600.0),
       dom_source_id: None,
-      current_script_state: None,
       console_sink: None,
       heap_limits: super::vm_limits::default_heap_limits(),
       vm_options: VmOptions::default(),
@@ -116,11 +112,6 @@ impl WindowRealmConfig {
 
   pub fn with_dom_source_id(mut self, id: u64) -> Self {
     self.dom_source_id = Some(id);
-    self
-  }
-
-  pub fn with_current_script_state(mut self, state: CurrentScriptStateHandle) -> Self {
-    self.current_script_state = Some(state);
     self
   }
 
@@ -157,7 +148,6 @@ pub struct WindowRealm {
   runtime: Box<VmJsRuntime>,
   realm_id: RealmId,
   console_sink_id: Option<u64>,
-  current_script_source_id: Option<u64>,
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
   interrupt_flag: Arc<AtomicBool>,
@@ -258,8 +248,7 @@ impl WindowRealm {
 
     let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
 
-    let (console_sink_id, current_script_source_id, match_media_env_id) =
-      init_window_globals(vm, heap, realm, &config)?;
+    let (console_sink_id, match_media_env_id) = init_window_globals(vm, heap, realm, &config)?;
     let time_bindings = match crate::js::time::install_time_bindings(
       vm,
       realm,
@@ -275,9 +264,6 @@ impl WindowRealm {
         if let Some(id) = console_sink_id {
           unregister_console_sink(id);
         }
-        if let Some(id) = current_script_source_id {
-          unregister_current_script_source(id);
-        }
         if let Some(id) = match_media_env_id {
           unregister_match_media_env(id);
         }
@@ -289,7 +275,6 @@ impl WindowRealm {
       runtime,
       realm_id,
       console_sink_id,
-      current_script_source_id,
       match_media_env_id,
       time_bindings: Some(time_bindings),
       interrupt_flag,
@@ -379,9 +364,6 @@ impl WindowRealm {
     self.time_bindings.take();
     if let Some(id) = self.console_sink_id.take() {
       unregister_console_sink(id);
-    }
-    if let Some(id) = self.current_script_source_id.take() {
-      unregister_current_script_source(id);
     }
     if let Some(id) = self.match_media_env_id.take() {
       unregister_match_media_env(id);
@@ -1171,7 +1153,6 @@ const EVENT_TARGET_CONTEXT_ABORT_CLEANUP_CALL_ID_SLOT: usize = 2;
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const EVENT_TARGET_PARENT_KEY: &str = "__fastrender_event_target_parent";
 const ABORT_SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
-const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const DOM_STRING_MAP_HOST_KIND: u64 = 4;
@@ -1272,32 +1253,16 @@ const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notif
 
 const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 
-static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
-
 static NEXT_DOM_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACTIVE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 
 static NEXT_MUTATION_OBSERVER_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-  static CURRENT_SCRIPT_SOURCES: RefCell<HashMap<u64, CurrentScriptStateHandle>> =
-    RefCell::new(HashMap::new());
   static DOM_SOURCES: RefCell<HashMap<u64, NonNull<dom2::Document>>> =
     RefCell::new(HashMap::new());
   static DOM_HOST_SOURCES: RefCell<HashMap<u64, NonNull<dyn DomHostVmJs>>> =
     RefCell::new(HashMap::new());
-}
-
-fn register_current_script_source(state: CurrentScriptStateHandle) -> u64 {
-  let id = NEXT_CURRENT_SCRIPT_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
-  CURRENT_SCRIPT_SOURCES.with(|sources| sources.borrow_mut().insert(id, state));
-  id
-}
-
-fn unregister_current_script_source(id: u64) {
-  CURRENT_SCRIPT_SOURCES.with(|sources| {
-    sources.borrow_mut().remove(&id);
-  });
 }
 
 pub(crate) fn register_dom_source(dom: NonNull<dom2::Document>) -> u64 {
@@ -1599,49 +1564,6 @@ pub(crate) fn dataset_exotic_delete(
   }
 
   Ok(Some(true))
-}
-
-fn current_script_for_source(id: u64) -> Option<NodeId> {
-  CURRENT_SCRIPT_SOURCES.with(|sources| {
-    let sources = sources.borrow();
-    let state = sources.get(&id)?;
-    let current = {
-      let state = state.borrow();
-      state.current_script
-    };
-    current
-  })
-}
-
-struct CurrentScriptSourceGuard {
-  id: u64,
-  active: bool,
-}
-
-impl CurrentScriptSourceGuard {
-  fn new(state: CurrentScriptStateHandle) -> Self {
-    Self {
-      id: register_current_script_source(state),
-      active: true,
-    }
-  }
-
-  fn id(&self) -> u64 {
-    self.id
-  }
-
-  fn disarm(mut self) -> u64 {
-    self.active = false;
-    self.id
-  }
-}
-
-impl Drop for CurrentScriptSourceGuard {
-  fn drop(&mut self) {
-    if self.active {
-      unregister_current_script_source(self.id);
-    }
-  }
 }
 
 const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
@@ -11869,8 +11791,8 @@ fn element_insert_adjacent_text_native(
 fn document_current_script_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -11879,16 +11801,29 @@ fn document_current_script_get_native(
     return Ok(Value::Null);
   };
 
-  let id_key = alloc_key(scope, CURRENT_SCRIPT_SOURCE_ID_KEY)?;
-  let source_id = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &id_key)?
-  {
-    Some(Value::Number(n)) => n as u64,
-    _ => return Ok(Value::Null),
-  };
+  fn current_script_from_vm_host(host: &mut dyn VmHost) -> Option<NodeId> {
+    if let Some(document) = host
+      .as_any_mut()
+      .downcast_mut::<crate::js::host_document::DocumentHostState>()
+    {
+      return document.current_script_handle().borrow().current_script;
+    }
+    if let Some(ctx) = host.as_any_mut().downcast_mut::<crate::js::VmJsHostContext>() {
+      return ctx
+        .current_script_state()
+        .and_then(|state| state.borrow().current_script);
+    }
+    None
+  }
 
-  let Some(node_id) = current_script_for_source(source_id) else {
+  let node_id = current_script_from_vm_host(host).or_else(|| {
+    let any = hooks.as_any_mut()?;
+    let payload = any.downcast_mut::<VmJsHostHooksPayload>()?;
+    let vm_host = payload.vm_host_mut()?;
+    current_script_from_vm_host(vm_host)
+  });
+
+  let Some(node_id) = node_id else {
     return Ok(Value::Null);
   };
   get_or_create_node_wrapper(vm, scope, document_obj, node_id)
@@ -12154,7 +12089,7 @@ fn init_window_globals(
   heap: &mut Heap,
   realm: &Realm,
   config: &WindowRealmConfig,
-) -> Result<(Option<u64>, Option<u64>, Option<u64>), VmError> {
+) -> Result<(Option<u64>, Option<u64>), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
 
@@ -15006,18 +14941,6 @@ fn init_window_globals(
     data_desc(Value::Object(insert_adjacent_text_func)),
   )?;
 
-  let current_script_guard = config
-    .current_script_state
-    .clone()
-    .map(CurrentScriptSourceGuard::new);
-  if let Some(guard) = current_script_guard.as_ref() {
-    let id_key = alloc_key(&mut scope, CURRENT_SCRIPT_SOURCE_ID_KEY)?;
-    scope.define_property(
-      document_obj,
-      id_key,
-      data_desc(Value::Number(guard.id() as f64)),
-    )?;
-  }
   scope.define_property(
     document_obj,
     current_script_key,
@@ -15448,7 +15371,6 @@ fn init_window_globals(
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
-    current_script_guard.map(CurrentScriptSourceGuard::disarm),
     Some(match_media_guard.disarm()),
   ))
 }

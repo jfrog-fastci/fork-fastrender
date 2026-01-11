@@ -26,8 +26,8 @@ use std::sync::Arc;
 /// - a `vm-js` realm with Window-like globals (`window`/`self`/`document`/`location`) via [`WindowRealm`],
 /// - and an HTML-like event loop (`setTimeout`/microtasks) via [`EventLoop`].
 ///
-/// The JS realm is configured with a clone of the document's [`CurrentScriptHost`] handle so
-/// `document.currentScript` is observable during script execution.
+/// `document.currentScript` is observable during script execution via the embedder `VmHost` context
+/// passed to the `vm-js` runtime (see [`WindowRealmHost::vm_js_host_context`]).
 pub struct WindowHost {
   host: WindowHostState,
   event_loop: EventLoop<WindowHostState>,
@@ -358,7 +358,6 @@ impl WindowHostState {
     let mut window = match WindowRealm::new_with_js_execution_options(
       WindowRealmConfig::new(document_url.clone())
         .with_dom_source_id(dom_source_id)
-        .with_current_script_state(document.current_script_state().clone())
         .with_clock(clock),
       js_execution_options,
     ) {
@@ -844,6 +843,45 @@ mod tests {
       .expect("resolve url-like specifier again");
     assert_eq!(direct_again, direct);
 
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_exec_script_exposes_document_current_script_via_host_context() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><script id=\"s\"></script></body></html>",
+    )
+    .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+
+    let no_current = host.exec_script("document.currentScript === null")?;
+    assert_eq!(no_current, Value::Bool(true));
+
+    let script_node = host
+      .host()
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script element");
+    let current_script_state = host
+      .host()
+      .document_host()
+      .current_script_handle()
+      .clone();
+    let mut orchestrator = crate::js::ScriptOrchestrator::new();
+    orchestrator.execute_with_current_script_state_resolved(
+      &current_script_state,
+      Some(script_node),
+      || {
+        let has_current = host.exec_script(
+          "document.currentScript && document.currentScript.getAttribute('id') === 's'",
+        )?;
+        assert_eq!(has_current, Value::Bool(true));
+        Ok(())
+      },
+    )?;
+
+    let restored = host.exec_script("document.currentScript === null")?;
+    assert_eq!(restored, Value::Bool(true));
     Ok(())
   }
 
