@@ -1,31 +1,39 @@
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
 }
 
-fn clang() -> &'static str {
-  for cand in ["clang-18", "clang"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(std::process::Stdio::null())
-      .stderr(std::process::Stdio::null())
-      .status()
-      .is_ok_and(|s| s.success())
-    {
-      return cand;
-    }
-  }
-  panic!("unable to locate clang (expected `clang-18` or `clang`)");
+fn cmd_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
 }
 
-fn compile_obj(out_dir: &Path) -> PathBuf {
+fn find_clang() -> Option<&'static str> {
+  for cand in ["clang-18", "clang"] {
+    if cmd_works(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
+fn lld_available() -> bool {
+  cmd_works("ld.lld-18") || cmd_works("ld.lld")
+}
+
+fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
   let asm = r#"
 .text
 .globl main
@@ -42,7 +50,7 @@ __LLVM_StackMaps:
   write_file(&asm_path, asm);
 
   let obj_path = out_dir.join("stackmaps.o");
-  let status = Command::new(clang())
+  let status = Command::new(clang)
     .args(["-c", "-o"])
     .arg(&obj_path)
     .arg(&asm_path)
@@ -76,8 +84,17 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 
 #[test]
 fn exported_stackmap_symbols_match_section_bounds() {
+  let Some(clang) = find_clang() else {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  };
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   let td = tempfile::tempdir().unwrap();
-  let obj = compile_obj(td.path());
+  let obj = compile_obj(clang, td.path());
 
   let elf = td.path().join("a.out");
   native_js::link::link_elf_executable(&elf, &[obj.clone()]).unwrap();

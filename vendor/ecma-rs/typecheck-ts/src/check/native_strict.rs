@@ -515,16 +515,18 @@ pub fn validate_native_strict_body(
                 ));
               }
 
-              let is_call_apply_or_bind =
-                (object_key_is_ident(&member.property, call_name)
-                  || object_key_is_string(&member.property, "call")
-                  || object_key_is_literal_string(body, &member.property, "call"))
-                  || (object_key_is_ident(&member.property, apply_name)
-                    || object_key_is_string(&member.property, "apply")
-                    || object_key_is_literal_string(body, &member.property, "apply"))
-                  || (object_key_is_ident(&member.property, bind_name)
-                    || object_key_is_string(&member.property, "bind")
-                    || object_key_is_literal_string(body, &member.property, "bind"));
+              let prop_is_call = object_key_is_ident(&member.property, call_name)
+                || object_key_is_string(&member.property, "call")
+                || object_key_is_literal_string(body, &member.property, "call");
+              let prop_is_apply = object_key_is_ident(&member.property, apply_name)
+                || object_key_is_string(&member.property, "apply")
+                || object_key_is_literal_string(body, &member.property, "apply");
+              let prop_is_bind = object_key_is_ident(&member.property, bind_name)
+                || object_key_is_string(&member.property, "bind")
+                || object_key_is_literal_string(body, &member.property, "bind");
+
+              let is_call_or_apply = prop_is_call || prop_is_apply;
+              let is_call_apply_or_bind = is_call_or_apply || prop_is_bind;
               if is_call_apply_or_bind
                 && (expr_is_builtin_member(
                   body,
@@ -552,15 +554,6 @@ pub fn validate_native_strict_body(
               }
 
               if is_call_or_apply {
-                let prop_is_call =
-                  object_key_is_ident(&member.property, call_name)
-                    || object_key_is_string(&member.property, "call")
-                    || object_key_is_literal_string(body, &member.property, "call");
-                let prop_is_apply =
-                  object_key_is_ident(&member.property, apply_name)
-                    || object_key_is_string(&member.property, "apply")
-                    || object_key_is_literal_string(body, &member.property, "apply");
-
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
                   member.object,
