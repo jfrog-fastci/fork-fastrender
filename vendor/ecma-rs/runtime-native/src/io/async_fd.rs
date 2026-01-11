@@ -15,7 +15,10 @@ static REGISTRY: Lazy<Mutex<HashMap<usize, Arc<State>>>> = Lazy::new(|| Mutex::n
 
 extern "C" fn drop_registry_entry(data: *mut u8) {
   let key = data as usize;
-  REGISTRY.lock().unwrap().remove(&key);
+  REGISTRY
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .remove(&key);
 }
 
 /// A small, runtime-native reactor-backed wrapper for awaiting fd readiness.
@@ -94,7 +97,12 @@ impl Future for Readable<'_> {
   type Output = io::Result<()>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let mut inner = self.fd.state.inner.lock().unwrap();
+    let mut inner = self
+      .fd
+      .state
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let current = inner.readable_gen;
     if let Some(id) = self.waiter_id {
@@ -128,7 +136,12 @@ impl Drop for Readable<'_> {
       return;
     };
 
-    let mut inner = self.fd.state.inner.lock().unwrap();
+    let mut inner = self
+      .fd
+      .state
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     inner.readable_waiters.remove(&id);
     let _ = self.fd.state.sync_watcher_locked(&mut inner, &self.fd.state);
   }
@@ -154,7 +167,12 @@ impl Future for Writable<'_> {
   type Output = io::Result<()>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let mut inner = self.fd.state.inner.lock().unwrap();
+    let mut inner = self
+      .fd
+      .state
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let current = inner.writable_gen;
     if let Some(id) = self.waiter_id {
@@ -187,7 +205,12 @@ impl Drop for Writable<'_> {
       return;
     };
 
-    let mut inner = self.fd.state.inner.lock().unwrap();
+    let mut inner = self
+      .fd
+      .state
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     inner.writable_waiters.remove(&id);
     let _ = self.fd.state.sync_watcher_locked(&mut inner, &self.fd.state);
   }
@@ -244,7 +267,10 @@ impl State {
           .expect("io watcher registered without watcher_key");
         inner.interests = 0;
         let _ = async_rt::global().deregister_fd(id);
-        REGISTRY.lock().unwrap().remove(&key);
+        REGISTRY
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .remove(&key);
       }
       return Ok(());
     }
@@ -261,7 +287,10 @@ impl State {
             .expect("io watcher registered without watcher_key");
           inner.watcher_id = None;
           inner.interests = 0;
-          REGISTRY.lock().unwrap().remove(&key);
+          REGISTRY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&key);
           return Err(io::Error::new(
             io::ErrorKind::Other,
             "failed to update reactor interest",
@@ -274,7 +303,10 @@ impl State {
 
     crate::rt_ensure_init();
     let key = NEXT_REGISTRY_KEY.fetch_add(1, Ordering::Relaxed);
-    REGISTRY.lock().unwrap().insert(key, Arc::clone(arc));
+    REGISTRY
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .insert(key, Arc::clone(arc));
     let id = match async_rt::global().register_io_with_drop(
       self.fd,
       desired,
@@ -284,7 +316,10 @@ impl State {
     ) {
       Ok(id) => id,
       Err(e) => {
-        REGISTRY.lock().unwrap().remove(&key);
+        REGISTRY
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .remove(&key);
         return Err(e);
       }
     };
@@ -296,14 +331,20 @@ impl State {
   }
 
   fn force_deregister(&self) {
-    let mut inner = self.inner.lock().unwrap();
+    let mut inner = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(id) = inner.watcher_id.take() {
       let key = inner.watcher_key.take().expect("watcher_id without watcher_key");
       inner.interests = 0;
       inner.readable_waiters.clear();
       inner.writable_waiters.clear();
       let _ = async_rt::global().deregister_fd(id);
-      REGISTRY.lock().unwrap().remove(&key);
+      REGISTRY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&key);
     }
   }
 }
@@ -311,7 +352,9 @@ impl State {
 extern "C" fn on_io_ready(events: u32, data: *mut u8) {
   let key = data as usize;
   let state = {
-    let reg = REGISTRY.lock().unwrap();
+    let reg = REGISTRY
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     reg.get(&key).cloned()
   };
   let Some(state) = state else {
@@ -320,7 +363,10 @@ extern "C" fn on_io_ready(events: u32, data: *mut u8) {
 
   let mut wake: Vec<Waker> = Vec::new();
   {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     if events & (RT_IO_READABLE | RT_IO_ERROR) != 0 {
       inner.readable_gen = inner.readable_gen.wrapping_add(1);
       wake.extend(inner.readable_waiters.values().cloned());
