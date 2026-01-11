@@ -118,6 +118,11 @@ impl InternedId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u64);
 
+/// Stable persistent handle id (safe to store in OS event loop userdata like `epoll_event.data.u64`).
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HandleId(pub u64);
+
 /// Opaque handle to a promise/coroutine managed by the runtime.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -206,6 +211,8 @@ extern "C" {
   pub fn rt_backing_store_external_bytes() -> usize;
 
   // Global roots / handles
+  pub fn rt_root_push(slot: GcHandle);
+  pub fn rt_root_pop(slot: GcHandle);
   pub fn rt_global_root_register(slot: *mut usize);
   pub fn rt_global_root_unregister(slot: *mut usize);
   pub fn rt_gc_register_root_slot(slot: GcHandle) -> u32;
@@ -213,8 +220,19 @@ extern "C" {
   pub fn rt_gc_pin(ptr: GcPtr) -> u32;
   pub fn rt_gc_unpin(handle: u32);
 
+  // Persistent handles (stable u64 ids).
+  pub fn rt_handle_alloc(ptr: GcPtr) -> HandleId;
+  pub fn rt_handle_free(handle: HandleId);
+  pub fn rt_handle_load(handle: HandleId) -> GcPtr;
+  pub fn rt_handle_store(handle: HandleId, ptr: GcPtr);
+
   pub fn rt_gc_set_young_range(start: *mut u8, end: *mut u8);
   pub fn rt_gc_get_young_range(out_start: *mut GcPtr, out_end: *mut GcPtr);
+
+  // Weak references (weak handles).
+  pub fn rt_weak_add(value: GcPtr) -> u64;
+  pub fn rt_weak_get(handle: u64) -> GcPtr;
+  pub fn rt_weak_remove(handle: u64);
 
   // Strings
   pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
@@ -256,6 +274,9 @@ mod tests {
     assert!(size_of::<TaskId>() == 8);
     assert!(align_of::<TaskId>() == 8);
 
+    assert!(size_of::<HandleId>() == 8);
+    assert!(align_of::<HandleId>() == 8);
+
     assert!(size_of::<PromiseRef>() == 8);
     assert!(align_of::<PromiseRef>() == 8);
 
@@ -295,7 +316,7 @@ mod tests {
       header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
       "missing StringRef typedef"
     );
-    for ty in ["RtShapeId", "InternedId", "TaskId", "PromiseRef", "GcPtr", "GcHandle"] {
+    for ty in ["RtShapeId", "InternedId", "TaskId", "HandleId", "PromiseRef", "GcPtr", "GcHandle"] {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
     assert!(
@@ -328,14 +349,23 @@ mod tests {
       "rt_write_barrier_range(",
       "rt_gc_collect(",
       "rt_backing_store_external_bytes(",
+      "rt_root_push(",
+      "rt_root_pop(",
       "rt_global_root_register(",
       "rt_global_root_unregister(",
       "rt_gc_register_root_slot(",
       "rt_gc_unregister_root_slot(",
       "rt_gc_pin(",
       "rt_gc_unpin(",
+      "rt_handle_alloc(",
+      "rt_handle_free(",
+      "rt_handle_load(",
+      "rt_handle_store(",
       "rt_gc_set_young_range(",
       "rt_gc_get_young_range(",
+      "rt_weak_add(",
+      "rt_weak_get(",
+      "rt_weak_remove(",
       "rt_string_concat(",
       "rt_string_intern(",
       "rt_string_pin_interned(",
