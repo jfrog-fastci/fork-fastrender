@@ -359,14 +359,34 @@ pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
 
 /// Unregister the current thread from the global registry.
 pub fn unregister_current_thread() {
-  // If a stop-the-world request is active, enter the safepoint before
-  // unregistering. This prevents a mutator from "disappearing" from the thread
-  // registry mid-STW, which could otherwise allow GC to proceed without
-  // scanning its stack.
-  if current_thread_state().is_some() {
-    safepoint::rt_gc_safepoint();
+  // Fast-path: allow callers to "ensure unregistered" without doing work.
+  if current_thread_state().is_none() {
+    return;
   }
-  clear_tls_thread_registration();
+
+  loop {
+    // GC handshake: if a stop-the-world is in progress (odd epoch), this will
+    // enter the safepoint slow path, publish our context, and block until the
+    // world is resumed. We must do this *while still registered* so the
+    // coordinator cannot forget about this mutator.
+    safepoint::rt_gc_safepoint();
+
+    // Prevent racing the GC coordinator while it is iterating thread states /
+    // contexts, and serialize against starting a new stop-the-world request.
+    let _world_guard = safepoint::gc_world_lock();
+
+    // A stop-the-world request may have started after we returned from the
+    // safepoint poll but before acquiring `gc_world_lock`. If so, retry: the
+    // next safepoint poll will block until resumed.
+    if safepoint::current_epoch() & 1 == 1 {
+      continue;
+    }
+
+    // Clearing TLS drops the current thread's registration, which removes this
+    // thread from the global registry.
+    clear_tls_thread_registration();
+    break;
+  }
 }
 
 /// Snapshot all registered threads (for GC iteration).

@@ -142,12 +142,23 @@ pub(crate) fn wait_while_stop_the_world() {
   }
 }
 
+/// Lock held by the GC coordinator while the world is stopped and thread contexts are being read.
+pub(crate) fn gc_world_lock() -> std::sync::MutexGuard<'static, ()> {
+  coordinator()
+    .gc_lock
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Try to request a global stop-the-world safepoint.
 ///
 /// Returns `Some(requested_epoch)` (odd) if this call successfully initiated the
 /// stop-the-world request, or `None` if another request is already in progress.
 pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
   let coord = coordinator();
+  // Serialize stop-the-world requests with mutators unregistering from the thread registry.
+  let _gc_guard = gc_world_lock();
+
   // Synchronize the epoch transition with any threads waiting on `cv`.
   let guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
@@ -433,25 +444,10 @@ where
 ///
 /// Returns the requested (odd) epoch.
 pub fn rt_gc_request_stop_the_world() -> u64 {
-  let coord = coordinator();
-  // Synchronize the epoch transition with any threads waiting on `cv`.
-  let guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
-  let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
-  loop {
-    if cur & 1 == 1 {
-      panic!("GC stop-the-world requested while another stop is already in progress (epoch={cur})");
-    }
-    let next = cur + 1;
-    match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
-      Ok(_) => {
-        coord.notify_all();
-        drop(guard);
-        wake_all_gc_wakers();
-        return next;
-      }
-      Err(actual) => cur = actual,
-    }
-  }
+  rt_gc_try_request_stop_the_world().unwrap_or_else(|| {
+    let cur = RT_GC_EPOCH.load(Ordering::Acquire);
+    panic!("GC stop-the-world requested while another stop is already in progress (epoch={cur})");
+  })
 }
 
 /// Wait until all registered threads have acknowledged the current stop-the-world request.

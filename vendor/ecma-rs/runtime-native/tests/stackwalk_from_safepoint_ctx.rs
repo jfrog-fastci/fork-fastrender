@@ -128,7 +128,6 @@ mod aarch64 {
     //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
     // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 16);
-
     // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
     // in-place by the walker after the base slot has potentially been relocated.
     let mut expected_slots: Vec<usize> = Vec::new();

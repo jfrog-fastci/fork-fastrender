@@ -153,3 +153,4 @@ fn align_up(v: usize, align: usize) -> usize {
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
+
