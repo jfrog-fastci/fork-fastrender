@@ -58,6 +58,14 @@ fn read_only_data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn accessor_desc(get: Value, set: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Accessor { get, set },
+  }
+}
+
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
@@ -341,27 +349,71 @@ fn text_decoder_construct(
     .heap_mut()
     .object_set_host_slots(obj, HostSlots { a: TEXT_DECODER_HOST_TAG, b: flags })?;
 
-  // Expose readonly instance properties that are commonly introspected.
-  let encoding_key = alloc_key(&mut scope, "encoding")?;
-  let encoding_s = scope.alloc_string("utf-8")?;
-  scope.push_root(Value::String(encoding_s))?;
-  scope.define_property(obj, encoding_key, read_only_data_desc(Value::String(encoding_s)))?;
-
-  let fatal_key = alloc_key(&mut scope, "fatal")?;
-  scope.define_property(
-    obj,
-    fatal_key,
-    read_only_data_desc(Value::Bool((flags & TEXT_DECODER_FLAG_FATAL) != 0)),
-  )?;
-
-  let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
-  scope.define_property(
-    obj,
-    ignore_bom_key,
-    read_only_data_desc(Value::Bool((flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0)),
-  )?;
-
   Ok(Value::Object(obj))
+}
+
+fn text_encoder_get_encoding(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_text_encoder_receiver(scope, this)?;
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.first().copied() {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    _ => Err(VmError::InvariantViolation(
+      "TextEncoder encoding getter missing utf-8 slot",
+    )),
+  }
+}
+
+fn text_decoder_get_encoding(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = require_text_decoder_receiver(scope, this)?;
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots.first().copied() {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    _ => Err(VmError::InvariantViolation(
+      "TextDecoder encoding getter missing utf-8 slot",
+    )),
+  }
+}
+
+fn text_decoder_get_fatal(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, flags) = require_text_decoder_receiver(scope, this)?;
+  Ok(Value::Bool((flags & TEXT_DECODER_FLAG_FATAL) != 0))
+}
+
+fn text_decoder_get_ignore_bom(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, flags) = require_text_decoder_receiver(scope, this)?;
+  Ok(Value::Bool((flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0))
 }
 
 fn text_encoder_encode(
@@ -640,6 +692,9 @@ pub(crate) fn install_window_text_encoding_bindings(
   // --- TextEncoder -----------------------------------------------------------
   let te_call_id: NativeFunctionId = vm.register_native_call(text_encoder_call)?;
   let te_construct_id: NativeConstructId = vm.register_native_construct(text_encoder_construct)?;
+  let utf8_s = scope.alloc_string("utf-8")?;
+  scope.push_root(Value::String(utf8_s))?;
+
   let te_name_s = scope.alloc_string("TextEncoder")?;
   scope.push_root(Value::String(te_name_s))?;
   let te_ctor = scope.alloc_native_function(te_call_id, Some(te_construct_id), te_name_s, 0)?;
@@ -694,10 +749,38 @@ pub(crate) fn install_window_text_encoding_bindings(
   let encode_into_key = alloc_key(&mut scope, "encodeInto")?;
   scope.define_property(te_proto, encode_into_key, data_desc(Value::Object(te_encode_into_fn)))?;
 
+  // `TextEncoder.prototype.encoding` (read-only accessor property).
+  let te_encoding_get_call_id: NativeFunctionId = vm.register_native_call(text_encoder_get_encoding)?;
+  let te_encoding_get_name_s = scope.alloc_string("get encoding")?;
+  scope.push_root(Value::String(te_encoding_get_name_s))?;
+  let te_encoding_get_slots = [Value::String(utf8_s)];
+  let te_encoding_get_fn = scope.alloc_native_function_with_slots(
+    te_encoding_get_call_id,
+    None,
+    te_encoding_get_name_s,
+    0,
+    &te_encoding_get_slots,
+  )?;
+  scope.push_root(Value::Object(te_encoding_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(te_encoding_get_fn, Some(intr.function_prototype()))?;
+
   let encoding_key = alloc_key(&mut scope, "encoding")?;
-  let utf8_s = scope.alloc_string("utf-8")?;
-  scope.push_root(Value::String(utf8_s))?;
-  scope.define_property(te_proto, encoding_key, read_only_data_desc(Value::String(utf8_s)))?;
+  scope.define_property(
+    te_proto,
+    encoding_key,
+    accessor_desc(Value::Object(te_encoding_get_fn), Value::Undefined),
+  )?;
+
+  // @@toStringTag
+  let te_tag_s = scope.alloc_string("TextEncoder")?;
+  scope.push_root(Value::String(te_tag_s))?;
+  scope.define_property(
+    te_proto,
+    PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
+    read_only_data_desc(Value::String(te_tag_s)),
+  )?;
 
   let te_key = alloc_key(&mut scope, "TextEncoder")?;
   scope.define_property(global, te_key, data_desc(Value::Object(te_ctor)))?;
@@ -745,6 +828,69 @@ pub(crate) fn install_window_text_encoding_bindings(
 
   let decode_key = alloc_key(&mut scope, "decode")?;
   scope.define_property(td_proto, decode_key, data_desc(Value::Object(td_decode_fn)))?;
+
+  // `TextDecoder.prototype.encoding` / `fatal` / `ignoreBOM` (read-only accessor properties).
+  let td_encoding_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_encoding)?;
+  let td_encoding_get_name_s = scope.alloc_string("get encoding")?;
+  scope.push_root(Value::String(td_encoding_get_name_s))?;
+  let td_encoding_get_slots = [Value::String(utf8_s)];
+  let td_encoding_get_fn = scope.alloc_native_function_with_slots(
+    td_encoding_get_call_id,
+    None,
+    td_encoding_get_name_s,
+    0,
+    &td_encoding_get_slots,
+  )?;
+  scope.push_root(Value::Object(td_encoding_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(td_encoding_get_fn, Some(intr.function_prototype()))?;
+  let encoding_key = alloc_key(&mut scope, "encoding")?;
+  scope.define_property(
+    td_proto,
+    encoding_key,
+    accessor_desc(Value::Object(td_encoding_get_fn), Value::Undefined),
+  )?;
+
+  let td_fatal_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_fatal)?;
+  let td_fatal_get_name_s = scope.alloc_string("get fatal")?;
+  scope.push_root(Value::String(td_fatal_get_name_s))?;
+  let td_fatal_get_fn = scope.alloc_native_function(td_fatal_get_call_id, None, td_fatal_get_name_s, 0)?;
+  scope.push_root(Value::Object(td_fatal_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(td_fatal_get_fn, Some(intr.function_prototype()))?;
+  let fatal_key = alloc_key(&mut scope, "fatal")?;
+  scope.define_property(
+    td_proto,
+    fatal_key,
+    accessor_desc(Value::Object(td_fatal_get_fn), Value::Undefined),
+  )?;
+
+  let td_ignore_bom_get_call_id: NativeFunctionId = vm.register_native_call(text_decoder_get_ignore_bom)?;
+  let td_ignore_bom_get_name_s = scope.alloc_string("get ignoreBOM")?;
+  scope.push_root(Value::String(td_ignore_bom_get_name_s))?;
+  let td_ignore_bom_get_fn =
+    scope.alloc_native_function(td_ignore_bom_get_call_id, None, td_ignore_bom_get_name_s, 0)?;
+  scope.push_root(Value::Object(td_ignore_bom_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(td_ignore_bom_get_fn, Some(intr.function_prototype()))?;
+  let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
+  scope.define_property(
+    td_proto,
+    ignore_bom_key,
+    accessor_desc(Value::Object(td_ignore_bom_get_fn), Value::Undefined),
+  )?;
+
+  // @@toStringTag
+  let td_tag_s = scope.alloc_string("TextDecoder")?;
+  scope.push_root(Value::String(td_tag_s))?;
+  scope.define_property(
+    td_proto,
+    PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
+    read_only_data_desc(Value::String(td_tag_s)),
+  )?;
 
   let td_key = alloc_key(&mut scope, "TextDecoder")?;
   scope.define_property(global, td_key, data_desc(Value::Object(td_ctor)))?;
@@ -1062,6 +1208,203 @@ mod tests {
     let name_key = alloc_key(&mut scope, "name")?;
     let name = vm.get(&mut scope, obj, name_key)?;
     assert_eq!(get_string(scope.heap(), name), "RangeError");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_attributes_live_on_prototype_and_to_string_tag_is_set() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let intr = realm.intrinsics();
+    let to_string_tag_key = PropertyKey::Symbol(intr.well_known_symbols().to_string_tag);
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // --- TextDecoder prototype accessors -------------------------------------
+    let td_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let td_ctor = vm.get(&mut scope, global, td_ctor_key)?;
+    let Value::Object(td_ctor_obj) = td_ctor else {
+      return Err(VmError::InvariantViolation("TextDecoder constructor missing"));
+    };
+    scope.push_root(Value::Object(td_ctor_obj))?;
+
+    let proto_key = alloc_key(&mut scope, "prototype")?;
+    let td_proto_val = vm.get(&mut scope, td_ctor_obj, proto_key)?;
+    let Value::Object(td_proto_obj) = td_proto_val else {
+      return Err(VmError::InvariantViolation("TextDecoder.prototype missing"));
+    };
+    scope.push_root(Value::Object(td_proto_obj))?;
+
+    let encoding_key = alloc_key(&mut scope, "encoding")?;
+    let fatal_key = alloc_key(&mut scope, "fatal")?;
+    let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
+
+    let enc_desc = scope
+      .heap()
+      .object_get_own_property(td_proto_obj, &encoding_key)?
+      .ok_or(VmError::InvariantViolation(
+        "TextDecoder.prototype.encoding missing",
+      ))?;
+    assert!(
+      matches!(enc_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      "expected encoding to be a read-only accessor property"
+    );
+
+    let fatal_desc = scope
+      .heap()
+      .object_get_own_property(td_proto_obj, &fatal_key)?
+      .ok_or(VmError::InvariantViolation("TextDecoder.prototype.fatal missing"))?;
+    assert!(
+      matches!(fatal_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      "expected fatal to be a read-only accessor property"
+    );
+
+    let ignore_desc = scope
+      .heap()
+      .object_get_own_property(td_proto_obj, &ignore_bom_key)?
+      .ok_or(VmError::InvariantViolation(
+        "TextDecoder.prototype.ignoreBOM missing",
+      ))?;
+    assert!(
+      matches!(ignore_desc.kind, PropertyKind::Accessor { set: Value::Undefined, .. }),
+      "expected ignoreBOM to be a read-only accessor property"
+    );
+
+    let tag_desc = scope
+      .heap()
+      .object_get_own_property(td_proto_obj, &to_string_tag_key)?
+      .ok_or(VmError::InvariantViolation(
+        "TextDecoder.prototype @@toStringTag missing",
+      ))?;
+    let PropertyKind::Data { value: Value::String(td_tag), writable: false } = tag_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "TextDecoder @@toStringTag must be a non-writable data property",
+      ));
+    };
+    assert_eq!(get_string(scope.heap(), Value::String(td_tag)), "TextDecoder");
+
+    // Construct a decoder with `{ fatal: true, ignoreBOM: true }` and ensure it does not get own
+    // data properties for those attributes (they should be inherited accessors).
+    let options = scope.alloc_object()?;
+    scope.push_root(Value::Object(options))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(options, Some(intr.object_prototype()))?;
+    scope.define_property(options, fatal_key, data_desc(Value::Bool(true)))?;
+    scope.define_property(options, ignore_bom_key, data_desc(Value::Bool(true)))?;
+
+    let label = scope.alloc_string("utf-8")?;
+    scope.push_root(Value::String(label))?;
+    let decoder = vm.construct_without_host(
+      &mut scope,
+      td_ctor,
+      &[Value::String(label), Value::Object(options)],
+      Value::Object(td_ctor_obj),
+    )?;
+    let Value::Object(decoder_obj) = decoder else {
+      return Err(VmError::InvariantViolation(
+        "TextDecoder constructor must return object",
+      ));
+    };
+    scope.push_root(Value::Object(decoder_obj))?;
+
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(decoder_obj, &encoding_key)?
+        .is_none(),
+      "TextDecoder instances should not have own encoding property"
+    );
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(decoder_obj, &fatal_key)?
+        .is_none(),
+      "TextDecoder instances should not have own fatal property"
+    );
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(decoder_obj, &ignore_bom_key)?
+        .is_none(),
+      "TextDecoder instances should not have own ignoreBOM property"
+    );
+
+    let encoding_val = vm.get(&mut scope, decoder_obj, encoding_key)?;
+    assert_eq!(get_string(scope.heap(), encoding_val), "utf-8");
+    assert_eq!(vm.get(&mut scope, decoder_obj, fatal_key)?, Value::Bool(true));
+    assert_eq!(
+      vm.get(&mut scope, decoder_obj, ignore_bom_key)?,
+      Value::Bool(true)
+    );
+
+    // --- TextEncoder prototype accessors -------------------------------------
+    let te_ctor_key = alloc_key(&mut scope, "TextEncoder")?;
+    let te_ctor = vm.get(&mut scope, global, te_ctor_key)?;
+    let Value::Object(te_ctor_obj) = te_ctor else {
+      return Err(VmError::InvariantViolation("TextEncoder constructor missing"));
+    };
+    scope.push_root(Value::Object(te_ctor_obj))?;
+
+    let te_proto_val = vm.get(&mut scope, te_ctor_obj, proto_key)?;
+    let Value::Object(te_proto_obj) = te_proto_val else {
+      return Err(VmError::InvariantViolation("TextEncoder.prototype missing"));
+    };
+    scope.push_root(Value::Object(te_proto_obj))?;
+
+    let te_enc_desc = scope
+      .heap()
+      .object_get_own_property(te_proto_obj, &encoding_key)?
+      .ok_or(VmError::InvariantViolation(
+        "TextEncoder.prototype.encoding missing",
+      ))?;
+    assert!(
+      matches!(
+        te_enc_desc.kind,
+        PropertyKind::Accessor {
+          set: Value::Undefined,
+          ..
+        }
+      ),
+      "expected TextEncoder.prototype.encoding to be a read-only accessor property"
+    );
+
+    let te_tag_desc = scope
+      .heap()
+      .object_get_own_property(te_proto_obj, &to_string_tag_key)?
+      .ok_or(VmError::InvariantViolation(
+        "TextEncoder.prototype @@toStringTag missing",
+      ))?;
+    let PropertyKind::Data { value: Value::String(te_tag), writable: false } = te_tag_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "TextEncoder @@toStringTag must be a non-writable data property",
+      ));
+    };
+    assert_eq!(get_string(scope.heap(), Value::String(te_tag)), "TextEncoder");
+
+    let encoder = vm.construct_without_host(&mut scope, te_ctor, &[], Value::Object(te_ctor_obj))?;
+    let Value::Object(encoder_obj) = encoder else {
+      return Err(VmError::InvariantViolation(
+        "TextEncoder constructor must return object",
+      ));
+    };
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(encoder_obj, &encoding_key)?
+        .is_none(),
+      "TextEncoder instances should not have own encoding property"
+    );
+    let enc_value = vm.get(&mut scope, encoder_obj, encoding_key)?;
+    assert_eq!(get_string(scope.heap(), enc_value), "utf-8");
 
     drop(scope);
     realm.teardown(&mut heap);
