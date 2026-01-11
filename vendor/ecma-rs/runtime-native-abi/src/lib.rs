@@ -789,6 +789,10 @@ mod tests {
       header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
       "missing StringRef typedef"
     );
+    assert!(
+      header.contains("typedef struct Microtask"),
+      "missing Microtask typedef"
+    );
     for ty in [
       "RtShapeId",
       "InternedId",
@@ -915,8 +919,8 @@ mod tests {
       "rt_async_block_on(",
       "rt_async_sleep(",
       "rt_queue_microtask(",
-      "rt_queue_microtask_with_drop(",
       "rt_queue_microtask_rooted(",
+      "rt_queue_microtask_with_drop(",
       "rt_drain_microtasks(",
       "rt_set_timeout(",
       "rt_set_timeout_rooted(",
@@ -953,5 +957,10 @@ mod tests {
         "generated header missing expected function `{func}`"
       );
     }
+
+    assert!(
+      header.contains("void rt_queue_microtask(Microtask"),
+      "generated header missing expected signature for `rt_queue_microtask(Microtask ...)`"
+    );
   }
 }

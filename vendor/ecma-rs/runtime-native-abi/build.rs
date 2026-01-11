@@ -132,6 +132,17 @@ fn main() {
     modified = true;
   }
 
+  // cbindgen emits `rt_queue_microtask(struct Microtask task)` even though it also emits a typedef
+  // for `Microtask`. Prefer using the typedef name so the generated header matches
+  // `runtime_native.h` and is friendlier to bindings generators that key off exact substrings.
+  if header.contains("rt_queue_microtask(struct Microtask") {
+    header = header.replace(
+      "rt_queue_microtask(struct Microtask",
+      "rt_queue_microtask(Microtask",
+    );
+    modified = true;
+  }
+
   // cbindgen does not currently emit foreign `extern` statics. The runtime exports
   // `RT_GC_EPOCH` as a link-visible symbol used by codegen for fast safepoint
   // polling; inject an extern declaration so the generated header is complete.
