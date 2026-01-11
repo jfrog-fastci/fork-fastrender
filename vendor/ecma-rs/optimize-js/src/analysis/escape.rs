@@ -1123,8 +1123,9 @@ mod tests {
 
   #[test]
   fn getprop_loaded_param_object_propagates_arg_escape() {
-    // %99 has no definition, so the analysis treats it as a parameter/input. Since it's the only
-    // input, it is assigned parameter index 0.
+    // %99 has no definition, so the analysis treats it as a parameter/input.
+    // ArgEscape payloads are parameter indices, so since it's the only input it is assigned
+    // parameter index 0.
     let cfg = cfg_with_blocks(
       &[(
         0,
