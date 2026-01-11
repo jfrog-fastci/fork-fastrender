@@ -26,7 +26,7 @@ fn lld_can_link_stackmaps_section_with_explicit_range_symbols() {
     }
 
     let ws_root = workspace_root();
-    let stackmaps_ld = ws_root.join("runtime-native").join("stackmaps.ld");
+    let stackmaps_ld = ws_root.join("runtime-native").join("link").join("stackmaps.ld");
 
     let tmp = tempfile::tempdir().expect("create tempdir");
     let project_dir = tmp.path();
@@ -116,4 +116,3 @@ fn main() {
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn lld_can_link_stackmaps_section_with_explicit_range_symbols() {}
-

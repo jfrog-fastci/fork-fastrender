@@ -10,7 +10,7 @@
 //! # Platform assumptions
 //! - Linux (ELF)
 //! - The final link step applies a linker script that defines
-//!   `__stackmaps_start` / `__stackmaps_end` (see `runtime-native/stackmaps.ld`).
+//!   `__stackmaps_start` / `__stackmaps_end` (see `runtime-native/link/stackmaps.ld`).
 //! - `x86_64` or `aarch64`
 //!
 //! This is not a general purpose binary analysis crate; it implements the subset

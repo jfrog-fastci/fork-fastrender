@@ -7,8 +7,9 @@ use core::{ptr, slice};
 /// - `__stackmaps_end`
 ///
 /// The repo provides a ready-to-use script fragment at
-/// `vendor/ecma-rs/runtime-native/stackmaps.ld`, which also defines project-
-/// specific aliases (`__fastr_stackmaps_*`) and legacy aliases
+/// `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (preferred) or
+/// `vendor/ecma-rs/runtime-native/stackmaps.ld` (compatibility shim), which also
+/// defines project-specific aliases (`__fastr_stackmaps_*`) and legacy aliases
 /// (`__llvm_stackmaps_*`).
 ///
 /// # Panics / Safety
