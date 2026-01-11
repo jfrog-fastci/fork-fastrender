@@ -106,8 +106,10 @@ fn has_register_roots(stackmap: &StackMap) -> bool {
     let Ok(sp) = StatepointRecord::new(rec) else {
       continue;
     };
-    for (base, derived) in sp.gc_pairs() {
-      if matches!(base, Location::Register { .. }) || matches!(derived, Location::Register { .. }) {
+    for pair in sp.gc_pairs() {
+      if matches!(&pair.base, Location::Register { .. })
+        || matches!(&pair.derived, Location::Register { .. })
+      {
         return true;
       }
     }
