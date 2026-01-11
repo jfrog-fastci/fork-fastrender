@@ -430,7 +430,9 @@ fn location_to_root_slot(regs: &FrameRegs, loc: &Location, bounds: Option<StackB
 
 #[cfg(test)]
 mod tests {
-  use super::relocate_derived_pairs;
+  use super::{relocate_derived_pairs, relocate_reloc_pairs_in_place, RelocPair};
+  use crate::statepoints::RootSlot;
+  use stackmap_context::ThreadContext;
 
   #[test]
   fn shared_base_slot_two_derived_slots() {
@@ -497,6 +499,23 @@ mod tests {
 
     let pairs = [(&mut base as *mut usize, &mut derived as *mut usize)];
     relocate_derived_pairs(&pairs, |old| old + 100);
+
+    assert_eq!(base, 0);
+    assert_eq!(derived, 0);
+  }
+
+  #[test]
+  fn relocated_base_to_null_forces_null_derived() {
+    let mut base: usize = 1000;
+    let mut derived: usize = base + 8;
+
+    let pair = RelocPair {
+      base_slot: RootSlot::StackAddr((&mut base as *mut usize).cast::<u8>()),
+      derived_slot: RootSlot::StackAddr((&mut derived as *mut usize).cast::<u8>()),
+    };
+
+    let mut ctx = ThreadContext::default();
+    relocate_reloc_pairs_in_place(&mut ctx, [pair], |_old| 0);
 
     assert_eq!(base, 0);
     assert_eq!(derived, 0);
