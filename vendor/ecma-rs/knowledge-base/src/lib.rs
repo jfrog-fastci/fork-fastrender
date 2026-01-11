@@ -1907,6 +1907,11 @@ properties:
       .expect("node:fs.existsSync exists in bundled knowledge base");
     assert!(api.effect_summary.contains(EffectSet::IO));
     assert!(!api.effect_summary.contains(EffectSet::MAY_THROW));
+
+    let map = kb
+      .get("Array.prototype.map")
+      .expect("Array.prototype.map exists in bundled knowledge base");
+    assert!(map.effect_summary.contains(EffectSet::ALLOCATES));
   }
 
   #[test]

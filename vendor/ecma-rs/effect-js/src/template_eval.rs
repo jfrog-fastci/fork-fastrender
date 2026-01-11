@@ -258,4 +258,18 @@ mod tests {
     let eval = eval_call_expr(&kb, &lowered, body, call_expr);
     assert!(eval.effects.contains(EffectSet::NONDETERMINISTIC));
   }
+
+  #[test]
+  fn uses_kb_effect_summary_for_depends_on_callback_templates() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(FileKind::Js, "Promise.prototype.then(x => x);").unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let eval = eval_call_expr(&kb, &lowered, body, call_expr);
+    assert!(
+      eval.effects.contains(EffectSet::ALLOCATES),
+      "expected Promise.prototype.then to allocate (base effects)"
+    );
+  }
 }
