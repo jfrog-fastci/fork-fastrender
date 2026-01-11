@@ -1,14 +1,19 @@
 - name: fetch
+  kind: function
   aliases:
     - fetch
     - window.fetch
     - globalThis.fetch
   since: "baseline"
   effects:
-    Custom:
-      flags: IO | NETWORK
-      throws: Maybe
-  purity: Impure
+    base: [io, network, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    network: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: true
   idempotent: false

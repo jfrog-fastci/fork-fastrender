@@ -1,34 +1,43 @@
 - name: URL
+  kind: constructor
   aliases:
     - URL
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Pure
+    base: [alloc, may_throw]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
 
 - name: URLSearchParams
+  kind: constructor
   aliases:
     - URLSearchParams
     - window.URLSearchParams
     - globalThis.URLSearchParams
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Pure
+    base: [alloc, may_throw]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
 
 - name: URL.createObjectURL
+  kind: function
   aliases:
     - URL.createObjectURL
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
+    base: [alloc, may_throw]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
 
 - name: URL.canParse
   aliases:
@@ -48,14 +57,17 @@
   purity: Pure
 
 - name: URL.prototype.toString
+  kind: function
   aliases:
     - URL.prototype.toString
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
   properties:
     encoding.output: ascii
 
@@ -73,26 +85,32 @@
 
 # Treat getters as pure reads.
 - name: URL.prototype.href
+  kind: property
   aliases:
     - URL.prototype.href
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
   properties:
     encoding.output: ascii
 
 - name: URL.prototype.pathname
+  kind: property
   aliases:
     - URL.prototype.pathname
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
   properties:
     encoding.output: ascii
 
@@ -181,24 +199,30 @@
     encoding.output: ascii
 
 - name: URL.prototype.searchParams
+  kind: property
   aliases:
     - URL.prototype.searchParams
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
 
 - name: URLSearchParams.prototype.get
+  kind: function
   aliases:
     - URLSearchParams.prototype.get
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
 
 - name: URLSearchParams.prototype.has
   aliases:
@@ -218,24 +242,30 @@
   purity: Impure
 
 - name: URLSearchParams.prototype.set
+  kind: function
   aliases:
     - URLSearchParams.prototype.set
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Impure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: impure
+    template: impure
 
 - name: URLSearchParams.prototype.append
+  kind: function
   aliases:
     - URLSearchParams.prototype.append
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Impure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: impure
+    template: impure
 
 - name: URLSearchParams.prototype.entries
   aliases:
@@ -248,13 +278,16 @@
   purity: Pure
 
 - name: URLSearchParams.prototype.toString
+  kind: function
   aliases:
     - URLSearchParams.prototype.toString
   since: "baseline"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Never
-  purity: Pure
+    base: [alloc]
+    allocates: true
+    may_throw: false
+  purity:
+    kind: pure
+    template: pure
   properties:
     encoding.output: ascii

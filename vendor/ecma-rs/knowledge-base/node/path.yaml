@@ -1,31 +1,46 @@
 - name: node:path.join
+  kind: function
   aliases:
     - path.join
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.resolve
+  kind: function
   aliases:
     - path.resolve
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.basename
+  kind: function
   aliases:
     - path.basename
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
@@ -34,11 +49,16 @@
     encoding.output: same_as_input
 
 - name: node:path.dirname
+  kind: function
   aliases:
     - path.dirname
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
@@ -47,11 +67,16 @@
     encoding.output: same_as_input
 
 - name: node:path.extname
+  kind: function
   aliases:
     - path.extname
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
@@ -60,11 +85,16 @@
     encoding.output: same_as_input
 
 - name: node:path.normalize
+  kind: function
   aliases:
     - path.normalize
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
@@ -73,88 +103,128 @@
     encoding.output: same_as_input
 
 - name: node:path.isAbsolute
+  kind: function
   aliases:
     - path.isAbsolute
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.relative
+  kind: function
   aliases:
     - path.relative
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.parse
+  kind: function
   aliases:
     - path.parse
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.format
+  kind: function
   aliases:
     - path.format
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.posix.join
+  kind: function
   aliases:
     - path.posix.join
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.posix.resolve
+  kind: function
   aliases:
     - path.posix.resolve
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.win32.join
+  kind: function
   aliases:
     - path.win32.join
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:path.win32.resolve
+  kind: function
   aliases:
     - path.win32.resolve
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true

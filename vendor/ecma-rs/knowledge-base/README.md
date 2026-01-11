@@ -22,6 +22,28 @@ Use the global name as it appears in JS:
 - Constructors: `URL`, `URLSearchParams`
 - Prototype members: `URL.prototype.pathname`
 
+## Entry schema (YAML)
+
+Each YAML file under `core/`, `node/`, `web/`, and `ecosystem/` is typically a list of API entries.
+
+The loader normalizes entries to `effect-model`'s `EffectTemplate`/`PurityTemplate`, so we keep the
+schema intentionally small and conservative.
+
+Recommended fields:
+
+- `name`: stable API name (see naming conventions above)
+- `kind`: `function|constructor|property|...` (informational; for future analysis/UI)
+- `effects`:
+  - `effects.base`: list of tags like `io`, `network`, `alloc`, `nondeterministic`, `async`,
+    `may_throw` (informational; future-facing)
+  - `effects.io|network|allocates|nondeterministic`: booleans used by the loader today
+  - `effects.may_throw`: boolean used by the loader today
+  - `effects.depends_on_args`: optional list of argument indices (informational)
+- `purity`:
+  - `purity.kind`: free-form label (informational)
+  - `purity.template`: one of `pure|read_only|allocating|impure|depends_on_callback|unknown` (used
+    by the loader today)
+
 ## Bundled file formats
 
 The default (bundled) knowledge base is built from files under:

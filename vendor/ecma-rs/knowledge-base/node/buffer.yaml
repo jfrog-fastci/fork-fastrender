@@ -1,52 +1,70 @@
 - name: node:buffer.Buffer.from
+  kind: function
   aliases:
     - buffer.Buffer.from
     - Buffer.from
   since: "v5.10.0"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
+    base: [alloc, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:buffer.Buffer.alloc
+  kind: function
   aliases:
     - buffer.Buffer.alloc
     - Buffer.alloc
   since: "v5.10.0"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
+    base: [alloc, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:buffer.Buffer.isBuffer
+  kind: function
   aliases:
     - buffer.Buffer.isBuffer
     - Buffer.isBuffer
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:buffer.Buffer.byteLength
+  kind: function
   aliases:
     - buffer.Buffer.byteLength
     - Buffer.byteLength
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
   async: false
   parallelizable: true
   idempotent: true

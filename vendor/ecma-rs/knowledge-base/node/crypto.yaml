@@ -1,39 +1,52 @@
 - name: node:crypto.randomBytes
+  kind: function
   aliases:
     - crypto.randomBytes
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: ALLOCATES | NONDETERMINISTIC
-      throws: Maybe
-  purity: Impure
+    base: [alloc, nondeterministic, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   parallelizable: true
   idempotent: false
   deterministic: false
 
 - name: node:crypto.createHash
+  kind: function
   aliases:
     - crypto.createHash
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
+    base: [alloc, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: true
   idempotent: true
   deterministic: true
 
 - name: node:crypto.randomUUID
+  kind: function
   aliases:
     - crypto.randomUUID
   since: "v14.17.0"
   effects:
-    Custom:
-      flags: ALLOCATES | NONDETERMINISTIC
-      throws: Maybe
-  purity: Impure
+    base: [alloc, nondeterministic, may_throw]
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: true
   idempotent: false

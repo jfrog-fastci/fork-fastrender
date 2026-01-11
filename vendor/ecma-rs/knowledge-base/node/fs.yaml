@@ -1,64 +1,106 @@
 - name: node:fs.readFile
+  kind: function
   aliases:
     - fs.readFile
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.readFileSync
+  kind: function
   aliases:
     - fs.readFileSync
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: false
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.writeFile
+  kind: function
   aliases:
     - fs.writeFile
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: true
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.writeFileSync
+  kind: function
   aliases:
     - fs.writeFileSync
   since: "v0.1.0"
-  effects: Io
-  purity: Impure
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
   async: false
   parallelizable: false
   idempotent: false
   deterministic: false
 
 - name: node:fs.stat
+  kind: function
   aliases:
     - fs.stat
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: true
   parallelizable: true
   idempotent: true
   deterministic: false
 
 - name: node:fs.statSync
+  kind: function
   aliases:
     - fs.statSync
   since: "v0.1.0"
-  effects: Io
-  purity: ReadOnly
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
   async: false
   parallelizable: true
   idempotent: true
@@ -87,14 +129,18 @@
   deterministic: false
 
 - name: node:fs.existsSync
+  kind: function
   aliases:
     - fs.existsSync
   since: "v0.1.0"
   effects:
-    Custom:
-      flags: IO
-      throws: Never
-  purity: ReadOnly
+    base: [io]
+    depends_on_args: [0]
+    io: true
+    may_throw: false
+  purity:
+    kind: read_only
+    template: read_only
   async: false
   parallelizable: true
   idempotent: true

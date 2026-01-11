@@ -856,15 +856,36 @@ enum ApiSemanticsFile {
 /// - a single mapping (`name: ...`) representing one [`ApiSemantics`], or
 /// - a YAML list of [`ApiSemantics`] objects.
 pub fn parse_api_semantics_yaml_str(yaml: &str) -> Result<Vec<ApiSemantics>, serde_yaml::Error> {
-  let file: ApiSemanticsFile = serde_yaml::from_str(yaml)?;
-  let mut entries = match file {
-    ApiSemanticsFile::One(one) => vec![one],
-    ApiSemanticsFile::Many(many) => many,
-  };
-  for entry in &mut entries {
-    entry.id = ApiId::from_name(&entry.name);
+  // Fast path: the legacy "ApiSemantics list" format where `effects` and `purity` are directly
+  // represented as `EffectTemplate` / `PurityTemplate` values.
+  //
+  // Some knowledge base files (notably Node/Web entries) use a more structured form for
+  // `effects`/`purity` that needs normalization via `ApiRaw` (e.g. `effects.base`, `effects.io`,
+  // `purity.template`). For those, fall back to parsing the YAML as a generic value and normalize.
+  if let Ok(file) = serde_yaml::from_str::<ApiSemanticsFile>(yaml) {
+    return Ok(match file {
+      ApiSemanticsFile::One(one) => vec![one],
+      ApiSemanticsFile::Many(many) => many,
+    });
   }
-  Ok(entries)
+
+  let value: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+  match value {
+    serde_yaml::Value::Sequence(_) => {
+      let apis: Vec<ApiRaw> = serde_yaml::from_value(value)?;
+      Ok(apis.into_iter().map(normalize_api).collect())
+    }
+    serde_yaml::Value::Mapping(map) => {
+      // Support a single entry written in the `ApiRaw` schema (e.g. with structured effects).
+      if map.contains_key(&serde_yaml::Value::String("name".to_string())) {
+        let api: ApiRaw = serde_yaml::from_value(serde_yaml::Value::Mapping(map))?;
+        Ok(vec![normalize_api(api)])
+      } else {
+        Ok(Vec::new())
+      }
+    }
+    _ => Ok(Vec::new()),
+  }
 }
 #[cfg(test)]
 mod tests {
