@@ -217,13 +217,34 @@ where
       ScriptType::Classic => {}
       ScriptType::Module => {
         if !self.options.supports_module_scripts {
-          // HTML: unsupported module scripts are ignored.
+          // Even when module scripts are disabled, keep HTML's "src present but empty/invalid"
+          // behavior: queue an error event task and suppress inline fallback.
+          //
+          // This keeps dynamic `<script type="module" src="">` consistent with classic scripts,
+          // which also fire an error event when `src` is present but cannot be resolved.
+          if spec.src_attr_present && spec.src.is_none() {
+            event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+              host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+            })?;
+          }
           return Ok(());
         }
         return self.handle_module_script(host, event_loop, spec);
       }
-      // Import maps and unknown script types are ignored by FastRender's execution pipeline.
-      ScriptType::ImportMap | ScriptType::Unknown => return Ok(()),
+      ScriptType::ImportMap => {
+        if !self.options.supports_module_scripts {
+          return Ok(());
+        }
+        // HTML: import maps must be inline; `src` is invalid and must queue an `error` event task.
+        if spec.src_attr_present {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+        }
+        return Ok(());
+      }
+      // Unknown script types are ignored by FastRender's execution pipeline.
+      ScriptType::Unknown => return Ok(()),
     }
     // HTML: When a user agent supports module scripts, classic scripts with the `nomodule`
     // attribute must be ignored completely (not fetched/executed).

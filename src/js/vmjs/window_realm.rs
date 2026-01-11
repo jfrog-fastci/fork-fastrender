@@ -10537,6 +10537,20 @@ fn prepare_dynamic_script_element(
 ) -> Result<(), VmError> {
   let base_url = current_base_url_for_dynamic_scripts(vm);
 
+  // `WindowHost` drives JS via `EventLoop<WindowHostState>`. For this embedding we keep DOM mutation
+  // steps non-reentrant by queueing script execution as tasks on that event loop (and handling
+  // external fetching/decoding/SRI in the queued task).
+  //
+  // Other embeddings (notably `BrowserTabHost` and test harnesses) either schedule scripts via their
+  // own orchestrator or execute inline scripts synchronously, so only take the task-queueing path
+  // when the matching event loop is installed.
+  if runtime::current_event_loop_mut::<WindowHostState>().is_some() {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    return prepare_dynamic_script(dom, script, &base_url);
+  }
+
   let spec = {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
     // lifetime of the associated host document.
@@ -12693,6 +12707,11 @@ fn document_current_script_get_native(
     }
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return document.current_script_handle().borrow().current_script;
+    }
+    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
+      return ctx
+        .current_script_state()
+        .and_then(|handle| handle.borrow().current_script);
     }
     None
   }
@@ -16353,8 +16372,8 @@ mod tests {
   fn new_realm(config: WindowRealmConfig) -> Result<WindowRealm, VmError> {
     let mut js_execution_options = JsExecutionOptions::default();
     // These unit tests validate DOM/Web API behaviour, not the per-run wall time budget. Increase
-    // it so debug builds running tests in parallel don't trip the default 100ms budget.
-    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    // it so debug builds running tests in parallel don't trip the default budget.
+    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
     // Keep the heap limits configured by `WindowRealmConfig` (some tests tweak it).
     js_execution_options.max_vm_heap_bytes = None;
     WindowRealm::new_with_js_execution_options(config, js_execution_options)
@@ -16901,9 +16920,9 @@ mod tests {
     let _guard = DomSourceGuard { id: dom_source_id };
 
     let mut js_execution_options = JsExecutionOptions::default();
-    // Increase the wall time budget so debug builds running in parallel don't trip the default 100ms
+    // Increase the wall time budget so debug builds running in parallel don't trip the default
     // budget.
-    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    js_execution_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
     // Keep the heap limits configured by `WindowRealmConfig`.
     js_execution_options.max_vm_heap_bytes = None;
     // Provide enough fuel for the initial script to install listeners.

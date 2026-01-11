@@ -3221,7 +3221,7 @@ mod tests {
     // listener registration, and event propagation). The default per-script wall-time budget is
     // tuned for hostile input and can be a bit too tight in debug builds.
     let mut opts = JsExecutionOptions::default();
-    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
     let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
 
     let log = host.exec_script(

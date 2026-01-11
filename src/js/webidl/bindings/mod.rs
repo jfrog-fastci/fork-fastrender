@@ -1852,10 +1852,12 @@ mod tests {
             ));
           };
 
-          let init = args
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| BindingValue::String(String::new()));
+          let mut init = args.into_iter().next().unwrap_or(BindingValue::Undefined);
+          // Generated bindings preserve the selected union member type. This host only needs the
+          // underlying value.
+          while let BindingValue::Union { value, .. } = init {
+            init = *value;
+          }
 
           let params = match init {
             BindingValue::Undefined | BindingValue::Null => UrlSearchParams::new(&self.limits),
@@ -1900,14 +1902,39 @@ mod tests {
               }
               params
             }
+            BindingValue::Record(entries) => {
+              // `record<USVString, USVString>`: append each key/value pair in `[[OwnPropertyKeys]]`
+              // order.
+              let params = UrlSearchParams::new(&self.limits);
+              for (name, value) in entries {
+                let value = match value {
+                  BindingValue::String(value) => value,
+                  BindingValue::Object(v) => Self::value_to_rust_string(rt, self, v)?,
+                  _ => {
+                    return Err(rt.throw_type_error(
+                      "URLSearchParams constructor init record values must be strings",
+                    ));
+                  }
+                };
+                params
+                  .append(&name, &value)
+                  .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?;
+              }
+              params
+            }
             BindingValue::Dictionary(map) => {
-              // `record<USVString, USVString>`: append each key/value pair.
+              // Legacy test hosts still accept `BindingValue::Dictionary` for record conversions.
+              // Newer bindings use `BindingValue::Record` to preserve property order.
               let params = UrlSearchParams::new(&self.limits);
               for (name, value) in map {
-                let BindingValue::String(value) = value else {
-                  return Err(rt.throw_type_error(
-                    "URLSearchParams constructor init record values must be strings",
-                  ));
+                let value = match value {
+                  BindingValue::String(value) => value,
+                  BindingValue::Object(v) => Self::value_to_rust_string(rt, self, v)?,
+                  _ => {
+                    return Err(rt.throw_type_error(
+                      "URLSearchParams constructor init record values must be strings",
+                    ));
+                  }
                 };
                 params
                   .append(&name, &value)
