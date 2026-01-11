@@ -137,6 +137,79 @@ fn guard_clause_subject(lowered: &LowerResult, body: &hir_js::Body, test: ExprId
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use hir_js::{lower_from_source_with_kind, FileKind};
+
+  #[test]
+  fn map_get_or_default_nullish_sets_conditional_to_binary_expr() {
+    let lowered = lower_from_source_with_kind(
+      FileKind::Ts,
+      r#"
+const m = new Map();
+const k = "x";
+const v = m.get(k) ?? 123;
+"#,
+    )
+    .expect("lower source");
+
+    let root_body = lowered.root_body();
+    let body = lowered.body(root_body).expect("root body exists");
+
+    let binary_expr_id = body
+      .exprs
+      .iter()
+      .enumerate()
+      .find_map(|(idx, expr)| match &expr.kind {
+        ExprKind::Binary {
+          op: BinaryOp::NullishCoalescing,
+          ..
+        } => Some(ExprId(idx as u32)),
+        _ => None,
+      })
+      .expect("expected a nullish coalescing expression");
+
+    let ExprKind::Binary { left, right, .. } = &body.exprs[binary_expr_id.0 as usize].kind else {
+      unreachable!("binary expr id points at binary node")
+    };
+    let left = *left;
+    let right = *right;
+
+    let patterns = recognize_patterns_best_effort_untyped(&lowered, root_body);
+
+    let matches: Vec<_> = patterns
+      .iter()
+      .filter_map(|pat| match pat {
+        RecognizedPattern::MapGetOrDefault {
+          conditional,
+          map,
+          key,
+          default,
+        } if *conditional == binary_expr_id => Some((*map, *key, *default)),
+        _ => None,
+      })
+      .collect();
+
+    assert_eq!(
+      matches.len(),
+      1,
+      "expected one MapGetOrDefault pattern, got {patterns:#?}"
+    );
+    let (map_expr, key_expr, default_expr) = matches[0];
+    assert_eq!(default_expr, right);
+
+    let ExprKind::Call(call) = &body.exprs[left.0 as usize].kind else {
+      panic!("expected binary left to be a call expression");
+    };
+    let ExprKind::Member(member) = &body.exprs[call.callee.0 as usize].kind else {
+      panic!("expected call callee to be a member expression");
+    };
+    assert_eq!(map_expr, member.object);
+    assert_eq!(key_expr, call.args[0].expr);
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardKind {
   Return,
