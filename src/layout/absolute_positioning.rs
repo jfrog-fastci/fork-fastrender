@@ -877,6 +877,14 @@ impl AbsoluteLayout {
       style.margin.bottom
     };
 
+    // `height:auto` for absolutely positioned boxes uses the box's content height after layout.
+    // When the inline size is definite (i.e. `width` is not `auto`/intrinsic keyword), callers can
+    // provide a reliable `intrinsic_height` computed from a normal-flow layout pass at the used
+    // width. Prefer that over min/max-content block size probes, which can be wildly different for
+    // complex flex/grid subtrees (and are *not* what `height:auto` means).
+    let width_is_auto = matches!(style.width, LengthOrAuto::Auto) || style.width_keyword.is_some();
+    let use_intrinsic_height_for_auto = !width_is_auto;
+
     // Compute shrink-to-fit candidates for auto height.
     let preferred_min = preferred_min_block_size.unwrap_or(intrinsic_height);
     let preferred = preferred_block_size.unwrap_or(preferred_min);
@@ -1114,7 +1122,11 @@ impl AbsoluteLayout {
 
       // None specified - use preferred block size (shrink-to-fit without constraints)
       (None, None, None) => {
-        let height = preferred;
+        let height = if use_intrinsic_height_for_auto {
+          intrinsic_height
+        } else {
+          preferred
+        };
         let y = static_y + margin_top + border_top + padding_top;
         (y, height, false)
       }
@@ -1629,6 +1641,27 @@ impl AbsoluteLayout {
     assert!(
       (result.size.height - 90.0).abs() < 0.001,
       "auto height with no insets should shrink-to-fit preferred block size"
+    );
+  }
+
+  #[test]
+  fn layout_absolute_auto_height_uses_intrinsic_height_when_width_is_definite() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width = LengthOrAuto::px(100.0);
+    style.height = LengthOrAuto::Auto;
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(10.0, 20.0), Point::ZERO);
+    input.preferred_min_block_size = Some(40.0);
+    input.preferred_block_size = Some(90.0);
+    let cb = create_containing_block(200.0, 200.0);
+
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert!(
+      (result.size.height - 20.0).abs() < 0.001,
+      "auto height should use intrinsic content height when width is definite"
     );
   }
 

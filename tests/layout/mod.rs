@@ -2,6 +2,7 @@
 
 mod absolute_position_body;
 mod abspos_aspect_ratio_auto_auto_non_replaced;
+mod abspos_fixed_flex_auto_height;
 mod abspos_intrinsic_sizing_keywords;
 mod abspos_inline_synthetic_container;
 mod abspos_inline_wrapper_vertical_writing_mode;

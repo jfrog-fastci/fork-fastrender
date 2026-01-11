@@ -2999,6 +2999,26 @@ impl BlockFormattingContext {
           (child_fragment.bounds.size.height - actual_vertical).max(0.0),
         );
 
+        if trace_positioned.contains(&pos_child.id) {
+          eprintln!(
+            "[block-positioned-intrinsics] child_id={} fc={:?} static_pos=({:.1},{:.1}) child_constraints=({:?},{:?}) static_layout_border_box=({:.1},{:.1}) intrinsic_size=({:.1},{:.1}) pref_min_inline={:?} pref_inline={:?} pref_min_block={:?} pref_block={:?}",
+            pos_child.id,
+            fc_type,
+            static_pos.x,
+            static_pos.y,
+            child_constraints.available_width,
+            child_constraints.available_height,
+            child_fragment.bounds.width(),
+            child_fragment.bounds.height(),
+            intrinsic_size.width,
+            intrinsic_size.height,
+            preferred_min_inline,
+            preferred_inline,
+            preferred_min_block,
+            preferred_block,
+          );
+        }
+
         let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
           positioned_style,
           intrinsic_size,
