@@ -14,18 +14,32 @@
 //! - rewrite plain calls into `llvm.experimental.gc.statepoint.*`
 //! - attach the required `"gc-live"` operand bundle
 //! - insert `llvm.experimental.gc.relocate.*` / `gc.result.*` and rewrite uses
- 
+
+use std::path::Path;
+use std::sync::OnceLock;
+
+use inkwell::basic_block::BasicBlock;
+use inkwell::builder::Builder;
+use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::targets::{FileType, TargetMachine};
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{
+  CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+};
+use inkwell::values::FunctionValue;
+use inkwell::{module::Linkage, OptimizationLevel};
 use llvm_sys::prelude::LLVMModuleRef;
+use target_lexicon::Triple;
 
 pub mod gc;
 pub mod gc_lint;
 pub mod passes;
 pub mod statepoints;
 pub mod statepoint_directives;
+pub mod types;
 
 pub use gc_lint::{lint_gc_pointer_discipline, LintError, LintRule, LintViolation};
+pub use types::{classify_type, llvm_type, NativeType};
 
 /// Run the GC pointer discipline lint in debug builds/tests.
 ///
@@ -64,4 +78,156 @@ pub fn emit_object(module: &Module<'_>, target_machine: &TargetMachine) -> Vec<u
     .expect("write object")
     .as_slice()
     .to_vec()
+}
+
+static LLVM_NATIVE_TARGET_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// Initialize LLVM's native target machinery (targets, asm printer/parser, etc).
+///
+/// This is a global one-time operation; calling it multiple times is safe.
+pub fn init_native_target() -> Result<(), String> {
+  LLVM_NATIVE_TARGET_INIT
+    .get_or_init(|| {
+      Target::initialize_native(&InitializationConfig::default())
+        .map_err(|e| format!("failed to initialize native LLVM target: {e}"))
+    })
+    .clone()
+}
+
+fn to_machine_opt_level(level: crate::OptLevel) -> OptimizationLevel {
+  match level {
+    crate::OptLevel::O0 => OptimizationLevel::None,
+    crate::OptLevel::O1 => OptimizationLevel::Less,
+    crate::OptLevel::O2 => OptimizationLevel::Default,
+    crate::OptLevel::O3 => OptimizationLevel::Aggressive,
+    // LLVM's inkwell wrapper doesn't expose size-optimizing levels here; fall
+    // back to `Default`.
+    crate::OptLevel::Os | crate::OptLevel::Oz => OptimizationLevel::Default,
+  }
+}
+
+fn to_pass_pipeline(level: crate::OptLevel) -> &'static str {
+  match level {
+    crate::OptLevel::O0 => "default<O0>",
+    crate::OptLevel::O1 => "default<O1>",
+    crate::OptLevel::O2 => "default<O2>",
+    crate::OptLevel::O3 => "default<O3>",
+    crate::OptLevel::Os => "default<Os>",
+    crate::OptLevel::Oz => "default<Oz>",
+  }
+}
+
+/// Wrapper around an LLVM module + builder wired up for a specific target.
+pub struct LlvmBackend<'ctx> {
+  pub context: &'ctx Context,
+  pub module: Module<'ctx>,
+  pub builder: Builder<'ctx>,
+  pub target_machine: TargetMachine,
+  pub target_triple: TargetTriple,
+}
+
+impl<'ctx> LlvmBackend<'ctx> {
+  /// Create a new LLVM backend with module target triple + data layout set based
+  /// on the host (or an override in `options.target`).
+  pub fn new(
+    context: &'ctx Context,
+    module_name: &str,
+    options: &crate::CompileOptions,
+  ) -> Result<Self, String> {
+    init_native_target()?;
+
+    let module = context.create_module(module_name);
+    let builder = context.create_builder();
+
+    let target_triple = match options.target.as_ref() {
+      Some(triple) => TargetTriple::create(&triple.to_string()),
+      None => TargetMachine::get_default_triple(),
+    };
+
+    let target = Target::from_triple(&target_triple)
+      .map_err(|e| format!("failed to select LLVM target for triple: {e}"))?;
+
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let features = TargetMachine::get_host_cpu_features().to_string();
+
+    let target_machine = target
+      .create_target_machine(
+        &target_triple,
+        &cpu,
+        &features,
+        to_machine_opt_level(options.opt_level),
+        RelocMode::Default,
+        CodeModel::Default,
+      )
+      .ok_or_else(|| "failed to create LLVM target machine".to_string())?;
+
+    module.set_triple(&target_triple);
+    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
+
+    Ok(Self {
+      context,
+      module,
+      builder,
+      target_machine,
+      target_triple,
+    })
+  }
+
+  /// Add a function to the module.
+  pub fn add_function(
+    &self,
+    name: &str,
+    ty: inkwell::types::FunctionType<'ctx>,
+    linkage: Option<Linkage>,
+  ) -> FunctionValue<'ctx> {
+    self.module.add_function(name, ty, linkage)
+  }
+
+  /// Append a basic block to a function.
+  pub fn append_basic_block(&self, function: FunctionValue<'ctx>, name: &str) -> BasicBlock<'ctx> {
+    self.context.append_basic_block(function, name)
+  }
+
+  /// Verify the module.
+  pub fn verify(&self) -> Result<(), String> {
+    self
+      .module
+      .verify()
+      .map_err(|e| format!("invalid LLVM IR: {e}"))
+  }
+
+  /// Run an LLVM optimization pipeline on the module.
+  pub fn optimize_module(&self, opt_level: crate::OptLevel) -> Result<(), String> {
+    let options = PassBuilderOptions::create();
+    self
+      .module
+      .run_passes(to_pass_pipeline(opt_level), &self.target_machine, options)
+      .map_err(|e| format!("failed to run LLVM optimization passes: {e}"))?;
+
+    Ok(())
+  }
+
+  /// Emit LLVM textual IR to `path`.
+  pub fn emit_llvm_ir(&self, path: impl AsRef<Path>) -> Result<(), String> {
+    self
+      .module
+      .print_to_file(path.as_ref())
+      .map_err(|e| format!("failed to write LLVM IR: {e}"))
+  }
+
+  /// Emit a native object file to `path`.
+  pub fn emit_object(&self, path: impl AsRef<Path>) -> Result<(), String> {
+    self
+      .target_machine
+      .write_to_file(&self.module, FileType::Object, path.as_ref())
+      .map_err(|e| format!("failed to write object file: {e}"))
+  }
+}
+
+/// Helper to convert a `target-lexicon` triple to an LLVM `TargetTriple`.
+///
+/// This is currently only used by parts of `native-js` that accept
+/// `target_lexicon::Triple` in public APIs.
+pub fn target_triple_from_lexicon(triple: &Triple) -> TargetTriple {
+  TargetTriple::create(&triple.to_string())
 }
