@@ -1018,9 +1018,10 @@ expressions (`Direct`). Our first runtime milestone uses **frame-pointer-only st
 does not reconstruct a full register context for every frame, so we require statepoint roots be
 addressable stack slots (`Indirect [SP + off]`).
 
-In practice, with our configured LLVM 18 codegen (notably `--fixup-max-csr-statepoints=0`), we
-observe that on both **x86_64 SysV** and **aarch64 SysV**, across `-O0/-O2` and with/without
-`-frame-pointer=all`, statepoint `gc-live` roots are emitted as `Indirect [SP + off]` spill slots.
+In practice, with our configured LLVM 18 codegen (notably `--fixup-allow-gcptr-in-csr=false` and/or
+`--fixup-max-csr-statepoints=0`), we observe that on both **x86_64 SysV** and **aarch64 SysV**,
+across `-O0/-O2` and with/without `-frame-pointer=all`, statepoint `gc-live` roots are emitted as
+`Indirect [SP + off]` spill slots.
 
 This is good news: a moving GC can update the spill slot in memory, and the code after the
 statepoint reloads relocated values from those slots.

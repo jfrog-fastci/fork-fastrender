@@ -2775,7 +2775,7 @@ StackMap v3 invariant (LLVM 18, tested; required by our runtime):
     arbitrary frames, so statepoint `gc-live` roots must be addressable stack slots:
     `Indirect [SP + off]`.
   - We enforce this by:
-    - codegen: `--fixup-max-csr-statepoints=0` (see `native-js` emitter)
+    - codegen: `--fixup-allow-gcptr-in-csr=false` (preferred) / `--fixup-max-csr-statepoints=0` (fallback; see `native-js` emitter)
     - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)
   - Empirically, on x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
     statepoint roots are `Indirect [SP + off]` under the above codegen settings.
