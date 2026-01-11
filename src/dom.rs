@@ -425,8 +425,8 @@ fn is_reserved_custom_element_name(name: &str) -> bool {
 
 /// Returns true if `name` is a [valid custom element name] per HTML.
 ///
-/// This helper is shared by spec-correct `:defined` matching and (future) declarative shadow DOM
-/// host validation.
+/// This helper is shared by spec-correct `:defined` matching and declarative shadow DOM host
+/// validation.
 ///
 /// [valid custom element name]: https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
 pub(crate) fn is_valid_custom_element_name(name: &str) -> bool {
@@ -12079,6 +12079,27 @@ mod tests {
     assert!(
       selector_matches_with_custom_elements_defined(&invalid_start_ref, &selector, false),
       "hyphenated names that do not start with an ASCII lowercase letter are not valid custom element names"
+    );
+
+    let uppercase = element("x-Foo", vec![]);
+    let uppercase_ref = ElementRef::with_ancestors(&uppercase, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&uppercase_ref, &selector, false),
+      "names containing ASCII uppercase are not valid custom element names"
+    );
+
+    let unicode_custom_element_name = element("math-α", vec![]);
+    let unicode_custom_element_name_ref = ElementRef::with_ancestors(&unicode_custom_element_name, &[]);
+    assert!(
+      !selector_matches_with_custom_elements_defined(&unicode_custom_element_name_ref, &selector, false),
+      "valid custom element names may contain non-ASCII code points (HTML LS)"
+    );
+
+    let svg_custom_element_name = svg_element("x-foo");
+    let svg_custom_element_name_ref = ElementRef::with_ancestors(&svg_custom_element_name, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&svg_custom_element_name_ref, &selector, false),
+      "host languages without custom elements should treat all elements as :defined (Selectors 4)"
     );
   }
 
