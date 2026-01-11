@@ -66,6 +66,54 @@ fn assert_failure_prints_message_and_exits_non_zero() {
 }
 
 #[test]
+fn numeric_literal_precision_is_preserved_for_strict_equality() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+
+  // If numeric literals are rounded when lowered into LLVM IR, these two distinct values can end
+  // up equal and make this assert incorrectly pass.
+  std::fs::write(
+    &path,
+    "assert(1.23456789 === 1.2345678, \"precision lost\");\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure()
+    .stdout(predicate::str::contains("precision lost"));
+}
+
+#[test]
+fn panic_builtin_exits_non_zero() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "panic(\"boom\");\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure()
+    .stdout(predicate::str::contains("boom"));
+}
+
+#[test]
+fn trap_builtin_exits_non_zero() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "trap();\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure();
+}
+
+#[test]
 fn no_builtins_flag_disables_builtin_recognition() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
@@ -79,4 +127,3 @@ fn no_builtins_flag_disables_builtin_recognition() {
     .failure()
     .stderr(predicate::str::contains("builtins disabled"));
 }
-

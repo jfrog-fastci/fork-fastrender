@@ -32,6 +32,10 @@ impl Value {
   }
 }
 
+fn f64_to_llvm_const(value: f64) -> String {
+  format!("0x{:016X}", value.to_bits())
+}
+
 #[derive(Default)]
 struct StringPool {
   next_id: usize,
@@ -168,7 +172,7 @@ impl Codegen {
     match expr.stx.as_ref() {
       Expr::LitNum(num) => Ok(Value {
         ty: Ty::Number,
-        ir: format!("{:.6e}", num.stx.value.0),
+        ir: f64_to_llvm_const(num.stx.value.0),
       }),
       Expr::LitBool(b) => Ok(Value {
         ty: Ty::Bool,
@@ -238,13 +242,13 @@ impl Codegen {
             return Err(CodegenError::BuiltinsDisabled);
           }
 
-          match builtin {
-            BuiltinCall::Print { arg } => {
-              let v = self.compile_expr(arg)?;
-              self.emit_print_value(v)?;
-              Ok(Value::void())
-            }
-            BuiltinCall::Assert { cond, msg } => {
+           match builtin {
+             BuiltinCall::Print { arg } => {
+               let v = self.compile_expr(arg)?;
+               self.emit_print_value(v)?;
+               Ok(Value::void())
+             }
+             BuiltinCall::Assert { cond, msg } => {
               let cond_v = self.compile_expr(cond)?;
               if cond_v.ty != Ty::Bool {
                 return Err(CodegenError::TypeError(
@@ -268,14 +272,38 @@ impl Codegen {
               self.emit("  call void @abort()".to_string());
               self.emit("  unreachable".to_string());
 
-              self.emit(format!("{ok}:"));
-              Ok(Value::void())
-            }
-          }
-        } else {
-          Err(CodegenError::UnsupportedExpr)
-        }
-      }
+               self.emit(format!("{ok}:"));
+               Ok(Value::void())
+             }
+             BuiltinCall::Panic { msg } => {
+               if let Some(msg) = msg {
+                 let msg_v = self.compile_expr(msg)?;
+                 self.emit_print_value(msg_v)?;
+               }
+               self.emit("  call i32 @fflush(ptr null)".to_string());
+               self.emit("  call void @abort()".to_string());
+               self.emit("  unreachable".to_string());
+
+               // Keep the IR structurally valid by starting a fresh (unreachable) block for any
+               // subsequent statements / the implicit final `ret`.
+               let cont = self.fresh_block("panic.after");
+               self.emit(format!("{cont}:"));
+               Ok(Value::void())
+             }
+             BuiltinCall::Trap => {
+               self.emit("  call i32 @fflush(ptr null)".to_string());
+               self.emit("  call void @llvm.trap()".to_string());
+               self.emit("  unreachable".to_string());
+
+               let cont = self.fresh_block("trap.after");
+               self.emit(format!("{cont}:"));
+               Ok(Value::void())
+             }
+           }
+         } else {
+           Err(CodegenError::UnsupportedExpr)
+         }
+       }
 
       _ => Err(CodegenError::UnsupportedExpr),
     }
@@ -309,7 +337,8 @@ pub(super) fn emit_llvm_module(
   out.push_str("declare i32 @puts(ptr)\n");
   out.push_str("declare i32 @printf(ptr, ...)\n");
   out.push_str("declare i32 @fflush(ptr)\n");
-  out.push_str("declare void @abort()\n\n");
+  out.push_str("declare void @abort()\n");
+  out.push_str("declare void @llvm.trap()\n\n");
 
   out.push_str("define i32 @main() {\n");
   for line in &cg.main_body {

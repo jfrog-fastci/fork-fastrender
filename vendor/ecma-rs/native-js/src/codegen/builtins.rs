@@ -8,6 +8,8 @@ pub enum BuiltinCall<'a> {
     cond: &'a Node<Expr>,
     msg: Option<&'a Node<Expr>>,
   },
+  Panic { msg: Option<&'a Node<Expr>> },
+  Trap,
 }
 
 fn arg_value<'a>(arg: &'a Node<CallArg>) -> Option<&'a Node<Expr>> {
@@ -49,6 +51,23 @@ pub fn recognize_builtin(call: &Node<CallExpr>) -> Option<BuiltinCall<'_>> {
     let cond = arg_value(&call.stx.arguments[0])?;
     let msg = call.stx.arguments.get(1).and_then(arg_value);
     return Some(BuiltinCall::Assert { cond, msg });
+  }
+
+  // `panic(msg?)`
+  if is_ident(callee, "panic") {
+    if !(call.stx.arguments.is_empty() || call.stx.arguments.len() == 1) {
+      return None;
+    }
+    let msg = call.stx.arguments.first().and_then(arg_value);
+    return Some(BuiltinCall::Panic { msg });
+  }
+
+  // `trap()`
+  if is_ident(callee, "trap") {
+    if !call.stx.arguments.is_empty() {
+      return None;
+    }
+    return Some(BuiltinCall::Trap);
   }
 
   // `console.log(x)`
