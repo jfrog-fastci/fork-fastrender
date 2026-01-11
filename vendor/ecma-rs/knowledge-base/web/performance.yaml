@@ -1,0 +1,20 @@
+# Web Performance API semantics.
+
+- name: performance.now
+  kind: function
+  aliases:
+    - performance.now
+    - window.performance.now
+    - globalThis.performance.now
+  since: "baseline"
+  effects:
+    nondeterministic: true
+    may_throw: false
+    allocates: false
+    io: false
+    network: false
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false

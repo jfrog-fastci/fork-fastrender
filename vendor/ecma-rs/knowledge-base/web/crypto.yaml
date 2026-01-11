@@ -1,0 +1,44 @@
+# Web Crypto API semantics.
+
+- name: crypto.getRandomValues
+  kind: function
+  aliases:
+    - crypto.getRandomValues
+    - window.crypto.getRandomValues
+    - globalThis.crypto.getRandomValues
+  since: "baseline"
+  effects:
+    allocates: false
+    nondeterministic: true
+    may_throw: true
+    io: false
+    network: false
+  purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+# `crypto.randomUUID()` is available in both modern browsers and Node. We keep the
+# metadata aligned with the Node entry (`node:crypto.randomUUID`) so the shared
+# alias `crypto.randomUUID` remains conflict-free.
+- name: crypto.randomUUID
+  kind: function
+  aliases:
+    - crypto.randomUUID
+    - window.crypto.randomUUID
+    - globalThis.crypto.randomUUID
+  since: "v14.17.0"
+  effects:
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+    io: false
+    network: false
+  purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+  properties:
+    encoding.output: ascii
