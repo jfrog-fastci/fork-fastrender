@@ -275,20 +275,30 @@ impl VmJsModuleLoader {
 
           // Second: link + evaluate.
           if let (Ok(_), Some(entry_id)) = (&outcome, entry_module) {
-            match module_graph.evaluate(&mut vm, heap, global_object, realm_id, entry_id, vm_host, &mut hooks) {
-              Ok(promise) => {
-                let mut scope = heap.scope();
-                if let Err(err) = ensure_promise_fulfilled(&mut scope, promise) {
-                  outcome = Err(vm_error_to_error_in_scope(&mut scope, err));
-                } else {
-                  outcome = Ok(promise);
-                }
-              }
-              Err(err) => {
-                // Convert via a fresh scope so thrown values (if any) are rooted while formatting.
-                outcome = Err(vm_error_to_error_with_fresh_scope(heap, err));
-              }
-            }
+            let mut scope = heap.scope();
+            let eval_result: std::result::Result<Value, VmError> = (|| {
+              module_graph.evaluate_sync_with_scope(
+                &mut vm,
+                &mut scope,
+                global_object,
+                realm_id,
+                entry_id,
+                vm_host,
+                &mut hooks,
+              )?;
+
+              // Return a fulfilled Promise for API compatibility with the previous
+              // `ModuleGraph::evaluate`-based implementation.
+              let promise_prototype = realm.intrinsics().promise_prototype();
+              let promise = scope.alloc_promise_with_prototype(Some(promise_prototype))?;
+              scope.heap_mut().promise_fulfill(promise, Value::Undefined)?;
+              Ok(Value::Object(promise))
+            })();
+
+            outcome = match eval_result {
+              Ok(value) => Ok(value),
+              Err(err) => Err(vm_error_to_error_in_scope(&mut scope, err)),
+            };
           }
 
           outcome
@@ -1079,6 +1089,47 @@ mod tests {
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "ok"), Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn module_loader_reports_stack_traces_for_thrown_errors() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let document_url = "https://example.com/index.html";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        r#"throw new Error("boom");"#.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
+    let err = loader
+      .evaluate_module_url(&mut host, &mut event_loop, entry_url)
+      .expect_err("expected module evaluation to throw");
+
+    let msg = err.to_string();
+    assert!(
+      msg.contains("boom"),
+      "expected error message to include thrown message; got {msg:?}"
+    );
+    assert!(
+      msg.contains("at "),
+      "expected error message to include stack trace; got {msg:?}"
+    );
+    assert!(
+      msg.contains(entry_url),
+      "expected stack trace to include module URL {entry_url:?}; got {msg:?}"
+    );
     Ok(())
   }
 
