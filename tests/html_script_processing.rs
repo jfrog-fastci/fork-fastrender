@@ -153,6 +153,30 @@ fn blocking_external_script_delays_later_inline_script_until_fetched_and_execute
 }
 
 #[test]
+fn importmap_is_ignored_by_classic_script_runner() -> Result<()> {
+  // `parse_and_run_classic_scripts` is intentionally classic-only; `type="importmap"` must be
+  // ignored when module scripts are disabled.
+  let html = concat!(
+    "<!doctype html>",
+    "<script type=\"importmap\">{\"imports\":{}}</script>",
+    "<script>INLINE</script>",
+  );
+
+  let exec = RecordingExecutor::new();
+  let events = Rc::clone(&exec.events);
+
+  let fetcher = FakeFetcher::new();
+
+  let _doc = parse_and_run_classic_scripts(html, Some("https://ex/doc.html"), fetcher, exec)?;
+
+  assert_eq!(
+    &*events.borrow(),
+    &["script:INLINE".to_string(), "microtask:INLINE".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn async_external_scripts_execute_in_completion_order() -> Result<()> {
   let html = concat!(
     "<!doctype html>",

@@ -645,6 +645,9 @@ where
 ///       `defer` attribute has no effect),
 ///     - non-parser-inserted module scripts execute in insertion order as soon as possible (HTML
 ///       "in-order-asap" list).
+/// - Import maps (`type="importmap"`):
+///   - only processed when [`JsExecutionOptions::supports_module_scripts`] is true,
+///   - must be inline-only (`src` queues an `error` element task).
 /// - A microtask checkpoint after each script execution (performed by the orchestrator).
 ///
 /// Out of scope (intentionally not modeled here):
@@ -1118,6 +1121,13 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
         });
       }
       ScriptType::ImportMap => {
+        // Import maps are only meaningful when module scripts are supported. When module scripts are
+        // disabled, treat `type="importmap"` the same way browsers without module support do: ignore
+        // it as an unknown script type (no execution and no load/error events).
+        if !self.options.supports_module_scripts {
+          return Ok(DiscoveredScript { id, actions });
+        }
+
         // HTML: import maps must be inline; `src` is invalid and must queue `error`.
         if element.src_attr_present {
           actions.push(ScriptSchedulerAction::QueueScriptEventTask {
@@ -3394,8 +3404,23 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn parser_inserted_importmap_executes_synchronously() -> Result<()> {
+  fn importmaps_are_ignored_when_module_scripts_not_supported() -> Result<()> {
+    // Browsers without module support treat `type="importmap"` like an unknown script type.
     let mut h = Harness::new();
+    h.discover(importmap_inline("MAP"))?;
+    h.run_event_loop()?;
+    assert!(
+      h.host.log.is_empty(),
+      "import maps must be ignored when module scripts are not supported"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_importmap_executes_synchronously() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
     h.discover(importmap_inline("MAP"))?;
     assert_eq!(
       h.host.log,
@@ -3406,7 +3431,9 @@ mod state_machine_tests {
 
   #[test]
   fn dynamic_importmap_executes_as_task() -> Result<()> {
-    let mut h = Harness::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
     h.discover_dynamic(importmap_inline_dynamic("MAP"))?;
     assert!(
       h.host.log.is_empty(),
@@ -3422,7 +3449,9 @@ mod state_machine_tests {
 
   #[test]
   fn importmap_scripts_with_src_queue_error_and_do_not_execute_inline_fallback() -> Result<()> {
-    let mut h = Harness::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
 
     let mut spec = classic_external("https://example.com/importmap.json", false, false);
     spec.script_type = ScriptType::ImportMap;

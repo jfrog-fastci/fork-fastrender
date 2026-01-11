@@ -169,8 +169,14 @@ where
       Ok(())
     }
     ScriptType::ImportMap => {
-      // Import maps are not executed by this dynamic insertion helper, but HTML still requires that
-      // `src` presence is an error and suppresses inline processing.
+      // Import maps are only meaningful when module scripts are supported. When modules are
+      // disabled, treat `type="importmap"` like an unknown script type and ignore it.
+      if !supports_module_scripts {
+        return Ok(());
+      }
+
+      // Import maps are not executed by this dynamic insertion helper yet, but `src` is invalid and
+      // must queue an `error` event task (and suppress inline processing).
       if spec.src_attr_present {
         event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
           host.dispatch_script_event(ScriptElementEvent::Error, &spec)

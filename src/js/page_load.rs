@@ -266,13 +266,13 @@ where
       return Ok(());
     }
 
-    // This orchestrator models only classic script execution. Import maps are not JavaScript and
-    // require a dedicated host hook (they register module specifier mappings for later module
-    // resolution).
+    // This orchestrator models only classic script execution. Import maps are not JavaScript; they
+    // register module specifier mappings for later module resolution when module scripts are
+    // enabled.
     //
-    // Still allow `type="importmap" src=...` to flow through the scheduler so it can queue the
-    // required `error` event task for invalid `src` usage, but ignore inline import maps so we don't
-    // execute their JSON source as a classic script.
+    // When module scripts are enabled, `type="importmap" src=...` is invalid and should still queue
+    // an `error` event task. Allow that case to flow through the scheduler, but ignore inline import
+    // maps so we don't execute their JSON source as a classic script.
     if spec.script_type == ScriptType::ImportMap && !spec.src_attr_present {
       return Ok(());
     }
