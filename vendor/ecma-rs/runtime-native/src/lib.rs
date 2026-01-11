@@ -42,6 +42,7 @@ pub mod gc_safe;
 pub mod async_abi;
 pub mod async_rt;
 mod async_runtime;
+pub mod promise_reactions;
 pub mod reactor;
 pub mod timer_wheel;
 pub mod time;

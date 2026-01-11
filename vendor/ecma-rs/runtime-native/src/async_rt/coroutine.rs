@@ -2,7 +2,7 @@ use crate::abi::PromiseRef;
 use crate::abi::RtCoroStatus;
 use crate::abi::RtCoroutineHeader;
 
-use super::promise::{promise_new, promise_outcome, promise_then, PromiseOutcome};
+use super::promise::{promise_new, promise_outcome, promise_register_reaction, PromiseOutcome};
 use super::strict_await_yields;
 use super::{queue_macrotask, TaskFn};
 
@@ -46,33 +46,61 @@ fn run_coroutine(coro: *mut RtCoroutineHeader) {
   }
 }
 
-struct AwaitContinuation {
+#[repr(C)]
+struct AwaitReaction {
+  node: crate::promise_reactions::PromiseReactionNode,
   coro: *mut RtCoroutineHeader,
-  awaited: PromiseRef,
 }
 
-extern "C" fn await_on_settle(data: *mut u8) {
-  // Safety: allocated by `coro_await`.
-  let cont = unsafe { Box::from_raw(data as *mut AwaitContinuation) };
+extern "C" fn await_reaction_run(
+  node: *mut crate::promise_reactions::PromiseReactionNode,
+  promise: crate::async_abi::PromiseRef,
+) {
+  let node = unsafe { &*(node as *mut AwaitReaction) };
+  let awaited = PromiseRef(promise.cast());
 
-  let (await_is_error, await_value, await_error) = match promise_outcome(cont.awaited) {
+  let (await_is_error, await_value, await_error) = match promise_outcome(awaited) {
     PromiseOutcome::Fulfilled(v) => (0, v, core::ptr::null_mut()),
     PromiseOutcome::Rejected(e) => (1, core::ptr::null_mut(), e),
     PromiseOutcome::Pending => {
-      // Shouldn't happen (callback only runs after settlement) but be robust: resubscribe.
-      promise_then(cont.awaited, await_on_settle, Box::into_raw(cont) as *mut u8);
+      // Should not happen (reactions are scheduled after settlement), but be robust: resubscribe.
+      let new_node = alloc_await_reaction(node.coro);
+      promise_register_reaction(awaited, new_node);
       return;
     }
   };
 
-  if !cont.coro.is_null() {
+  if !node.coro.is_null() {
     unsafe {
-      (*cont.coro).await_is_error = await_is_error;
-      (*cont.coro).await_value = await_value;
-      (*cont.coro).await_error = await_error;
+      (*node.coro).await_is_error = await_is_error;
+      (*node.coro).await_value = await_value;
+      (*node.coro).await_error = await_error;
     }
-    run_coroutine(cont.coro);
+    run_coroutine(node.coro);
   }
+}
+
+extern "C" fn await_reaction_drop(node: *mut crate::promise_reactions::PromiseReactionNode) {
+  unsafe {
+    drop(Box::from_raw(node as *mut AwaitReaction));
+  }
+}
+
+static AWAIT_REACTION_VTABLE: crate::promise_reactions::PromiseReactionVTable =
+  crate::promise_reactions::PromiseReactionVTable {
+    run: await_reaction_run,
+    drop: await_reaction_drop,
+  };
+
+fn alloc_await_reaction(coro: *mut RtCoroutineHeader) -> *mut crate::promise_reactions::PromiseReactionNode {
+  let node = Box::new(AwaitReaction {
+    node: crate::promise_reactions::PromiseReactionNode {
+      next: core::ptr::null_mut(),
+      vtable: &AWAIT_REACTION_VTABLE,
+    },
+    coro,
+  });
+  Box::into_raw(node) as *mut crate::promise_reactions::PromiseReactionNode
 }
 
 pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
@@ -137,6 +165,6 @@ pub(crate) fn coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next
     }
   }
 
-  let cont = Box::new(AwaitContinuation { coro, awaited });
-  promise_then(awaited, await_on_settle, Box::into_raw(cont) as *mut u8);
+  let node = alloc_await_reaction(coro);
+  promise_register_reaction(awaited, node);
 }

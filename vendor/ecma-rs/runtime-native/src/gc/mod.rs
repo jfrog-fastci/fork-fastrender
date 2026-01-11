@@ -38,6 +38,12 @@ pub struct ObjHeader {
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
 
+#[inline]
+pub(crate) fn align_up(value: usize, align: usize) -> usize {
+  debug_assert!(align.is_power_of_two());
+  value.wrapping_add(align - 1) & !(align - 1)
+}
+
 // `meta` layout:
 // - bit 0: forwarded bit (nursery only)
 // - bit 1: mark epoch (0/1)

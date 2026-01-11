@@ -51,10 +51,10 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 //   u8 bytes[..] (inline, capacity is a bucketed size)
 const INTERNED_PREFIX_SIZE: usize = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>();
 
-// Pointer offsets for interned strings: no GC pointer fields.
-//
-// `TypeDescriptor` stores offsets as `u32` byte offsets from the object base pointer.
-static NO_PTR_OFFSETS: [u32; 0] = [];
+ // Pointer offsets for interned strings: no GC pointer fields.
+ //
+ // `TypeDescriptor` stores offsets as `u32` byte offsets from the object base pointer.
+ static NO_PTR_OFFSETS: [u32; 0] = [];
 
 /// We allocate interned strings as *fixed-size* GC objects by rounding their inline byte storage up
 /// to a bucketed capacity (powers of two).

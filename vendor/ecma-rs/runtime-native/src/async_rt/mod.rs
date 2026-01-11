@@ -45,11 +45,12 @@ static POLL_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static STRICT_AWAIT_YIELDS: AtomicBool = AtomicBool::new(false);
 
 pub type TaskFn = extern "C" fn(*mut u8);
+pub type TaskDropFn = extern "C" fn(*mut u8);
 
-#[derive(Clone)]
 pub struct Task {
   callback: TaskFn,
   data: *mut u8,
+  drop: Option<TaskDropFn>,
   /// Optional GC root(s) that must stay alive until the task is executed.
   ///
   /// This is a placeholder integration point; the GC itself is not implemented
@@ -66,11 +67,47 @@ pub struct Task {
 // passed back to the callback on the single-threaded event loop.
 unsafe impl Send for Task {}
 
+impl Clone for Task {
+  fn clone(&self) -> Self {
+    if self.drop.is_some() {
+      // `Task` is cloned by the I/O reactor for persistent watchers. Tasks with owned drop hooks are
+      // one-shot (e.g. promise reaction jobs) and must not be cloned: cloning would result in
+      // double-free when both clones are dropped.
+      std::process::abort();
+    }
+    Self {
+      callback: self.callback,
+      data: self.data,
+      drop: None,
+      gc_root: self.gc_root.clone(),
+    }
+  }
+}
+
+impl Drop for Task {
+  fn drop(&mut self) {
+    let Some(drop) = self.drop else {
+      return;
+    };
+    drop(self.data);
+  }
+}
+
 impl Task {
   pub fn new(callback: TaskFn, data: *mut u8) -> Self {
     Self {
       callback,
       data,
+      drop: None,
+      gc_root: None,
+    }
+  }
+
+  pub fn new_with_drop(callback: TaskFn, data: *mut u8, drop: TaskDropFn) -> Self {
+    Self {
+      callback,
+      data,
+      drop: Some(drop),
       gc_root: None,
     }
   }
@@ -85,6 +122,7 @@ impl Task {
     Self {
       callback,
       data,
+      drop: None,
       gc_root: Some(gc::Root::new_unchecked(data)),
     }
   }

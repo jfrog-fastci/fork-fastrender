@@ -33,13 +33,18 @@ pub struct PromiseHeader {
   /// [`PromiseHeader::REJECTED`].
   pub state: AtomicU8,
 
-  /// Waiter list state for this promise.
+  /// Promise reaction list head.
+  ///
+  /// This is an intrusive singly-linked list of [`crate::promise_reactions::PromiseReactionNode`]
+  /// objects, stored as a raw pointer cast to `usize`.
+  ///
+  /// The list is pushed in LIFO order and drained by the runtime in FIFO order by reversing the
+  /// list before scheduling reaction jobs.
   ///
   /// Stored values:
-  /// - [`PromiseHeader::WAITERS_EMPTY`] (`0`): no waiters yet (only valid while pending).
-  /// - A `CoroutineRef` cast to `usize`: head of an intrusive singly-linked list (pending).
-  /// - [`PromiseHeader::WAITERS_CLOSED`]: promise is settled and no longer accepts waiters.
-  pub waiters: AtomicUsize,
+  /// - `0`: no reactions yet.
+  /// - `ptr`: a `*mut PromiseReactionNode` cast to `usize` (head of list).
+  pub reactions: AtomicUsize,
 
   /// Reserved for runtime flags (e.g. unhandled rejection tracking).
   pub flags: AtomicU8,
@@ -49,14 +54,6 @@ impl PromiseHeader {
   pub const PENDING: PromiseState = 0;
   pub const FULFILLED: PromiseState = 1;
   pub const REJECTED: PromiseState = 2;
-
-  pub const WAITERS_EMPTY: usize = 0;
-  /// Sentinel value stored in [`PromiseHeader::waiters`] indicating the promise is
-  /// settled and no longer accepts waiters.
-  ///
-  /// This must not be a valid coroutine pointer. The ABI relies on coroutine frames being
-  /// aligned to at least 2 bytes (true for any reasonable target with pointers).
-  pub const WAITERS_CLOSED: usize = 1;
 }
 
 /// Opaque pointer to a promise header (and therefore the start of a generated `Promise<T>`).
@@ -131,9 +128,6 @@ pub struct Coroutine {
 
   /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
   pub promise: PromiseRef,
-
-  /// Intrusive node used by [`PromiseHeader::waiters`].
-  pub next_waiter: *mut Coroutine,
 
   /// Reserved for runtime flags (e.g. scheduled/running bits).
   pub flags: u32,
