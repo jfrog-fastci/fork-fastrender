@@ -826,23 +826,15 @@ fn enumerate_roots_for_frame(
   caller_sp_override: Option<u64>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
-  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
-  // addition to GC statepoints. Identify statepoints by their layout (LLVM 18 observed): the first
-  // three locations are constant header entries (callconv, flags, deopt_count).
+  // `.llvm_stackmaps` may contain records other than GC statepoints (e.g. from
+  // `llvm.experimental.stackmap`). Detect statepoints by attempting to decode the
+  // callsite record using the LLVM 18 `gc.statepoint` layout.
   //
-  // Important: the StackMap record `patchpoint_id` is **not** a stable marker (LLVM supports
-  // overriding it via the `"statepoint-id"` callsite attribute), so do not rely on it to detect
-  // statepoints.
-  if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
-    return Ok(());
-  }
-
-  let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
-    WalkError::InvalidStatepoint {
-      return_addr: caller_ra,
-      source,
-    }
-  })?;
+  // If decode fails, treat this record as a non-statepoint and skip it.
+  let statepoint = match crate::statepoints::StatepointRecord::new(callsite.record) {
+    Ok(sp) => sp,
+    Err(_) => return Ok(()),
+  };
 
   let needs_sp = statepoint
     .gc_pairs()
@@ -955,16 +947,11 @@ fn enumerate_root_pairs_for_frame(
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
 ) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
-  if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
-    return Ok(Vec::new());
-  }
-
-  let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
-    WalkError::InvalidStatepoint {
-      return_addr: caller_ra,
-      source,
-    }
-  })?;
+  // Only statepoint callsites contribute GC root relocation pairs.
+  let statepoint = match crate::statepoints::StatepointRecord::new(callsite.record) {
+    Ok(sp) => sp,
+    Err(_) => return Ok(Vec::new()),
+  };
 
   let needs_sp = statepoint
     .gc_pairs()

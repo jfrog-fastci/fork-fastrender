@@ -108,28 +108,22 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
     //   GC relocation pairs.
     //
     // Deopt operand locations are *not* relocation pairs and must not be validated as such (they can
-    // be any location kind). Use `StatepointRecord` to skip over them when the record structurally
-    // looks like a statepoint (3 leading constants).
-    let looks_like_statepoint = crate::statepoints::looks_like_statepoint_record(record);
-
-    let filtered: Vec<&Location> = if looks_like_statepoint {
-      let statepoint = StatepointRecord::new(record).map_err(|_| ValidationError::OddLocationCount {
-        pc,
-        patchpoint_id,
-        instruction_offset,
-        count: record.locations.len(),
-      })?;
-      statepoint
+    // be any location kind). If the record decodes as a `gc.statepoint`, use `StatepointRecord` to
+    // skip over deopt operands and validate only the `(base, derived)` GC-live pairs.
+    //
+    // If decode fails, treat this record as a non-statepoint stackmap (e.g. from
+    // `llvm.experimental.stackmap`) and validate its non-constant locations as plain pairs.
+    let filtered: Vec<&Location> = match StatepointRecord::new(record) {
+      Ok(statepoint) => statepoint
         .gc_pairs()
         .iter()
         .flat_map(|pair| [&pair.base, &pair.derived])
-        .collect()
-    } else {
-      record
+        .collect(),
+      Err(_) => record
         .locations
         .iter()
         .filter(|loc| !matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
-        .collect()
+        .collect(),
     };
 
     if filtered.len() % 2 != 0 {
