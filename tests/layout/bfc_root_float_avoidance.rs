@@ -69,6 +69,62 @@ fn bfc_root_block_is_pushed_down_when_too_wide_to_fit_next_to_floats() {
 }
 
 #[test]
+fn bfc_root_auto_width_shrinks_to_fit_next_to_floats() {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::InlineBlock;
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(50.0));
+  float_style.height = Some(Length::px(20.0));
+  let float_node =
+    BoxNode::new_inline_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  // `overflow:hidden` establishes a BFC. When `width:auto`, the used width should shrink to the
+  // remaining available width next to floats instead of being forced below them.
+  let mut bfc_style = ComputedStyle::default();
+  bfc_style.display = Display::Block;
+  bfc_style.overflow_x = Overflow::Hidden;
+  bfc_style.overflow_y = Overflow::Hidden;
+  bfc_style.height = Some(Length::px(10.0));
+  let bfc_node = BoxNode::new_block(Arc::new(bfc_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![float_node, bfc_node],
+  );
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+
+  let bfc_frags: Vec<_> = fragment
+    .children
+    .iter()
+    .filter(|child| (child.bounds.width() - 150.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01)
+    .collect();
+  assert_eq!(
+    bfc_frags.len(),
+    1,
+    "expected a single BFC root fragment; got {} children",
+    fragment.children.len()
+  );
+  let bfc_frag = bfc_frags[0];
+  assert!(
+    (bfc_frag.bounds.x() - 50.0).abs() < 0.01,
+    "expected BFC root block to start to the right of the float at x=50, got x={:.2}",
+    bfc_frag.bounds.x()
+  );
+  assert!(
+    bfc_frag.bounds.y().abs() < 0.01,
+    "expected BFC root block to stay on the same line as the float at y=0, got y={:.2}",
+    bfc_frag.bounds.y()
+  );
+}
+
+#[test]
 fn bfc_root_negative_margins_do_not_get_clamped_when_no_floats_overlap() {
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;

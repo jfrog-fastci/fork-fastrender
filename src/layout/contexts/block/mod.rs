@@ -1535,6 +1535,61 @@ impl BlockFormattingContext {
       }
     }
 
+    // CSS 2.1 §9.5.1: A block formatting context (BFC) root's border box must not overlap the
+    // margin boxes of floats in the same formatting context.
+    //
+    // FastRender already performs float avoidance for BFC roots by shifting/clamping their
+    // horizontal position, and (when the border box is too wide to fit next to floats) pushing the
+    // box down below them.
+    //
+    // However, browsers allow *auto-sized* BFC roots to shrink to the available width next to
+    // floats rather than always being pushed down. This is a common pattern for float-based
+    // two-column layouts (e.g. `float:left` sidebar + `overflow:hidden` content column).
+    //
+    // Implement this behavior by clamping the used content inline-size when:
+    // - The element is in-flow (not itself a float / abspos)
+    // - The inline-size is `auto`
+    // - There are overlapping floats that reduce the available width band at this Y position
+    //
+    // Min/max sizing has already been applied above; do not shrink below the computed `min-width`
+    // content size. If the minimum cannot fit in the float band, later float avoidance will still
+    // push the box down below floats.
+    if width_auto
+      && establishes_bfc(style)
+      && !style.float.is_floating()
+      && matches!(style.position, Position::Static | Position::Relative)
+      && (if inline_is_horizontal {
+        constraints.used_border_box_width.is_none()
+      } else {
+        constraints.used_border_box_height.is_none()
+      })
+    {
+      if let Some(ctx) = external_float_ctx.as_deref() {
+        let query_y = external_float_base_y + box_y;
+        let (_, available_width) = ctx.available_width_at_y_in_containing_block(
+          query_y,
+          external_float_base_x,
+          containing_width,
+        );
+        // Allow a small epsilon to avoid layout instability from tiny float rounding errors.
+        const FLOAT_FIT_EPSILON: f32 = 0.01;
+        let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
+        if has_overlapping_floats {
+          let inline_edges = computed_width.border_left
+            + computed_width.padding_left
+            + computed_width.padding_right
+            + computed_width.border_right;
+          let available_content = (available_width - inline_edges).max(0.0);
+          if available_content.is_finite()
+            && available_content + FLOAT_FIT_EPSILON < computed_width.content_width
+            && available_content + FLOAT_FIT_EPSILON >= min_width
+          {
+            computed_width.content_width = available_content;
+          }
+        }
+      }
+    }
+
     let aspect_ratio_block_size_hint = if height_auto && specified_height.is_none() {
       match style.aspect_ratio {
         crate::style::types::AspectRatio::Ratio(ratio)
