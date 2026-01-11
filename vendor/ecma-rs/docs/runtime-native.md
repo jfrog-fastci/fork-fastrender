@@ -551,8 +551,8 @@ struct StackMapRecord {
   uint16_t NumLiveOuts;
   struct LiveOut {
     uint16_t DwarfRegNum;
+    uint8_t  Reserved;          // = 0
     uint8_t  Size;
-    uint8_t  Reserved;
   } LiveOuts[NumLiveOuts];
 
   // padding to 8-byte alignment
