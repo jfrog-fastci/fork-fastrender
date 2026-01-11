@@ -151,7 +151,7 @@ pub extern "C" fn allocate(_size: i64) -> *mut u8 {
         core::arch::asm!(
             "mov {0}, [rbp + 8]",
             out(reg) ra,
-            options(nostack, nomem, preserves_flags),
+            options(nostack, readonly, preserves_flags),
         );
     }
     LAST_RA.store(ra, Ordering::Relaxed);
@@ -242,4 +242,3 @@ fn main() {
 fn inprocess_loader_finds_statepoint_callsite_in_pie_binary() -> io::Result<()> {
     Ok(())
 }
-
