@@ -37,6 +37,22 @@ members = [
   "semantic-js",
   "typecheck-ts-cli",
 ]
+# By default, keep `cargo test`/`cargo check` lightweight and free of heavy system deps
+# (e.g. LLVM for `native-js`/`runtime-native`). Full coverage is still available via `--workspace`.
+default-members = [
+  "diagnostics",
+  "emit-js",
+  "hir-js",
+  "minify-js",
+  "parse-js",
+  "runtime-js",
+  "semantic-js",
+  "typecheck-ts",
+  "types-ts-interned",
+  "vm-js",
+  "webidl",
+  "webidl-vm-js",
+]
 exclude = ["fuzz"]
 
 [workspace.package]

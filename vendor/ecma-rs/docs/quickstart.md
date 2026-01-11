@@ -7,6 +7,15 @@ If you only want to build and run the core crates/CLIs, you **do not** need Node
 If you're working on the **native compiler** track described in [`EXEC.plan.md`](../EXEC.plan.md), see
 [`docs/native_compiler_quickstart.md`](./native_compiler_quickstart.md) for strict-native + VM-oracle guidance.
 
+## Workspace defaults (baseline vs full workspace)
+
+This workspace uses Cargo's `default-members` so a plain `cargo test` stays lightweight:
+
+- `cargo test` / `cargo check` runs the **default members** (core crates that do not require LLVM or external corpora).
+- `cargo test --workspace` runs **everything** in the workspace (includes optional harnesses + the LLVM-backed native compiler crates).
+
+For LLVM-backed crates (e.g. `native-js`, `runtime-native`), use [`scripts/cargo_llvm.sh`](../scripts/cargo_llvm.sh) and ensure LLVM 18 is installed (`scripts/check_system.sh`).
+
 ## Nested-workspace note (when vendored in FastRender)
 
 In the FastRender mono-repo, `ecma-rs` lives under `vendor/ecma-rs/` and is **not** part of the

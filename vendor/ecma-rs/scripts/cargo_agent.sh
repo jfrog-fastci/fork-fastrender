@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # In this repository, the high-throughput cargo wrapper lives at `<repo-root>/scripts/cargo_agent.sh`,
 # but Cargo needs to run from `vendor/ecma-rs/` so it picks up:
-# - `vendor/ecma-rs/Cargo.toml` (the correct workspace)
+# - `vendor/ecma-rs/Cargo.toml` (the correct workspace + `default-members`)
 # - `vendor/ecma-rs/rust-toolchain.toml` (the pinned compiler version)
 #
 # Usage (from repo root):
@@ -13,6 +13,7 @@ set -euo pipefail
 #
 # Usage (from vendor/ecma-rs):
 #   bash scripts/cargo_agent.sh test -p hir-js
+#   # (no `--workspace` => runs default members only)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
