@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "runtime_native.h"
 
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #define BYTES_LIT(s) ((const uint8_t*)(s)), (sizeof(s) - 1)
 
@@ -12,6 +16,31 @@ static int check(int cond) {
 static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;
+}
+
+static void* enqueue_microtask_from_thread(void* arg) {
+  // Register this OS thread with the runtime so allocator + safepoint machinery
+  // is initialized. This also documents that embedders should treat queue
+  // operations as "mutator" interactions.
+  rt_thread_init(1);
+
+  // Give the main thread time to enter `rt_async_wait()` so this exercise the
+  // cross-thread wakeup path.
+  struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 50 * 1000 * 1000,
+  };
+  (void)nanosleep(&delay, NULL);
+
+  int* flag = (int*)arg;
+  Microtask task = {
+    .func = set_int,
+    .data = (uint8_t*)flag,
+  };
+  rt_queue_microtask(task);
+
+  rt_thread_deinit();
+  return NULL;
 }
 
 typedef struct MicrotaskDropCtx {
@@ -46,6 +75,8 @@ int main(void) {
   // code or participating in GC safepoints.
   rt_thread_init(0);
   int rc = 0;
+  pthread_t wake_thread;
+  int wake_thread_started = 0;
   static const RtShapeDescriptor kShapes[1] = {
     {
       .size = 16,
@@ -125,6 +156,24 @@ int main(void) {
   if (check(drop_ctx.dropped == 1)) { rc = 17; goto done; }
   if (check(rooted_microtask_ran == 1)) { rc = 19; goto done; }
 
+  // Cross-thread enqueue should wake an event loop thread blocked in `rt_async_wait`.
+  int wake_microtask_ran = 0;
+  if (pthread_create(&wake_thread, NULL, enqueue_microtask_from_thread, &wake_microtask_ran) != 0) {
+    rc = 20;
+    goto done;
+  }
+  wake_thread_started = 1;
+
+  rt_async_wait();
+  // `rt_async_wait` should only park/unpark; it must not run microtasks itself.
+  if (check(wake_microtask_ran == 0)) { rc = 21; goto done; }
+
+  rt_drain_microtasks();
+  if (check(wake_microtask_ran == 1)) { rc = 22; goto done; }
+
+  if (pthread_join(wake_thread, NULL) != 0) { rc = 23; goto done; }
+  wake_thread_started = 0;
+
   enum { N = 4096 };
   uint32_t out[N];
   memset(out, 0, sizeof(out));
@@ -134,6 +183,9 @@ int main(void) {
   }
 
 done:
+  if (wake_thread_started) {
+    (void)pthread_join(wake_thread, NULL);
+  }
   rt_thread_deinit();
   return rc;
 }
