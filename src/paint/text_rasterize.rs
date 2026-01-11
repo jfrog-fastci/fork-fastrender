@@ -1020,8 +1020,8 @@ impl TextRasterizer {
 
   fn map_point(transform: Transform, x: f32, y: f32) -> (f32, f32) {
     (
-      transform.sx * x + transform.ky * y + transform.tx,
-      transform.kx * x + transform.sy * y + transform.ty,
+      transform.sx * x + transform.kx * y + transform.tx,
+      transform.ky * x + transform.sy * y + transform.ty,
     )
   }
 
@@ -1061,9 +1061,9 @@ impl TextRasterizer {
     clip_mask: Option<&Mask>,
   ) -> Result<()> {
     // Subpixel AA assumes the LCD subpixel grid is aligned with the target surface X axis.
-    // Avoid applying it when the glyph is rotated/skewed in Y (nonzero kx), which would map
-    // "horizontal" subpixels onto a non-horizontal edge.
-    if transform.kx.abs() > 1e-6 {
+    // Avoid applying it when the glyph is rotated/skewed, which would map "horizontal" subpixels
+    // onto a non-horizontal edge.
+    if transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6 {
       return Err(RenderError::RasterizationFailed {
         reason: "subpixel AA unsupported for non-axis-aligned glyph transform".to_string(),
       }
@@ -1113,7 +1113,16 @@ impl TextRasterizer {
     let dst_h = dst.height() as i32;
     let dst_w_usize = dst.width() as usize;
     let mask_data = mask_pixmap.data();
-    let clip_data = clip_mask.map(Mask::data);
+    let clip_data = match clip_mask {
+      Some(mask) if mask.width() == dst.width() && mask.height() == dst.height() => Some(mask.data()),
+      Some(_) => {
+        return Err(RenderError::RasterizationFailed {
+          reason: "subpixel AA clip mask size mismatch".to_string(),
+        }
+        .into());
+      }
+      None => None,
+    };
     let dst_data = dst.data_mut();
     let width_sub_i32 = width_sub as i32;
     let width_sub_usize = width_sub as usize;
@@ -3190,5 +3199,69 @@ mod tests {
     assert!((transform.sy + 2.0).abs() < 1e-6);
     assert_eq!(transform.tx, 10.0);
     assert_eq!(transform.ty, 20.0);
+  }
+
+  #[test]
+  fn subpixel_text_rasterization_produces_color_fringes_only_on_opaque_backdrops() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_SUBPIXEL_AA".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.subpixel_aa_enabled);
+
+      let mut pixmap = Pixmap::new(16, 4).unwrap();
+      pixmap.fill(tiny_skia::Color::from_rgba8(128, 128, 128, 255));
+      let rect = tiny_skia::Rect::from_xywh(0.0, 0.0, 5.1, 4.0).unwrap();
+      let path = tiny_skia::PathBuilder::from_rect(rect);
+      rasterizer
+        .fill_path_subpixel_aa(&mut pixmap, &path, Transform::identity(), 1.0, Rgba::WHITE, None)
+        .unwrap();
+
+      let mut fringe = false;
+      for px in pixmap.data().chunks_exact(4) {
+        if px[3] != 255 {
+          continue;
+        }
+        if px[0] == 128 && px[1] == 128 && px[2] == 128 {
+          continue;
+        }
+        if px[0] == 255 && px[1] == 255 && px[2] == 255 {
+          continue;
+        }
+        if px[0] != px[1] || px[1] != px[2] {
+          fringe = true;
+          break;
+        }
+      }
+      assert!(fringe);
+
+      let mut transparent = Pixmap::new(16, 4).unwrap();
+      transparent.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
+      rasterizer
+        .fill_path_subpixel_aa(
+          &mut transparent,
+          &path,
+          Transform::identity(),
+          1.0,
+          Rgba::WHITE,
+          None,
+        )
+        .unwrap();
+      assert!(
+        transparent
+          .data()
+          .chunks_exact(4)
+          .any(|px| px[3] > 0 && px[3] < 255)
+      );
+      for px in transparent.data().chunks_exact(4) {
+        if px[3] == 0 {
+          continue;
+        }
+        assert_eq!(px[0], px[1]);
+        assert_eq!(px[1], px[2]);
+      }
+    });
   }
 }
