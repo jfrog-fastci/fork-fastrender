@@ -1485,19 +1485,13 @@ impl TextItem {
         }
       }
 
-      let mut cumulative_shift = 0.0;
       let mut new_advance = 0.0;
 
       for (idx, glyph) in run.glyphs.iter_mut().enumerate() {
         let extra = extra_by_glyph[idx];
-        match axis {
-          InlineAxis::Horizontal => glyph.x_offset += cumulative_shift,
-          InlineAxis::Vertical => glyph.y_offset += cumulative_shift,
-        }
         if extra != 0.0 {
           add_inline_advance(glyph, axis, extra);
         }
-        cumulative_shift += extra;
         new_advance += glyph_inline_advance(glyph, axis);
       }
 
@@ -1848,19 +1842,13 @@ impl TextItem {
         }
       }
 
-      let mut cumulative_shift = 0.0;
       let mut new_advance = 0.0;
 
       for (idx, glyph) in run.glyphs.iter_mut().enumerate() {
         let extra = extra_by_glyph[idx];
-        match axis {
-          InlineAxis::Horizontal => glyph.x_offset += cumulative_shift,
-          InlineAxis::Vertical => glyph.y_offset += cumulative_shift,
-        }
         if extra != 0.0 {
           add_inline_advance(glyph, axis, extra);
         }
-        cumulative_shift += extra;
         new_advance += glyph_inline_advance(glyph, axis);
       }
 
@@ -6572,8 +6560,16 @@ mod tests {
   use crate::style::types::WritingMode;
   use crate::style::ComputedStyle;
   use crate::text::font_db::FontDatabase;
+  use crate::text::font_db::FontFaceMetricsOverrides;
+  use crate::text::font_db::FontStretch;
+  use crate::text::font_db::FontStyle;
+  use crate::text::font_db::FontWeight;
+  use crate::text::font_db::LoadedFont;
   use crate::text::font_loader::FontContext;
   use crate::text::line_break::find_break_opportunities;
+  use crate::text::pipeline::Direction as PipelineDirection;
+  use crate::text::pipeline::GlyphPosition;
+  use crate::text::pipeline::RunRotation;
   use crate::text::pipeline::ShapingPipeline;
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ImageDecodingAttribute;
@@ -6749,6 +6745,73 @@ mod tests {
       Direction::Ltr => crate::text::pipeline::Direction::LeftToRight,
       Direction::Rtl => crate::text::pipeline::Direction::RightToLeft,
     }
+  }
+
+  fn make_synthetic_font() -> Arc<LoadedFont> {
+    Arc::new(LoadedFont {
+      id: None,
+      data: Arc::new(Vec::new()),
+      index: 0,
+      face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
+      family: "Test".to_string(),
+      weight: FontWeight::NORMAL,
+      style: FontStyle::Normal,
+      stretch: FontStretch::Normal,
+    })
+  }
+
+  fn make_synthetic_run(text: &str, advance_per_glyph: f32) -> ShapedRun {
+    let glyph_count = text.chars().count();
+    let mut glyphs = Vec::with_capacity(glyph_count);
+    for idx in 0..glyph_count {
+      glyphs.push(GlyphPosition {
+        glyph_id: idx as u32,
+        cluster: idx as u32,
+        x_offset: 0.0,
+        y_offset: 0.0,
+        x_advance: advance_per_glyph,
+        y_advance: 0.0,
+      });
+    }
+    let advance = advance_per_glyph * glyph_count as f32;
+
+    ShapedRun {
+      text: text.to_string(),
+      start: 0,
+      end: text.len(),
+      glyphs,
+      direction: PipelineDirection::LeftToRight,
+      level: 0,
+      advance,
+      font: make_synthetic_font(),
+      font_size: 16.0,
+      baseline_shift: 0.0,
+      language: None,
+      features: Arc::from(Vec::new()),
+      synthetic_bold: 0.0,
+      synthetic_oblique: 0.0,
+      rotation: RunRotation::None,
+      palette_index: 0,
+      palette_overrides: Arc::new(Vec::new()),
+      palette_override_hash: 0,
+      variations: Vec::new(),
+      scale: 1.0,
+    }
+  }
+
+  fn glyph_x_positions(runs: &[ShapedRun]) -> Vec<f32> {
+    let mut out = Vec::new();
+    let mut run_origin = 0.0;
+    for run in runs {
+      let mut pen_x = run_origin;
+      for glyph in &run.glyphs {
+        out.push(pen_x + glyph.x_offset);
+        pen_x += glyph.x_advance;
+      }
+      run_origin += run.advance;
+    }
+    out
   }
 
   fn make_builder_with_base(width: f32, base: Level) -> LineBuilder<'static> {
@@ -10451,6 +10514,67 @@ mod tests {
 
     let expected_extra = style.letter_spacing * (text.chars().count().saturating_sub(1) as f32);
     assert!((spaced_width - base_width - expected_extra).abs() < 0.01);
+  }
+
+  #[test]
+  fn letter_spacing_does_not_shift_glyph_offsets() {
+    let text = "abc";
+    let mut runs = vec![make_synthetic_run(text, 10.0)];
+    let base_positions = glyph_x_positions(&runs);
+
+    TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 0.0);
+    let spaced_positions = glyph_x_positions(&runs);
+
+    assert_eq!(base_positions.len(), 3);
+    assert_eq!(spaced_positions.len(), 3);
+    assert_eq!(spaced_positions[0], base_positions[0]);
+    assert!(
+      (spaced_positions[1] - base_positions[1] - 2.0).abs() < f32::EPSILON,
+      "expected second glyph shift to equal letter-spacing"
+    );
+    assert!(
+      (spaced_positions[2] - base_positions[2] - 4.0).abs() < f32::EPSILON,
+      "expected third glyph shift to equal 2 * letter-spacing"
+    );
+
+    assert!(
+      runs[0].glyphs.iter().all(|g| g.x_offset == 0.0),
+      "spacing should not rewrite glyph offsets; only advances should change"
+    );
+  }
+
+  #[test]
+  fn justification_does_not_shift_glyph_offsets() {
+    let text = "a b";
+    let runs = vec![make_synthetic_run(text, 10.0)];
+    let mut item = TextItem::new(
+      runs,
+      text.to_string(),
+      make_strut_metrics(),
+      find_break_opportunities(text),
+      Vec::new(),
+      Arc::new(ComputedStyle::default()),
+      Direction::Ltr,
+    );
+    let base_positions = glyph_x_positions(&item.runs);
+
+    let count = item.apply_inter_word_justification(2.0);
+    let justified_positions = glyph_x_positions(&item.runs);
+
+    assert_eq!(count, 1);
+    assert_eq!(base_positions.len(), 3);
+    assert_eq!(justified_positions.len(), 3);
+    assert_eq!(justified_positions[0], base_positions[0]);
+    assert_eq!(justified_positions[1], base_positions[1]);
+    assert!(
+      (justified_positions[2] - base_positions[2] - 2.0).abs() < f32::EPSILON,
+      "expected last glyph to shift by exactly the justification delta"
+    );
+
+    assert!(
+      item.runs[0].glyphs.iter().all(|g| g.x_offset == 0.0),
+      "justification should not rewrite glyph offsets; only advances should change"
+    );
   }
 
   #[test]
