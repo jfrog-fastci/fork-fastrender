@@ -27,6 +27,9 @@ llvm-readobj-18 --stackmap <file>.o
 llvm-readobj-18 -x .llvm_stackmaps <file>.o
 ```
 
+Some reproducers require extra `llc` flags (e.g. to allow keeping GC roots in
+registers); see the comments at the top of each `.ll`.
+
 ## StackMap v3 binary layout (little-endian)
 
 ### Section header
@@ -151,6 +154,54 @@ Runtime consequences:
 All byte dumps below are `llvm-readobj-18 -x .llvm_stackmaps <obj>`.
 
 ### LocationKind = 1 (Register)
+
+#### Statepoint `gc-live` root kept in a register
+
+IR: `investigation/llvm_stackmaps/statepoint_gc_live_register.ll`
+
+Requires `llc` flags:
+
+```bash
+llc-18 -O2 -filetype=obj \
+  -fixup-allow-gcptr-in-csr \
+  -max-registers-for-gc-values=1 \
+  <file>.sp.bc -o <file>.o
+```
+
+`llvm-readobj-18 --stackmap`:
+
+```text
+Record ID: 2882400000, instruction offset: 9
+  5 locations:
+    #1: Constant 0, size: 8
+    #2: Constant 0, size: 8
+    #3: Constant 0, size: 8
+    #4: Register R#3, size: 8
+    #5: Register R#3, size: 8
+```
+
+Bytes:
+
+```text
+Hex dump of section '.llvm_stackmaps':
+0x00000000 03000000 01000000 00000000 01000000 ................
+0x00000010 00000000 00000000 08000000 00000000 ................
+0x00000020 01000000 00000000 00efcdab 00000000 ................
+0x00000030 09000000 00000500 04000800 00000000 ................
+0x00000040 00000000 04000800 00000000 00000000 ................
+0x00000050 04000800 00000000 00000000 01000800 ................
+0x00000060 03000000 00000000 01000800 03000000 ................
+0x00000070 00000000 00000000 00000000 00000000 ................
+```
+
+Decoding a `Register` `Location` (12 bytes):
+
+```text
+01 00 08 00  03 00 00 00  00 00 00 00
+Kind=1 (Register), DwarfRegNum=3 (RBX), Size=8
+```
+
+#### `llvm.experimental.stackmap` operand in a register (non-statepoint)
 
 IR: `investigation/llvm_stackmaps/stackmap_register.ll`
 
