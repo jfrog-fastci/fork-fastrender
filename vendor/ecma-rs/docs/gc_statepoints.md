@@ -20,8 +20,8 @@ See also (repo-local, complementary):
 
 The ABI assumptions documented here are guarded by fast regression scripts:
 
-- `vendor/ecma-rs/scripts/test_stackmap_abi.sh` (return PC + SP base)
-- `vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh` (flags range + patch_bytes lowering)
+- `scripts/test_stackmap_abi.sh` (return PC + SP base)
+- `scripts/test_statepoint_flags_patchbytes.sh` (flags range + patch_bytes lowering)
 
 ---
 
