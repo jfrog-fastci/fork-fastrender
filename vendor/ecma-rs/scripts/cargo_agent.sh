@@ -9,7 +9,7 @@ set -euo pipefail
 # - `vendor/ecma-rs/rust-toolchain.toml` (the pinned compiler version)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ECMA_RS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-cd "${REPO_ROOT}"
-exec bash "${REPO_ROOT}/../../scripts/cargo_agent.sh" "$@"
+cd "${ECMA_RS_ROOT}"
+exec bash "${ECMA_RS_ROOT}/../../scripts/cargo_agent.sh" "$@"

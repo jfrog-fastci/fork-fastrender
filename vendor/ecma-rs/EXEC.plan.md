@@ -81,15 +81,16 @@ prlimit --version
 **1. Always use the wrapper scripts:**
 ```bash
 # CORRECT:
-bash scripts/cargo_agent.sh build --release -p native-js
-bash scripts/cargo_agent.sh test -p effect-js --lib
+bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
 
 # WRONG (will spawn uncontrolled parallelism):
 cargo build
 cargo test
 ```
 
-The wrapper (`scripts/cargo_agent.sh`) enforces:
+For ecma-rs workspace builds (this nested workspace), use `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`.
+It `cd`s into `vendor/ecma-rs/` and delegates to the top-level `scripts/cargo_agent.sh` wrapper, which enforces:
 - Slot-based concurrency limiting (prevents cargo stampedes)
 - Per-command RAM cap via `RLIMIT_AS` (default 64GB)
 - Reasonable test thread counts
@@ -97,12 +98,12 @@ The wrapper (`scripts/cargo_agent.sh`) enforces:
 **2. Scope your cargo commands:**
 ```bash
 # CORRECT (scoped to specific crate):
-bash scripts/cargo_agent.sh test -p native-js --lib
-bash scripts/cargo_agent.sh build -p effect-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
+bash vendor/ecma-rs/scripts/cargo_agent.sh build -p effect-js
 
 # WRONG (compiles entire workspace):
-bash scripts/cargo_agent.sh build --all
-bash scripts/cargo_agent.sh test
+bash vendor/ecma-rs/scripts/cargo_agent.sh build --all
+bash vendor/ecma-rs/scripts/cargo_agent.sh test
 ```
 
 **3. LLVM operations need extra RAM:**
@@ -114,23 +115,23 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 
 # Or set manually:
-FASTR_CARGO_LIMIT_AS=96G bash scripts/cargo_agent.sh test -p native-js --lib
+FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
 
 # For full release builds with LTO (very hungry):
-FASTR_CARGO_LIMIT_AS=128G bash scripts/cargo_agent.sh build --release -p native-js
+FASTR_CARGO_LIMIT_AS=128G bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
 ```
 
 **4. Don't artificially limit parallelism:**
 ```bash
 # WRONG (too conservative - wastes resources):
-FASTR_CARGO_JOBS=1 bash scripts/cargo_agent.sh build ...
+FASTR_CARGO_JOBS=1 bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
 
 # RIGHT (let the wrapper decide based on available slots):
-bash scripts/cargo_agent.sh build ...
+bash vendor/ecma-rs/scripts/cargo_agent.sh build ...
 
 # RIGHT (if you need to limit for a specific reason, document why):
 # Reduce parallelism because this test spawns subprocesses
-FASTR_CARGO_JOBS=8 bash scripts/cargo_agent.sh test ...
+FASTR_CARGO_JOBS=8 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
 ```
 
 **5. Long-running processes need timeouts:**
@@ -144,13 +145,13 @@ timeout 600 bash scripts/run_limited.sh --as 32G -- ./target/release/my_binary
 
 **6. Clean up disk when over budget:**
 ```bash
-# Before long loops, check target/ size:
+# Before long loops, check vendor/ecma-rs/target/ size:
 TARGET_MAX_GB="${TARGET_MAX_GB:-400}"
-if [[ -d target ]]; then
-  size_gb=$(du -sg target 2>/dev/null | cut -f1 || echo 0)
+if [[ -d vendor/ecma-rs/target ]]; then
+  size_gb=$(du -sg vendor/ecma-rs/target 2>/dev/null | cut -f1 || echo 0)
   if [[ "${size_gb}" -ge "${TARGET_MAX_GB}" ]]; then
-    echo "target/ at ${size_gb}GB, cleaning..." >&2
-    bash scripts/cargo_agent.sh clean
+    echo "vendor/ecma-rs/target/ at ${size_gb}GB, cleaning..." >&2
+    bash vendor/ecma-rs/scripts/cargo_agent.sh clean
   fi
 fi
 ```
@@ -178,21 +179,21 @@ fi
 
 ```bash
 # Standard build/test (most operations):
-bash scripts/cargo_agent.sh build -p <crate>
-bash scripts/cargo_agent.sh test -p <crate> --lib
+bash vendor/ecma-rs/scripts/cargo_agent.sh build -p <crate>
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p <crate> --lib
 
 # LLVM-heavy operations (native-js, runtime-native):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 
 # Or with explicit limit:
-FASTR_CARGO_LIMIT_AS=96G bash scripts/cargo_agent.sh <command>
+FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
 
 # Running binaries:
 bash scripts/run_limited.sh --as 32G --cpu 300 -- ./target/release/binary
 
 # Check if target/ needs cleaning:
-du -sh target/
+du -sh vendor/ecma-rs/target/
 ```
 
 ---
