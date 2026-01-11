@@ -553,6 +553,13 @@ pub fn validate_native_strict_body(
                 ));
               }
 
+              let is_call_or_apply =
+                (object_key_is_ident(&member.property, call_name)
+                  || object_key_is_string(&member.property, "call")
+                  || object_key_is_literal_string(body, &member.property, "call"))
+                  || (object_key_is_ident(&member.property, apply_name)
+                    || object_key_is_string(&member.property, "apply")
+                    || object_key_is_literal_string(body, &member.property, "apply"));
               if is_call_or_apply {
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
