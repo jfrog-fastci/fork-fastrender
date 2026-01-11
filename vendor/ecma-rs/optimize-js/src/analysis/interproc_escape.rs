@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct FnEscapeSummary {
   /// For each parameter `i`, the escape state of the value passed for that parameter.
   pub param_escape: Vec<EscapeState>,
-  /// Parameter indices that may be returned/thrown by the function (i.e. returned by alias).
+  /// Parameter indices that may be returned by the function (i.e. returned by alias).
   pub returns_param: BTreeSet<usize>,
+  /// Parameter indices that may be thrown by the function (i.e. thrown by alias).
+  pub throws_param: BTreeSet<usize>,
 }
 
 impl FnEscapeSummary {
@@ -20,6 +22,7 @@ impl FnEscapeSummary {
     Self {
       param_escape: vec![EscapeState::NoEscape; param_count],
       returns_param: BTreeSet::new(),
+      throws_param: BTreeSet::new(),
     }
   }
 
@@ -36,6 +39,10 @@ impl FnEscapeSummary {
     let before = self.returns_param.len();
     self.returns_param.extend(other.returns_param.iter().copied());
     changed |= self.returns_param.len() != before;
+
+    let before = self.throws_param.len();
+    self.throws_param.extend(other.throws_param.iter().copied());
+    changed |= self.throws_param.len() != before;
     changed
   }
 }
@@ -260,8 +267,7 @@ fn compute_cfg_escape_summary(
         InstTyp::Return => {
           if let Some(value) = inst.as_return() {
             for idx in params_for_arg(&var_params, value) {
-              summary.param_escape[idx] =
-                summary.param_escape[idx].join(EscapeState::ReturnEscape);
+              summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::ReturnEscape);
               summary.returns_param.insert(idx);
             }
           }
@@ -269,7 +275,7 @@ fn compute_cfg_escape_summary(
         InstTyp::Throw => {
           for idx in params_for_arg(&var_params, inst.as_throw()) {
             summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::ReturnEscape);
-            summary.returns_param.insert(idx);
+            summary.throws_param.insert(idx);
           }
         }
         InstTyp::ForeignStore | InstTyp::UnknownStore => {

@@ -638,7 +638,14 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
                 .unwrap_or(EscapeState::Unknown);
 
               let mapped = match callee_state {
-                EscapeState::NoEscape | EscapeState::ReturnEscape => EscapeState::NoEscape,
+                EscapeState::NoEscape => EscapeState::NoEscape,
+                EscapeState::ReturnEscape => {
+                  if callee_summary.throws_param.contains(&k) {
+                    EscapeState::ReturnEscape
+                  } else {
+                    EscapeState::NoEscape
+                  }
+                }
                 EscapeState::GlobalEscape | EscapeState::Unknown => callee_state,
                 EscapeState::ArgEscape(j) => {
                   let receiver_ext = args.get(j).map(|a| ext_for_arg(&var_ext, a)).unwrap_or(EscapeState::GlobalEscape);

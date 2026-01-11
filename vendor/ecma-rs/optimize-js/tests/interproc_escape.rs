@@ -122,6 +122,50 @@ fn returning_helper_call_result_marks_alloc_as_return_escape() {
 }
 
 #[test]
+fn calling_helper_that_throws_param_marks_alloc_as_return_escape() {
+  // helper(x) { throw x; }
+  let helper = func(cfg_single_block(vec![Inst::throw(Arg::Var(0))]), vec![0]);
+
+  // caller() { const o = {}; helper(o); }
+  let caller = func(
+    cfg_single_block(vec![
+      Inst::call(
+        0,
+        Arg::Builtin("__optimize_js_object".to_string()),
+        Arg::Const(Const::Undefined),
+        Vec::new(),
+        Vec::new(),
+      ),
+      Inst::call(
+        None::<u32>,
+        Arg::Fn(0),
+        Arg::Const(Const::Undefined),
+        vec![Arg::Var(0)],
+        Vec::new(),
+      ),
+      Inst::ret(None),
+    ]),
+    Vec::new(),
+  );
+
+  let program = Program {
+    functions: vec![helper, caller],
+    top_level: func(cfg_single_block(Vec::new()), Vec::new()),
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
+  let summaries = interproc_escape::compute_program_escape_summaries(&program);
+  let caller_escape = escape::analyze_cfg_escapes_with_params_and_summaries(
+    &program.functions[1].body,
+    &program.functions[1].params,
+    Some(&summaries),
+    None,
+  );
+  assert_eq!(escape_of(&caller_escape, 0), EscapeState::ReturnEscape);
+}
+
+#[test]
 fn helper_storing_param_to_global_forces_global_escape() {
   // helper(x) { unknownGlobal = x; }
   let helper = func(

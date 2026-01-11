@@ -77,6 +77,6 @@ fn return_void_lowers_to_return_without_value() {
     .any(|inst| inst.t == InstTyp::Return && inst.as_return().is_none());
   assert!(
     saw_return_void,
-    "expected Return inst with no explicit value for `return;` (implicit `undefined`)"
+    "expected Return terminator with no explicit value for `return;` (implicit `undefined`)"
   );
 }
