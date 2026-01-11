@@ -1,3 +1,4 @@
+#[cfg(target_arch = "x86_64")]
 use runtime_native::FrameCursor;
 
 #[cfg(target_arch = "x86_64")]
