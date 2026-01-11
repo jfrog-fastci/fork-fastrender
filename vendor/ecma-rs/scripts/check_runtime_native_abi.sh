@@ -73,10 +73,16 @@ required_symbols=(
   rt_backing_store_external_bytes
   rt_root_push
   rt_root_pop
+  rt_global_root_register
+  rt_global_root_unregister
   rt_gc_register_root_slot
   rt_gc_unregister_root_slot
   rt_gc_pin
   rt_gc_unpin
+  rt_handle_alloc
+  rt_handle_free
+  rt_handle_load
+  rt_handle_store
   rt_gc_set_young_range
   rt_gc_get_young_range
   rt_weak_add

@@ -32,18 +32,29 @@ int main(void) {
   rt_register_shape_table(kShapes, 1);
 
   RtShapeId shape = (RtShapeId)1;
-  uint8_t* pinned = rt_alloc_pinned(16, shape);
-  (void)pinned;
+  GcPtr obj1 = rt_alloc_pinned(16, shape);
+  GcPtr obj2 = rt_alloc_pinned(16, shape);
+  if (check(obj1 != NULL)) { rc = 6; goto done; }
+  if (check(obj2 != NULL)) { rc = 7; goto done; }
 
   // Temporary shadow-stack roots: embedders/native glue can register addressable
   // GC pointer slots so a moving GC can update them in-place.
   //
   // This smoke test doesn't exercise relocation (pinned objects never move),
   // but it ensures the symbol is present and callable from C.
-  GcPtr tmp = pinned;
+  GcPtr tmp = obj1;
   rt_root_push(&tmp);
   rt_gc_safepoint();
   rt_root_pop(&tmp);
+
+  // Persistent handle API: stable u64 ids for keeping GC objects alive across
+  // async / OS boundaries.
+  HandleId h = rt_handle_alloc(obj1);
+  if (check(rt_handle_load(h) == obj1)) { rc = 8; goto done; }
+  rt_handle_store(h, obj2);
+  if (check(rt_handle_load(h) == obj2)) { rc = 9; goto done; }
+  rt_handle_free(h);
+  if (check(rt_handle_load(h) == NULL)) { rc = 10; goto done; }
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
