@@ -57,14 +57,35 @@ impl EffectSet {
   }
 }
 
+/// Best-effort string encoding classification for compile-time-known string
+/// values.
+///
+/// This is intentionally conservative and only used when we can prove that a
+/// particular SSA value is a string constant (or derived from string constants).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum StringEncoding {
+  Ascii,
+  Latin1,
+  Utf8,
+  Unknown,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
-pub struct TypeInfo {}
+pub struct TypeInfo {
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub string_encoding: Option<StringEncoding>,
+}
 
 impl TypeInfo {
   pub fn is_default(&self) -> bool {
-    self == &Self::default()
+    self.string_encoding.is_none()
   }
 }
 

@@ -12,7 +12,7 @@ use crate::{FnId, Program};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
-use super::{alias, effect, escape, nullability, ownership, range};
+use super::{alias, effect, encoding, escape, nullability, ownership, range};
 
 /// Stable identifier for a function in a [`Program`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -22,9 +22,6 @@ pub enum FunctionKey {
   /// A nested function referenced by [`Arg::Fn`].
   Fn(FnId),
 }
-
-#[derive(Clone, Debug, Default)]
-pub struct EncodingAnalysisResult {}
 
 /// Program-wide analysis results.
 ///
@@ -43,7 +40,7 @@ pub struct ProgramAnalyses {
 
   pub range: HashMap<FunctionKey, range::RangeResult>,
   pub nullability: HashMap<FunctionKey, nullability::NullabilityResult>,
-  pub encoding: HashMap<FunctionKey, EncodingAnalysisResult>,
+  pub encoding: HashMap<FunctionKey, encoding::EncodingResult>,
 }
 
 fn sorted_fn_ids(program: &Program) -> Vec<FnId> {
@@ -201,7 +198,9 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
     analyses
       .range
       .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
-    analyses.encoding.insert(key, EncodingAnalysisResult::default());
+    analyses
+      .encoding
+      .insert(key, encoding::analyze_cfg_encoding(cfg_for_key(program, key)));
   }
 
   analyses
@@ -286,7 +285,9 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       .range
       .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
     annotate_cfg_nullability_narrowings(cfg_for_key_mut(program, key));
-    analyses.encoding.insert(key, EncodingAnalysisResult::default());
+    let encoding_result = encoding::analyze_cfg_encoding(cfg_for_key(program, key));
+    encoding::annotate_cfg_encoding(cfg_for_key_mut(program, key), &encoding_result);
+    analyses.encoding.insert(key, encoding_result);
   }
 
   analyses
