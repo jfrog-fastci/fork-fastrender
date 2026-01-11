@@ -700,6 +700,7 @@ mod tests {
         bblocks: CfgBBlocks::default(),
         entry: 0,
       },
+      params: Vec::new(),
       stats: Default::default(),
     }
   }

@@ -187,8 +187,15 @@ impl OptimizationStats {
 pub struct ProgramFunction {
   pub debug: Option<OptimizerDebug>,
   pub body: Cfg,
+  pub params: Vec<u32>,
   #[cfg_attr(feature = "serde", serde(skip_serializing))]
   pub stats: OptimizationStats,
+}
+
+impl ProgramFunction {
+  pub fn param_index_of(&self, var: u32) -> Option<usize> {
+    self.params.iter().position(|&param| param == var)
+  }
 }
 
 #[derive(Debug)]
@@ -461,6 +468,7 @@ pub(crate) fn build_program_function(
   insts: Vec<Inst>,
   mut c_label: Counter,
   mut c_temp: Counter,
+  params: Vec<u32>,
 ) -> ProgramFunction {
   let mut dbg = program.debug.then(|| OptimizerDebug::new());
   let mut dbg_checkpoint = |name: &str, cfg: &Cfg| {
@@ -524,6 +532,7 @@ pub(crate) fn build_program_function(
   ProgramFunction {
     debug: dbg,
     body: cfg,
+    params,
     stats,
   }
 }
@@ -532,8 +541,8 @@ pub(crate) fn compile_hir_body(
   program: &ProgramCompiler,
   body: BodyId,
 ) -> OptimizeResult<ProgramFunction> {
-  let (insts, c_label, c_temp) = crate::il::s2i::stmt::translate_body(program, body)?;
-  Ok(build_program_function(program, insts, c_label, c_temp))
+  let (insts, c_label, c_temp, params) = crate::il::s2i::stmt::translate_body(program, body)?;
+  Ok(build_program_function(program, insts, c_label, c_temp, params))
 }
 
 pub type FnId = usize;

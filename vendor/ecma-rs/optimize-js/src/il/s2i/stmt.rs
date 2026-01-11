@@ -912,8 +912,20 @@ impl<'p> HirSourceToInst<'p> {
 pub fn translate_body(
   program: &ProgramCompiler,
   body_id: BodyId,
-) -> OptimizeResult<(Vec<Inst>, Counter, Counter)> {
+) -> OptimizeResult<(Vec<Inst>, Counter, Counter, Vec<u32>)> {
   let mut compiler = HirSourceToInst::new(program, body_id);
+  let mut params = Vec::new();
+  if compiler.body.kind == BodyKind::Function {
+    if let Some(function) = &compiler.body.function {
+      let mut symbols = Vec::new();
+      for param in function.params.iter() {
+        compiler.collect_pat_binding_symbols(param.pat, &mut symbols);
+      }
+      for sym in symbols {
+        params.push(compiler.symbol_to_temp(sym));
+      }
+    }
+  }
   compiler.hoist_var_decls();
   for stmt in root_statements(compiler.body) {
     compiler.compile_stmt(stmt)?;
@@ -927,5 +939,5 @@ pub fn translate_body(
   {
     compiler.out.push(Inst::ret(Arg::Const(Const::Undefined)));
   }
-  Ok((compiler.out, compiler.c_label, compiler.c_temp))
+  Ok((compiler.out, compiler.c_label, compiler.c_temp, params))
 }

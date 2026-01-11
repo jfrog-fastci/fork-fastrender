@@ -254,3 +254,29 @@ fn return_statement_emits_return_inst_with_value() {
     "expected to find Return(Const::Num(1)) in nested function IL"
   );
 }
+
+#[test]
+fn destructured_parameter_binding_temps_follow_pattern_traversal_order() {
+  let source = r#"const f = ({ x, y }) => { y; x; };"#;
+  let first = compile(source);
+  let second = compile(source);
+
+  assert_eq!(first.functions.len(), 1);
+  assert_eq!(second.functions.len(), 1);
+
+  assert_eq!(first.functions[0].params, vec![0, 1]);
+  assert_eq!(second.functions[0].params, vec![0, 1]);
+}
+
+#[test]
+fn parameter_temps_follow_parameter_order() {
+  let source = r#"const f = (a, b) => { b; a; };"#;
+  let first = compile(source);
+  let second = compile(source);
+
+  assert_eq!(first.functions.len(), 1);
+  assert_eq!(second.functions.len(), 1);
+
+  assert_eq!(first.functions[0].params, vec![0, 1]);
+  assert_eq!(second.functions[0].params, vec![0, 1]);
+}
