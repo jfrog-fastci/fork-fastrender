@@ -110,6 +110,12 @@ fn collect_param_vars(cfg: &Cfg) -> BTreeSet<u32> {
 struct LocalAllocFlowFacts {
   /// Allocation-defining SSA temps (allocation id = temp).
   alloc_vars: BTreeSet<u32>,
+  /// SSA temps that may refer to non-local objects (e.g. parameters, global loads, unknown call
+  /// results, or the result of `GetProp`).
+  ///
+  /// This is used to conservatively treat `PropAssign` into such values as an escape sink even when
+  /// they may also alias a local allocation (e.g. via `Phi`).
+  external_defs: BTreeSet<u32>,
   /// `tgt = src`
   var_assigns: Vec<(u32, Arg)>,
   /// `tgt = phi(args...)`
@@ -139,6 +145,7 @@ fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
             continue;
           };
           if !is_internal_alloc_builder(callee) {
+            facts.external_defs.insert(tgt);
             continue;
           }
           facts.alloc_vars.insert(tgt);
@@ -152,12 +159,21 @@ fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
           let tgt = inst.tgts[0];
           facts.phis.push((tgt, inst.args.clone()));
         }
+        InstTyp::ForeignLoad => {
+          let (tgt, _) = inst.as_foreign_load();
+          facts.external_defs.insert(tgt);
+        }
+        InstTyp::UnknownLoad => {
+          let (tgt, _) = inst.as_unknown_load();
+          facts.external_defs.insert(tgt);
+        }
         InstTyp::PropAssign => {
           let (obj, _prop, val) = inst.as_prop_assign();
           facts.prop_assigns.push((obj.clone(), val.clone()));
         }
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
           let (tgt, obj, _op, _prop) = inst.as_bin();
+          facts.external_defs.insert(tgt);
           facts.getprops.push((tgt, obj.clone()));
         }
         _ => {}
@@ -174,6 +190,15 @@ fn allocs_for_arg(var_allocs: &VarAllocs, arg: &Arg) -> BTreeSet<u32> {
   match arg {
     Arg::Var(v) => var_allocs.get(v).cloned().unwrap_or_default(),
     _ => BTreeSet::new(),
+  }
+}
+
+fn ext_for_arg(var_ext: &BTreeMap<u32, EscapeState>, arg: &Arg) -> EscapeState {
+  match arg {
+    Arg::Var(v) => var_ext.get(v).copied().unwrap_or(EscapeState::NoEscape),
+    // Builtins and nested functions are not local allocations.
+    Arg::Builtin(_) | Arg::Fn(_) => EscapeState::GlobalEscape,
+    Arg::Const(_) => EscapeState::NoEscape,
   }
 }
 
@@ -200,6 +225,13 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
   for &alloc in alloc_vars.iter() {
     var_allocs.insert(alloc, BTreeSet::from([alloc]));
   }
+  let mut var_ext: BTreeMap<u32, EscapeState> = BTreeMap::new();
+  for &param in param_vars.iter() {
+    var_ext.insert(param, EscapeState::ArgEscape(param));
+  }
+  for &v in facts.external_defs.iter() {
+    join_escape(&mut var_ext, v, EscapeState::GlobalEscape);
+  }
   let mut stored_into: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
 
   let mut changed = true;
@@ -209,6 +241,16 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
     for (tgt, arg) in facts.var_assigns.iter() {
       let src_allocs = allocs_for_arg(&var_allocs, arg);
       if src_allocs.is_empty() {
+        // Still propagate externalness through copies.
+        let src_ext = ext_for_arg(&var_ext, arg);
+        if src_ext != EscapeState::NoEscape {
+          let entry = var_ext.entry(*tgt).or_insert(EscapeState::NoEscape);
+          let next = entry.join(src_ext);
+          if next != *entry {
+            *entry = next;
+            changed = true;
+          }
+        }
         continue;
       }
       let entry = var_allocs.entry(*tgt).or_default();
@@ -217,21 +259,40 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
       if entry.len() != before {
         changed = true;
       }
+
+      let src_ext = ext_for_arg(&var_ext, arg);
+      if src_ext != EscapeState::NoEscape {
+        let entry = var_ext.entry(*tgt).or_insert(EscapeState::NoEscape);
+        let next = entry.join(src_ext);
+        if next != *entry {
+          *entry = next;
+          changed = true;
+        }
+      }
     }
 
     for (tgt, args) in facts.phis.iter() {
       let mut merged = BTreeSet::new();
+      let mut merged_ext = EscapeState::NoEscape;
       for arg in args.iter() {
         merged.extend(allocs_for_arg(&var_allocs, arg));
+        merged_ext = merged_ext.join(ext_for_arg(&var_ext, arg));
       }
-      if merged.is_empty() {
-        continue;
+      if !merged.is_empty() {
+        let entry = var_allocs.entry(*tgt).or_default();
+        let before = entry.len();
+        entry.extend(merged);
+        if entry.len() != before {
+          changed = true;
+        }
       }
-      let entry = var_allocs.entry(*tgt).or_default();
-      let before = entry.len();
-      entry.extend(merged);
-      if entry.len() != before {
-        changed = true;
+      if merged_ext != EscapeState::NoEscape {
+        let entry = var_ext.entry(*tgt).or_insert(EscapeState::NoEscape);
+        let next = entry.join(merged_ext);
+        if next != *entry {
+          *entry = next;
+          changed = true;
+        }
       }
     }
 
@@ -332,14 +393,12 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
           if value_allocs.is_empty() {
             continue;
           }
-
-          if let Arg::Var(obj_var) = obj {
-            if param_vars.contains(obj_var) {
-              for value in value_allocs {
-                join_escape(&mut alloc_states, value, EscapeState::ArgEscape(*obj_var));
-              }
-              continue;
+          let obj_ext = ext_for_arg(&var_ext, obj);
+          if obj_ext != EscapeState::NoEscape {
+            for value in value_allocs {
+              join_escape(&mut alloc_states, value, obj_ext);
             }
+            continue;
           }
 
           let container_allocs = allocs_for_arg(&var_allocs, obj);
@@ -680,6 +739,51 @@ mod tests {
     let escape = analyze_cfg_escapes(&cfg);
     assert_eq!(escape_of(&escape, 0), EscapeState::NoEscape);
     assert_eq!(escape_of(&escape, 1), EscapeState::GlobalEscape);
+  }
+
+  #[test]
+  fn prop_assign_to_phi_of_local_and_param_is_arg_escape() {
+    let mut phi = Inst::phi_empty(1);
+    phi.insert_phi(0, Arg::Var(0));
+    phi.insert_phi(1, Arg::Var(99));
+
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          )],
+        ),
+        (1, vec![]),
+        (
+          2,
+          vec![
+            phi,
+            Inst::call(
+              2,
+              Arg::Builtin("__optimize_js_object".to_string()),
+              Arg::Const(Const::Undefined),
+              vec![],
+              vec![],
+            ),
+            Inst::prop_assign(
+              Arg::Var(1),
+              Arg::Const(Const::Str("x".to_string())),
+              Arg::Var(2),
+            ),
+          ],
+        ),
+      ],
+      &[(0, 2), (1, 2)],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(99));
   }
 
   #[test]
