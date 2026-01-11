@@ -2,7 +2,6 @@
 mod linux {
     use std::any::Any;
     use std::io;
-    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -33,12 +32,55 @@ mod linux {
         leased: AtomicUsize,
         reprovided: AtomicUsize,
         slab_drop_counter: Arc<AtomicUsize>,
-        remove_submitted: AtomicBool,
+    }
+
+    /// Keepalive for a pool's backing slab while buffer removal is in-flight.
+    ///
+    /// `IORING_OP_PROVIDE_BUFFERS` registers raw user pointers inside the kernel. When a pool is
+    /// dropped, we must keep the backing slab alive until the kernel acknowledges
+    /// `IORING_OP_REMOVE_BUFFERS` (or we conservatively leak).
+    #[derive(Debug)]
+    pub(crate) struct PoolSlabKeepalive {
+        // Owned backing slab kept alive for as long as the kernel may still have the old
+        // provided-buffer pointers registered.
+        #[allow(dead_code)]
+        storage: Box<[u8]>,
+        slab_drop_counter: Arc<AtomicUsize>,
+    }
+
+    impl Drop for PoolSlabKeepalive {
+        fn drop(&mut self) {
+            self.slab_drop_counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     impl Drop for Inner {
         fn drop(&mut self) {
-            self.slab_drop_counter.fetch_add(1, Ordering::Relaxed);
+            // Detach the backing slab so we can keep it alive until the kernel forgets its pointers.
+            let storage = std::mem::replace(&mut self.storage, Vec::new().into_boxed_slice());
+            let keepalive = PoolSlabKeepalive {
+                storage,
+                slab_drop_counter: self.slab_drop_counter.clone(),
+            };
+
+            let Some(driver) = self.driver.upgrade() else {
+                // Driver already dropped (or leaked and not reachable via WeakDriver); the ring is
+                // gone, so the kernel cannot reference the provided buffers anymore.
+                drop(keepalive);
+                return;
+            };
+
+            // Submit `IORING_OP_REMOVE_BUFFERS` so the kernel forgets the registered pointers before
+            // we free the slab. The driver holds `keepalive` until the remove CQE is observed.
+            if let Err(_err) = driver.submit_remove_buffers(self.nbufs, self.buf_group, keepalive) {
+                // The driver is responsible for leaking the slab on failure to preserve memory
+                // safety (the kernel may still hold the provided-buffer pointers).
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "runtime-io-uring: failed to submit REMOVE_BUFFERS for group {}: {}",
+                    self.buf_group, _err
+                );
+            }
         }
     }
 
@@ -103,7 +145,6 @@ mod linux {
                     leased: AtomicUsize::new(0),
                     reprovided: AtomicUsize::new(0),
                     slab_drop_counter: Arc::new(AtomicUsize::new(0)),
-                    remove_submitted: AtomicBool::new(false),
                 }),
             };
 
@@ -248,46 +289,6 @@ mod linux {
                 self.inner.reprovided.fetch_add(1, Ordering::Relaxed);
             }
             res
-        }
-    }
-
-    impl Drop for ProvidedBufPool {
-        fn drop(&mut self) {
-            // Only the last handle can initiate buffer removal. This avoids redundant submissions
-            // and ensures the pool's slab remains alive until the kernel acknowledges removal.
-            if Arc::strong_count(&self.inner) != 1 {
-                return;
-            }
-            if self
-                .inner
-                .remove_submitted
-                .swap(true, Ordering::AcqRel)
-            {
-                return;
-            }
-
-            let Some(driver) = self.inner.driver.upgrade() else {
-                // Driver already dropped (or leaked and not reachable via WeakDriver); the ring is
-                // gone, so the kernel cannot reference the provided buffers anymore.
-                return;
-            };
-
-            // `IORING_OP_PROVIDE_BUFFERS` registers raw user pointers inside the kernel. If we were
-            // to free the backing slab while the ring is still alive, later buf-select ops could
-            // cause the kernel to write into freed memory. Submit `IORING_OP_REMOVE_BUFFERS` so the
-            // kernel forgets the pointers, keeping the slab alive until the internal CQE is drained.
-            let keepalive = self.clone();
-            if let Err(_err) = driver.submit_remove_buffers(self.inner.nbufs, self.inner.buf_group, keepalive) {
-                // Best-effort fallback: if we cannot submit the removal request (unsupported kernel,
-                // SQ full, etc), leak the pool slab to preserve memory safety.
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "runtime-io-uring: failed to submit REMOVE_BUFFERS for group {}; leaking pool slab",
-                    self.inner.buf_group
-                );
-                // Leak a clone so the underlying slab remains valid for the rest of the process.
-                std::mem::forget(self.clone());
-            }
         }
     }
 

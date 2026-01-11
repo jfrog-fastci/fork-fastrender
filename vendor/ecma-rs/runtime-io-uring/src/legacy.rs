@@ -34,7 +34,7 @@ mod linux {
         MultiShotHandle, MultiShotId, MultiShotRecvMsgEvent, MultiShotRecvMsgState,
     };
     use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
-    use crate::pool::{LeasedBuf, ProvidedBufPool};
+    use crate::pool::{LeasedBuf, PoolSlabKeepalive, ProvidedBufPool};
     use crate::timeout::duration_to_timespec;
 
     const INTERNAL_USER_DATA: u64 = 0;
@@ -447,7 +447,7 @@ mod linux {
         /// Internal op: remove a provided-buffer group so the kernel no longer holds user pointers.
         ///
         /// This op is not surfaced to callers via [`Completion`].
-        InternalRemoveBuffers { pool: ProvidedBufPool },
+        InternalRemoveBuffers { slab: PoolSlabKeepalive },
         /// Internal `IORING_OP_PROVIDE_BUFFERS` request used by [`ProvidedBufPool`] buffer return.
         ///
         /// Safety: `ProvideBuffers` stores user pointers in the SQE. The pool slab backing `addr`
@@ -576,7 +576,7 @@ mod linux {
                             _ => self.ready.push_back(Completion::Op { id, res, op }),
                         }
                     }
-                    OpState::InternalRemoveBuffers { pool } => {
+                    OpState::InternalRemoveBuffers { slab } => {
                         if res < 0 {
                             // If we failed to remove provided buffers, the kernel may still hold the
                             // user pointers. Leak the pool slab to preserve memory safety.
@@ -585,10 +585,7 @@ mod linux {
                                 "runtime-io-uring: internal REMOVE_BUFFERS failed: {}; leaking pool slab",
                                 io::Error::from_raw_os_error(-res)
                             );
-                            mem::forget(pool);
-                        } else {
-                            // Success path: drop the pool (after releasing the mutex), freeing the slab.
-                            keepalive_to_drop.push(pool);
+                            mem::forget(slab);
                         }
                     }
                     OpState::InternalProvideBuffers { addr, pool, stability } => {
@@ -802,12 +799,17 @@ mod linux {
             &self,
             nbufs: u16,
             buf_group: u16,
-            keepalive_pool: ProvidedBufPool,
+            keepalive_slab: PoolSlabKeepalive,
         ) -> io::Result<()> {
-            let mut inner_guard = self
-                .inner
-                .lock()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let mut inner_guard = match self.inner.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    // If we cannot lock the driver, we can't safely remove the kernel's provided
+                    // buffer registrations. Leak the slab to avoid a potential UAF.
+                    mem::forget(keepalive_slab);
+                    return Err(io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"));
+                }
+            };
             let inner = &mut *inner_guard;
             let op_id = Self::alloc_id(inner);
 
@@ -825,10 +827,13 @@ mod linux {
                 let mut sq = ring.submission();
                 let available = sq.capacity() - sq.len();
                 if available < 1 {
+                    // Keep the slab alive if we fail to submit removal. This avoids a potential UAF
+                    // where the kernel still holds provided-buffer pointers.
+                    mem::forget(keepalive_slab);
                     return Err(Self::submission_queue_full());
                 }
 
-                ops.insert(op_id, OpState::InternalRemoveBuffers { pool: keepalive_pool });
+                ops.insert(op_id, OpState::InternalRemoveBuffers { slab: keepalive_slab });
 
                 unsafe {
                     sq.push(&entry).unwrap();
@@ -1251,16 +1256,14 @@ mod linux {
                                     _ => inner.ready.push_back(Completion::Op { id, res, op }),
                                 }
                             }
-                            OpState::InternalRemoveBuffers { pool } => {
+                            OpState::InternalRemoveBuffers { slab } => {
                                 if res < 0 {
                                     #[cfg(debug_assertions)]
                                     eprintln!(
                                         "runtime-io-uring: internal REMOVE_BUFFERS failed: {}; leaking pool slab",
                                         io::Error::from_raw_os_error(-res)
                                     );
-                                    mem::forget(pool);
-                                } else {
-                                    keepalive_to_drop.push(pool);
+                                    mem::forget(slab);
                                 }
                             }
                             OpState::InternalProvideBuffers { addr, pool, stability } => {
