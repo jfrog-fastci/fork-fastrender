@@ -192,10 +192,15 @@ fi
 #   bash scripts/cargo_agent.sh test -p optimize-js --lib
 # from the repo root.
 #
-# If the requested package name matches a crate directory under
-# `vendor/ecma-rs/` and the caller did not explicitly provide `--manifest-path`,
-# automatically scope the cargo invocation to `vendor/ecma-rs/Cargo.toml` so the
-# package can be resolved.
+# If the requested package name matches a crate directory under `vendor/ecma-rs/`
+# and the caller did not explicitly provide `--manifest-path`, automatically
+# scope the cargo invocation to `vendor/ecma-rs/Cargo.toml` so the package can be
+# resolved.
+#
+# If the monorepo workspace also contains a package with the same name, prefer
+# the monorepo package. To target the vendored workspace explicitly, use:
+#   - `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`, or
+#   - `bash scripts/cargo_agent.sh ... --manifest-path vendor/ecma-rs/Cargo.toml`.
 if [[ "$*" != *"--manifest-path"* ]]; then
   argv=("$@")
   subcmd_pos=0
@@ -223,6 +228,19 @@ if [[ "$*" != *"--manifest-path"* ]]; then
           pkg="${argv[$i]#--package=}"
           ;;
       esac
+      if [[ -n "${pkg}" ]]; then
+        # Prefer monorepo workspace packages when there is a name collision with
+        # a crate directory under `vendor/ecma-rs/`.
+        #
+        # Example: FastRender keeps a workspace-local adapter at
+        # `crates/webidl-vm-js`, but `vendor/ecma-rs/` also contains a
+        # `webidl-vm-js` crate. In that case `scripts/cargo_agent.sh test -p
+        # webidl-vm-js` should target the monorepo crate by default.
+        if [[ -f "${repo_root}/${pkg}/Cargo.toml" || -f "${repo_root}/crates/${pkg}/Cargo.toml" ]]; then
+          continue
+        fi
+      fi
+
       if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${pkg}/Cargo.toml" ]]; then
         insert_pos=$((subcmd_pos + 1))
         argv=(
