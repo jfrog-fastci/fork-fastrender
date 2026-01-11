@@ -2,23 +2,12 @@ use core::ffi::c_void;
 
 pub use runtime_native_abi::{
   Coroutine, CoroutineId, InternedId, Microtask, PromiseRef, RtParallelForBodyFn, RtShapeDescriptor,
-  RtShapeId,
+  RtShapeId, RtThreadKind,
   RtTaskFn, StringRef, TaskId,
 };
 
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
 pub type TimerId = u64;
-
-/// Class of runtime thread for registration via the stable C ABI.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
-pub enum RtThreadKind {
-  RT_THREAD_MAIN = 0,
-  RT_THREAD_WORKER = 1,
-  RT_THREAD_IO = 2,
-  RT_THREAD_EXTERNAL = 3,
-}
 
 /// Opaque value reference.
 ///
