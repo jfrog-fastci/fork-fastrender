@@ -144,7 +144,7 @@ int main(void) {
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
   // On Linux/ELF, `runtime-native` expects the final binary to export symbols delimiting the
-  // (possibly empty) in-memory `.llvm_stackmaps` section.
+  // (possibly empty) in-memory `.llvm_stackmaps` section (`__fastr_stackmaps_start/end`).
   //
   // When linking from C directly (bypassing Cargo/rustc), pass the same linker script fragment.
   let stackmaps_ld = if cfg!(target_os = "linux") {

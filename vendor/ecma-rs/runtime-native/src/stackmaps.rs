@@ -724,24 +724,7 @@ impl StackMaps {
   /// - Parse `/proc/self/exe` to find `.llvm_stackmaps` on disk and apply relocations.
   #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   pub fn parse_from_linker_symbols() -> Result<Self, StackMapError> {
-    Self::parse(llvm_stackmaps_section_bytes())
-  }
-}
-#[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
-fn llvm_stackmaps_section_bytes() -> &'static [u8] {
-  extern "C" {
-    static __fastr_stackmaps_start: u8;
-    static __fastr_stackmaps_end: u8;
-  }
-
-  unsafe {
-    let start = std::ptr::addr_of!(__fastr_stackmaps_start);
-    let end = std::ptr::addr_of!(__fastr_stackmaps_end);
-    let len = end.offset_from(start);
-    if len <= 0 {
-      return &[];
-    }
-    std::slice::from_raw_parts(start, len as usize)
+    Self::parse(crate::stackmaps_section())
   }
 }
 

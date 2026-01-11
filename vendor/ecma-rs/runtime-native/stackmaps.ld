@@ -18,7 +18,9 @@ SECTIONS
 {
   .llvm_stackmaps : ALIGN(8)
   {
+    /* Preferred symbol names (shared with native-js). */
     __fastr_stackmaps_start = .;
+    /* Backwards compatible aliases (older runtime-native prototypes). */
     __llvm_stackmaps_start = .;
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))

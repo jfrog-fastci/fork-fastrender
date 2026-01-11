@@ -1,5 +1,7 @@
 #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
 extern "C" {
+  // Exported by the native-js link pipeline (and by `runtime-native/stackmaps.ld`
+  // when linking via Cargo with the `llvm_stackmaps_linker` feature).
   static __fastr_stackmaps_start: u8;
   static __fastr_stackmaps_end: u8;
 }
@@ -75,16 +77,18 @@ mod macho {
 pub fn stackmaps_section() -> &'static [u8] {
   #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   unsafe {
-    let start = core::ptr::addr_of!(__fastr_stackmaps_start) as usize;
-    let end = core::ptr::addr_of!(__fastr_stackmaps_end) as usize;
+    let start = core::ptr::addr_of!(__fastr_stackmaps_start);
+    let end = core::ptr::addr_of!(__fastr_stackmaps_end);
 
-    if end < start {
+    let start_addr = start as usize;
+    let end_addr = end as usize;
+    if end_addr < start_addr {
       panic!(
-        "invalid .llvm_stackmaps range: __fastr_stackmaps_end ({end:#x}) < __fastr_stackmaps_start ({start:#x})"
+        "invalid .llvm_stackmaps range: __fastr_stackmaps_end ({end_addr:#x}) < __fastr_stackmaps_start ({start_addr:#x})"
       );
     }
 
-    let len = end - start;
+    let len = end_addr - start_addr;
 
     // Stack maps are metadata; if this is enormous something went very wrong
     // (e.g. the linker script wasn't applied and symbols resolved to unrelated
@@ -96,7 +100,17 @@ pub fn stackmaps_section() -> &'static [u8] {
       );
     }
 
-    core::slice::from_raw_parts(start as *const u8, len)
+    // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
+    if start_addr % 8 != 0 {
+      panic!(
+        ".llvm_stackmaps pointer misaligned on Linux: start={start_addr:#x}"
+      );
+    }
+    if len % 8 != 0 {
+      panic!(".llvm_stackmaps length misaligned on Linux: len={len}");
+    }
+
+    core::slice::from_raw_parts(start, len)
   }
 
   #[cfg(target_os = "macos")]
