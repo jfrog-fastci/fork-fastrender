@@ -16893,18 +16893,18 @@ fn mipmap_lod_for_scale(scale_x: f32, scale_y: f32) -> Option<(u32, f32)> {
     lod = 0.0;
   }
   let mut base = lod.floor();
-  let mut frac = lod - base;
+  let frac = lod - base;
 
   // Keep the boundary stable when `lod` is extremely close to an integer. This avoids dithering
   // between mip levels due to float noise.
   let eps = 1e-6;
-  if frac < eps {
-    frac = 0.0;
-  } else if frac > 1.0 - eps {
+  if frac > 1.0 - eps {
     base += 1.0;
-    frac = 0.0;
   }
-  Some((base as u32, frac))
+  // Chrome/Skia tends to behave closer to `mipmap: nearest` than full trilinear blending for
+  // `SkFilterMode::Linear` image minification, which keeps scaled raster images sharper and reduces
+  // fixture diffs compared to always blending between levels.
+  Some((base as u32, 0.0))
 }
 
 fn downsample_mipmap_level(
@@ -23918,7 +23918,7 @@ mod tests {
   }
 
   #[test]
-  fn scaled_image_resampling_uses_mipmapped_trilinear_filtering() {
+  fn scaled_image_resampling_uses_mipmapped_nearest_filtering() {
     // 8x1 red ramp (0..224).
     let mut pixels = Vec::new();
     for i in 0..8u8 {
@@ -23926,15 +23926,15 @@ mod tests {
     }
     let image = ImageData::new_pixels(8, 1, pixels);
 
-    // Downscale to 3px wide: scale is between mip levels 1 (4px) and 2 (2px), so we should blend
-    // between them.
+    // Downscale to 3px wide: Skia picks a single mip level (no trilinear blend) and uses bilinear
+    // filtering within that level.
     let pixmap = super::image_data_to_scaled_pixmap_inner(&image, 3, 1, ImageFilterQuality::Linear)
       .unwrap()
       .unwrap();
     assert_eq!((pixmap.width(), pixmap.height()), (3, 1));
-    assert_eq!(pixel(&pixmap, 0, 0), (35, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 0, 0), (26, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 1, 0), (112, 0, 0, 255));
-    assert_eq!(pixel(&pixmap, 2, 0), (188, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 2, 0), (197, 0, 0, 255));
   }
 
   #[test]
