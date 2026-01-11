@@ -3243,6 +3243,36 @@ impl DisplayListBuilder {
     }
     let clip_rect = root_style
       .and_then(|style| Self::clip_rect_from_style(style, root_border_bounds, Some(viewport)));
+
+    // `context_bounds` is computed from layout and includes paint overflow for the entire document.
+    // When building a display list for a specific visible region (viewport culling), far-offscreen
+    // overflow (e.g. `text-indent:-9999em` used for accessible-but-hidden labels) can dramatically
+    // inflate stacking-context bounds and force the renderer to consider enormous offscreen
+    // surfaces for layer allocation.
+    //
+    // Clamp the stacking context bounds to the rect we are actually building/keeping display
+    // items for (the current visibility rect in local/pre-transform coordinates, plus any filter
+    // halo expansion). Do **not** include overflow clipping here: overflow clips are applied only
+    // to descendants, while the stacking context root may still paint outside the scrollport (e.g.
+    // box-shadow).
+    let mut stacking_context_bounds = context_bounds;
+    let mut bounds_visibility = context_visibility;
+    if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
+      bounds_visibility = bounds_visibility.intersect(Some(bounds), true);
+    } else if let Some((_, rect)) = clip_path_mask.as_ref() {
+      // `clip-path: url(#id)` alpha masks are rasterized over the stacking context bounds and act
+      // as a hard clip for the subtree.
+      bounds_visibility = bounds_visibility.intersect(Some(*rect), true);
+    }
+    if let Some(bounds) = clip_rect.as_ref().and_then(|clip| Self::clip_bounds(clip)) {
+      bounds_visibility = bounds_visibility.intersect(Some(bounds), true);
+    }
+    if let Some(vis) = bounds_visibility.rect {
+      if let Some(intersection) = context_bounds.intersection(vis) {
+        stacking_context_bounds = intersection;
+      }
+    }
+
     let overflow_clip = root_style.and_then(|style| {
       Self::overflow_clip_from_style(
         style,
@@ -3502,7 +3532,7 @@ impl DisplayListBuilder {
         is_root,
         establishes_backdrop_root,
         has_backdrop_sensitive_descendants: false,
-        bounds: context_bounds,
+        bounds: stacking_context_bounds,
         plane_rect,
         mix_blend_mode,
         opacity: root_opacity,
@@ -3559,7 +3589,7 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       if needs_layer_bounds {
-        self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
+        self.expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
       }
       self.list.push(DisplayItem::PopStackingContext);
       if let Some(DisplayItem::PushStackingContext(item)) =
@@ -3669,7 +3699,7 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PopClip);
     }
     if needs_layer_bounds {
-      self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
+      self.expand_stacking_context_bounds_from_items(stacking_push_index, stacking_context_bounds);
     }
     self.list.push(DisplayItem::PopStackingContext);
     if let Some(DisplayItem::PushStackingContext(item)) =
@@ -16609,6 +16639,70 @@ mod tests {
         .iter()
         .all(|rect| *rect == Rect::from_xywh(15.0, 26.0, 100.0, 100.0)),
       "overflow clips should be resolved against the border box, not scroll overflow"
+    );
+  }
+
+  #[test]
+  fn stacking_context_bounds_clamped_to_viewport_visibility() {
+    // Regression: `StackingContext.bounds` is computed from layout and includes paint overflow for
+    // the whole document. When building a display list for a viewport, far-offscreen overflow (like
+    // `text-indent:-9999em`) should not inflate stacking context bounds for layer allocation.
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.isolation = crate::style::types::Isolation::Isolate;
+    style.background_color = Rgba::BLUE;
+
+    let offscreen_text = create_text_fragment(-10_000.0, 0.0, 100.0, 20.0, "hidden");
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      vec![offscreen_text],
+      Arc::new(style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![child]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let sc_bounds = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(0.0, 0.0, 50.0, 20.0)),
+      "expected stacking context bounds to be clamped to the viewport visible rect"
+    );
+  }
+
+  #[test]
+  fn stacking_context_bounds_clamped_for_opacity_layer() {
+    // Regression: clamping should also apply to opacity stacking contexts (which allocate a
+    // compositing surface and therefore consume `StackingContextItem::bounds` during layer
+    // allocation).
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.opacity = 0.5;
+    child_style.background_color = Rgba::BLUE;
+
+    let offscreen_text = create_text_fragment(-10_000.0, 0.0, 100.0, 20.0, "hidden");
+    let child = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      vec![offscreen_text],
+      Arc::new(child_style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![child]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let sc_bounds = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if (sc.opacity - 0.5).abs() < 1e-6 => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(0.0, 0.0, 50.0, 20.0)),
+      "expected opacity stacking context bounds to be clamped to the visible rect"
     );
   }
 
