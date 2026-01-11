@@ -62,6 +62,9 @@ typedef void* ValueRef;
 // Under a moving GC, runtime entrypoints that may safepoint/GC must not accept raw
 // GC pointers unless they are pinned. Instead they take a handle: a pointer to a
 // caller-owned root slot (`*mut *mut u8` in Rust).
+//
+// `GcPtr` is an **object base pointer**: it points at the start of the GC header
+// (`ObjHeader` in the Rust implementation), not to the payload after the header.
 typedef uint8_t* GcPtr;
 typedef uint8_t** GcHandle;
 
