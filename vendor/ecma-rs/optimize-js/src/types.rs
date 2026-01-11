@@ -45,8 +45,9 @@ impl ValueTypeSummary {
   }
 
   pub fn excludes_nullish(self) -> bool {
-    // `contains(NULLISH)` would only be true for types that include *both* `null` and `undefined`;
-    // for our purposes we care about whether the summary may include *either* nullish value.
+    // `NULLISH` is a union of {null, undefined}. `contains()` checks for a superset, so it would
+    // only return true if *both* bits are set. For our purposes we care about whether the summary
+    // may include *either* nullish value, so we check for any overlap.
     !self.is_unknown() && (self.0 & Self::NULLISH.0) == 0
   }
 
