@@ -338,7 +338,8 @@ producing an executable:
 > `native-js build`/`run`, but stops before producing/linking an executable.
 
 Pass `--extra-strict` to also run the legacy `native_js::strict::validate` checks (this rejects
-TypeScript-only runtime-inert wrappers like `satisfies` / `as` / `!`).
+TypeScript "escape hatches" like type assertions (`as`) and non-null assertions (`!`), in addition
+to other unsafe constructs like `any` and `eval()`).
 
 If you have the binary installed on your `PATH`, the equivalent invocation is:
 

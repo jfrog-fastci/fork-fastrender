@@ -177,7 +177,8 @@ The API is intentionally small and currently consists of:
 - `strict::validate(...)`: legacy strict validator that rejects unsafe constructs
   (`any`, `eval`, etc). This is still useful for tests and tooling, but the AOT
   pipeline prefers `validate_strict_subset` (which allows TS-only runtime-inert
-  wrappers like `satisfies` / `as` / `!`). Some frontends also expose
+  wrappers like type assertions (`as`) and non-null assertions (`!`) when the
+  wrapped runtime expression is supported). Some frontends also expose
   `strict::validate` behind an opt-in flag (e.g. `native-js --extra-strict`).
 - `strict::entrypoint(...)`: locate the exported `main()` entrypoint in a
   typechecked program (used by the early HIR-based backend).
