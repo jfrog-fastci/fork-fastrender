@@ -94,8 +94,8 @@ constant header location in each record (location `#2`), immediately after the
 callconv header location `#1` (the statepoint callsite calling convention ID,
 usually `0` for `ccc`).
 Depending on whether LLVM chooses to use the stackmap constant pool, `#2` may be
-printed as either `Constant <flags>` or `ConstantIndex ... (<flags>)`; the value
-must match the IR `flags` immarg either way.
+printed as either `Constant <flags>` or `ConstIndex`/`ConstantIndex ... (<flags>)`;
+the value must match the IR `flags` immarg either way.
 
 ## `gc.statepoint`: `patch_bytes > 0` reserves a patchable region (x86_64)
 

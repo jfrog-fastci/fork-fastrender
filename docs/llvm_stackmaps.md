@@ -120,9 +120,9 @@ For stackmaps created from `gc.statepoint` (including `rewrite-statepoints-for-g
 
 | Location index | Meaning | Observed encoding |
 |---:|---|---|
-| `#1` | **Calling convention ID** of the original call | `Constant <cc-id>` |
-| `#2` | **Statepoint flags** (the `i32 flags` operand to `gc.statepoint`) | `Constant <flags>` |
-| `#3` | **Number of deopt operands** | `Constant <n>` |
+| `#1` | **Calling convention ID** of the original call | `Constant` / `ConstantIndex` |
+| `#2` | **Statepoint flags** (the `i32 flags` operand to `gc.statepoint`) | `Constant` / `ConstantIndex` |
+| `#3` | **Number of deopt operands** | `Constant` / `ConstantIndex` |
 | next `n` | The deopt operands themselves (`"deopt"(... )`) | one `Location` per operand |
 | remaining | GC roots (`"gc-live"`) | encoded as base/derived pairs |
 
@@ -133,7 +133,7 @@ Notes:
   `investigation/llvm_stackmaps/statepoint_gc_transition_flags.ll`.
 - The 3 meta entries are *constant* locations; in our examples `llvm-readobj` prints them as `Constant`.
   They may also be encoded as `ConstantIndex` (via the constant pool), in which case `llvm-readobj`
-  prints `ConstantIndex ... (<value>)`.
+  prints `ConstIndex`/`ConstantIndex ... (<value>)`.
 
 ### Parsing GC roots from the record
 
