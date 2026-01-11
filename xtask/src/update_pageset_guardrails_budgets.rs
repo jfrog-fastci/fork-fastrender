@@ -260,6 +260,10 @@ fn build_perf_smoke_command(args: &UpdatePagesetGuardrailsBudgetsArgs, output: &
     // Otherwise, perf_smoke will happily emit total_ms=0 and we would write bogus budgets into the
     // manifest.
     .arg("--fail-on-failure")
+    // Budget updates should only be run with the full pageset guardrails fixture set available. If
+    // any fixture directories are missing, fail instead of skipping timings and writing a partial
+    // update.
+    .arg("--fail-on-missing-fixtures")
     .arg("--fail-on-fetch-errors")
     .arg("--output")
     .arg(output);
@@ -570,6 +574,10 @@ mod tests {
     assert!(
       argv.iter().any(|arg| arg == "--fail-on-failure"),
       "expected perf_smoke command to pass --fail-on-failure; got {argv:?}"
+    );
+    assert!(
+      argv.iter().any(|arg| arg == "--fail-on-missing-fixtures"),
+      "expected perf_smoke command to pass --fail-on-missing-fixtures; got {argv:?}"
     );
     assert!(
       argv.iter().any(|arg| arg == "--fail-on-fetch-errors"),
