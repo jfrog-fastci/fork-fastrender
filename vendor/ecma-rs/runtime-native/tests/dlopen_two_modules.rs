@@ -75,6 +75,42 @@ fn dlopen_registers_multiple_stackmap_modules() {
   }
 }
 
+#[test]
+fn dlopen_then_scan_registers_stackmaps_without_constructors() {
+  // Skip if dlopen is somehow not available.
+  if unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) }.is_null() {
+    eprintln!("dlopen unavailable; skipping");
+    return;
+  }
+
+  let dir = TempDir::new().unwrap();
+  let lib = build_test_module_without_registration(&dir, "mod_scan").unwrap();
+
+  unsafe {
+    let h = dlopen(&lib);
+
+    let pc = stackmap_first_callsite_pc(h) as usize;
+    assert!(
+      lookup(pc).is_none(),
+      "module should not be registered before scan"
+    );
+
+    runtime_native::global_stackmap_registry()
+      .write()
+      .load_all_loaded_modules()
+      .expect("load_all_loaded_modules should succeed");
+
+    assert!(lookup(pc).is_some(), "callsite should be registered after scan");
+
+    // Clean up so this test doesn't leak global registry state into other tests.
+    let start = dlsym(h, "__llvm_stackmaps_start") as *const u8;
+    assert!(
+      runtime_native::rt_stackmaps_unregister(start),
+      "unregister should succeed"
+    );
+  }
+}
+
 unsafe fn stackmap_first_callsite_pc(handle: *mut libc::c_void) -> u64 {
   let start = dlsym(handle, "__llvm_stackmaps_start") as *const u8;
   let end = dlsym(handle, "__llvm_stackmaps_end") as *const u8;
@@ -109,6 +145,65 @@ fn build_test_module(dir: &TempDir, name: &str) -> std::io::Result<std::path::Pa
       static void {name}_ctor(void) {{
         {name}_registered = rt_stackmaps_register(&__llvm_stackmaps_start, &__llvm_stackmaps_end) ? 1 : 0;
       }}
+
+      // Hand-crafted minimal LLVM stackmap blob with one function and one record.
+      __asm__(
+        ".section .llvm_stackmaps,\"aw\",@progbits\n"
+        ".globl __llvm_stackmaps_start\n"
+        "__llvm_stackmaps_start:\n"
+        // Header
+        ".byte 3\n"          // Version
+        ".byte 0\n"          // Reserved
+        ".short 0\n"         // Reserved
+        ".long 1\n"          // NumFunctions
+        ".long 0\n"          // NumConstants
+        ".long 1\n"          // NumRecords
+        // FunctionInfo[0]
+        ".quad {name}_target\n" // FunctionAddress (relocated)
+        ".quad 0\n"          // StackSize
+        ".quad 1\n"          // RecordCount
+        // Record[0]
+        ".quad 1\n"          // PatchPointID
+        ".long 0\n"          // InstructionOffset
+        ".short 0\n"         // Reserved
+        ".short 0\n"         // NumLocations
+        ".short 0\n"         // Padding
+        ".short 0\n"         // NumLiveOuts
+        ".long 0\n"          // Record padding to 8-byte alignment
+        ".globl __llvm_stackmaps_end\n"
+        "__llvm_stackmaps_end:\n"
+        ".previous\n"
+      );
+    "#
+  );
+
+  std::fs::write(&src_path, code)?;
+
+  let status = Command::new("cc")
+    .arg("-shared")
+    .arg("-fPIC")
+    .arg("-O0")
+    .arg("-o")
+    .arg(&out_path)
+    .arg(&src_path)
+    .status()?;
+
+  assert!(status.success(), "cc failed for {name}");
+  Ok(out_path)
+}
+
+fn build_test_module_without_registration(
+  dir: &TempDir,
+  name: &str,
+) -> std::io::Result<std::path::PathBuf> {
+  let src_path = dir.path().join(format!("{name}.c"));
+  let out_path = dir.path().join(format!("lib{name}.so"));
+
+  let code = format!(
+    r#"
+      #include <stdint.h>
+
+      void {name}_target(void) {{}}
 
       // Hand-crafted minimal LLVM stackmap blob with one function and one record.
       __asm__(
