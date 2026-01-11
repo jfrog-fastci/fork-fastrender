@@ -140,7 +140,7 @@ mod heap;
 mod import_meta;
 mod interrupt;
 mod intrinsics;
-mod iterator;
+pub mod iterator;
 mod jobs;
 mod microtasks;
 mod module_graph;

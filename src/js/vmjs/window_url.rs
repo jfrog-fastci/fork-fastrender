@@ -15,6 +15,7 @@ use vm_js::{
   GcObject, GcString, GcSymbol, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
   RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
+use vm_js::iterator;
 
 const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
 const URL_INVALID_ERROR: &str = "Invalid URL";
@@ -69,13 +70,6 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
-}
-
-fn alloc_symbol_key(scope: &mut Scope<'_>, description: &str) -> Result<PropertyKey, VmError> {
-  let s = scope.alloc_string(description)?;
-  scope.push_root(Value::String(s))?;
-  let sym = scope.heap_mut().symbol_for(s)?;
-  Ok(PropertyKey::from_symbol(sym))
 }
 
 const URLSP_ITER_KIND_ENTRIES: u8 = 0;
@@ -658,6 +652,135 @@ fn url_username_set_native(
   Ok(Value::Undefined)
 }
 
+fn urlsp_init_pair_from_sequence(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  limits: &UrlLimits,
+  value: Value,
+) -> Result<(String, String), VmError> {
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+  let mut record = iterator::get_iterator(vm, host, hooks, scope, value)?;
+
+  let Some(name_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
+    let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      "URLSearchParams init pair must contain exactly two values",
+    ));
+  };
+  let Some(value_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? else {
+    let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      "URLSearchParams init pair must contain exactly two values",
+    ));
+  };
+  if iterator::iterator_step_value(vm, host, hooks, scope, &mut record)?.is_some() {
+    let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+    return Err(vm_js::throw_type_error(
+      scope,
+      intrinsics,
+      "URLSearchParams init pair must contain exactly two values",
+    ));
+  }
+
+  let name = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    name_value,
+    limits.max_input_bytes,
+    URLSP_INIT_TOO_LONG_ERROR,
+  )?;
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    value_value,
+    limits.max_input_bytes,
+    URLSP_INIT_TOO_LONG_ERROR,
+  )?;
+  Ok((name, value))
+}
+
+fn urlsp_init_from_iterable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  limits: &UrlLimits,
+  mut record: iterator::IteratorRecord,
+) -> Result<UrlSearchParams, VmError> {
+  let mut params = UrlSearchParams::new(limits);
+
+  let result = (|| -> Result<(), VmError> {
+    while let Some(pair_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)? {
+      let (name, value) =
+        urlsp_init_pair_from_sequence(vm, scope, host, hooks, limits, pair_value)?;
+      params.append(&name, &value).map_err(map_url_error)?;
+    }
+    Ok(())
+  })();
+
+  match result {
+    Ok(()) => Ok(params),
+    Err(err) => {
+      let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+      // If iterator close threw, prefer the original error.
+      Err(err)
+    }
+  }
+}
+
+fn urlsp_init_from_record(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  limits: &UrlLimits,
+  obj: GcObject,
+) -> Result<UrlSearchParams, VmError> {
+  let keys = scope.heap().own_property_keys(obj)?;
+  let mut params = UrlSearchParams::new(limits);
+
+  for key in keys {
+    let PropertyKey::String(name_key) = key else {
+      continue;
+    };
+
+    let Some(desc) = scope.heap().get_own_property(obj, key)? else {
+      continue;
+    };
+    if !desc.enumerable {
+      continue;
+    }
+
+    let name = js_string_to_rust_string_limited(scope, name_key, limits.max_input_bytes, URLSP_INIT_TOO_LONG_ERROR)?;
+    let value = vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?;
+    let value = value_to_limited_string(
+      vm,
+      scope,
+      host,
+      hooks,
+      value,
+      limits.max_input_bytes,
+      URLSP_INIT_TOO_LONG_ERROR,
+    )?;
+
+    params.append(&name, &value).map_err(map_url_error)?;
+  }
+
+  Ok(params)
+}
+
 fn url_password_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1097,22 +1220,56 @@ fn urlsp_construct_native(
   let limits = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| Ok(state.limits.clone()))?;
 
   let init_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let init = match init_value {
-    Value::Undefined => None,
-    v => Some(value_to_limited_string(
-      vm,
-      scope,
-      host,
-      hooks,
-      v,
-      limits.max_input_bytes,
-      URLSP_INIT_TOO_LONG_ERROR,
-    )?),
-  };
+  let params = match init_value {
+    Value::Undefined => UrlSearchParams::new(&limits),
+    Value::Object(obj) => {
+      // URLSearchParams(init) accepts:
+      // - sequence<sequence<USVString>>
+      // - record<USVString, USVString>
+      // - USVString
+      //
+      // For now we interpret objects with an @@iterator method (or array exotic objects) as the
+      // sequence form. Otherwise, we treat them as record-like.
+      let intrinsics = vm
+        .intrinsics()
+        .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+      let iterator_key = PropertyKey::from_symbol(intrinsics.well_known_symbols().iterator);
 
-  let params = match init {
-    None => UrlSearchParams::new(&limits),
-    Some(s) => UrlSearchParams::parse(&s, &limits).map_err(map_url_error)?,
+      match vm.get_method_with_host_and_hooks(host, scope, hooks, Value::Object(obj), iterator_key) {
+        Ok(Some(method)) => {
+          let record = iterator::get_iterator_from_method(
+            vm,
+            host,
+            hooks,
+            scope,
+            Value::Object(obj),
+            method,
+          )?;
+          urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?
+        }
+        Ok(None) => {
+          // Array fast-path: `vm-js` supports iterating array exotic objects before full
+          // `%Array.prototype%[@@iterator]` exists. If it's not an array, fall back to record.
+          match iterator::get_iterator(vm, host, hooks, scope, Value::Object(obj)) {
+            Ok(record) => urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?,
+            Err(_) => urlsp_init_from_record(vm, scope, host, hooks, &limits, obj)?,
+          }
+        }
+        Err(err) => return Err(err),
+      }
+    }
+    other => {
+      let init = value_to_limited_string(
+        vm,
+        scope,
+        host,
+        hooks,
+        other,
+        limits.max_input_bytes,
+        URLSP_INIT_TOO_LONG_ERROR,
+      )?;
+      UrlSearchParams::parse(&init, &limits).map_err(map_url_error)?
+    }
   };
 
   with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
@@ -1990,6 +2147,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   let urlsp_iter_proto = {
     let object_proto = realm.intrinsics().object_prototype();
     let func_proto = realm.intrinsics().function_prototype();
+    let iterator_sym = realm.intrinsics().well_known_symbols().iterator;
     let iter_proto = scope.alloc_object_with_prototype(Some(object_proto))?;
     scope.push_root(Value::Object(iter_proto))?;
 
@@ -2005,14 +2163,14 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     scope.define_property(iter_proto, next_key, proto_data_desc(Value::Object(next_fn)))?;
 
     let iter_id = vm.register_native_call(urlsp_iterator_iterator_native)?;
-    let iter_name = scope.alloc_string("Symbol.iterator")?;
+    let iter_name = scope.alloc_string("[Symbol.iterator]")?;
     scope.push_root(Value::String(iter_name))?;
     let iter_fn = scope.alloc_native_function_with_slots(iter_id, None, iter_name, 0, &[realm_slot])?;
     scope.push_root(Value::Object(iter_fn))?;
     scope
       .heap_mut()
       .object_set_prototype(iter_fn, Some(func_proto))?;
-    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    let sym_key = PropertyKey::from_symbol(iterator_sym);
     scope.define_property(iter_proto, sym_key, proto_data_desc(Value::Object(iter_fn)))?;
 
     iter_proto
@@ -2070,7 +2228,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
   scope.define_property(params_proto, values_key, proto_data_desc(Value::Object(values_fn)))?;
 
   // [Symbol.iterator] is an alias for entries().
-  let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+  let sym_key = PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().iterator);
   scope.define_property(params_proto, sym_key, proto_data_desc(Value::Object(entries_fn)))?;
 
   install_method(
@@ -2278,7 +2436,7 @@ mod tests {
     scope.push_root(Value::Object(params_obj))?;
     let entries_key = alloc_key(&mut scope, "entries")?;
     let entries_fn = vm.get(&mut scope, params_obj, entries_key)?;
-    let sym_key = alloc_symbol_key(&mut scope, "Symbol.iterator")?;
+    let sym_key = PropertyKey::from_symbol(realm_ref.intrinsics().well_known_symbols().iterator);
     let sym_fn = vm.get(&mut scope, params_obj, sym_key)?;
     assert_eq!(
       entries_fn, sym_fn,
