@@ -24,6 +24,7 @@ use std::ffi::CStr;
 use thiserror::Error;
 
 pub const STACKMAP_VERSION: u8 = 3;
+const STACKMAP_HEADER_SIZE: usize = 16;
 
 /// x86_64 SysV DWARF register number for RBP.
 pub const X86_64_DWARF_REG_RBP: u16 = 6;
@@ -257,7 +258,7 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
-    if off >= bytes.len() {
+    if off >= bytes.len() || bytes.len() - off < STACKMAP_HEADER_SIZE {
       break;
     }
 
@@ -1138,6 +1139,49 @@ mod tests {
     // Ensure the per-blob callsite indexes are still correct.
     assert!(sm.lookup(0x1010).is_some());
     assert!(sm.lookup(0x2020).is_some());
+  }
+
+  #[test]
+  fn parse_all_stackmaps_ignores_short_trailing_bytes() {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, 0x1000); // addr
+    push_u64(&mut bytes, 32); // stack_size
+    push_u64(&mut bytes, 1); // record_count
+
+    // Record.
+    push_u64(&mut bytes, 1); // patchpoint_id
+    push_u32(&mut bytes, 0x10); // instruction_offset
+    push_u16(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 1); // num_locations
+
+    // Location: Indirect [RSP + 16], size 8.
+    push_u8(&mut bytes, 3); // kind = Indirect
+    push_u8(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 8); // size
+    push_u16(&mut bytes, X86_64_DWARF_REG_RSP); // dwarf_reg
+    push_u16(&mut bytes, 0); // reserved2
+    push_i32(&mut bytes, 16); // offset
+
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
+
+    // No liveouts.
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    // Short non-zero tail (e.g. section alignment noise from a non-standard toolchain).
+    bytes.extend_from_slice(&[0xAA; 8]);
+
+    let blobs = super::parse_all_stackmaps(&bytes).unwrap();
+    assert_eq!(blobs.len(), 1);
+
+    // The callsite index should still build successfully.
+    let idx = StackMaps::parse(&bytes).unwrap();
+    assert!(idx.lookup(0x1010).is_some());
   }
 
   #[test]
