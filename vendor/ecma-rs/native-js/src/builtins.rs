@@ -77,6 +77,7 @@ pub fn native_js_builtins_lib() -> LibFile {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
   use typecheck_ts::{FileKey, MemoryHost, Program};
 
   #[test]
@@ -84,7 +85,10 @@ mod tests {
     let builtins = native_js_builtins_lib();
     assert_eq!(builtins.key.as_str(), NATIVE_JS_BUILTINS_LIB_KEY);
 
-    let mut host = MemoryHost::new();
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+      ..Default::default()
+    });
     host.add_lib(builtins.clone());
 
     let entry_key = FileKey::new("entry.ts");
