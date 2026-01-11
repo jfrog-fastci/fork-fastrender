@@ -971,6 +971,15 @@ impl CallbackAnalyzer<'_> {
                     // so any other constant key does not depend on index/array.
                     _ => {}
                   },
+                  Some(ExprKind::Template(tmpl)) if tmpl.spans.is_empty() => match tmpl.head.as_str() {
+                    "0" => {}
+                    "1" => self.uses_index = true,
+                    "2" => self.uses_array = true,
+                    "length" => {}
+                    // Array callbacks pass exactly 3 arguments (value, index, array),
+                    // so any other constant key does not depend on index/array.
+                    _ => {}
+                  },
                   Some(ExprKind::Unary { op, expr: inner }) => match *op {
                     // `+<number>` preserves the numeric property key.
                     hir_js::UnaryOp::Plus => {
@@ -1856,6 +1865,66 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(function (x) { return arguments[\"length\"]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_length_template_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[`length`]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_numeric_template_counts_as_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[`1`]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_array_template_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[`2`]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_using_arguments_other_template_slot_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[`3`]; });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
