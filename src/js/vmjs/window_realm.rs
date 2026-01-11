@@ -59,7 +59,7 @@ pub type ConsoleSink =
 /// We keep a dedicated type so helpers like `current_script_state_handle_from_vm_host` can reliably
 /// recover shared host-side state (currently: `Document.currentScript` bookkeeping) even when the
 /// embedder passes a unit `()` host or other opaque type.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct VmJsHostContext {
   current_script_state: Option<CurrentScriptStateHandle>,
 }
@@ -10417,6 +10417,9 @@ fn current_script_state_handle_from_vm_host(
     }
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return Some(document.current_script_handle().clone());
+    }
+    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
+      return ctx.current_script_state().cloned();
     }
     None
   }
