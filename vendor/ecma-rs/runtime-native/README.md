@@ -6,6 +6,17 @@ This crate provides the runtime-side pieces of the compiler/runtime ABI contract
 allocator entrypoints, string helpers, GC safepoints, and the **minimal async/await runtime ABI**
 needed to execute LLVM-generated coroutine state machines with JS-correct microtask ordering.
 
+## Reactor contract (epoll + kqueue)
+
+The low-level cross-platform reactor contract is documented in `docs/reactor.md` and enforced by
+`tests/reactor_conformance.rs`.
+
+Key guarantees include:
+
+- **edge-triggered** readiness on all platforms (epoll `EPOLLET`, kqueue `EV_CLEAR`)
+- **at most one event per token per poll**, with read+write readiness merged when both are observed
+- a cross-thread `Waker` that interrupts a blocking poll
+
 ## Build (static library)
 
 From the `vendor/ecma-rs/` workspace root:
