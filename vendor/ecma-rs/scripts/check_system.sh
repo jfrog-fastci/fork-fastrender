@@ -64,6 +64,30 @@ check_cmd_optional() {
   fi
 }
 
+check_pkg_config_module() {
+  local module="$1"
+  local pkg="$2"
+
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    # This is already checked in the core tools section, but keep the logic
+    # robust in case the check ordering changes.
+    echo -e "${RED}✗${NC} pkg-config not found (cannot check ${module}; install: pkg-config)"
+    ((errors+=1))
+    return 1
+  fi
+
+  if pkg-config --exists "${module}" 2>/dev/null; then
+    local ver
+    ver="$(pkg-config --modversion "${module}" 2>/dev/null || echo "unknown")"
+    echo -e "${GREEN}✓${NC} ${module} (pkg-config): ${ver}"
+    return 0
+  else
+    echo -e "${RED}✗${NC} ${module} not found via pkg-config (install: ${pkg})"
+    ((errors+=1))
+    return 1
+  fi
+}
+
 echo "=== System Check for ecma-rs Native Compilation ==="
 echo ""
 
@@ -72,6 +96,8 @@ check_cmd rustc "rustup (https://rustup.rs)" || true
 check_cmd cargo "rustup" || true
 check_cmd gcc "build-essential" || true
 check_cmd make "build-essential" || true
+check_cmd pkg-config "pkg-config" || true
+check_cmd curl "curl" || true
 check_cmd objdump "binutils" || true
 check_cmd git "git" || true
 
@@ -87,6 +113,12 @@ echo ""
 echo "--- Resource Limiting (required for multi-agent) ---"
 check_cmd flock "util-linux" || true
 check_cmd prlimit "util-linux" || true
+
+echo ""
+echo "--- Native linking deps ---"
+# Some crates (and transitive dependencies) require OpenSSL for TLS support.
+# Validate the development headers and linker flags are present.
+check_pkg_config_module openssl "libssl-dev" || true
 
 echo ""
 echo "--- LLVM 18 (for native codegen) ---"
@@ -251,7 +283,7 @@ if [[ $errors -gt 0 ]]; then
   echo -e "${RED}${errors} error(s)${NC}, ${warnings} warning(s)"
   echo ""
   echo "Install missing dependencies:"
-  echo "  sudo apt-get install build-essential util-linux llvm-18 llvm-18-dev clang-18 lld-18"
+  echo "  sudo apt-get install build-essential pkg-config libssl-dev util-linux git curl binutils llvm-18 llvm-18-dev clang-18 lld-18"
   exit 1
 elif [[ $warnings -gt 0 ]]; then
   echo -e "${GREEN}OK${NC} with ${YELLOW}${warnings} warning(s)${NC}"
