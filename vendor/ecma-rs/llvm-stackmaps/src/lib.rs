@@ -8,9 +8,11 @@
 //! - look up a record by return address (absolute PC)
 //!
 //! # Platform assumptions
-//! - Linux (ELF)
-//! - The final link step applies a linker script that defines
+//! - Linux (ELF) or macOS (Mach-O)
+//! - On Linux, the final link step applies a linker script that defines
 //!   `__stackmaps_start` / `__stackmaps_end` (see `runtime-native/link/stackmaps.ld`).
+//! - On macOS, the stackmaps bytes are discovered via `getsectdatafromheader_64` in the main
+//!   image, using the segment/section `__LLVM_STACKMAPS,__llvm_stackmaps`.
 //! - `x86_64` or `aarch64`
 //!
 //! This is not a general purpose binary analysis crate; it implements the subset
@@ -24,7 +26,10 @@ pub use stackmap::{
     StackMapFunction, StackMapHeader, StackMapRecord, StackMaps, StatepointRecordView,
 };
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 mod global {
     use std::sync::OnceLock;
 
@@ -43,7 +48,10 @@ mod global {
 /// Parse the in-process `.llvm_stackmaps` section and return a cached [`StackMaps`].
 ///
 /// This is the typical entry point for a native runtime.
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 pub fn stackmaps() -> &'static StackMaps {
     match global::stackmaps() {
         Ok(maps) => maps,
@@ -54,7 +62,10 @@ pub fn stackmaps() -> &'static StackMaps {
 /// Look up a stackmap record by callsite return address (absolute PC).
 ///
 /// This uses a global cache built from the in-memory `.llvm_stackmaps` section.
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 pub fn lookup(pc: u64) -> Option<&'static StackMapRecord> {
     stackmaps().lookup(pc)
 }
@@ -64,7 +75,10 @@ pub fn lookup(pc: u64) -> Option<&'static StackMapRecord> {
 /// Returns `None` when:
 /// - no record exists for `pc`, or
 /// - the record does not match the expected statepoint layout.
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")),
+))]
 pub fn lookup_statepoint(pc: u64) -> Option<StatepointRecordView<'static>> {
     stackmaps().lookup_statepoint(pc)
 }
