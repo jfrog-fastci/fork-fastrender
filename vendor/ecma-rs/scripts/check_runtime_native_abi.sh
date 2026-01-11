@@ -48,21 +48,43 @@ required_symbols=(
   # Thread registration / shape table.
   rt_thread_init
   rt_thread_deinit
-  rt_register_shape_table
-
+  rt_register_current_thread
+  rt_unregister_current_thread
+  rt_register_thread
+  rt_unregister_thread
+  rt_thread_register
+  rt_thread_unregister
+  rt_thread_set_parked
+  rt_thread_attach
+  rt_thread_detach
   rt_alloc
   rt_alloc_pinned
   rt_alloc_array
+  rt_register_shape_table
+  rt_gc_poll
   rt_gc_safepoint
+  rt_gc_safepoint_relocate_h
+  rt_gc_safepoint_slow
   rt_write_barrier
+  rt_write_barrier_range
   rt_gc_collect
+  rt_backing_store_external_bytes
+  rt_gc_register_root_slot
+  rt_gc_unregister_root_slot
+  rt_gc_pin
+  rt_gc_unpin
   rt_gc_set_young_range
   rt_gc_get_young_range
+  rt_weak_add
+  rt_weak_get
+  rt_weak_remove
   rt_string_concat
   rt_string_intern
+  rt_string_pin_interned
   rt_parallel_spawn
   rt_parallel_join
   rt_parallel_for
+  rt_spawn_blocking
 
   # Native async ABI (PromiseHeader-based).
   rt_promise_init
@@ -82,6 +104,11 @@ required_symbols=(
 
   rt_async_spawn_legacy
   rt_async_poll_legacy
+  rt_async_sleep_legacy
+  rt_queue_microtask
+  rt_set_timeout
+  rt_set_interval
+  rt_clear_timer
 )
 
 missing=0

@@ -323,6 +323,7 @@ void rt_thread_set_parked(bool parked);
 // -----------------------------------------------------------------------------
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);
 InternedId rt_string_intern(const uint8_t* s, size_t len);
+void rt_string_pin_interned(InternedId id);
 
 // -----------------------------------------------------------------------------
 // Parallel

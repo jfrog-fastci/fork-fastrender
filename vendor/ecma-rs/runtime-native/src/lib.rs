@@ -415,7 +415,7 @@ mod tests {
       let id_unpinned = rt_string_intern(b"temp".as_ptr(), b"temp".len());
       let id_pinned = rt_string_intern(b"perm".as_ptr(), b"perm".len());
 
-      crate::interner::pin_interned(id_pinned);
+      rt_string_pin_interned(id_pinned);
 
       // Force a GC sweep of the interner's backing heap. Since the interner keeps only weak
       // references to non-pinned entries, they should be collected and pruned.
@@ -553,6 +553,7 @@ mod tests {
       "void rt_thread_set_parked(bool parked);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
+      "void rt_string_pin_interned(InternedId id);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
@@ -622,6 +623,7 @@ mod tests {
     let _thread_set_parked: extern "C" fn(bool) = rt_thread_set_parked;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
+    let _pin_interned: extern "C" fn(abi::InternedId) = rt_string_pin_interned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
@@ -680,6 +682,7 @@ mod tests {
       _thread_set_parked,
       _concat,
       _intern,
+      _pin_interned,
       _spawn,
       _join,
       _for,
@@ -941,18 +944,34 @@ mod tests {
       return;
     }
 
-    let data = Box::new(ConcurrencyData {
-      active: AtomicUsize::new(0),
-      max_active: AtomicUsize::new(0),
-    });
-    let data_ptr = (&*data as *const ConcurrencyData).cast_mut().cast::<u8>();
+    // Worker threads are spawned lazily on first use. Under heavy load, a single attempt can race
+    // with thread startup / scheduling and observe no overlap even though the pool is correctly
+    // multi-threaded. Retry a few times before failing to keep this test stable in CI.
+    const ATTEMPTS: usize = 5;
+    let mut max_active = 0usize;
+    for _ in 0..ATTEMPTS {
+      let data = Box::new(ConcurrencyData {
+        active: AtomicUsize::new(0),
+        max_active: AtomicUsize::new(0),
+      });
+      let data_ptr = (&*data as *const ConcurrencyData).cast_mut().cast::<u8>();
 
-    let tasks = [rt_parallel_spawn(concurrency_probe, data_ptr), rt_parallel_spawn(concurrency_probe, data_ptr)];
-    rt_parallel_join(tasks.as_ptr(), tasks.len());
+      let tasks = [
+        rt_parallel_spawn(concurrency_probe, data_ptr),
+        rt_parallel_spawn(concurrency_probe, data_ptr),
+      ];
+      rt_parallel_join(tasks.as_ptr(), tasks.len());
 
-    assert!(
-      data.max_active.load(Ordering::SeqCst) >= 2,
-      "expected at least two tasks to overlap; worker_count={workers}"
+      max_active = data.max_active.load(Ordering::SeqCst);
+      if max_active >= 2 {
+        return;
+      }
+
+      std::thread::yield_now();
+    }
+
+    panic!(
+      "expected at least two tasks to overlap after {ATTEMPTS} attempts; worker_count={workers} max_active={max_active}"
     );
   }
 

@@ -333,6 +333,7 @@ pub(crate) fn pin_interned(id: InternedId) {
 /// Resolve an interned ID back to a [`StringRef`].
 ///
 /// Returns `None` if the ID is invalid or if the interned entry was reclaimed.
+#[allow(dead_code)] // Planned runtime API; currently used by tests and future debug tooling.
 pub(crate) fn lookup(id: InternedId) -> Option<StringRef> {
   let tables = INTERNER.tables.load_full();
   let idx = usize::try_from(id.0).ok()?;

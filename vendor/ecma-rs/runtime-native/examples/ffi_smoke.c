@@ -37,6 +37,7 @@ int main(void) {
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
   if (check(id1 == id2)) goto fail1;
+  rt_string_pin_interned(id1);
 
   StringRef ab = rt_string_concat(BYTES_LIT("a"), BYTES_LIT("b"));
   if (check(ab.len == 2)) goto fail2;

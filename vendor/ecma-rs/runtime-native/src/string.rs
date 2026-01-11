@@ -79,3 +79,11 @@ pub extern "C" fn rt_string_intern(s: *const u8, len: usize) -> InternedId {
 
   interner::intern(bytes)
 }
+
+/// Permanently pin an interned string so it survives GC sweeps and interner pruning.
+///
+/// This is intended for common interned strings like property names and keywords.
+#[no_mangle]
+pub extern "C" fn rt_string_pin_interned(id: InternedId) {
+  interner::pin_interned(id);
+}

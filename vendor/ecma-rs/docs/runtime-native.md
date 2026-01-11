@@ -219,6 +219,7 @@ pub fn rt_gc_collect();
 // Strings
 pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
 pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
+pub fn rt_string_pin_interned(id: InternedId);
 
 // Parallel
 pub fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId;
@@ -264,6 +265,7 @@ generation strategy.
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer. |
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
+| `rt_string_pin_interned` | MayGC | May allocate/promote and pin interned strings. |
 | `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
 | `rt_parallel_join` | MayGC | May block/safepoint while waiting. |
 | `rt_parallel_for` | MayGC | May spawn tasks and/or block while waiting. |
