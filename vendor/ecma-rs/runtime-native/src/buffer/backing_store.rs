@@ -734,6 +734,7 @@ mod borrow_tests {
     let mut store = alloc.alloc_zeroed(4).unwrap();
 
     let g = store.try_borrow_io_write().unwrap();
+    assert!(store.is_io_borrowed());
     assert!(matches!(
       store.try_borrow_io_write(),
       Err(BorrowError::Borrowed)
@@ -745,6 +746,7 @@ mod borrow_tests {
     assert_eq!(store.try_with_slice(|_| ()), Err(BorrowError::Borrowed));
     assert_eq!(store.try_with_slice_mut(|_| ()), Err(BorrowError::Borrowed));
     drop(g);
+    assert!(!store.is_io_borrowed());
 
     assert_eq!(store.try_with_slice(|s| s.len()).unwrap(), 4);
   }
