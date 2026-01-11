@@ -146,6 +146,107 @@ fn stop_the_world_completes_while_threads_contend_on_handle_table_lock() {
 }
 
 #[test]
+fn stop_the_world_completes_while_thread_waits_on_handle_table_alloc_write_lock() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let table = Arc::new(HandleTable::<u8>::new());
+
+  std::thread::scope(|scope| {
+    // Thread A holds a long-lived *read* lock.
+    let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+    let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+    // Thread B attempts to allocate while the read lock is held (blocks on write lock).
+    let (b_id_tx, b_id_rx) = mpsc::channel::<u64>();
+    let (b_start_tx, b_start_rx) = mpsc::channel::<()>();
+    let (b_done_tx, b_done_rx) = mpsc::channel::<u64>();
+    let (b_finish_tx, b_finish_rx) = mpsc::channel::<()>();
+
+    let table_a = Arc::clone(&table);
+    scope.spawn(move || {
+      threading::register_current_thread(ThreadKind::Worker);
+      table_a.debug_with_read_lock_for_tests(|| {
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+      });
+
+      runtime_native::rt_gc_safepoint();
+      threading::unregister_current_thread();
+    });
+
+    a_locked_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread A should acquire the handle table read lock");
+
+    let table_b = Arc::clone(&table);
+    scope.spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      b_id_tx.send(id.get()).unwrap();
+
+      b_start_rx.recv().unwrap();
+
+      let ptr = NonNull::new(Box::into_raw(Box::new(55u8))).unwrap();
+      let hid = table_b.alloc(ptr);
+      b_done_tx.send(hid.to_u64()).unwrap();
+
+      b_finish_rx.recv().unwrap();
+      let freed = table_b.free(hid).unwrap();
+      unsafe {
+        drop(Box::from_raw(freed.as_ptr()));
+      }
+
+      runtime_native::rt_gc_safepoint();
+      threading::unregister_current_thread();
+    });
+
+    let b_id = b_id_rx
+      .recv_timeout(TIMEOUT)
+      .expect("thread B should register with the thread registry");
+
+    // Ensure thread B is actively contending on the write lock before requesting STW.
+    b_start_tx.send(()).unwrap();
+    wait_until_native_safe(b_id, TIMEOUT);
+
+    let stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+    assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+    struct ResumeOnDrop;
+    impl Drop for ResumeOnDrop {
+      fn drop(&mut self) {
+        runtime_native::rt_gc_resume_world();
+      }
+    }
+    let _resume = ResumeOnDrop;
+
+    // Let thread A release its read lock and reach the safepoint.
+    a_release_tx.send(()).unwrap();
+
+    assert!(
+      runtime_native::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+      "world failed to stop within timeout; HandleTable write-lock contention must not block STW"
+    );
+
+    // Root enumeration/relocation must be able to take the HandleTable write lock while the world
+    // is stopped (even though another thread is blocked trying to allocate).
+    table.with_stw_update(|_| {});
+
+    // Resume so the contending allocation can complete.
+    runtime_native::rt_gc_resume_world();
+
+    let hid = b_done_rx
+      .recv_timeout(TIMEOUT)
+      .expect("allocation should complete after world is resumed");
+    assert_ne!(hid, 0);
+
+    b_finish_tx.send(()).unwrap();
+  });
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn stw_root_enumeration_can_iterate_handle_table_slots() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -249,4 +350,3 @@ fn stale_handle_ids_do_not_resolve_after_free_and_reuse() {
 
   threading::unregister_current_thread();
 }
-

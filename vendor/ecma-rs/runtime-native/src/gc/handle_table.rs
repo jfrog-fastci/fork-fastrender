@@ -315,6 +315,19 @@ impl<T> HandleTable<T> {
     f(&mut guard)
   }
 
+  /// Debug/test helper: run `f` while holding the table's shared/read lock.
+  ///
+  /// This exists so integration tests can deterministically create contention between:
+  /// - a long-held read lock, and
+  /// - a thread blocked on `alloc/free/set` (write lock),
+  /// and assert that the blocked thread transitions into a GC-safe ("NativeSafe") region so
+  /// stop-the-world coordination does not deadlock.
+  #[doc(hidden)]
+  pub fn debug_with_read_lock_for_tests<R>(&self, f: impl FnOnce() -> R) -> R {
+    let _guard = self.inner.read();
+    f()
+  }
+
   pub(crate) fn clear_for_tests(&self) {
     let mut inner = self.inner.write();
     // Important: do *not* truncate `slots` here.
