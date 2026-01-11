@@ -281,6 +281,73 @@ fn non_statepoint_records_are_skipped() {
   assert!(visited.is_empty());
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn multiple_derived_pointers_share_base_and_are_relocated() {
+  use std::collections::BTreeSet;
+
+  let bytes = build_stackmaps_with_two_derived_pointers();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  // x86_64 FP_RECORD_SIZE=8.
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = align_up(base + 128, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // Stackmap uses:
+  //   base     = [SP + 0]
+  //   derived1 = [SP + 8]
+  //   derived2 = [SP + 16]
+  let base_val = Box::into_raw(Box::new(0u8)) as u64;
+  unsafe {
+    write_u64(caller_sp + 0, base_val);
+    write_u64(caller_sp + 8, base_val + 8);
+    write_u64(caller_sp + 16, base_val + 16);
+  }
+
+  let mut visited = BTreeSet::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.insert(slot as usize);
+
+      // Simulate a moving GC by relocating the base pointer in-place.
+      let slot_ptr = slot as *mut *mut u8;
+      let old = slot_ptr.read() as u64;
+      slot_ptr.write((old + 0x1000) as *mut u8);
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
+  assert!(
+    visited.contains(&(caller_sp + 0)),
+    "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
+    caller_sp
+  );
+
+  let base_after = unsafe { read_u64(caller_sp + 0) };
+  assert_eq!(base_after, base_val + 0x1000);
+  assert_eq!(unsafe { read_u64(caller_sp + 8) }, base_after + 8);
+  assert_eq!(unsafe { read_u64(caller_sp + 16) }, base_after + 16);
+}
+
 fn align_up(v: usize, align: usize) -> usize {
   (v + (align - 1)) & !(align - 1)
 }
@@ -303,11 +370,22 @@ fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
 
 #[cfg(target_arch = "x86_64")]
 fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
-  // Minimal stackmap section containing one callsite record with one derived
-  // pointer pair (base and derived refer to different stack slots).
+  build_stackmaps_with_shared_base_derived_offsets(&[8])
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_stackmaps_with_two_derived_pointers() -> Vec<u8> {
+  build_stackmaps_with_shared_base_derived_offsets(&[8, 16])
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> Vec<u8> {
+  // Minimal stackmap section containing one callsite record with one or more derived-pointer pairs
+  // that all share the same base slot ([SP + 0]).
   //
-  // This is used to assert the stack walker can relocate derived pointers after
-  // the base slot has been updated by a moving collector.
+  // This is used to assert the stack walker can:
+  // - relocate the base slot once, and
+  // - update each derived slot to preserve its original offset from the base.
   let mut out = Vec::new();
 
   // Header.
@@ -327,7 +405,8 @@ fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
   out.extend_from_slice(&0xabcdef00u64.to_le_bytes()); // patchpoint_id
   out.extend_from_slice(&0x10u32.to_le_bytes()); // instruction_offset
   out.extend_from_slice(&0u16.to_le_bytes()); // reserved
-  out.extend_from_slice(&5u16.to_le_bytes()); // num_locations
+  let num_locations = 3usize + derived_offsets.len() * 2;
+  out.extend_from_slice(&u16::try_from(num_locations).unwrap().to_le_bytes());
 
   // 3 leading constants (statepoint header).
   for _ in 0..3 {
@@ -338,19 +417,21 @@ fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
     out.extend_from_slice(&0i32.to_le_bytes()); // small const
   }
 
-  // base: Indirect [SP + 0]
-  out.extend_from_slice(&[3, 0]); // Indirect, reserved
-  out.extend_from_slice(&8u16.to_le_bytes()); // size
-  out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
-  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
-  out.extend_from_slice(&0i32.to_le_bytes()); // offset
+  for &derived_off in derived_offsets {
+    // base: Indirect [SP + 0]
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0i32.to_le_bytes()); // offset
 
-  // derived: Indirect [SP + 8] (different slot => derived pointer)
-  out.extend_from_slice(&[3, 0]); // Indirect, reserved
-  out.extend_from_slice(&8u16.to_le_bytes()); // size
-  out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
-  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
-  out.extend_from_slice(&8i32.to_le_bytes()); // offset
+    // derived: Indirect [SP + derived_off] (different slot => derived pointer)
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&derived_off.to_le_bytes()); // offset
+  }
 
   // Align to 8.
   while out.len() % 8 != 0 {
