@@ -110,7 +110,11 @@ entry:
     rename_script.exists(),
     "missing helper script at {rename_script:?}"
   );
-  let linker_script = manifest_dir.join("link/stackmaps.ld");
+  // This test links with GNU ld via `gcc`. For PIE builds, GNU ld may merge
+  // writable `.data.rel.ro.*` output sections into the same PT_LOAD as `.text`
+  // if they are inserted "after .text", producing an RWX segment. Use the
+  // GNU ld-specific fragment that inserts into the RELRO/data region instead.
+  let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
   assert!(
     linker_script.exists(),
     "missing linker script at {linker_script:?}"

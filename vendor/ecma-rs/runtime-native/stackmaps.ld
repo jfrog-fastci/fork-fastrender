@@ -37,7 +37,9 @@ SECTIONS {
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-/* Anchor at `.data` so the writable `.data.rel.ro.*` output sections don't end
- * up merged into the executable text PT_LOAD (which would create an RWX
- * segment). */
-} INSERT BEFORE .data;
+/* Anchor at `.text` for lld compatibility (lld may omit empty `.data` output
+ * sections in minimal links).
+ *
+ * Note: GNU ld PIE builds should prefer `runtime-native/link/stackmaps_gnuld.ld`
+ * to avoid RWX LOAD segments. */
+} INSERT AFTER .text;
