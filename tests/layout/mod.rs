@@ -180,6 +180,7 @@ mod flex_zero_main_size;
 mod flex_nowrap_min_width_no_drift;
 mod font_relative_units_test;
 mod root_relative_font_units;
+mod system_font_precedence_duplicate_family;
 mod float_blockification;
 mod float_line_box_intrusion;
 mod float_line_boxes_do_not_spurious_clear;

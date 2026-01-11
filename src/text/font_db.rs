@@ -1707,7 +1707,7 @@ impl FontDatabase {
       stretch: stretch.into(),
     };
     if let Some(found) = self.db.query(&query) {
-      return Some(found);
+      return Some(self.prefer_non_bundled_duplicate_face(found));
     }
 
     if !self.is_shared_bundled_db() {
@@ -1724,7 +1724,7 @@ impl FontDatabase {
         stretch: stretch.into(),
       };
       if let Some(found) = self.db.query(&query) {
-        return Some(found);
+        return Some(self.prefer_non_bundled_duplicate_face(found));
       }
     }
 
@@ -1767,7 +1767,7 @@ impl FontDatabase {
     };
 
     if let Some(found) = self.db.query(&query) {
-      return Some(found);
+      return Some(self.prefer_non_bundled_duplicate_face(found));
     }
 
     if !allow_aliases {
@@ -1789,6 +1789,50 @@ impl FontDatabase {
 
   fn is_shared_bundled_db(&self) -> bool {
     Arc::ptr_eq(&self.db, &shared_bundled_fontdb())
+  }
+
+  /// When both bundled fonts and non-bundled fonts are loaded into the same fontdb instance,
+  /// `fontdb::Database::query` can return either face when they share the same family/style/weight.
+  ///
+  /// We ship bundled fallback fonts for determinism, and attach built-in metric overrides to them
+  /// (see `create_loaded_font_with_info`) so `line-height: normal` behaves closer to typical
+  /// browsers when system fonts are unavailable. When system (or user-supplied) fonts are present,
+  /// however, we should prefer those faces over the bundled duplicates so we don't accidentally
+  /// apply the bundled overrides and distort layout metrics (notably line heights in table-heavy
+  /// pages like Hacker News).
+  fn prefer_non_bundled_duplicate_face(&self, found: ID) -> ID {
+    if self.bundled_face_ids.is_empty() || !self.bundled_face_ids.contains(&found) {
+      return found;
+    }
+
+    let Some(found_face) = self.db.face(found) else {
+      return found;
+    };
+    let Some((primary_family, _)) = found_face.families.first() else {
+      return found;
+    };
+
+    // Find an equivalent non-bundled face (same family + style/weight/stretch).
+    for candidate in self.db.faces() {
+      if self.bundled_face_ids.contains(&candidate.id) {
+        continue;
+      }
+      if candidate.style != found_face.style
+        || candidate.weight != found_face.weight
+        || candidate.stretch != found_face.stretch
+      {
+        continue;
+      }
+      if candidate
+        .families
+        .iter()
+        .any(|(name, _)| primary_family.eq_ignore_ascii_case(name))
+      {
+        return candidate.id;
+      }
+    }
+
+    found
   }
 
   fn bundled_family_aliases(family: &str) -> Option<&'static [&'static str]> {
