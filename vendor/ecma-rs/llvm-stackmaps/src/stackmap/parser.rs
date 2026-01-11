@@ -509,6 +509,109 @@ mod tests {
     use crate::stackmap::Location;
 
     #[test]
+    fn rejects_overlarge_num_functions_without_allocating() {
+        // Header claims 1000 functions but provides no function table.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[3, 0, 0, 0]);
+        bytes.extend_from_slice(&(1000u32).to_le_bytes()); // num functions
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num records
+
+        let err = StackMaps::parse(&bytes).unwrap_err();
+        assert_eq!(err.offset, 16);
+    }
+
+    #[test]
+    fn rejects_header_record_count_mismatch() {
+        // Header says 1 record but function entry says it has 2 records.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[3, 0, 0, 0]);
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+        // Function entry: record_count=2.
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // addr
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+        bytes.extend_from_slice(&(2u64).to_le_bytes()); // record count
+
+        let err = StackMaps::parse(&bytes).unwrap_err();
+        assert_eq!(err.offset, 40);
+        assert!(
+            err.message.contains("record count mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_overlarge_num_locations_without_allocating() {
+        // Record claims 10 locations but the buffer ends immediately after the record header.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[3, 0, 0, 0]);
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+        // Function entry: 1 record.
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // addr
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+        bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+        // Record header with num_locations=10.
+        bytes.extend_from_slice(&(1u64).to_le_bytes()); // id
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // instruction offset
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved
+        bytes.extend_from_slice(&(10u16).to_le_bytes()); // num locations
+
+        // Provide a minimal record tail (24-byte minimum record size) so the parser reaches the
+        // `num_locations` validation rather than failing the blob-level min-size check.
+        bytes.extend_from_slice(&[0u8; 8]);
+
+        let err = StackMaps::parse(&bytes).unwrap_err();
+        assert_eq!(err.offset, 40);
+        assert!(
+            err.message.contains("num_locations"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_overlarge_num_live_outs_without_allocating() {
+        // Record claims 2 live-outs but provides no live-out entries.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[3, 0, 0, 0]);
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+        bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+        // Function entry: 1 record.
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // addr
+        bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+        bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+        // Record header with num_locations=0.
+        bytes.extend_from_slice(&(1u64).to_le_bytes()); // id
+        bytes.extend_from_slice(&(0u32).to_le_bytes()); // instruction offset
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // reserved
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+        // Live-out header (already aligned): u16 padding + u16 num_liveouts=2.
+        bytes.extend_from_slice(&(0u16).to_le_bytes()); // padding
+        bytes.extend_from_slice(&(2u16).to_le_bytes()); // num liveouts
+
+        // Provide a minimal record tail (24-byte minimum record size) so the parser reaches the
+        // `num_live_outs` validation rather than failing the blob-level min-size check.
+        bytes.extend_from_slice(&[0u8; 4]);
+
+        let err = StackMaps::parse(&bytes).unwrap_err();
+        assert_eq!(err.offset, 40);
+        assert!(
+            err.message.contains("num_live_outs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn parse_constant_index_location() {
         // Minimal stackmap section:
         // - 1 function

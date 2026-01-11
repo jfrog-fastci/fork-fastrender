@@ -141,3 +141,13 @@ pub fn section_bytes<'a>(file: &'a [u8], section_name: &str) -> Result<&'a [u8],
 
     Err(ElfError { message: "ELF: section not found" })
 }
+
+/// Return the raw stackmaps section bytes from an ELF file.
+///
+/// In object files, LLVM writes stackmaps into `.llvm_stackmaps`.
+/// In final PIE binaries, this repository's link pipeline relocates them into
+/// `.data.rel.ro.llvm_stackmaps` so runtime relocations can be applied safely.
+pub fn stackmaps_section_bytes<'a>(file: &'a [u8]) -> Result<&'a [u8], ElfError> {
+    section_bytes(file, ".data.rel.ro.llvm_stackmaps")
+        .or_else(|_| section_bytes(file, ".llvm_stackmaps"))
+}

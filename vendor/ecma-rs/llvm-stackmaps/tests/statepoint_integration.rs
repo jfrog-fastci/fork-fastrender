@@ -59,7 +59,7 @@ fn integration_statepoint_stackmap_lookup() {
     assert!(status.success(), "llc failed");
 
     let file = fs::read(&obj).unwrap();
-    let section = elf::section_bytes(&file, ".llvm_stackmaps").unwrap();
+    let section = elf::stackmaps_section_bytes(&file).unwrap();
 
     let maps = StackMaps::parse(section).unwrap();
     assert_eq!(maps.callsites().len(), 1, "expected exactly one callsite");
