@@ -238,6 +238,16 @@ impl ProgramFunction {
   pub fn analyzed_cfg(&self) -> &Cfg {
     self.ssa_body.as_ref().unwrap_or(&self.body)
   }
+
+  /// Returns the SSA-form CFG (with phi nodes) when available.
+  pub fn cfg_ssa(&self) -> Option<&Cfg> {
+    self.ssa_body.as_ref()
+  }
+
+  /// Returns the deconstructed CFG (phi nodes removed).
+  pub fn cfg_deconstructed(&self) -> &Cfg {
+    &self.body
+  }
 }
 
 #[derive(Debug)]
