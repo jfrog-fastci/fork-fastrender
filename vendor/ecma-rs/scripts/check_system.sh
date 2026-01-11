@@ -149,6 +149,23 @@ elif check_cmd_optional llvm-objcopy "llvm"; then
 fi
 
 echo ""
+echo "--- LLVM Stackmaps Section Retention (recommended) ---"
+if (command -v clang-18 >/dev/null 2>&1 || command -v clang >/dev/null 2>&1) &&
+  command -v readelf >/dev/null 2>&1 &&
+  command -v objcopy >/dev/null 2>&1 &&
+  command -v strip >/dev/null 2>&1; then
+  if bash "${SCRIPT_DIR}/check_llvm_stackmaps.sh"; then
+    echo -e "${GREEN}✓${NC} stackmaps retention check passed"
+  else
+    echo -e "${RED}✗${NC} stackmaps retention check failed (run: bash ${SCRIPT_DIR}/check_llvm_stackmaps.sh)"
+    ((errors++))
+  fi
+else
+  echo -e "${YELLOW}?${NC} stackmaps retention check skipped (missing clang/readelf/objcopy/strip)"
+  ((warnings++))
+fi
+
+echo ""
 echo "--- Environment Variables ---"
 if [[ -n "${LLVM_SYS_180_PREFIX:-}" ]]; then
   if [[ -d "${LLVM_SYS_180_PREFIX}" ]]; then

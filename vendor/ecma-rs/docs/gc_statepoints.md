@@ -23,6 +23,8 @@ The ABI assumptions documented here are guarded by fast regression scripts:
 
 - `scripts/test_stackmap_abi.sh` (return PC + SP base)
 - `scripts/test_statepoint_flags_patchbytes.sh` (flags range + patch_bytes lowering)
+- `scripts/check_llvm_stackmaps.sh` (ensures `.llvm_stackmaps` is retained under `--gc-sections` + common strip modes)
+- `scripts/test_stackmaps_pie_link.sh` (PIE link policy regression: ET_DYN + no DT_TEXTREL)
 
 ---
 
