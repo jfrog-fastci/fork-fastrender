@@ -11,6 +11,13 @@ build = "build.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
+# Escape hatch for experiments. Disables the build-time check that the crate is compiled with
+# `-C force-frame-pointers=yes`.
+#
+# WARNING: the runtime-native FP stack walker / GC root enumerator assumes a stable frame-pointer
+# chain. Enabling this feature may lead to hard crashes or silent memory corruption.
+allow_omit_frame_pointers = []
+
 # Enables parsing the in-memory `.llvm_stackmaps` section via linker-defined
 # boundary symbols.
 #

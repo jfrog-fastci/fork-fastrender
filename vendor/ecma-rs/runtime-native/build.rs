@@ -1,9 +1,16 @@
 use object::{Object, ObjectSection};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+  // Ensure the build script reruns when the effective rustc flags change.
+  println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+  println!("cargo:rerun-if-env-changed=RUSTFLAGS");
+
+  enforce_force_frame_pointers();
+
   // Silence `unexpected_cfgs` warnings for cfgs set by this build script.
   println!("cargo::rustc-check-cfg=cfg(runtime_native_has_stackmap_test_artifact)");
   println!("cargo::rustc-check-cfg=cfg(runtime_native_no_stackmap_test_artifact)");
@@ -16,6 +23,91 @@ fn main() {
   // Integration test artifact (x86_64 only): compile a tiny statepoint module and extract the
   // `Indirect [SP + off]` stackmap location so we can validate stack walking logic.
   maybe_build_stackmap_test_artifact();
+}
+
+fn enforce_force_frame_pointers() {
+  // Escape hatch for experiments / debugging.
+  if env::var_os("CARGO_FEATURE_ALLOW_OMIT_FRAME_POINTERS").is_some() {
+    println!(
+      "cargo:warning=runtime-native: building with `allow_omit_frame_pointers`; \
+       the FP-based stack walker / GC root enumerator may crash or return incorrect results"
+    );
+    return;
+  }
+
+  let flags = rustflags();
+  if has_force_frame_pointers_yes(&flags) {
+    return;
+  }
+
+  let pretty_flags = if flags.is_empty() {
+    "<none>".to_string()
+  } else {
+    flags.join(" ")
+  };
+
+  eprintln!(
+    r#"runtime-native: missing required Rust frame pointer flag.
+
+This crate contains an FP-based stack walker / GC root enumerator that assumes a stable frame-pointer (FP) chain.
+Building without frame pointers can lead to stack walking failures and hard crashes.
+
+Fix:
+  - Set: RUSTFLAGS="-C force-frame-pointers=yes"
+  - Or use the LLVM wrapper script (injects this flag automatically):
+      bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native
+
+Escape hatch (unsafe; for experiments only):
+  - Enable feature `allow_omit_frame_pointers`:
+      cargo build -p runtime-native --features allow_omit_frame_pointers
+
+Detected rustflags:
+  {pretty_flags}
+"#
+  );
+  std::process::exit(1);
+}
+
+fn rustflags() -> Vec<String> {
+  if let Ok(encoded) = env::var("CARGO_ENCODED_RUSTFLAGS") {
+    // Cargo uses the ASCII unit separator to avoid quoting issues.
+    let parts: Vec<String> = encoded
+      .split('\u{1f}')
+      .filter(|p| !p.is_empty())
+      .map(|s| s.to_string())
+      .collect();
+    if !parts.is_empty() {
+      return parts;
+    }
+  }
+
+  if let Ok(raw) = env::var("RUSTFLAGS") {
+    return raw
+      .split_whitespace()
+      .filter(|p| !p.is_empty())
+      .map(|s| s.to_string())
+      .collect();
+  }
+
+  Vec::new()
+}
+
+fn has_force_frame_pointers_yes(flags: &[String]) -> bool {
+  // Accept both spellings:
+  // - `-Cforce-frame-pointers=yes`
+  // - `-C force-frame-pointers=yes`
+  let mut i = 0usize;
+  while i < flags.len() {
+    let flag = &flags[i];
+    if flag == "-Cforce-frame-pointers=yes" {
+      return true;
+    }
+    if flag == "-C" && flags.get(i + 1).map(String::as_str) == Some("force-frame-pointers=yes") {
+      return true;
+    }
+    i += 1;
+  }
+  false
 }
 
 fn maybe_enable_stackmaps_linker_symbols() {

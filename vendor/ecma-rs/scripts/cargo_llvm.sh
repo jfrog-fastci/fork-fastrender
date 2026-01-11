@@ -57,10 +57,12 @@ export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
 #
 # Note: We deliberately set this in the LLVM wrapper script instead of globally for the
 # whole workspace, since most crates don't need frame pointers.
-if [[ -z "${RUSTFLAGS:-}" ]]; then
-  export RUSTFLAGS="-C force-frame-pointers=yes"
-else
-  export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+  if [[ -z "${RUSTFLAGS:-}" ]]; then
+    export RUSTFLAGS="-C force-frame-pointers=yes"
+  else
+    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+  fi
 fi
 
 # Auto-detect LLVM 18 on Ubuntu if not already set

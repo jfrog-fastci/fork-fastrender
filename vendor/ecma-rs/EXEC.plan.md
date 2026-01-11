@@ -125,6 +125,13 @@ FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh test -p nati
 FASTR_CARGO_LIMIT_AS=128G bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
 ```
 
+**Frame pointers are mandatory for runtime-native stack walking:**
+
+- `runtime-native` must be compiled with `-C force-frame-pointers=yes` (Rust).
+  - `vendor/ecma-rs/scripts/cargo_llvm.sh` injects this automatically.
+- Any generated LLVM code that participates in stack walking must be compiled with
+  `-frame-pointer=all` (Clang/LLVM).
+
 **4. Don't artificially limit parallelism:**
 ```bash
 # WRONG (too conservative - wastes resources):
@@ -189,6 +196,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p <crate> --lib
 # LLVM-heavy operations (native-js, runtime-native):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+# (This wrapper also injects `-C force-frame-pointers=yes` for runtime-native stack walking.)
 
 # Or with explicit limit:
 FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
