@@ -2,6 +2,8 @@ use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
 use optimize_js::il::inst::{Arg, Const, Inst, InstTyp, StringEncoding};
 use optimize_js::ssa::phi_simplify::simplify_phis;
 use optimize_js::ssa::ssa_deconstruct::deconstruct_ssa;
+#[cfg(feature = "typed")]
+use optimize_js::types::ValueTypeSummary;
 use optimize_js::util::counter::Counter;
 use parse_js::num::JsNumber;
 
@@ -120,6 +122,9 @@ fn typed_type_id_survives_ssa_phi_lowering() {
         for inst in block.iter() {
           if inst.tgts.iter().any(|&tgt| tgt == returned)
             && inst.meta.type_id.is_some()
+            && inst.meta.hir_expr.is_some()
+            && inst.meta.type_summary == Some(ValueTypeSummary::Number)
+            && inst.meta.excludes_nullish
           {
             return true;
           }
