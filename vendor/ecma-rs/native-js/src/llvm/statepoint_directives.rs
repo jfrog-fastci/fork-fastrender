@@ -1,9 +1,12 @@
 use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMCreateStringAttribute, LLVMGetBasicBlockParent,
-  LLVMGetGlobalParent, LLVMGetInstructionParent, LLVMGetModuleContext,
+  LLVMAddCallSiteAttribute, LLVMCreateStringAttribute, LLVMGetBasicBlockParent, LLVMGetGlobalParent,
+  LLVMGetInstructionParent, LLVMGetModuleContext, LLVMRemoveCallSiteStringAttribute,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
+
+#[cfg(feature = "statepoint-directives")]
+use llvm_sys::core::LLVMGetCallSiteStringAttribute;
 
 fn instruction_context(call: LLVMValueRef) -> LLVMContextRef {
   unsafe {
@@ -24,6 +27,15 @@ fn add_callsite_string_attr(call: LLVMValueRef, key: &CStr, value: &CStr) {
   let ctx = instruction_context(call);
 
   unsafe {
+    // Ensure the key is unique. LLVM treats string attributes as a key/value mapping, but the C API
+    // is "add-only"; remove any existing entry first so we can reliably update/override values.
+    LLVMRemoveCallSiteStringAttribute(
+      call,
+      llvm_sys::LLVMAttributeFunctionIndex,
+      key.as_ptr(),
+      key.to_bytes().len() as u32,
+    );
+
     let attr = LLVMCreateStringAttribute(
       ctx,
       key.as_ptr(),
@@ -34,6 +46,19 @@ fn add_callsite_string_attr(call: LLVMValueRef, key: &CStr, value: &CStr) {
 
     // "Callsite" attributes live at the function attribute index.
     LLVMAddCallSiteAttribute(call, llvm_sys::LLVMAttributeFunctionIndex, attr);
+  }
+}
+
+#[cfg(feature = "statepoint-directives")]
+fn has_callsite_string_attr(call: LLVMValueRef, key: &CStr) -> bool {
+  unsafe {
+    !LLVMGetCallSiteStringAttribute(
+      call,
+      llvm_sys::LLVMAttributeFunctionIndex,
+      key.as_ptr(),
+      key.to_bytes().len() as u32,
+    )
+    .is_null()
   }
 }
 
@@ -84,6 +109,7 @@ pub fn assign_statepoint_ids(
   use llvm_sys::LLVMOpcode;
 
   let mut next_id = start;
+  let statepoint_id_key = CString::new("statepoint-id").expect("statepoint-id must not contain NULs");
 
   unsafe {
     let mut func = LLVMGetFirstFunction(module);
@@ -96,8 +122,11 @@ pub fn assign_statepoint_ids(
           while !inst.is_null() {
             match LLVMGetInstructionOpcode(inst) {
               LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke => {
-                set_callsite_statepoint_id(inst, next_id);
-                next_id += 1;
+                // Preserve explicitly-assigned IDs.
+                if !has_callsite_string_attr(inst, &statepoint_id_key) {
+                  set_callsite_statepoint_id(inst, next_id);
+                  next_id += 1;
+                }
               }
               _ => {}
             }
