@@ -17,6 +17,7 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
     integrity_attr_present: false,
     integrity: None,
     referrer_policy: None,
+    fetch_priority: None,
     parser_inserted: true,
     node_id: None,
     script_type: ScriptType::Classic,

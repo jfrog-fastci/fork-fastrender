@@ -6879,6 +6879,27 @@ impl DisplayListBuilder {
                           &render_url,
                           base_dpr,
                         ) {
+                          // Converting a `Pixmap` into display-list `ImageData` requires cloning the
+                          // pixel buffer (`pixmap.data().to_vec()`). This is a major allocation
+                          // hotspot that bypasses `paint/pixmap.rs`, so we explicitly charge it to
+                          // any active stage allocation budget before allocating.
+                          if let Some(bytes) = u64::from(render_w_unoriented)
+                            .checked_mul(u64::from(render_h_unoriented))
+                            .and_then(|px| px.checked_mul(4))
+                          {
+                            if let Err(err) = crate::render_control::reserve_allocation_with(
+                              bytes,
+                              || {
+                                format!(
+                                  "image data pixel buffer {}x{} url={}",
+                                  render_w_unoriented, render_h_unoriented, render_url
+                                )
+                              },
+                            ) {
+                              self.error.get_or_insert(err);
+                              return;
+                            }
+                          }
                           let image_data = if orientation.quarter_turns % 4 == 0
                             && !orientation.flip_x
                           {
@@ -8996,6 +9017,24 @@ impl DisplayListBuilder {
                 Ok(pixmap) => pixmap,
                 Err(_) => break 'paint_url,
               };
+              // Cloning SVG pixmap bytes into `ImageData` can be large. Charge the allocation before
+              // we allocate/copy the pixel buffer.
+              if let Some(bytes) = u64::from(pixmap.width())
+                .checked_mul(u64::from(pixmap.height()))
+                .and_then(|px| px.checked_mul(4))
+              {
+                if let Err(err) = crate::render_control::reserve_allocation_with(bytes, || {
+                  format!(
+                    "image data pixel buffer {}x{} url={}",
+                    pixmap.width(),
+                    pixmap.height(),
+                    resolved_src
+                  )
+                }) {
+                  self.error.get_or_insert(err);
+                  break 'paint_url;
+                }
+              }
               let image_data = Arc::new(ImageData::from_pixmap(pixmap.as_ref(), tile_w, tile_h));
               let mut decoded_cache = self
                 .decoded_image_cache
@@ -13924,6 +13963,27 @@ impl DisplayListBuilder {
       }
     };
 
+    // `ImageData::from_pixmap` clones the underlying pixel buffer, so charge the bytes before we
+    // allocate/copy them.
+    if let Some(bytes) = u64::from(pixmap.width())
+      .checked_mul(u64::from(pixmap.height()))
+      .and_then(|px| px.checked_mul(4))
+    {
+      if let Err(err) = crate::render_control::reserve_allocation_with(bytes, || {
+        format!(
+          "image data pixel buffer {}x{} url=inline-svg",
+          pixmap.width(),
+          pixmap.height()
+        )
+      }) {
+        self.error.get_or_insert(err);
+        if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
+          breakdown.record_image_decode(start.elapsed());
+        }
+        return false;
+      }
+    }
+
     let image_data = Arc::new(ImageData::from_pixmap(pixmap.as_ref(), dest_w, dest_h));
 
     let mut decoded_cache = self
@@ -14152,6 +14212,26 @@ impl DisplayListBuilder {
               render_url,
               base_dpr,
             ) {
+              if let Some(bytes) = u64::from(render_w)
+                .checked_mul(u64::from(render_h))
+                .and_then(|px| px.checked_mul(4))
+              {
+                if crate::render_control::reserve_allocation_with(bytes, || {
+                  format!(
+                    "image data pixel buffer {}x{} url={}",
+                    render_w, render_h, render_url
+                  )
+                })
+                .is_err()
+                {
+                  if let (Some(breakdown), Some(start)) =
+                    (self.build_breakdown.as_ref(), decode_timer)
+                  {
+                    breakdown.record_image_decode(start.elapsed());
+                  }
+                  return None;
+                }
+              }
               let pixels = pixmap.data().to_vec();
               // Apply `image-orientation` semantics to match `CachedImage::to_oriented_rgba`.
               let mut rgba = image::RgbaImage::from_raw(render_w, render_h, pixels)?;
@@ -14181,6 +14261,25 @@ impl DisplayListBuilder {
     let mut image_data = if let Some(custom) = rendered_svg_with_foreign_object {
       custom
     } else {
+      // `CachedImage::to_oriented_rgba` can allocate a full RGBA8 buffer even when the source image
+      // is already decoded. Budget the output buffer so extremely large images can be aborted
+      // deterministically.
+      let (w, h) = image.oriented_dimensions(orientation);
+      if let Some(bytes) = u64::from(w)
+        .checked_mul(u64::from(h))
+        .and_then(|px| px.checked_mul(4))
+      {
+        if crate::render_control::reserve_allocation_with(bytes, || {
+          format!("image data pixel buffer {}x{} url={}", w, h, key.url)
+        })
+        .is_err()
+        {
+          if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
+            breakdown.record_image_decode(start.elapsed());
+          }
+          return None;
+        }
+      }
       let rgba = image.to_oriented_rgba(orientation);
       let (w, h) = rgba.dimensions();
       if w == 0 || h == 0 {
@@ -14403,6 +14502,35 @@ mod tests {
     let _guard = StageAllocationBudgetGuard::install(Some(&budget));
     let mut builder = DisplayListBuilder::new();
     builder.emit_background(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), Rgba::RED);
+    let err = builder.finish().unwrap_err();
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        ..
+      }) => {
+        assert_eq!(stage, RenderStage::Paint);
+        assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn inline_svg_image_data_allocation_budget_exceeded() {
+    // Render a 1×1 inline SVG into a pixmap (4 bytes) and then clone it into display-list
+    // `ImageData` (another 4 bytes). With a budget of 5 bytes we should exceed once we attempt to
+    // allocate the `ImageData` pixel buffer.
+    let budget = Arc::new(StageAllocationBudget::new(5));
+    let _guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let _stage_guard = crate::render_control::StageGuard::install(Some(RenderStage::Paint));
+    let _heartbeat_guard =
+      crate::render_control::StageHeartbeatGuard::install(Some(StageHeartbeat::PaintBuild));
+    let mut builder = DisplayListBuilder::with_image_cache(ImageCache::new());
+    let svg = crate::tree::box_tree::SvgContent::raw(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>"#,
+    );
+    let _ = builder.emit_inline_svg(&svg, Rect::from_xywh(0.0, 0.0, 1.0, 1.0), None);
     let err = builder.finish().unwrap_err();
     match err {
       Error::Render(RenderError::StageAllocationBudgetExceeded {
