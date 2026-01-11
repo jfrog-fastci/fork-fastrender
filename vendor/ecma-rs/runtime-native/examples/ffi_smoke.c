@@ -15,6 +15,8 @@ static void par_for_body(size_t i, uint8_t* data) {
 }
 
 int main(void) {
+  // The runtime expects mutator threads to register before executing compiled
+  // code or participating in GC safepoints.
   rt_thread_init(0);
 
   static const RtShapeDescriptor kShapes[1] = {

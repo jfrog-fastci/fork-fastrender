@@ -61,6 +61,7 @@ required_symbols=(
   rt_alloc_pinned
   rt_alloc_array
   rt_register_shape_table
+  RT_GC_EPOCH
   rt_gc_poll
   rt_gc_safepoint
   rt_gc_safepoint_relocate_h
