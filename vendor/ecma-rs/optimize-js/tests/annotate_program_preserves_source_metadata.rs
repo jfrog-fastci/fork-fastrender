@@ -31,17 +31,21 @@ fn annotate_program_preserves_lowering_metadata_fields() {
   bblocks.add(0, vec![inst]);
   bblocks.add(1, Vec::new());
 
+  let cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
   let mut program = Program {
     functions: Vec::new(),
     top_level: ProgramFunction {
       debug: None,
-      body: Cfg {
-        graph,
-        bblocks,
-        entry: 0,
-      },
+      body: cfg.clone(),
       params: Vec::new(),
-      ssa_body: None,
+      // `annotate_program` resets metadata on both the SSA and SSA-deconstructed CFGs. Most real
+      // programs have `ssa_body` populated, so assert both paths preserve lowering metadata.
+      ssa_body: Some(cfg),
       stats: OptimizationStats::default(),
     },
     top_level_mode: TopLevelMode::Module,
@@ -50,17 +54,32 @@ fn annotate_program_preserves_lowering_metadata_fields() {
 
   annotate_program(&mut program);
 
-  let meta = &program.top_level.body.bblocks.get(0)[0].meta;
-  assert_eq!(meta.type_id, some_type_id(), "expected type_id to be preserved");
-  assert_eq!(meta.hir_expr, Some(ExprId(7)), "expected hir_expr to be preserved");
-  assert_eq!(
-    meta.type_summary,
-    Some(ValueTypeSummary::NUMBER),
-    "expected type_summary to be preserved"
-  );
-  assert!(
-    meta.excludes_nullish,
-    "expected excludes_nullish to be preserved"
-  );
+  for (name, cfg) in [
+    ("body", &program.top_level.body),
+    (
+      "ssa_body",
+      program.top_level.ssa_body.as_ref().expect("ssa_body missing"),
+    ),
+  ] {
+    let meta = &cfg.bblocks.get(0)[0].meta;
+    assert_eq!(
+      meta.type_id,
+      some_type_id(),
+      "expected type_id to be preserved ({name})"
+    );
+    assert_eq!(
+      meta.hir_expr,
+      Some(ExprId(7)),
+      "expected hir_expr to be preserved ({name})"
+    );
+    assert_eq!(
+      meta.type_summary,
+      Some(ValueTypeSummary::NUMBER),
+      "expected type_summary to be preserved ({name})"
+    );
+    assert!(
+      meta.excludes_nullish,
+      "expected excludes_nullish to be preserved ({name})"
+    );
+  }
 }
-
