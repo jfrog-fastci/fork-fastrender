@@ -235,7 +235,7 @@ void rt_gc_safepoint_slow(uint64_t epoch);
 // This is used when generated/native code derives a non-GC pointer (e.g. an
 // ArrayBuffer backing-store `uint8_t*`) from a GC-managed object header and then
 // may hit a safepoint/GC before its last use.
-void rt_keep_alive_gc_ref(uint8_t* gc_ref);
+void rt_keep_alive_gc_ref(GcPtr gc_ref);
 // Generational write barrier for an object field store.
 //
 // Contract: `obj` must be the same object base pointer that was returned from

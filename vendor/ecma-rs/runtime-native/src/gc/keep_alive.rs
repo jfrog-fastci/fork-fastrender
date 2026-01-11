@@ -12,7 +12,7 @@
 /// - The inline asm is treated as having side effects, so the call cannot be DCE'd or moved
 ///   arbitrarily.
 #[inline(never)]
-pub fn keep_alive_gc_ref(gc_ref: *mut u8) {
+pub fn keep_alive_gc_ref(gc_ref: crate::roots::GcPtr) {
   // SAFETY: The asm block does not dereference `gc_ref`; it only makes the value observable to the
   // optimizer. We intentionally omit `nomem` so LLVM must assume this could touch memory, which
   // prevents motion across memory operations/statepoints.
@@ -28,6 +28,6 @@ pub fn keep_alive_gc_ref(gc_ref: *mut u8) {
 /// Exported runtime ABI entrypoint used by generated code.
 #[no_mangle]
 #[inline(never)]
-pub extern "C" fn rt_keep_alive_gc_ref(gc_ref: *mut u8) {
+pub extern "C" fn rt_keep_alive_gc_ref(gc_ref: crate::roots::GcPtr) {
   keep_alive_gc_ref(gc_ref);
 }
