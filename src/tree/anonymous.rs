@@ -244,8 +244,25 @@ impl AnonymousBoxCreator {
         }
       },
 
-      // Inline containers need inline fixup
-      BoxType::Inline(_) => Self::fixup_inline_children(children, parent_style),
+      // Inline-level boxes can still establish their own formatting context (e.g. `inline-block`,
+      // `inline-flex`). In that case, their children must satisfy the same anonymous-box
+      // invariants as a block container with the corresponding formatting context.
+      //
+      // This matters for common real-world patterns like `<a><div>...</div></a>` inside an
+      // inline-block: the inline `<a>` can contain a block-level box (valid HTML, but violates
+      // CSS2's "no blocks in inlines" rule). If we treat the inline-block as an inline container
+      // here, we won't split that illegal inline, and later layout will overlap subsequent block
+      // siblings (Engadget relies on this for feature-card images).
+      BoxType::Inline(inline) => match inline.formatting_context {
+        None => Self::fixup_inline_children(children, parent_style),
+        Some(FormattingContextType::Flex | FormattingContextType::Grid) => {
+          Self::fixup_flex_or_grid_children(children, parent_style.as_ref())
+        }
+        Some(FormattingContextType::Table) => children,
+        Some(FormattingContextType::Block | FormattingContextType::Inline) => {
+          Self::fixup_block_children(children, parent_style.as_ref())
+        }
+      },
 
       // Anonymous block containers also need block fixup
       BoxType::Anonymous(anon)
@@ -1248,6 +1265,36 @@ mod tests {
     let fixed = fixup_tree(root);
     assert_eq!(fixed.children.len(), 1);
     assert!(fixed.children[0].is_block_level());
+  }
+
+  #[test]
+  fn inline_block_children_are_fixed_up_as_a_block_container() {
+    // Inline-level boxes like inline-block establish a formatting context for their children.
+    // Anonymous box fixup must treat them like block containers, otherwise we miss required
+    // fixups such as splitting illegal "inline contains block" descendants.
+    //
+    // This pattern is extremely common in the wild (e.g. `<a><div>...</div></a>` inside an
+    // inline-block wrapper).
+    let style = default_style();
+    let block_child = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    let inline_with_block = BoxNode::new_inline(style.clone(), vec![block_child]);
+
+    let sibling_block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+
+    let mut inline_block_style = (*style).clone();
+    inline_block_style.display = Display::InlineBlock;
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![inline_with_block, sibling_block],
+    );
+
+    let fixed = fixup_tree(inline_block);
+    assert_eq!(fixed.children.len(), 2);
+    assert!(
+      fixed.children.iter().all(|child| child.is_block_level()),
+      "expected inline-block fixup to lift block descendants out of inline children"
+    );
   }
 
   #[test]
