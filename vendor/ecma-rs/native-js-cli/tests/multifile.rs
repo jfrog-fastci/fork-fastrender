@@ -524,6 +524,29 @@ fn entry_fn_can_target_reexported_export() {
 }
 
 #[test]
+fn entry_fn_can_target_export_all_reexported_export() {
+  let dir = tempdir().unwrap();
+  let impl_file = dir.path().join("impl.ts");
+  let entry = dir.path().join("entry.ts");
+
+  fs::write(
+    &impl_file,
+    "console.log(\"dep\");\nexport function run(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+  fs::write(&entry, "export * from './impl';\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("run")
+    .arg(entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
 fn type_only_import_does_not_execute_module() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
