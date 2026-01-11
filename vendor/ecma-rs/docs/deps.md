@@ -50,6 +50,7 @@ graph TD
     effect_js --> hir_js
     effect_js --> knowledge_base
     effect_js --> typecheck_ts
+    effect_js --> types_ts_interned
     effect_js_cli --> diagnostics
     effect_js_cli --> effect_js
     effect_js_cli --> hir_js
