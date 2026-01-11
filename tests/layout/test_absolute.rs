@@ -155,6 +155,39 @@ fn test_absolute_top_and_bottom_stretch_height() {
   assert_eq!(result.size.height, 450.0);
 }
 
+#[test]
+fn test_abspos_replaced_top_bottom_auto_height_uses_intrinsic_and_allows_auto_margins() {
+  // Regression test: absolutely positioned *replaced* elements (e.g. <img>) with `top` and `bottom`
+  // specified should not be stretched when `height` is `auto` (CSS 2.1 §10.6.5).
+  //
+  // Discord's homepage hero uses:
+  //   img.home-image-gerl { position: absolute; top: 0; bottom: 0; margin-top: auto; }
+  // to bottom-align a character illustration inside a fixed-height container without distorting it.
+  let layout = AbsoluteLayout::new();
+
+  let mut style = default_style();
+  style.position = Position::Absolute;
+  style.top = LengthOrAuto::px(0.0);
+  style.bottom = LengthOrAuto::px(0.0);
+  style.margin_top_auto = true;
+
+  let mut input = create_input(style, Size::new(50.0, 100.0));
+  input.is_replaced = true;
+  let cb = create_cb(200.0, 400.0);
+
+  let result = layout.layout_absolute(&input, &cb).unwrap();
+  assert!(
+    (result.size.height - 100.0).abs() < 0.1,
+    "expected intrinsic height (got {})",
+    result.size.height
+  );
+  assert!(
+    (result.position.y - 300.0).abs() < 0.1,
+    "expected auto margin to bottom-align element (got {})",
+    result.position.y
+  );
+}
+
 // ============================================================================
 // Width/Height Auto Tests (Intrinsic Size)
 // ============================================================================
