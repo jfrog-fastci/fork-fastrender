@@ -1,3 +1,5 @@
+#![doc = include_str!("../docs/async_abi.md")]
+
 //! C-compatible async/await ABI for the native runtime.
 //!
 //! This module contains the shared layout contract between:
@@ -16,6 +18,8 @@
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::RtShapeId;
+
+use static_assertions::{const_assert, const_assert_eq};
 
 /// ABI version tag for the native coroutine ABI.
 ///
@@ -233,6 +237,24 @@ unsafe impl Send for Coroutine {}
 pub type CoroutineRef = *mut Coroutine;
 
 // ---- Compile-time checks ----
+
+const_assert_eq!(core::mem::align_of::<PromiseHeader>(), 8);
+const_assert_eq!(core::mem::offset_of!(PromiseHeader, state), 0);
+const_assert_eq!(
+  core::mem::offset_of!(PromiseHeader, waiters),
+  core::mem::size_of::<usize>()
+);
+const_assert_eq!(
+  core::mem::offset_of!(PromiseHeader, flags),
+  core::mem::size_of::<usize>() * 2
+);
+const_assert_eq!(
+  core::mem::size_of::<PromiseHeader>(),
+  core::mem::size_of::<usize>() * 2 + 8
+);
+const_assert!(
+  core::mem::size_of::<PromiseHeader>() % core::mem::align_of::<PromiseHeader>() == 0
+);
 
 const _: () = {
   assert!(core::mem::align_of::<PromiseHeader>() >= 8);

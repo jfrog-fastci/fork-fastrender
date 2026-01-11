@@ -1,10 +1,252 @@
-# Async runtime ABI (runtime-native)
+# Async ABI contract (`runtime-native`)
 
-This document describes the **async** portion of the stable C ABI surface exposed by
-`runtime-native`, plus additional execution model notes.
+This document describes the **async** portion of the stable compiler/runtime ABI surface exposed by
+`runtime-native`.
 
-`include/runtime_native.h` is the authoritative ABI definition; this document exists to give
-additional context for codegen and embedding implementations.
+`include/runtime_native.h` is the authoritative ABI definition for exported symbols and C-facing
+struct definitions. This document provides additional semantics and invariants (layout diagrams,
+state machines, memory ordering, scheduling, and GC constraints) that are relied upon by codegen and
+embedders.
+
+Guardrails live in three places:
+
+- `runtime-native/src/async_abi.rs`: ABI types + compile-time layout assertions
+- `runtime-native/tests/abi_layout.rs`: field-offset/size conformance tests
+- this document: semantics, ordering, scheduling, and GC constraints
+
+## Object layouts
+
+### `Promise<T>`
+
+**Definition:**
+
+```text
+Promise<T> := PromiseHeader + payload(T)
+```
+
+`PromiseHeader` is a stable prefix at **offset 0** of every promise allocation.
+
+```text
+┌──────────────────────────────────────────────┐
+│ Promise<T>                                   │
+├──────────────────────────────────────────────┤
+│ PromiseHeader                                │  <── PromiseRef points here
+│  - state     : AtomicU8                      │
+│  - reactions : AtomicUsize                   │  (0 / ptr(head of PromiseReactionNode list))
+│  - flags     : AtomicU8                      │
+├──────────────────────────────────────────────┤
+│ payload(T)                                   │  (written before fulfill/reject)
+└──────────────────────────────────────────────┘
+```
+
+**Key layout invariants:**
+
+- `PromiseHeader` is `#[repr(C, align(8))]`.
+- `payload(T)` begins at `addr(PromiseRef) + size_of::<PromiseHeader>()`.
+- `size_of::<PromiseHeader>()` is guaranteed to be a multiple of `align_of::<PromiseHeader>()`.
+
+### `CoroutineFrame`
+
+**Definition:**
+
+```text
+CoroutineFrame := Coroutine + locals
+```
+
+`Coroutine` is a stable prefix at **offset 0** of every coroutine frame allocation.
+
+```text
+┌───────────────────────────────────────────┐
+│ CoroutineFrame (heap allocated when live) │
+├───────────────────────────────────────────┤
+│ Coroutine                                 │  <── CoroutineRef points here
+│  - vtable      : *const CoroutineVTable   │  (must be first field)
+│  - promise     : PromiseRef               │  (written by rt_async_spawn*)
+│  - next_waiter : *mut Coroutine           │  (runtime-only intrusive list)
+│  - flags       : u32                      │
+├───────────────────────────────────────────┤
+│ locals / state machine slots              │  (compiler-generated)
+└───────────────────────────────────────────┘
+```
+
+### Coroutine vtable
+
+`CoroutineVTable` is a stable layout; generated code must populate it exactly.
+
+```text
+CoroutineVTable {
+  resume: unsafe extern "C" fn(*mut Coroutine) -> CoroutineStep,
+  destroy: unsafe extern "C" fn(CoroutineRef),
+
+  promise_size: u32,
+  promise_align: u32,
+  promise_shape_id: RtShapeId,
+
+  abi_version: u32,
+  reserved: [usize; 4],
+}
+```
+
+- `resume` runs the coroutine state machine until the next suspension point.
+- `destroy` destroys (drops + deallocates) a coroutine frame. The runtime calls this **only** when
+  the coroutine frame is runtime-owned (see `CORO_FLAG_RUNTIME_OWNS_FRAME`).
+- The `promise_*` fields describe the result promise allocation that `rt_async_spawn*` creates and
+  stores into `coro.promise`.
+
+## Promise state machine
+
+`PromiseHeader.state` contains a `PromiseState` value (`u8`):
+
+- `PENDING   = 0`
+- `FULFILLED = 1`
+- `REJECTED  = 2`
+
+State transitions:
+
+```text
+Pending  -- fulfill --> Fulfilled
+   |
+   '-- reject  -----> Rejected
+```
+
+Rules:
+
+- The only legal transitions are `Pending → Fulfilled` and `Pending → Rejected`.
+- `Fulfilled` and `Rejected` are terminal.
+
+## Waiter / reaction registration + wake algorithm
+
+Promises maintain a lock-free, intrusive stack of *reaction nodes*. Reactions are the unified
+mechanism for:
+
+- resuming an `await` continuation, and
+- running `.then(...)` callbacks.
+
+### Representation
+
+`PromiseHeader.reactions` is an `AtomicUsize` containing one of:
+
+- `0` (no reactions yet), or
+- a `PromiseReactionNode*` cast to `usize` (head of an intrusive singly-linked list).
+
+The list nodes are `PromiseReactionNode`s with a `next` pointer. The list is pushed in LIFO order
+for low-overhead registration; it is drained in FIFO order by reversing the list before scheduling
+jobs onto the microtask queue.
+
+### Registering a reaction (conceptual pseudocode)
+
+```text
+register_reaction(promise, node):
+  // Push onto the intrusive list.
+  loop:
+    head = promise.reactions.load(Acquire)
+    node.next = head
+    if promise.reactions.compare_exchange_weak(head, node, AcqRel, Acquire):
+      break
+
+  // Race fix (post-CAS recheck):
+  //
+  // The promise might have settled after we pushed but before the settler drained the list. Recheck
+  // state and, if settled, drain reactions again to avoid a lost wake.
+  if promise.state.load(Acquire) != PENDING:
+    drain_reactions(promise)
+```
+
+### Settling a promise + draining reactions (conceptual pseudocode)
+
+```text
+resolve(promise, new_state):
+  // Payload must already have been written by the *winning* resolver.
+  //
+  // Settlement is first-wins and thread-safe: only the caller that transitions
+  // `PENDING -> {FULFILLED,REJECTED}` drains reactions.
+  if !promise.state.compare_exchange(PENDING, new_state, AcqRel, Acquire):
+    return
+  drain_reactions(promise)
+
+drain_reactions(promise):
+  head = promise.reactions.swap(0, AcqRel)
+  head = reverse_list(head)   // FIFO order
+
+  while head != null:
+    next = head.next
+    head.next = null
+    enqueue_microtask(run_reaction(head, promise))
+    head = next
+```
+
+Key invariant:
+
+- `drain_reactions` is idempotent and safe to call multiple times. If it races with concurrent
+  registrations, the post-CAS recheck ensures a subsequent drain will pick up newly-added nodes.
+
+## Memory ordering contract
+
+This contract prevents “heisenbugs” across CPU cores.
+
+### Producer (generated code)
+
+When resolving a promise:
+
+1. Write `payload(T)` (ordinary writes).
+2. Call `rt_promise_fulfill(promise)` or `rt_promise_reject(promise)`.
+
+If multiple producers may race to settle the same promise (e.g. host callbacks, duplicate
+registrations), generated code must ensure **only the winning settle call writes the payload**. Use
+`rt_promise_try_fulfill` / `rt_promise_try_reject` to determine the winner when needed.
+
+### Runtime (fulfill/reject)
+
+The runtime must publish the payload by atomically transitioning `PENDING → {FULFILLED,REJECTED}`
+using an atomic compare-and-swap (CAS) with **Release** (or stronger) semantics. Only the CAS winner
+drains reactions and schedules wakeups.
+
+### Consumer (awaiting code)
+
+Before reading `payload(T)`, the awaiting side must:
+
+- load `PromiseHeader.state` with **Acquire** semantics and observe a non-`Pending` state.
+
+That Acquire load synchronizes-with the runtime’s Release state transition, making the payload writes
+visible.
+
+## Scheduling semantics (`rt_async_*`)
+
+These are the guarantees codegen is allowed to rely on.
+
+### `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
+
+- Takes ownership of the coroutine frame pointer.
+- Allocates the result promise described by `coro.vtable.{promise_size,promise_align,promise_shape_id}`.
+- Stores the promise pointer into `coro.promise`.
+- **Immediately resumes** the coroutine during the call (until it completes or reaches its first
+  `await`).
+- Returns `coro.promise`.
+
+### `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
+
+- Same allocation/initialization semantics as `rt_async_spawn`.
+- Enqueues the coroutine’s *first resume* as a **microtask** (does not resume synchronously).
+
+### `rt_async_poll() -> bool`
+
+Drives the runtime forward (run-ready coroutines, process I/O completions, timers).
+
+- Returns `true` if the runtime believes there is still pending work after this turn.
+- Returns `false` if the runtime is fully idle.
+
+### `rt_async_wait()`
+
+Blocks the current thread until at least one async task becomes ready. This is intended for an event
+loop thread to park when the runtime is idle (no timers/I/O ready) and be woken by promise settlement
+or other cross-thread enqueues.
+
+### `rt_async_cancel_all()`
+
+Teardown helper that cancels all **runtime-owned** async-ABI coroutine frames currently queued in the
+runtime. For each cancelled frame, the runtime calls `(*coro.vtable).destroy(coro)` exactly once.
+
+## Microtask draining (`rt_drain_microtasks` / `rt_async_run_until_idle`)
 
 ## Microtask queue semantics
 
@@ -418,3 +660,40 @@ resumption), because attaching `await` reactions after a rejection should still 
 Microtasks are FIFO: coroutines enqueued earlier are resumed earlier (including those enqueued via
 `rt_async_spawn_deferred_legacy` and those woken by promise resolution). If Task 301 (FIFO ordering
 work) is implemented, this property is relied upon to match Web microtask ordering.
+
+## GC constraints
+
+The runtime uses a precise GC. To keep tracing correct and simple, the async ABI must follow these
+rules.
+
+### No tagged/sentinel pointers in pointer fields
+
+Any **pointer-typed** field (e.g. `Coroutine.vtable`, `Coroutine.promise`, `Coroutine.next_waiter`)
+must contain:
+
+- `null`, or
+- a properly aligned pointer to a valid allocation (heap object, stack/root record, or static data).
+
+Do not store tagged pointers (low-bit tagging) or non-null sentinel integers in pointer fields.
+
+**Note:** `PromiseHeader.reactions` stores reaction-node pointers as `usize`. This is intentional: it
+is not a pointer field, so the GC (or any tracer) must treat it explicitly when walking promise
+metadata.
+
+### Rooting rules
+
+- A suspended coroutine frame must be considered live (GC-rooted) while:
+  - it is referenced by any pending promise’s reaction list, or
+  - it is in the scheduler’s queues.
+- Promise payloads may contain GC pointers. Codegen/runtime must ensure those pointers are traced by
+  the promise’s shape descriptor (`promise_shape_id`).
+
+## Spec deviations / supported behavior
+
+This project supports both behaviors for `await`:
+
+- **Fast-path (default):** if the awaited promise is already settled, the continuation may run
+  synchronously without forcing a microtask turn.
+- **Strict yield mode:** always yield on `await`, matching ECMAScript’s microtask timing.
+
+The runtime exposes this as a configuration knob (`set_strict_await_yields` in `runtime-native`).

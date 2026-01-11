@@ -84,6 +84,7 @@ thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
 runtime-io-uring = { workspace = true }
 loom = { version = "0.7", optional = true }
+static_assertions = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true }
@@ -95,6 +96,7 @@ object = { workspace = true }
 assert_cmd = { workspace = true }
 serde_json = { workspace = true }
 criterion = { workspace = true }
+memoffset = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
