@@ -410,4 +410,48 @@ mod tests {
       "unexpected error message: {err}"
     );
   }
+
+  #[test]
+  fn accepts_allow_origin_with_ipv6_brackets() {
+    let doc_origin = origin_from_url("https://[::1]/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://[::1]".to_string());
+
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("IPv6 origin should be serialized with brackets and match exactly");
+  }
+
+  #[test]
+  fn rejects_allow_origin_ipv6_without_brackets() {
+    let doc_origin = origin_from_url("https://[::1]/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://::1".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("unbracketed IPv6 origin should not match the serialized request origin");
+    assert!(
+      err.contains("does not match request origin"),
+      "unexpected error message: {err}"
+    );
+  }
 }
