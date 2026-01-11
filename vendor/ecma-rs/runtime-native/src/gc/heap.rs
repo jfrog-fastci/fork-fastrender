@@ -274,6 +274,18 @@ impl GcHeap {
     &self.stats
   }
 
+  pub fn nursery_stats(&self) -> nursery::NurseryStats {
+    self.nursery.stats()
+  }
+
+  pub fn nursery_reserved_bytes(&self) -> usize {
+    self.nursery.size_bytes()
+  }
+
+  pub fn nursery_allocated_bytes(&self) -> usize {
+    self.nursery.allocated_bytes()
+  }
+
   pub fn weak_add(&mut self, ptr: *mut u8) -> WeakHandle {
     self.weak_handles.weak_add(ptr)
   }
