@@ -87,6 +87,17 @@ impl OwnershipState {
   pub fn is_default(&self) -> bool {
     matches!(self, Self::Unknown)
   }
+
+  pub fn join(self, other: Self) -> Self {
+    use OwnershipState::*;
+    // Deterministic "worse wins" join.
+    match (self, other) {
+      (Unknown, _) | (_, Unknown) => Unknown,
+      (Shared, _) | (_, Shared) => Shared,
+      (Borrowed, _) | (_, Borrowed) => Borrowed,
+      (Owned, Owned) => Owned,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
