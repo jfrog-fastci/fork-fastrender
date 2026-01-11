@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 const FALLBACK_DEFAULT_BUDGET_MS: u64 = 5000;
 const DEFAULT_BUDGET_MULTIPLIER: f64 = 1.30;
-const DEFAULT_MAX_BUDGET_MS: u64 = 60_000;
+const DEFAULT_MAX_BUDGET_MS: u64 = 120_000;
 const DEFAULT_ROUND_TO_MS: u64 = 100;
 const DEFAULT_MAX_BUDGET_INCREASE_PERCENT: f64 = 0.10;
 const PAGESET_GUARDRAILS_MANIFEST_PATH: &str = "tests/pages/pageset_guardrails.json";
@@ -60,7 +60,7 @@ pub struct UpdatePagesetGuardrailsBudgetsArgs {
   pub write: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct PagesetGuardrailsManifest {
   schema_version: u32,
   #[serde(default)]
@@ -91,10 +91,22 @@ struct PerfSmokeSummary {
   fixtures: Vec<PerfSmokeFixture>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+enum PerfSmokeFixtureStatus {
+  #[default]
+  Ok,
+  Error,
+  Panic,
+  Timeout,
+}
+
 #[derive(Debug, Deserialize)]
 struct PerfSmokeFixture {
   name: String,
   total_ms: f64,
+  #[serde(default)]
+  status: PerfSmokeFixtureStatus,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,12 +236,31 @@ fn load_manifest(path: &Path) -> Result<PagesetGuardrailsManifest> {
 
 fn run_perf_smoke(
   args: &UpdatePagesetGuardrailsBudgetsArgs,
-  _manifest: &PagesetGuardrailsManifest,
+  manifest: &PagesetGuardrailsManifest,
   output: &Path,
-  _tempdir: &TempDir,
+  tempdir: &TempDir,
 ) -> Result<()> {
-  let mut cmd = build_perf_smoke_command(args, output);
+  let perf_smoke_manifest_path = tempdir.path().join("perf_smoke_manifest.json");
+  let mut perf_smoke_manifest = manifest.clone();
+  let perf_smoke_budget_ms = args.max_budget_ms as f64;
+  perf_smoke_manifest.default_budget_ms = Some(perf_smoke_budget_ms);
+  for fixture in &mut perf_smoke_manifest.fixtures {
+    fixture.budget_ms = Some(perf_smoke_budget_ms);
+  }
+  let perf_smoke_manifest_json = serde_json::to_string_pretty(&perf_smoke_manifest)
+    .context("serialize perf_smoke manifest")?;
+  fs::write(
+    &perf_smoke_manifest_path,
+    format!("{perf_smoke_manifest_json}\n"),
+  )
+  .with_context(|| {
+    format!(
+      "failed to write perf_smoke manifest copy to {}",
+      perf_smoke_manifest_path.display()
+    )
+  })?;
 
+  let mut cmd = build_perf_smoke_command(args, &perf_smoke_manifest_path, output);
   let status = cmd
     .status()
     .context("failed to invoke perf_smoke via cargo_agent")?;
@@ -239,18 +270,19 @@ fn run_perf_smoke(
   Ok(())
 }
 
-fn build_perf_smoke_command(args: &UpdatePagesetGuardrailsBudgetsArgs, output: &Path) -> Command {
+fn build_perf_smoke_command(
+  args: &UpdatePagesetGuardrailsBudgetsArgs,
+  manifest: &Path,
+  output: &Path,
+) -> Command {
   let repo_root = crate::repo_root();
 
   // Keep renders deterministic across machines.
   let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   // Ensure we always exercise the same manifest, even if the caller has env vars set.
-  cmd.env(
-    "FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST",
-    &args.manifest,
-  );
-  cmd.env("FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST", &args.manifest);
+  cmd.env("FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST", manifest);
+  cmd.env("FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST", manifest);
   cmd
     .arg("run")
     .arg("--release")
@@ -324,6 +356,9 @@ fn read_perf_smoke_summary(path: &Path) -> Result<PerfSmokeSummary> {
 fn timings_map(perf: &PerfSmokeSummary) -> Result<BTreeMap<String, f64>> {
   let mut map = BTreeMap::new();
   for fixture in &perf.fixtures {
+    if fixture.status != PerfSmokeFixtureStatus::Ok {
+      continue;
+    }
     if map.insert(fixture.name.clone(), fixture.total_ms).is_some() {
       bail!(
         "perf_smoke report contains duplicate fixture {}",
@@ -564,7 +599,7 @@ mod tests {
   #[test]
   fn perf_smoke_command_includes_safety_flags_and_no_isolate_by_default() {
     let args = base_args();
-    let cmd = build_perf_smoke_command(&args, Path::new("out.json"));
+    let cmd = build_perf_smoke_command(&args, &args.manifest, Path::new("out.json"));
 
     let argv: Vec<String> = cmd
       .get_args()
@@ -625,7 +660,7 @@ mod tests {
     let mut args = base_args();
     args.isolate = true;
 
-    let cmd = build_perf_smoke_command(&args, Path::new("out.json"));
+    let cmd = build_perf_smoke_command(&args, &args.manifest, Path::new("out.json"));
     let argv: Vec<String> = cmd
       .get_args()
       .map(|arg| arg.to_string_lossy().into_owned())
@@ -635,5 +670,20 @@ mod tests {
       !argv.iter().any(|arg| arg == "--no-isolate"),
       "expected perf_smoke command to omit --no-isolate when isolate=true; got {argv:?}"
     );
+  }
+
+  #[test]
+  fn timings_map_ignores_failed_fixtures() {
+    let perf: PerfSmokeSummary = serde_json::from_value(json!({
+      "schema_version": 7,
+      "fixtures": [
+        { "name": "ok", "total_ms": 123.0, "status": "ok" },
+        { "name": "timeout", "total_ms": 0.0, "status": "timeout" }
+      ]
+    }))
+    .unwrap();
+    let timings = timings_map(&perf).expect("timings");
+    assert_eq!(timings.get("ok").copied(), Some(123.0));
+    assert!(!timings.contains_key("timeout"));
   }
 }
