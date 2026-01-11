@@ -1986,7 +1986,7 @@ where
 
   let filtered_width_i64 = filtered_width as i64;
   let filtered_height_u32 = filtered_height as u32;
-  let filtered_height_i64 = filtered_height as i64;
+  let filtered_height_i64 = i64::from(filtered_height_u32);
 
   // `bounds_in_src` can extend outside `src_size` (e.g. when a tile renderer translates the canvas
   // so some tiles see negative origins). `region` only stores the intersection that we could
