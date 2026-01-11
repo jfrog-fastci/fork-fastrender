@@ -12,6 +12,21 @@ run the examples with `--locked` (matching CI), generate it first:
 bash scripts/cargo_agent.sh generate-lockfile
 ```
 
+## Nested-workspace note (when vendored in FastRender)
+
+When `ecma-rs` is vendored under `vendor/ecma-rs/` in the FastRender mono-repo,
+you can run these examples from the FastRender repo root via:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh run -p <crate> --example <example>
+```
+
+Or, if you're already inside `vendor/ecma-rs/`:
+
+```bash
+bash scripts/cargo_agent.sh run -p <crate> --example <example>
+```
+
 ## `diagnostics`
 
 ```bash
