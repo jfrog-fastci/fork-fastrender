@@ -8,7 +8,7 @@ use llvm_sys::core::{
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetGC, LLVMGetIncomingBlock,
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
-  LLVMGetNextInstruction,
+  LLVMGetNextInstruction, LLVMGetTailCallKind,
   LLVMGetNumOperands, LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetParamTypes, LLVMGetReturnType,
   LLVMGetStringAttributeAtIndex, LLVMGetValueKind,
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
@@ -61,6 +61,10 @@ pub enum PassError {
     "GC-managed function `{function}` contains a call to inline asm, which LLVM 18's `rewrite-statepoints-for-gc` pass cannot rewrite without aborting: {instruction}"
   )]
   UnsupportedInlineAsmInGcFunction { function: String, instruction: String },
+  #[error(
+    "GC-managed function `{function}` contains a `musttail` call, which LLVM 18's `rewrite-statepoints-for-gc` pass cannot rewrite without aborting: {instruction}"
+  )]
+  UnsupportedMustTailCallInGcFunction { function: String, instruction: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
   #[error("LLVM module defines `{name}` with incompatible type (expected `i64`)")]
@@ -149,6 +153,14 @@ fn reject_callbr_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
           let opcode = LLVMGetInstructionOpcode(inst);
           if opcode == LLVMOpcode::LLVMCallBr {
             return Err(PassError::UnsupportedCallBrInGcFunction {
+              function: func_name,
+              instruction: value_to_string(inst),
+            });
+          }
+          if opcode == LLVMOpcode::LLVMCall
+            && LLVMGetTailCallKind(inst) == LLVMTailCallKind::LLVMTailCallKindMustTail
+          {
+            return Err(PassError::UnsupportedMustTailCallInGcFunction {
               function: func_name,
               instruction: value_to_string(inst),
             });
