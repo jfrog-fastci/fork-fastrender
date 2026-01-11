@@ -310,6 +310,10 @@ pub fn current_thread_id() -> Option<ThreadId> {
 
 /// Register the current thread with the global registry.
 pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
+  // Eagerly parse and index stackmaps the first time any thread registers. This prevents
+  // stop-the-world GC/root enumeration from doing the lazy `StackMaps::parse` allocation work
+  // while the world is stopped.
+  let _ = crate::stackmap::try_stackmaps();
   registry().register_current_thread(kind).id
 }
 
