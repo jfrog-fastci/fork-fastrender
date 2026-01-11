@@ -13,7 +13,7 @@ pub mod window {
   use crate::js::webidl::DataPropertyAttributes;
   use webidl_ir::{
     DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
-    NumericLiteral, NumericType, StringType, TypeContext,
+    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
   };
   use webidl_js_runtime::{
     convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
@@ -706,26 +706,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    // Legacy bindings expose `URL.origin` as an attribute accessor and dispatch via
-    // `WebHostBindings::get_attribute`.
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -763,6 +743,24 @@ pub mod window {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -2084,10 +2082,11 @@ pub mod worker {
   use crate::js::webidl::DataPropertyAttributes;
   use webidl_ir::{
     DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
-    StringType, TypeContext,
+    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
   };
   use webidl_js_runtime::{
-    convert_arguments, ArgumentSchema, ConvertedValue, WebIdlJsRuntime,
+    convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
+    OverloadSig, WebIdlJsRuntime,
   };
 
   type RtJsValue<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::JsValue;
@@ -2762,26 +2761,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    // Legacy bindings expose `URL.origin` as an attribute accessor and dispatch via
-    // `WebHostBindings::get_attribute`.
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2819,6 +2798,24 @@ pub mod worker {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
