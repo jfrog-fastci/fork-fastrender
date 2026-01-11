@@ -1,4 +1,19 @@
-# LLVM Statepoints + `.llvm_stackmaps` ABI
+# (Deprecated) LLVM Statepoints + `.llvm_stackmaps` ABI
+
+This document is **historical** and may be incorrect for the current implementation.
+
+The up-to-date, developer-facing spec for LLVM 18 statepoints + stackmaps used by `runtime-native`
+is:
+
+- `docs/gc_statepoints.md`
+
+In particular, this document predates changes where:
+
+- `runtime-native` enforces SP/FP-based **Indirect** stackmap slots and currently rejects derived pointers at safepoints,
+- `.llvm_stackmaps` discovery uses `runtime-native/stackmaps.ld` and `__fastr_stackmaps_{start,end}` symbols (with `__llvm_*` aliases).
+
+---
+
 Authoritative contract between **TS-generated native code** (the `native-js` backend)
 and the **Rust runtime / GC** (`runtime-native`) for precise stack scanning using
 LLVM statepoints.
