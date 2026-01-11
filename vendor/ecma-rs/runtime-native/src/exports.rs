@@ -768,9 +768,22 @@ pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> Promise
   })
 }
 
+/// Like [`rt_async_spawn_legacy`], but enqueues the coroutine's first resume as a microtask instead
+/// of running it synchronously.
+///
+/// This is required for Web-style microtask semantics (e.g. `queueMicrotask`).
+#[no_mangle]
+pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    async_rt::coroutine::async_spawn_deferred(coro)
+  })
+}
+
 /// Drive the runtime's async/event-loop queues.
 ///
-/// This runtime maintains process-global singleton state. `rt_async_poll` may be called from
+/// This runtime maintains process-global singleton state. `rt_async_poll_legacy` may be called from
 /// multiple threads, but calls are **globally serialized** (only one thread executes the poll loop
 /// at a time).
 #[no_mangle]

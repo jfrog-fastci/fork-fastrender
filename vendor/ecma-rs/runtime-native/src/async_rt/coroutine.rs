@@ -4,7 +4,7 @@ use crate::abi::RtCoroutineHeader;
 
 use super::promise::{promise_new, promise_outcome, promise_register_reaction, PromiseOutcome};
 use super::strict_await_yields;
-use super::{queue_macrotask, TaskFn};
+use super::{queue_macrotask, queue_microtask, TaskFn};
 
 extern "C" fn coro_resume_task(data: *mut u8) {
   let coro = data as *mut RtCoroutineHeader;
@@ -116,6 +116,24 @@ pub(crate) fn async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
   }
 
   run_coroutine(coro);
+
+  unsafe { (*coro).promise }
+}
+
+pub(crate) fn async_spawn_deferred(coro: *mut RtCoroutineHeader) -> PromiseRef {
+  let coro = validate_coro_ptr(coro);
+  if coro.is_null() {
+    return PromiseRef::null();
+  }
+
+  unsafe {
+    if (*coro).promise.is_null() {
+      (*coro).promise = promise_new();
+    }
+  }
+
+  // Schedule the first resume as a microtask instead of running synchronously.
+  queue_microtask(coro_resume_task as TaskFn, coro as *mut u8);
 
   unsafe { (*coro).promise }
 }

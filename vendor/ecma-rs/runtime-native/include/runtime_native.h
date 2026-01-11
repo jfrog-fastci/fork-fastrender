@@ -392,6 +392,9 @@ struct RtCoroutineHeader {
 };
 
 LegacyPromiseRef rt_async_spawn_legacy(RtCoroutineHeader* coro);
+// Like rt_async_spawn_legacy, but enqueues the first resume as a microtask instead of running
+// synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
+LegacyPromiseRef rt_async_spawn_deferred_legacy(RtCoroutineHeader* coro);
 bool rt_async_poll_legacy(void);
 LegacyPromiseRef rt_async_sleep_legacy(uint64_t delay_ms);
 void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);
