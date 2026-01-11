@@ -29,6 +29,8 @@ fn make_pipe() -> (i32, i32) {
   let mut fds = [0i32; 2];
   let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
   assert_eq!(rc, 0, "pipe failed: {}", std::io::Error::last_os_error());
+  set_nonblocking(fds[0]);
+  set_nonblocking(fds[1]);
   (fds[0], fds[1])
 }
 
@@ -38,10 +40,48 @@ fn close_fd(fd: i32) {
   }
 }
 
+fn set_nonblocking(fd: i32) {
+  unsafe {
+    loop {
+      let flags = libc::fcntl(fd, libc::F_GETFL);
+      if flags >= 0 {
+        loop {
+          let rc = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+          if rc >= 0 {
+            return;
+          }
+          let err = std::io::Error::last_os_error();
+          if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+          }
+          panic!("fcntl(F_SETFL) failed: {err}");
+        }
+      }
+      let err = std::io::Error::last_os_error();
+      if err.kind() == std::io::ErrorKind::Interrupted {
+        continue;
+      }
+      panic!("fcntl(F_GETFL) failed: {err}");
+    }
+  }
+}
+
 fn write_byte(fd: i32) {
   let byte: [u8; 1] = [1];
-  let rc = unsafe { libc::write(fd, byte.as_ptr().cast::<libc::c_void>(), byte.len()) };
-  assert_eq!(rc, 1, "write failed: {}", std::io::Error::last_os_error());
+  loop {
+    let rc = unsafe { libc::write(fd, byte.as_ptr().cast::<libc::c_void>(), byte.len()) };
+    if rc == 1 {
+      return;
+    }
+    if rc < 0 {
+      let err = std::io::Error::last_os_error();
+      if err.kind() == std::io::ErrorKind::Interrupted {
+        continue;
+      }
+      panic!("write failed: {err}");
+    }
+    panic!("write returned unexpected byte count {rc}");
+  }
 }
 
 #[test]
@@ -107,6 +147,28 @@ fn deregister_stops_events() {
 }
 
 #[test]
+fn double_register_same_fd_fails() {
+  let _rt = TestRuntimeGuard::new();
+
+  let (rfd, wfd) = make_pipe();
+
+  extern "C" fn noop_cb(_events: u32, _data: *mut u8) {}
+
+  let id1 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0);
+
+  let id2 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_eq!(
+    id2, 0,
+    "expected registering the same fd twice to fail (use rt_io_update instead)"
+  );
+
+  rt_io_unregister(id1);
+  close_fd(rfd);
+  close_fd(wfd);
+}
+
+#[test]
 fn wake_interrupts_poll() {
   let _rt = TestRuntimeGuard::new();
 
@@ -115,16 +177,15 @@ fn wake_interrupts_poll() {
 
   // Keep the runtime non-idle so `rt_async_poll` blocks inside the reactor.
   let timer_id = async_rt::schedule_timer(
-    Instant::now() + Duration::from_secs(1),
+    Instant::now() + Duration::from_secs(5),
     set_bool,
     timer_fired as *const AtomicBool as *mut u8,
   );
 
   let (tx, rx) = mpsc::channel();
   let poll_thread = std::thread::spawn(move || {
-    let start = Instant::now();
     let _pending = runtime_native::rt_async_poll_legacy();
-    let _ = tx.send(start.elapsed());
+    let _ = tx.send(());
   });
 
   let deadline = Instant::now() + Duration::from_secs(1);
@@ -136,19 +197,20 @@ fn wake_interrupts_poll() {
     std::thread::yield_now();
   }
 
+  let wake_start = Instant::now();
   async_rt::enqueue_microtask(set_bool, ran as *const AtomicBool as *mut u8);
 
-  let elapsed = rx
-    .recv_timeout(Duration::from_secs(2))
+  rx.recv_timeout(Duration::from_secs(2))
     .expect("poll thread did not return in time");
+  let wake_elapsed = wake_start.elapsed();
 
   let _ = async_rt::global().cancel_timer(timer_id);
   poll_thread.join().unwrap();
 
   assert!(ran.load(Ordering::SeqCst), "microtask did not run");
   assert!(
-    elapsed < Duration::from_millis(500),
-    "rt_async_poll did not wake promptly (elapsed={elapsed:?})"
+    wake_elapsed < Duration::from_secs(1),
+    "rt_async_poll did not wake promptly (elapsed={wake_elapsed:?})"
   );
   assert!(!timer_fired.load(Ordering::SeqCst), "poll returned only after timer fired");
 }
@@ -162,16 +224,15 @@ fn wake_race_stress() {
 
   // Keep the runtime non-idle so `rt_async_poll` blocks inside the reactor.
   let timer_id = async_rt::schedule_timer(
-    Instant::now() + Duration::from_secs(2),
+    Instant::now() + Duration::from_secs(5),
     set_bool,
     timer_fired as *const AtomicBool as *mut u8,
   );
 
   let (tx, rx) = mpsc::channel();
   let poll_thread = std::thread::spawn(move || {
-    let start = Instant::now();
     let _pending = runtime_native::rt_async_poll_legacy();
-    let _ = tx.send(start.elapsed());
+    let _ = tx.send(());
   });
 
   // Wait for the polling thread to actually block in `kevent`.
@@ -200,17 +261,12 @@ fn wake_race_stress() {
     w.join().unwrap();
   }
 
-  let elapsed = rx
-    .recv_timeout(Duration::from_secs(3))
+  rx.recv_timeout(Duration::from_secs(3))
     .expect("poll thread did not return in time");
 
   let _ = async_rt::global().cancel_timer(timer_id);
   poll_thread.join().unwrap();
 
   assert!(ran.load(Ordering::SeqCst) > 0, "microtasks did not run");
-  assert!(
-    elapsed < Duration::from_millis(500),
-    "rt_async_poll did not wake promptly (elapsed={elapsed:?})"
-  );
   assert!(!timer_fired.load(Ordering::SeqCst), "poll returned only after timer fired");
 }

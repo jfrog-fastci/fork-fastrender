@@ -145,20 +145,26 @@ impl Reactor {
       ));
     }
     ensure_nonblocking(fd)?;
+    let mut watchers = self.watchers.lock().unwrap();
+    if watchers.values().any(|w| w.fd == fd) {
+      return Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "reactor fd is already registered (use update_io/deregister_fd instead of registering twice)",
+      ));
+    }
+
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
-    {
-      let mut watchers = self.watchers.lock().unwrap();
-      watchers.insert(
-        id,
-        Watcher {
-          fd,
-          interest,
-          kind: WatcherKind::Task(task),
-        },
-      );
-      self.watchers_count.fetch_add(1, Ordering::Release);
-    }
+    watchers.insert(
+      id,
+      Watcher {
+        fd,
+        interest,
+        kind: WatcherKind::Task(task),
+      },
+    );
+    self.watchers_count.fetch_add(1, Ordering::Release);
+    drop(watchers);
     self.wake();
     Ok(id)
   }
@@ -189,26 +195,33 @@ impl Reactor {
       ));
     }
     ensure_nonblocking(fd)?;
+
+    let mut watchers = self.watchers.lock().unwrap();
+    if watchers.values().any(|w| w.fd == fd) {
+      return Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "reactor fd is already registered (use rt_io_update/rt_io_unregister instead of registering twice)",
+      ));
+    }
+
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
-    {
-      let mut watchers = self.watchers.lock().unwrap();
-      watchers.insert(
-        id,
-        Watcher {
-          fd,
-          interest,
-          kind: WatcherKind::Io(IoWatcher {
-            interests,
-            cb,
-            data,
-            drop,
-            active: Arc::new(AtomicBool::new(true)),
-          }),
-        },
-      );
-      self.watchers_count.fetch_add(1, Ordering::Release);
-    }
+    watchers.insert(
+      id,
+      Watcher {
+        fd,
+        interest,
+        kind: WatcherKind::Io(IoWatcher {
+          interests,
+          cb,
+          data,
+          drop,
+          active: Arc::new(AtomicBool::new(true)),
+        }),
+      },
+    );
+    self.watchers_count.fetch_add(1, Ordering::Release);
+    std::mem::drop(watchers);
     self.wake();
     Ok(id)
   }
@@ -246,8 +259,11 @@ impl Reactor {
     let watcher = {
       let mut watchers = self.watchers.lock().unwrap();
       let watcher = watchers.remove(&id);
-      if watcher.is_some() {
+      if let Some(w) = &watcher {
         self.watchers_count.fetch_sub(1, Ordering::Release);
+        // Ensure we remove the OS registration before releasing the lock so callers cannot race a
+        // deregister+register on the same fd and accidentally delete the new registration.
+        let _ = self.sys.ctl_del(w.fd);
       }
       watcher
     };
@@ -258,7 +274,6 @@ impl Reactor {
         drop(io.data);
       }
     }
-    let _ = self.sys.ctl_del(watcher.fd);
     self.wake();
     true
   }
@@ -274,7 +289,13 @@ impl Reactor {
       // Update the count while still holding the lock so we don't race with concurrent
       // register/unregister calls.
       self.watchers_count.store(0, Ordering::Release);
-      watchers.drain().collect()
+      let drained: Vec<(WatcherId, Watcher)> = watchers.drain().collect();
+      // Remove OS registrations while still holding the lock so future register calls cannot race a
+      // delete-after-add ordering on the same fd.
+      for (_id, watcher) in &drained {
+        let _ = self.sys.ctl_del(watcher.fd);
+      }
+      drained
     };
 
     for (_id, watcher) in drained {
@@ -284,7 +305,6 @@ impl Reactor {
           drop(io.data);
         }
       }
-      let _ = self.sys.ctl_del(watcher.fd);
     }
     self.wake();
   }
