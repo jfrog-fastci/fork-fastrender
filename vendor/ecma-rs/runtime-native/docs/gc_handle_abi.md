@@ -88,7 +88,10 @@ Limitations:
 - A `GcHandle` is only valid for the duration of the call. Do **not** store
   `GcHandle` values in heaps/queues/async tasks.
 - For long-lived references from host code, use a persistent root mechanism such
-  as `rt_gc_register_root_slot` / `rt_gc_pin` (see `include/runtime_native.h`) or
+  as:
+  - `rt_global_root_register` / `rt_global_root_unregister` (word-sized global/static slots),
+  - `rt_gc_register_root_slot` / `rt_gc_pin` (handle-based persistent roots; see `include/runtime_native.h`),
+  or
   the runtime's handle table (`gc::HandleTable`).
 
 ### Temporary roots for runtime-native Rust/FFI code (shadow stack)

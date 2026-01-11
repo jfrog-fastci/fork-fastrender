@@ -65,6 +65,10 @@ pub use conservative::conservative_scan_words;
 // Global/static roots (always-scanned)
 // -----------------------------------------------------------------------------
 
+// Ensure it is sound to treat `usize` slots as `GcPtr` slots.
+const _: [(); core::mem::size_of::<usize>()] = [(); core::mem::size_of::<GcPtr>()];
+const _: [(); core::mem::align_of::<usize>()] = [(); core::mem::align_of::<GcPtr>()];
+
 /// Register a *global* GC root slot.
 ///
 /// This is intended for GC-managed pointers stored outside LLVM stackmaps:
@@ -81,6 +85,9 @@ pub fn register_global_root_slot(slot: *mut usize) {
   if slot.is_null() {
     std::process::abort();
   }
+  if (slot as usize) % core::mem::align_of::<usize>() != 0 {
+    std::process::abort();
+  }
   // Reinterpret the `usize` slot as a `GcPtr` slot.
   let slot = slot as *mut GcPtr;
   let _handle = global_root_registry().register_root_slot(slot);
@@ -89,6 +96,9 @@ pub fn register_global_root_slot(slot: *mut usize) {
 /// Unregister a *global* GC root slot previously registered via [`register_global_root_slot`].
 pub fn unregister_global_root_slot(slot: *mut usize) {
   if slot.is_null() {
+    std::process::abort();
+  }
+  if (slot as usize) % core::mem::align_of::<usize>() != 0 {
     std::process::abort();
   }
   let slot = slot as *mut GcPtr;

@@ -334,6 +334,8 @@ void rt_root_pop(GcHandle slot);
 //
 // This is intended for GC pointers stored in statics or long-lived runtime state. The GC will
 // update `*slot` in place if it relocates the referenced object.
+//
+// Contract: `slot` must remain valid and writable until unregistered.
 void rt_global_root_register(size_t* slot);
 void rt_global_root_unregister(size_t* slot);
 

@@ -61,6 +61,9 @@ impl RootRegistry {
     if slot.is_null() {
       std::process::abort();
     }
+    if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
+      std::process::abort();
+    }
     let mut inner = self.inner.lock();
     inner.alloc(Entry::Borrowed(slot))
   }
@@ -91,6 +94,9 @@ impl RootRegistry {
   /// Panics if `slot` is null.
   pub fn unregister_root_slot_ptr(&self, slot: *mut *mut u8) {
     if slot.is_null() {
+      std::process::abort();
+    }
+    if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
       std::process::abort();
     }
     let mut inner = self.inner.lock();
