@@ -11,6 +11,7 @@ members = [
   "native-js",
   "optimize-js-debugger",
   "optimize-js",
+  "native-js-cli",
   "parse-js-cli",
   "parse-js",
   "effect-model",

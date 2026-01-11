@@ -14,3 +14,4 @@ llvm-sys = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }
 typecheck-ts = { workspace = true }
+parse-js = { workspace = true }

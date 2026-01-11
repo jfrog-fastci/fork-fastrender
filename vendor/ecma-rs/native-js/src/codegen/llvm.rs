@@ -1,0 +1,322 @@
+use crate::CompileOptions;
+use parse_js::ast::expr::Expr;
+use parse_js::ast::node::Node;
+use parse_js::ast::stmt::Stmt;
+use parse_js::ast::stx::TopLevel;
+use parse_js::operator::OperatorName;
+use std::collections::HashMap;
+
+use super::builtins::{recognize_builtin, BuiltinCall};
+use super::CodegenError;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Ty {
+  Number,
+  Bool,
+  String,
+  Void,
+}
+
+#[derive(Clone, Debug)]
+struct Value {
+  ty: Ty,
+  ir: String,
+}
+
+impl Value {
+  fn void() -> Self {
+    Self {
+      ty: Ty::Void,
+      ir: String::new(),
+    }
+  }
+}
+
+#[derive(Default)]
+struct StringPool {
+  next_id: usize,
+  // Map from raw bytes (without null terminator) to (global name, array length including terminator).
+  interned: HashMap<Vec<u8>, (String, usize)>,
+  defs: Vec<String>,
+}
+
+fn llvm_escape_bytes(bytes: &[u8]) -> String {
+  let mut out = String::new();
+  for &b in bytes {
+    if (0x20..=0x7e).contains(&b) && b != b'"' && b != b'\\' {
+      out.push(b as char);
+    } else {
+      out.push('\\');
+      out.push_str(&format!("{b:02X}"));
+    }
+  }
+  out
+}
+
+impl StringPool {
+  fn intern(&mut self, bytes: &[u8]) -> (String, usize) {
+    if let Some(existing) = self.interned.get(bytes) {
+      return existing.clone();
+    }
+
+    let name = format!("@.str{}", self.next_id);
+    self.next_id += 1;
+
+    let mut with_null = bytes.to_vec();
+    with_null.push(0);
+    let len = with_null.len();
+    let escaped = llvm_escape_bytes(&with_null);
+    self.defs.push(format!(
+      "{name} = private unnamed_addr constant [{len} x i8] c\"{escaped}\", align 1"
+    ));
+
+    self
+      .interned
+      .insert(bytes.to_vec(), (name.clone(), len));
+
+    (name, len)
+  }
+}
+
+struct Codegen {
+  opts: CompileOptions,
+  strings: StringPool,
+  tmp_counter: usize,
+  block_counter: usize,
+  main_body: Vec<String>,
+}
+
+impl Codegen {
+  fn new(opts: CompileOptions) -> Self {
+    Self {
+      opts,
+      strings: StringPool::default(),
+      tmp_counter: 0,
+      block_counter: 0,
+      main_body: Vec::new(),
+    }
+  }
+
+  fn tmp(&mut self) -> String {
+    let name = format!("%t{}", self.tmp_counter);
+    self.tmp_counter += 1;
+    name
+  }
+
+  fn fresh_block(&mut self, prefix: &str) -> String {
+    let name = format!("{prefix}{}", self.block_counter);
+    self.block_counter += 1;
+    name
+  }
+
+  fn emit(&mut self, line: impl Into<String>) {
+    self.main_body.push(line.into());
+  }
+
+  fn emit_string_ptr(&mut self, bytes: &[u8]) -> String {
+    let (global, len) = self.strings.intern(bytes);
+    let tmp = self.tmp();
+    self.emit(format!(
+      "  {tmp} = getelementptr inbounds [{len} x i8], ptr {global}, i64 0, i64 0"
+    ));
+    tmp
+  }
+
+  fn emit_print_value(&mut self, value: Value) -> Result<(), CodegenError> {
+    match value.ty {
+      Ty::Number => {
+        let fmt = self.emit_string_ptr(b"%g\n");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, double {})",
+          value.ir
+        ));
+        Ok(())
+      }
+      Ty::Bool => {
+        let true_ptr = self.emit_string_ptr(b"true");
+        let false_ptr = self.emit_string_ptr(b"false");
+        let sel = self.tmp();
+        self.emit(format!(
+          "  {sel} = select i1 {}, ptr {true_ptr}, ptr {false_ptr}",
+          value.ir
+        ));
+        self.emit(format!("  call i32 @puts(ptr {sel})"));
+        Ok(())
+      }
+      Ty::String => {
+        self.emit(format!("  call i32 @puts(ptr {})", value.ir));
+        Ok(())
+      }
+      Ty::Void => Err(CodegenError::TypeError(
+        "cannot print a void expression".to_string(),
+      )),
+    }
+  }
+
+  fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
+    match stmt.stx.as_ref() {
+      Stmt::Empty(_) => Ok(()),
+      Stmt::Expr(expr_stmt) => {
+        let _ = self.compile_expr(&expr_stmt.stx.expr)?;
+        Ok(())
+      }
+      _ => Err(CodegenError::UnsupportedStmt),
+    }
+  }
+
+  fn compile_expr(&mut self, expr: &Node<Expr>) -> Result<Value, CodegenError> {
+    match expr.stx.as_ref() {
+      Expr::LitNum(num) => Ok(Value {
+        ty: Ty::Number,
+        ir: format!("{:.6e}", num.stx.value.0),
+      }),
+      Expr::LitBool(b) => Ok(Value {
+        ty: Ty::Bool,
+        ir: if b.stx.value { "1" } else { "0" }.to_string(),
+      }),
+      Expr::LitStr(s) => {
+        let ptr = self.emit_string_ptr(s.stx.value.as_bytes());
+        Ok(Value { ty: Ty::String, ir: ptr })
+      }
+
+      Expr::Binary(bin) => {
+        let left = self.compile_expr(&bin.stx.left)?;
+        let right = self.compile_expr(&bin.stx.right)?;
+        match bin.stx.operator {
+          OperatorName::Addition => {
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "binary `+` currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!(
+              "  {out} = fadd double {}, {}",
+              left.ir, right.ir
+            ));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
+          OperatorName::StrictEquality => {
+            if left.ty != right.ty {
+              return Err(CodegenError::TypeError(
+                "`===` currently requires both sides to have the same type".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            match left.ty {
+              Ty::Number => {
+                self.emit(format!(
+                  "  {out} = fcmp oeq double {}, {}",
+                  left.ir, right.ir
+                ));
+              }
+              Ty::Bool => {
+                self.emit(format!(
+                  "  {out} = icmp eq i1 {}, {}",
+                  left.ir, right.ir
+                ));
+              }
+              _ => {
+                return Err(CodegenError::TypeError(
+                  "`===` currently only supports numbers and booleans".to_string(),
+                ));
+              }
+            }
+            Ok(Value { ty: Ty::Bool, ir: out })
+          }
+          other => Err(CodegenError::UnsupportedOperator(other)),
+        }
+      }
+
+      Expr::Call(call) => {
+        let builtin = recognize_builtin(call);
+        if let Some(builtin) = builtin {
+          if !self.opts.builtins {
+            return Err(CodegenError::BuiltinsDisabled);
+          }
+
+          match builtin {
+            BuiltinCall::Print { arg } => {
+              let v = self.compile_expr(arg)?;
+              self.emit_print_value(v)?;
+              Ok(Value::void())
+            }
+            BuiltinCall::Assert { cond, msg } => {
+              let cond_v = self.compile_expr(cond)?;
+              if cond_v.ty != Ty::Bool {
+                return Err(CodegenError::TypeError(
+                  "`assert` condition must be a boolean".to_string(),
+                ));
+              }
+
+              let ok = self.fresh_block("assert.ok");
+              let fail = self.fresh_block("assert.fail");
+              self.emit(format!(
+                "  br i1 {}, label %{ok}, label %{fail}",
+                cond_v.ir
+              ));
+
+              self.emit(format!("{fail}:"));
+              if let Some(msg) = msg {
+                let msg_v = self.compile_expr(msg)?;
+                self.emit_print_value(msg_v)?;
+              }
+              self.emit("  call i32 @fflush(ptr null)".to_string());
+              self.emit("  call void @abort()".to_string());
+              self.emit("  unreachable".to_string());
+
+              self.emit(format!("{ok}:"));
+              Ok(Value::void())
+            }
+          }
+        } else {
+          Err(CodegenError::UnsupportedExpr)
+        }
+      }
+
+      _ => Err(CodegenError::UnsupportedExpr),
+    }
+  }
+}
+
+pub(super) fn emit_llvm_module(
+  ast: &Node<TopLevel>,
+  opts: CompileOptions,
+) -> Result<String, CodegenError> {
+  let mut cg = Codegen::new(opts);
+
+  cg.emit("entry:");
+  for stmt in &ast.stx.body {
+    cg.compile_stmt(stmt)?;
+  }
+  cg.emit("  ret i32 0");
+
+  let mut out = String::new();
+  out.push_str("; ModuleID = 'native-js'\n");
+  out.push_str("source_filename = \"native-js\"\n\n");
+
+  for def in &cg.strings.defs {
+    out.push_str(def);
+    out.push('\n');
+  }
+  if !cg.strings.defs.is_empty() {
+    out.push('\n');
+  }
+
+  out.push_str("declare i32 @puts(ptr)\n");
+  out.push_str("declare i32 @printf(ptr, ...)\n");
+  out.push_str("declare i32 @fflush(ptr)\n");
+  out.push_str("declare void @abort()\n\n");
+
+  out.push_str("define i32 @main() {\n");
+  for line in &cg.main_body {
+    out.push_str(line);
+    out.push('\n');
+  }
+  out.push_str("}\n");
+
+  Ok(out)
+}

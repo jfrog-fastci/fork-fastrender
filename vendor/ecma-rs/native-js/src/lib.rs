@@ -1,7 +1,10 @@
 //! Native (LLVM-backed) code generation for `ecma-rs`.
 //!
-//! This crate is currently a skeleton: it wires up LLVM and provides the public API surface that
-//! future TS/HIR lowering will target.
+//! This crate is still early: most of the real TS/HIR lowering is not implemented yet.
+//! It wires up LLVM and provides the public API surface that future TS/HIR lowering will target.
+//!
+//! For now it also contains a tiny `parse-js`-driven LLVM IR emitter that is used by
+//! `native-js-cli` integration tests and for debugging the native pipeline.
 //!
 //! ## GC stack walking
 //! The native runtime performs **precise GC** using LLVM statepoints. In addition to stack maps,
@@ -19,6 +22,7 @@ mod stack_walking;
 pub use stack_walking::CodeGen;
 
 use llvm_sys as _;
+use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use target_lexicon::Triple;
 
 /// Optimization level to apply during compilation.
@@ -57,6 +61,8 @@ pub struct CompileOptions {
   pub target: Option<Triple>,
   /// Whether to emit debug info.
   pub debug: bool,
+  /// If true, recognize and lower small builtin APIs such as `console.log` and `assert`.
+  pub builtins: bool,
 }
 
 impl Default for CompileOptions {
@@ -66,6 +72,7 @@ impl Default for CompileOptions {
       emit: EmitKind::Object,
       target: None,
       debug: false,
+      builtins: true,
     }
   }
 }
@@ -96,10 +103,31 @@ impl Compiler {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NativeJsError {
+  #[error(transparent)]
+  Parse(#[from] parse_js::error::SyntaxError),
+
+  #[error(transparent)]
+  Codegen(#[from] codegen::CodegenError),
+
   #[error("native-js codegen is not implemented yet")]
   Unimplemented,
+
   #[error("LLVM error: {0}")]
   Llvm(String),
+}
+
+pub fn compile_typescript_to_llvm_ir(
+  source: &str,
+  opts: CompileOptions,
+) -> Result<String, NativeJsError> {
+  let ast = parse_with_options(
+    source,
+    ParseOptions {
+      dialect: Dialect::Ts,
+      source_type: SourceType::Module,
+    },
+  )?;
+  Ok(codegen::emit_llvm_module(&ast, opts)?)
 }
 
 #[cfg(test)]
