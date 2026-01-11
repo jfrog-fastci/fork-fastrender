@@ -626,10 +626,13 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 /// small process-global list ([`REMEMBERED_SET`]).
 ///
 /// This helper performs a **sticky rebuild** by:
-/// - retaining only objects for which `object_has_young_refs` returns `true`
-/// - clearing the per-object `REMEMBERED` bit for removed objects
+/// - clearing the process-global remembered-set tracking list, and
+/// - rebuilding it from `objs`, retaining only objects for which `object_has_young_refs` returns
+///   `true`.
 ///
 /// `objs` is the set of candidate old-generation objects that might be remembered.
+///
+/// For objects that are removed, this clears the per-object `REMEMBERED` bit.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
   objs: &[*mut u8],

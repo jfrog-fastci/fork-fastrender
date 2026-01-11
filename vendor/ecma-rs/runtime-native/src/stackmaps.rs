@@ -607,11 +607,15 @@ impl<'a> CallSite<'a> {
     let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
       Ok(sp) => sp,
       Err(err) => {
-        debug_assert!(
-          false,
-          "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
-          self.record
-        );
+        // Some non-statepoint patchpoints might (coincidentally) start with constant-like operands;
+        // treat decode failures as fatal only when the record uses LLVM's default statepoint id.
+        if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+          debug_assert!(
+            false,
+            "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
+            self.record
+          );
+        }
         return RelocPairsIter::Empty;
       }
     };

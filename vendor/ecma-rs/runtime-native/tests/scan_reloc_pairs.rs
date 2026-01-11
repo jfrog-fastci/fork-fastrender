@@ -8,6 +8,38 @@ use stackmap_context::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
 const FIXTURE: &[u8] = include_bytes!("fixtures/bin/statepoint_base_derived_x86_64.bin");
 const FIXTURE_DEOPT: &[u8] = include_bytes!("fixtures/bin/statepoint_deopt_x86_64.bin");
 
+fn rewrite_first_patchpoint_id(bytes: &mut [u8], patchpoint_id: u64) {
+  // StackMap v3 header:
+  //   u8  Version
+  //   u8  Reserved0
+  //   u16 Reserved1
+  //   u32 NumFunctions
+  //   u32 NumConstants
+  //   u32 NumRecords
+  //
+  // Followed by:
+  //   StackSizeRecord[NumFunctions] (24 bytes each)
+  //   u64 Constants[NumConstants]
+  //   StackMapRecord[NumRecords] ...
+  const HEADER_SIZE: usize = 16;
+  const FUNCTION_RECORD_SIZE: usize = 24;
+  const CONSTANT_SIZE: usize = 8;
+  if bytes.len() < HEADER_SIZE {
+    panic!("fixture too small to contain stackmap header");
+  }
+  if bytes[0] != 3 {
+    panic!("fixture is not a StackMap v3 blob (version={})", bytes[0]);
+  }
+  let num_functions = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+  let num_constants = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+  let record0_off =
+    HEADER_SIZE + num_functions * FUNCTION_RECORD_SIZE + num_constants * CONSTANT_SIZE;
+  if record0_off + 8 > bytes.len() {
+    panic!("fixture too small to contain first stackmap record header");
+  }
+  bytes[record0_off..record0_off + 8].copy_from_slice(&patchpoint_id.to_le_bytes());
+}
+
 fn add_signed(base: u64, offset: i32) -> u64 {
   if offset >= 0 {
     base + (offset as u64)
@@ -125,6 +157,29 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
 
   assert!(saw_same, "did not observe base==derived relocation pair");
   assert!(saw_derived, "did not observe base!=derived relocation pair");
+}
+
+#[test]
+fn scan_reloc_pairs_accepts_custom_statepoint_id() {
+  let mut bytes = FIXTURE.to_vec();
+  rewrite_first_patchpoint_id(&mut bytes, 42);
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps fixture");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("fixture should contain callsites");
+  assert_eq!(
+    callsite.record.patchpoint_id, 42,
+    "expected patchpoint_id override to take effect in parsed stackmap record"
+  );
+
+  // Synthetic stack memory (word-aligned).
+  let mut stack: Vec<usize> = vec![0; 256];
+  let sp_base = stack.as_mut_ptr() as u64;
+
+  let mut ctx = ThreadContext::default();
+  ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
+  ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
+
+  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  assert_eq!(pairs.len(), callsite.reloc_pairs().count());
 }
 
 #[test]
