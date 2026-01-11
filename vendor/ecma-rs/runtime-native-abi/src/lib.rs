@@ -654,6 +654,18 @@ mod tests {
       header.contains("typedef struct Coroutine Coroutine;") || header.contains("struct Coroutine;"),
       "missing Coroutine forward declaration"
     );
+    assert!(
+      header.contains("typedef struct Runtime Runtime;") || header.contains("struct Runtime;"),
+      "missing Runtime forward declaration"
+    );
+    assert!(
+      header.contains("typedef struct Thread Thread;") || header.contains("struct Thread;"),
+      "missing Thread forward declaration"
+    );
+    assert!(
+      header.contains("typedef struct RtPromise RtPromise;") || header.contains("struct RtPromise;"),
+      "missing RtPromise forward declaration"
+    );
 
     // Functions (key entrypoints).
     for func in [
