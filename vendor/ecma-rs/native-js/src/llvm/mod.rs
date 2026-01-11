@@ -29,7 +29,10 @@ use inkwell::targets::{
 use inkwell::values::FunctionValue;
 use inkwell::{module::Linkage, OptimizationLevel};
 use target_lexicon::Triple;
+use typecheck_ts::TypeKindSummary;
 
+mod backend;
+pub mod expr;
 pub mod gc;
 pub mod gc_lint;
 pub mod passes;
@@ -229,4 +232,29 @@ impl<'ctx> LlvmBackend<'ctx> {
 /// `target_lexicon::Triple` in public APIs.
 pub fn target_triple_from_lexicon(triple: &Triple) -> TargetTriple {
   TargetTriple::create(&triple.to_string())
+}
+
+/// Minimal set of primitive kinds supported by the expression-only HIR→LLVM
+/// lowering in `llvm::expr`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+  Number,
+  Boolean,
+}
+
+impl ValueKind {
+  pub fn from_type_kind(kind: &TypeKindSummary) -> Option<Self> {
+    match kind {
+      TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(ValueKind::Number),
+      TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(ValueKind::Boolean),
+      _ => None,
+    }
+  }
+
+  pub fn as_str(self) -> &'static str {
+    match self {
+      ValueKind::Number => "number",
+      ValueKind::Boolean => "boolean",
+    }
+  }
 }

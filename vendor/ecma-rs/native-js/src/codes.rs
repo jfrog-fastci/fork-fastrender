@@ -5,12 +5,12 @@
 //! - codes stay stable and non-overlapping
 //! - callers can reuse the same code values without duplicating strings
 
-use diagnostics::{Diagnostic, Span};
+use diagnostics::{sort_diagnostics, sort_labels, Diagnostic, Span};
 
 /// Metadata describing a diagnostic code.
 #[derive(Clone, Copy, Debug)]
 pub struct Code {
-  /// Stable string identifier, e.g. `NJS0001`.
+  /// Stable string identifier, e.g. `NJS0200`.
   pub id: &'static str,
   /// Short description of what the diagnostic reports.
   pub description: &'static str,
@@ -25,8 +25,10 @@ pub const STRICT_SUBSET_UNSUPPORTED_TYPE: Code =
   Code::new("NJS0010", "unsupported type in native-js strict subset");
 
 /// NJS0011: Type cannot be represented in the current native ABI/codegen layer.
-pub const UNSUPPORTED_NATIVE_TYPE: Code =
-  Code::new("NJS0011", "unsupported type for native codegen");
+pub const UNSUPPORTED_NATIVE_TYPE: Code = Code::new("NJS0011", "unsupported type for native codegen");
+
+/// NJS0200: HIR expression form not supported by the native backend yet.
+pub const UNSUPPORTED_EXPR: Code = Code::new("NJS0200", "unsupported expression");
 
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
@@ -45,3 +47,14 @@ impl Code {
     Diagnostic::warning(self.id, message, primary)
   }
 }
+
+/// Sort labels inside each diagnostic and then the diagnostics themselves to
+/// keep outputs deterministic regardless of traversal order.
+pub fn normalize_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+  for diagnostic in diagnostics.iter_mut() {
+    sort_labels(&mut diagnostic.labels);
+    diagnostic.notes.sort();
+  }
+  sort_diagnostics(diagnostics);
+}
+
