@@ -626,16 +626,28 @@ mod tests {
     engine.focus_node_id(&mut dom, Some(input_id), true);
 
     // In "ABC אבג" (LTR paragraph with an RTL run), the caret's visual order differs from the
-    // logical character index order. Visual ArrowRight traversal should move the caret:
-    //   0 → 1 → 2 → 3 → 7 → 6 → 5 → 4
-    let expected = [0usize, 1, 2, 3, 7, 6, 5, 4];
-    set_text_selection_caret(&mut engine, &mut dom, input_id, expected[0]);
-    for (idx, &caret) in expected.iter().enumerate() {
-      assert_eq!(
-        engine.text_edit.as_ref().unwrap().caret,
-        caret,
-        "at step {idx}"
-      );
+    // logical character index order. In addition, the LTR/RTL run boundary at char_idx=4 has a
+    // "split caret": two distinct visual caret stops for the same logical boundary.
+    //
+    // Visual ArrowRight traversal should step through all visual caret stops:
+    //   (0,D) → (1,D) → (2,D) → (3,D) → (4,U) → (7,U) → (6,D) → (5,D) → (4,D)
+    // where D=Downstream, U=Upstream.
+    let expected = [
+      (0usize, CaretAffinity::Downstream),
+      (1, CaretAffinity::Downstream),
+      (2, CaretAffinity::Downstream),
+      (3, CaretAffinity::Downstream),
+      (4, CaretAffinity::Upstream),
+      (7, CaretAffinity::Upstream),
+      (6, CaretAffinity::Downstream),
+      (5, CaretAffinity::Downstream),
+      (4, CaretAffinity::Downstream),
+    ];
+    set_text_selection_caret(&mut engine, &mut dom, input_id, expected[0].0);
+    for (idx, &(caret, affinity)) in expected.iter().enumerate() {
+      let edit = engine.text_edit.as_ref().unwrap();
+      assert_eq!(edit.caret, caret, "at step {idx}");
+      assert_eq!(edit.caret_affinity, affinity, "at step {idx}");
       if idx + 1 < expected.len() {
         assert!(
           engine.key_action(&mut dom, KeyAction::ArrowRight),

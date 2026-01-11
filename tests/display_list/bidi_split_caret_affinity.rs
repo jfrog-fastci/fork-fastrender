@@ -50,9 +50,15 @@ fn display_list_bidi_split_caret_uses_affinity() {
   )]));
   let config = FastRenderConfig::new().with_runtime_toggles(toggles);
 
+  // Use deterministic font fixtures so mixed LTR/RTL shaping has stable advances and the split
+  // caret lands at two distinct x positions.
   let html = "<!doctype html>\
-    <style>html,body{margin:0;background:rgb(0,0,0);}</style>\
-    <input id=\"target\" value=\"ABC אבג\" style=\"display:block;margin:0;width:260px;height:60px;box-sizing:content-box;border:0;padding:0;background:black;color:rgb(0,255,0);caret-color:rgb(255,0,0);font-size:36px;line-height:1;\">";
+    <style>\
+      @font-face{font-family:'TestLatin';src:url('tests/fixtures/fonts/NotoSans-subset.ttf') format('truetype');}\
+      @font-face{font-family:'TestHebrew';src:url('tests/fixtures/fonts/NotoSansHebrew-subset.ttf') format('truetype');}\
+      html,body{margin:0;background:rgb(0,0,0);}\
+    </style>\
+    <input id=\"target\" value=\"ABC אבג\" style=\"display:block;margin:0;width:260px;height:60px;box-sizing:content-box;border:0;padding:0;background:black;color:rgb(0,255,0);caret-color:rgb(255,0,0);font-family:'TestLatin','TestHebrew';font-size:36px;line-height:1;\">";
 
   let renderer = FastRender::with_config(config).expect("create renderer");
   let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(320, 120))
@@ -82,6 +88,10 @@ fn display_list_bidi_split_caret_uses_affinity() {
   };
 
   let upstream = render_with_affinity(&mut doc, CaretAffinity::Upstream);
+  // BrowserDocument caches layout/paint artifacts; interaction state only participates in the
+  // style/layout pipeline. Mark the document dirty so the second render re-runs the pipeline with
+  // the new caret affinity.
+  let _ = doc.dom_mut();
   let downstream = render_with_affinity(&mut doc, CaretAffinity::Downstream);
 
   let (up_min_x, up_max_x, up_count) =
