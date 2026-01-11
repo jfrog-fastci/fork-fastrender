@@ -143,3 +143,35 @@ fn root_registry_is_thread_safe_under_concurrent_mutation_and_enumeration() {
     t.join().unwrap();
   }
 }
+
+#[test]
+fn root_registry_get_and_set_observe_slot_updates() {
+  let _rt = TestRuntimeGuard::new();
+
+  let obj_a = Box::into_raw(Box::new(0u8)) as *mut u8;
+  let obj_b = Box::into_raw(Box::new(1u8)) as *mut u8;
+
+  let handle = runtime_native::rt_gc_pin(obj_a);
+  assert_eq!(runtime_native::roots::global_root_registry().get(handle), Some(obj_a));
+
+  // Simulate a moving GC updating the slot in place.
+  runtime_native::roots::global_root_registry().for_each_root_slot(|slot| unsafe {
+    if *slot == obj_a {
+      *slot = obj_b;
+    }
+  });
+  assert_eq!(runtime_native::roots::global_root_registry().get(handle), Some(obj_b));
+
+  // Direct `set` should also update the stored pointer.
+  assert!(runtime_native::roots::global_root_registry().set(handle, obj_a));
+  assert_eq!(runtime_native::roots::global_root_registry().get(handle), Some(obj_a));
+
+  runtime_native::rt_gc_unpin(handle);
+  assert_eq!(runtime_native::roots::global_root_registry().get(handle), None);
+  assert!(!runtime_native::roots::global_root_registry().set(handle, obj_a));
+
+  unsafe {
+    drop(Box::from_raw(obj_a));
+    drop(Box::from_raw(obj_b));
+  }
+}

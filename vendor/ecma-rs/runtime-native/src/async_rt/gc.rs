@@ -12,7 +12,6 @@ pub struct Root {
 }
 
 struct RootInner {
-  slot: *mut *mut u8,
   handle: u32,
 }
 
@@ -27,27 +26,24 @@ impl Root {
   /// # Safety
   /// `ptr` must be a valid pointer to a GC-managed object.
   pub unsafe fn new_unchecked(ptr: *mut u8) -> Self {
-    let slot = Box::into_raw(Box::new(ptr));
-    let handle = crate::roots::global_root_registry().register_root_slot(slot);
+    // Use an internally-owned slot in the global root registry so async/runtime code can store a
+    // stable handle without managing per-task slot storage.
+    let handle = crate::roots::global_root_registry().pin(ptr);
     Self {
-      inner: Arc::new(RootInner { slot, handle }),
+      inner: Arc::new(RootInner { handle }),
     }
   }
 
   #[allow(dead_code)]
   pub fn ptr(&self) -> *mut u8 {
-    // Safety: `slot` is owned by `RootInner` and freed only after it is removed from the global
-    // root set.
-    unsafe { *self.inner.slot }
+    crate::roots::global_root_registry()
+      .get(self.inner.handle)
+      .unwrap_or_else(|| std::process::abort())
   }
 }
 
 impl Drop for RootInner {
   fn drop(&mut self) {
     crate::roots::global_root_registry().unregister(self.handle);
-    // Safety: `slot` was allocated from `Box::into_raw` in `new_unchecked`.
-    unsafe {
-      drop(Box::from_raw(self.slot));
-    }
   }
 }

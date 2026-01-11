@@ -70,6 +70,65 @@ impl RootRegistry {
     let _ = inner.remove(handle);
   }
 
+  /// Returns the current pointer value for a registered root handle.
+  ///
+  /// This can be used by host/async code to re-load a GC pointer after a GC cycle may have
+  /// relocated the object.
+  ///
+  /// Returns `None` if:
+  /// - `handle` is invalid,
+  /// - `handle` is stale (slot generation mismatch),
+  /// - or the entry was already removed.
+  ///
+  /// # Safety
+  /// For handles created by [`RootRegistry::register_root_slot`], the caller must uphold the root
+  /// registry contract: the registered slot pointer must remain valid until it is unregistered.
+  pub fn get(&self, handle: u32) -> Option<*mut u8> {
+    let mut inner = self.inner.lock();
+    let (index, generation) = decode_handle(handle)?;
+    let slot = inner.slots.get_mut(index as usize)?;
+    if slot.generation != generation {
+      return None;
+    }
+    let entry = slot.entry.as_ref()?;
+    Some(match entry {
+      Entry::Borrowed(ptr) => unsafe { **ptr },
+      Entry::Pinned(b) => *b.as_ref(),
+    })
+  }
+
+  /// Updates the pointer value stored in a registered root handle.
+  ///
+  /// Returns `false` if `handle` is invalid/stale/removed.
+  ///
+  /// # Safety
+  /// For handles created by [`RootRegistry::register_root_slot`], the caller must uphold the root
+  /// registry contract: the registered slot pointer must remain valid until it is unregistered.
+  pub fn set(&self, handle: u32, ptr: *mut u8) -> bool {
+    let mut inner = self.inner.lock();
+    let Some((index, generation)) = decode_handle(handle) else {
+      return false;
+    };
+    let Some(slot) = inner.slots.get_mut(index as usize) else {
+      return false;
+    };
+    if slot.generation != generation {
+      return false;
+    }
+    let Some(entry) = slot.entry.as_mut() else {
+      return false;
+    };
+    match entry {
+      Entry::Borrowed(slot_ptr) => unsafe {
+        **slot_ptr = ptr;
+      },
+      Entry::Pinned(b) => {
+        *b.as_mut() = ptr;
+      }
+    }
+    true
+  }
+
   /// Enumerate all registered root slots.
   pub fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
     let mut inner = self.inner.lock();
