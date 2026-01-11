@@ -85,15 +85,18 @@ LLVM statepoint rewriting (`rewrite-statepoints-for-gc`) only rewrites *existing
 create new safepoints. For a stop-the-world moving GC, relying only on call sites is insufficient: a
 tight loop with no calls can prevent a mutator thread from reaching a safepoint indefinitely.
 
-`native-js` therefore requires **explicit safepoint polls** in long-running call-free paths. The current
-implementation achieves this by running LLVM's `place-safepoints` pass **before**
-`rewrite-statepoints-for-gc`:
+`native-js` therefore requires **explicit safepoint polls** in long-running call-free paths.
+
+The current implementation uses LLVM's `place-safepoints` pass as a *marker insertion* phase, then
+lowers those markers into a cheap inline poll before running `rewrite-statepoints-for-gc`:
 
 ```text
-function(place-safepoints),rewrite-statepoints-for-gc
+function(place-safepoints),
+  <native-js poll lowering>,
+rewrite-statepoints-for-gc
 ```
 
-This inserts calls to:
+`place-safepoints` inserts calls to:
 
 ```llvm
 declare void @gc.safepoint_poll()
@@ -104,22 +107,42 @@ at:
 - function entry, and
 - loop backedges (including counted loops; `native-js` enables `--spp-all-backedges`).
 
-Those poll calls are then rewritten into `llvm.experimental.gc.statepoint.*` intrinsics, so LLVM emits
-stackmap records at the poll PCs and `gc.relocate` for any live `ptr addrspace(1)` values across the poll.
+`native-js` then rewrites each unconditional poll call into a fast-path inline epoch check:
 
-### Runtime contract for `gc.safepoint_poll`
+```llvm
+; fast path: no call/statepoint
+%epoch = load atomic i64, ptr @RT_GC_EPOCH acquire, align 8
+%requested = icmp ne i64 (and i64 %epoch, 1), 0
+br i1 %requested, label %gc.poll.slow, label %gc.poll.cont
 
-The runtime must provide a symbol named `gc.safepoint_poll` compatible with `void ()`. In this repo,
-`runtime-native` exports `gc.safepoint_poll` and implements it in per-architecture assembly so it can:
+gc.poll.slow:
+  ; slow path: becomes the actual statepoint
+  call void @rt_gc_safepoint_slow(i64 %epoch)
+  br label %gc.poll.cont
+```
 
-- inline an (Acquire) load of the exported `RT_GC_EPOCH` and return immediately when no GC is requested, and
-- on the slow path, capture the *managed* caller's `(SP, FP, return address)` at the poll callsite and
-  call into the safepoint slow path (`rt_gc_safepoint_slow_impl`) so the published context matches the
-  stackmap record for the poll callsite.
+Finally, `rewrite-statepoints-for-gc` rewrites the **slow-path** call into an
+`llvm.experimental.gc.statepoint.*` intrinsic. LLVM then emits stackmap records at the slow-path poll
+PCs and `gc.relocate` for any live `ptr addrspace(1)` values across the poll. The fast path carries
+only the load+branch overhead.
 
-Note: LLVM stackmap `Indirect [SP + off]` locations use the **post-call** caller `SP` at the stackmap
-record PC. On x86_64, `call` pushes an 8-byte return address, so the poll stub must publish `SP` as
-`sp_entry + 8` (not the callee-entry `RSP`).
+### Runtime contract for safepoint polling
+
+The runtime must export:
+
+- `RT_GC_EPOCH` (`_Atomic uint64_t` / `i64`), and
+- `rt_gc_safepoint_slow(uint64_t epoch)` (`void (i64)`), entered only when the observed epoch is odd.
+
+`rt_gc_safepoint_slow` must be able to publish the *managed caller's* context (SP/FP/return address)
+such that it matches the `.llvm_stackmaps` record for the callsite. In this repo, this is implemented
+by `runtime-native` (see `runtime-native/README.md`).
+
+Note: LLVM stackmap `Indirect [SP + off]` locations use the caller's **post-call** stack pointer at
+the stackmap record PC, so the published SP for the managed caller must use the same convention.
+
+`runtime-native` also exports `gc.safepoint_poll(void)` for compatibility with LLVM's
+`place-safepoints` naming convention, but `native-js` lowers away the marker calls and does not rely
+on the symbol in final output.
 
 ---
 

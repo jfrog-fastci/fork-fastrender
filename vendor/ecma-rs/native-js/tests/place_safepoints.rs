@@ -127,16 +127,20 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
 
   let statepoint_polls = ir
     .lines()
-    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@gc.safepoint_poll"))
+    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@rt_gc_safepoint_slow"))
     .count();
   assert!(
     statepoint_polls >= 2,
-    "expected >=2 statepoints that call gc.safepoint_poll (entry + backedge), got {statepoint_polls}:\n{ir}"
+    "expected >=2 statepoints that call rt_gc_safepoint_slow (entry + backedge), got {statepoint_polls}:\n{ir}"
   );
 
   assert!(
     !ir.contains("call void @gc.safepoint_poll"),
     "expected poll calls to be rewritten (no direct call remains):\n{ir}"
+  );
+  assert!(
+    ir.contains("@RT_GC_EPOCH") && ir.contains("load atomic") && ir.contains("acquire"),
+    "expected polls to be lowered into an inline RT_GC_EPOCH atomic load:\n{ir}"
   );
 
   // Emit an object file and validate the resulting stackmaps contain GC root slots for `%obj` at
@@ -245,10 +249,10 @@ fn place_safepoints_inserts_backedge_poll_for_counted_loop() {
   let ir = module.print_to_string().to_string();
   let statepoint_polls = ir
     .lines()
-    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@gc.safepoint_poll"))
+    .filter(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("@rt_gc_safepoint_slow"))
     .count();
   assert!(
     statepoint_polls >= 2,
-    "expected >=2 statepoints that call gc.safepoint_poll even for a counted loop, got {statepoint_polls}:\n{ir}"
+    "expected >=2 statepoints that call rt_gc_safepoint_slow even for a counted loop, got {statepoint_polls}:\n{ir}"
   );
 }

@@ -134,8 +134,12 @@ fn call_free_loop_has_safepoint_polls_with_stackmaps_and_relocation() {
   // must be derived from a gc.relocate result.
   let ir = module.print_to_string().to_string();
   assert!(
-    ir.contains("@llvm.experimental.gc.statepoint") && ir.contains("@gc.safepoint_poll"),
-    "expected poll calls to be rewritten into statepoints:\n{ir}"
+    ir.contains("@llvm.experimental.gc.statepoint") && ir.contains("@rt_gc_safepoint_slow"),
+    "expected poll slow-path calls to be rewritten into statepoints:\n{ir}"
+  );
+  assert!(
+    ir.contains("@RT_GC_EPOCH") && ir.contains("load atomic") && ir.contains("acquire"),
+    "expected polls to be lowered into an inline RT_GC_EPOCH atomic load:\n{ir}"
   );
   assert!(
     ir.contains("@llvm.experimental.gc.relocate.p1"),
