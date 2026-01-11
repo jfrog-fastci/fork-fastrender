@@ -502,6 +502,9 @@ mod tests {
       "uint64_t rt_weak_add(uint8_t* value);",
       "uint8_t* rt_weak_get(uint64_t handle);",
       "void rt_weak_remove(uint64_t handle);",
+      "uint64_t rt_thread_register(uint32_t kind);",
+      "void rt_thread_unregister(void);",
+      "void rt_thread_set_parked(bool parked);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
@@ -568,6 +571,9 @@ mod tests {
     let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
     let _weak_get: extern "C" fn(u64) -> *mut u8 = rt_weak_get;
     let _weak_remove: extern "C" fn(u64) = rt_weak_remove;
+    let _thread_register: extern "C" fn(u32) -> u64 = rt_thread_register;
+    let _thread_unregister: extern "C" fn() = rt_thread_unregister;
+    let _thread_set_parked: extern "C" fn(bool) = rt_thread_set_parked;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
@@ -623,6 +629,9 @@ mod tests {
       _weak_add,
       _weak_get,
       _weak_remove,
+      _thread_register,
+      _thread_unregister,
+      _thread_set_parked,
       _concat,
       _intern,
       _spawn,

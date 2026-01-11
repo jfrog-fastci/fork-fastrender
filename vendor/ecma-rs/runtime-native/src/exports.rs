@@ -21,10 +21,10 @@ use crate::threading;
 use crate::threading::registry;
 use crate::Runtime;
 use crate::Thread;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -36,6 +36,23 @@ fn ensure_event_loop_thread_registered() {
   // first use so GC can coordinate stop-the-world safepoints across all
   // mutator threads.
   crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+}
+
+fn thread_kind_from_abi(kind: u32) -> threading::ThreadKind {
+  match kind {
+    0 => threading::ThreadKind::Main,
+    1 => threading::ThreadKind::Worker,
+    2 => threading::ThreadKind::Io,
+    3 => threading::ThreadKind::External,
+    other => {
+      // Avoid unwinding across the C ABI boundary.
+      if cfg!(debug_assertions) {
+        eprintln!("rt_thread_register: unknown thread kind {other} (expected 0..=3)");
+        std::process::abort();
+      }
+      threading::ThreadKind::External
+    }
+  }
 }
 
 #[no_mangle]
@@ -141,14 +158,7 @@ pub extern "C" fn rt_thread_init(kind: u32) {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_thread_init();
 
-  let kind = match kind {
-    0 => threading::ThreadKind::Main,
-    1 => threading::ThreadKind::Worker,
-    2 => threading::ThreadKind::Io,
-    3 => threading::ThreadKind::External,
-    _ => threading::ThreadKind::External,
-  };
-  threading::register_current_thread(kind);
+  threading::register_current_thread(thread_kind_from_abi(kind));
 }
 
 /// Unregister the current OS thread from the runtime.
@@ -157,6 +167,41 @@ pub extern "C" fn rt_thread_deinit() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_thread_deinit();
   threading::unregister_current_thread();
+}
+
+/// Register the current OS thread with the runtime thread registry.
+///
+/// This is a stable compiler/runtime ABI entrypoint used by LLVM-generated code.
+///
+/// `kind` mapping:
+/// - 0: Main
+/// - 1: Worker
+/// - 2: Io
+/// - 3: External
+#[no_mangle]
+pub extern "C" fn rt_thread_register(kind: u32) -> u64 {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_thread_init();
+
+  threading::register_current_thread(thread_kind_from_abi(kind)).get()
+}
+
+/// Unregister the current OS thread from the runtime thread registry.
+#[no_mangle]
+pub extern "C" fn rt_thread_unregister() {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_thread_deinit();
+
+  threading::unregister_current_thread();
+}
+
+/// Mark/unmark the current thread as parked (idle) inside the runtime.
+///
+/// When transitioning back to `parked == false` (unparking), this will perform a
+/// safepoint poll before returning.
+#[no_mangle]
+pub extern "C" fn rt_thread_set_parked(parked: bool) {
+  threading::set_parked(parked);
 }
 
 /// GC safepoint.

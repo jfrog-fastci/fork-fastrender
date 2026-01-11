@@ -41,6 +41,10 @@ pub fn register_reactor_waker(waker: fn()) {
 /// GC to wake idle worker threads that are blocked on unrelated condition
 /// variables.
 ///
+/// When transitioning back to `parked == false`, this function performs a
+/// safepoint poll before returning. This ensures a thread cannot resume mutator
+/// work in the middle of an in-progress stop-the-world request.
+///
 /// Invariant (required by future precise GC stack scanning):
 /// - The runtime must only mark a thread `parked` at a known safepoint where the
 ///   stack does not contain untracked GC pointers.

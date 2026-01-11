@@ -226,6 +226,35 @@ uint8_t* rt_weak_get(uint64_t handle);
 void rt_weak_remove(uint64_t handle);
 
 // -----------------------------------------------------------------------------
+// Threading / safepoints
+// -----------------------------------------------------------------------------
+
+// Runtime thread kind values for rt_thread_register(uint32_t kind).
+//
+// These are part of the stable compiler/runtime ABI contract:
+// - 0: Main
+// - 1: Worker
+// - 2: Io
+// - 3: External
+#define RT_THREAD_KIND_MAIN 0u
+#define RT_THREAD_KIND_WORKER 1u
+#define RT_THREAD_KIND_IO 2u
+#define RT_THREAD_KIND_EXTERNAL 3u
+
+// Register the current OS thread with the runtime thread registry (idempotent).
+// Returns a stable runtime-assigned thread id.
+uint64_t rt_thread_register(uint32_t kind);
+
+// Unregister the current OS thread from the runtime thread registry.
+void rt_thread_unregister(void);
+
+// Mark/unmark the current thread as parked (idle) inside the runtime.
+//
+// IMPORTANT: When `parked == false` (unparking), this function performs a safepoint poll
+// before returning (fast path if no stop-the-world is requested).
+void rt_thread_set_parked(bool parked);
+
+// -----------------------------------------------------------------------------
 // Strings
 // -----------------------------------------------------------------------------
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);

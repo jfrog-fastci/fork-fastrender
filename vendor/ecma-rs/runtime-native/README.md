@@ -6,6 +6,11 @@ This crate provides the runtime-side pieces of the compiler/runtime ABI contract
 allocator entrypoints, string helpers, GC safepoints, and the **minimal async/await runtime ABI**
 needed to execute LLVM-generated coroutine state machines with JS-correct microtask ordering.
 
+See also:
+* `include/runtime_native.h` — stable C ABI surface
+* `docs/safepoint_abi.md` — thread registration + parked/unparked safepoint protocol
+* `docs/write_barrier.md` — generational write barrier contract
+
 ## Reactor contract (epoll + kqueue)
 
 The low-level cross-platform reactor contract is documented in `docs/reactor.md` and enforced by
