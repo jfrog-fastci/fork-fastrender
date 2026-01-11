@@ -24,9 +24,9 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use crate::stack_walk::{FrameView, StackWalker};
-use crate::stackmaps::{CallSite, Location, StackMapRecord, StackMaps};
+use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::StackBounds;
-use crate::statepoints::{eval_location, RegFile, RootSlot, StatepointRecord};
+use crate::statepoints::{eval_location, RegFile, RootSlot};
 use stackmap_context::ThreadContext;
 
 /// A `(base, derived)` relocation pair.
@@ -226,17 +226,10 @@ fn visit_callsite_reloc_pairs(
   bounds: Option<StackBounds>,
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
-  let record: &StackMapRecord = callsite.record;
-  let statepoint = StatepointRecord::new(record).unwrap_or_else(|err| {
-    panic!(
-      "failed to decode statepoint stackmap record at return_address=0x{:x} (patchpoint_id=0x{:x}): {err}",
-      frame.return_address, record.patchpoint_id
-    )
-  });
-
-  // LLVM 18 statepoint lowering emits locations in (base, derived) order for each `gc.relocate`
-  // call. `gc_pairs()` is already offset past the 3-entry statepoint header and any deopt operands.
-  for pair in statepoint.gc_pairs() {
+  // LLVM 18 statepoint lowering emits `gc-live` locations in (base, derived) order for each
+  // `gc.relocate` use. `CallSite::reloc_pairs` skips the statepoint header + any deopt operands and
+  // yields an empty iterator for non-statepoint stackmap records.
+  for pair in callsite.reloc_pairs() {
     let Some(base_slot) = location_to_root_slot(frame, &pair.base, bounds) else {
       return false;
     };
