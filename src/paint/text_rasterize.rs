@@ -54,6 +54,7 @@ use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage, Result};
 #[cfg(test)]
 use crate::paint::pixmap::new_pixmap;
+use crate::paint::pixmap::new_pixmap_with_context;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
 use crate::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
@@ -72,6 +73,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tiny_skia::BlendMode as SkiaBlendMode;
+use tiny_skia::Color;
 use tiny_skia::FillRule;
 use tiny_skia::Mask;
 use tiny_skia::Paint;
@@ -83,6 +85,39 @@ use tiny_skia::Transform;
 const DEFAULT_GLYPH_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
+const SUBPIXEL_AA_SCALE_X: u32 = 3;
+const SUBPIXEL_AA_PAD_PX: i32 = 1;
+
+#[derive(Default)]
+struct SubpixelAAScratch {
+  pixmap: Option<Pixmap>,
+}
+
+impl std::fmt::Debug for SubpixelAAScratch {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SubpixelAAScratch")
+      .field("allocated", &self.pixmap.as_ref().map(|p| (p.width(), p.height())))
+      .finish()
+  }
+}
+
+impl SubpixelAAScratch {
+  fn get_or_resize(&mut self, width: u32, height: u32) -> Result<&mut Pixmap> {
+    let needs_new = match self.pixmap.as_ref() {
+      Some(existing) => existing.width() != width || existing.height() != height,
+      None => true,
+    };
+    if needs_new {
+      self.pixmap = Some(new_pixmap_with_context(width, height, "text subpixel AA mask")?);
+    }
+    let pixmap = self
+      .pixmap
+      .as_mut()
+      .expect("pixmap should exist after allocation");
+    pixmap.data_mut().fill(0);
+    Ok(pixmap)
+  }
+}
 
 /// Computes the advance width of a glyph with the given variation settings applied.
 pub fn glyph_advance_with_variations(
@@ -816,6 +851,8 @@ pub struct TextRasterizer {
   /// Renderer for color glyph formats
   color_renderer: ColorFontRenderer,
   hinting_enabled: bool,
+  subpixel_aa_enabled: bool,
+  subpixel_scratch: SubpixelAAScratch,
 }
 
 impl Default for TextRasterizer {
@@ -873,12 +910,239 @@ impl TextRasterizer {
     color_cache: Arc<Mutex<ColorGlyphCache>>,
   ) -> Self {
     let hinting_enabled = runtime::runtime_toggles().truthy("FASTR_TEXT_HINTING");
+    let subpixel_aa_enabled = runtime::runtime_toggles().truthy("FASTR_TEXT_SUBPIXEL_AA");
     Self {
       cache,
       color_cache,
       color_renderer,
       hinting_enabled,
+      subpixel_aa_enabled,
+      subpixel_scratch: SubpixelAAScratch::default(),
     }
+  }
+
+  fn map_point(transform: Transform, x: f32, y: f32) -> (f32, f32) {
+    (
+      transform.sx * x + transform.ky * y + transform.tx,
+      transform.kx * x + transform.sy * y + transform.ty,
+    )
+  }
+
+  fn transformed_bounds(path: &Path, transform: Transform) -> Option<(f32, f32, f32, f32)> {
+    let rect = path.bounds();
+    let corners = [
+      (rect.left(), rect.top()),
+      (rect.right(), rect.top()),
+      (rect.left(), rect.bottom()),
+      (rect.right(), rect.bottom()),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in corners {
+      let (tx, ty) = Self::map_point(transform, x, y);
+      min_x = min_x.min(tx);
+      min_y = min_y.min(ty);
+      max_x = max_x.max(tx);
+      max_y = max_y.max(ty);
+    }
+    if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
+      Some((min_x, min_y, max_x, max_y))
+    } else {
+      None
+    }
+  }
+
+  fn fill_path_subpixel_aa(
+    &mut self,
+    dst: &mut Pixmap,
+    path: &Path,
+    transform: Transform,
+    fill_alpha: f32,
+    color: Rgba,
+    clip_mask: Option<&Mask>,
+  ) -> Result<()> {
+    // Subpixel AA assumes the LCD subpixel grid is aligned with the target surface X axis.
+    // Avoid applying it when the glyph is rotated/skewed in Y (nonzero kx), which would map
+    // "horizontal" subpixels onto a non-horizontal edge.
+    if transform.kx.abs() > 1e-6 {
+      return Err(RenderError::RasterizationFailed {
+        reason: "subpixel AA unsupported for non-axis-aligned glyph transform".to_string(),
+      }
+      .into());
+    }
+
+    let Some((min_x, min_y, max_x, max_y)) = Self::transformed_bounds(path, transform) else {
+      return Ok(());
+    };
+    if max_x <= min_x || max_y <= min_y {
+      return Ok(());
+    }
+
+    let origin_x = (min_x.floor() as i32).saturating_sub(SUBPIXEL_AA_PAD_PX);
+    let origin_y = (min_y.floor() as i32).saturating_sub(SUBPIXEL_AA_PAD_PX);
+    let end_x = (max_x.ceil() as i32).saturating_add(SUBPIXEL_AA_PAD_PX);
+    let end_y = (max_y.ceil() as i32).saturating_add(SUBPIXEL_AA_PAD_PX);
+    let width_px_i32 = end_x.saturating_sub(origin_x);
+    let height_px_i32 = end_y.saturating_sub(origin_y);
+    if width_px_i32 <= 0 || height_px_i32 <= 0 {
+      return Ok(());
+    }
+    let width_px = width_px_i32 as u32;
+    let height_px = height_px_i32 as u32;
+    let width_sub = width_px
+      .checked_mul(SUBPIXEL_AA_SCALE_X)
+      .ok_or_else(|| RenderError::RasterizationFailed {
+        reason: "subpixel AA mask width overflow".to_string(),
+      })?;
+
+    let mask_pixmap = self.subpixel_scratch.get_or_resize(width_sub, height_px)?;
+    mask_pixmap.fill(Color::TRANSPARENT);
+
+    let mut mask_paint = Paint::default();
+    mask_paint.set_color_rgba8(255, 255, 255, 255);
+    mask_paint.anti_alias = true;
+    mask_paint.blend_mode = SkiaBlendMode::SourceOver;
+
+    let subpixel_scale = Transform::from_scale(SUBPIXEL_AA_SCALE_X as f32, 1.0);
+    let transform_sub = concat_transforms(subpixel_scale, transform);
+    let local_translate = Transform::from_translate(-(origin_x as f32) * SUBPIXEL_AA_SCALE_X as f32, -(origin_y as f32));
+    let mask_transform = concat_transforms(local_translate, transform_sub);
+
+    mask_pixmap.fill_path(path, &mask_paint, FillRule::Winding, mask_transform, None);
+
+    let dst_w = dst.width() as i32;
+    let dst_h = dst.height() as i32;
+    let dst_w_usize = dst.width() as usize;
+    let mask_data = mask_pixmap.data();
+    let clip_data = clip_mask.map(Mask::data);
+    let dst_data = dst.data_mut();
+    let width_sub_i32 = width_sub as i32;
+    let width_sub_usize = width_sub as usize;
+    // A small symmetric filter (in subpixel units) to reduce color fringes and better approximate
+    // browser LCD text rendering.
+    //
+    // Use a simple binomial/Gaussian kernel (sum=256). This is intentionally small and cheap; it
+    // is *not* a perfect replica of Skia's LCD pipeline, but it produces stable, browser-like
+    // results on text-heavy fixtures.
+    const LCD_FILTER_WEIGHTS: [u32; 5] = [16, 64, 96, 64, 16]; // sum=256
+
+    let color_r = color.r as f32;
+    let color_g = color.g as f32;
+    let color_b = color.b as f32;
+    let fill_alpha = fill_alpha.clamp(0.0, 1.0);
+
+    for local_y in 0..height_px_i32 {
+      let global_y = origin_y + local_y;
+      if global_y < 0 || global_y >= dst_h {
+        continue;
+      }
+      let global_y_usize = global_y as usize;
+      let row_start = local_y as usize * width_sub_usize * 4;
+      let row = &mask_data[row_start..row_start + width_sub_usize * 4];
+      let filtered_alpha = |center: i32| -> u8 {
+        let mut acc = 0u32;
+        for (i, weight) in LCD_FILTER_WEIGHTS.iter().enumerate() {
+          let offset = i as i32 - 2;
+          let sub_x = center + offset;
+          if sub_x < 0 || sub_x >= width_sub_i32 {
+            continue;
+          }
+          let idx = sub_x as usize * 4 + 3;
+          acc += u32::from(row[idx]) * *weight;
+        }
+        ((acc + 128) >> 8) as u8
+      };
+
+      for local_x in 0..width_px_i32 {
+        let global_x = origin_x + local_x;
+        if global_x < 0 || global_x >= dst_w {
+          continue;
+        }
+        let global_x_usize = global_x as usize;
+
+        let clip_alpha = clip_data
+          .as_ref()
+          .map(|clip| clip[global_y_usize * dst_w_usize + global_x_usize])
+          .unwrap_or(255);
+        if clip_alpha == 0 {
+          continue;
+        }
+
+        let base_sub = local_x * 3;
+        let mut cov_r = filtered_alpha(base_sub);
+        let mut cov_g = filtered_alpha(base_sub + 1);
+        let mut cov_b = filtered_alpha(base_sub + 2);
+
+        if clip_alpha != 255 {
+          // Multiply coverages by the clip alpha (device pixel resolution).
+          cov_r = ((u16::from(cov_r) * u16::from(clip_alpha) + 127) / 255) as u8;
+          cov_g = ((u16::from(cov_g) * u16::from(clip_alpha) + 127) / 255) as u8;
+          cov_b = ((u16::from(cov_b) * u16::from(clip_alpha) + 127) / 255) as u8;
+        }
+
+        if cov_r == 0 && cov_g == 0 && cov_b == 0 {
+          continue;
+        }
+
+        let dst_idx = (global_y_usize * dst_w_usize + global_x_usize) * 4;
+        let dst_a = dst_data[dst_idx + 3];
+
+        if dst_a != 255 {
+          // Fallback: collapse to a single coverage value for non-opaque backdrops since our
+          // surface format cannot represent per-channel alpha.
+          let cov_avg = (u16::from(cov_r) + u16::from(cov_g) + u16::from(cov_b)) as f32 / 3.0;
+          let src_a = (fill_alpha * cov_avg / 255.0).clamp(0.0, 1.0);
+          if src_a <= 0.0 {
+            continue;
+          }
+
+          let dst_a_f = dst_a as f32 / 255.0;
+          let out_a_f = src_a + dst_a_f * (1.0 - src_a);
+          let out_a_u8 = (out_a_f * 255.0).round().clamp(0.0, 255.0) as u8;
+          if out_a_u8 == 0 {
+            dst_data[dst_idx..dst_idx + 4].copy_from_slice(&[0, 0, 0, 0]);
+            continue;
+          }
+
+          let src_r = color_r * src_a;
+          let src_g = color_g * src_a;
+          let src_b = color_b * src_a;
+          let dst_r = dst_data[dst_idx] as f32;
+          let dst_g = dst_data[dst_idx + 1] as f32;
+          let dst_b = dst_data[dst_idx + 2] as f32;
+          let inv = 1.0 - src_a;
+          dst_data[dst_idx] = (src_r + dst_r * inv).round().clamp(0.0, 255.0) as u8;
+          dst_data[dst_idx + 1] = (src_g + dst_g * inv).round().clamp(0.0, 255.0) as u8;
+          dst_data[dst_idx + 2] = (src_b + dst_b * inv).round().clamp(0.0, 255.0) as u8;
+          dst_data[dst_idx + 3] = out_a_u8;
+          continue;
+        }
+
+        // Opaque backdrop: apply per-channel coverage. Keep alpha opaque.
+        let dst_r = dst_data[dst_idx] as f32;
+        let dst_g = dst_data[dst_idx + 1] as f32;
+        let dst_b = dst_data[dst_idx + 2] as f32;
+
+        let a_r = fill_alpha * (cov_r as f32 / 255.0);
+        let a_g = fill_alpha * (cov_g as f32 / 255.0);
+        let a_b = fill_alpha * (cov_b as f32 / 255.0);
+
+        dst_data[dst_idx] = (color_r * a_r + dst_r * (1.0 - a_r))
+          .round()
+          .clamp(0.0, 255.0) as u8;
+        dst_data[dst_idx + 1] = (color_g * a_g + dst_g * (1.0 - a_g))
+          .round()
+          .clamp(0.0, 255.0) as u8;
+        dst_data[dst_idx + 2] = (color_b * a_b + dst_b * (1.0 - a_b))
+          .round()
+          .clamp(0.0, 255.0) as u8;
+        dst_data[dst_idx + 3] = 255;
+      }
+    }
+
+    Ok(())
   }
 
   /// Renders a shaped text run to a pixmap.
@@ -1281,14 +1545,41 @@ impl TextRasterizer {
           }
 
           if draw_fill && color_glyph.is_none() {
-            // Render the path fill
-            pixmap.fill_path(
-              path.as_ref(),
-              &paint,
-              FillRule::Winding,
-              transform,
-              state.clip_mask,
-            );
+            // Chrome typically renders text with LCD/subpixel anti-aliasing, producing tinted edge
+            // pixels. Our default tiny-skia path rasterization is grayscale AA, so allow enabling a
+            // lightweight subpixel mode for fixture-chrome diffs.
+            //
+            // This is intentionally guarded by a runtime toggle so golden tests remain stable.
+            let mut used_subpixel = false;
+            if self.subpixel_aa_enabled
+              && state.blend_mode == SkiaBlendMode::SourceOver
+              && rotation.is_none()
+            {
+              if self
+                .fill_path_subpixel_aa(
+                  pixmap,
+                  path.as_ref(),
+                  transform,
+                  fill_alpha,
+                  color,
+                  state.clip_mask,
+                )
+                .is_ok()
+              {
+                used_subpixel = true;
+              }
+            }
+
+            if !used_subpixel {
+              // Render the path fill (grayscale AA).
+              pixmap.fill_path(
+                path.as_ref(),
+                &paint,
+                FillRule::Winding,
+                transform,
+                state.clip_mask,
+              );
+            }
             if synthetic_bold > 0.0 {
               let mut stroke = tiny_skia::Stroke::default();
               stroke.width = synthetic_bold * 2.0;
