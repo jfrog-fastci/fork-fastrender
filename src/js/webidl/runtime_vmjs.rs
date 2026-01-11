@@ -104,6 +104,11 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   /// Returns whether `value` implements the given WebIDL interface.
   fn implements_interface(&self, value: Self::JsValue, interface: webidl::InterfaceId) -> bool;
 
+  /// ECMAScript abstract operation `ToObject ( argument )`.
+  ///
+  /// Implementations must throw a `TypeError` when `value` is `null` or `undefined`.
+  fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
   fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error>;
   fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
@@ -131,6 +136,9 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<JsOwnPropertyDescriptor>, Self::Error>;
+
+  /// Returns true if `key` is a Symbol.
+  fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool;
 
   /// Converts a property key into a JS string value.
   ///
@@ -829,6 +837,29 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     self.state.hooks.implements_interface(value, interface)
   }
 
+  fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+    match value {
+      Value::Object(_) => Ok(value),
+      Value::Undefined | Value::Null => Err(self.throw_type_error("ToObject: cannot convert null or undefined to object")),
+      other => {
+        let intr = self.intrinsics()?;
+        let object_ctor = Value::Object(intr.object_constructor());
+        // Root the input value + callee across the internal boxing call (which can allocate).
+        let boxed = self.with_stack_roots(&[other, object_ctor], |rt| {
+          rt.cx
+            .vm
+            .call_without_host(&mut rt.cx.scope, object_ctor, Value::Undefined, &[other])
+        })?;
+        if !self.is_object(boxed) {
+          return Err(self.throw_type_error("ToObject internal boxing returned non-object"));
+        }
+        // Keep the boxed wrapper alive for the lifetime of this conversion context.
+        self.cx.scope.push_root(boxed)?;
+        Ok(boxed)
+      }
+    }
+  }
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
     use webidl::JsRuntime as _;
     self.cx.to_boolean(value)
@@ -983,6 +1014,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
         enumerable: d.enumerable,
       }))
     })
+  }
+
+  fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool {
+    matches!(key, PropertyKey::Symbol(_))
   }
 
   fn property_key_to_js_string(
@@ -1546,6 +1581,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::implements_interface(self, value, interface)
   }
 
+  fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_object(self, value)
+  }
+
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_boolean(self, value)
   }
@@ -1681,6 +1720,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     Ok(desc.map(|d| JsOwnPropertyDescriptor {
       enumerable: d.enumerable,
     }))
+  }
+
+  fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_is_symbol(self, key)
   }
 
   fn property_key_to_js_string(

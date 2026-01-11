@@ -55,41 +55,57 @@ where
   R: WebIdlBindingsRuntime<Host>,
   F: FnMut(&mut R, &mut Host, R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>,
 {
-  if !rt.is_object(value) {
-    return Err(rt.throw_type_error("expected object for record"));
-  }
-
   rt.with_stack_roots(&[value], |rt| {
-    let keys = rt.own_property_keys(value)?;
-    let mut out: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
+    let obj = rt.to_object(value)?;
+    rt.with_stack_roots(&[obj], |rt| {
+      let keys = rt.own_property_keys(obj)?;
 
-    for key in keys {
-      let Some(desc) = rt.get_own_property(value, key)? else {
-        continue;
-      };
-      if !desc.enumerable {
-        continue;
+      // Root string keys returned by `OwnPropertyKeys` for the duration of the conversion.
+      //
+      // `vm-js` can synthesize index keys (e.g. for String objects). Those strings are not
+      // reachable from `obj` and would be collected unless they are treated as stack roots while
+      // we iterate.
+      let mut key_roots: Vec<R::JsValue> = Vec::with_capacity(keys.len());
+      for key in &keys {
+        if rt.property_key_is_symbol(*key) {
+          continue;
+        }
+        key_roots.push(rt.property_key_to_js_string(*key)?);
       }
 
-      let js_key = rt.property_key_to_js_string(key)?;
-      let typed_key = rt.js_string_to_rust_string(js_key)?;
+      let mut out: BTreeMap<String, BindingValue<R::JsValue>> = BTreeMap::new();
 
-      // Enforce the record entry count limit on *new* keys.
-      if !out.contains_key(&typed_key) && out.len() >= rt.limits().max_record_entries {
-        return Err(rt.throw_range_error("record exceeds maximum entry count"));
-      }
+      rt.with_stack_roots(&key_roots, |rt| {
+        for key in keys {
+          // Record keys are strings; symbol keys are ignored.
+          if rt.property_key_is_symbol(key) {
+            continue;
+          }
+          let Some(desc) = rt.get_own_property(obj, key)? else {
+            continue;
+          };
+          if !desc.enumerable {
+            continue;
+          }
 
-      // Root the key while fetching and converting the property value. `own_property_keys` can
-      // synthesize index keys (e.g. for String objects), which are not reachable from `value` and
-      // must be treated as stack roots during the conversion.
-      let typed_value = rt.with_stack_roots(&[js_key], |rt| {
-        let prop_value = rt.get(value, key)?;
-        rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
-      })?;
-      out.insert(typed_key, typed_value);
-    }
+          let js_key = rt.property_key_to_js_string(key)?;
+          let typed_key = rt.js_string_to_rust_string(js_key)?;
 
-    Ok(BindingValue::Dictionary(out))
+          // Enforce the record entry count limit on *new* keys.
+          if !out.contains_key(&typed_key) && out.len() >= rt.limits().max_record_entries {
+            return Err(rt.throw_range_error("record exceeds maximum entry count"));
+          }
+
+          let typed_value = rt.with_stack_roots(&[js_key], |rt| {
+            let prop_value = rt.get(obj, key)?;
+            rt.with_stack_roots(&[prop_value], |rt| convert_value(rt, host, prop_value))
+          })?;
+          out.insert(typed_key, typed_value);
+        }
+
+        Ok(BindingValue::Dictionary(out))
+      })
+    })
   })
 }
 
@@ -560,6 +576,51 @@ mod tests {
       other => panic!("expected record['a'] to be a string, got {other:?}"),
     }
     assert!(!map.contains_key("hidden"), "record must skip non-enumerable keys");
+  }
+
+  #[test]
+  fn record_conversion_ignores_enumerable_symbol_keys() {
+    let mut rt = VmJsRuntime::new();
+    let mut host = ();
+
+    let obj = rt.alloc_object_value().unwrap();
+    let a_key = rt.property_key_from_str("a").unwrap();
+    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, a_key, Value::Number(1.0), true)
+      .unwrap();
+
+    // Record keys are strings; symbol keys should be ignored even if enumerable.
+    let sym_key =
+      <VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(&mut rt).unwrap();
+    webidl_js_runtime::JsRuntime::define_data_property(&mut rt, obj, sym_key, Value::Number(2.0), true)
+      .unwrap();
+
+    let record = to_record::<(), _, _>(&mut rt, &mut host, obj, |rt, _host, v| {
+      Ok(BindingValue::Number(webidl_js_runtime::JsRuntime::to_number(rt, v)?))
+    })
+    .unwrap();
+
+    let BindingValue::Dictionary(map) = record else {
+      panic!("expected dictionary record, got: {record:?}");
+    };
+    assert_eq!(map.len(), 1);
+    assert!(map.contains_key("a"));
+  }
+
+  #[test]
+  fn record_conversion_uses_to_object() {
+    let mut rt = VmJsRuntime::new();
+    let mut host = ();
+
+    // WebIDL record conversion performs `ToObject`, so primitives should be accepted.
+    let record = to_record::<(), _, _>(&mut rt, &mut host, Value::Bool(true), |_rt, _host, _v| {
+      Ok(BindingValue::Undefined)
+    })
+    .unwrap();
+
+    let BindingValue::Dictionary(map) = record else {
+      panic!("expected dictionary record, got: {record:?}");
+    };
+    assert!(map.is_empty());
   }
 
   #[test]
