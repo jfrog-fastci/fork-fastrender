@@ -101,7 +101,7 @@ use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
-use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::{BoxNode, BoxType};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::{error::RenderError, error::RenderStage};
@@ -264,6 +264,24 @@ fn snap_intrinsic_border_box_size(value: f32) -> f32 {
   } else {
     value
   }
+}
+
+#[inline]
+fn subtree_has_in_flow_layout_content(root: &BoxNode) -> bool {
+  let mut stack: Vec<&BoxNode> = root.children.iter().collect();
+  while let Some(node) = stack.pop() {
+    if node.style.running_position.is_some() || !node.style.position.is_in_flow() {
+      continue;
+    }
+    if matches!(
+      node.box_type,
+      BoxType::Text(_) | BoxType::LineBreak(_) | BoxType::Marker(_) | BoxType::Replaced(_)
+    ) {
+      return true;
+    }
+    stack.extend(node.children.iter());
+  }
+  false
 }
 
 #[cfg(test)]
@@ -3197,10 +3215,8 @@ impl FormattingContext for FlexFormattingContext {
                         // but they must not return a bogus 0px block size for elements that have
                         // in-flow content. Doing so can collapse flex lines and clip overflow
                         // content (e.g. sticky headers with `grid-template-rows: 1fr`).
-                        let has_in_flow_children = measure_box.children.iter().any(|child| {
-                          child.style.running_position.is_none() && child.style.position.is_in_flow()
-                        });
-                        if content_h <= eps && has_in_flow_children {
+                        let has_in_flow_content = subtree_has_in_flow_layout_content(measure_box);
+                        if content_h <= eps && has_in_flow_content {
                           if mode == IntrinsicSizingMode::MinContent {
                             // Min-content intrinsic-width probes can legitimately produce a 0px
                             // inline size when percentage-sized replaced descendants resolve their
@@ -3457,10 +3473,8 @@ impl FormattingContext for FlexFormattingContext {
                             content_h = max_h_bound.max(0.0);
                           }
 
-                          let has_in_flow_children = measure_box.children.iter().any(|child| {
-                            child.style.running_position.is_none() && child.style.position.is_in_flow()
-                          });
-                          if content_h <= eps && has_in_flow_children {
+                          let has_in_flow_content = subtree_has_in_flow_layout_content(measure_box);
+                          if content_h <= eps && has_in_flow_content {
                             if mode == IntrinsicSizingMode::MinContent {
                               // See the explanation in the fit-content branch above: avoid falling
                               // back to a full layout during a min-content intrinsic width probe,
@@ -5015,6 +5029,10 @@ impl FormattingContext for FlexFormattingContext {
             | FormattingContextType::Table
         );
 
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(root_box_id),
+          implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+        };
         let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
@@ -5024,10 +5042,7 @@ impl FormattingContext for FlexFormattingContext {
             self.viewport_size,
             &self.font_context,
             Some(&anchor_index),
-            crate::layout::anchor_positioning::AnchorQueryContext {
-              query_parent_box_id: Some(root_box_id),
-              implicit_anchor_box_id: candidate.implicit_anchor_box_id,
-            },
+            anchor_query,
           )?;
         let mut child_fragment = candidate.fragment;
         let mut border_size = Size::new(
@@ -5071,10 +5086,7 @@ impl FormattingContext for FlexFormattingContext {
               self.viewport_size,
               &self.font_context,
               Some(&anchor_index),
-              crate::layout::anchor_positioning::AnchorQueryContext {
-                query_parent_box_id: Some(root_box_id),
-                implicit_anchor_box_id: candidate.implicit_anchor_box_id,
-              },
+              anchor_query,
             )?;
           border_size = Size::new(
             result.size.width + actual_horizontal,
@@ -12493,6 +12505,10 @@ impl FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(query_parent_box_id),
+          implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+        };
         let (layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
@@ -12502,10 +12518,7 @@ impl FlexFormattingContext {
             self.viewport_size,
             &self.font_context,
             Some(anchor_index),
-            crate::layout::anchor_positioning::AnchorQueryContext {
-              query_parent_box_id: Some(query_parent_box_id),
-              implicit_anchor_box_id: candidate.implicit_anchor_box_id,
-            },
+            anchor_query,
           )?;
         let mut probe_size = Size::new(
           (result.size.width + actual_horizontal).max(0.0),
@@ -12565,10 +12578,7 @@ impl FlexFormattingContext {
               self.viewport_size,
               &self.font_context,
               Some(anchor_index),
-              crate::layout::anchor_positioning::AnchorQueryContext {
-                query_parent_box_id: Some(query_parent_box_id),
-                implicit_anchor_box_id: candidate.implicit_anchor_box_id,
-              },
+              anchor_query,
             )?;
           result = rerun;
           probe_size = Size::new(

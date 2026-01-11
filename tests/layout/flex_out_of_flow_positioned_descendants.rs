@@ -86,3 +86,75 @@ fn flex_item_size_ignores_fixed_out_of_flow_descendants() {
   );
 }
 
+#[test]
+fn flex_item_size_ignores_out_of_flow_descendants_nested_in_empty_in_flow_wrappers() {
+  // Regression test for pages like yahoo.com where a flex item contains a list wrapper with an
+  // in-flow `<li>` but only out-of-flow (e.g. `position: absolute`) content. The wrapper should not
+  // expand to the viewport width during intrinsic sizing and push later flex items off-screen.
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.width = Some(Length::px(500.0));
+
+  let mut abspos_style = ComputedStyle::default();
+  abspos_style.display = Display::Block;
+  abspos_style.position = Position::Absolute;
+  abspos_style.width = Some(Length::px(100.0));
+  abspos_style.height = Some(Length::px(10.0));
+  let abspos_child = BoxNode::new_block(
+    Arc::new(abspos_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut li_style = ComputedStyle::default();
+  li_style.display = Display::Block;
+  let li_wrapper = BoxNode::new_block(
+    Arc::new(li_style),
+    FormattingContextType::Block,
+    vec![abspos_child],
+  );
+
+  let mut ul_style = ComputedStyle::default();
+  ul_style.display = Display::Block;
+  let ul_wrapper = BoxNode::new_block(
+    Arc::new(ul_style),
+    FormattingContextType::Block,
+    vec![li_wrapper],
+  );
+
+  let mut content_style = ComputedStyle::default();
+  content_style.display = Display::Block;
+  content_style.width = Some(Length::px(50.0));
+  content_style.height = Some(Length::px(20.0));
+  let content = BoxNode::new_block(Arc::new(content_style), FormattingContextType::Block, vec![]);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![ul_wrapper, content],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(500.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout should succeed");
+
+  let ul_fragment = fragment.children.get(0).expect("ul fragment");
+  assert!(
+    ul_fragment.bounds.width() <= 0.1,
+    "wrapper should remain 0px wide (got {})",
+    ul_fragment.bounds.width()
+  );
+
+  let content_fragment = fragment.children.get(1).expect("content fragment");
+  assert!(
+    content_fragment.bounds.x().abs() < 0.1,
+    "content should not be pushed right by out-of-flow wrapper (x={})",
+    content_fragment.bounds.x()
+  );
+}
