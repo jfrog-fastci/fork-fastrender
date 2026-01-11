@@ -5,6 +5,100 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fmt::{self};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct EffectSet {
+  pub reads: bool,
+  pub writes: bool,
+  pub allocates: bool,
+  pub unknown: bool,
+  pub may_throw: bool,
+}
+
+impl EffectSet {
+  pub fn is_default(&self) -> bool {
+    !self.reads && !self.writes && !self.allocates && !self.unknown && !self.may_throw
+  }
+
+  pub fn is_pure(&self) -> bool {
+    self.is_default()
+  }
+
+  pub fn union(self, other: Self) -> Self {
+    Self {
+      reads: self.reads || other.reads,
+      writes: self.writes || other.writes,
+      allocates: self.allocates || other.allocates,
+      unknown: self.unknown || other.unknown,
+      may_throw: self.may_throw || other.may_throw,
+    }
+  }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct TypeInfo {}
+
+impl TypeInfo {
+  pub fn is_default(&self) -> bool {
+    self == &Self::default()
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum OwnershipState {
+  Owned,
+  Borrowed,
+  Shared,
+  Unknown,
+}
+
+impl Default for OwnershipState {
+  fn default() -> Self {
+    Self::Unknown
+  }
+}
+
+impl OwnershipState {
+  pub fn is_default(&self) -> bool {
+    matches!(self, Self::Unknown)
+  }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct InstMeta {
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "EffectSet::is_default")
+  )]
+  pub effects: EffectSet,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "TypeInfo::is_default")
+  )]
+  pub result_type: TypeInfo,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "OwnershipState::is_default")
+  )]
+  pub ownership: OwnershipState,
+}
+
+impl InstMeta {
+  pub fn is_default(&self) -> bool {
+    self.effects.is_default() && self.result_type.is_default() && self.ownership.is_default()
+  }
+
+  pub fn is_pure(&self) -> bool {
+    self.effects.is_pure()
+  }
+}
+
 // PartialOrd and Ord are for some arbitrary canonical order, even if semantics of ordering is opaque.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -199,7 +293,7 @@ fn dummy_symbol() -> SymbolId {
   SymbolId(u32::MAX as u64)
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Inst {
   pub t: InstTyp,
@@ -207,6 +301,11 @@ pub struct Inst {
   pub args: Vec<Arg>,
   pub spreads: Vec<usize>, // Indices into `args` that are spread, for Call. Cannot have values less than 2 as the first two args are `callee` and `this`.
   pub labels: Vec<u32>,
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "InstMeta::is_default")
+  )]
+  pub meta: InstMeta,
   // Garbage values if not applicable.
   #[cfg_attr(
     feature = "serde",
@@ -231,6 +330,38 @@ pub struct Inst {
     serde(default, skip_serializing_if = "String::is_empty")
   )]
   pub unknown: String,
+}
+
+impl PartialEq for Inst {
+  fn eq(&self, other: &Self) -> bool {
+    self.t == other.t
+      && self.tgts == other.tgts
+      && self.args == other.args
+      && self.spreads == other.spreads
+      && self.labels == other.labels
+      && self.bin_op == other.bin_op
+      && self.un_op == other.un_op
+      && self.foreign == other.foreign
+      && self.unknown == other.unknown
+  }
+}
+
+impl Eq for Inst {}
+
+impl Debug for Inst {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Inst")
+      .field("t", &self.t)
+      .field("tgts", &self.tgts)
+      .field("args", &self.args)
+      .field("spreads", &self.spreads)
+      .field("labels", &self.labels)
+      .field("bin_op", &self.bin_op)
+      .field("un_op", &self.un_op)
+      .field("foreign", &self.foreign)
+      .field("unknown", &self.unknown)
+      .finish()
+  }
 }
 
 impl Inst {
@@ -263,6 +394,7 @@ impl Default for Inst {
       args: Default::default(),
       spreads: Default::default(),
       labels: Default::default(),
+      meta: Default::default(),
       bin_op: BinOp::_Dummy,
       un_op: UnOp::_Dummy,
       foreign: dummy_symbol(),
