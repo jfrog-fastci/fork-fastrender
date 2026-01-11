@@ -310,8 +310,14 @@ extern "C" fn drop_arc_task(data: *mut u8) {
   }
 }
 
+extern "C" fn noop_task(_data: *mut u8) {}
+
 fn schedule_drop_arc(ptr: *const State) {
-  async_rt::enqueue_microtask(drop_arc_task, ptr as *mut u8);
+  async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
+    noop_task,
+    ptr as *mut u8,
+    drop_arc_task,
+  ));
 }
 
 impl StateInner {
