@@ -321,7 +321,7 @@ impl<'p> HirSourceToInst<'p> {
         Some(init) => {
           let tmp = self.c_temp.bump();
           let rval = self.compile_expr(*init)?;
-          self.out.push(Inst::var_assign(tmp, rval));
+          self.push_value_inst(*init, Inst::var_assign(tmp, rval));
           self.compile_destructuring(*pat, Arg::Var(tmp))?;
         }
         None => match decl.kind {
@@ -396,14 +396,12 @@ impl<'p> HirSourceToInst<'p> {
     let iterable_tmp_var = if is_for_of {
       let iterable_tmp_var = self.c_temp.bump();
       let iterable_arg = self.compile_expr(right)?;
-      self
-        .out
-        .push(Inst::var_assign(iterable_tmp_var, iterable_arg));
+      self.push_value_inst(right, Inst::var_assign(iterable_tmp_var, iterable_arg));
       iterable_tmp_var
     } else {
       let obj_tmp_var = self.c_temp.bump();
       let obj_arg = self.compile_expr(right)?;
-      self.out.push(Inst::var_assign(obj_tmp_var, obj_arg));
+      self.push_value_inst(right, Inst::var_assign(obj_tmp_var, obj_arg));
 
       let keys_tmp_var = self.c_temp.bump();
       self.out.push(Inst::call(
@@ -626,9 +624,10 @@ impl<'p> HirSourceToInst<'p> {
   ) -> OptimizeResult<()> {
     let discriminant_tmp_var = self.c_temp.bump();
     let discriminant_arg = self.compile_expr(discriminant)?;
-    self
-      .out
-      .push(Inst::var_assign(discriminant_tmp_var, discriminant_arg));
+    self.push_value_inst(
+      discriminant,
+      Inst::var_assign(discriminant_tmp_var, discriminant_arg),
+    );
 
     if cases.is_empty() {
       return Ok(());

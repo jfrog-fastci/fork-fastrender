@@ -78,15 +78,22 @@ impl<'p> HirSourceToInst<'p> {
   /// If a chain was set up by the current node, add the jump target and action for on-nullish for the entire chain.
   /// This must be called at the end of any node that called `maybe_setup_chain`.
   /// See `Chain` for more details.
-  fn complete_chain_setup(&mut self, did_chain_setup: bool, res_tmp_var: u32, chain: Chain) {
+  fn complete_chain_setup(
+    &mut self,
+    expr_id: ExprId,
+    did_chain_setup: bool,
+    res_tmp_var: u32,
+    chain: Chain,
+  ) {
     if did_chain_setup {
       let after_chain_label = self.c_label.bump();
       // This is for when our chain was fully evaluated i.e. there was no short-circuiting due to optional chaining.
       self.out.push(Inst::goto(after_chain_label));
       self.out.push(Inst::label(chain.is_nullish_label));
-      self
-        .out
-        .push(Inst::var_assign(res_tmp_var, Arg::Const(Const::Undefined)));
+      self.push_value_inst(
+        expr_id,
+        Inst::var_assign(res_tmp_var, Arg::Const(Const::Undefined)),
+      );
       self.out.push(Inst::goto(after_chain_label));
       self.out.push(Inst::label(after_chain_label));
     }
@@ -98,7 +105,7 @@ impl<'p> HirSourceToInst<'p> {
     self.classify_symbol(symbol, name)
   }
 
-  fn literal_arg(&mut self, span: Loc, lit: &hir_js::Literal) -> OptimizeResult<Arg> {
+  fn literal_arg(&mut self, expr_id: ExprId, span: Loc, lit: &hir_js::Literal) -> OptimizeResult<Arg> {
     Ok(match lit {
       hir_js::Literal::Boolean(v) => Arg::Const(Const::Bool(*v)),
       hir_js::Literal::Number(v) => {
@@ -119,13 +126,16 @@ impl<'p> HirSourceToInst<'p> {
       }
       hir_js::Literal::Regex(v) => {
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_REGEX_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          vec![Arg::Const(Const::Str(v.clone()))],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_REGEX_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Const(Const::Str(v.clone()))],
+            Vec::new(),
+          ),
+        );
         Arg::Var(tmp)
       }
     })
@@ -153,13 +163,16 @@ impl<'p> HirSourceToInst<'p> {
     Ok(match self.classify_ident(expr, name) {
       VarType::Local(local) => Arg::Var(self.symbol_to_temp(local)),
       VarType::Builtin(builtin) => Arg::Builtin(builtin),
-      VarType::Foreign(foreign) => self.temp_var_arg(|tgt| Inst::foreign_load(tgt, foreign)),
-      VarType::Unknown(name) => self.temp_var_arg(|tgt| Inst::unknown_load(tgt, name)),
+      VarType::Foreign(foreign) => {
+        self.temp_var_arg_for_expr(expr, |tgt| Inst::foreign_load(tgt, foreign))
+      }
+      VarType::Unknown(name) => self.temp_var_arg_for_expr(expr, |tgt| Inst::unknown_load(tgt, name)),
     })
   }
 
   pub fn compile_assignment(
     &mut self,
+    assign_expr_id: ExprId,
     span: Loc,
     operator: AssignOp,
     target: PatId,
@@ -179,7 +192,7 @@ impl<'p> HirSourceToInst<'p> {
         }
         let value_tmp_var = self.c_temp.bump();
         let value_arg = self.compile_expr(value)?;
-        self.out.push(Inst::var_assign(value_tmp_var, value_arg));
+        self.push_value_inst(assign_expr_id, Inst::var_assign(value_tmp_var, value_arg));
         self.compile_destructuring(target, Arg::Var(value_tmp_var))?;
         Ok(Arg::Var(value_tmp_var))
       }
@@ -202,9 +215,10 @@ impl<'p> HirSourceToInst<'p> {
         match operator {
           AssignOp::Assign => {
             let value_arg = self.compile_expr(value)?;
-            self
-              .out
-              .push(Inst::var_assign(value_tmp_var, value_arg.clone()));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, value_arg.clone()),
+            );
             *assign_inst.args.last_mut().unwrap() = value_arg;
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
@@ -236,9 +250,10 @@ impl<'p> HirSourceToInst<'p> {
               }
             };
 
-            self
-              .out
-              .push(Inst::var_assign(value_tmp_var, left_arg.clone()));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, left_arg.clone()),
+            );
             let converge_label_id = self.c_label.bump();
 
             match operator {
@@ -270,7 +285,10 @@ impl<'p> HirSourceToInst<'p> {
             }
 
             let rhs = self.compile_expr(value)?;
-            self.out.push(Inst::var_assign(value_tmp_var, rhs.clone()));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, rhs.clone()),
+            );
             *assign_inst.args.last_mut().unwrap() = rhs;
             self.out.push(assign_inst);
             self.out.push(Inst::label(converge_label_id));
@@ -326,15 +344,15 @@ impl<'p> HirSourceToInst<'p> {
               }
             };
             let rhs_inst = Inst::bin(value_tmp_var, left_arg, op, value_arg);
-            self.out.push(rhs_inst);
+            self.push_value_inst(assign_expr_id, rhs_inst);
             *assign_inst.args.last_mut().unwrap() = Arg::Var(value_tmp_var);
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
           }
         }
       }
-      PatKind::AssignTarget(expr_id) => {
-        let target_expr = &self.body.exprs[expr_id.0 as usize];
+      PatKind::AssignTarget(target_expr_id) => {
+        let target_expr = &self.body.exprs[target_expr_id.0 as usize];
         let dummy_val = Arg::Const(Const::Num(JsNumber(0xdeadbeefu32 as f64)));
         let mut assign_inst = match target_expr.kind {
           ExprKind::Member(ref member) => {
@@ -361,9 +379,10 @@ impl<'p> HirSourceToInst<'p> {
         match operator {
           AssignOp::Assign => {
             let value_arg = self.compile_expr(value)?;
-            self
-              .out
-              .push(Inst::var_assign(value_tmp_var, value_arg.clone()));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, value_arg.clone()),
+            );
             *assign_inst.args.last_mut().unwrap() = value_arg;
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
@@ -377,9 +396,10 @@ impl<'p> HirSourceToInst<'p> {
               BinOp::GetProp,
               prop.clone(),
             ));
-            self
-              .out
-              .push(Inst::var_assign(value_tmp_var, Arg::Var(left_tmp_var)));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, Arg::Var(left_tmp_var)),
+            );
 
             let converge_label_id = self.c_label.bump();
 
@@ -412,7 +432,10 @@ impl<'p> HirSourceToInst<'p> {
             }
 
             let rhs = self.compile_expr(value)?;
-            self.out.push(Inst::var_assign(value_tmp_var, rhs.clone()));
+            self.push_value_inst(
+              assign_expr_id,
+              Inst::var_assign(value_tmp_var, rhs.clone()),
+            );
             *assign_inst.args.last_mut().unwrap() = rhs;
             self.out.push(assign_inst);
             self.out.push(Inst::label(converge_label_id));
@@ -451,7 +474,7 @@ impl<'p> HirSourceToInst<'p> {
               prop.clone(),
             ));
             let rhs_inst = Inst::bin(value_tmp_var, Arg::Var(left_tmp_var), op, value_arg);
-            self.out.push(rhs_inst);
+            self.push_value_inst(assign_expr_id, rhs_inst);
             *assign_inst.args.last_mut().unwrap() = Arg::Var(value_tmp_var);
             self.out.push(assign_inst);
             Ok(Arg::Var(value_tmp_var))
@@ -468,6 +491,7 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn compile_logical_expr(
     &mut self,
+    expr_id: ExprId,
     span: Loc,
     operator: BinaryOp,
     left: ExprId,
@@ -495,7 +519,7 @@ impl<'p> HirSourceToInst<'p> {
     let converge_label_id = self.c_label.bump();
     let res_tmp_var = self.c_temp.bump();
     let left = self.compile_expr(left)?;
-    self.out.push(Inst::var_assign(res_tmp_var, left.clone()));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, left.clone()));
     self.out.push(match operator {
       BinaryOp::LogicalAnd => Inst::cond_goto(left, DUMMY_LABEL, converge_label_id),
       BinaryOp::LogicalOr => Inst::cond_goto(left, converge_label_id, DUMMY_LABEL),
@@ -508,13 +532,14 @@ impl<'p> HirSourceToInst<'p> {
       }
     });
     let right = self.compile_expr(right)?;
-    self.out.push(Inst::var_assign(res_tmp_var, right));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, right));
     self.out.push(Inst::label(converge_label_id));
     Ok(Arg::Var(res_tmp_var))
   }
 
   pub fn compile_nullish_coalescing_expr(
     &mut self,
+    expr_id: ExprId,
     left: ExprId,
     right: ExprId,
   ) -> OptimizeResult<Arg> {
@@ -526,7 +551,7 @@ impl<'p> HirSourceToInst<'p> {
     let res_tmp_var = self.c_temp.bump();
 
     let left_arg = self.compile_expr(left)?;
-    self.out.push(Inst::var_assign(res_tmp_var, left_arg));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, left_arg));
 
     let is_nullish_tmp_var = self.c_temp.bump();
     self.out.push(Inst::bin(
@@ -542,7 +567,7 @@ impl<'p> HirSourceToInst<'p> {
     ));
 
     let right_arg = self.compile_expr(right)?;
-    self.out.push(Inst::var_assign(res_tmp_var, right_arg));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, right_arg));
     self.out.push(Inst::label(converge_label_id));
 
     Ok(Arg::Var(res_tmp_var))
@@ -555,16 +580,17 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn compile_binary_expr(
     &mut self,
+    expr_id: ExprId,
     span: Loc,
     operator: BinaryOp,
     left: ExprId,
     right: ExprId,
   ) -> OptimizeResult<Arg> {
     if matches!(operator, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
-      return self.compile_logical_expr(span, operator, left, right);
+      return self.compile_logical_expr(expr_id, span, operator, left, right);
     }
     if operator == BinaryOp::NullishCoalescing {
-      return self.compile_nullish_coalescing_expr(left, right);
+      return self.compile_nullish_coalescing_expr(expr_id, left, right);
     }
     if operator == BinaryOp::Comma {
       return self.compile_comma_expr(left, right);
@@ -578,13 +604,16 @@ impl<'p> HirSourceToInst<'p> {
         BinaryOp::Instanceof => Self::INTERNAL_INSTANCEOF_CALLEE,
         _ => unreachable!(),
       };
-      self.out.push(Inst::call(
-        res_tmp_var,
-        Arg::Builtin(callee.to_string()),
-        Arg::Const(Const::Undefined),
-        vec![left, right],
-        Vec::new(),
-      ));
+      self.push_value_inst(
+        expr_id,
+        Inst::call(
+          res_tmp_var,
+          Arg::Builtin(callee.to_string()),
+          Arg::Const(Const::Undefined),
+          vec![left, right],
+          Vec::new(),
+        ),
+      );
       return Ok(Arg::Var(res_tmp_var));
     }
 
@@ -748,12 +777,13 @@ impl<'p> HirSourceToInst<'p> {
     let left = self.compile_expr(left)?;
     let right = self.compile_expr(right)?;
     let res_tmp_var = self.c_temp.bump();
-    self.out.push(Inst::bin(res_tmp_var, left, op, right));
+    self.push_value_inst(expr_id, Inst::bin(res_tmp_var, left, op, right));
     Ok(Arg::Var(res_tmp_var))
   }
 
   pub fn compile_cond_expr(
     &mut self,
+    expr_id: ExprId,
     test: ExprId,
     consequent: ExprId,
     alternate: ExprId,
@@ -773,17 +803,18 @@ impl<'p> HirSourceToInst<'p> {
       .out
       .push(Inst::cond_goto(test_arg, cons_label_id, DUMMY_LABEL));
     let alt_res = self.compile_expr(alternate)?;
-    self.out.push(Inst::var_assign(res_tmp_var, alt_res));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, alt_res));
     self.out.push(Inst::goto(after_label_id));
     self.out.push(Inst::label(cons_label_id));
     let cons_res = self.compile_expr(consequent)?;
-    self.out.push(Inst::var_assign(res_tmp_var, cons_res));
+    self.push_value_inst(expr_id, Inst::var_assign(res_tmp_var, cons_res));
     self.out.push(Inst::label(after_label_id));
     Ok(Arg::Var(res_tmp_var))
   }
 
   pub fn compile_update_expr(
     &mut self,
+    expr_id: ExprId,
     _span: Loc,
     operator: UpdateOp,
     argument: ExprId,
@@ -797,16 +828,19 @@ impl<'p> HirSourceToInst<'p> {
           UpdateOp::Increment => BinOp::Add,
         };
         if prefix {
-          self.out.push(Inst::bin(
-            arg.to_var(),
-            arg.clone(),
-            rhs,
-            Arg::Const(Const::Num(JsNumber(1.0))),
-          ));
+          self.push_value_inst(
+            expr_id,
+            Inst::bin(
+              arg.to_var(),
+              arg.clone(),
+              rhs,
+              Arg::Const(Const::Num(JsNumber(1.0))),
+            ),
+          );
           Ok(arg)
         } else {
           let tmp_var = self.c_temp.bump();
-          self.out.push(Inst::var_assign(tmp_var, arg.clone()));
+          self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
           self.out.push(Inst::bin(
             arg.clone().to_var(),
             arg,
@@ -821,6 +855,7 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn compile_unary_expr(
     &mut self,
+    expr_id: ExprId,
     span: Loc,
     operator: UnaryOp,
     argument: ExprId,
@@ -838,25 +873,25 @@ impl<'p> HirSourceToInst<'p> {
         }
         let arg = self.compile_expr(argument)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::Not, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::Not, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::BitNot => {
         let arg = self.compile_expr(argument)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::BitNot, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::BitNot, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::Minus => {
         let arg = self.compile_expr(argument)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::Neg, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::Neg, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::Plus => {
         let arg = self.compile_expr(argument)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::Plus, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::Plus, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::Typeof => {
@@ -868,13 +903,13 @@ impl<'p> HirSourceToInst<'p> {
           _ => self.compile_expr(argument)?,
         };
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::Typeof, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::Typeof, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::Void => {
         let arg = self.compile_expr(argument)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::un(tmp, UnOp::Void, arg));
+        self.push_value_inst(expr_id, Inst::un(tmp, UnOp::Void, arg));
         Ok(Arg::Var(tmp))
       }
       UnaryOp::Delete => {
@@ -891,13 +926,16 @@ impl<'p> HirSourceToInst<'p> {
             let object_arg = self.compile_expr(member.object)?;
             let prop_arg = key_arg(self, &member.property)?;
             let tmp = self.c_temp.bump();
-            self.out.push(Inst::call(
-              tmp,
-              Arg::Builtin(Self::INTERNAL_DELETE_CALLEE.to_string()),
-              Arg::Const(Const::Undefined),
-              vec![object_arg, prop_arg],
-              Vec::new(),
-            ));
+            self.push_value_inst(
+              expr_id,
+              Inst::call(
+                tmp,
+                Arg::Builtin(Self::INTERNAL_DELETE_CALLEE.to_string()),
+                Arg::Const(Const::Undefined),
+                vec![object_arg, prop_arg],
+                Vec::new(),
+              ),
+            );
             Ok(Arg::Var(tmp))
           }
           _ => Err(unsupported_syntax(
@@ -917,6 +955,7 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn compile_member_expr(
     &mut self,
+    expr_id: ExprId,
     member: &MemberExpr,
     chain: impl Into<Option<Chain>>,
   ) -> OptimizeResult<CompiledMemberExpr> {
@@ -926,13 +965,11 @@ impl<'p> HirSourceToInst<'p> {
     self.conditional_chain_jump(optional, &left_arg, chain);
     let res_tmp_var = self.c_temp.bump();
     let right_arg = key_arg(self, &member.property)?;
-    self.out.push(Inst::bin(
-      res_tmp_var,
-      left_arg.clone(),
-      BinOp::GetProp,
-      right_arg,
-    ));
-    self.complete_chain_setup(did_chain_setup, res_tmp_var, chain);
+    self.push_value_inst(
+      expr_id,
+      Inst::bin(res_tmp_var, left_arg.clone(), BinOp::GetProp, right_arg),
+    );
+    self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
     Ok(CompiledMemberExpr {
       res: Arg::Var(res_tmp_var),
       left: left_arg.clone(),
@@ -941,6 +978,7 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn compile_call_expr(
     &mut self,
+    expr_id: ExprId,
     span: Loc,
     call: &CallExpr,
     chain: impl Into<Option<Chain>>,
@@ -982,22 +1020,25 @@ impl<'p> HirSourceToInst<'p> {
         }
       }
 
-      self.out.push(Inst::call(
-        res_tmp_var,
-        Arg::Builtin(Self::INTERNAL_NEW_CALLEE.to_string()),
-        ctor_arg,
-        args,
-        spreads,
-      ));
+      self.push_value_inst(
+        expr_id,
+        Inst::call(
+          res_tmp_var,
+          Arg::Builtin(Self::INTERNAL_NEW_CALLEE.to_string()),
+          ctor_arg,
+          args,
+          spreads,
+        ),
+      );
 
-      self.complete_chain_setup(did_chain_setup, res_tmp_var, chain);
+      self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
       return Ok(Arg::Var(res_tmp_var));
     }
 
     let (did_chain_setup, chain) = self.maybe_setup_chain(chain);
     let (this_arg, callee_arg) = match self.body.exprs[call.callee.0 as usize].kind.clone() {
       ExprKind::Member(m) => {
-        let c = self.compile_member_expr(&m, chain)?;
+        let c = self.compile_member_expr(call.callee, &m, chain)?;
         (c.left, c.res)
       }
       _ => {
@@ -1020,10 +1061,11 @@ impl<'p> HirSourceToInst<'p> {
         spreads.push(arg_idx + 2);
       }
     }
-    self
-      .out
-      .push(Inst::call(res_tmp_var, callee_arg, this_arg, args, spreads));
-    self.complete_chain_setup(did_chain_setup, res_tmp_var, chain);
+    self.push_value_inst(
+      expr_id,
+      Inst::call(res_tmp_var, callee_arg, this_arg, args, spreads),
+    );
+    self.complete_chain_setup(expr_id, did_chain_setup, res_tmp_var, chain);
     Ok(Arg::Var(res_tmp_var))
   }
 
@@ -1035,14 +1077,16 @@ impl<'p> HirSourceToInst<'p> {
     let expr = &self.body.exprs[expr_id.0 as usize];
     let span = Loc(expr.span.start as usize, expr.span.end as usize);
     match &expr.kind {
-      ExprKind::Binary { op, left, right } => self.compile_binary_expr(span, *op, *left, *right),
-      ExprKind::Call(call) => self.compile_call_expr(span, call, chain),
-      ExprKind::Member(member) => Ok(self.compile_member_expr(member, chain)?.res),
+      ExprKind::Binary { op, left, right } => {
+        self.compile_binary_expr(expr_id, span, *op, *left, *right)
+      }
+      ExprKind::Call(call) => self.compile_call_expr(expr_id, span, call, chain),
+      ExprKind::Member(member) => Ok(self.compile_member_expr(expr_id, member, chain)?.res),
       ExprKind::Conditional {
         test,
         consequent,
         alternate,
-      } => self.compile_cond_expr(*test, *consequent, *alternate),
+      } => self.compile_cond_expr(expr_id, *test, *consequent, *alternate),
       ExprKind::Array(array) => {
         let mut args = Vec::new();
         let mut spreads = Vec::new();
@@ -1063,13 +1107,16 @@ impl<'p> HirSourceToInst<'p> {
           }
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          spreads,
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            args,
+            spreads,
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::Object(obj) => {
@@ -1128,13 +1175,16 @@ impl<'p> HirSourceToInst<'p> {
           }
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_OBJECT_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_OBJECT_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::Template(template) => {
@@ -1145,13 +1195,16 @@ impl<'p> HirSourceToInst<'p> {
           args.push(Arg::Const(Const::Str(span.literal.clone())));
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_TEMPLATE_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::TaggedTemplate { tag, template } => {
@@ -1163,13 +1216,16 @@ impl<'p> HirSourceToInst<'p> {
           args.push(Arg::Const(Const::Str(span.literal.clone())));
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_TAGGED_TEMPLATE_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_TAGGED_TEMPLATE_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::ImportCall {
@@ -1182,25 +1238,31 @@ impl<'p> HirSourceToInst<'p> {
           args.push(self.compile_expr(*attrs)?);
         }
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin("import".to_string()),
-          Arg::Const(Const::Undefined),
-          args,
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin("import".to_string()),
+            Arg::Const(Const::Undefined),
+            args,
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       ExprKind::Await { expr } => {
         let arg = self.compile_expr(*expr)?;
         let tmp = self.c_temp.bump();
-        self.out.push(Inst::call(
-          tmp,
-          Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
-          Arg::Const(Const::Undefined),
-          vec![arg],
-          Vec::new(),
-        ));
+        self.push_value_inst(
+          expr_id,
+          Inst::call(
+            tmp,
+            Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
+            Arg::Const(Const::Undefined),
+            vec![arg],
+            Vec::new(),
+          ),
+        );
         Ok(Arg::Var(tmp))
       }
       #[cfg(feature = "semantic-ops")]
@@ -1400,17 +1462,19 @@ impl<'p> HirSourceToInst<'p> {
         Ok(Arg::Var(tmp))
       }
       ExprKind::Ident(name) => self.compile_id_expr(expr_id, *name),
-      ExprKind::Literal(lit) => self.literal_arg(span, lit),
+      ExprKind::Literal(lit) => self.literal_arg(expr_id, span, lit),
       ExprKind::This => Ok(Arg::Builtin("this".to_string())),
       ExprKind::ImportMeta => Ok(Arg::Builtin("import.meta".to_string())),
       ExprKind::NewTarget => Ok(Arg::Builtin("new.target".to_string())),
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.compile_expr(*expr),
-      ExprKind::Unary { op, expr } => self.compile_unary_expr(span, *op, *expr),
-      ExprKind::Update { op, expr, prefix } => self.compile_update_expr(span, *op, *expr, *prefix),
+      ExprKind::Unary { op, expr } => self.compile_unary_expr(expr_id, span, *op, *expr),
+      ExprKind::Update { op, expr, prefix } => {
+        self.compile_update_expr(expr_id, span, *op, *expr, *prefix)
+      }
       ExprKind::Assignment { op, target, value } => {
-        self.compile_assignment(span, *op, *target, *value)
+        self.compile_assignment(expr_id, span, *op, *target, *value)
       }
       ExprKind::FunctionExpr {
         def,

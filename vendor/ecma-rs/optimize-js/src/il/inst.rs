@@ -1,5 +1,6 @@
 use crate::analysis::purity::Purity;
 use crate::symbol::semantics::SymbolId;
+use crate::types::TypeId;
 use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
@@ -162,6 +163,15 @@ pub struct InstMeta {
   pub result_type: TypeInfo,
   #[cfg_attr(
     feature = "serde",
+    serde(
+      default,
+      skip_serializing_if = "Option::is_none",
+      serialize_with = "serialize_type_id"
+    )
+  )]
+  pub type_id: Option<TypeId>,
+  #[cfg_attr(
+    feature = "serde",
     serde(default, skip_serializing_if = "OwnershipState::is_default")
   )]
   pub ownership: OwnershipState,
@@ -178,9 +188,18 @@ pub struct InstMeta {
 }
 
 impl InstMeta {
+  pub fn set_type_id(&mut self, type_id: Option<TypeId>) {
+    self.type_id = type_id;
+  }
+
+  pub fn clear_type_id(&mut self) {
+    self.type_id = None;
+  }
+
   pub fn is_default(&self) -> bool {
     self.effects.is_default()
       && self.result_type.is_default()
+      && self.type_id.is_none()
       && self.ownership.is_default()
       && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
@@ -196,10 +215,27 @@ impl Default for InstMeta {
     Self {
       effects: EffectSet::default(),
       result_type: TypeInfo::default(),
+      type_id: None,
       ownership: OwnershipState::default(),
       callee_purity: Purity::Impure,
       nullability_narrowing: None,
     }
+  }
+}
+
+#[cfg(feature = "serde")]
+fn serialize_type_id<S>(value: &Option<TypeId>, serializer: S) -> Result<S::Ok, S::Error>
+where
+  S: serde::Serializer,
+{
+  use serde::Serialize;
+  #[cfg(feature = "typed")]
+  {
+    value.map(|id| id.0).serialize(serializer)
+  }
+  #[cfg(not(feature = "typed"))]
+  {
+    value.serialize(serializer)
   }
 }
 

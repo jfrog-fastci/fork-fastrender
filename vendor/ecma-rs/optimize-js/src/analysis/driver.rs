@@ -117,7 +117,9 @@ fn cfg_block_labels_sorted(cfg: &Cfg) -> Vec<u32> {
 fn reset_cfg_meta(cfg: &mut Cfg) {
   for label in cfg_block_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
+      let type_id = inst.meta.type_id;
       inst.meta = InstMeta::default();
+      inst.meta.type_id = type_id;
     }
   }
 }

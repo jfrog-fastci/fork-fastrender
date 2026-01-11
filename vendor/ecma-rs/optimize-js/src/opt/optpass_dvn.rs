@@ -261,7 +261,9 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         .tgt_to_coc
         .insert(tgt, canonical_value.clone())
         .is_none());
-      new_inst = Inst::var_assign(tgt, canonical_value)
+      let meta = new_inst.meta.clone();
+      new_inst = Inst::var_assign(tgt, canonical_value);
+      new_inst.meta = meta;
     } else {
       let pure_val = match new_inst.t {
         InstTyp::Bin => {
@@ -294,7 +296,9 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         let (row, existing) = state.upsert_val(val, tgt);
         assert!(state.tgt_to_coc.insert(tgt, row).is_none());
         if let Some(value) = existing {
+          let meta = new_inst.meta.clone();
           new_inst = Inst::var_assign(tgt, value);
+          new_inst.meta = meta;
         };
       };
     };

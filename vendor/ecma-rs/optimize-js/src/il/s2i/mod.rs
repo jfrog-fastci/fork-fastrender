@@ -4,7 +4,7 @@ pub mod stmt;
 #[cfg(test)]
 mod tests;
 
-use super::inst::Inst;
+use super::inst::{Arg, Inst};
 use crate::eval::builtin::BUILTINS;
 use crate::symbol::semantics::SymbolId;
 use crate::util::counter::Counter;
@@ -134,5 +134,22 @@ impl<'p> HirSourceToInst<'p> {
 
   pub fn expr_is_boolean(&self, expr: ExprId) -> bool {
     self.program.types.expr_is_boolean(self.body_id, expr)
+  }
+
+  pub fn expr_type_id(&self, expr: ExprId) -> Option<crate::types::TypeId> {
+    self.program.types.expr_type(self.body_id, expr)
+  }
+
+  pub fn push_value_inst(&mut self, expr: ExprId, mut inst: Inst) {
+    inst.meta.type_id = self.expr_type_id(expr);
+    self.out.push(inst);
+  }
+
+  pub fn temp_var_arg_for_expr(&mut self, expr: ExprId, f: impl FnOnce(u32) -> Inst) -> Arg {
+    let tgt = self.c_temp.bump();
+    let mut inst = f(tgt);
+    inst.meta.type_id = self.expr_type_id(expr);
+    self.out.push(inst);
+    Arg::Var(tgt)
   }
 }
