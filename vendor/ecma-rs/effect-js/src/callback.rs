@@ -236,13 +236,14 @@ pub fn analyze_inline_callback(
   let ExprKind::FunctionExpr {
     body: cb_body,
     is_arrow,
+    name: fn_name,
     ..
-  } = cb_expr.kind
+  } = &cb_expr.kind
   else {
     return analyze_known_callback_reference(lowered, callsite_body, callback_expr, kb);
   };
 
-  let cb_body_data = lowered.body(cb_body)?;
+  let cb_body_data = lowered.body(*cb_body)?;
   let func = cb_body_data.function.as_ref()?;
 
   let params_are_simple = func.params.iter().all(|param| {
@@ -255,7 +256,8 @@ pub fn analyze_inline_callback(
       .is_some_and(|pat| matches!(pat.kind, PatKind::Ident(_)))
   });
 
-  let arguments_object_available = !is_arrow
+  let arguments_object_available = !*is_arrow
+    && !fn_name.is_some_and(|name| lowered.names.resolve(name) == Some("arguments"))
     && !func
       .params
       .iter()
@@ -311,7 +313,7 @@ pub fn analyze_inline_callback(
   let mut analyzer = CallbackAnalyzer {
     lowered,
     kb,
-    body: cb_body,
+    body: *cb_body,
     arguments_object_available,
     var_shadows_params: !params_are_simple,
     index_param,
@@ -2025,6 +2027,21 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(function (arguments) { return arguments[0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_named_arguments_function_does_not_count_as_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function arguments(x) { return arguments[1]; });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
