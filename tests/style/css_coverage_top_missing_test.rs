@@ -4,7 +4,7 @@ use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::{AlignItems, FlexBasis, JustifyContent, TextAlign};
+use fastrender::style::types::{AlignContent, AlignItems, FlexBasis, FlexWrap, JustifyContent, TextAlign};
 use fastrender::style::values::Length;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
@@ -75,11 +75,74 @@ fn ms_flex_pack_distribute_maps_to_space_around() {
 }
 
 #[test]
+fn ms_flex_pack_left_maps_to_flex_start() {
+  let (div, _span) = styles_for_div_and_span(r#"<div style="display:flex;-ms-flex-pack:left"><span></span></div>"#);
+  assert_eq!(div.justify_content, JustifyContent::FlexStart);
+}
+
+#[test]
+fn ms_flex_pack_space_evenly_maps_to_space_evenly() {
+  let (div, _span) = styles_for_div_and_span(
+    r#"<div style="display:flex;-ms-flex-pack:space-evenly"><span></span></div>"#,
+  );
+  assert_eq!(div.justify_content, JustifyContent::SpaceEvenly);
+}
+
+#[test]
+fn ms_flex_pack_between_maps_to_space_between() {
+  let (div, _span) = styles_for_div_and_span(
+    r#"<div style="display:flex;-ms-flex-pack:between"><span></span></div>"#,
+  );
+  assert_eq!(div.justify_content, JustifyContent::SpaceBetween);
+}
+
+#[test]
 fn ms_flex_align_center_maps_to_align_items_center() {
   let (div, _span) = styles_for_div_and_span(
     r#"<div style="display:flex;-ms-flex-align:center"><span></span></div>"#,
   );
   assert_eq!(div.align_items, AlignItems::Center);
+}
+
+#[test]
+fn ms_flex_line_pack_left_maps_to_align_content_flex_start() {
+  let div = styles_for_first(
+    r#"<div style="display:flex;-ms-flex-line-pack:left"></div>"#,
+    "div",
+  );
+  assert_eq!(div.align_content, AlignContent::FlexStart);
+}
+
+#[test]
+fn align_content_left_and_right_are_accepted_as_legacy_aliases() {
+  let div_left = styles_for_first(r#"<div style="display:flex;align-content:left"></div>"#, "div");
+  assert_eq!(div_left.align_content, AlignContent::Start);
+
+  let div_right = styles_for_first(r#"<div style="display:flex;align-content:right"></div>"#, "div");
+  assert_eq!(div_right.align_content, AlignContent::End);
+}
+
+#[test]
+fn ms_flex_wrap_aliases_map_to_flex_wrap() {
+  let div_wrap = styles_for_first(r#"<div style="display:flex;-ms-flex-wrap:wrap"></div>"#, "div");
+  assert_eq!(div_wrap.flex_wrap, FlexWrap::Wrap);
+
+  // `none` is the legacy IE10 spelling for `nowrap`. Ensure it can override earlier declarations.
+  let div_none = styles_for_first(
+    r#"<div style="display:flex;flex-wrap:wrap;-ms-flex-wrap:none"></div>"#,
+    "div",
+  );
+  assert_eq!(div_none.flex_wrap, FlexWrap::NoWrap);
+}
+
+#[test]
+fn supports_legacy_alignment_keywords_seen_in_fixtures() {
+  assert!(supports_declaration("align-content", "left"));
+  assert!(supports_declaration("align-content", "right"));
+  assert!(supports_declaration("-ms-flex-line-pack", "left"));
+  assert!(supports_declaration("-ms-flex-pack", "space-evenly"));
+  assert!(supports_declaration("-ms-flex-pack", "between"));
+  assert!(supports_declaration("-ms-flex-wrap", "none"));
 }
 
 #[test]

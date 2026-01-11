@@ -12003,15 +12003,30 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "-ms-flex-wrap" => {
+      // Legacy IE10 `-ms-flex-wrap` maps to modern `flex-wrap`.
+      //
+      // Older MS prefixed syntaxes use `none`/`no-wrap` instead of `nowrap`.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
+        styles.flex_wrap = match kw.as_str() {
+          "none" | "nowrap" | "no-wrap" => FlexWrap::NoWrap,
+          "wrap" => FlexWrap::Wrap,
+          "wrap-reverse" => FlexWrap::WrapReverse,
+          _ => styles.flex_wrap,
+        };
+      }
+    }
     "-ms-flex-pack" => {
       // Legacy IE10 `-ms-flex-pack` maps to modern `justify-content`.
       if let PropertyValue::Keyword(kw) = resolved_value {
         styles.justify_content = match kw.to_ascii_lowercase().as_str() {
-          "start" => JustifyContent::FlexStart,
-          "end" => JustifyContent::FlexEnd,
+          "start" | "left" | "flex-start" | "normal" => JustifyContent::FlexStart,
+          "end" | "right" | "flex-end" => JustifyContent::FlexEnd,
           "center" => JustifyContent::Center,
-          "justify" => JustifyContent::SpaceBetween,
-          "distribute" => JustifyContent::SpaceAround,
+          "justify" | "between" | "space-between" => JustifyContent::SpaceBetween,
+          "distribute" | "space-around" => JustifyContent::SpaceAround,
+          "space-evenly" => JustifyContent::SpaceEvenly,
           // Non-standard but appears in real-world autoprefixer output (e.g. `justify-content: stretch`).
           "stretch" => JustifyContent::Stretch,
           _ => styles.justify_content,
@@ -12021,8 +12036,8 @@ fn apply_declaration_with_base_internal_with_order(
     "-ms-flex-line-pack" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         styles.align_content = match kw.to_ascii_lowercase().as_str() {
-          "start" => AlignContent::FlexStart,
-          "end" => AlignContent::FlexEnd,
+          "start" | "left" => AlignContent::FlexStart,
+          "end" | "right" => AlignContent::FlexEnd,
           "center" => AlignContent::Center,
           "justify" => AlignContent::SpaceBetween,
           "distribute" => AlignContent::SpaceAround,
@@ -12035,11 +12050,11 @@ fn apply_declaration_with_base_internal_with_order(
       // Legacy IE10 `-ms-flex-align` maps to modern `align-items`.
       if let PropertyValue::Keyword(kw) = resolved_value {
         styles.align_items = match kw.to_ascii_lowercase().as_str() {
-          "start" => AlignItems::FlexStart,
-          "end" => AlignItems::FlexEnd,
+          "start" | "flex-start" | "top" | "left" => AlignItems::FlexStart,
+          "end" | "flex-end" | "bottom" | "right" => AlignItems::FlexEnd,
           "center" => AlignItems::Center,
           "baseline" => AlignItems::Baseline,
-          "stretch" => AlignItems::Stretch,
+          "stretch" | "normal" => AlignItems::Stretch,
           _ => styles.align_items,
         };
       }
@@ -12116,13 +12131,13 @@ fn apply_declaration_with_base_internal_with_order(
           "flex-start" => AlignContent::FlexStart,
           "flex-end" => AlignContent::FlexEnd,
           "center" => AlignContent::Center,
+          // Legacy aliases that appear in real-world stylesheets.
+          "left" => AlignContent::Start,
+          "right" => AlignContent::End,
           "space-between" => AlignContent::SpaceBetween,
           "space-evenly" => AlignContent::SpaceEvenly,
           "space-around" => AlignContent::SpaceAround,
-          "stretch" => AlignContent::Stretch,
-          // Legacy aliases. See CSS Box Alignment (legacy alignment keywords).
-          "left" => AlignContent::Start,
-          "right" => AlignContent::End,
+          "stretch" | "normal" => AlignContent::Stretch,
           _ => styles.align_content,
         };
       }

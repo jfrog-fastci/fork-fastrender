@@ -582,6 +582,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "-ms-flex-pack",
   "-ms-flex-positive",
   "-ms-flex-preferred-size",
+  "-ms-flex-wrap",
   "-ms-grid-column",
   "-ms-grid-column-span",
   "-ms-grid-row",
@@ -3326,6 +3327,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return keyword_in_list(parsed, &["row", "row-reverse", "column", "column-reverse"])
     }
     "flex-wrap" => return keyword_in_list(parsed, &["nowrap", "wrap", "wrap-reverse"]),
+    "-ms-flex-wrap" => {
+      return keyword_in_list(parsed, &["none", "nowrap", "no-wrap", "wrap", "wrap-reverse"])
+    }
     // CSS Box Alignment keywords.
     //
     // Keep this validator in sync with what the engine actually accepts during computed style
@@ -3362,6 +3366,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return keyword_in_list(
         parsed,
         &[
+          // Legacy aliases.
+          "left",
+          "right",
           "start",
           "end",
           "flex-start",
@@ -3414,7 +3421,27 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       )
     }
     "-ms-flex-pack" => {
-      return keyword_in_list(parsed, &["start", "end", "center", "justify", "distribute", "stretch"])
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "center",
+          "justify",
+          "distribute",
+          "stretch",
+          // Legacy aliases / modern spellings seen in fixtures.
+          "left",
+          "right",
+          "flex-start",
+          "flex-end",
+          "normal",
+          "between",
+          "space-between",
+          "space-around",
+          "space-evenly",
+        ],
+      )
     }
     "-ms-flex-line-pack" => {
       return keyword_in_list(
@@ -3427,11 +3454,31 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "distribute",
           "stretch",
           "normal",
+          // Legacy aliases.
+          "left",
+          "right",
         ],
       )
     }
     "-ms-flex-align" => {
-      return keyword_in_list(parsed, &["start", "end", "center", "baseline", "stretch"])
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "center",
+          "baseline",
+          "stretch",
+          // Legacy aliases / modern spellings seen in fixtures.
+          "flex-start",
+          "flex-end",
+          "top",
+          "bottom",
+          "left",
+          "right",
+          "normal",
+        ],
+      )
     }
     "-ms-flex-item-align" => {
       return keyword_in_list(
