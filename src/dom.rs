@@ -6312,15 +6312,6 @@ impl<'a> ElementRef<'a> {
     false
   }
 
-  fn nearest_form(&self) -> Option<&DomNode> {
-    self.all_ancestors.iter().rev().copied().find(|node| {
-      node
-        .tag_name()
-        .map(|t| t.eq_ignore_ascii_case("form"))
-        .unwrap_or(false)
-    })
-  }
-
   fn tree_root_info(&self) -> (&'a DomNode, &'a [&'a DomNode]) {
     if self.all_ancestors.is_empty() {
       return (self.node, &[]);
@@ -6429,34 +6420,94 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_default_submit(&self) -> bool {
-    let Some(form) = self.nearest_form() else {
+    if !ElementRef::is_default_submit_candidate(self.node, self.all_ancestors) {
       return false;
     };
 
-    let mut ancestors = vec![form];
-    let target = self.node as *const DomNode;
+    let (tree_root, ancestors_in_tree) = self.tree_root_info();
+    let forms_by_id = Self::collect_forms_by_id(tree_root);
 
-    fn traverse<'a>(
-      node: &'a DomNode,
-      ancestors: &mut Vec<&'a DomNode>,
-      target: *const DomNode,
-    ) -> Option<bool> {
-      if ElementRef::is_default_submit_candidate(node, ancestors) {
-        return Some(ptr::eq(node, target));
-      }
+    let nearest_form_ancestor = ancestors_in_tree.iter().rev().copied().find(|node| {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+    });
 
-      ancestors.push(node);
-      for child in node.children.iter() {
-        if let Some(res) = traverse(child, ancestors, target) {
-          ancestors.pop();
-          return Some(res);
-        }
-      }
-      ancestors.pop();
-      None
+    let Some(form) = Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id)
+    else {
+      return false;
+    };
+
+    #[derive(Clone, Copy)]
+    enum TraversalState {
+      Enter,
+      Exit,
     }
 
-    traverse(form, &mut ancestors, target).unwrap_or(false)
+    struct StackEntry<'b> {
+      node: &'b DomNode,
+      state: TraversalState,
+      nearest_form_ancestor: Option<&'b DomNode>,
+    }
+
+    let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut stack: Vec<StackEntry<'_>> = vec![StackEntry {
+      node: tree_root,
+      state: TraversalState::Enter,
+      nearest_form_ancestor: None,
+    }];
+
+    while let Some(entry) = stack.pop() {
+      match entry.state {
+        TraversalState::Enter => {
+          if ElementRef::is_default_submit_candidate(entry.node, &ancestors) {
+            let owner =
+              Self::resolve_form_owner_for_node(entry.node, entry.nearest_form_ancestor, &forms_by_id);
+            if owner.is_some_and(|owner| ptr::eq(owner, form)) {
+              return ptr::eq(entry.node, self.node);
+            }
+          }
+
+          let children: &[DomNode] =
+            if matches!(entry.node.node_type, DomNodeType::ShadowRoot { .. })
+              && !ptr::eq(entry.node, tree_root)
+            {
+              &[]
+            } else {
+              entry.node.traversal_children()
+            };
+
+          let child_nearest_form_ancestor = if entry
+            .node
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+          {
+            Some(entry.node)
+          } else {
+            entry.nearest_form_ancestor
+          };
+
+          ancestors.push(entry.node);
+          stack.push(StackEntry {
+            node: entry.node,
+            state: TraversalState::Exit,
+            nearest_form_ancestor: None,
+          });
+          for child in children.iter().rev() {
+            stack.push(StackEntry {
+              node: child,
+              state: TraversalState::Enter,
+              nearest_form_ancestor: child_nearest_form_ancestor,
+            });
+          }
+        }
+        TraversalState::Exit => {
+          ancestors.pop();
+        }
+      }
+    }
+
+    false
   }
 
   /// Direction from dir/xml:dir attributes, inherited; defaults to LTR when none found.
@@ -14115,6 +14166,115 @@ mod tests {
       children: vec![],
     };
     assert!(matches(&checkbox, &[], &PseudoClass::Default));
+  }
+
+  #[test]
+  fn default_respects_form_attribute_on_external_submit_controls() {
+    let doc = document(vec![
+      element_with_attrs(
+        "button",
+        vec![("type", "submit"), ("form", "f"), ("id", "ext")],
+        vec![],
+      ),
+      element_with_attrs(
+        "form",
+        vec![("id", "f")],
+        vec![element_with_attrs(
+          "button",
+          vec![("type", "submit"), ("id", "inner")],
+          vec![],
+        )],
+      ),
+    ]);
+
+    let ext = &doc.children[0];
+    let form = &doc.children[1];
+    let inner = &form.children[0];
+
+    let ext_ancestors: Vec<&DomNode> = vec![&doc];
+    let inner_ancestors: Vec<&DomNode> = vec![&doc, form];
+
+    assert!(matches(ext, &ext_ancestors, &PseudoClass::Default));
+    assert!(!matches(inner, &inner_ancestors, &PseudoClass::Default));
+  }
+
+  #[test]
+  fn default_ignores_submit_controls_in_inert_template_contents() {
+    let doc = document(vec![
+      element(
+        "template",
+        vec![element_with_attrs(
+          "button",
+          vec![("type", "submit"), ("form", "f"), ("id", "ext")],
+          vec![],
+        )],
+      ),
+      element_with_attrs(
+        "form",
+        vec![("id", "f")],
+        vec![element_with_attrs(
+          "button",
+          vec![("type", "submit"), ("id", "inner")],
+          vec![],
+        )],
+      ),
+    ]);
+
+    let template = &doc.children[0];
+    let ext = &template.children[0];
+    let form = &doc.children[1];
+    let inner = &form.children[0];
+
+    let ext_ancestors: Vec<&DomNode> = vec![&doc, template];
+    let inner_ancestors: Vec<&DomNode> = vec![&doc, form];
+
+    assert!(!matches(ext, &ext_ancestors, &PseudoClass::Default));
+    assert!(matches(inner, &inner_ancestors, &PseudoClass::Default));
+  }
+
+  #[test]
+  fn default_does_not_cross_shadow_root_boundaries() {
+    let doc = document(vec![element_with_attrs(
+      "form",
+      vec![("id", "f")],
+      vec![
+        element(
+          "div",
+          vec![DomNode {
+            node_type: DomNodeType::ShadowRoot {
+              mode: ShadowRootMode::Open,
+              delegates_focus: false,
+            },
+            children: vec![element_with_attrs(
+              "button",
+              vec![("type", "submit"), ("id", "shadow")],
+              vec![],
+            )],
+          }],
+        ),
+        element_with_attrs("button", vec![("type", "submit"), ("id", "light")], vec![]),
+      ],
+    )]);
+
+    let form = &doc.children[0];
+    let host = &form.children[0];
+    let shadow_root = &host.children[0];
+    let shadow_submit = &shadow_root.children[0];
+    let light_submit = &form.children[1];
+
+    let shadow_ancestors: Vec<&DomNode> = vec![&doc, form, host, shadow_root];
+    let light_ancestors: Vec<&DomNode> = vec![&doc, form];
+
+    assert!(!matches(
+      shadow_submit,
+      &shadow_ancestors,
+      &PseudoClass::Default
+    ));
+    assert!(matches(
+      light_submit,
+      &light_ancestors,
+      &PseudoClass::Default
+    ));
   }
 
   #[test]
