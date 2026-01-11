@@ -141,7 +141,6 @@ use line_builder::TextItem;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-#[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -161,6 +160,47 @@ thread_local! {
   // makes "reset + assert" patterns flaky.
   static INLINE_FC_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS: Cell<usize> = const { Cell::new(0) };
   static INLINE_FC_WITH_FACTORY_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+thread_local! {
+  /// Inline intrinsic sizing probes (min-/max-content widths) use synthetic available widths (0/∞)
+  /// to drive line-breaking measurement.
+  ///
+  /// Those synthetic widths are **not** a definite percentage base for descendants. In intrinsic
+  /// sizing:
+  /// - percentage `max-width` behaves as `none` (∞), not `0px`
+  /// - percentage `width` behaves as `auto`
+  ///
+  /// If we incorrectly treat the synthetic widths as a definite percentage base, inline-blocks like
+  /// `max-width: 100%` clamp their shrink-to-fit width to 0, collapsing intrinsic contributions.
+  /// This cascades into flexbox's `min-width:auto` (content-based automatic minimum size) and can
+  /// allow shrink-to-zero flex items (notably the Yelp header actions).
+  static INLINE_INTRINSIC_PERCENTAGE_BASE_NONE: Cell<bool> = const { Cell::new(false) };
+}
+
+struct InlineIntrinsicPercentageBaseGuard {
+  prev: bool,
+}
+
+impl Drop for InlineIntrinsicPercentageBaseGuard {
+  fn drop(&mut self) {
+    INLINE_INTRINSIC_PERCENTAGE_BASE_NONE.with(|flag| flag.set(self.prev));
+  }
+}
+
+#[inline]
+fn enter_inline_intrinsic_percentage_base_none() -> InlineIntrinsicPercentageBaseGuard {
+  let prev = INLINE_INTRINSIC_PERCENTAGE_BASE_NONE.with(|flag| {
+    let prev = flag.get();
+    flag.set(true);
+    prev
+  });
+  InlineIntrinsicPercentageBaseGuard { prev }
+}
+
+#[inline]
+fn inline_intrinsic_percentage_base_is_none() -> bool {
+  INLINE_INTRINSIC_PERCENTAGE_BASE_NONE.with(|flag| flag.get())
 }
 
 /// Inline Formatting Context implementation
@@ -3090,7 +3130,9 @@ impl InlineFormattingContext {
       );
     let fc = self.factory.get(fc_type);
 
-    let percentage_base = available_width.is_finite().then_some(available_width);
+    let percentage_base =
+      (!inline_intrinsic_percentage_base_is_none() && available_width.is_finite())
+        .then_some(available_width);
     let percentage_base_px = percentage_base.unwrap_or(0.0);
     let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
     let block_positive = crate::style::block_axis_positive(style.writing_mode);
@@ -3336,7 +3378,7 @@ impl InlineFormattingContext {
     };
 
     let resolve_fit_content_limit = |limit: Length| -> Option<f32> {
-      if limit.unit.is_percentage() && percentage_base.is_none() {
+      if limit.has_percentage() && percentage_base.is_none() {
         return None;
       }
       Some(resolve_length_for_width(
@@ -3389,7 +3431,7 @@ impl InlineFormattingContext {
                   .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
               },
               CalcSizeBasis::Length(len) => {
-                if len.unit.is_percentage() && percentage_base.is_none() {
+                if len.has_percentage() && percentage_base.is_none() {
                   None
                 } else {
                   Some(resolve_length_for_width(
@@ -3408,7 +3450,7 @@ impl InlineFormattingContext {
                 crate::css::properties::parse_length(&format!("calc({expr_sum})"))
               })
               .and_then(|expr_len| {
-                if expr_len.unit.is_percentage() && percentage_base.is_none() {
+                if expr_len.has_percentage() && percentage_base.is_none() {
                   None
                 } else {
                   Some(resolve_length_for_width(
@@ -3432,7 +3474,7 @@ impl InlineFormattingContext {
       style.width.as_ref()
     };
     let specified_inline_from_length = specified_inline_length.and_then(|l| {
-      if l.unit.is_percentage() && percentage_base.is_none() {
+      if l.has_percentage() && percentage_base.is_none() {
         None
       } else {
         Some(resolve_length_for_width(
@@ -3468,14 +3510,17 @@ impl InlineFormattingContext {
       resolve_intrinsic_keyword(keyword).unwrap_or(0.0)
     } else {
       min_inline_length
-        .map(|l| {
-          resolve_length_for_width(
+        .and_then(|l| {
+          if l.has_percentage() && percentage_base.is_none() {
+            return None;
+          }
+          Some(resolve_length_for_width(
             *l,
             percentage_base_px,
             style,
             &self.font_context,
             self.viewport_size,
-          )
+          ))
         })
         .unwrap_or(0.0)
     };
@@ -3493,14 +3538,19 @@ impl InlineFormattingContext {
       resolve_intrinsic_keyword(keyword).unwrap_or(f32::INFINITY)
     } else {
       max_inline_length
-        .map(|l| {
-          resolve_length_for_width(
+        .and_then(|l| {
+          // Intrinsic sizing does not have a definite percentage base. Per CSS sizing rules,
+          // percentage max-width behaves as `none` (∞), not `0px`.
+          if l.has_percentage() && percentage_base.is_none() {
+            return None;
+          }
+          Some(resolve_length_for_width(
             *l,
             percentage_base_px,
             style,
             &self.font_context,
             self.viewport_size,
-          )
+          ))
         })
         .unwrap_or(f32::INFINITY)
     };
@@ -7894,6 +7944,7 @@ impl InlineFormattingContext {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    let _guard = enter_inline_intrinsic_percentage_base_none();
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let style: &ComputedStyle = style_override
       .as_deref()
@@ -7963,6 +8014,7 @@ impl InlineFormattingContext {
   }
 
   fn calculate_intrinsic_widths(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
+    let _guard = enter_inline_intrinsic_percentage_base_none();
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let style: &ComputedStyle = style_override
       .as_deref()
@@ -8060,6 +8112,7 @@ impl InlineFormattingContext {
     children: &[&BoxNode],
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    let _guard = enter_inline_intrinsic_percentage_base_none();
     let style = container_style;
     if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
@@ -8129,6 +8182,7 @@ impl InlineFormattingContext {
     container_style: &Arc<ComputedStyle>,
     children: &[&BoxNode],
   ) -> Result<(f32, f32), LayoutError> {
+    let _guard = enter_inline_intrinsic_percentage_base_none();
     let style = container_style;
     if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
@@ -11327,7 +11381,7 @@ impl InlineFormattingContext {
     };
 
     let resolve_fit_content_limit = |limit: Length| -> Option<f32> {
-      if limit.unit.is_percentage() && percentage_base.is_none() {
+      if limit.has_percentage() && percentage_base.is_none() {
         return None;
       }
       Some(resolve_length_for_width(
@@ -11380,7 +11434,7 @@ impl InlineFormattingContext {
                   .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
               },
               CalcSizeBasis::Length(len) => {
-                if len.unit.is_percentage() && percentage_base.is_none() {
+                if len.has_percentage() && percentage_base.is_none() {
                   None
                 } else {
                   Some(resolve_length_for_width(
@@ -11399,7 +11453,7 @@ impl InlineFormattingContext {
                 crate::css::properties::parse_length(&format!("calc({expr_sum})"))
               })
               .and_then(|expr_len| {
-                if expr_len.unit.is_percentage() && percentage_base.is_none() {
+                if expr_len.has_percentage() && percentage_base.is_none() {
                   None
                 } else {
                   Some(resolve_length_for_width(
@@ -11418,7 +11472,7 @@ impl InlineFormattingContext {
       };
 
     let specified_width_from_length = float_node.style.width.as_ref().and_then(|l| {
-      if l.unit.is_percentage() && percentage_base.is_none() {
+      if l.has_percentage() && percentage_base.is_none() {
         None
       } else {
         Some(resolve_length_for_width(
@@ -16118,6 +16172,49 @@ mod tests {
       "expected max-content {:.2} to exceed min-content {:.2}",
       max,
       min
+    );
+  }
+
+  #[test]
+  fn intrinsic_widths_for_children_ignore_percentage_max_width_on_inline_blocks() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    // Real-world sites (Yelp header dropdown trigger) commonly apply `max-width:100%` to
+    // inline-blocks. During intrinsic sizing probes the percentage base is unknown, so
+    // `max-width:<percentage>` behaves as `none` (∞) rather than clamping the shrink-to-fit width to
+    // `0px`.
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.font_size = 16.0;
+    inline_block_style.max_width = Some(Length::percent(100.0));
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(default_style(), "Hello world".to_string())],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Block);
+    let (expected_min, expected_max) = fc
+      .compute_intrinsic_inline_sizes(&inline_block)
+      .expect("inline-block intrinsic sizes");
+
+    let (min, max) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&inline_block])
+      .expect("intrinsic widths for children");
+
+    assert!(min > 0.0 && max > 0.0, "expected non-zero intrinsic widths");
+    assert!(
+      (min - expected_min).abs() < 0.5,
+      "expected min-content {:.2}, got {:.2}",
+      expected_min,
+      min
+    );
+    assert!(
+      (max - expected_max).abs() < 0.5,
+      "expected max-content {:.2}, got {:.2}",
+      expected_max,
+      max
     );
   }
 
