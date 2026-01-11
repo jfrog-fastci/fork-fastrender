@@ -938,7 +938,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     let printf = declare_printf(self.cg.context, &self.cg.module);
     let fmt = self
       .builder
-      .build_global_string_ptr("%d\\n", "native_js_print_fmt")
+      .build_global_string_ptr("%d\n", "native_js_print_fmt")
       .expect("failed to create printf format string");
     self
       .builder

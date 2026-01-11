@@ -11,6 +11,10 @@ fn native_js() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js")
 }
 
+fn native_js_cli() -> Command {
+  assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
+}
+
 fn run_with_timeout(
   cmd: &mut StdCommand,
   timeout: Duration,
@@ -211,8 +215,18 @@ fn emit_llvm_ir_contains_symbols() {
     .success();
 
   let text = fs::read_to_string(&ll).unwrap();
-  assert!(text.contains("@ts_main"), "expected IR to mention ts_main");
-  assert!(text.contains("define"), "expected IR to contain function definitions");
+  assert!(
+    text.contains("define i32 @main"),
+    "expected IR to define a `main` function"
+  );
+  assert!(
+    text.contains("@__nativejs_def_"),
+    "expected IR to contain native-js definition symbols"
+  );
+  assert!(
+    text.contains("define"),
+    "expected IR to contain function definitions"
+  );
 }
 
 #[test]
@@ -437,4 +451,42 @@ fn print_builtin_writes_stdout() {
     .assert()
     .success()
     .stdout(predicate::eq("3\n"));
+}
+
+#[test]
+fn checked_pipeline_check_succeeds_on_simple_program() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .success();
+}
+
+#[test]
+fn checked_pipeline_check_fails_on_type_error() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { return \"nope\"; }\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(1)
+    .stderr(predicates::str::contains("TS2322"));
 }

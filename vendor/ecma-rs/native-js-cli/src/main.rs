@@ -1,7 +1,11 @@
-use clap::{CommandFactory, Parser, Subcommand};
+mod output;
+
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use diagnostics::paths::normalize_fs_path;
 use native_js::compiler::compile_llvm_ir_to_artifact;
-use native_js::{compile_project_to_llvm_ir, CompileOptions, EmitKind};
+use native_js::{
+  compile_program, compile_project_to_llvm_ir, CompileOptions, EmitKind, NativeJsError,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,6 +46,19 @@ struct Cli {
   /// Keep the generated LLVM IR for debugging.
   #[arg(long, value_name = "PATH", global = true)]
   emit_llvm: Option<PathBuf>,
+
+  /// Which compilation pipeline to use.
+  ///
+  /// - `project`: legacy `parse-js` based emitter (keeps compiling even with TS type errors).
+  /// - `checked`: typechecked `native_js::compile_program` pipeline (fails on type errors).
+  #[arg(long, value_enum, default_value = "project", global = true)]
+  pipeline: Pipeline,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Pipeline {
+  Project,
+  Checked,
 }
 
 #[derive(Subcommand, Debug)]
@@ -90,54 +107,143 @@ fn main() {
         eprintln!("native-js-cli check: expected at least one entry file");
         exit(2);
       }
-      for entry in entries {
-        let _ = compile_file_to_ir(&cli, entry);
-      }
-    }
-    Some(Commands::Build { entry, output }) => {
-      let ir = compile_file_to_ir(&cli, entry);
-      write_ir_debug(&cli, &ir);
 
-      let mut opts = CompileOptions::default();
-      opts.builtins = !cli.no_builtins;
-      opts.emit = EmitKind::Executable;
+      match cli.pipeline {
+        Pipeline::Project => {
+          for entry in entries {
+            let _ = compile_file_to_ir(&cli, entry);
+          }
+        }
+        Pipeline::Checked => {
+          ensure_checked_pipeline_supported(&cli);
 
-      if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
-        eprintln!("{err}");
-        exit(1);
-      }
-    }
-    Some(Commands::Run { entry, args }) => {
-      let ir = compile_file_to_ir(&cli, entry);
-      write_ir_debug(&cli, &ir);
+          let mut ok = true;
+          for entry in entries {
+            let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
+              eprintln!("failed to create tempdir: {err}");
+              exit(1);
+            });
+            let out = tmpdir.path().join("out.ll");
+            if compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(out)).is_err() {
+              ok = false;
+            }
+          }
 
-      let mut opts = CompileOptions::default();
-      opts.builtins = !cli.no_builtins;
-      opts.emit = EmitKind::Executable;
-
-      let code = {
-        let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
-          Ok(out) => out,
-          Err(err) => {
-            eprintln!("{err}");
+          if !ok {
             exit(1);
           }
-        };
-        run_exe(&out.path, args)
-      };
-      exit(code);
-    }
-    Some(Commands::EmitIr { entry, output }) => {
-      let ir = compile_file_to_ir(&cli, entry);
-      if let Some(path) = output.as_deref() {
-        if let Err(err) = fs::write(path, &ir) {
-          eprintln!("failed to write {}: {err}", path.display());
-          exit(1);
         }
-      } else {
-        print!("{ir}");
       }
     }
+    Some(Commands::Build { entry, output }) => match cli.pipeline {
+      Pipeline::Project => {
+        let ir = compile_file_to_ir(&cli, entry);
+        write_ir_debug(&cli, &ir);
+
+        let mut opts = CompileOptions::default();
+        opts.builtins = !cli.no_builtins;
+        opts.emit = EmitKind::Executable;
+
+        if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
+          eprintln!("{err}");
+          exit(1);
+        }
+      }
+      Pipeline::Checked => {
+        ensure_checked_pipeline_supported(&cli);
+
+        if let Some(path) = cli.emit_llvm.as_deref() {
+          // Extra output for debugging (compile twice).
+          let _ = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(path.to_path_buf()))
+            .map_err(|()| exit(1));
+        }
+
+        let _ =
+          compile_file_checked(&cli, entry, EmitKind::Executable, Some(output.to_path_buf()))
+            .map_err(|()| exit(1));
+      }
+    },
+    Some(Commands::Run { entry, args }) => match cli.pipeline {
+      Pipeline::Project => {
+        let ir = compile_file_to_ir(&cli, entry);
+        write_ir_debug(&cli, &ir);
+
+        let mut opts = CompileOptions::default();
+        opts.builtins = !cli.no_builtins;
+        opts.emit = EmitKind::Executable;
+
+        let code = {
+          let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
+            Ok(out) => out,
+            Err(err) => {
+              eprintln!("{err}");
+              exit(1);
+            }
+          };
+          run_exe(&out.path, args)
+        };
+        exit(code);
+      }
+      Pipeline::Checked => {
+        ensure_checked_pipeline_supported(&cli);
+
+        if let Some(path) = cli.emit_llvm.as_deref() {
+          // Extra output for debugging (compile twice).
+          let _ = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(path.to_path_buf()))
+            .map_err(|()| exit(1));
+        }
+
+        let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
+          eprintln!("failed to create tempdir: {err}");
+          exit(1);
+        });
+        let exe = tmpdir.path().join("out");
+        let _keep_tmpdir = tmpdir;
+
+        let _ = compile_file_checked(&cli, entry, EmitKind::Executable, Some(exe.clone()))
+          .map_err(|()| exit(1));
+
+        let code = run_exe(&exe, args);
+        exit(code);
+      }
+    },
+    Some(Commands::EmitIr { entry, output }) => match cli.pipeline {
+      Pipeline::Project => {
+        let ir = compile_file_to_ir(&cli, entry);
+        if let Some(path) = output.as_deref() {
+          if let Err(err) = fs::write(path, &ir) {
+            eprintln!("failed to write {}: {err}", path.display());
+            exit(1);
+          }
+        } else {
+          print!("{ir}");
+        }
+      }
+      Pipeline::Checked => {
+        ensure_checked_pipeline_supported(&cli);
+
+        if let Some(path) = output.as_deref() {
+          let _ = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(path.to_path_buf()))
+            .map_err(|()| exit(1));
+        } else {
+          let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
+            eprintln!("failed to create tempdir: {err}");
+            exit(1);
+          });
+          let ll_path = tmpdir.path().join("out.ll");
+          let _keep_tmpdir = tmpdir;
+
+          let artifact =
+            compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(ll_path.clone()))
+              .unwrap_or_else(|()| exit(1));
+          let text = fs::read_to_string(&artifact.path).unwrap_or_else(|err| {
+            eprintln!("failed to read {}: {err}", artifact.path.display());
+            exit(1);
+          });
+          print!("{text}");
+        }
+      }
+    },
     None => {
       let Some(input) = cli.input.as_deref() else {
         let mut cmd = Cli::command();
@@ -146,24 +252,50 @@ fn main() {
         exit(2);
       };
 
-      let ir = compile_file_to_ir(&cli, input);
-      write_ir_debug(&cli, &ir);
+      match cli.pipeline {
+        Pipeline::Project => {
+          let ir = compile_file_to_ir(&cli, input);
+          write_ir_debug(&cli, &ir);
 
-      let mut opts = CompileOptions::default();
-      opts.builtins = !cli.no_builtins;
-      opts.emit = EmitKind::Executable;
+          let mut opts = CompileOptions::default();
+          opts.builtins = !cli.no_builtins;
+          opts.emit = EmitKind::Executable;
 
-      let code = {
-        let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
-          Ok(out) => out,
-          Err(err) => {
-            eprintln!("{err}");
-            exit(1);
+          let code = {
+            let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
+              Ok(out) => out,
+              Err(err) => {
+                eprintln!("{err}");
+                exit(1);
+              }
+            };
+            run_exe(&out.path, &[])
+          };
+          exit(code);
+        }
+        Pipeline::Checked => {
+          ensure_checked_pipeline_supported(&cli);
+
+          if let Some(path) = cli.emit_llvm.as_deref() {
+            // Extra output for debugging (compile twice).
+            let _ = compile_file_checked(&cli, input, EmitKind::LlvmIr, Some(path.to_path_buf()))
+              .map_err(|()| exit(1));
           }
-        };
-        run_exe(&out.path, &[])
-      };
-      exit(code);
+
+          let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
+            eprintln!("failed to create tempdir: {err}");
+            exit(1);
+          });
+          let exe = tmpdir.path().join("out");
+          let _keep_tmpdir = tmpdir;
+
+          let _ = compile_file_checked(&cli, input, EmitKind::Executable, Some(exe.clone()))
+            .map_err(|()| exit(1));
+
+          let code = run_exe(&exe, &[]);
+          exit(code);
+        }
+      }
     }
   }
 }
@@ -186,8 +318,8 @@ struct DiskState {
 
 impl DiskHost {
   fn new(entry: &Path) -> Result<(Self, FileKey), String> {
-    let canonical =
-      canonicalize_path(entry).map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
+    let canonical = canonicalize_path(entry)
+      .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
 
     let resolver = NodeResolver::new(ResolveOptions {
       node_modules: true,
@@ -303,25 +435,36 @@ fn file_kind_for(path: &Path) -> FileKind {
   FileKind::Ts
 }
 
+fn ensure_checked_pipeline_supported(cli: &Cli) {
+  if cli.entry_fn.is_some() {
+    eprintln!("--entry-fn is not supported with --pipeline checked (native-js uses `export function main()` as the entrypoint)");
+    exit(2);
+  }
+}
+
+fn load_program(input: &Path) -> Result<(DiskHost, Program, FileId), String> {
+  let (host, entry_key) = DiskHost::new(input)?;
+  let program = Program::new(host.clone(), vec![entry_key.clone()]);
+  let entry_id: FileId = program
+    .file_id(&entry_key)
+    .expect("entry file should be loaded");
+  Ok((host, program, entry_id))
+}
+
 fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
-  let (host, entry_key) = DiskHost::new(input).unwrap_or_else(|err| {
+  let (host, program, entry_id) = load_program(input).unwrap_or_else(|err| {
     eprintln!("{err}");
     exit(1);
   });
 
-  let program = Program::new(host.clone(), vec![entry_key.clone()]);
-
   // `Program::check()` is required to populate HIR lowerings, module resolution snapshots, and
-  // export maps. The CLI still tries to compile even when typecheck-ts reports errors because the
-  // native-js backend is currently only a lightweight `parse-js` emitter (not a real TS compiler).
+  // export maps. The legacy `project` pipeline still tries to compile even when `typecheck-ts`
+  // reports errors because the native-js backend is currently only a lightweight `parse-js` emitter
+  // (not a real TS compiler).
   //
-  // This keeps the CLI useful as a codegen smoke test while allowing `typecheck-ts` to be used for
-  // module graph discovery.
+  // Use `--pipeline checked` to compile with `native_js::compile_program`, which fails on type
+  // errors and enforces the strict subset validator.
   let _diagnostics = program.check();
-
-  let entry_id: FileId = program
-    .file_id(&entry_key)
-    .expect("entry file should be loaded");
 
   let mut opts = CompileOptions::default();
   opts.builtins = !cli.no_builtins;
@@ -333,6 +476,42 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
       exit(1);
     }
   }
+}
+
+fn compile_file_checked(
+  cli: &Cli,
+  input: &Path,
+  emit: EmitKind,
+  output: Option<PathBuf>,
+) -> Result<native_js::Artifact, ()> {
+  let (_host, program, entry_id) = load_program(input).map_err(|err| {
+    eprintln!("{err}");
+  })?;
+
+  let mut opts = CompileOptions::default();
+  opts.builtins = !cli.no_builtins;
+  opts.emit = emit;
+  opts.output = output;
+
+  match compile_program(&program, entry_id, &opts) {
+    Ok(artifact) => Ok(artifact),
+    Err(err) => {
+      emit_compile_program_diagnostics(&program, &err);
+      Err(())
+    }
+  }
+}
+
+fn emit_compile_program_diagnostics(program: &Program, err: &NativeJsError) {
+  if let Some(diags) = err.diagnostics() {
+    let render = output::render_options(false, false);
+    if let Err(io_err) = output::emit_diagnostics(program, diags.to_vec(), false, render) {
+      eprintln!("failed to write diagnostics: {io_err}");
+    }
+    return;
+  }
+
+  eprintln!("{err}");
 }
 
 fn write_ir_debug(cli: &Cli, ir: &str) {
