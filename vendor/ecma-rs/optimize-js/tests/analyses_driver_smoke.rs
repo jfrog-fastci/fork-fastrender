@@ -31,7 +31,7 @@ fn analyses_driver_smoke_is_deterministic() {
   "#;
 
   let program = compile_source(source, TopLevelMode::Module, false);
-  let cfg = &program.top_level.body;
+  let cfg = program.top_level.analyzed_cfg();
 
   let first = analyze_cfg(cfg);
   let second = analyze_cfg(cfg);
@@ -84,7 +84,7 @@ fn annotate_program_populates_inst_meta() {
 
   let mut saw_narrowing = false;
   let mut saw_utf8_encoding = false;
-  for (_label, block) in program.top_level.body.bblocks.all() {
+  for (_label, block) in program.top_level.analyzed_cfg().bblocks.all() {
     for inst in block {
       saw_narrowing |= inst.t == InstTyp::CondGoto && inst.meta.nullability_narrowing.is_some();
       saw_utf8_encoding |= inst.meta.result_type.string_encoding == Some(StringEncoding::Utf8);

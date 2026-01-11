@@ -28,7 +28,7 @@ fn analysis_driver_smoke() {
   "#;
 
   let program = compile_source(source, TopLevelMode::Module, false);
-  let top_cfg = &program.top_level.body;
+  let top_cfg = program.top_level.analyzed_cfg();
 
   // Snapshot one instruction's metadata to ensure `analyze_program` is non-mutating.
   let meta_before = top_cfg
@@ -77,7 +77,7 @@ fn analysis_driver_smoke() {
 
   let mut program = compile_source(source, TopLevelMode::Module, false);
   let _analyses = annotate_program(&mut program);
-  let cfg = &program.top_level.body;
+  let cfg = program.top_level.analyzed_cfg();
 
   assert!(
     any_inst(cfg, |inst| inst.t == InstTyp::CondGoto
@@ -90,4 +90,3 @@ fn analysis_driver_smoke() {
     "expected `annotate_program` to annotate at least one Utf8 string result (from `π` template literal)"
   );
 }
-

@@ -30,7 +30,7 @@ fn annotate_program_preserves_typed_il_metadata() {
     false,
   );
 
-  let insts_before = collect_insts(&program.top_level.body);
+  let insts_before = collect_insts(program.top_level.analyzed_cfg());
   let (idx, before) = insts_before
     .iter()
     .enumerate()
@@ -40,7 +40,7 @@ fn annotate_program_preserves_typed_il_metadata() {
 
   annotate_program(&mut program);
 
-  let insts_after = collect_insts(&program.top_level.body);
+  let insts_after = collect_insts(program.top_level.analyzed_cfg());
   assert_eq!(
     insts_before.len(),
     insts_after.len(),
@@ -59,4 +59,3 @@ fn annotate_program_preserves_typed_il_metadata() {
     "expected excludes_nullish to be preserved"
   );
 }
-

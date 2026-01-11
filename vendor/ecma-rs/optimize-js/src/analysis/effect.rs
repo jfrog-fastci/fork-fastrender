@@ -196,19 +196,19 @@ fn cfg_direct_calls(cfg: &Cfg) -> BTreeSet<FnId> {
 /// calls incorporate callee summaries (including recursion/cycles).
 pub fn compute_program_effects(program: &Program) -> FnEffectMap {
   let locals = FnEffectMap {
-    top_level: cfg_local_effects(&program.top_level.body),
+    top_level: cfg_local_effects(program.top_level.analyzed_cfg()),
     functions: program
       .functions
       .iter()
-      .map(|f| cfg_local_effects(&f.body))
+      .map(|f| cfg_local_effects(f.analyzed_cfg()))
       .collect(),
   };
 
-  let top_level_calls = cfg_direct_calls(&program.top_level.body);
+  let top_level_calls = cfg_direct_calls(program.top_level.analyzed_cfg());
   let function_calls: Vec<_> = program
     .functions
     .iter()
-    .map(|f| cfg_direct_calls(&f.body))
+    .map(|f| cfg_direct_calls(f.analyzed_cfg()))
     .collect();
 
   // Start with purely local effects; iteratively fold in callee summaries until a fixpoint.

@@ -35,11 +35,10 @@ fn annotate_program_populates_escape_metadata() {
 
   assert_eq!(program.functions.len(), 1, "expected one nested function");
   let func = &program.functions[0];
-  let alloc = find_object_alloc(&func.body).expect("object allocation should exist");
+  let alloc = find_object_alloc(func.analyzed_cfg()).expect("object allocation should exist");
   assert_eq!(
     alloc.meta.result_escape,
     Some(EscapeState::ReturnEscape),
     "expected returned object allocation to be marked as ReturnEscape"
   );
 }
-

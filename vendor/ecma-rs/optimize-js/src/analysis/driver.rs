@@ -106,8 +106,8 @@ fn function_keys(program: &Program) -> Vec<FunctionKey> {
 
 fn cfg_for_key(program: &Program, key: FunctionKey) -> &Cfg {
   match key {
-    FunctionKey::TopLevel => &program.top_level.body,
-    FunctionKey::Fn(id) => &program.functions[id].body,
+    FunctionKey::TopLevel => program.top_level.analyzed_cfg(),
+    FunctionKey::Fn(id) => program.functions[id].analyzed_cfg(),
   }
 }
 
@@ -120,8 +120,14 @@ fn params_for_key(program: &Program, key: FunctionKey) -> &[u32] {
 
 fn cfg_for_key_mut(program: &mut Program, key: FunctionKey) -> &mut Cfg {
   match key {
-    FunctionKey::TopLevel => &mut program.top_level.body,
-    FunctionKey::Fn(id) => &mut program.functions[id].body,
+    FunctionKey::TopLevel => {
+      let func = &mut program.top_level;
+      func.ssa_body.as_mut().unwrap_or(&mut func.body)
+    }
+    FunctionKey::Fn(id) => {
+      let func = &mut program.functions[id];
+      func.ssa_body.as_mut().unwrap_or(&mut func.body)
+    }
   }
 }
 
@@ -401,10 +407,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 1) effects
   let effects = effect::compute_program_effects(program);
   for &key in &keys {
-    match key {
-      FunctionKey::TopLevel => effect::annotate_cfg_effects(&mut program.top_level.body, &effects),
-      FunctionKey::Fn(id) => effect::annotate_cfg_effects(&mut program.functions[id].body, &effects),
-    }
+    effect::annotate_cfg_effects(cfg_for_key_mut(program, key), &effects);
   }
   analyses
     .effects_summary
@@ -418,10 +421,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 2) purity
   let purities = purity::compute_program_purity(program, &effects);
   for &key in &keys {
-    match key {
-      FunctionKey::TopLevel => purity::annotate_cfg_purity(&mut program.top_level.body, &purities),
-      FunctionKey::Fn(id) => purity::annotate_cfg_purity(&mut program.functions[id].body, &purities),
-    }
+    purity::annotate_cfg_purity(cfg_for_key_mut(program, key), &purities);
   }
   analyses
     .purity
@@ -568,7 +568,7 @@ mod tests {
       "expected at least one instruction to record string encoding in InstMeta.result_type"
     );
 
-    let top_cfg = &program.top_level.body;
+    let top_cfg = program.top_level.analyzed_cfg();
     assert!(
       analyses.range.get(&FunctionKey::TopLevel).is_some_and(|r| r.entry(top_cfg.entry).is_some()),
       "expected range analysis results for top-level entry block"
