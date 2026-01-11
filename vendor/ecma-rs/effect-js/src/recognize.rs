@@ -65,7 +65,7 @@ fn parse_simple_method_call_untyped(
   lowered: &LowerResult,
   body: BodyId,
   expr: ExprId,
-) -> Option<(ExprId, hir_js::NameId, ExprId)> {
+) -> Option<(ExprId, String, ExprId)> {
   let body_ref = lowered.body(body)?;
   let expr = strip_transparent_wrappers(body_ref, expr);
   let expr = body_ref.exprs.get(expr.0 as usize)?;
@@ -91,11 +91,31 @@ fn parse_simple_method_call_untyped(
   if member.optional {
     return None;
   }
-  let hir_js::ObjectKey::Ident(prop) = &member.property else {
-    return None;
-  };
+  let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
-  Some((member.object, *prop, arg0.expr))
+  Some((member.object, prop, arg0.expr))
+}
+
+fn static_object_key_name(
+  lowered: &LowerResult,
+  body: &hir_js::Body,
+  key: &hir_js::ObjectKey,
+) -> Option<String> {
+  match key {
+    hir_js::ObjectKey::Ident(id) => lowered.names.resolve(*id).map(|s| s.to_string()),
+    hir_js::ObjectKey::String(s) => Some(s.clone()),
+    hir_js::ObjectKey::Number(n) => Some(n.clone()),
+    hir_js::ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(lit)) => Some(lit.lossy.clone()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.clone()),
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.clone()),
+        _ => None,
+      }
+    }
+  }
 }
 
 fn is_null_or_undefined_expr(lowered: &LowerResult, body: &hir_js::Body, expr: ExprId) -> bool {
@@ -539,10 +559,7 @@ fn call_chain(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<
     if member.optional {
       return None;
     }
-    let hir_js::ObjectKey::Ident(prop) = member.property else {
-      return None;
-    };
-    let prop = lowered.names.resolve(prop)?.to_string();
+    let prop = static_object_key_name(lowered, body_ref, &member.property)?;
     methods.push((cur, prop));
 
     let recv = member.object;
@@ -806,7 +823,7 @@ pub fn recognize_patterns_best_effort_untyped(
       else {
         continue;
       };
-      if lowered.names.resolve(has_prop) != Some("has") {
+      if has_prop != "has" {
         continue;
       }
 
@@ -815,7 +832,7 @@ pub fn recognize_patterns_best_effort_untyped(
       else {
         continue;
       };
-      if lowered.names.resolve(get_prop) != Some("get") {
+      if get_prop != "get" {
         continue;
       }
 
@@ -855,7 +872,7 @@ pub fn recognize_patterns_best_effort_untyped(
       let Some((map, get_prop, key)) = parse_simple_method_call_untyped(lowered, body, *left) else {
         continue;
       };
-      if lowered.names.resolve(get_prop) != Some("get") {
+      if get_prop != "get" {
         continue;
       }
       patterns.push(RecognizedPattern::MapGetOrDefault {
@@ -1099,13 +1116,10 @@ fn classify_array_call(
   if member.optional {
     return None;
   }
-  let hir_js::ObjectKey::Ident(prop) = member.property else {
-    return None;
-  };
-  let prop = lowered.names.resolve(prop)?;
+  let prop = static_object_key_name(lowered, body, &member.property)?;
 
   let callback = call.args.first()?.expr;
-  match prop {
+  match prop.as_str() {
     "map" => Some((
       member.object,
       ArrayCallNode::Op(ArrayChainOp::Map { callback }),
@@ -1694,6 +1708,20 @@ fn expr_equivalent(body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
         (hir_js::ObjectKey::Ident(a), hir_js::ObjectKey::Ident(b)) if a == b => {}
         (hir_js::ObjectKey::String(a), hir_js::ObjectKey::String(b)) if a == b => {}
         (hir_js::ObjectKey::Number(a), hir_js::ObjectKey::Number(b)) if a == b => {}
+        (hir_js::ObjectKey::Computed(a), hir_js::ObjectKey::Computed(b)) => {
+          let a = strip_transparent_wrappers(body, *a);
+          let b = strip_transparent_wrappers(body, *b);
+          let Some(a_expr) = body.exprs.get(a.0 as usize) else {
+            return false;
+          };
+          let Some(b_expr) = body.exprs.get(b.0 as usize) else {
+            return false;
+          };
+          match (&a_expr.kind, &b_expr.kind) {
+            (ExprKind::Literal(a), ExprKind::Literal(b)) if a == b => {}
+            _ => return false,
+          }
+        }
         _ => return false,
       }
       expr_equivalent(body, a.object, b.object)
@@ -1707,7 +1735,7 @@ fn match_single_arg_member_call<'a>(
   lowered: &'a LowerResult,
   body: &hir_js::Body,
   call_expr: ExprId,
-) -> Option<(ExprId, &'a str, ExprId)> {
+) -> Option<(ExprId, String, ExprId)> {
   let call_expr = strip_transparent_wrappers(body, call_expr);
   let call = body.exprs.get(call_expr.0 as usize)?;
   let ExprKind::Call(call) = &call.kind else {
@@ -1729,10 +1757,7 @@ fn match_single_arg_member_call<'a>(
   if member.optional {
     return None;
   }
-  let hir_js::ObjectKey::Ident(prop) = member.property else {
-    return None;
-  };
-  let prop = lowered.names.resolve(prop)?;
+  let prop = static_object_key_name(lowered, body, &member.property)?;
 
   Some((member.object, prop, arg0.expr))
 }

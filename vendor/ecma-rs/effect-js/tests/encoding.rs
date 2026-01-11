@@ -188,6 +188,39 @@ fn to_lowercase_preserves_ascii() {
 
 #[cfg(feature = "typed")]
 #[test]
+fn to_lowercase_preserves_ascii_via_computed_key() {
+  use effect_js::typed::TypedProgram;
+  use std::sync::Arc;
+  use typecheck_ts::{FileKey, MemoryHost, Program};
+
+  let key = FileKey::new("index.ts");
+  let mut host = MemoryHost::new();
+  host.insert(key.clone(), "\"ABC\"[\"toLowerCase\"]();");
+
+  let program = Arc::new(Program::new(host, vec![key.clone()]));
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "typecheck diagnostics: {diagnostics:#?}"
+  );
+
+  let file = program.file_id(&key).expect("index.ts loaded");
+  let lowered = program.hir_lowered(file).expect("HIR lowered");
+  let root_body_id = lowered.root_body();
+  let root_body = lowered.body(root_body_id).expect("root body exists");
+
+  let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
+
+  let types = TypedProgram::from_program(Arc::clone(&program), file);
+  let kb = KnowledgeBase::default();
+  let results = effect_js::encoding::analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
+#[cfg(feature = "typed")]
+#[test]
 fn typed_url_pathname_is_ascii_via_member_resolution() {
   use effect_js::typed::TypedProgram;
   use std::sync::Arc;

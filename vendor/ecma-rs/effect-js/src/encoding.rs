@@ -235,7 +235,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       return self.encoding_of_kb_free_call(call);
     };
 
-    let Some(prop_name) = object_key_to_str(&self.lowered.names, &member.property) else {
+    let Some(prop_name) = object_key_to_str(self.body, &self.lowered.names, &member.property) else {
       return StringEncoding::Unknown;
     };
 
@@ -369,14 +369,39 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
   }
 }
 
+fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
 fn object_key_to_str<'a>(
+  body: &'a hir_js::Body,
   names: &'a hir_js::NameInterner,
   key: &'a ObjectKey,
 ) -> Option<&'a str> {
   match key {
     ObjectKey::Ident(name) => names.resolve(*name),
     ObjectKey::String(s) => Some(s.as_str()),
-    _ => None,
+    ObjectKey::Number(n) => Some(n.as_str()),
+    ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.as_str()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.as_str()),
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.as_str()),
+        _ => None,
+      }
+    }
   }
 }
 
