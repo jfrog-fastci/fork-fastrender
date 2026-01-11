@@ -27554,6 +27554,180 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn single_colon_before_matches_attribute_selectors() {
+    // Regression: real-world pages often use `[data-icon]:before { content: attr(data-icon); }` to
+    // render icon fonts. The legacy single-colon pseudo-element syntax must still work when the
+    // selector's subject is an attribute selector (not just a type selector).
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "em".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("data-icon".to_string(), "menu".to_string())],
+      },
+      children: vec![],
+    };
+    // Keep this close to real-world minified CSS (no trailing semicolon before the closing brace,
+    // and quoted values in later declarations) to exercise parser recovery.
+    let stylesheet = parse_stylesheet(
+      r#"[data-icon]:before{content:attr(data-icon);font-weight:normal;font-style:normal;font-size:1em;display:inline-block;width:1em;height:1em;line-height:1;text-transform:none;letter-spacing:normal;word-wrap:normal;white-space:nowrap;direction:ltr;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;-moz-osx-font-smoothing:grayscale;font-feature-settings:"liga"}"#,
+    )
+    .expect("stylesheet");
+
+    let styled = apply_styles(&dom, &stylesheet);
+    let before = styled
+      .before_styles
+      .as_ref()
+      .expect("generated [data-icon]:before pseudo-element");
+    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+  }
+
+  #[test]
+  fn data_icon_before_survives_large_real_world_stylesheet_parsing() {
+    // Regression: The britannica.com fixture relies on a large third-party stylesheet that defines
+    // icon-font glyphs via `[data-icon]:before { content: attr(data-icon); }`. In the full render
+    // pipeline, external stylesheets are pre-parsed/pruned with a media context, and we must not
+    // lose later rules when earlier parts of the sheet contain complex/minified constructs.
+    //
+    // This test reads the fixture's stylesheet verbatim (as cached) and asserts that the
+    // `[data-icon]:before` rule survives parsing and generates a ::before pseudo-element.
+    use crate::css::loader::absolutize_css_urls_cow;
+    use crate::css::parser::parse_stylesheet_with_media;
+    use std::path::PathBuf;
+    use url::Url;
+
+    let css_path: PathBuf = [
+      env!("CARGO_MANIFEST_DIR"),
+      "tests/pages/fixtures/britannica.com/assets/93b28b8d918123883e925d8af5930c63.css",
+    ]
+    .iter()
+    .collect();
+    let css = std::fs::read_to_string(&css_path)
+      .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
+
+    let media_ctx = MediaContext::screen(1200.0, 800.0);
+    let base_url = Url::from_file_path(&css_path)
+      .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
+    let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
+      .expect("fixture stylesheet URL rewriting");
+    let stylesheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
+      .expect("fixture stylesheet parses");
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "em".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("data-icon".to_string(), "menu".to_string())],
+      },
+      children: vec![],
+    };
+    let styled = apply_styles_with_media(&dom, &stylesheet, &media_ctx);
+    let before = styled
+      .before_styles
+      .as_ref()
+      .expect("expected [data-icon]:before pseudo-element from fixture stylesheet");
+    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+  }
+
+  #[test]
+  fn britannica_fixture_nav_toggle_generates_data_icon_before_pseudo_element() {
+    // Regression: the britannica.com fixture uses Material Icons rendered via
+    // `[data-icon]:before { content: attr(data-icon); }`. In the full fixture DOM with all linked
+    // author stylesheets applied, the `#nav-toggle` element must generate a ::before pseudo-element
+    // with the substituted attribute value.
+    use crate::css::loader::absolutize_css_urls_cow;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use crate::text::font_db::FontConfig;
+    use crate::text::font_loader::FontContext;
+    use crate::text::pipeline::ShapingPipeline;
+    use url::Url;
+
+    let fixture_root: PathBuf = [
+      env!("CARGO_MANIFEST_DIR"),
+      "tests/pages/fixtures/britannica.com",
+    ]
+    .iter()
+    .collect();
+    let html_path = fixture_root.join("index.html");
+    let html = std::fs::read_to_string(&html_path)
+      .unwrap_or_else(|err| panic!("failed to read fixture HTML {html_path:?}: {err}"));
+    let dom = crate::dom::parse_html(&html).expect("fixture HTML parses");
+
+    let media_ctx = MediaContext::screen(1200.0, 800.0);
+    let css_files = [
+      "assets/65db03ecf48e2c4b24c7020615d9d3c9.css",
+      "assets/f855a0a1301d238c55a2222179f461d4.css",
+      "assets/371d3379e4d7fe28765989b81fc78777.css",
+      "assets/93b28b8d918123883e925d8af5930c63.css",
+      "assets/3ce49e59488bfc7a2bc00b776a1aa6cf.css",
+    ];
+
+    let mut combined_rules = Vec::new();
+    let mut font_faces = Vec::new();
+    for rel in css_files {
+      let css_path = fixture_root.join(rel);
+      let css = std::fs::read_to_string(&css_path)
+        .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
+      let base_url = Url::from_file_path(&css_path)
+        .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
+      let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
+        .expect("fixture stylesheet URL rewriting");
+      let sheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
+        .unwrap_or_else(|err| panic!("failed to parse fixture stylesheet {css_path:?}: {err:?}"));
+      font_faces.extend(sheet.collect_font_face_rules(&media_ctx));
+      combined_rules.extend(sheet.rules);
+    }
+
+    let stylesheet = StyleSheet {
+      namespaces: Default::default(),
+      rules: combined_rules,
+    };
+
+    let styled = apply_styles_with_media(&dom, &stylesheet, &media_ctx);
+    let nav_toggle = find_styled_node_by_id(&styled, "nav-toggle").expect("#nav-toggle exists");
+    let before = nav_toggle
+      .before_styles
+      .as_ref()
+      .expect("expected #nav-toggle::before pseudo-element");
+    assert_eq!(before.content_value, ContentValue::from_string("menu"));
+
+    assert_eq!(
+      before.font_family.as_ref(),
+      ["Material Icons"],
+      "expected fixture to set .material-icons font-family to \"Material Icons\" so icon ligatures resolve"
+    );
+
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    if !font_faces.is_empty() {
+      font_ctx
+        .load_web_fonts(&font_faces, None, None)
+        .expect("load fixture @font-face fonts");
+      assert!(
+        font_ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
+        "fixture @font-face font loading timed out"
+      );
+    }
+
+    let pipeline = ShapingPipeline::new();
+    let shaped_runs = pipeline
+      .shape("menu", before, &font_ctx)
+      .expect("shape Material Icons ligature");
+    let glyphs: usize = shaped_runs.iter().map(|run| run.glyphs.len()).sum();
+    assert_eq!(
+      glyphs, 1,
+      "expected 'menu' icon ligature to shape into a single glyph, got {glyphs} glyphs (runs={shaped_runs:?})"
+    );
+    assert_eq!(shaped_runs[0].font.family, "Material Icons");
+    let ratio = shaped_runs[0].advance / before.font_size;
+    assert!(
+      (ratio - 1.0).abs() < 0.05,
+      "expected icon advance ~= 1em, got advance={} font_size={} ratio={ratio}",
+      shaped_runs[0].advance,
+      before.font_size
+    );
+  }
+
+  #[test]
   fn single_colon_after_behaves_like_pseudo_element() {
     let dom = element_with_style("");
     let stylesheet =

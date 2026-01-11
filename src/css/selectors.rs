@@ -1695,6 +1695,17 @@ mod tests {
   }
 
   #[test]
+  fn parses_legacy_single_colon_pseudo_elements_after_attribute_selectors() {
+    // Regression: pages frequently use attribute selectors for icon fonts, e.g. `[data-icon]:before`.
+    // The legacy single-colon form must still be parsed as a pseudo-element, not an unknown
+    // pseudo-class.
+    let list = parse_selector_list("[data-icon]:before");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Before));
+    assert_eq!(selector.to_css_string(), "[data-icon]::before");
+  }
+
+  #[test]
   fn parses_vendor_pseudo_element_aliases() {
     let parser = PseudoClassParser;
     let loc = SourceLocation { line: 0, column: 0 };

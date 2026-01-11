@@ -1,1 +1,10 @@
-/* missing */
+@font-face {
+  font-family: "Material Icons";
+  font-style: normal;
+  font-weight: 400;
+  src: url("FastRenderMaterialIcons.ttf") format("truetype");
+}
+
+.material-icons {
+  font-family: "Material Icons";
+}
