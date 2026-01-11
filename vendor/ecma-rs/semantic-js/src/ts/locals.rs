@@ -779,6 +779,13 @@ impl DeclarePass {
   }
 
   fn walk_for_in(&mut self, for_in: &mut Node<ForInStmt>) {
+    let needs_loop_scope = matches!(
+      &for_in.stx.lhs,
+      ForInOfLhs::Decl((mode, _)) if *mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(for_in));
+    }
     self.mark_scope(&mut for_in.assoc);
     match &mut for_in.stx.lhs {
       ForInOfLhs::Assign(pat) => self.walk_pat(pat, false, Namespace::VALUE),
@@ -795,9 +802,19 @@ impl DeclarePass {
     }
     self.walk_expr(&mut for_in.stx.rhs);
     self.walk_for_body(&mut for_in.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_for_of(&mut self, for_of: &mut Node<ForOfStmt>) {
+    let needs_loop_scope = matches!(
+      &for_of.stx.lhs,
+      ForInOfLhs::Decl((mode, _)) if *mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(for_of));
+    }
     self.mark_scope(&mut for_of.assoc);
     match &mut for_of.stx.lhs {
       ForInOfLhs::Assign(pat) => self.walk_pat(pat, false, Namespace::VALUE),
@@ -814,6 +831,9 @@ impl DeclarePass {
     }
     self.walk_expr(&mut for_of.stx.rhs);
     self.walk_for_body(&mut for_of.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_var_decl(&mut self, var: &mut Node<VarDecl>) {
@@ -1433,20 +1453,24 @@ impl<'a> ResolvePass<'a> {
         self.pop_scope_from_assoc(&triple.assoc);
       }
       AstStmt::ForIn(for_in) => {
+        self.push_scope_from_assoc(&for_in.assoc);
         match &mut for_in.stx.lhs {
           ForInOfLhs::Assign(pat) => self.walk_pat(pat),
           ForInOfLhs::Decl((_, decl)) => self.walk_pat_decl(decl),
         }
         self.walk_expr(&mut for_in.stx.rhs);
         self.walk_for_body(&mut for_in.stx.body);
+        self.pop_scope_from_assoc(&for_in.assoc);
       }
       AstStmt::ForOf(for_of) => {
+        self.push_scope_from_assoc(&for_of.assoc);
         match &mut for_of.stx.lhs {
           ForInOfLhs::Assign(pat) => self.walk_pat(pat),
           ForInOfLhs::Decl((_, decl)) => self.walk_pat_decl(decl),
         }
         self.walk_expr(&mut for_of.stx.rhs);
         self.walk_for_body(&mut for_of.stx.body);
+        self.pop_scope_from_assoc(&for_of.assoc);
       }
       AstStmt::Try(tr) => {
         self.walk_block_stmt(&mut tr.stx.wrapped);
@@ -2298,6 +2322,13 @@ impl DeclareTablesPass {
   }
 
   fn walk_for_in(&mut self, for_in: &Node<ForInStmt>) {
+    let needs_loop_scope = matches!(
+      &for_in.stx.lhs,
+      ForInOfLhs::Decl((mode, _)) if *mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(for_in));
+    }
     self.mark_scope(for_in);
     match &for_in.stx.lhs {
       ForInOfLhs::Assign(pat) => self.walk_pat(pat, false, Namespace::VALUE),
@@ -2314,9 +2345,19 @@ impl DeclareTablesPass {
     }
     self.walk_expr(&for_in.stx.rhs);
     self.walk_for_body(&for_in.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_for_of(&mut self, for_of: &Node<ForOfStmt>) {
+    let needs_loop_scope = matches!(
+      &for_of.stx.lhs,
+      ForInOfLhs::Decl((mode, _)) if *mode != VarDeclMode::Var
+    );
+    if needs_loop_scope {
+      self.push_scope(ScopeKind::Block, range_of(for_of));
+    }
     self.mark_scope(for_of);
     match &for_of.stx.lhs {
       ForInOfLhs::Assign(pat) => self.walk_pat(pat, false, Namespace::VALUE),
@@ -2333,6 +2374,9 @@ impl DeclareTablesPass {
     }
     self.walk_expr(&for_of.stx.rhs);
     self.walk_for_body(&for_of.stx.body);
+    if needs_loop_scope {
+      self.pop_scope();
+    }
   }
 
   fn walk_var_decl(&mut self, var: &Node<VarDecl>) {
@@ -2930,20 +2974,24 @@ impl<'a> ResolveTablesPass<'a> {
         self.pop_scope_for_node(triple);
       }
       AstStmt::ForIn(for_in) => {
+        self.push_scope_for_node(for_in);
         match &for_in.stx.lhs {
           ForInOfLhs::Assign(pat) => self.walk_pat(pat),
           ForInOfLhs::Decl((_, decl)) => self.walk_pat_decl(decl),
         }
         self.walk_expr(&for_in.stx.rhs);
         self.walk_for_body(&for_in.stx.body);
+        self.pop_scope_for_node(for_in);
       }
       AstStmt::ForOf(for_of) => {
+        self.push_scope_for_node(for_of);
         match &for_of.stx.lhs {
           ForInOfLhs::Assign(pat) => self.walk_pat(pat),
           ForInOfLhs::Decl((_, decl)) => self.walk_pat_decl(decl),
         }
         self.walk_expr(&for_of.stx.rhs);
         self.walk_for_body(&for_of.stx.body);
+        self.pop_scope_for_node(for_of);
       }
       AstStmt::Try(tr) => {
         self.walk_block_stmt(&tr.stx.wrapped);
