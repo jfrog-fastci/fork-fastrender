@@ -52,18 +52,24 @@ impl Epoll {
   pub fn wait(&self, events: &mut [libc::epoll_event], timeout_ms: i32) -> io::Result<usize> {
     debug_assert!(timeout_ms >= -1);
 
-    let rc = unsafe {
-      libc::epoll_wait(
-        self.fd.as_raw_fd(),
-        events.as_mut_ptr(),
-        events.len().try_into().unwrap_or(i32::MAX),
-        timeout_ms,
-      )
-    };
-    if rc < 0 {
-      return Err(io::Error::last_os_error());
+    loop {
+      let rc = unsafe {
+        libc::epoll_wait(
+          self.fd.as_raw_fd(),
+          events.as_mut_ptr(),
+          events.len().try_into().unwrap_or(i32::MAX),
+          timeout_ms,
+        )
+      };
+      if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EINTR) {
+          continue;
+        }
+        return Err(err);
+      }
+      return Ok(rc as usize);
     }
-    Ok(rc as usize)
   }
 }
 
