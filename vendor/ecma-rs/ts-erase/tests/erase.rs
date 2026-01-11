@@ -374,6 +374,44 @@ fn full_mode_lowers_import_equals_and_export_assignment() {
 }
 
 #[test]
+fn full_mode_declares_bindings_for_runtime_ts_constructs() {
+  let src = r#"
+    enum E { A }
+    namespace N { const x = 1; }
+    const y = E.A;
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Script);
+  assert!(
+    output.contains("var E"),
+    "expected lowered enum to declare a runtime binding: {output}"
+  );
+  assert!(
+    output.contains("var N"),
+    "expected lowered namespace to declare a runtime binding: {output}"
+  );
+}
+
+#[test]
+fn full_mode_preserves_export_lists_of_runtime_ts_constructs() {
+  let src = r#"
+    export { E };
+    enum E { A = 1 }
+    export const x = E.A;
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert!(
+    output.contains("export{E}") || output.contains("export {E}"),
+    "expected lowered output to keep export list entry for runtime enum: {output}"
+  );
+  assert!(
+    output.contains("var E"),
+    "expected lowered enum to declare a runtime binding: {output}"
+  );
+}
+
+#[test]
 fn erases_abstract_class_members() {
   let src = r#"
     abstract class A {

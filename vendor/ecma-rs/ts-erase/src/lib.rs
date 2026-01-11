@@ -262,6 +262,14 @@ struct StripContext {
   source_type: SourceType,
   mode: TsEraseMode,
   value_bindings_stack: Vec<HashSet<String>>,
+  /// Names of top-level TypeScript runtime constructs (enums/namespaces/modules) that will be
+  /// lowered into JavaScript value bindings.
+  ///
+  /// These names are *not* included in `value_bindings_stack` because that set is also used to
+  /// decide whether enum/namespace lowering must synthesize a fresh `var` binding; including the
+  /// enum/namespace name there would incorrectly suppress the required `var` declaration (leading
+  /// to runtime `ReferenceError` when evaluating `E || (E = {})`).
+  top_level_ts_runtime_bindings: HashSet<String>,
   top_level_module_exports: HashSet<String>,
   erased_const_enum_bindings: HashSet<String>,
   emitted_export_var: HashSet<String>,
@@ -550,11 +558,13 @@ pub fn erase_types_with_config(
   };
   let all_identifier_strings = collect_all_identifier_strings(top_level);
   let top_level_value_bindings = collect_top_level_value_bindings(&top_level.stx.body);
+  let top_level_ts_runtime_bindings = collect_top_level_ts_runtime_bindings(&top_level.stx.body);
   let top_level_module_exports = if matches!(source_type, SourceType::Module) {
     collect_top_level_module_exports(
       &top_level.stx.body,
       &erased_const_enum_bindings,
       &top_level_value_bindings,
+      &top_level_ts_runtime_bindings,
     )
   } else {
     HashSet::new()
@@ -564,6 +574,7 @@ pub fn erase_types_with_config(
     source_type,
     mode: config.mode,
     value_bindings_stack: vec![top_level_value_bindings],
+    top_level_ts_runtime_bindings,
     top_level_module_exports,
     erased_const_enum_bindings,
     emitted_export_var: HashSet::new(),
@@ -1000,15 +1011,27 @@ fn collect_top_level_value_bindings(stmts: &[Node<Stmt>]) -> HashSet<String> {
           names.insert(decl.stx.name.clone());
         }
       }
-      Stmt::EnumDecl(decl) if !decl.stx.declare && !decl.stx.const_ => {
+      _ => {}
+    }
+  }
+  names
+}
+
+fn collect_top_level_ts_runtime_bindings(stmts: &[Node<Stmt>]) -> HashSet<String> {
+  let mut names = HashSet::new();
+  for stmt in stmts {
+    match stmt.stx.as_ref() {
+      Stmt::EnumDecl(decl) if !decl.stx.declare => {
         names.insert(decl.stx.name.clone());
       }
       Stmt::NamespaceDecl(decl) if !decl.stx.declare => {
         names.insert(decl.stx.name.clone());
       }
       Stmt::ModuleDecl(decl) if !decl.stx.declare => {
-        if let ModuleName::Identifier(name) = &decl.stx.name {
-          names.insert(name.clone());
+        if decl.stx.body.is_some() {
+          if let ModuleName::Identifier(name) = &decl.stx.name {
+            names.insert(name.clone());
+          }
         }
       }
       _ => {}
@@ -1021,6 +1044,7 @@ fn collect_top_level_module_exports(
   stmts: &[Node<Stmt>],
   erased_const_enum_bindings: &HashSet<String>,
   top_level_value_bindings: &HashSet<String>,
+  top_level_ts_runtime_bindings: &HashSet<String>,
 ) -> HashSet<String> {
   let mut names = HashSet::new();
   for stmt in stmts {
@@ -1056,7 +1080,9 @@ fn collect_top_level_module_exports(
             if !entry.stx.type_only {
               if export_stmt.stx.from.is_none() {
                 if let ModuleExportImportName::Ident(local) = &entry.stx.exportable {
-                  if !top_level_value_bindings.contains(local) {
+                  if !top_level_value_bindings.contains(local)
+                    && !top_level_ts_runtime_bindings.contains(local)
+                  {
                     // Exporting type-only symbols (interfaces, type aliases, type-only imports, etc.)
                     // does not emit a runtime JS export.
                     continue;
@@ -1400,6 +1426,7 @@ fn strip_export_list(
         // any runtime JS export, even if the syntax used `export { Foo }` without an explicit
         // `type` modifier.
         ctx.current_value_bindings().contains(local)
+          || ctx.top_level_ts_runtime_bindings.contains(local)
       });
       for name in names.iter_mut() {
         name.stx.type_only = false;
