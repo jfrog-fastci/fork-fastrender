@@ -292,10 +292,11 @@ pub fn rt_parallel_for(
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).
 // The async runtime must store something stable in OS/userdata (epoll/kqueue) and
-// cross-thread wakers across awaits, so it cannot retain raw `*mut Coroutine`.
-// Use a stable generational handle id (u64) that indexes a pinned handle table
-// cell, and the GC updates the cell's pointer when the coroutine relocates.
-pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
+// cross-thread wakers across awaits, so it must not retain raw `*mut Coroutine`
+// pointers across turns. Use a stable generational handle id (u64) that indexes a
+// pinned handle-table cell; the GC updates the cell's pointer when the coroutine
+// relocates.
+pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
 ```
 
@@ -877,11 +878,11 @@ The compiler is responsible for:
   pointers in shape maps.
 
 ### 7.2 Event loop tick model: `rt_async_poll`
-The async runtime is driven by a polling entrypoint:
+The native async ABI uses `rt_async_poll` as a **microtask checkpoint**:
 
 ```c
-// Drive the async runtime for one turn.
-// Returns true if there is still pending work afterwards (i.e. the runtime is non-idle).
+// Drain the microtask queue (non-blocking).
+// Returns true if at least one microtask was executed.
 bool rt_async_poll(void);
 ```
 
@@ -889,12 +890,15 @@ Integration with scheduler:
 - When workers are busy, async polling is opportunistic (e.g. worker 0 polls
   periodically or the runtime has a dedicated IO thread).
 - When the scheduler becomes idle (no runnable tasks), a worker calls
-  `rt_async_poll()` to block until external events make progress.
+  `rt_async_wait()` to block until external events enqueue work.
 
 ### 7.3 Promises and continuations
 Promises are the minimal cross-cutting primitive:
-- Awaiting a promise registers a continuation with `rt_promise_then`.
-- Resolving a promise enqueues those continuations as tasks.
+- Awaiting a promise is represented by the coroutine yielding `Await(p)` from its
+  resume step; the runtime registers a continuation on `p` and suspends the
+  coroutine.
+- Settling a promise enqueues those continuations as **microtasks** (promise
+  reaction jobs).
 
 The runtime must ensure:
 - Continuations are invoked exactly once (or follow JS promise semantics if/when

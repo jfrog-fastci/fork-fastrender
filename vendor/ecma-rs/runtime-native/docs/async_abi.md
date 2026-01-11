@@ -230,10 +230,13 @@ These are the guarantees codegen is allowed to rely on.
 
 ### `rt_async_poll() -> bool`
 
-Drives the runtime forward (run-ready coroutines, process I/O completions, timers).
+Drains the runtime's **microtask queue** (a microtask checkpoint).
 
-- Returns `true` if the runtime believes there is still pending work after this turn.
-- Returns `false` if the runtime is fully idle.
+- This is a **non-blocking** poll: it does *not* wait for timers or I/O readiness.
+- Promise settlement and async/await wakeups schedule work onto the microtask queue; `rt_async_poll`
+  executes that ready work to completion.
+- Returns `true` if it executed at least one microtask; returns `false` if there was no runnable
+  work (or if called re-entrantly during an ongoing microtask checkpoint).
 
 ### `rt_async_wait()`
 
