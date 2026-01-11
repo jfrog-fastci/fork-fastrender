@@ -736,6 +736,25 @@ mod tests {
   fn c_header_matches_exported_entrypoints() {
     const HEADER: &str = include_str!("../include/runtime_native.h");
 
+    fn normalize_ws(s: &str) -> String {
+      let mut out = String::with_capacity(s.len());
+      let mut prev_space = false;
+      for ch in s.chars() {
+        if ch.is_whitespace() {
+          if !prev_space {
+            out.push(' ');
+            prev_space = true;
+          }
+        } else {
+          out.push(ch);
+          prev_space = false;
+        }
+      }
+      out
+    }
+
+    let normalized_header = normalize_ws(HEADER);
+
     // Keep these strings in sync with `include/runtime_native.h` to ensure we
     // don't forget to update the header when changing the exported ABI.
     const DECLS: &[&str] = &[
@@ -845,7 +864,7 @@ mod tests {
 
     for decl in DECLS {
       assert!(
-        HEADER.contains(decl),
+        normalized_header.contains(&normalize_ws(decl)),
         "`runtime_native.h` is missing expected declaration: {decl}"
       );
     }
@@ -853,7 +872,7 @@ mod tests {
     if cfg!(feature = "gc_stats") {
       for decl in ["void rt_gc_stats_snapshot(RtGcStatsSnapshot* out);", "void rt_gc_stats_reset(void);"] {
         assert!(
-          HEADER.contains(decl),
+          normalized_header.contains(&normalize_ws(decl)),
           "`runtime_native.h` is missing expected gc_stats declaration: {decl}"
         );
       }
