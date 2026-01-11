@@ -5516,6 +5516,21 @@ fn build_appearance_none_form_control_fallback(
     children.push(node);
   };
 
+  let push_line_height_strut = |children: &mut Vec<BoxNode>| {
+    if !children.is_empty() {
+      return;
+    }
+
+    // Use a bidi formatting mark to ensure the text shaping pipeline yields an empty glyph stream
+    // (so nothing paints) while still producing a line box with the control's computed line height.
+    let strut = if styled.styles.direction == Direction::Rtl {
+      '\u{200f}'
+    } else {
+      '\u{200e}'
+    };
+    push_text(children, Arc::clone(&styled.styles), strut.to_string(), None);
+  };
+
   match &form_control.control {
     FormControlKind::Text {
       value,
@@ -5575,6 +5590,8 @@ fn build_appearance_none_form_control_fallback(
       } else if let Some(text) = text {
         push_text(&mut children, style, text, pseudo);
       }
+
+      push_line_height_strut(&mut children);
     }
     FormControlKind::TextArea {
       value,
@@ -5620,6 +5637,8 @@ fn build_appearance_none_form_control_fallback(
       } else if let Some(text) = text {
         push_text(&mut children, style, text, pseudo);
       }
+
+      push_line_height_strut(&mut children);
     }
     FormControlKind::Button { label } => {
       if styled
