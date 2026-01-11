@@ -39,8 +39,9 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/link/stackmaps.ld
 ```
 
-This works with both **GNU ld** and **lld**, and also defines stable boundary symbols
-for runtime discovery (see below).
+This works with both **GNU ld** and **lld** (for GNU ld PIE builds, prefer
+`runtime-native/link/stackmaps_gnuld.ld` or use `scripts/native_link.sh` to avoid RWX segments),
+and also defines stable boundary symbols for runtime discovery (see below).
 The repository’s wrapper does this for you:
 
 ```bash
