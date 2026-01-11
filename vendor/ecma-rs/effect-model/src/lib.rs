@@ -158,8 +158,10 @@ mod effect_set_serde {
       "IO" => Ok(EffectSet::IO),
       "NETWORK" => Ok(EffectSet::NETWORK),
       "NONDETERMINISTIC" | "NON_DETERMINISTIC" => Ok(EffectSet::NONDETERMINISTIC),
-      "READS_GLOBAL" | "READ_GLOBAL" => Ok(EffectSet::READS_GLOBAL),
-      "WRITES_GLOBAL" | "WRITE_GLOBAL" => Ok(EffectSet::WRITES_GLOBAL),
+      "READS_GLOBAL" | "READ_GLOBAL" | "READSGLOBAL" | "READGLOBAL" => Ok(EffectSet::READS_GLOBAL),
+      "WRITES_GLOBAL" | "WRITE_GLOBAL" | "WRITESGLOBAL" | "WRITEGLOBAL" => {
+        Ok(EffectSet::WRITES_GLOBAL)
+      }
       "UNKNOWN" => Ok(EffectSet::UNKNOWN),
       other => Err(E::custom(format!("unknown effect flag `{other}`"))),
     }
@@ -696,5 +698,33 @@ mod tests {
     let joined = EffectSummary::join(summary, EffectSummary::PURE);
     assert!(!joined.flags.contains(EffectSet::MAY_THROW));
     assert_eq!(joined.throws, ThrowBehavior::Maybe);
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn effect_set_deserialize_accepts_camel_case_global_flags() {
+    use serde::de::value::Error as DeError;
+    use serde::de::IntoDeserializer;
+    use serde::Deserialize;
+
+    let reads: EffectSet =
+      EffectSet::deserialize(<&str as IntoDeserializer<'_, DeError>>::into_deserializer(
+        "readsGlobal",
+      ))
+      .unwrap();
+    assert_eq!(reads, EffectSet::READS_GLOBAL);
+
+    let write: EffectSet =
+      EffectSet::deserialize(<&str as IntoDeserializer<'_, DeError>>::into_deserializer(
+        "writeGlobal",
+      ))
+      .unwrap();
+    assert_eq!(write, EffectSet::WRITES_GLOBAL);
+
+    let expr: EffectSet = EffectSet::deserialize(
+      <&str as IntoDeserializer<'_, DeError>>::into_deserializer("readsGlobal | writeGlobal"),
+    )
+    .unwrap();
+    assert_eq!(expr, EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL);
   }
 }
