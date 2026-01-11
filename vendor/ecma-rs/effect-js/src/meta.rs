@@ -52,6 +52,18 @@ pub fn parallelizable_at_callsite(api: &Api, callsite: &CallSiteInfo) -> bool {
 mod tests {
   use super::*;
   use crate::EffectDb;
+  use hir_js::{BodyId, ExprId, StmtKind};
+
+  fn first_stmt_expr(lowered: &hir_js::LowerResult) -> (BodyId, ExprId) {
+    let root = lowered.root_body();
+    let root_body = lowered.body(root).expect("root body");
+    let first_stmt = *root_body.root_stmts.first().expect("root stmt");
+    let stmt = &root_body.stmts[first_stmt.0 as usize];
+    match stmt.kind {
+      StmtKind::Expr(expr) => (root, expr),
+      _ => panic!("expected expression statement"),
+    }
+  }
 
   #[test]
   fn meta_queries() {
@@ -65,5 +77,50 @@ mod tests {
     assert_eq!(is_deterministic(sqrt), Some(true));
     assert_eq!(is_idempotent(sqrt), Some(true));
     assert!(!is_async(sqrt));
+  }
+
+  #[test]
+  fn parallelizable_heuristic_array_map() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.map").unwrap();
+
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => x + 1);").unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(parallelizable_at_callsite(api, &callsite));
+  }
+
+  #[test]
+  fn parallelizable_heuristic_array_map_index_callback() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.map").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => i);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(!parallelizable_at_callsite(api, &callsite));
+  }
+
+  #[test]
+  fn parallelizable_heuristic_array_reduce_is_conservative_without_associativity() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.reduce").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.reduce((a, b) => a + b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(!parallelizable_at_callsite(api, &callsite));
   }
 }

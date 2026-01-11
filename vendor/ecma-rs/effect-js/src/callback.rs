@@ -41,6 +41,7 @@ pub fn callsite_info_for_args(
     callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
     callback_uses_index: callback.map(|cb| cb.uses_index),
     callback_uses_array: callback.map(|cb| cb.uses_array),
+    // `CallSiteInfo` does not currently model callback associativity.
     ..crate::db::CallSiteInfo::default()
   }
 }
