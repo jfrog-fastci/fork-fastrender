@@ -590,7 +590,7 @@ pub fn run_fixture_ts_with_name(name: &str, source: &str) -> Result<String, Diag
 
 #[cfg(test)]
 mod tests {
-  use super::erase_typescript_to_js;
+  use super::{erase_typescript_to_js, TsToJsError};
   use std::path::{Path, PathBuf};
 
   fn fixtures_dir() -> PathBuf {
@@ -643,6 +643,26 @@ mod tests {
         .vm
         .perform_microtask_checkpoint(&mut runtime.heap)
         .unwrap_or_else(|err| panic!("oracle microtask checkpoint failed for {fixture:?}: {err:?}\nJS:\n{js}"));
+    }
+  }
+
+  #[test]
+  fn strict_native_erasure_rejects_runtime_ts_constructs() {
+    // The harness erases TypeScript using `ts-erase` in strict-native mode, which intentionally
+    // rejects runtime TS constructs like enums and namespaces. This keeps the oracle path aligned
+    // with the native compiler's strict subset.
+    for (label, source) in [
+      ("enum", "enum E { A = 1 }"),
+      ("namespace", "namespace N { const x = 1; }"),
+    ] {
+      let err = erase_typescript_to_js(source).expect_err("expected strict-native erasure failure");
+      let TsToJsError::Erase(diags) = err else {
+        panic!("expected TsToJsError::Erase for {label}, got {err:?}");
+      };
+      assert!(
+        !diags.is_empty(),
+        "expected at least one diagnostic for {label}"
+      );
     }
   }
 
