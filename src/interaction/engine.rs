@@ -717,6 +717,40 @@ mod tests {
   }
 
   #[test]
+  fn bidi_selection_collapse_preserves_split_caret_affinity() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
+        .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Extend selection from the start to the split-caret boundary at char_idx=4 ("ABC ").
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    for _ in 0..4 {
+      assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowRight));
+    }
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), Some((0, 4)));
+    assert_eq!(edit.caret, 4);
+    assert_eq!(
+      edit.caret_affinity,
+      CaretAffinity::Upstream,
+      "expected selection end at split caret to land on the upstream (LTR) side"
+    );
+
+    // Collapsing the selection to the end (ArrowRight without shift) must keep the caret on the
+    // same visual side of the split caret; it must not "teleport" to the RTL run's start edge.
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Upstream);
+  }
+
+  #[test]
   fn backspace_deletes_previous_character_and_updates_caret() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
@@ -4016,8 +4050,12 @@ impl InteractionEngine {
                   start_in_line,
                   CaretAffinity::Downstream,
                 );
+                // The selection end boundary is after the selected text, so prefer an upstream stop
+                // when the boundary is a split caret. This prevents collapsing a selection to the
+                // wrong visual edge at bidi boundaries (e.g. selecting an LTR run that ends where
+                // an RTL run begins).
                 let end_pos =
-                  crate::text::caret::caret_stop_index(&stops, end_in_line, CaretAffinity::Downstream);
+                  crate::text::caret::caret_stop_index(&stops, end_in_line, CaretAffinity::Upstream);
 
                 if let (Some(start_pos), Some(end_pos)) = (start_pos, end_pos) {
                   let (left_edge, right_edge) = if start_pos <= end_pos {
@@ -4032,13 +4070,17 @@ impl InteractionEngine {
                     )
                   };
                   let (next_caret, next_affinity) = if move_left { left_edge } else { right_edge };
-                  edit.set_caret_with_affinity(next_caret, next_affinity);
+                  edit.set_caret_with_affinity_and_maybe_extend_selection(
+                    next_caret,
+                    next_affinity,
+                    false,
+                  );
                 } else {
-                  edit.set_caret(if move_left { start } else { end });
+                  edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
                 }
               } else {
                 // Selection spans multiple lines; fall back to logical collapse.
-                edit.set_caret(if move_left { start } else { end });
+                edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
               }
             } else if let Some(cur_idx) = crate::text::caret::caret_stop_index(
               &stops,
@@ -4097,7 +4139,9 @@ impl InteractionEngine {
               let end_pos = crate::text::caret::caret_stop_index(
                 &stops,
                 end.min(current_len),
-                CaretAffinity::Downstream,
+                // Prefer upstream at the end boundary to avoid "teleporting" across split-caret
+                // bidi boundaries when collapsing selections with ArrowLeft/Right.
+                CaretAffinity::Upstream,
               );
 
               if let (Some(start_pos), Some(end_pos)) = (start_pos, end_pos) {
@@ -4113,9 +4157,13 @@ impl InteractionEngine {
                   )
                 };
                 let (next_caret, next_affinity) = if move_left { left_edge } else { right_edge };
-                edit.set_caret_with_affinity(next_caret, next_affinity);
+                edit.set_caret_with_affinity_and_maybe_extend_selection(
+                  next_caret,
+                  next_affinity,
+                  false,
+                );
               } else {
-                edit.set_caret(if move_left { start } else { end });
+                edit.set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
               }
             } else if let Some(cur_idx) = crate::text::caret::caret_stop_index(
               &stops,
