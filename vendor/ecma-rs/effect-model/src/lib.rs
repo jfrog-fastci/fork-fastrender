@@ -3,10 +3,11 @@ use bitflags::bitflags;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ThrowBehavior {
+  #[default]
   #[cfg_attr(feature = "serde", serde(alias = "Never"))]
   Never,
   #[cfg_attr(feature = "serde", serde(alias = "Maybe"))]
@@ -24,12 +25,6 @@ impl ThrowBehavior {
       (Maybe, _) | (_, Maybe) => Maybe,
       (Never, Never) => Never,
     }
-  }
-}
-
-impl Default for ThrowBehavior {
-  fn default() -> Self {
-    Self::Never
   }
 }
 
@@ -447,7 +442,7 @@ impl From<EffectSummary> for EffectSet {
 
 /// An effect template used for API semantics where some effects may be
 /// conditional on runtime callback behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum EffectTemplate {
@@ -459,14 +454,9 @@ pub enum EffectTemplate {
   Custom(EffectSet),
   #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
   DependsOnArgs { base: EffectSet, args: Vec<usize> },
+  #[default]
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
-}
-
-impl Default for EffectTemplate {
-  fn default() -> Self {
-    Self::Unknown
-  }
 }
 
 impl EffectTemplate {
@@ -512,7 +502,7 @@ impl EffectTemplate {
 
 /// A purity template used for API semantics where purity may be conditional on
 /// runtime callback behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum PurityTemplate {
@@ -526,14 +516,9 @@ pub enum PurityTemplate {
   Impure,
   #[cfg_attr(feature = "serde", serde(alias = "DependsOnArgs"))]
   DependsOnArgs { base: Purity, args: Vec<usize> },
+  #[default]
   #[cfg_attr(feature = "serde", serde(alias = "Unknown"))]
   Unknown,
-}
-
-impl Default for PurityTemplate {
-  fn default() -> Self {
-    Self::Unknown
-  }
 }
 
 impl PurityTemplate {

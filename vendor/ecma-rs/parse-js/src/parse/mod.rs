@@ -303,12 +303,12 @@ impl<'a> Parser<'a> {
     loc: Loc,
     name: &str,
   ) -> SyntaxResult<()> {
-    if self.is_strict_ecmascript() && self.is_strict_mode() {
-      if Self::is_strict_mode_reserved_word(name)
-        || Self::is_strict_mode_restricted_binding_identifier(name)
-      {
-        return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-      }
+    if self.is_strict_ecmascript()
+      && self.is_strict_mode()
+      && (Self::is_strict_mode_reserved_word(name)
+        || Self::is_strict_mode_restricted_binding_identifier(name))
+    {
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
     }
     Ok(())
   }

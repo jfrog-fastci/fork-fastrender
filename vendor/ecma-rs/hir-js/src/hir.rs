@@ -1276,6 +1276,7 @@ pub enum JsxChild {
 }
 
 impl HirFile {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     file: FileId,
     file_kind: FileKind,

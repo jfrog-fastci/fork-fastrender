@@ -345,7 +345,7 @@ impl<'a> Parser<'a> {
           let inner = Node::new(start_loc, TypeUniqueSymbol {});
           Ok(Node::new(outer_loc, TypeExpr::UniqueSymbol(inner)))
         } else {
-          return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax("symbol after unique")));
+          Err(self.peek().error(SyntaxErrorType::ExpectedSyntax("symbol after unique")))
         }
       }
       TT::KeywordObjectType => {
@@ -838,11 +838,9 @@ impl<'a> Parser<'a> {
     self.require(TT::KeywordImport)?;
     self.require(TT::ParenthesisOpen)?;
     let module_specifier = self.lit_str_val()?;
-    if self.consume_if(TT::Comma).is_match() {
-      if self.peek().typ != TT::ParenthesisClose {
-        let _ = self.expr(ctx, [TT::Comma, TT::ParenthesisClose])?;
-        let _ = self.consume_if(TT::Comma);
-      }
+    if self.consume_if(TT::Comma).is_match() && self.peek().typ != TT::ParenthesisClose {
+      let _ = self.expr(ctx, [TT::Comma, TT::ParenthesisClose])?;
+      let _ = self.consume_if(TT::Comma);
     }
     self.require(TT::ParenthesisClose)?;
 
@@ -1614,10 +1612,10 @@ impl<'a> Parser<'a> {
     self.with_loc(|p| {
       // TypeScript: Allow accessibility modifiers in type signatures for error recovery
       // e.g., `(public x, private y)` in interface (semantically invalid but syntactically parseable)
-      if !p.consume_if(TT::KeywordPublic).is_match() {
-        if !p.consume_if(TT::KeywordPrivate).is_match() {
-          let _ = p.consume_if(TT::KeywordProtected);
-        }
+      if !p.consume_if(TT::KeywordPublic).is_match()
+        && !p.consume_if(TT::KeywordPrivate).is_match()
+      {
+        let _ = p.consume_if(TT::KeywordProtected);
       }
 
       // TypeScript: Allow readonly modifier

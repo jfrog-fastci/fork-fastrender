@@ -77,25 +77,25 @@ pub enum OperatorName {
 
 impl OperatorName {
   pub fn is_assignment(self) -> bool {
-    match self {
+    matches!(
+      self,
       OperatorName::Assignment
-      | OperatorName::AssignmentAddition
-      | OperatorName::AssignmentBitwiseAnd
-      | OperatorName::AssignmentBitwiseLeftShift
-      | OperatorName::AssignmentBitwiseOr
-      | OperatorName::AssignmentBitwiseRightShift
-      | OperatorName::AssignmentBitwiseUnsignedRightShift
-      | OperatorName::AssignmentBitwiseXor
-      | OperatorName::AssignmentDivision
-      | OperatorName::AssignmentExponentiation
-      | OperatorName::AssignmentLogicalAnd
-      | OperatorName::AssignmentLogicalOr
-      | OperatorName::AssignmentMultiplication
-      | OperatorName::AssignmentNullishCoalescing
-      | OperatorName::AssignmentRemainder
-      | OperatorName::AssignmentSubtraction => true,
-      _ => false,
-    }
+        | OperatorName::AssignmentAddition
+        | OperatorName::AssignmentBitwiseAnd
+        | OperatorName::AssignmentBitwiseLeftShift
+        | OperatorName::AssignmentBitwiseOr
+        | OperatorName::AssignmentBitwiseRightShift
+        | OperatorName::AssignmentBitwiseUnsignedRightShift
+        | OperatorName::AssignmentBitwiseXor
+        | OperatorName::AssignmentDivision
+        | OperatorName::AssignmentExponentiation
+        | OperatorName::AssignmentLogicalAnd
+        | OperatorName::AssignmentLogicalOr
+        | OperatorName::AssignmentMultiplication
+        | OperatorName::AssignmentNullishCoalescing
+        | OperatorName::AssignmentRemainder
+        | OperatorName::AssignmentSubtraction
+    )
   }
 }
 

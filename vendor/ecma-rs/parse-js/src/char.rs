@@ -1,9 +1,8 @@
 use ahash::HashSet;
-use ahash::HashSetExt;
 use core::ops::RangeInclusive;
 use once_cell::sync::Lazy;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CharFilter {
   chars: HashSet<char>,
   inverted: bool,
@@ -11,10 +10,7 @@ pub struct CharFilter {
 
 impl CharFilter {
   pub fn new() -> CharFilter {
-    CharFilter {
-      chars: HashSet::new(),
-      inverted: false,
-    }
+    Self::default()
   }
 
   pub fn add_char(&mut self, c: char) {
@@ -30,13 +26,6 @@ impl CharFilter {
   pub fn add_chars_from_slice(&mut self, chars: &str) {
     for c in chars.chars() {
       self.chars.insert(c);
-    }
-  }
-
-  pub fn clone(&self) -> CharFilter {
-    CharFilter {
-      chars: self.chars.clone(),
-      inverted: self.inverted,
     }
   }
 

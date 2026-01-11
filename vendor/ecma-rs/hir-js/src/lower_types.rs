@@ -570,7 +570,7 @@ impl<'a> TypeLowerer<'a> {
             .func
             .stx
             .parameters
-            .get(0)
+            .first()
             .map(|param| self.lower_param_decl(param))
             .unwrap_or_else(|| TypeFnParam {
               name: None,

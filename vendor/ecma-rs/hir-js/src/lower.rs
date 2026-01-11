@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::hir::{
   ArrayElement, ArrayLiteral, ArrayPat, ArrayPatElement, AssignOp, BinaryOp, Body, BodyKind, CallArg,
   CallExpr, CatchClause, ClassBody, ClassMember as HirClassMember, ClassMemberKey,
@@ -104,6 +106,7 @@ impl LoweringContext {
     }
   }
 
+  #[allow(clippy::wrong_self_convention)]
   pub(crate) fn to_range(&mut self, loc: Loc) -> TextRange {
     self.check_cancelled();
     let (range, note) = loc.to_diagnostics_range_with_note();
@@ -192,11 +195,11 @@ impl LoweringContext {
       if owner == MISSING_DEF {
         return self.semantic_ops_promise_shadowed_top_level;
       }
-      return self
+      self
         .semantic_ops_promise_shadowed_by_def
         .get(&owner)
         .copied()
-        .unwrap_or(false);
+        .unwrap_or(false)
     }
     #[cfg(not(feature = "semantic-ops"))]
     {
@@ -820,7 +823,7 @@ pub fn lower_file_with_diagnostics_with_cancellation(
       // Some definitions (notably variable declarators) are synthesized from
       // nested syntax and can be referenced by multiple `DefData` entries. Make
       // sure each `BodyId` is lowered and stored exactly once.
-      if !body_index.contains_key(&body.id) {
+      if let Entry::Vacant(e) = body_index.entry(body.id) {
         let lowered_body = lower_body_from_source(
           def_id,
           body.id,
@@ -840,7 +843,7 @@ pub fn lower_file_with_diagnostics_with_cancellation(
         let body_arc = Arc::new(lowered_body);
         let idx = bodies.len();
         body_ids.push(body.id);
-        body_index.insert(body.id, idx);
+        e.insert(idx);
         bodies.push(body_arc);
       }
     }
@@ -1719,11 +1722,11 @@ fn lower_stmt(
     AstStmt::If(if_stmt) => {
       let test = lower_expr(&if_stmt.stx.test, builder, ctx);
       let cons = lower_stmt(&if_stmt.stx.consequent, builder, ctx);
-      let alt = if let Some(alt) = &if_stmt.stx.alternate {
-        Some(lower_stmt(alt, builder, ctx))
-      } else {
-        None
-      };
+      let alt = if_stmt
+        .stx
+        .alternate
+        .as_ref()
+        .map(|alt| lower_stmt(alt, builder, ctx));
       StmtKind::If {
         test,
         consequent: cons,
@@ -1830,11 +1833,11 @@ fn lower_stmt(
       } else {
         None
       };
-      let finally_block = if let Some(finally) = &tr.stx.finally {
-        Some(lower_block_stmt(finally, builder, ctx))
-      } else {
-        None
-      };
+      let finally_block = tr
+        .stx
+        .finally
+        .as_ref()
+        .map(|finally| lower_block_stmt(finally, builder, ctx));
       StmtKind::Try {
         block,
         catch,
@@ -2329,27 +2332,28 @@ fn lower_call_expr(
               let prop = builder.names.resolve(prop);
               if let Some(prop) = prop.filter(|p| *p == "all" || *p == "race") {
                 if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
-                  if builder.names.resolve(*obj) == Some("Promise") {
-                    if args.len() == 1 && !args[0].spread {
-                      if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
-                        let mut promises = Vec::new();
-                        let mut ok = true;
-                        for element in arr.elements.iter() {
-                          match element {
-                            ArrayElement::Expr(expr) => promises.push(*expr),
-                            ArrayElement::Empty | ArrayElement::Spread(_) => {
-                              ok = false;
-                              break;
-                            }
+                  if builder.names.resolve(*obj) == Some("Promise")
+                    && args.len() == 1
+                    && !args[0].spread
+                  {
+                    if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
+                      let mut promises = Vec::new();
+                      let mut ok = true;
+                      for element in arr.elements.iter() {
+                        match element {
+                          ArrayElement::Expr(expr) => promises.push(*expr),
+                          ArrayElement::Empty | ArrayElement::Spread(_) => {
+                            ok = false;
+                            break;
                           }
                         }
-                        if ok {
-                          return match prop {
-                            "all" => ExprKind::PromiseAll { promises },
-                            "race" => ExprKind::PromiseRace { promises },
-                            _ => unreachable!(),
-                          };
-                        }
+                      }
+                      if ok {
+                        return match prop {
+                          "all" => ExprKind::PromiseAll { promises },
+                          "race" => ExprKind::PromiseRace { promises },
+                          _ => unreachable!(),
+                        };
                       }
                     }
                   }
@@ -3250,18 +3254,16 @@ fn collect_stmt<'a>(
         in_global,
         ctx,
       );
-      if var_decl.stx.export {
-        if record_module_item {
-          module_items.push(ModuleItem {
+      if var_decl.stx.export && record_module_item {
+        module_items.push(ModuleItem {
+          span,
+          kind: ModuleItemKind::ExportedDecl(ExportedDecl {
+            default: false,
+            type_only: false,
             span,
-            kind: ModuleItemKind::ExportedDecl(ExportedDecl {
-              default: false,
-              type_only: false,
-              span,
-              kind: ExportedDeclKind::Var(var_decl),
-            }),
-          });
-        }
+            kind: ExportedDeclKind::Var(var_decl),
+          }),
+        });
       }
     }
     AstStmt::NamespaceDecl(ns) => {
@@ -3277,18 +3279,16 @@ fn collect_stmt<'a>(
         in_global,
         ctx,
       );
-      if ns.stx.export {
-        if record_module_item {
-          module_items.push(ModuleItem {
+      if ns.stx.export && record_module_item {
+        module_items.push(ModuleItem {
+          span,
+          kind: ModuleItemKind::ExportedDecl(ExportedDecl {
+            default: false,
+            type_only: false,
             span,
-            kind: ModuleItemKind::ExportedDecl(ExportedDecl {
-              default: false,
-              type_only: false,
-              span,
-              kind: ExportedDeclKind::Namespace(ns),
-            }),
-          });
-        }
+            kind: ExportedDeclKind::Namespace(ns),
+          }),
+        });
       }
     }
     AstStmt::ModuleDecl(module) => {
@@ -3312,18 +3312,16 @@ fn collect_stmt<'a>(
       desc.is_exported = exported;
       desc.type_source = Some(TypeSource::Module);
       descriptors.push(desc);
-      if module.stx.export {
-        if record_module_item {
-          module_items.push(ModuleItem {
+      if module.stx.export && record_module_item {
+        module_items.push(ModuleItem {
+          span,
+          kind: ModuleItemKind::ExportedDecl(ExportedDecl {
+            default: false,
+            type_only: false,
             span,
-            kind: ModuleItemKind::ExportedDecl(ExportedDecl {
-              default: false,
-              type_only: false,
-              span,
-              kind: ExportedDeclKind::Module(module),
-            }),
-          });
-        }
+            kind: ExportedDeclKind::Module(module),
+          }),
+        });
       }
       if let Some(body) = &module.stx.body {
         let body_start = descriptors.len();
@@ -5576,13 +5574,12 @@ fn collect_pat_names_inner(
         collect_pat_names_inner(rest, names, acc, ctx);
       }
     }
-    AstPat::AssignTarget(expr) => match &*expr.stx {
-      AstExpr::Id(id) => {
+    AstPat::AssignTarget(expr) => {
+      if let AstExpr::Id(id) = &*expr.stx {
         let name_id = names.intern(&id.stx.name);
         acc.push((name_id, ctx.to_range(expr.loc)));
       }
-      _ => {}
-    },
+    }
   }
 }
 
@@ -6280,7 +6277,7 @@ fn lower_module_items(
   (imports, exports)
 }
 
-fn find_def<'a>(defs: &'a [DefData], kind: DefKind, span: TextRange) -> Option<&'a DefData> {
+fn find_def(defs: &[DefData], kind: DefKind, span: TextRange) -> Option<&DefData> {
   defs.iter().find(|d| d.path.kind == kind && d.span == span)
 }
 

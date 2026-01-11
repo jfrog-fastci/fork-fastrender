@@ -106,7 +106,7 @@ impl PatternMatcher {
         }),
       )
       .map(|m| (self.patterns[m.pattern().as_usize()], Match(m.end())))
-      .ok_or_else(|| LexNotFound)
+      .ok_or(LexNotFound)
   }
 }
 
@@ -153,7 +153,7 @@ impl<'a> Lexer<'a> {
   }
 
   fn peek(&self, n: usize) -> LexResult<char> {
-    self.peek_or_eof(n).ok_or_else(|| LexNotFound)
+    self.peek_or_eof(n).ok_or(LexNotFound)
   }
 
   fn peek_or_eof(&self, n: usize) -> Option<char> {
@@ -196,7 +196,9 @@ impl<'a> Lexer<'a> {
 
   fn while_not_char(&self, a: char) -> Match {
     if a.is_ascii() {
-      Match(memchr(a as u8, self.source[self.next..].as_bytes()).unwrap_or(self.remaining()))
+      Match(
+        memchr(a as u8, &self.source.as_bytes()[self.next..]).unwrap_or(self.remaining()),
+      )
     } else {
       Match(self.source[self.next..].find(a).unwrap_or(self.remaining()))
     }
@@ -209,7 +211,7 @@ impl<'a> Lexer<'a> {
           a as u8,
           b as u8,
           c as u8,
-          self.source[self.next..].as_bytes(),
+          &self.source.as_bytes()[self.next..],
         )
         .unwrap_or(self.remaining()),
       )
@@ -489,15 +491,12 @@ static INSIG: Lazy<PatternMatcher> = Lazy::new(|| {
   for whitespace in ECMASCRIPT_WHITESPACE {
     patterns.push((TT::Whitespace, whitespace.to_string()));
   }
-  patterns.extend(
-    [
-      (TT::CommentMultiline, "/*".into()),
-      (TT::CommentSingle, "//".into()),
-      (TT::CommentSingle, "<!--".into()),
-      (TT::CommentSingle, "-->".into()),
-    ]
-    .into_iter(),
-  );
+  patterns.extend([
+    (TT::CommentMultiline, "/*".into()),
+    (TT::CommentSingle, "//".into()),
+    (TT::CommentSingle, "<!--".into()),
+    (TT::CommentSingle, "-->".into()),
+  ]);
   PatternMatcher::new(true, patterns)
 });
 
@@ -505,7 +504,7 @@ fn find_line_terminator(text: &str) -> Option<(usize, usize)> {
   let mut earliest: Option<(usize, char)> = None;
   for terminator in ECMASCRIPT_LINE_TERMINATORS {
     if let Some(pos) = text.find(terminator) {
-      if earliest.map_or(true, |(earliest_pos, _)| pos < earliest_pos) {
+      if earliest.is_none_or(|(earliest_pos, _)| pos < earliest_pos) {
         earliest = Some((pos, terminator));
       }
     }
@@ -738,7 +737,7 @@ fn consume_digits_with_separators(
     match lexer.peek_or_eof(0) {
       Some('_') => {
         // Separators must be surrounded by digits.
-        let has_following_digit = lexer.peek_or_eof(1).map_or(false, |c| digit_filter.has(c));
+        let has_following_digit = lexer.peek_or_eof(1).is_some_and(|c| digit_filter.has(c));
         if prev_sep || !consumed_digit || !has_following_digit {
           valid = false;
         }
@@ -1153,7 +1152,7 @@ pub fn lex_next(lexer: &mut Lexer<'_>, mode: LexMode, dialect: Dialect, source_t
   let mut at_line_start = lexer.next() == 0;
   let mut preceded_by_line_terminator = false;
   let allow_html_comments = matches!(source_type, SourceType::Script);
-  while let Ok((tt, mat)) = INSIG.find(&lexer) {
+  while let Ok((tt, mat)) = INSIG.find(lexer) {
     // HTML comment tokens (`<!--` and `-->`) are only enabled for Script goal.
     // In modules they should be tokenised as normal punctuation so parsing fails.
     let is_html_comment = tt == TT::CommentSingle && (mat.len() == 3 || mat.len() == 4);

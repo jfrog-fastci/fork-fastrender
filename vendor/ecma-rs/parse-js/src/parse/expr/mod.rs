@@ -522,7 +522,7 @@ impl<'a> Parser<'a> {
 
   pub fn class_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassExpr>> {
     self.with_loc(|p| {
-      p.require(TT::KeywordClass)?.loc;
+      p.require(TT::KeywordClass)?;
       let prev_strict_mode = p.strict_mode;
       if p.is_strict_ecmascript() {
         p.strict_mode += 1;
@@ -620,7 +620,7 @@ impl<'a> Parser<'a> {
   pub fn class_expr_with_decorators(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassExpr>> {
     self.with_loc(|p| {
       let decorators = p.decorators(ctx)?;
-      p.require(TT::KeywordClass)?.loc;
+      p.require(TT::KeywordClass)?;
       let prev_strict_mode = p.strict_mode;
       if p.is_strict_ecmascript() {
         p.strict_mode += 1;
@@ -758,7 +758,7 @@ impl<'a> Parser<'a> {
         .str(t1.loc)
         .chars()
         .next()
-        .map_or(false, |c| c.is_ascii_lowercase());
+        .is_some_and(|c| c.is_ascii_lowercase());
 
     let looks_like_type_assertion = !is_likely_jsx_tag
       && matches!(
@@ -811,14 +811,11 @@ impl<'a> Parser<'a> {
           let expression = p.expr_with_min_prec(ctx, min_prec, terminators, asi)?;
 
           use crate::ast::expr::TypeAssertionExpr;
-          return Ok(
-            TypeAssertionExpr {
-              expression: Box::new(expression),
-              type_annotation: None,
-              const_assertion: true,
-            }
-            .into(),
-          );
+          return Ok(TypeAssertionExpr {
+            expression: Box::new(expression),
+            type_annotation: None,
+            const_assertion: true,
+          });
         }
 
         let type_annotation = p.type_expr(ctx)?;
@@ -1304,12 +1301,11 @@ impl<'a> Parser<'a> {
             if operator.name == OperatorName::Delete
               && p.is_strict_ecmascript()
               && p.is_strict_mode()
+              && matches!(operand.stx.as_ref(), Expr::Id(_))
             {
-              if matches!(operand.stx.as_ref(), Expr::Id(_)) {
-                return Err(op_tok.error(SyntaxErrorType::ExpectedSyntax(
-                  "delete of an unqualified identifier in strict mode",
-                )));
-              }
+              return Err(op_tok.error(SyntaxErrorType::ExpectedSyntax(
+                "delete of an unqualified identifier in strict mode",
+              )));
             }
 
             Ok(UnaryExpr {
@@ -1892,10 +1888,7 @@ impl<'a> Parser<'a> {
               Node::new(
                 left.loc + end.loc,
                 CallExpr {
-                  optional_chaining: match operator.name {
-                    OperatorName::OptionalChainingCall => true,
-                    _ => false,
-                  },
+                  optional_chaining: matches!(operator.name, OperatorName::OptionalChainingCall),
                   arguments,
                   callee: left,
                 },
@@ -2068,14 +2061,14 @@ impl<'a> Parser<'a> {
           }
         }
       }
-      Ok(SuperExpr {}.into())
+      Ok(SuperExpr {})
     })
   }
 
   pub fn this_expr(&mut self) -> SyntaxResult<Node<ThisExpr>> {
     self.with_loc(|p| {
       p.require(TT::KeywordThis)?;
-      Ok(ThisExpr {}.into())
+      Ok(ThisExpr {})
     })
   }
 
@@ -2092,7 +2085,7 @@ impl<'a> Parser<'a> {
           "new.target expression not allowed outside functions",
         )));
       }
-      Ok(NewTarget {}.into())
+      Ok(NewTarget {})
     })
   }
 }

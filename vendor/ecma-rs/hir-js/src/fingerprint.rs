@@ -540,12 +540,12 @@ fn hash_jsx_expr_container(hasher: &mut StableHasher, container: &JsxExprContain
 #[inline]
 fn hash_jsx_member_expr(hasher: &mut StableHasher, member: &JsxMemberExpr) {
   hash_id_expr(hasher, &member.base.stx);
-  hash_vec(hasher, &member.path, hash_string);
+  hash_vec(hasher, &member.path, |hasher, value| hash_string(hasher, value));
 }
 
 #[inline]
 fn hash_jsx_name(hasher: &mut StableHasher, name: &JsxName) {
-  hash_option(hasher, name.namespace.as_ref(), hash_string);
+  hash_option(hasher, name.namespace.as_ref(), |hasher, value| hash_string(hasher, value));
   write_str(hasher, &name.name);
 }
 
@@ -870,7 +870,7 @@ fn write_str(hasher: &mut StableHasher, value: &str) {
 }
 
 #[inline]
-fn hash_string(hasher: &mut StableHasher, value: &String) {
+fn hash_string(hasher: &mut StableHasher, value: &str) {
   write_str(hasher, value);
 }
 

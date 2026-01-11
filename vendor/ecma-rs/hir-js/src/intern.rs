@@ -78,6 +78,10 @@ impl NameInterner {
     debug_assert_eq!(self.by_name.len(), self.by_id.len());
     self.by_name.len()
   }
+
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
 }
 
 #[cfg(test)]

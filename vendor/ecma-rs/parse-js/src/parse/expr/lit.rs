@@ -709,12 +709,10 @@ fn count_regex_capturing_groups(pattern: &str) -> usize {
       // - plain `(...)`
       // - named groups `(?<name>...)`
       if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
-        if i + 2 < bytes.len() && bytes[i + 2] == b'<' {
-          if i + 3 < bytes.len() {
-            match bytes[i + 3] {
-              b'=' | b'!' => {}
-              _ => count += 1,
-            }
+        if i + 2 < bytes.len() && bytes[i + 2] == b'<' && i + 3 < bytes.len() {
+          match bytes[i + 3] {
+            b'=' | b'!' => {}
+            _ => count += 1,
           }
         }
       } else {
@@ -1028,7 +1026,7 @@ fn validate_regex_pattern(
         let mut min: usize = 0;
         while j < bytes.len() {
           let c = bytes[j];
-          if !(b'0'..=b'9').contains(&c) {
+          if !c.is_ascii_digit() {
             break;
           }
           min = min.saturating_mul(10).saturating_add((c - b'0') as usize);
@@ -1057,7 +1055,7 @@ fn validate_regex_pattern(
           let mut max_val: usize = 0;
           while j < bytes.len() {
             let c = bytes[j];
-            if !(b'0'..=b'9').contains(&c) {
+            if !c.is_ascii_digit() {
               break;
             }
             max_val = max_val.saturating_mul(10).saturating_add((c - b'0') as usize);
@@ -1313,7 +1311,7 @@ impl<'a> Parser<'a> {
 
   pub fn lit_obj(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<LitObjExpr>> {
     self.with_loc(|p| {
-      p.require(TT::BraceOpen)?.loc;
+      p.require(TT::BraceOpen)?;
       let mut members = Vec::new();
       while p.peek().typ != TT::BraceClose && p.peek().typ != TT::EOF {
         let member_start = p.peek().loc;
@@ -1615,7 +1613,7 @@ impl<'a> Parser<'a> {
     let t = if matches!(peek.typ, TT::LiteralString | TT::Invalid)
       && self
         .str(peek.loc)
-        .starts_with(|c: char| c == '"' || c == '\'')
+        .starts_with(['"', '\''])
     {
       self.consume_with_mode(mode)
     } else {

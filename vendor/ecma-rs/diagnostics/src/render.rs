@@ -313,9 +313,7 @@ fn render_highlight_rows<'a>(
 }
 
 fn push_marker_run(line: &mut String, highlight: &LineHighlight<'_>, options: &RenderOptions) {
-  let marker = std::iter::repeat(highlight.marker)
-    .take(highlight.len)
-    .collect::<String>();
+  let marker = std::iter::repeat_n(highlight.marker, highlight.len).collect::<String>();
   if options.color {
     line.push_str(marker_color_code(highlight));
     line.push_str(&marker);
@@ -461,7 +459,7 @@ fn visible_lines_for_span(start_line: usize, end_line: usize, max_lines: usize) 
     return (start_line..=end_line).collect();
   }
 
-  let head_count = (max_lines + 1) / 2;
+  let head_count = max_lines.div_ceil(2);
   let tail_count = max_lines.saturating_sub(head_count);
   let mut lines = Vec::with_capacity(max_lines);
 

@@ -143,83 +143,82 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
         if rest.is_some() {
           return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
         };
-        match *member.stx {
-          ObjMember { typ } => match typ {
-            ObjMemberType::Valued { key, val: value } => {
-              let (target, default_value) = match value {
-                ClassOrObjVal::Prop(Some(initializer)) => match *initializer.stx {
-                  Expr::Binary(n) => {
-                    if !recover && initializer.assoc.get::<ParenthesizedExpr>().is_some() {
-                      return Err(
-                        initializer
-                          .loc
-                          .error(SyntaxErrorType::InvalidAssigmentTarget, None),
-                      );
-                    }
-                    let BinaryExpr {
-                      operator,
-                      left,
-                      right,
-                    } = *n.stx;
-                    if operator != OperatorName::Assignment {
-                      return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-                    };
-                    (lit_to_pat_with_recover(left, recover)?, Some(right))
+        let ObjMember { typ } = *member.stx;
+        match typ {
+          ObjMemberType::Valued { key, val: value } => {
+            let (target, default_value) = match value {
+              ClassOrObjVal::Prop(Some(initializer)) => match *initializer.stx {
+                Expr::Binary(n) => {
+                  if !recover && initializer.assoc.get::<ParenthesizedExpr>().is_some() {
+                    return Err(
+                      initializer
+                        .loc
+                        .error(SyntaxErrorType::InvalidAssigmentTarget, None),
+                    );
                   }
-                  _ => (lit_to_pat_with_recover(initializer, recover)?, None),
-                },
+                  let BinaryExpr {
+                    operator,
+                    left,
+                    right,
+                  } = *n.stx;
+                  if operator != OperatorName::Assignment {
+                    return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+                  };
+                  (lit_to_pat_with_recover(left, recover)?, Some(right))
+                }
+                _ => (lit_to_pat_with_recover(initializer, recover)?, None),
+              },
+              _ => return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None)),
+            };
+            properties.push(Node::new(
+              loc,
+              ObjPatProp {
+                key,
+                target,
+                default_value,
+                shorthand: true,
+              },
+            ));
+          }
+          ObjMemberType::Shorthand { id } => {
+            properties.push(Node::new(
+              loc,
+              ObjPatProp {
+                key: ClassOrObjKey::Direct(id.derive_stx(|id| ClassOrObjMemberDirectKey {
+                  key: id.name.clone(),
+                  tt: TT::Identifier,
+                })),
+                target: id
+                  .derive_stx(|id| IdPat {
+                    name: id.name.clone(),
+                  })
+                  .into_wrapped(),
+                default_value: None,
+                shorthand: true,
+              },
+            ));
+          }
+          ObjMemberType::Rest { val: value } => {
+            if recover {
+              // TypeScript: For error recovery, allow any pattern in rest position
+              // e.g., `{...{}}` or `{...[]}`.
+              rest = Some(lit_to_pat_with_recover(value, recover)?);
+            } else {
+              // Rest properties must be assignment targets (not patterns) in
+              // strict ECMAScript mode.
+              let rest_target = match value.stx.as_ref() {
+                Expr::Id(_) => lit_to_pat_with_recover(value, recover)?,
+                Expr::Member(member) if !member.stx.optional_chaining => {
+                  Node::new(loc, Pat::AssignTarget(value))
+                }
+                Expr::ComputedMember(member) if !member.stx.optional_chaining => {
+                  Node::new(loc, Pat::AssignTarget(value))
+                }
                 _ => return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None)),
               };
-              properties.push(Node::new(
-                loc,
-                ObjPatProp {
-                  key,
-                  target,
-                  default_value,
-                  shorthand: true,
-                },
-              ));
+              rest = Some(rest_target);
             }
-            ObjMemberType::Shorthand { id } => {
-              properties.push(Node::new(
-                loc,
-                ObjPatProp {
-                  key: ClassOrObjKey::Direct(id.derive_stx(|id| ClassOrObjMemberDirectKey {
-                    key: id.name.clone(),
-                    tt: TT::Identifier,
-                  })),
-                  target: id
-                    .derive_stx(|id| IdPat {
-                      name: id.name.clone(),
-                    })
-                    .into_wrapped(),
-                  default_value: None,
-                  shorthand: true,
-                },
-              ));
-            }
-            ObjMemberType::Rest { val: value } => {
-              if recover {
-                // TypeScript: For error recovery, allow any pattern in rest position
-                // e.g., `{...{}}` or `{...[]}`.
-                rest = Some(lit_to_pat_with_recover(value, recover)?);
-              } else {
-                // Rest properties must be assignment targets (not patterns) in
-                // strict ECMAScript mode.
-                let rest_target = match value.stx.as_ref() {
-                  Expr::Id(_) => lit_to_pat_with_recover(value, recover)?,
-                  Expr::Member(member) if !member.stx.optional_chaining => {
-                    Node::new(loc, Pat::AssignTarget(value))
-                  }
-                  Expr::ComputedMember(member) if !member.stx.optional_chaining => {
-                    Node::new(loc, Pat::AssignTarget(value))
-                  }
-                  _ => return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None)),
-                };
-                rest = Some(rest_target);
-              }
-            }
-          },
+          }
         };
       }
       Ok(Node::new(loc, ObjPat { properties, rest }).into_wrapped())

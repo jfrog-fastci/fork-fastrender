@@ -185,20 +185,15 @@ impl RewriteIdExprName<'_> {
   }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum ConstEnumMode {
   /// Emit `const enum` declarations as runtime enums (an enum object + IIFE),
   /// matching the lowering used for non-`const` enums.
   Runtime,
   /// Inline `const enum` member accesses and erase the declaration, matching the
   /// default `tsc` emit semantics.
+  #[default]
   Inline,
-}
-
-impl Default for ConstEnumMode {
-  fn default() -> Self {
-    Self::Inline
-  }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -228,33 +223,19 @@ impl Default for TsEraseOptions {
 /// and instead reject runtime-only TypeScript constructs deterministically. This
 /// is intended for oracle tooling that wants a stable TS→JS erasure path while
 /// still enforcing a strict TS subset.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum TsEraseMode {
   /// Lower TypeScript runtime constructs (enums, namespaces) into JavaScript.
+  #[default]
   Full,
   /// Reject TypeScript runtime constructs; only erase TS-only syntax.
   StrictNative,
 }
 
-impl Default for TsEraseMode {
-  fn default() -> Self {
-    Self::Full
-  }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TsEraseConfig {
   pub mode: TsEraseMode,
   pub options: TsEraseOptions,
-}
-
-impl Default for TsEraseConfig {
-  fn default() -> Self {
-    Self {
-      mode: TsEraseMode::default(),
-      options: TsEraseOptions::default(),
-    }
-  }
 }
 
 struct StripContext {
@@ -1538,7 +1519,7 @@ enum ConstEnumLookupResult {
   Value(ConstEnumValue),
 }
 
-fn unwrap_ts_const_expr<'a>(mut expr: &'a Node<Expr>) -> &'a Node<Expr> {
+fn unwrap_ts_const_expr(mut expr: &Node<Expr>) -> &Node<Expr> {
   loop {
     match expr.stx.as_ref() {
       Expr::Instantiation(instantiation) => expr = instantiation.stx.expression.as_ref(),
@@ -2158,7 +2139,7 @@ fn inline_const_enums(top_level: &mut Node<TopLevel>) -> HashSet<String> {
       self.shadowed.pop();
     }
 
-    fn rewrite_class_members(&mut self, members: &mut Vec<Node<ClassMember>>) {
+    fn rewrite_class_members(&mut self, members: &mut [Node<ClassMember>]) {
       for member in members.iter_mut() {
         if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
           self.rewrite_expr(expr);
@@ -2837,12 +2818,10 @@ fn rewrite_enum_member_refs(
     fn rewrite_pat(&mut self, pat: &mut Node<Pat>) {
       match pat.stx.as_mut() {
         Pat::Arr(arr) => {
-          for elem in arr.stx.elements.iter_mut() {
-            if let Some(elem) = elem {
-              self.rewrite_pat(&mut elem.target);
-              if let Some(default) = elem.default_value.as_mut() {
-                self.rewrite_expr(default);
-              }
+          for elem in arr.stx.elements.iter_mut().flatten() {
+            self.rewrite_pat(&mut elem.target);
+            if let Some(default) = elem.default_value.as_mut() {
+              self.rewrite_expr(default);
             }
           }
           if let Some(rest) = arr.stx.rest.as_mut() {
@@ -2910,7 +2889,7 @@ fn rewrite_enum_member_refs(
       });
     }
 
-    fn rewrite_class_members(&mut self, members: &mut Vec<Node<ClassMember>>) {
+    fn rewrite_class_members(&mut self, members: &mut [Node<ClassMember>]) {
       for member in members.iter_mut() {
         if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
           self.rewrite_expr(expr);
@@ -3041,7 +3020,7 @@ fn rewrite_enum_member_refs(
       }
     }
 
-    fn rewrite_stmts_in_block(&mut self, stmts: &mut Vec<Node<Stmt>>) {
+    fn rewrite_stmts_in_block(&mut self, stmts: &mut [Node<Stmt>]) {
       let scope = self.collect_block_declared_names(stmts);
       self.with_scope(scope, |rewriter| {
         for stmt in stmts.iter_mut() {
@@ -3396,12 +3375,10 @@ fn rewrite_enum_member_refs(
           }
         }
         Expr::ArrPat(pat) => {
-          for elem in pat.stx.elements.iter_mut() {
-            if let Some(elem) = elem {
-              self.rewrite_pat(&mut elem.target);
-              if let Some(default) = elem.default_value.as_mut() {
-                self.rewrite_expr(default);
-              }
+          for elem in pat.stx.elements.iter_mut().flatten() {
+            self.rewrite_pat(&mut elem.target);
+            if let Some(default) = elem.default_value.as_mut() {
+              self.rewrite_expr(default);
             }
           }
           if let Some(rest) = pat.stx.rest.as_mut() {
@@ -4238,13 +4215,11 @@ fn strip_pat(ctx: &mut StripContext, pat: Node<Pat>) -> Node<Pat> {
 
 fn strip_arr_pat(ctx: &mut StripContext, pat: Node<ArrPat>) -> Node<ArrPat> {
   let mut pat = pat;
-  for elem in pat.stx.elements.iter_mut() {
-    if let Some(elem) = elem {
-      let target = take_pat(&mut elem.target);
-      elem.target = strip_pat(ctx, target);
-      if let Some(default) = elem.default_value.take() {
-        elem.default_value = Some(strip_expr(ctx, default));
-      }
+  for elem in pat.stx.elements.iter_mut().flatten() {
+    let target = take_pat(&mut elem.target);
+    elem.target = strip_pat(ctx, target);
+    if let Some(default) = elem.default_value.take() {
+      elem.default_value = Some(strip_expr(ctx, default));
     }
   }
   if let Some(rest) = pat.stx.rest.as_mut() {
@@ -4467,9 +4442,8 @@ enum SuperCallInsert {
   AfterWithReturnThis { insert_at: usize, loc: Loc },
 }
 
-fn super_call_insert_after(stmts: &mut Vec<Node<Stmt>>) -> Option<SuperCallInsert> {
-  for idx in 0..stmts.len() {
-    let stmt = &mut stmts[idx];
+fn super_call_insert_after(stmts: &mut [Node<Stmt>]) -> Option<SuperCallInsert> {
+  for (idx, stmt) in stmts.iter_mut().enumerate() {
     match stmt.stx.as_mut() {
       Stmt::Expr(expr_stmt) if is_super_call(&expr_stmt.stx.expr) => {
         return Some(SuperCallInsert::After(idx + 1));

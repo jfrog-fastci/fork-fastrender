@@ -156,10 +156,8 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<Node<NamespaceDecl>> {
     self.with_loc(|p| {
       // Accept both 'namespace' and 'module' keywords (unless this is part of a dotted path)
-      if !skip_keyword {
-        if !p.consume_if(TT::KeywordNamespace).is_match() {
-          p.require(TT::KeywordModule)?;
-        }
+      if !skip_keyword && !p.consume_if(TT::KeywordNamespace).is_match() {
+        p.require(TT::KeywordModule)?;
       }
 
       // TypeScript: Allow reserved keywords in dotted namespace paths
