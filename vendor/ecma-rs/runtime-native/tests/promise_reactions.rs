@@ -1,6 +1,6 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::test_util::TestRuntimeGuard;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 #[repr(C)]
@@ -95,15 +95,26 @@ fn concurrent_registrations_do_not_lose_reactions() {
 
   const THREADS: usize = 4;
   const PER_THREAD: usize = 200;
+  const HALF: usize = PER_THREAD / 2;
 
   let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS + 1));
+  let half_ready = std::sync::Arc::new(AtomicUsize::new(0));
+  let settled = std::sync::Arc::new(AtomicBool::new(false));
   let mut joins = Vec::new();
   for _ in 0..THREADS {
     let b = barrier.clone();
+    let half_ready = half_ready.clone();
+    let settled = settled.clone();
     joins.push(std::thread::spawn(move || {
       b.wait();
       for i in 0..PER_THREAD {
         runtime_native::rt_promise_then_legacy(promise, inc, fired as *const AtomicUsize as *mut u8);
+        if i + 1 == HALF {
+          half_ready.fetch_add(1, Ordering::SeqCst);
+          while !settled.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+          }
+        }
         if i % 17 == 0 {
           std::thread::yield_now();
         }
@@ -113,8 +124,11 @@ fn concurrent_registrations_do_not_lose_reactions() {
 
   // Start the registrars and resolve mid-flight to cover both pending + already-settled paths.
   barrier.wait();
-  std::thread::sleep(std::time::Duration::from_millis(5));
+  while half_ready.load(Ordering::SeqCst) < (THREADS / 2).max(1) {
+    std::thread::yield_now();
+  }
   runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+  settled.store(true, Ordering::SeqCst);
 
   for j in joins {
     j.join().unwrap();
