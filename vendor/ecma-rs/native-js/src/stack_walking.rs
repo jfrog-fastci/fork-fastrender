@@ -25,6 +25,9 @@ impl<'ctx> CodeGen<'ctx> {
   }
 
   pub fn module_ir(&self) -> String {
+    // Be defensive: future code may add functions without going through `define_function`.
+    // Enforce the stack-walking invariant across the whole module before emitting IR.
+    self.enforce_stack_walking_invariants();
     self.module.print_to_string().to_string()
   }
 
@@ -60,5 +63,39 @@ impl<'ctx> CodeGen<'ctx> {
 
     func.add_attribute(AttributeLoc::Function, frame_pointer);
     func.add_attribute(AttributeLoc::Function, disable_tail_calls);
+  }
+
+  fn enforce_stack_walking_invariants(&self) {
+    let mut func = self.module.get_first_function();
+    while let Some(f) = func {
+      self.apply_stack_walking_attrs(f);
+      func = f.get_next_function();
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn module_ir_enforces_stack_walking_attrs_for_all_functions() {
+    let context = Context::create();
+    let cg = CodeGen::new(&context, "test");
+
+    // Bypass `define_function` to simulate accidental direct `Module::add_function` usage.
+    let i32_ty = context.i32_type();
+    let fn_ty = i32_ty.fn_type(&[], false);
+    let func = cg.module.add_function("raw", fn_ty, None);
+    let entry = context.append_basic_block(func, "entry");
+    cg.builder.position_at_end(entry);
+    let _ = cg.builder.build_return(Some(&i32_ty.const_int(0, false)));
+
+    let ir = cg.module_ir();
+    assert!(ir.contains("\"frame-pointer\"=\"all\""), "IR:\n{ir}");
+    assert!(
+      ir.contains("\"disable-tail-calls\"=\"true\"") || ir.contains("disable-tail-calls"),
+      "IR:\n{ir}"
+    );
   }
 }
