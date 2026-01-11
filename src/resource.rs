@@ -4016,10 +4016,12 @@ fn cors_preflight_method_cache_entry_match(
   let Some(entry_method) = entry_method else {
     return false;
   };
-  if entry_method == "*" {
-    return !credentialed;
+  // Fetch's wildcard semantics: `*` only counts as a wildcard for non-credentialed requests. For
+  // credentialed requests, `*` is a literal token (and only matches a literal `*` request method).
+  if entry_method.eq_ignore_ascii_case(method) {
+    return true;
   }
-  entry_method.eq_ignore_ascii_case(method)
+  entry_method == "*" && !credentialed
 }
 
 fn cors_preflight_header_name_cache_entry_token_match(
@@ -4043,6 +4045,8 @@ fn cors_preflight_header_name_cache_entry_match(
   if entry_header.eq_ignore_ascii_case(header_name) {
     return true;
   }
+  // Fetch's wildcard semantics: `*` only counts as a wildcard for non-credentialed requests, and
+  // never matches CORS non-wildcard request-header names (Authorization).
   entry_header == "*" && !credentialed && !is_cors_non_wildcard_request_header_name(header_name)
 }
 

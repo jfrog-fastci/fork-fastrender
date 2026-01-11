@@ -3288,6 +3288,140 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_cache_wildcard_entries_do_not_match_credentialed_request() {
+    if skip_if_curl_backend_missing("cors_preflight_cache_wildcard_entries_do_not_match_credentialed_request") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_cache_wildcard_entries_do_not_match_credentialed_request")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      let mut last_connection: Option<Instant> = None;
+      let mut connection_count: usize = 0;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            connection_count += 1;
+            last_connection = Some(Instant::now());
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let (headers, _body) = read_http_request(&mut stream);
+            captured_req.lock().unwrap().push(headers.clone());
+            let line = headers.lines().next().unwrap_or_default();
+            let method = line.split_whitespace().next().unwrap_or_default();
+            if method.eq_ignore_ascii_case("OPTIONS") {
+              let request_method = headers
+                .lines()
+                .find_map(|line| {
+                  let (name, value) = line.split_once(':')?;
+                  if name.trim().eq_ignore_ascii_case("access-control-request-method") {
+                    Some(value.trim().to_string())
+                  } else {
+                    None
+                  }
+                })
+                .unwrap_or_default();
+              if request_method.eq_ignore_ascii_case("PUT") {
+                let response = concat!(
+                  "HTTP/1.1 204 No Content\r\n",
+                  "Access-Control-Allow-Origin: https://client.example\r\n",
+                  "Access-Control-Allow-Credentials: true\r\n",
+                  "Access-Control-Allow-Methods: *, PUT\r\n",
+                  "Access-Control-Allow-Headers: *, x-test\r\n",
+                  "Access-Control-Max-Age: 600\r\n",
+                  "Content-Length: 0\r\n",
+                  "Connection: close\r\n",
+                  "\r\n"
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+              } else if request_method.eq_ignore_ascii_case("DELETE") {
+                let response = concat!(
+                  "HTTP/1.1 204 No Content\r\n",
+                  "Access-Control-Allow-Origin: https://client.example\r\n",
+                  "Access-Control-Allow-Credentials: true\r\n",
+                  "Access-Control-Allow-Methods: DELETE\r\n",
+                  "Access-Control-Max-Age: 600\r\n",
+                  "Content-Length: 0\r\n",
+                  "Connection: close\r\n",
+                  "\r\n"
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+              } else {
+                panic!("unexpected Access-Control-Request-Method: {request_method:?}");
+              }
+            } else {
+              let body = b"ok";
+              let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+              stream.write_all(body).unwrap();
+            }
+            if connection_count >= 4 {
+              break;
+            }
+          }
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
+              break;
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/wildcard");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Include;
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    let mut request = Request::new("DELETE", &url);
+    request.credentials = RequestCredentials::Include;
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+      captured.len(),
+      4,
+      "expected OPTIONS + PUT + OPTIONS + DELETE requests, got:\n{captured:#?}"
+    );
+    let lines: Vec<String> = captured
+      .iter()
+      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
+      .collect();
+    assert!(lines[0].starts_with("options /wildcard"), "request[0]: {}", lines[0]);
+    assert!(lines[1].starts_with("put /wildcard"), "request[1]: {}", lines[1]);
+    assert!(lines[2].starts_with("options /wildcard"), "request[2]: {}", lines[2]);
+    assert!(lines[3].starts_with("delete /wildcard"), "request[3]: {}", lines[3]);
+  }
+
+  #[test]
   fn cors_preflight_cache_wildcard_header_entry_does_not_match_authorization() {
     if skip_if_curl_backend_missing(
       "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
