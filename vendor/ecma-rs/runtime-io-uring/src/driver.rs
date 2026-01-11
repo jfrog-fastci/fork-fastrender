@@ -353,7 +353,18 @@ mod imp {
             let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
 
             let ptr = buf.stable_mut_ptr().as_ptr();
-            let len = buf.len();
+            let len = u32::try_from(buf.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buffer length exceeds u32::MAX",
+                )
+            })?;
+            let stability = crate::debug_stability::record(read_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                    ptr as *const u8,
+                );
+            });
             let read_entry = opcode::Read::new(types::Fd(fd), ptr, len as _)
                 .offset(offset as _)
                 .build()
@@ -373,6 +384,12 @@ mod imp {
             self.in_flight().insert(
                 read_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                            buf.stable_mut_ptr().as_ptr() as *const u8,
+                        );
+                    });
                     if let Some(shared) = read_weak.upgrade() {
                         shared.complete(result, buf);
                     }
@@ -423,7 +440,18 @@ mod imp {
             let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
 
             let ptr = buf.stable_ptr().as_ptr() as *const u8;
-            let len = buf.len();
+            let len = u32::try_from(buf.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buffer length exceeds u32::MAX",
+                )
+            })?;
+            let stability = crate::debug_stability::record(write_id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                    ptr as *const u8,
+                );
+            });
             let write_entry = opcode::Write::new(types::Fd(fd), ptr, len as _)
                 .offset(offset as _)
                 .build()
@@ -441,6 +469,12 @@ mod imp {
             self.in_flight().insert(
                 write_id.0,
                 InFlightOp::Once(Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                            buf.stable_ptr().as_ptr() as *const u8,
+                        );
+                    });
                     if let Some(shared) = write_weak.upgrade() {
                         shared.complete(result, buf);
                     }
@@ -463,6 +497,143 @@ mod imp {
                 IoOp {
                     id: write_id,
                     shared: write_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit a connect with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_connect_with_timeout(
+            &mut self,
+            fd: RawFd,
+            addr: SocketAddr,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<()>, IoOp<OpId>)> {
+            let connect_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let connect_shared = Arc::new(OpShared::new(connect_id));
+            let connect_weak: Weak<OpShared<()>> = Arc::downgrade(&connect_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let addr = ConnectAddr::new(addr);
+            let connect_entry = opcode::Connect::new(types::Fd(fd), addr.addr_ptr(), addr.addr_len())
+                .build()
+                .flags(squeue::Flags::IO_LINK)
+                .user_data(connect_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [connect_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                connect_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _addr = addr;
+                    if let Some(shared) = connect_weak.upgrade() {
+                        shared.complete(result, ());
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, connect_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: connect_id,
+                    shared: connect_shared,
+                },
+                IoOp {
+                    id: timeout_id,
+                    shared: timeout_shared,
+                },
+            ))
+        }
+
+        /// Submit an accept with a linked timeout.
+        ///
+        /// CQE semantics match [`Self::submit_read_with_timeout`].
+        pub fn submit_accept_with_timeout(
+            &mut self,
+            listener_fd: RawFd,
+            flags: i32,
+            timeout: Duration,
+        ) -> io::Result<(IoOp<Option<SocketAddr>>, IoOp<OpId>)> {
+            let accept_id = self.alloc_id();
+            let timeout_id = self.alloc_id();
+
+            let accept_shared = Arc::new(OpShared::new(accept_id));
+            let accept_weak: Weak<OpShared<Option<SocketAddr>>> = Arc::downgrade(&accept_shared);
+
+            let timeout_shared = Arc::new(OpShared::new(timeout_id));
+            let timeout_weak: Weak<OpShared<OpId>> = Arc::downgrade(&timeout_shared);
+
+            let mut addr = AcceptAddr::new();
+            let accept_entry = opcode::Accept::new(
+                types::Fd(listener_fd),
+                addr.addr_ptr(),
+                addr.addr_len_ptr(),
+            )
+            .flags(flags)
+            .build()
+            .flags(squeue::Flags::IO_LINK)
+            .user_data(accept_id.0);
+
+            let ts = Box::new(duration_to_timespec(timeout));
+            let timeout_entry = opcode::LinkTimeout::new(&*ts)
+                .build()
+                .user_data(timeout_id.0);
+
+            let entries = [accept_entry, timeout_entry];
+            self.push_entries(&entries)?;
+
+            self.in_flight().insert(
+                accept_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let peer = if result < 0 { None } else { addr.peer_addr() };
+                    if let Some(shared) = accept_weak.upgrade() {
+                        shared.complete(result, peer);
+                    }
+                })),
+            );
+
+            self.in_flight().insert(
+                timeout_id.0,
+                InFlightOp::Once(Box::new(move |result| {
+                    let _ts = ts;
+                    if let Some(shared) = timeout_weak.upgrade() {
+                        shared.complete(result, accept_id);
+                    }
+                })),
+            );
+
+            self.submit_sqes()?;
+
+            Ok((
+                IoOp {
+                    id: accept_id,
+                    shared: accept_shared,
                 },
                 IoOp {
                     id: timeout_id,
@@ -1294,6 +1465,30 @@ impl IoUringDriver {
         _offset: u64,
         _timeout: std::time::Duration,
     ) -> io::Result<(IoOp<B>, IoOp<OpId>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn submit_connect_with_timeout(
+        &mut self,
+        _fd: i32,
+        _addr: std::net::SocketAddr,
+        _timeout: std::time::Duration,
+    ) -> io::Result<(IoOp<()>, IoOp<OpId>)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn submit_accept_with_timeout(
+        &mut self,
+        _listener_fd: i32,
+        _flags: i32,
+        _timeout: std::time::Duration,
+    ) -> io::Result<(IoOp<Option<std::net::SocketAddr>>, IoOp<OpId>)> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "io_uring is only supported on Linux",
