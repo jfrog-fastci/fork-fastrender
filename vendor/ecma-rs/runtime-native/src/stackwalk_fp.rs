@@ -458,11 +458,10 @@ pub unsafe fn walk_gc_roots_from_fp(
         {
           conservative_scan_frame_words(caller_sp, caller_fp, bounds, &mut visit);
         }
-
-        #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
-        {
-          return Err(WalkError::MissingStackMap { return_addr: caller_ra });
-        }
+        // No stackmap record for the caller's return address. In a fully-instrumented managed
+        // stack this indicates we've crossed into unmanaged/runtime frames (which are not scanned
+        // precisely). Stop walking rather than failing the entire root enumeration.
+        return Ok(());
       }
     }
 
@@ -555,16 +554,10 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
         } else {
           ctx.sp_entry as u64
         };
-        if scan_start == 0 {
-          return Err(WalkError::MissingStackMap { return_addr: caller_ra });
+        if scan_start != 0 {
+          let scan_end = bounds.hi;
+          conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
         }
-        let scan_end = bounds.hi;
-        conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
-      }
-
-      #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
-      {
-        return Err(WalkError::MissingStackMap { return_addr: caller_ra });
       }
     }
   }
@@ -581,8 +574,9 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
 /// each `gc.relocate` use at every statepoint callsite, including interior/derived pointers where
 /// `base != derived`.
 ///
-/// Note: this uses the same stack-walking strategy as [`walk_gc_root_pairs_from_fp`], and will skip
-/// frames whose return address is not present in `stackmaps`.
+/// Note: this uses the same stack-walking strategy as [`walk_gc_root_pairs_from_fp`], and stops
+/// walking when it encounters a return address that is not present in `stackmaps` (treated as the
+/// boundary into unmanaged/runtime frames).
 pub unsafe fn walk_gc_reloc_pairs_from_fp(
   start_fp: u64,
   bounds: Option<StackBounds>,
@@ -652,19 +646,24 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
       });
     }
 
-    if let Some(callsite) = stackmaps.lookup(caller_ra) {
-      let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
-      let pairs = enumerate_root_pairs_for_frame(
-        caller_fp,
-        caller_ra,
-        callsite,
-        bounds,
-        Some(caller_sp),
-        &mut pairs_scratch,
-      )?;
-      if !pairs.is_empty() {
-        visit_frame_reloc_pairs(caller_ra, pairs);
-      }
+    let Some(callsite) = stackmaps.lookup(caller_ra) else {
+      // No stackmap record for this return address. Treat this as the end of the managed stack and
+      // stop walking; we intentionally do not traverse arbitrary unmanaged frames (libc, sysroot,
+      // etc.) since they may not preserve a valid frame-pointer chain.
+      return Ok(());
+    };
+
+    let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
+    let pairs = enumerate_root_pairs_for_frame(
+      caller_fp,
+      caller_ra,
+      callsite,
+      bounds,
+      Some(caller_sp),
+      &mut pairs_scratch,
+    )?;
+    if !pairs.is_empty() {
+      visit_frame_reloc_pairs(caller_ra, pairs);
     }
 
     cur_fp = caller_fp;
