@@ -82,6 +82,10 @@ fn gc_statepoint_stackmaps_do_not_use_register_roots_o3() {
 
   let context = Context::create();
   let ir = include_str!("fixtures/complex_ptr_statepoint.ll");
+  assert!(
+    ir.contains("gc \"coreclr\""),
+    "fixture drift: expected complex_ptr_statepoint.ll to use `gc \"coreclr\"`"
+  );
   let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "complex_ptr_statepoint.ll");
   let module = context
     .create_module_from_ir(buf)
@@ -105,6 +109,13 @@ fn gc_statepoint_stackmaps_do_not_use_register_roots_o3() {
 
   module.set_triple(&triple);
   module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "LLVM IR fixture failed module verification: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
 
   let obj = tm
     .write_to_memory_buffer(&module, inkwell::targets::FileType::Object)
