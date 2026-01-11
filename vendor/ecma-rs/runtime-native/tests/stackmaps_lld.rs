@@ -49,7 +49,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-runtime-native = {{ path = "{}", features = ["llvm_stackmaps_linker"] }}
+runtime-native = {{ path = "{}" }}
 "#,
       crate_dir.display()
     ),
