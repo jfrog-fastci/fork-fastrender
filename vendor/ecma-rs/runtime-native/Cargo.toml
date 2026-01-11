@@ -62,7 +62,7 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-stackmap-context = { path = "../stackmap-context" }
+stackmap-context = { workspace = true }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
 loom = { version = "0.7", optional = true }
