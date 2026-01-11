@@ -200,6 +200,25 @@ If you have an interior pointer (derived from a base object pointer), **both** t
 - `derived_index` points at the value to be relocated (often the same as base).
 - For interior pointers, the GC uses the **base pointer** to identify the object and the `(derived - base)` offset to reconstruct the derived pointer after moving the object.
 
+#### When to root a derived pointer vs recompute it
+
+If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or
+an index value that is still available after the safepoint), it's usually better to:
+
+1. Keep only the **base** pointer live across the safepoint (i.e. only base in `"gc-live"`).
+2. After the safepoint, use the *relocated base* to recompute the derived pointer with another
+   `getelementptr`.
+
+This keeps stack maps smaller (fewer `"gc-live"` entries and fewer `gc.relocate` calls) and can make
+later optimization easier.
+
+Root a derived pointer (include it in `"gc-live"` and relocate it with `(base_idx, derived_idx)`)
+only when you *cannot* reliably recompute it after the safepoint, for example:
+
+- the offset/index is not materialized anymore (was computed in a different block and not kept live),
+- the derived pointer itself is passed around/stored and must remain usable after the safepoint,
+- you need to preserve multiple interior pointers where recomputing would be expensive or invasive.
+
 ---
 
 ## Codegen constraints required by `runtime-native`

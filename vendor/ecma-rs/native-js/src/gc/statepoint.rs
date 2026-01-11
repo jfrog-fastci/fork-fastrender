@@ -95,6 +95,29 @@ impl StatepointEmitter {
     call_args: &[LLVMValueRef],
     gc_live: &[LLVMValueRef],
   ) -> StatepointCall {
+    // Base pointers are identical to derived pointers for non-interior roots.
+    let base_indices: Vec<u32> = (0..gc_live.len() as u32).collect();
+    self.emit_statepoint_call_with_base_indices(builder, callee, call_args, gc_live, &base_indices)
+  }
+
+  /// Like [`emit_statepoint_call`], but allows specifying a base-pointer index for each
+  /// relocated value.
+  ///
+  /// This is required for interior pointers (derived pointers) where `base_idx != derived_idx`.
+  /// Indices are 0-based into the `"gc-live"` operand bundle list.
+  pub unsafe fn emit_statepoint_call_with_base_indices(
+    &mut self,
+    builder: LLVMBuilderRef,
+    callee: LLVMValueRef,
+    call_args: &[LLVMValueRef],
+    gc_live: &[LLVMValueRef],
+    base_indices: &[u32],
+  ) -> StatepointCall {
+    debug_assert_eq!(
+      gc_live.len(),
+      base_indices.len(),
+      "base_indices must match gc_live length"
+    );
     let callee_fn_ty = LLVMGlobalGetValueType(callee);
     let callee_ret_ty = LLVMGetReturnType(callee_fn_ty);
     let callee_ret_kind = LLVMGetTypeKind(callee_ret_ty);
@@ -170,15 +193,23 @@ impl StatepointEmitter {
     };
 
     let mut relocated = Vec::with_capacity(gc_live.len());
-    for (idx, _) in gc_live.iter().enumerate() {
-      let idx_const = LLVMConstInt(self.i32_ty, idx as u64, 0);
+    for (derived_idx, &base_idx) in base_indices.iter().enumerate() {
+      debug_assert!(
+        (base_idx as usize) < gc_live.len(),
+        "base index {base_idx} out of bounds for gc_live length {}",
+        gc_live.len()
+      );
+      let base_idx_const = LLVMConstInt(self.i32_ty, base_idx as u64, 0);
+      let derived_idx_const = LLVMConstInt(self.i32_ty, derived_idx as u64, 0);
       let relocate = LLVMBuildCall2(
         builder,
         self.gc_relocate_fn_ty,
         self.gc_relocate_fn,
-        [token, idx_const, idx_const].as_mut_ptr(),
+        [token, base_idx_const, derived_idx_const].as_mut_ptr(),
         3,
-        CString::new(format!("gc_relocate{idx}")).unwrap().as_ptr(),
+        CString::new(format!("gc_relocate{derived_idx}"))
+          .unwrap()
+          .as_ptr(),
       );
       llvm_sys::core::LLVMSetInstructionCallConv(relocate, LLVMCallConv::LLVMColdCallConv as u32);
       relocated.push(relocate);

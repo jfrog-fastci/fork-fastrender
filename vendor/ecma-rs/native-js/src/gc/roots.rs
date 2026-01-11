@@ -20,6 +20,21 @@
 //! (loads/stores can inhibit some optimizations). Later we can:
 //!   - add caching to avoid redundant reloads where safe, or
 //!   - switch to an LLVM pass-based SSA rewriting strategy.
+//!
+//! ## Derived / interior pointers
+//!
+//! Real code often forms **interior pointers** (e.g. `getelementptr` into an object)
+//! and keeps them live across safepoints. LLVM models this via *base+derived*
+//! relocation:
+//!
+//! `gc.relocate(token, base_idx, derived_idx)`
+//!
+//! - `base_idx` points at the base object pointer in the `"gc-live"` bundle.
+//! - `derived_idx` points at the derived (interior) pointer value.
+//!
+//! If you can cheaply recompute the derived pointer after the safepoint, prefer
+//! rooting only the base pointer and re-doing the `gep` from the relocated base.
+//! Root a derived pointer only when the offset cannot be reconstructed later.
 
 use crate::gc::statepoint::StatepointEmitter;
 use llvm_sys::core::{
@@ -27,11 +42,11 @@ use llvm_sys::core::{
   LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::CString;
-use std::cell::RefCell;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct GcSlot {
   alloca: LLVMValueRef,
 }
@@ -42,10 +57,16 @@ impl GcSlot {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum GcRoot {
+  Base(GcSlot),
+  Derived { base: GcSlot, derived: GcSlot },
+}
+
 pub struct GcFrame {
   gc_ptr_ty: LLVMTypeRef,
   alloca_builder: LLVMBuilderRef,
-  rooted: RefCell<Vec<GcSlot>>,
+  rooted: RefCell<Vec<GcRoot>>,
   next_slot_id: Cell<usize>,
 }
 
@@ -79,12 +100,12 @@ impl GcFrame {
     self.gc_ptr_ty
   }
 
-  /// Create a new rooted slot and store `init` into it.
+  /// Allocate a new stack slot (`alloca`) of GC pointer type and store `init` into it.
   ///
   /// The `alloca` itself is placed in the function entry block (via the frame's
   /// dedicated alloca builder) while the initializing store happens at the
   /// caller's current insertion point.
-  pub unsafe fn alloc_slot(&self, builder: LLVMBuilderRef, init: LLVMValueRef) -> GcSlot {
+  unsafe fn alloc_slot_untracked(&self, builder: LLVMBuilderRef, init: LLVMValueRef) -> GcSlot {
     let slot_id = self.next_slot_id.get();
     self.next_slot_id.set(slot_id + 1);
     let slot_name = CString::new(format!("gc_root{slot_id}")).unwrap();
@@ -92,9 +113,37 @@ impl GcFrame {
     let alloca = LLVMBuildAlloca(self.alloca_builder, self.gc_ptr_ty, slot_name.as_ptr());
     LLVMBuildStore(builder, init, alloca);
 
-    let slot = GcSlot { alloca };
-    self.rooted.borrow_mut().push(slot);
+    GcSlot { alloca }
+  }
+
+  /// Root a base GC pointer.
+  pub unsafe fn root_base(&self, builder: LLVMBuilderRef, ptr: LLVMValueRef) -> GcSlot {
+    let slot = self.alloc_slot_untracked(builder, ptr);
+    self.rooted.borrow_mut().push(GcRoot::Base(slot));
     slot
+  }
+
+  /// Back-compat alias for [`GcFrame::root_base`].
+  pub unsafe fn alloc_slot(&self, builder: LLVMBuilderRef, init: LLVMValueRef) -> GcSlot {
+    self.root_base(builder, init)
+  }
+
+  /// Root an interior pointer (`derived`) along with its base object pointer (`base`).
+  ///
+  /// The base must be rooted separately (via [`GcFrame::root_base`]) so it appears
+  /// in the `"gc-live"` bundle and can be referenced by index.
+  pub unsafe fn root_derived(
+    &self,
+    builder: LLVMBuilderRef,
+    base: &GcSlot,
+    derived: LLVMValueRef,
+  ) -> GcSlot {
+    let derived_slot = self.alloc_slot_untracked(builder, derived);
+    self
+      .rooted
+      .borrow_mut()
+      .push(GcRoot::Derived { base: *base, derived: derived_slot });
+    derived_slot
   }
 
   pub unsafe fn load(&self, builder: LLVMBuilderRef, slot: GcSlot, name: &str) -> LLVMValueRef {
@@ -133,16 +182,55 @@ impl GcFrame {
     callee: LLVMValueRef,
     call_args: &[LLVMValueRef],
   ) -> Option<LLVMValueRef> {
-    let rooted_slots: Vec<GcSlot> = self.rooted.borrow().iter().copied().collect();
+    let roots: Vec<GcRoot> = self.rooted.borrow().iter().copied().collect();
 
-    let mut live_vals = Vec::with_capacity(rooted_slots.len());
-    for (idx, slot) in rooted_slots.iter().copied().enumerate() {
+    // Deterministic ordering: all bases first (in insertion order), then derived
+    // pointers (in insertion order).
+    let mut base_slots = Vec::new();
+    let mut derived_roots: Vec<(GcSlot, GcSlot)> = Vec::new();
+    for root in roots {
+      match root {
+        GcRoot::Base(slot) => base_slots.push(slot),
+        GcRoot::Derived { base, derived } => derived_roots.push((base, derived)),
+      }
+    }
+
+    let mut base_slot_index: HashMap<GcSlot, u32> = HashMap::with_capacity(base_slots.len());
+    for (idx, slot) in base_slots.iter().copied().enumerate() {
+      base_slot_index.insert(slot, idx as u32);
+    }
+
+    let mut gc_live_slots = Vec::with_capacity(base_slots.len() + derived_roots.len());
+    gc_live_slots.extend_from_slice(&base_slots);
+    for &(_, derived) in &derived_roots {
+      gc_live_slots.push(derived);
+    }
+
+    let mut base_indices = Vec::with_capacity(gc_live_slots.len());
+    for (idx, _) in base_slots.iter().enumerate() {
+      base_indices.push(idx as u32);
+    }
+    for &(base, _) in &derived_roots {
+      let base_idx = *base_slot_index.get(&base).expect(
+        "derived root references base slot that is not rooted as a base (root_base must be called first)",
+      );
+      base_indices.push(base_idx);
+    }
+
+    let mut live_vals = Vec::with_capacity(gc_live_slots.len());
+    for (idx, slot) in gc_live_slots.iter().copied().enumerate() {
       live_vals.push(self.load(builder, slot, &format!("gc_live{idx}")));
     }
 
-    let sp = statepoints.emit_statepoint_call(builder, callee, call_args, &live_vals);
+    let sp = statepoints.emit_statepoint_call_with_base_indices(
+      builder,
+      callee,
+      call_args,
+      &live_vals,
+      &base_indices,
+    );
 
-    for (slot, relocated) in rooted_slots.into_iter().zip(sp.relocated.iter().copied()) {
+    for (slot, relocated) in gc_live_slots.into_iter().zip(sp.relocated.iter().copied()) {
       self.store(builder, slot, relocated);
     }
 

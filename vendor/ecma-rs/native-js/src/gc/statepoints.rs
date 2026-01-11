@@ -19,10 +19,15 @@
 //! `@llvm.experimental.gc.relocate`. Even with a non-moving GC today, emitting `gc.relocate` makes
 //! the IR future-proof: later we can switch to a moving collector without changing codegen.
 //!
-//! ## Assumptions (for now)
-//! Early codegen assumes there are no interior pointers live across safepoints (i.e. base ==
-//! derived). The API is structured around base/derived pairs so we can extend it to interior
-//! pointers later without changing all call sites.
+//! ## Derived / interior pointers
+//! `LiveGcPtr` models LLVM's base+derived relocation scheme.
+//!
+//! - For normal GC references, use [`LiveGcPtr::new`] (base == derived).
+//! - For interior pointers (e.g. `getelementptr` results that remain live across a safepoint), use
+//!   [`LiveGcPtr::new_with_base`].
+//!
+//! If you can cheaply recompute the interior pointer after the safepoint, it is usually better to
+//! keep only the base pointer live and redo the `gep` from the relocated base.
 
 use std::collections::HashMap;
 use std::ffi::CString;

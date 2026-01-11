@@ -2,9 +2,10 @@ use crate::gc::roots::GcFrame;
 use crate::gc::statepoint::StatepointEmitter;
 use llvm_sys::analysis::{LLVMVerifyModule, LLVMVerifierFailureAction};
 use llvm_sys::core::{
-  LLVMAppendBasicBlockInContext, LLVMBuildRetVoid, LLVMConstNull, LLVMContextCreate,
-  LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage,
-  LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction, LLVMModuleCreateWithNameInContext,
+  LLVMAppendBasicBlockInContext, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMConstInt, LLVMConstNull,
+  LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
+  LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction, LLVMGetParam,
+  LLVMInt8TypeInContext, LLVMInt64TypeInContext, LLVMModuleCreateWithNameInContext,
   LLVMPositionBuilderAtEnd, LLVMPrintModuleToString, LLVMSetGC, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
@@ -62,6 +63,79 @@ pub fn demo_gc_root_slots_ir() -> String {
 
     ir
   }
+}
+
+/// Build a tiny function that roots:
+///   - a base GC pointer, and
+///   - a derived/interior pointer (`gep` from the base),
+/// and then emits a safepointed call.
+///
+/// Used by IR-level tests to lock down base+derived relocation indices.
+pub fn demo_gc_root_derived_ptr_ir() -> String {
+  unsafe { demo_gc_root_derived_ptrs_ir(1) }
+}
+
+/// Like [`demo_gc_root_derived_ptr_ir`], but roots two derived pointers sharing the same base.
+pub fn demo_gc_root_multi_derived_ptr_ir() -> String {
+  unsafe { demo_gc_root_derived_ptrs_ir(2) }
+}
+
+unsafe fn demo_gc_root_derived_ptrs_ir(num_derived: u64) -> String {
+  let ctx = LLVMContextCreate();
+  let module = LLVMModuleCreateWithNameInContext(b"demo\0".as_ptr().cast(), ctx);
+  let builder = LLVMCreateBuilderInContext(ctx);
+
+  // Declare `void @callee()`.
+  let void_ty = LLVMVoidTypeInContext(ctx);
+  let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+  let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
+
+  // Define `void @test(ptr addrspace(1) %base) gc "statepoint-example"`.
+  let gc_ptr_ty = llvm_sys::core::LLVMPointerType(void_ty, 1);
+  let test_fn_ty = LLVMFunctionType(void_ty, [gc_ptr_ty].as_ptr().cast_mut(), 1, 0);
+  let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
+  LLVMSetGC(test_fn, b"statepoint-example\0".as_ptr().cast());
+
+  let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
+  LLVMPositionBuilderAtEnd(builder, entry);
+
+  let frame = GcFrame::new(ctx, entry);
+  let mut sp = StatepointEmitter::new(ctx, module, frame.gc_ptr_ty());
+
+  let base = LLVMGetParam(test_fn, 0);
+  let base_slot = frame.root_base(builder, base);
+
+  let i8_ty = LLVMInt8TypeInContext(ctx);
+  let i64_ty = LLVMInt64TypeInContext(ctx);
+  for i in 0..num_derived {
+    let offset = 8 + (i * 8);
+    let idx = LLVMConstInt(i64_ty, offset, 0);
+    let mut idxs = [idx];
+    let derived = LLVMBuildGEP2(
+      builder,
+      i8_ty,
+      base,
+      idxs.as_mut_ptr(),
+      idxs.len() as u32,
+      CString::new(format!("derived{i}")).unwrap().as_ptr(),
+    );
+    frame.root_derived(builder, &base_slot, derived);
+  }
+
+  frame.safepoint_call(builder, &mut sp, callee, &[]);
+
+  LLVMBuildRetVoid(builder);
+  verify_module(module);
+
+  let c_str = LLVMPrintModuleToString(module);
+  let ir = CStr::from_ptr(c_str).to_string_lossy().into_owned();
+  LLVMDisposeMessage(c_str);
+
+  LLVMDisposeBuilder(builder);
+  LLVMDisposeModule(module);
+  LLVMContextDispose(ctx);
+
+  ir
 }
 
 unsafe fn llvm_get_or_add_fn(module: LLVMModuleRef, name: &str, ty: llvm_sys::prelude::LLVMTypeRef) -> LLVMValueRef {
