@@ -272,6 +272,7 @@ The signatures below intentionally mirror the sketch in `EXEC.plan.md`:
 // Memory
 pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
 pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
+pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
 // GC

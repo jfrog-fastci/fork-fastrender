@@ -21,8 +21,8 @@ fn bytes_from_raw<'a>(ptr: *const u8, len: usize, context: &'static str) -> &'a 
 
 /// Concatenate two UTF-8 byte strings into a new allocation.
 ///
-/// Milestone-1 runtime: the returned bytes are heap-allocated and never freed
-/// (GC not implemented yet).
+/// The returned bytes are allocated outside the GC heap via the runtime's bump allocator
+/// (`crate::alloc`) and are currently leak-only (not reclaimed by GC).
 #[no_mangle]
 pub extern "C" fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef {
   abort_on_panic(|| {
