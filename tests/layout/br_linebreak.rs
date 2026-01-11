@@ -158,6 +158,17 @@ fn br_before_block_does_not_create_trailing_empty_line() {
 }
 
 #[test]
+fn multiple_brs_before_block_create_blank_line() {
+  // A single `<br>` immediately before a block-level element is treated as redundant (the block
+  // already starts on a new line). However, additional `<br>`s must still create empty lines.
+  //
+  // Real-world markup (e.g. the Hacker News footer) uses `<br><br>` before a `<form>` to insert a
+  // blank line between sections; preserve that spacing.
+  let lines = line_texts("<div>hello<br><br><div>block</div></div>");
+  assert_eq!(lines, ["hello", ""]);
+}
+
+#[test]
 fn leading_br_before_block_still_creates_empty_line() {
   let lines = line_texts("<div><br><div>block</div></div>");
   assert_eq!(lines, ["", ""]);

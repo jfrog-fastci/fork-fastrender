@@ -1945,10 +1945,21 @@ impl InlineFormattingContext {
           }
           self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
           // If the inline flow ends with a hard break (`<br>`) and the next in-flow child is a
-          // block-level box, browsers do not create an extra empty line box between the inline
-          // content and the following block. The block starts on the line immediately after the
-          // break, so drop the final hard break before flushing this inline segment.
-          if matches!(current_items.last(), Some(InlineItem::HardBreak(_))) {
+          // block-level box, browsers do not create an extra *trailing* empty line box between the
+          // inline content and the following block. The block starts on the line immediately after
+          // the break, so drop exactly one trailing hard break before flushing this inline segment.
+          //
+          // However, *multiple* consecutive `<br>`s before the block must still create empty lines
+          // (e.g. `text<br><br><div>` produces one blank line). We therefore drop only one break and
+          // leave any additional trailing breaks intact.
+          //
+          // Preserve clearing line breaks (`<br clear=...>`) because dropping them would prevent
+          // float clearance from being applied.
+          let last_is_non_clearing_break = matches!(
+            current_items.last(),
+            Some(InlineItem::HardBreak(clear)) if !clear.is_clearing()
+          );
+          if last_is_non_clearing_break {
             // A leading `<br>` (e.g. `<div><br><div>block</div></div>`) should still create an
             // empty line, so only drop the trailing hard break when the inline segment contains
             // real in-flow content before it.
