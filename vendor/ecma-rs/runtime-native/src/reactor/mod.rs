@@ -5,6 +5,8 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod task;
+
 /// Token associated with a registered I/O source.
 ///
 /// The reactor guarantees that [`Reactor::poll`] returns at most one [`Event`] per [`Token`]

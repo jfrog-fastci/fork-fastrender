@@ -269,7 +269,6 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
 
     out.push(map);
     off = off.checked_add(len).ok_or(StackMapError::UnexpectedEof)?;
-
     // Linkers align concatenated input sections; `.llvm_stackmaps` uses (at least) 8-byte
     // alignment.
     //
