@@ -90,6 +90,9 @@ fn c_can_link_and_call_runtime_native() {
 #include "runtime_native.h"
 
 int main(void) {
+  ShapeId shape = (ShapeId)0;
+  uint8_t* pinned = rt_alloc_pinned(16, shape);
+  (void)pinned;
   rt_gc_safepoint();
   return 0;
 }

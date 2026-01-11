@@ -40,6 +40,13 @@ cc -std=c99 \
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
 
+## Pinned allocations
+
+Some embeddings require stable object addresses (FFI / host references). The runtime exposes
+`rt_alloc_pinned`, which is intended to allocate objects whose address is stable across GC cycles.
+Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
+wired up.
+
 ## Parallel ABI (placeholder)
 
 The AOT compiler may emit calls to `rt_parallel_spawn` / `rt_parallel_join` for parallel work
@@ -103,4 +110,3 @@ The runtime provides a minimal `Promise` implementation sufficient for async/awa
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
 FIFO by calling `rt_async_poll()`.
-

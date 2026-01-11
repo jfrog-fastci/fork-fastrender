@@ -44,6 +44,9 @@ typedef struct StringRef {
 // Memory
 // -----------------------------------------------------------------------------
 uint8_t* rt_alloc(size_t size, ShapeId shape);
+// Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
+// host embeddings that require stable addresses.
+uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);
 uint8_t* rt_alloc_array(size_t len, size_t elem_size);
 
 // -----------------------------------------------------------------------------

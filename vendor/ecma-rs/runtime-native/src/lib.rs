@@ -138,6 +138,7 @@ mod tests {
     // don't forget to update the header when changing the exported ABI.
     const DECLS: &[&str] = &[
       "uint8_t* rt_alloc(size_t size, ShapeId shape);",
+      "uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);",
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_gc_safepoint(void);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
@@ -167,6 +168,7 @@ mod tests {
 
     // Ensure the Rust exports match the declared ABI shape.
     let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
+    let _alloc_pinned: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc_pinned;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
@@ -187,6 +189,7 @@ mod tests {
     let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
     let _ = (
       _alloc,
+      _alloc_pinned,
       _alloc_array,
       _safepoint,
       _write_barrier,
