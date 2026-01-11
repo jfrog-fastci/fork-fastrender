@@ -2,7 +2,7 @@ use std::mem;
 use std::ptr;
 
 use runtime_native::buffer::{
-  ArrayBuffer, BackingStoreAllocator, BackingStoreDetachError, GlobalBackingStoreAllocator, Uint8Array,
+  ArrayBuffer, ArrayBufferError, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array,
 };
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
@@ -107,64 +107,64 @@ fn unreachable_pinned_objects_are_collectible() {
 }
 
 #[test]
-fn pin_unpin_toggles_is_pinned() {
+fn pin_unpin_toggles_pin_count() {
   let buffer = ArrayBuffer::new_zeroed(8).unwrap();
-  let store = buffer.backing_store();
-
-  assert!(!store.is_pinned());
+  assert_eq!(buffer.pin_count(), 0);
 
   let pinned = buffer.pin().unwrap();
   assert_eq!(pinned.len(), 8);
-  assert!(store.is_pinned());
+  assert_eq!(buffer.pin_count(), 1);
 
   drop(pinned);
-  assert!(!store.is_pinned());
+  assert_eq!(buffer.pin_count(), 0);
 }
 
 #[test]
 fn pin_is_raii_on_panic() {
   let buffer = ArrayBuffer::new_zeroed(4).unwrap();
-  let store = buffer.backing_store();
+  assert_eq!(buffer.pin_count(), 0);
 
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let _pinned = buffer.pin().unwrap();
-    assert!(store.is_pinned());
+    assert_eq!(buffer.pin_count(), 1);
     panic!("boom");
   }));
 
   assert!(result.is_err());
-  assert!(!store.is_pinned());
+  assert_eq!(buffer.pin_count(), 0);
 }
 
 #[test]
-fn detach_and_free_are_blocked_while_pinned() {
-  let mut buffer = ArrayBuffer::new_zeroed(8).unwrap();
+fn detach_transfer_and_resize_are_blocked_while_pinned() {
+  let alloc = GlobalBackingStoreAllocator::default();
+  let mut buffer = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
+  assert_eq!(alloc.external_bytes(), 8);
 
   let pinned = buffer.pin().unwrap();
-  assert!(buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 1);
 
   assert_eq!(
-    buffer.backing_store_mut().try_detach(),
-    Err(BackingStoreDetachError::Pinned)
+    buffer.detach(),
+    Err(ArrayBufferError::Pinned)
   );
+  assert_eq!(buffer.transfer().unwrap_err(), ArrayBufferError::Pinned);
   assert_eq!(
-    buffer.backing_store_mut().try_free(),
-    Err(BackingStoreDetachError::Pinned)
+    buffer.resize(16),
+    Err(ArrayBufferError::Pinned)
   );
 
   drop(pinned);
-  assert!(!buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 0);
 
-  buffer.backing_store_mut().try_detach().unwrap();
-  assert_eq!(
-    buffer.backing_store_mut().try_free(),
-    Err(BackingStoreDetachError::NotAlive)
-  );
+  buffer.detach().unwrap();
+  assert!(buffer.is_detached());
+  assert_eq!(buffer.byte_len(), 0);
+  assert_eq!(alloc.external_bytes(), 0);
 }
 
 #[test]
 fn finalize_defers_free_until_last_unpin() {
-  let alloc = GlobalBackingStoreAllocator::new();
+  let alloc = GlobalBackingStoreAllocator::default();
   let mut buffer = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
   assert_eq!(alloc.external_bytes(), 8);
 
@@ -189,17 +189,17 @@ fn typed_array_pins_subrange() {
   let ptr_buf = pinned_buf.as_ptr();
   let len_buf = pinned_buf.len();
   assert_eq!(len_buf, 8);
-  assert!(buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 1);
 
   let pinned_view = view.pin().unwrap();
   let ptr_view = pinned_view.as_ptr();
   let len_view = pinned_view.len();
   assert_eq!(len_view, 4);
   assert_eq!((ptr_view as usize) - (ptr_buf as usize), 2);
-  assert!(buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 2);
 
   drop(pinned_view);
-  assert!(buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 1);
   drop(pinned_buf);
-  assert!(!buffer.backing_store().is_pinned());
+  assert_eq!(buffer.pin_count(), 0);
 }
