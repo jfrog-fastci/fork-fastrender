@@ -206,6 +206,11 @@ mere presence of values in `"gc-live"`.
 
 Practical implications for codegen:
 
+* **GC pointer call arguments are roots.** LLVM does not implicitly treat
+  `ptr addrspace(1)` call arguments as GC roots for stackmap emission. When
+  manually building statepoints, ensure any GC pointer call arguments are also
+  listed in `"gc-live"` (and have corresponding `gc.relocate` uses), or they may
+  be missing from `.llvm_stackmaps`.
 * If you add a GC pointer to `"gc-live"` but never use a corresponding
   `gc.relocate` result (or it gets DCE’d), LLVM may emit a StackMap record with no
   GC pointer locations for that value.
