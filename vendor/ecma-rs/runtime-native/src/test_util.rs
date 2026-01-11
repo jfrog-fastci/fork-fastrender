@@ -85,6 +85,9 @@ impl TestRuntimeGuard {
     let lock = TEST_MUTEX.lock();
     // Serialize with tests that mutate write barrier state (young range + remembered set).
     let gc_lock = GC_TEST_MUTEX.lock();
+    // Ensure one-time global initialization doesn't get charged to tests that
+    // measure `rt_async_poll` latency (e.g. idle detection).
+    let _ = crate::rt_ensure_init();
     reset_runtime_state();
     Self {
       _lock: lock,
@@ -158,9 +161,6 @@ impl Drop for TestGcGuard {
     YOUNG_SPACE
       .start
       .store(self.prev_young_start, Ordering::Release);
-    YOUNG_SPACE
-      .end
-      .store(self.prev_young_end, Ordering::Release);
     YOUNG_SPACE
       .end
       .store(self.prev_young_end, Ordering::Release);

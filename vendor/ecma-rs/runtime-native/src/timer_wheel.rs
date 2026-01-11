@@ -1,7 +1,19 @@
+use std::task::Waker;
 use std::time::Instant;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct TimerKey(u64);
+
+/// Helper payload for scheduling wakers into the timer wheel.
+#[derive(Debug, Clone)]
+pub struct WakeTask(pub Waker);
+
+impl WakeTask {
+  #[inline]
+  pub fn wake(self) {
+    self.0.wake();
+  }
+}
 
 // 64^6 ~= 6.87e10ms ~= 795 days, enough to cover JS' max timeout (2^31-1 ms).
 const BITS: usize = 6;
@@ -115,8 +127,16 @@ impl<T> Default for TimerWheel<T> {
 
 impl<T> TimerWheel<T> {
   pub fn new() -> Self {
+    Self::new_at(Instant::now())
+  }
+
+  /// Construct a timer wheel using `base` as the tick origin.
+  ///
+  /// This is useful for deterministic tests: callers can derive all deadlines from a single base
+  /// instant and advance time without sleeping.
+  pub fn new_at(base: Instant) -> Self {
     Self {
-      base: Instant::now(),
+      base,
       current_tick: 0,
       levels: std::array::from_fn(|_| Level::default()),
       slots: Vec::new(),
@@ -637,6 +657,7 @@ mod tests {
   use super::*;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
+  use std::task::{RawWaker, RawWakerVTable, Waker};
   use std::time::Duration;
 
   #[test]
@@ -780,5 +801,45 @@ mod tests {
     assert!(stats.tick_steps < 10_000, "tick_steps too high: {stats:?}");
     assert!(stats.slot_visits < 10_000, "slot_visits too high: {stats:?}");
     assert!(stats.cascades < 1_000, "cascades too high: {stats:?}");
+  }
+
+  #[test]
+  fn waking_works_with_custom_waker() {
+    fn counting_waker(counter: Arc<AtomicUsize>) -> Waker {
+      unsafe fn clone(data: *const ()) -> RawWaker {
+        Arc::<AtomicUsize>::increment_strong_count(data as *const AtomicUsize);
+        RawWaker::new(data, &VTABLE)
+      }
+
+      unsafe fn wake(data: *const ()) {
+        let arc = Arc::<AtomicUsize>::from_raw(data as *const AtomicUsize);
+        arc.fetch_add(1, Ordering::SeqCst);
+      }
+
+      unsafe fn wake_by_ref(data: *const ()) {
+        let arc = Arc::<AtomicUsize>::from_raw(data as *const AtomicUsize);
+        arc.fetch_add(1, Ordering::SeqCst);
+        let _ = Arc::into_raw(arc);
+      }
+
+      unsafe fn drop(data: *const ()) {
+        let _ = Arc::<AtomicUsize>::from_raw(data as *const AtomicUsize);
+      }
+
+      static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+
+      let raw = RawWaker::new(Arc::into_raw(counter) as *const (), &VTABLE);
+      unsafe { Waker::from_raw(raw) }
+    }
+
+    let base = Instant::now();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let waker = counting_waker(counter.clone());
+
+    let mut wheel = TimerWheel::new_at(base);
+    wheel.schedule(base + Duration::from_millis(1), WakeTask(waker));
+
+    wheel.poll_expired(base + Duration::from_millis(1), |w| w.wake());
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
   }
 }

@@ -95,9 +95,8 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
 
   runtime_native::rt_async_wait();
   resolver.join().unwrap();
-  // Ensure the resolver thread has finished enqueueing all wakeups before we start polling the
-  // single-consumer event loop. Otherwise, `rt_async_poll_legacy` can briefly observe the runtime as
-  // idle and return early while another thread is still producing microtasks.
+  // `rt_async_wait` may return spuriously. After the resolver completes, drain the single-consumer
+  // runtime so we don't miss work enqueued concurrently with the wait.
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
@@ -133,9 +132,7 @@ fn many_waiters_are_all_woken() {
 
   runtime_native::rt_async_wait();
   resolver.join().unwrap();
-  // See comment in `cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait`: ensure the
-  // resolver thread has finished enqueueing all wakeups before polling so we don't observe a
-  // transient idle state while another thread is still producing microtasks.
+  // Drain after the resolver completes to handle spurious wakeups / late resolution.
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), n);
 }

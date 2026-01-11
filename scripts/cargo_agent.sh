@@ -336,6 +336,37 @@ if [[ -z "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
   export CMAKE_TOOLCHAIN_FILE="${repo_root}/.cargo/aom_generic_toolchain.cmake"
 fi
 
+# `vendor/ecma-rs` is a nested workspace with its own `.cargo/config.toml`.
+# When invoking Cargo from the repo root with `--manifest-path vendor/ecma-rs/Cargo.toml`,
+# Cargo does *not* load that nested config, so `env` overrides like `RUSTC_BOOTSTRAP=1`
+# would otherwise be lost.
+#
+# `runtime-native` relies on this (uses `#![feature(thread_local)]`), so propagate the
+# nested workspace's bootstrap opt-in when we detect a `vendor/ecma-rs/Cargo.toml`
+# manifest path.
+needs_rustc_bootstrap=0
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  manifest_path=""
+  if [[ "${argv[$i]}" == "--manifest-path" ]]; then
+    manifest_path="${argv[$((i + 1))]:-}"
+  elif [[ "${argv[$i]}" == --manifest-path=* ]]; then
+    manifest_path="${argv[$i]#--manifest-path=}"
+  fi
+
+  if [[ -n "${manifest_path}" ]]; then
+    case "${manifest_path}" in
+      "${repo_root}/vendor/ecma-rs/Cargo.toml"|"vendor/ecma-rs/Cargo.toml"|*/vendor/ecma-rs/Cargo.toml)
+        needs_rustc_bootstrap=1
+        ;;
+    esac
+  fi
+done
+
+if [[ "${needs_rustc_bootstrap}" == "1" && -z "${RUSTC_BOOTSTRAP:-}" ]]; then
+  export RUSTC_BOOTSTRAP=1
+fi
+
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
 # When the sccache daemon is unhealthy, it can fail *some* compilations mid-run and surface as a
 # spurious `could not compile ... process didn't exit successfully: sccache rustc ...` error.
