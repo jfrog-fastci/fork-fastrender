@@ -124,7 +124,38 @@ impl<'ast> Visit<'ast> for PanicVisitor {
     if mac.path.is_ident("panic") {
       self.panics.push(mac.span());
     }
+    collect_panic_spans_in_token_stream(mac.tokens.clone(), &mut self.panics);
     syn::visit::visit_macro(self, mac);
+  }
+}
+
+fn collect_panic_spans_in_token_stream(tokens: proc_macro2::TokenStream, out: &mut Vec<Span>) {
+  use proc_macro2::TokenTree;
+
+  let mut iter = tokens.into_iter().peekable();
+  while let Some(tt) = iter.next() {
+    match tt {
+      TokenTree::Group(group) => collect_panic_spans_in_token_stream(group.stream(), out),
+      TokenTree::Ident(ident) => {
+        if ident.to_string() != "panic" {
+          continue;
+        }
+
+        let Some(TokenTree::Punct(punct)) = iter.peek() else {
+          continue;
+        };
+        if punct.as_char() != '!' {
+          continue;
+        }
+
+        // Consume `!` so nested patterns like `panic!!()` don't repeatedly match.
+        let _ = iter.next();
+        if matches!(iter.peek(), Some(TokenTree::Group(_))) {
+          out.push(ident.span());
+        }
+      }
+      _ => {}
+    }
   }
 }
 
