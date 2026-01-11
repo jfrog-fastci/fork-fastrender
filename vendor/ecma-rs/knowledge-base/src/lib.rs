@@ -1488,12 +1488,32 @@ pub fn parse_api_semantics_yaml_str(yaml: &str) -> Result<Vec<ApiSemantics>, ser
       Ok(apis.into_iter().map(normalize_api).collect())
     }
     serde_yaml::Value::Mapping(map) => {
-      // Support a single entry written in the `ApiRaw` schema (e.g. with structured effects).
-      if map.contains_key(&serde_yaml::Value::String("name".to_string())) {
+      let is_schema_module = map.contains_key(&serde_yaml::Value::String("schema".to_string()))
+        || map.contains_key(&serde_yaml::Value::String("schema_version".to_string()));
+
+      if is_schema_module {
+        let module: ModuleRaw = serde_yaml::from_value(serde_yaml::Value::Mapping(map))?;
+        if module.schema != 1 {
+          return Err(serde_yaml::Error::custom(format!(
+            "unsupported schema version {}",
+            module.schema
+          )));
+        }
+        Ok(module.apis.into_iter().map(normalize_api).collect())
+      } else if map.contains_key(&serde_yaml::Value::String("name".to_string())) {
+        // Support a single entry written in the `ApiRaw` schema (e.g. with structured effects).
         let api: ApiRaw = serde_yaml::from_value(serde_yaml::Value::Mapping(map))?;
         Ok(vec![normalize_api(api)])
       } else {
-        Ok(Vec::new())
+        // Mapping format: `{ ApiName: { ... }, ... }`.
+        let apis: BTreeMap<String, ApiBodyRaw> =
+          serde_yaml::from_value(serde_yaml::Value::Mapping(map))?;
+        Ok(
+          apis
+            .into_iter()
+            .map(|(name, api)| normalize_api_from_body(name, api))
+            .collect(),
+        )
       }
     }
     _ => Ok(Vec::new()),
@@ -1581,6 +1601,35 @@ purity:
       EffectTemplate::Custom(EffectSet::ALLOCATES | EffectSet::MAY_THROW)
     );
     assert_eq!(parsed[1].kind, ApiKind::Getter);
+  }
+
+  #[test]
+  fn parse_yaml_schema_module_v1() {
+    let yaml = include_str!("../core/json.yaml");
+    let entries = parse_api_semantics_yaml_str(yaml).expect("parse core/json.yaml");
+    assert!(
+      entries.iter().any(|api| api.name == "JSON.parse"),
+      "expected JSON.parse in schema module"
+    );
+  }
+
+  #[test]
+  fn parse_yaml_mapping_format_module() {
+    let yaml = r#"
+console.log:
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+"#;
+    let entries = parse_api_semantics_yaml_str(yaml).expect("parse mapping module");
+    let entry = entries
+      .iter()
+      .find(|api| api.name == "console.log")
+      .expect("console.log entry");
+    assert_eq!(entry.purity, PurityTemplate::Impure);
+    assert!(entry.effect_summary.contains(EffectSet::IO));
   }
 
   #[test]
