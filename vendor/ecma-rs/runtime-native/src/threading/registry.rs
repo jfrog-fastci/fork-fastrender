@@ -1,6 +1,7 @@
 use crate::arch::SafepointContext;
 use crate::threading::safepoint;
 use std::collections::HashMap;
+use std::cell::RefCell;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -146,7 +147,7 @@ impl ThreadRegistry {
       threads.insert(id, state.clone());
     }
 
-    set_tls_thread_state(state.clone());
+    set_tls_thread_registration(ThreadRegistration { state: state.clone() });
     safepoint::notify_state_change();
 
     // If a GC is already in progress, immediately park at the safepoint before
@@ -158,21 +159,9 @@ impl ThreadRegistry {
     state
   }
 
-  fn unregister_current_thread(&self) {
-    let Some(state) = current_thread_state() else {
-      return;
-    };
-
-    let id = state.id;
-    clear_tls_thread_state();
-
-    {
-      let mut threads = self.threads.lock().unwrap();
-      if threads.remove(&id).is_some() {
-      }
-    }
-
-    safepoint::notify_state_change();
+  fn unregister_thread(&self, id: ThreadId) {
+    let mut threads = self.threads.lock().unwrap();
+    threads.remove(&id);
   }
 
   fn all_threads(&self) -> Vec<Arc<ThreadState>> {
@@ -203,29 +192,45 @@ fn registry() -> &'static ThreadRegistry {
 }
 
 thread_local! {
-  static TLS_THREAD_STATE: std::cell::RefCell<Option<Arc<ThreadState>>> = std::cell::RefCell::new(None);
+  static TLS_THREAD_REGISTRATION: RefCell<Option<ThreadRegistration>> = RefCell::new(None);
 }
 
-fn set_tls_thread_state(state: Arc<ThreadState>) {
-  TLS_THREAD_STATE.with(|cell| {
-    *cell.borrow_mut() = Some(state);
+struct ThreadRegistration {
+  state: Arc<ThreadState>,
+}
+
+impl Drop for ThreadRegistration {
+  fn drop(&mut self) {
+    registry().unregister_thread(self.state.id);
+    safepoint::notify_state_change();
+  }
+}
+
+fn set_tls_thread_registration(reg: ThreadRegistration) {
+  TLS_THREAD_REGISTRATION.with(|cell| {
+    *cell.borrow_mut() = Some(reg);
   });
 }
 
-fn clear_tls_thread_state() {
-  TLS_THREAD_STATE.with(|cell| {
+fn clear_tls_thread_registration() {
+  TLS_THREAD_REGISTRATION.with(|cell| {
     *cell.borrow_mut() = None;
   });
 }
 
 /// Return this thread's registered [`ThreadState`], if any.
 pub fn current_thread_state() -> Option<Arc<ThreadState>> {
-  TLS_THREAD_STATE.with(|cell| cell.borrow().clone())
+  TLS_THREAD_REGISTRATION.with(|cell| {
+    cell
+      .borrow()
+      .as_ref()
+      .map(|reg| reg.state.clone())
+  })
 }
 
 /// Return this thread's registered [`ThreadId`], if any.
 pub fn current_thread_id() -> Option<ThreadId> {
-  current_thread_state().map(|s| s.id)
+  TLS_THREAD_REGISTRATION.with(|cell| cell.borrow().as_ref().map(|reg| reg.state.id))
 }
 
 /// Register the current thread with the global registry.
@@ -235,7 +240,7 @@ pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
 
 /// Unregister the current thread from the global registry.
 pub fn unregister_current_thread() {
-  registry().unregister_current_thread();
+  clear_tls_thread_registration();
 }
 
 /// Snapshot all registered threads (for GC iteration).
@@ -250,21 +255,24 @@ pub fn thread_counts() -> ThreadCounts {
 
 /// Mark the current thread as parked/unparked.
 pub fn set_current_thread_parked(parked: bool) {
-  let Some(state) = current_thread_state() else {
-    return;
-  };
-
-  state.parked.store(parked, Ordering::Release);
-  safepoint::notify_state_change();
+  TLS_THREAD_REGISTRATION.with(|cell| {
+    if let Some(reg) = cell.borrow().as_ref() {
+      reg.state.parked.store(parked, Ordering::Release);
+      safepoint::notify_state_change();
+    }
+  });
 }
 
 /// Update the current thread's observed safepoint epoch.
 pub(crate) fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
-  let Some(state) = current_thread_state() else {
-    return;
-  };
-
-  state.safepoint_epoch_observed.store(epoch, Ordering::Release);
+  TLS_THREAD_REGISTRATION.with(|cell| {
+    if let Some(reg) = cell.borrow().as_ref() {
+      reg
+        .state
+        .safepoint_epoch_observed
+        .store(epoch, Ordering::Release);
+    }
+  });
 }
 
 pub(crate) fn set_current_thread_safepoint_context(ctx: SafepointContext) {

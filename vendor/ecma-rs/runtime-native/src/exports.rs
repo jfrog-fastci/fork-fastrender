@@ -9,6 +9,14 @@ use crate::gc::ObjHeader;
 use crate::gc::YOUNG_SPACE;
 use std::sync::atomic::Ordering;
 
+#[inline(always)]
+fn ensure_event_loop_thread_registered() {
+  // The async runtime is driven by the main thread/event loop. Register it on
+  // first use so GC can coordinate stop-the-world safepoints across all
+  // mutator threads.
+  crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+}
+
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
   alloc::malloc_bytes(size, "rt_alloc")
@@ -116,6 +124,7 @@ pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
 #[no_mangle]
 pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
   let _ = crate::rt_ensure_init();
+  ensure_event_loop_thread_registered();
   async_rt::coroutine::async_spawn(coro)
 }
 
@@ -127,6 +136,7 @@ pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
 #[no_mangle]
 pub extern "C" fn rt_async_poll() -> bool {
   let _ = crate::rt_ensure_init();
+  ensure_event_loop_thread_registered();
   async_rt::poll()
 }
 
@@ -136,25 +146,30 @@ pub extern "C" fn rt_async_poll() -> bool {
 
 #[no_mangle]
 pub extern "C" fn rt_promise_new() -> PromiseRef {
+  ensure_event_loop_thread_registered();
   async_rt::promise::promise_new()
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve(p: PromiseRef, value: ValueRef) {
+  ensure_event_loop_thread_registered();
   async_rt::promise::promise_resolve(p, value)
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_reject(p: PromiseRef, err: ValueRef) {
+  ensure_event_loop_thread_registered();
   async_rt::promise::promise_reject(p, err)
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+  ensure_event_loop_thread_registered();
   async_rt::promise::promise_then(p, on_settle, data)
 }
 
 #[no_mangle]
 pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
+  ensure_event_loop_thread_registered();
   async_rt::coroutine::coro_await(coro, awaited, next_state)
 }
