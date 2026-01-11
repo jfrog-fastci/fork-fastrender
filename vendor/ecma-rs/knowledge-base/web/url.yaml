@@ -12,14 +12,20 @@
   aliases:
     - URL.createObjectURL
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
   purity: Impure
 
 - name: URL.prototype.toString
   aliases:
     - URL.prototype.toString
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
   properties:
     encoding.output: ascii
@@ -29,7 +35,10 @@
   aliases:
     - URL.prototype.href
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
   properties:
     encoding.output: ascii
@@ -38,7 +47,10 @@
   aliases:
     - URL.prototype.pathname
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
   properties:
     encoding.output: ascii
@@ -47,35 +59,50 @@
   aliases:
     - URL.prototype.searchParams
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
 
 - name: URLSearchParams.prototype.get
   aliases:
     - URLSearchParams.prototype.get
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
 
 - name: URLSearchParams.prototype.set
   aliases:
     - URLSearchParams.prototype.set
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Impure
 
 - name: URLSearchParams.prototype.append
   aliases:
     - URLSearchParams.prototype.append
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Impure
 
 - name: URLSearchParams.prototype.toString
   aliases:
     - URLSearchParams.prototype.toString
   since: "baseline"
-  effects: Pure
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: Pure
   properties:
     encoding.output: ascii

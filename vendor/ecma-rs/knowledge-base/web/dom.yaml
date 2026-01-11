@@ -2,40 +2,55 @@
   aliases:
     - document.querySelector
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
   purity: ReadOnly
 
 - name: document.getElementById
   aliases:
     - document.getElementById
   since: "baseline"
-  effects: Unknown
+  effects: Pure
   purity: ReadOnly
 
 - name: Element.prototype.querySelector
   aliases:
     - Element.prototype.querySelector
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
   purity: ReadOnly
 
 - name: Element.prototype.querySelectorAll
   aliases:
     - Element.prototype.querySelectorAll
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
   purity: ReadOnly
 
 - name: Element.prototype.getAttribute
   aliases:
     - Element.prototype.getAttribute
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
   purity: ReadOnly
 
 - name: Element.prototype.setAttribute
   aliases:
     - Element.prototype.setAttribute
   since: "baseline"
-  effects: Unknown
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
   purity: Impure
