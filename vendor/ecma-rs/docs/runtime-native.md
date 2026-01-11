@@ -247,9 +247,18 @@ pub struct StringRef {
   pub len: usize,
 }
 
+/// Opaque promise header prefix.
+///
+/// In the native async ABI, every `Promise<T>` allocation begins with a `PromiseHeader` at offset 0.
+/// The concrete layout is owned by the runtime.
+#[repr(C)]
+pub struct PromiseHeader {
+  _private: [u8; 0],
+}
+
 /// Opaque handle returned by `rt_async_spawn`.
 #[repr(transparent)]
-pub struct PromiseRef(pub *mut core::ffi::c_void);
+pub struct PromiseRef(pub *mut PromiseHeader);
 ```
 
 #### 3.1.2 Exported symbols (names + signatures)
