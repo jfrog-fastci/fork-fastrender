@@ -3,15 +3,14 @@ resolver = "2"
 members = [
   "conformance-harness",
   "diagnostics",
-  "conformance-harness",
   "bench/minify-js",
   "bench/typecheck-ts",
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
+  "native-js",
   "optimize-js-debugger",
   "optimize-js",
-  "native-js",
   "parse-js-cli",
   "parse-js",
   "effect-model",
@@ -31,7 +30,6 @@ members = [
   "typecheck-ts-harness",
   "semantic-js",
   "typecheck-ts-cli",
-  "vm-js",
 ]
 exclude = ["fuzz"]
 

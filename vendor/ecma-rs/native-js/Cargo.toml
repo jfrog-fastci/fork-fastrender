@@ -8,7 +8,9 @@ repository.workspace = true
 
 [dependencies]
 diagnostics = { workspace = true }
+hir-js = { workspace = true }
 inkwell = { workspace = true }
 llvm-sys = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }
+typecheck-ts = { workspace = true }
