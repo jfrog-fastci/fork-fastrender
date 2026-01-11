@@ -448,6 +448,15 @@ mod linux {
         ///
         /// This op is not surfaced to callers via [`Completion`].
         InternalRemoveBuffers { pool: ProvidedBufPool },
+        /// Internal `IORING_OP_PROVIDE_BUFFERS` request used by [`ProvidedBufPool`] buffer return.
+        ///
+        /// Safety: `ProvideBuffers` stores user pointers in the SQE. The pool slab backing `addr`
+        /// must remain valid until the CQE for this request is observed.
+        InternalProvideBuffers {
+            addr: usize,
+            pool: ProvidedBufPool,
+            stability: debug_stability::OpStability,
+        },
         Timeout {
             target: OpId,
             _ts: Box<types::Timespec>,
@@ -462,14 +471,14 @@ mod linux {
         /// Number of in-flight internal ops submitted with `user_data == INTERNAL_USER_DATA`.
         ///
         /// These ops are not tracked in `ops`/`multishots`, but they can still cause the kernel to
-        /// write CQEs into the ring mappings after submission (e.g. `IORING_OP_PROVIDE_BUFFERS`).
-        /// We must therefore keep the ring alive until their CQEs have been observed.
+        /// write CQEs into the ring mappings after submission.
         internal_in_flight: usize,
         /// Keep-alive for pointer-carrying internal ops.
         ///
-        /// `IORING_OP_PROVIDE_BUFFERS` stores user pointers in the SQE. Even though these ops are
-        /// internal (and their CQEs are not surfaced), the pointed-to pool storage must remain
-        /// valid until the CQE is observed.
+        /// If an internal op submitted with `user_data == INTERNAL_USER_DATA` stores raw user
+        /// pointers in its SQE, the pointed-to resources must remain valid until the CQE is
+        /// observed. Such keepalives are stored here and are only dropped after the corresponding
+        /// CQE(s) are drained.
         internal_keepalive_pools: Vec<ProvidedBufPool>,
         ops: HashMap<OpId, OpState>,
         multishots: HashMap<OpId, MultiShotRecvMsgState>,
@@ -577,8 +586,19 @@ mod linux {
                                 io::Error::from_raw_os_error(-res)
                             );
                             mem::forget(pool);
+                        } else {
+                            // Success path: drop the pool (after releasing the mutex), freeing the slab.
+                            keepalive_to_drop.push(pool);
                         }
-                        // Success path: drop the pool, freeing the slab.
+                    }
+                    OpState::InternalProvideBuffers { addr, pool, stability } => {
+                        debug_stability::assert_stable(&stability, |rec| {
+                            rec.ptr(debug_stability::PtrKind::IoBufData { index: 0 }, addr as *const u8);
+                        });
+                        // Internal completion; not surfaced to callers. Drop the keepalive outside
+                        // the driver's mutex because dropping the last pool handle may submit
+                        // `IORING_OP_REMOVE_BUFFERS`.
+                        keepalive_to_drop.push(pool);
                     }
                     OpState::Timeout {
                         target,
@@ -716,40 +736,66 @@ mod linux {
                 )
             })?;
 
-            let entry = opcode::ProvideBuffers::new(addr, len_i32, nbufs, buf_group, buf_id)
-                .build()
-                .user_data(INTERNAL_USER_DATA);
+            // Dropping a pool may submit further internal ops; avoid dropping keepalives while
+            // holding the driver's mutex.
+            let mut state_to_drop: Option<OpState> = None;
+            let res = {
+                let mut inner_guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+                let inner = &mut *inner_guard;
 
-            let mut inner_guard = self
-                .inner
-                .lock()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
-            let inner = &mut *inner_guard;
-            {
-                let ring = inner
-                    .ring
-                    .as_mut()
-                    .expect("io_uring used after drop (ring already taken)");
-                let mut sq = ring.submission();
-                let available = sq.capacity() - sq.len();
-                if available < 1 {
-                    return Err(Self::submission_queue_full());
+                let id = Self::alloc_id(inner);
+                let stability = debug_stability::record(id, |rec| {
+                    rec.ptr(debug_stability::PtrKind::IoBufData { index: 0 }, addr as *const u8);
+                });
+                let entry = opcode::ProvideBuffers::new(addr, len_i32, nbufs, buf_group, buf_id)
+                    .build()
+                    .user_data(id.as_u64());
+
+                {
+                    let ring = inner
+                        .ring
+                        .as_mut()
+                        .expect("io_uring used after drop (ring already taken)");
+                    let ops = &mut inner.ops;
+
+                    let mut sq = ring.submission();
+                    let available = sq.capacity() - sq.len();
+                    if available < 1 {
+                        return Err(Self::submission_queue_full());
+                    }
+
+                    ops.insert(
+                        id,
+                        OpState::InternalProvideBuffers {
+                            addr: addr as usize,
+                            pool: keepalive_pool,
+                            stability,
+                        },
+                    );
+
+                    unsafe {
+                        sq.push(&entry).unwrap();
+                    }
                 }
 
-                unsafe {
-                    sq.push(&entry).unwrap();
+                match ring_submit(
+                    inner
+                        .ring
+                        .as_mut()
+                        .expect("io_uring used after drop (ring already taken)"),
+                ) {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        state_to_drop = inner.ops.remove(&id);
+                        Err(e)
+                    }
                 }
-                inner.internal_in_flight = inner.internal_in_flight.saturating_add(1);
-                inner.internal_keepalive_pools.push(keepalive_pool);
-            }
-
-            ring_submit(
-                inner
-                    .ring
-                    .as_mut()
-                    .expect("io_uring used after drop (ring already taken)"),
-            )?;
-            Ok(())
+            };
+            drop(state_to_drop);
+            res
         }
 
         pub(crate) fn submit_remove_buffers(
@@ -1213,7 +1259,21 @@ mod linux {
                                         io::Error::from_raw_os_error(-res)
                                     );
                                     mem::forget(pool);
+                                } else {
+                                    keepalive_to_drop.push(pool);
                                 }
+                            }
+                            OpState::InternalProvideBuffers { addr, pool, stability } => {
+                                debug_stability::assert_stable(&stability, |rec| {
+                                    rec.ptr(
+                                        debug_stability::PtrKind::IoBufData { index: 0 },
+                                        addr as *const u8,
+                                    );
+                                });
+                                // Internal completion; not surfaced to callers. Drop the keepalive
+                                // outside the driver's mutex because dropping the last pool handle
+                                // may submit `IORING_OP_REMOVE_BUFFERS`.
+                                keepalive_to_drop.push(pool);
                             }
                             OpState::Timeout {
                                 target,

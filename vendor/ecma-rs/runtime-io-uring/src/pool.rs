@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::any::Any;
     use std::io;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -118,6 +119,16 @@ mod linux {
             pool.inner.in_kernel.store(nbufs as usize, Ordering::Relaxed);
 
             Ok(pool)
+        }
+
+        /// Internal helper for tests: returns a weak handle that becomes `None` once the pool's
+        /// backing storage is dropped.
+        #[doc(hidden)]
+        pub fn __debug_inner_weak(&self) -> std::sync::Weak<dyn Any> {
+            // Avoid exposing the private `Inner` type while still letting integration tests observe
+            // pool drop ordering.
+            let arc: Arc<dyn Any> = self.inner.clone();
+            Arc::downgrade(&arc)
         }
 
         pub fn buf_group(&self) -> u16 {
