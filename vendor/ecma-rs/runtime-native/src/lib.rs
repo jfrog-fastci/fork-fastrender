@@ -95,8 +95,6 @@ pub mod statepoint_verify;
 // Keep it available to integration tests, but don't treat it as stable API.
 #[cfg(feature = "loom")]
 pub mod loom_promise_waiters;
-#[cfg(not(feature = "loom"))]
-mod loom_promise_waiters;
 
 // Core object model used by the planned Immix + generational collector.
 pub mod metadata;
