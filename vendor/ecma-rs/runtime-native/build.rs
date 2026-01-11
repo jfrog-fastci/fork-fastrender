@@ -128,6 +128,12 @@ fn maybe_enable_stackmaps_linker_symbols() {
   let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
   let script = manifest_dir.join("link").join("stackmaps.ld");
 
+  // The repo defaults to `-fuse-ld=mold` for fast links, but mold does not
+  // support the GNU ld linker script features used by `stackmaps.ld`
+  // (SECTIONS/KEEP/INSERT). Force LLD so the script is accepted and stackmaps
+  // are not discarded under `--gc-sections`.
+  println!("cargo:rustc-link-arg=-fuse-ld=lld");
+
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.
   println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
