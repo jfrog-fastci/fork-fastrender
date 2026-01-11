@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
 
 fn effect_js_cli() -> Command {
@@ -25,8 +26,15 @@ async function run(urls: string[]) {
     )
     .unwrap();
 
+  let kb_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("../knowledge-base")
+    .canonicalize()
+    .expect("resolve knowledge-base dir");
+
   let assert = effect_js_cli()
     .timeout(Duration::from_secs(10))
+    .arg("--kb-dir")
+    .arg(kb_dir)
     .arg("analyze")
     .arg(fixture.path())
     .assert()
