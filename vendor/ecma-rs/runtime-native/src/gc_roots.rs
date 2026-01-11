@@ -20,9 +20,12 @@
 //!
 //! [`relocate_reloc_pairs_in_place`] implements a two-phase algorithm that is robust to this.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::ptr;
+
+use crate::stack_walk::{FrameView, StackWalker};
+use crate::stackmaps::{CallSite, Location, StackMapRecord, StackMaps};
 
 /// A `(base, derived)` relocation pair.
 ///
@@ -34,6 +37,34 @@ use std::ptr;
 pub struct RelocPair {
   pub base_slot: *mut usize,
   pub derived_slot: *mut usize,
+}
+
+impl RelocPair {
+  /// Updates the derived slot after the base slot has been updated to `new_base`.
+  ///
+  /// This preserves the interior-pointer offset:
+  /// `offset = old_derived - old_base`
+  /// `new_derived = new_base + offset`
+  ///
+  /// Note: if the same `base_slot` can appear in multiple relocation pairs, callers must ensure
+  /// that `old_base` is the *original* base value (before any in-place updates). If you do not
+  /// have that guarantee, use [`relocate_reloc_pairs_in_place`] instead.
+  ///
+  /// # Safety
+  /// The slots must be valid and writable.
+  pub unsafe fn update_derived_after_base_moved(&self, old_base: usize, new_base: usize) {
+    let old_derived = self.derived_slot.read();
+
+    // Preserve nulls to avoid underflow and to treat null pointers as non-roots.
+    if old_base == 0 || old_derived == 0 || new_base == 0 {
+      self.derived_slot.write(0);
+      return;
+    }
+
+    let offset = old_derived.wrapping_sub(old_base);
+    let new_derived = new_base.wrapping_add(offset);
+    self.derived_slot.write(new_derived);
+  }
 }
 
 /// Apply stackmap-derived relocation pairs with correct handling for repeated base slots.
@@ -104,7 +135,8 @@ pub fn relocate_reloc_pairs_in_place(
   }
 
   // Phase 2: relocate each unique base slot once.
-  let mut new_base_by_slot: HashMap<*mut usize, usize> = HashMap::with_capacity(old_base_by_slot.len());
+  let mut new_base_by_slot: HashMap<*mut usize, usize> =
+    HashMap::with_capacity(old_base_by_slot.len());
   for (&slot, &old_base) in &old_base_by_slot {
     let new_base = if old_base == 0 { 0 } else { relocate(old_base) };
     new_base_by_slot.insert(slot, new_base);
@@ -142,6 +174,90 @@ pub fn relocate_reloc_pairs_in_place(
     unsafe {
       ptr::write_unaligned(pair.derived_slot, new_derived);
     }
+  }
+}
+
+pub struct StackRootEnumerator<'a> {
+  stackmaps: &'a StackMaps,
+}
+
+impl<'a> StackRootEnumerator<'a> {
+  pub fn new(stackmaps: &'a StackMaps) -> Self {
+    Self { stackmaps }
+  }
+
+  /// Walk the stack from the given callee frame pointer and invoke `f` for each
+  /// base/derived relocation slot pair.
+  ///
+  /// `top_callee_fp` is typically the frame pointer of the runtime safepoint function.
+  ///
+  /// Notes/assumptions:
+  /// - We currently assume LLVM 18 statepoint lowering, where the stackmap record's `locations`
+  ///   are: a prefix of constant header entries (metadata), followed by `(base, derived)` pairs for
+  ///   each `gc.relocate` in the frame.
+  /// - Only `Location::Indirect` is supported for slot addressing (with DWARF reg RSP/RBP).
+  pub fn visit_reloc_pairs(&self, top_callee_fp: usize, mut f: impl FnMut(RelocPair)) {
+    unsafe {
+      let mut walker = StackWalker::new(top_callee_fp);
+      while let Some(frame) = walker.next_frame() {
+        let Some(callsite) = self.stackmaps.lookup(frame.return_address as u64) else {
+          // We likely reached an unmanaged/native frame (no stackmap entry). Stop.
+          break;
+        };
+
+        visit_callsite_reloc_pairs(callsite, &frame, &mut f);
+      }
+    }
+  }
+}
+
+fn visit_callsite_reloc_pairs(callsite: CallSite<'_>, frame: &FrameView, f: &mut dyn FnMut(RelocPair)) {
+  let record: &StackMapRecord = callsite.record;
+  let non_const: Vec<&Location> = record
+    .locations
+    .iter()
+    .filter(|loc| !matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
+    .collect();
+
+  assert!(
+    non_const.len() % 2 == 0,
+    "stackmap record at return_address=0x{:x} has odd number of non-constant locations ({})",
+    frame.return_address,
+    non_const.len()
+  );
+
+  // LLVM 18 statepoint lowering emits locations in (base, derived) order for each gc.relocate.
+  for chunk in non_const.chunks_exact(2) {
+    let base_slot = location_to_slot(frame, chunk[0]);
+    let derived_slot = location_to_slot(frame, chunk[1]);
+    f(RelocPair {
+      base_slot,
+      derived_slot,
+    });
+  }
+}
+
+fn location_to_slot(frame: &FrameView, loc: &Location) -> *mut usize {
+  match *loc {
+    Location::Indirect { dwarf_reg, offset, size } => {
+      assert!(
+        size as usize == std::mem::size_of::<usize>(),
+        "unsupported stackmap slot size {size} (expected pointer-sized)"
+      );
+      let base = match dwarf_reg {
+        // x86_64 DWARF reg numbers.
+        7 => frame.caller_sp, // RSP
+        6 => frame.caller_fp, // RBP
+        _ => panic!("unsupported DWARF register {dwarf_reg} for stack slot"),
+      };
+      let addr = (base as isize).wrapping_add(offset as isize) as usize;
+      assert!(
+        addr % std::mem::align_of::<usize>() == 0,
+        "stackmap slot address 0x{addr:x} is not word-aligned"
+      );
+      addr as *mut usize
+    }
+    _ => panic!("unsupported stackmap location for mutable slot: {loc:?}"),
   }
 }
 
