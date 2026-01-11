@@ -41,3 +41,51 @@ fn single_edge_bottom_border_snaps_like_chrome() {
   );
 }
 
+#[test]
+fn single_edge_bottom_border_snaps_like_chrome_even_width() {
+  // Like `single_edge_bottom_border_snaps_like_chrome`, but with a 2px bottom border.
+  //
+  // Regression: even-width bottom borders can still land on fractional device pixels (e.g. when
+  // the border box height is fractional due to subpixel line-heights). Chrome snaps these down to
+  // the next device pixel row, while a naïve fill-rect snap paints one row too high.
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: #ff6600; }
+      #line {
+        position: absolute;
+        left: 0;
+        top: 0.35px;
+        width: 20px;
+        height: 0;
+        border-bottom: 2px solid #fff;
+      }
+    </style>
+    <div id="line"></div>
+  "#;
+
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let pixmap = renderer.render_html(html, 30, 10).expect("render");
+
+  let above = pixmap.pixel(5, 0).expect("above pixel");
+  assert_eq!(
+    (above.red(), above.green(), above.blue(), above.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel above border to remain background"
+  );
+
+  for y in [1u32, 2u32] {
+    let border = pixmap.pixel(5, y).expect("border pixel");
+    assert_eq!(
+      (border.red(), border.green(), border.blue(), border.alpha()),
+      (255, 255, 255, 255),
+      "expected 2px bottom border to paint device pixel row {y}"
+    );
+  }
+
+  let below = pixmap.pixel(5, 3).expect("below pixel");
+  assert_eq!(
+    (below.red(), below.green(), below.blue(), below.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel below 2px border to remain background"
+  );
+}

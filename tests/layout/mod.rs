@@ -25,6 +25,7 @@ mod anchor_positioning;
 mod position_area;
 mod aria_hidden_has_no_effect;
 mod aria_hidden_layout;
+mod arxiv_lists_and_forms_regressions;
 mod block_constraints_viewport_clamp;
 mod block_height_min_content_auto;
 mod block_intrinsic_includes_child_margins;

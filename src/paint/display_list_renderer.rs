@@ -7446,7 +7446,28 @@ impl DisplayListRenderer {
             .draw_rect(Rect::from_xywh(x, y, w, top.width), top.color);
         }
         if bottom.width > 0.0 {
-          let bottom_y = y + h - bottom.width;
+          // Chrome/Skia's rasterization of single-edge 1px borders differs from our general
+          // axis-aligned opaque fill snapping. In particular, a `border-bottom: 1px solid` whose
+          // top edge lands on a fractional device pixel (common with text-heavy layouts) is
+          // painted one device pixel lower than a naïve 1px fill-rect would suggest.
+          //
+          // This shows up as 1px "stripe swaps" on pages like `doc.rust-lang.org`, where Chrome's
+          // bottom borders land on row N+1 while FastRender paints row N.
+          //
+          // Match Chrome by biasing *single-edge* bottom borders (no other sides) down by half a
+          // device pixel when the border width is an integer number of device pixels.
+          //
+          // Even-width borders can still land on fractional device pixels (because the border box
+          // height is often fractional in text-heavy layouts). Without this bias the fill-rect snap
+          // path rounds the top edge up/down based on the pixel-center rule, which can place the
+          // border one row too high and "swap" a stripe of background/border color (notably in
+          // arxiv.org's 2px header divider).
+          let mut bottom_y = y + h - bottom.width;
+          let single_edge_bottom =
+            top.width <= 0.0 && right.width <= 0.0 && left.width <= 0.0 && bottom.width > 0.0;
+          if single_edge_bottom && Self::is_near_integer(bottom.width) {
+            bottom_y += 0.5;
+          }
           self.canvas.draw_rect(
             Rect::from_xywh(x, bottom_y, w, bottom.width),
             bottom.color,
