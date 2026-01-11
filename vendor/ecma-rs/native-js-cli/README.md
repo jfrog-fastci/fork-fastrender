@@ -128,7 +128,7 @@ can test the non-builtin path.
 
 - arguments are printed left-to-right, separated by a single space
 - a trailing newline is always printed
-- numbers are formatted similar to `printf("%g")`, but special-cased for
+- numbers are formatted similar to `printf("%.15g")`, but special-cased for
   `NaN` / `Infinity` / `-Infinity`
 
 ## Supported language subset (current)

@@ -371,7 +371,10 @@ impl Codegen {
 
     self.emit(format!("{finite}:"));
     {
-      let fmt = self.emit_string_ptr(b"%g");
+      // `%.15g` matches JS `Number#toString` reasonably well for debugging: it avoids the very
+      // low default precision of `%g` while still keeping common values like `0.1` and `0.3`
+      // readable.
+      let fmt = self.emit_string_ptr(b"%.15g");
       self.emit(format!(
         "  call i32 (ptr, ...) @printf(ptr {fmt}, double {value_ir})"
       ));

@@ -353,8 +353,9 @@ Type annotations in function declarations (current):
 - Arguments are printed space-separated with a trailing newline.
 - Printing always flushes stdout (`fflush(NULL)`) after the call to make debugging output visible
   even if the program later traps/aborts.
-- Numbers use libc formatting for finite values, but `NaN`/`Infinity`/`-Infinity` are printed in
-  a JS-friendly form (instead of libc `nan`/`inf` strings).
+- Numbers use libc formatting for finite values (currently `printf("%.15g")`), but
+  `NaN`/`Infinity`/`-Infinity` are printed in a JS-friendly form (instead of libc `nan`/`inf`
+  strings).
 - `assert(cond, msg?)` aborts when `cond` is false:
   - prints `msg` if provided (any printable value)
   - otherwise prints a default `assertion failed` message
