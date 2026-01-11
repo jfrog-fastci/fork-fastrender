@@ -91,7 +91,7 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)
     }
-    RecognizedPattern::AsyncIterator { stmt, iterable } => {
+    RecognizedPattern::AsyncIterator { stmt, iterable, .. } => {
       format!("AsyncIterator(stmt={}, iterable={})", stmt.0, iterable.0)
     }
     RecognizedPattern::StringTemplate { expr, span_count } => {

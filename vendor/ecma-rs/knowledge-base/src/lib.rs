@@ -616,6 +616,19 @@ impl<'de> Deserialize<'de> for EffectsRaw {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct EffectsDetailsRaw {
+  // Legacy format: some KB files include a `base: [alloc, io, ...]` list for
+  // human readability. These tokens are redundant with the boolean fields
+  // below, but we keep parsing them for backwards compatibility.
+  #[serde(default)]
+  base: Vec<String>,
+
+  // Legacy format: some KB files include `depends_on_args: [0, 1]` alongside
+  // `template: depends_on_callback`. The modern schema encodes indices directly
+  // in `EffectTemplate::DependsOnArgs`, so we only parse this field to avoid
+  // rejecting older files.
+  #[serde(default)]
+  depends_on_args: Vec<usize>,
+
   #[serde(default)]
   template: Option<String>,
 
@@ -692,6 +705,12 @@ impl<'de> Deserialize<'de> for PurityRaw {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct PurityDetailsRaw {
+  // Legacy format: some KB files include `kind: pure/read_only/...` in addition
+  // to the template string. We ignore it but accept it for backwards
+  // compatibility.
+  #[serde(default)]
+  kind: Option<String>,
+
   #[serde(default)]
   template: Option<String>,
 }
@@ -746,7 +765,7 @@ fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
 fn normalize_purity(raw: PurityRaw) -> PurityTemplate {
   match raw {
     PurityRaw::Template(t) => t,
-    PurityRaw::Details(details) => match details.template {
+    PurityRaw::Details(details) => match details.template.or(details.kind) {
       Some(template) => parse_purity_template(&template),
       None => PurityTemplate::Unknown,
     },
@@ -781,32 +800,60 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
         .map(normalize_ident)
         .unwrap_or_default();
 
+      let mut base_allocates = false;
+      let mut base_io = false;
+      let mut base_network = false;
+      let mut base_nondeterministic = false;
+      let mut base_may_throw = false;
+      let mut base_unknown = false;
+      for token in &details.base {
+        match normalize_ident(token).as_str() {
+          "alloc" | "allocates" => base_allocates = true,
+          "io" => base_io = true,
+          "network" => base_network = true,
+          "nondeterministic" | "non_deterministic" => base_nondeterministic = true,
+          "may_throw" | "throws" => base_may_throw = true,
+          "unknown" => base_unknown = true,
+          // `async` is tracked by the top-level `async` API field, not the effect flags.
+          _ => {}
+        }
+      }
+
       let unknown_default = template == "unknown";
       let io_default = template == "io";
 
       let mut flags = EffectSet::empty();
-      if details.allocates.unwrap_or(unknown_default) {
+      if details
+        .allocates
+        .unwrap_or(unknown_default || base_allocates)
+      {
         flags |= EffectSet::ALLOCATES;
       }
-      if details.io.unwrap_or(io_default || unknown_default) {
+      if details.io.unwrap_or(io_default || unknown_default || base_io) {
         flags |= EffectSet::IO;
       }
-      if details.network.unwrap_or(unknown_default) {
+      if details.network.unwrap_or(unknown_default || base_network) {
         flags |= EffectSet::NETWORK;
       }
-      if details.nondeterministic.unwrap_or(unknown_default) {
+      if details
+        .nondeterministic
+        .unwrap_or(unknown_default || base_nondeterministic)
+      {
         flags |= EffectSet::NONDETERMINISTIC;
       }
 
-      if unknown_default {
+      if unknown_default || base_unknown {
         flags |= EffectSet::UNKNOWN;
       }
 
       // Prefer the explicit `throws:` field (used by newer entries) over the
       // legacy `effects.may_throw` boolean.
-      let may_throw = match throws.and_then(parse_throw_behavior) {
-        Some(throws) => !matches!(throws, ThrowBehavior::Never),
-        None => details.may_throw.unwrap_or_else(|| template != "pure"),
+      let may_throw = if let Some(throws) = throws.and_then(parse_throw_behavior) {
+        !matches!(throws, ThrowBehavior::Never)
+      } else if let Some(v) = details.may_throw {
+        v
+      } else {
+        base_may_throw || template != "pure"
       };
       if may_throw {
         flags |= EffectSet::MAY_THROW;
@@ -815,7 +862,11 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
       let effect_template = if template == "depends_on_callback" {
         EffectTemplate::DependsOnArgs {
           base: flags,
-          args: vec![0],
+          args: if details.depends_on_args.is_empty() {
+            vec![0]
+          } else {
+            details.depends_on_args.clone()
+          },
         }
       } else if flags.is_empty() {
         EffectTemplate::Pure

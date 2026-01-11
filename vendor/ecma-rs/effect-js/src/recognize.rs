@@ -1,6 +1,6 @@
 use hir_js::{
   ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind, StmtId,
-  StmtKind, UnaryOp,
+  StmtKind, UnaryOp, VarDeclKind,
 };
 
 #[cfg(feature = "typed")]
@@ -37,7 +37,13 @@ pub enum RecognizedPattern {
   },
 
   /// `for await (const x of asyncIterable) { ... }` (untyped).
-  AsyncIterator { stmt: StmtId, iterable: ExprId },
+  AsyncIterator {
+    stmt: StmtId,
+    iterable: ExprId,
+    binding_pat: PatId,
+    binding_kind: Option<VarDeclKind>,
+    body: StmtId,
+  },
 
   /// `` `${a} ${b} ${c}` `` (untyped).
   StringTemplate { expr: ExprId, span_count: usize },
@@ -294,12 +300,29 @@ pub fn recognize_patterns_best_effort_untyped(
       StmtKind::ForIn {
         is_for_of: true,
         await_: true,
+        left,
         right,
+        body,
         ..
-      } => patterns.push(RecognizedPattern::AsyncIterator {
-        stmt: stmt_id,
-        iterable: *right,
-      }),
+      } => {
+        let (binding_pat, binding_kind) = match left {
+          hir_js::ForHead::Pat(pat) => (*pat, None),
+          hir_js::ForHead::Var(var) => {
+            let Some(decl) = var.declarators.first() else {
+              return;
+            };
+            (decl.pat, Some(var.kind))
+          }
+        };
+
+        patterns.push(RecognizedPattern::AsyncIterator {
+          stmt: stmt_id,
+          iterable: *right,
+          binding_pat,
+          binding_kind,
+          body: *body,
+        });
+      }
       StmtKind::Var(var) => {
         for decl in &var.declarators {
           let Some(source) = decl.init else {
@@ -565,12 +588,29 @@ pub fn recognize_patterns_typed(
       StmtKind::ForIn {
         is_for_of: true,
         await_: true,
+        left,
         right,
+        body,
         ..
-      } => patterns.push(RecognizedPattern::AsyncIterator {
-        stmt: stmt_id,
-        iterable: *right,
-      }),
+      } => {
+        let (binding_pat, binding_kind) = match left {
+          hir_js::ForHead::Pat(pat) => (*pat, None),
+          hir_js::ForHead::Var(var) => {
+            let Some(decl) = var.declarators.first() else {
+              return;
+            };
+            (decl.pat, Some(var.kind))
+          }
+        };
+
+        patterns.push(RecognizedPattern::AsyncIterator {
+          stmt: stmt_id,
+          iterable: *right,
+          binding_pat,
+          binding_kind,
+          body: *body,
+        });
+      }
       StmtKind::Var(var) => {
         for decl in &var.declarators {
           let Some(source) = decl.init else {

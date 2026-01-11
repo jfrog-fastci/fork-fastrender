@@ -286,7 +286,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     if let Some(preserves) = entry
       .properties
       .get("encoding.preserves_input_if")
-      .and_then(|v| v.as_str())
+      .and_then(|value| value.as_str())
     {
       let required = parse_encoding(preserves)?;
       return (input == required).then_some(input);

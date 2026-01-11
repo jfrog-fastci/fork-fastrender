@@ -10,10 +10,10 @@ mod resolve;
 mod template_eval;
 pub mod types;
 
-pub mod kb;
-pub mod resolver;
 pub mod db;
+pub mod kb;
 pub mod meta;
+pub mod resolver;
 pub mod signals;
 pub mod validate;
 
@@ -31,6 +31,10 @@ pub use encoding::analyze_string_encodings_typed;
 pub use eval::{eval_api_call, CallSemantics, CallSiteInfo as EvalCallSiteInfo};
 pub use kb::load_default_api_database;
 pub use db::{CallSiteInfo, EffectDb};
+pub use patterns::{
+  recognize_patterns, ExprPatternTables, RecognizePatternsResult, RecognizedPatternId,
+  StmtPatternTables,
+};
 pub use recognize::{
   recognize_patterns_best_effort_untyped, recognize_patterns_untyped, GuardKind, RecognizedPattern,
 };
