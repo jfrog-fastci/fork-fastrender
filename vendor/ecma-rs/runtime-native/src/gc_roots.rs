@@ -166,7 +166,10 @@ pub fn relocate_reloc_pairs_in_place(
       .expect("derived_slot missing from snapshot map");
 
     // Null convention: treat 0 as null, skip relocation.
-    let new_derived = if old_base == 0 || old_derived == 0 {
+    //
+    // Note: `relocate` should never return `0` for a live (non-null) base pointer, but keep the
+    // derived slot consistent with the base slot if it does.
+    let new_derived = if old_base == 0 || old_derived == 0 || new_base == 0 {
       0
     } else {
       let delta = old_derived.wrapping_sub(old_base);

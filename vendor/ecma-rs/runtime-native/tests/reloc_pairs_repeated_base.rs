@@ -77,3 +77,21 @@ fn reloc_pairs_treats_zero_as_null() {
   assert_eq!(calls, 0);
   assert_eq!(frame, [0, 0]);
 }
+
+#[test]
+fn reloc_pairs_force_null_if_base_relocates_to_zero() {
+  let mut frame: [usize; 2] = [0; 2];
+  let base: usize = 0x1000;
+  frame[0] = base;
+  frame[1] = base + 0x10;
+
+  let base_slot = RootSlot::StackAddr((&mut frame[0] as *mut usize).cast::<u8>());
+  let derived_slot = RootSlot::StackAddr((&mut frame[1] as *mut usize).cast::<u8>());
+
+  let pairs = [RelocPair { base_slot, derived_slot }];
+
+  let mut ctx = ThreadContext::default();
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |_old| 0);
+
+  assert_eq!(frame, [0, 0]);
+}
