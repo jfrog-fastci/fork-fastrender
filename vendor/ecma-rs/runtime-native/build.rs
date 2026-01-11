@@ -25,16 +25,8 @@ fn maybe_enable_stackmaps_linker_symbols() {
   if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_none() {
     return;
   }
-
   let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
   if target_os != "linux" {
-    return;
-  }
-
-  // Only require linker-script integration when explicitly enabled: consumers
-  // embedding `libruntime_native.a` from non-Rust linkers (e.g. C) should be
-  // able to link without having to provide stackmap boundary symbols.
-  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_none() {
     return;
   }
 
@@ -321,4 +313,3 @@ impl<'a> Cursor<'a> {
     Ok(i32::from_le_bytes(self.read_exact::<4>()?))
   }
 }
-
