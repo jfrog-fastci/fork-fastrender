@@ -61,7 +61,8 @@ pub(crate) fn has_external_pending() -> bool {
 
 pub(crate) fn external_pending_inc() {
   EXTERNAL_PENDING.fetch_add(1, Ordering::AcqRel);
-  // Ensure a currently-blocking `epoll_wait` wakes to observe the new pending count.
+  // Ensure a currently-blocking reactor wait syscall (`epoll_wait`/`kevent`) wakes to observe the
+  // new pending count.
   global().loop_.wake();
 }
 
@@ -319,7 +320,7 @@ pub(crate) fn wait_for_work() {
 /// - macrotask queue
 /// - timers
 /// - I/O watchers
-/// - wake eventfd counter
+/// - reactor wake state
 /// - external pending count
 ///
 /// It does **not** tear down any background worker threads.
