@@ -445,6 +445,7 @@ extern "C" {
 
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
+  pub fn rt_parallel_spawn_rooted(task: RtTaskFn, data: GcPtr) -> TaskId;
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
   pub fn rt_parallel_spawn_promise(
@@ -474,6 +475,7 @@ extern "C" {
   // Microtasks + timers (queueMicrotask / setTimeout / setInterval).
   pub fn rt_async_sleep(delay_ms: u64) -> PromiseRef;
   pub fn rt_queue_microtask(task: Microtask);
+  pub fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: GcPtr);
   pub fn rt_queue_microtask_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
@@ -481,6 +483,7 @@ extern "C" {
   );
   pub fn rt_drain_microtasks() -> bool;
   pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
+  pub fn rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: GcPtr, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
@@ -490,6 +493,11 @@ extern "C" {
   pub fn rt_set_interval(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
+    interval_ms: u64,
+  ) -> TimerId;
+  pub fn rt_set_interval_rooted(
+    cb: extern "C" fn(*mut u8),
+    data: GcPtr,
     interval_ms: u64,
   ) -> TimerId;
   pub fn rt_set_interval_with_drop(
@@ -506,6 +514,12 @@ extern "C" {
     interests: u32,
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
+  ) -> IoWatcherId;
+  pub fn rt_io_register_rooted(
+    fd: i32,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: GcPtr,
   ) -> IoWatcherId;
   pub fn rt_io_register_with_drop(
     fd: i32,
@@ -776,6 +790,7 @@ mod tests {
       "rt_string_intern(",
       "rt_string_pin_interned(",
       "rt_parallel_spawn(",
+      "rt_parallel_spawn_rooted(",
       "rt_parallel_join(",
       "rt_parallel_for(",
       "rt_parallel_spawn_promise(",
@@ -797,14 +812,18 @@ mod tests {
       "rt_async_block_on(",
       "rt_async_sleep(",
       "rt_queue_microtask(",
+      "rt_queue_microtask_rooted(",
       "rt_queue_microtask_with_drop(",
       "rt_drain_microtasks(",
       "rt_set_timeout(",
+      "rt_set_timeout_rooted(",
       "rt_set_timeout_with_drop(",
       "rt_set_interval(",
+      "rt_set_interval_rooted(",
       "rt_set_interval_with_drop(",
       "rt_clear_timer(",
       "rt_io_register(",
+      "rt_io_register_rooted(",
       "rt_io_register_with_drop(",
       "rt_io_update(",
       "rt_io_unregister(",

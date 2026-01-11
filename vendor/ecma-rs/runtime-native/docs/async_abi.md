@@ -348,17 +348,21 @@ the runtime's single-consumer microtask checkpoint semantics.
 
 - `rt_queue_microtask(task: Microtask)`
 - `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
+- `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
 - `rt_drain_microtasks() -> bool`
 - `rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_timeout_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), delay_ms: u64) -> TimerId`
+- `rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId`
 - `rt_set_interval(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
 - `rt_set_interval_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8), interval_ms: u64) -> TimerId`
+- `rt_set_interval_rooted(cb: extern "C" fn(*mut u8), data: *mut u8, interval_ms: u64) -> TimerId`
 - `rt_clear_timer(id: TimerId)`
 
 ### I/O readiness watchers
 
 - `rt_io_register(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_register_with_drop(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8)) -> IoWatcherId`
+- `rt_io_register_rooted(fd: i32, interests: u32, cb: extern "C" fn(u32, *mut u8), data: *mut u8) -> IoWatcherId`
 - `rt_io_update(id: IoWatcherId, interests: u32)`
 - `rt_io_unregister(id: IoWatcherId)`
 
