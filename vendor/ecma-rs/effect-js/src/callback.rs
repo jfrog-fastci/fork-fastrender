@@ -41,7 +41,7 @@ pub fn callsite_info_for_args(
     callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
     callback_uses_index: callback.map(|cb| cb.uses_index),
     callback_uses_array: callback.map(|cb| cb.uses_array),
-    callback_is_associative: None,
+    ..crate::db::CallSiteInfo::default()
   }
 }
 
@@ -646,5 +646,48 @@ mod tests {
     assert_eq!(info.callback_is_pure, Some(true));
     assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_calling_date_now_is_nondeterministic() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(() => Date.now());")
+        .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(cb.effects.flags.contains(EffectFlags::NONDETERMINISTIC));
+  }
+
+  #[test]
+  fn callback_unknown_call_is_unknown_purity() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => foo(x));").unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let call = lowered
+      .body(body)
+      .unwrap()
+      .exprs
+      .get(call_expr.0 as usize)
+      .unwrap();
+    let ExprKind::Call(call) = &call.kind else {
+      panic!("expected call expr");
+    };
+    let cb_expr = call.args[0].expr;
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Unknown);
   }
 }
