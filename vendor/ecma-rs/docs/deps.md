@@ -56,6 +56,7 @@ graph TD
     emit_js --> diagnostics
     emit_js --> hir_js
     emit_js --> parse_js
+    emit_js --> ts_erase
     hir_js --> diagnostics
     hir_js --> parse_js
     knowledge_base --> effect_model
