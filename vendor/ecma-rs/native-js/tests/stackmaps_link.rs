@@ -19,6 +19,57 @@ const STACKMAP_RELOC_SECTION_CANDIDATES: [&str; 4] = [
   ".rel.data.rel.ro.llvm_stackmaps",
 ];
 
+fn elf64_le_has_wx_load_segment(bytes: &[u8]) -> Result<bool> {
+  // Minimal ELF64 little-endian program header scan.
+  //
+  // We intentionally parse the ELF header directly instead of relying on external tools like
+  // `readelf`, since native-js tests should run in minimal environments.
+  if bytes.len() < 64 {
+    return Err(anyhow!("ELF header too small ({} bytes)", bytes.len()));
+  }
+  if &bytes[0..4] != b"\x7fELF" {
+    return Err(anyhow!("not an ELF file (bad magic)"));
+  }
+  // EI_CLASS = 2 (ELFCLASS64), EI_DATA = 1 (ELFDATA2LSB).
+  if bytes[4] != 2 {
+    return Err(anyhow!("expected ELF64 (EI_CLASS=2), got {}", bytes[4]));
+  }
+  if bytes[5] != 1 {
+    return Err(anyhow!(
+      "expected little-endian ELF (EI_DATA=1), got {}",
+      bytes[5]
+    ));
+  }
+
+  let e_phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
+  let e_phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
+  let e_phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
+
+  if e_phoff == 0 || e_phnum == 0 {
+    return Ok(false);
+  }
+  if e_phentsize < 8 {
+    return Err(anyhow!("ELF program header entry size too small: {e_phentsize}"));
+  }
+  if e_phoff + e_phentsize * e_phnum > bytes.len() {
+    return Err(anyhow!("ELF program header table is out of bounds"));
+  }
+
+  for idx in 0..e_phnum {
+    let off = e_phoff + idx * e_phentsize;
+    let p_type = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+    let p_flags = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap());
+    const PT_LOAD: u32 = 1;
+    const PF_X: u32 = 0x1;
+    const PF_W: u32 = 0x2;
+    if p_type == PT_LOAD && (p_flags & PF_X) != 0 && (p_flags & PF_W) != 0 {
+      return Ok(true);
+    }
+  }
+
+  Ok(false)
+}
+
 /// End-to-end test: generate an object file that contains `.llvm_stackmaps`,
 /// link it into an executable, and ensure the final binary keeps the stackmaps
 /// section (relocated to `.data.rel.ro.llvm_stackmaps`) without keeping a
@@ -116,6 +167,10 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
     assert_section_absent(&exe_bytes, name)?;
   }
   assert_no_textrel_dynamic_tags(&exe_bytes)?;
+  assert!(
+    !elf64_le_has_wx_load_segment(&exe_bytes)?,
+    "unexpected RWX PT_LOAD segment in linked PIE executable"
+  );
 
   let status = Command::new(&exe_path)
     .status()
