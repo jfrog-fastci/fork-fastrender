@@ -1,9 +1,12 @@
 use crate::CompileOptions;
-use parse_js::ast::expr::{CallArg, Expr};
 use parse_js::ast::expr::pat::Pat;
+use parse_js::ast::expr::{CallArg, Expr};
+use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::Node;
+use parse_js::ast::stmt::decl::FuncDecl;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
+use parse_js::ast::type_expr::TypeExpr;
 use parse_js::operator::OperatorName;
 use std::collections::HashMap;
 
@@ -77,9 +80,7 @@ impl StringPool {
       "{name} = private unnamed_addr constant [{len} x i8] c\"{escaped}\", align 1"
     ));
 
-    self
-      .interned
-      .insert(bytes.to_vec(), (name.clone(), len));
+    self.interned.insert(bytes.to_vec(), (name.clone(), len));
 
     (name, len)
   }
@@ -88,10 +89,16 @@ impl StringPool {
 struct Codegen {
   opts: CompileOptions,
   strings: StringPool,
+  function_sigs: HashMap<String, FunctionSig>,
+  function_defs: Vec<String>,
   tmp_counter: usize,
   block_counter: usize,
   vars: HashMap<String, (Ty, String)>,
-  main_body: Vec<String>,
+  body: Vec<String>,
+  /// If `Some`, we're compiling a user-defined function body and this is its return type.
+  current_return_ty: Option<Ty>,
+  /// Whether the current basic block is terminated (e.g. by `br`, `ret`, or `unreachable`).
+  block_terminated: bool,
 }
 
 impl Codegen {
@@ -99,10 +106,14 @@ impl Codegen {
     Self {
       opts,
       strings: StringPool::default(),
+      function_sigs: HashMap::new(),
+      function_defs: Vec::new(),
       tmp_counter: 0,
       block_counter: 0,
       vars: HashMap::new(),
-      main_body: Vec::new(),
+      body: Vec::new(),
+      current_return_ty: None,
+      block_terminated: false,
     }
   }
 
@@ -119,7 +130,18 @@ impl Codegen {
   }
 
   fn emit(&mut self, line: impl Into<String>) {
-    self.main_body.push(line.into());
+    let line = line.into();
+    let trimmed = line.trim();
+    // Basic block labels always end with `:`.
+    if trimmed.ends_with(':') {
+      self.block_terminated = false;
+    } else {
+      let inst = trimmed.trim_start();
+      if inst.starts_with("br ") || inst.starts_with("ret ") || inst == "unreachable" {
+        self.block_terminated = true;
+      }
+    }
+    self.body.push(line);
   }
 
   fn llvm_type_of(ty: Ty) -> &'static str {
@@ -234,9 +256,7 @@ impl Codegen {
 
   fn emit_print_value_inline(&mut self, value: Value) -> Result<(), CodegenError> {
     match value.ty {
-      Ty::Number => {
-        self.emit_print_number_inline(&value.ir)
-      }
+      Ty::Number => self.emit_print_number_inline(&value.ir),
       Ty::Bool => {
         let true_ptr = self.emit_string_ptr(b"true");
         let false_ptr = self.emit_string_ptr(b"false");
@@ -289,9 +309,7 @@ impl Codegen {
 
     let nan = self.fresh_block("print.nan");
     let not_nan = self.fresh_block("print.not_nan");
-    self.emit(format!(
-      "  br i1 {is_nan}, label %{nan}, label %{not_nan}"
-    ));
+    self.emit(format!("  br i1 {is_nan}, label %{nan}, label %{not_nan}"));
 
     let cont = self.fresh_block("print.num.cont");
 
@@ -366,7 +384,9 @@ impl Codegen {
 
   fn emit_strcmp_eq(&mut self, left: &str, right: &str) -> Result<String, CodegenError> {
     let cmp = self.tmp();
-    self.emit(format!("  {cmp} = call i32 @strcmp(ptr {left}, ptr {right})"));
+    self.emit(format!(
+      "  {cmp} = call i32 @strcmp(ptr {left}, ptr {right})"
+    ));
     let out = self.tmp();
     self.emit(format!("  {out} = icmp eq i32 {cmp}, 0"));
     Ok(out)
@@ -397,12 +417,138 @@ impl Codegen {
   }
 
   fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
+    // Never emit instructions after a terminator. If we do, LLVM will reject the IR.
+    // Instead, start a fresh (unreachable) basic block.
+    if self.block_terminated {
+      let cont = self.fresh_block("after.term");
+      self.emit(format!("{cont}:"));
+    }
+
     match stmt.stx.as_ref() {
+      Stmt::Block(block) => {
+        for stmt in &block.stx.body {
+          self.compile_stmt(stmt)?;
+        }
+        Ok(())
+      }
       Stmt::Empty(_) => Ok(()),
       Stmt::Expr(expr_stmt) => {
         let _ = self.compile_expr(&expr_stmt.stx.expr)?;
         Ok(())
       }
+      Stmt::If(if_stmt) => {
+        let cond = self.compile_expr(&if_stmt.stx.test)?;
+        if cond.ty != Ty::Bool {
+          return Err(CodegenError::TypeError(
+            "`if` condition must be a boolean".to_string(),
+          ));
+        }
+
+        let then_label = self.fresh_block("if.then");
+        let else_label = self.fresh_block("if.else");
+        let end_label = self.fresh_block("if.end");
+
+        let false_label = if if_stmt.stx.alternate.is_some() {
+          else_label.as_str()
+        } else {
+          end_label.as_str()
+        };
+
+        self.emit(format!(
+          "  br i1 {}, label %{then_label}, label %{false_label}",
+          cond.ir
+        ));
+
+        self.emit(format!("{then_label}:"));
+        self.compile_stmt(&if_stmt.stx.consequent)?;
+        if !self.block_terminated {
+          self.emit(format!("  br label %{end_label}"));
+        }
+
+        if let Some(alt) = if_stmt.stx.alternate.as_ref() {
+          self.emit(format!("{else_label}:"));
+          self.compile_stmt(alt)?;
+          if !self.block_terminated {
+            self.emit(format!("  br label %{end_label}"));
+          }
+        }
+
+        self.emit(format!("{end_label}:"));
+        Ok(())
+      }
+      Stmt::While(while_stmt) => {
+        let cond_label = self.fresh_block("while.cond");
+        let body_label = self.fresh_block("while.body");
+        let end_label = self.fresh_block("while.end");
+
+        self.emit(format!("  br label %{cond_label}"));
+
+        self.emit(format!("{cond_label}:"));
+        let cond = self.compile_expr(&while_stmt.stx.condition)?;
+        if cond.ty != Ty::Bool {
+          return Err(CodegenError::TypeError(
+            "`while` condition must be a boolean".to_string(),
+          ));
+        }
+        self.emit(format!(
+          "  br i1 {}, label %{body_label}, label %{end_label}",
+          cond.ir
+        ));
+
+        self.emit(format!("{body_label}:"));
+        self.compile_stmt(&while_stmt.stx.body)?;
+        if !self.block_terminated {
+          self.emit(format!("  br label %{cond_label}"));
+        }
+
+        self.emit(format!("{end_label}:"));
+        Ok(())
+      }
+      Stmt::Return(ret) => {
+        let Some(expected) = self.current_return_ty else {
+          return Err(CodegenError::TypeError(
+            "`return` is not allowed at the top level".to_string(),
+          ));
+        };
+
+        match (expected, ret.stx.value.as_ref()) {
+          (Ty::Void, None) => {
+            self.emit("  ret void".to_string());
+            Ok(())
+          }
+          (Ty::Void, Some(_)) => Err(CodegenError::TypeError(
+            "cannot return a value from a `void` function".to_string(),
+          )),
+          (expected, Some(expr)) => {
+            let value = self.compile_expr(expr)?;
+            if value.ty == Ty::Void {
+              return Err(CodegenError::TypeError(
+                "cannot return a void expression".to_string(),
+              ));
+            }
+            if value.ty != expected {
+              return Err(CodegenError::TypeError(format!(
+                "return type mismatch: expected {expected:?}, got {got:?}",
+                got = value.ty
+              )));
+            }
+
+            let llvm_ty = Self::llvm_type_of(expected);
+            let value_ir = match expected {
+              Ty::Null | Ty::Undefined => "0".to_string(),
+              _ => value.ir,
+            };
+            self.emit(format!("  ret {llvm_ty} {value_ir}"));
+            Ok(())
+          }
+          (expected, None) => Err(CodegenError::TypeError(format!(
+            "missing return value for function returning {expected:?}"
+          ))),
+        }
+      }
+      // Top-level function declarations are compiled separately (hoisted). We don't model nested
+      // function declarations in the minimal emitter.
+      Stmt::FunctionDecl(_) => Ok(()),
       Stmt::VarDecl(decl) => {
         for declarator in &decl.stx.declarators {
           let name = match declarator.pattern.stx.pat.stx.as_ref() {
@@ -449,7 +595,10 @@ impl Codegen {
       }),
       Expr::LitStr(s) => {
         let ptr = self.emit_string_ptr(s.stx.value.as_bytes());
-        Ok(Value { ty: Ty::String, ir: ptr })
+        Ok(Value {
+          ty: Ty::String,
+          ir: ptr,
+        })
       }
       Expr::Id(id) => match id.stx.name.as_str() {
         name => {
@@ -491,7 +640,11 @@ impl Codegen {
           OperatorName::Assignment => {
             let target = match bin.stx.left.stx.as_ref() {
               Expr::IdPat(id) => id.stx.name.as_str(),
-              _ => return Err(CodegenError::TypeError("invalid assignment target".to_string())),
+              _ => {
+                return Err(CodegenError::TypeError(
+                  "invalid assignment target".to_string(),
+                ))
+              }
             };
 
             let rhs = self.compile_expr(&bin.stx.right)?;
@@ -530,7 +683,11 @@ impl Codegen {
           OperatorName::AssignmentAddition => {
             let target = match bin.stx.left.stx.as_ref() {
               Expr::IdPat(id) => id.stx.name.as_str(),
-              _ => return Err(CodegenError::TypeError("invalid assignment target".to_string())),
+              _ => {
+                return Err(CodegenError::TypeError(
+                  "invalid assignment target".to_string(),
+                ))
+              }
             };
 
             let (lhs_ty, lhs_slot) = self.vars.get(target).cloned().ok_or_else(|| {
@@ -569,10 +726,7 @@ impl Codegen {
               ));
             }
             let out = self.tmp();
-            self.emit(format!(
-              "  {out} = fadd double {}, {}",
-              left.ir, right.ir
-            ));
+            self.emit(format!("  {out} = fadd double {}, {}", left.ir, right.ir));
             Ok(Value {
               ty: Ty::Number,
               ir: out,
@@ -587,10 +741,7 @@ impl Codegen {
               ));
             }
             let out = self.tmp();
-            self.emit(format!(
-              "  {out} = fsub double {}, {}",
-              left.ir, right.ir
-            ));
+            self.emit(format!("  {out} = fsub double {}, {}", left.ir, right.ir));
             Ok(Value {
               ty: Ty::Number,
               ir: out,
@@ -605,10 +756,7 @@ impl Codegen {
               ));
             }
             let out = self.tmp();
-            self.emit(format!(
-              "  {out} = fmul double {}, {}",
-              left.ir, right.ir
-            ));
+            self.emit(format!("  {out} = fmul double {}, {}", left.ir, right.ir));
             Ok(Value {
               ty: Ty::Number,
               ir: out,
@@ -623,10 +771,7 @@ impl Codegen {
               ));
             }
             let out = self.tmp();
-            self.emit(format!(
-              "  {out} = fdiv double {}, {}",
-              left.ir, right.ir
-            ));
+            self.emit(format!("  {out} = fdiv double {}, {}", left.ir, right.ir));
             Ok(Value {
               ty: Ty::Number,
               ir: out,
@@ -649,14 +794,14 @@ impl Codegen {
                 ));
               }
               Ty::Bool => {
-                self.emit(format!(
-                  "  {out} = icmp eq i1 {}, {}",
-                  left.ir, right.ir
-                ));
+                self.emit(format!("  {out} = icmp eq i1 {}, {}", left.ir, right.ir));
               }
               Ty::String => {
                 let eq = self.emit_strcmp_eq(&left.ir, &right.ir)?;
-                return Ok(Value { ty: Ty::Bool, ir: eq });
+                return Ok(Value {
+                  ty: Ty::Bool,
+                  ir: eq,
+                });
               }
               Ty::Null | Ty::Undefined => {
                 // `null === null` and `undefined === undefined`.
@@ -672,7 +817,10 @@ impl Codegen {
                 ));
               }
             }
-            Ok(Value { ty: Ty::Bool, ir: out })
+            Ok(Value {
+              ty: Ty::Bool,
+              ir: out,
+            })
           }
           OperatorName::StrictInequality => {
             let left = self.compile_expr(&bin.stx.left)?;
@@ -694,23 +842,29 @@ impl Codegen {
                 ));
                 let out = self.tmp();
                 self.emit(format!("  {out} = xor i1 {eq}, true"));
-                Ok(Value { ty: Ty::Bool, ir: out })
+                Ok(Value {
+                  ty: Ty::Bool,
+                  ir: out,
+                })
               }
               Ty::Bool => {
                 let eq = self.tmp();
-                self.emit(format!(
-                  "  {eq} = icmp eq i1 {}, {}",
-                  left.ir, right.ir
-                ));
+                self.emit(format!("  {eq} = icmp eq i1 {}, {}", left.ir, right.ir));
                 let out = self.tmp();
                 self.emit(format!("  {out} = xor i1 {eq}, true"));
-                Ok(Value { ty: Ty::Bool, ir: out })
+                Ok(Value {
+                  ty: Ty::Bool,
+                  ir: out,
+                })
               }
               Ty::String => {
                 let eq = self.emit_strcmp_eq(&left.ir, &right.ir)?;
                 let out = self.tmp();
                 self.emit(format!("  {out} = xor i1 {eq}, true"));
-                Ok(Value { ty: Ty::Bool, ir: out })
+                Ok(Value {
+                  ty: Ty::Bool,
+                  ir: out,
+                })
               }
               Ty::Null | Ty::Undefined => Ok(Value {
                 ty: Ty::Bool,
@@ -745,7 +899,10 @@ impl Codegen {
               "  {out} = fcmp {pred} double {}, {}",
               left.ir, right.ir
             ));
-            Ok(Value { ty: Ty::Bool, ir: out })
+            Ok(Value {
+              ty: Ty::Bool,
+              ir: out,
+            })
           }
           OperatorName::LogicalAnd | OperatorName::LogicalOr => {
             let left = self.compile_expr(&bin.stx.left)?;
@@ -762,7 +919,10 @@ impl Codegen {
               _ => unreachable!(),
             };
             self.emit(format!("  {out} = {op} i1 {}, {}", left.ir, right.ir));
-            Ok(Value { ty: Ty::Bool, ir: out })
+            Ok(Value {
+              ty: Ty::Bool,
+              ir: out,
+            })
           }
           other => Err(CodegenError::UnsupportedOperator(other)),
         }
@@ -816,14 +976,14 @@ impl Codegen {
             return Err(CodegenError::BuiltinsDisabled);
           }
 
-           match builtin {
+          match builtin {
             BuiltinCall::Print { args } => {
               self.emit_print_log_call(args)?;
               // Make stdout useful for debugging even when the program later traps (e.g. SIGSEGV).
               self.emit("  call i32 @fflush(ptr null)".to_string());
               Ok(Value::void())
             }
-             BuiltinCall::Assert { cond, msg } => {
+            BuiltinCall::Assert { cond, msg } => {
               let cond_v = self.compile_expr(cond)?;
               if cond_v.ty != Ty::Bool {
                 return Err(CodegenError::TypeError(
@@ -833,10 +993,7 @@ impl Codegen {
 
               let ok = self.fresh_block("assert.ok");
               let fail = self.fresh_block("assert.fail");
-              self.emit(format!(
-                "  br i1 {}, label %{ok}, label %{fail}",
-                cond_v.ir
-              ));
+              self.emit(format!("  br i1 {}, label %{ok}, label %{fail}", cond_v.ir));
 
               self.emit(format!("{fail}:"));
               if let Some(msg) = msg {
@@ -850,38 +1007,96 @@ impl Codegen {
               self.emit("  call void @abort()".to_string());
               self.emit("  unreachable".to_string());
 
-               self.emit(format!("{ok}:"));
-               Ok(Value::void())
-             }
-             BuiltinCall::Panic { msg } => {
-               if let Some(msg) = msg {
-                 let msg_v = self.compile_expr(msg)?;
-                 self.emit_print_value(msg_v)?;
-               }
-               self.emit("  call i32 @fflush(ptr null)".to_string());
-               self.emit("  call void @abort()".to_string());
-               self.emit("  unreachable".to_string());
+              self.emit(format!("{ok}:"));
+              Ok(Value::void())
+            }
+            BuiltinCall::Panic { msg } => {
+              if let Some(msg) = msg {
+                let msg_v = self.compile_expr(msg)?;
+                self.emit_print_value(msg_v)?;
+              }
+              self.emit("  call i32 @fflush(ptr null)".to_string());
+              self.emit("  call void @abort()".to_string());
+              self.emit("  unreachable".to_string());
 
-               // Keep the IR structurally valid by starting a fresh (unreachable) block for any
-               // subsequent statements / the implicit final `ret`.
-               let cont = self.fresh_block("panic.after");
-               self.emit(format!("{cont}:"));
-               Ok(Value::void())
-             }
-             BuiltinCall::Trap => {
-               self.emit("  call i32 @fflush(ptr null)".to_string());
-               self.emit("  call void @llvm.trap()".to_string());
-               self.emit("  unreachable".to_string());
+              // Keep the IR structurally valid by starting a fresh (unreachable) block for any
+              // subsequent statements / the implicit final `ret`.
+              let cont = self.fresh_block("panic.after");
+              self.emit(format!("{cont}:"));
+              Ok(Value::void())
+            }
+            BuiltinCall::Trap => {
+              self.emit("  call i32 @fflush(ptr null)".to_string());
+              self.emit("  call void @llvm.trap()".to_string());
+              self.emit("  unreachable".to_string());
 
-               let cont = self.fresh_block("trap.after");
-               self.emit(format!("{cont}:"));
-               Ok(Value::void())
-             }
-           }
-         } else {
-           Err(CodegenError::UnsupportedExpr)
-         }
-       }
+              let cont = self.fresh_block("trap.after");
+              self.emit(format!("{cont}:"));
+              Ok(Value::void())
+            }
+          }
+        } else {
+          // Minimal support for direct calls to user-defined functions.
+          if call.stx.optional_chaining {
+            return Err(CodegenError::UnsupportedExpr);
+          }
+
+          let callee = match call.stx.callee.stx.as_ref() {
+            Expr::Id(id) => id.stx.name.as_str(),
+            _ => return Err(CodegenError::UnsupportedExpr),
+          };
+
+          let sig = self.function_sigs.get(callee).cloned().ok_or_else(|| {
+            CodegenError::TypeError(format!("call to unknown function `{callee}`"))
+          })?;
+
+          if sig.params.len() != call.stx.arguments.len() {
+            return Err(CodegenError::TypeError(format!(
+              "function `{callee}` expects {} args, got {}",
+              sig.params.len(),
+              call.stx.arguments.len()
+            )));
+          }
+
+          let mut arg_irs = Vec::with_capacity(sig.params.len());
+          for (idx, (param_ty, arg)) in sig.params.iter().zip(&call.stx.arguments).enumerate() {
+            if arg.stx.spread {
+              return Err(CodegenError::UnsupportedExpr);
+            }
+            let v = self.compile_expr(&arg.stx.value)?;
+            if v.ty != *param_ty {
+              return Err(CodegenError::TypeError(format!(
+                "argument {idx} to `{callee}` has type {got:?}, expected {expected:?}",
+                got = v.ty,
+                expected = param_ty
+              )));
+            }
+            let llvm_ty = Self::llvm_type_of(*param_ty);
+            let value_ir = match v.ty {
+              Ty::Null | Ty::Undefined => "0".to_string(),
+              _ => v.ir,
+            };
+            arg_irs.push(format!("{llvm_ty} {value_ir}"));
+          }
+
+          let ret_ty = sig.ret;
+          if ret_ty == Ty::Void {
+            self.emit(format!("  call void @{callee}({})", arg_irs.join(", ")));
+            Ok(Value::void())
+          } else {
+            let out = self.tmp();
+            let llvm_ret = Self::llvm_type_of(ret_ty);
+            self.emit(format!(
+              "  {out} = call {llvm_ret} @{callee}({})",
+              arg_irs.join(", ")
+            ));
+            Ok(Value {
+              ty: ret_ty,
+              ir: out,
+            })
+          }
+        }
+      }
 
       _ => Err(CodegenError::UnsupportedExpr),
     }
@@ -894,6 +1109,10 @@ pub(super) fn emit_llvm_module(
 ) -> Result<String, CodegenError> {
   let mut cg = Codegen::new(opts);
 
+  cg.collect_function_signatures(ast)?;
+  cg.compile_function_decls(ast)?;
+
+  cg.reset_fn_ctx(None);
   cg.emit("entry:");
   for stmt in &ast.stx.body {
     cg.compile_stmt(stmt)?;
@@ -919,13 +1138,18 @@ pub(super) fn emit_llvm_module(
   out.push_str("declare void @abort()\n");
   out.push_str("declare void @llvm.trap()\n\n");
 
+  for func in &cg.function_defs {
+    out.push_str(func);
+    out.push('\n');
+  }
+
   // Stack-walkability invariants for precise GC:
   // - Keep frame pointers so the runtime can walk the frame chain.
   // - Disable tail calls so frames are not elided.
   //
   // See `native-js/docs/gc_stack_walking.md`.
   out.push_str("define i32 @main() #0 {\n");
-  for line in &cg.main_body {
+  for line in &cg.body {
     out.push_str(line);
     out.push('\n');
   }
@@ -933,4 +1157,234 @@ pub(super) fn emit_llvm_module(
   out.push_str("\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n");
 
   Ok(out)
+}
+
+#[derive(Clone, Debug)]
+struct FunctionSig {
+  ret: Ty,
+  params: Vec<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct FnCtx {
+  tmp_counter: usize,
+  block_counter: usize,
+  vars: HashMap<String, (Ty, String)>,
+  body: Vec<String>,
+  current_return_ty: Option<Ty>,
+  block_terminated: bool,
+}
+
+impl Codegen {
+  fn reset_fn_ctx(&mut self, ret: Option<Ty>) {
+    self.tmp_counter = 0;
+    self.block_counter = 0;
+    self.vars.clear();
+    self.body.clear();
+    self.current_return_ty = ret;
+    self.block_terminated = false;
+  }
+
+  fn take_fn_ctx(&mut self) -> FnCtx {
+    FnCtx {
+      tmp_counter: self.tmp_counter,
+      block_counter: self.block_counter,
+      vars: std::mem::take(&mut self.vars),
+      body: std::mem::take(&mut self.body),
+      current_return_ty: self.current_return_ty,
+      block_terminated: self.block_terminated,
+    }
+  }
+
+  fn restore_fn_ctx(&mut self, ctx: FnCtx) {
+    self.tmp_counter = ctx.tmp_counter;
+    self.block_counter = ctx.block_counter;
+    self.vars = ctx.vars;
+    self.body = ctx.body;
+    self.current_return_ty = ctx.current_return_ty;
+    self.block_terminated = ctx.block_terminated;
+  }
+
+  fn type_from_type_expr(ty: &Node<TypeExpr>) -> Result<Ty, CodegenError> {
+    match ty.stx.as_ref() {
+      TypeExpr::Number(_) => Ok(Ty::Number),
+      TypeExpr::Boolean(_) => Ok(Ty::Bool),
+      TypeExpr::String(_) => Ok(Ty::String),
+      TypeExpr::Void(_) => Ok(Ty::Void),
+      TypeExpr::Null(_) => Ok(Ty::Null),
+      TypeExpr::Undefined(_) => Ok(Ty::Undefined),
+      other => Err(CodegenError::TypeError(format!(
+        "unsupported type annotation: {other:?}"
+      ))),
+    }
+  }
+
+  fn default_value_ir(ty: Ty) -> String {
+    match ty {
+      Ty::Number => f64_to_llvm_const(0.0),
+      Ty::Bool => "0".to_string(),
+      Ty::String => "null".to_string(),
+      Ty::Null | Ty::Undefined => "0".to_string(),
+      Ty::Void => String::new(),
+    }
+  }
+
+  fn collect_function_signatures(&mut self, ast: &Node<TopLevel>) -> Result<(), CodegenError> {
+    for stmt in &ast.stx.body {
+      let Stmt::FunctionDecl(decl) = stmt.stx.as_ref() else {
+        continue;
+      };
+      let Some(name) = decl.stx.name.as_ref().map(|n| n.stx.name.clone()) else {
+        return Err(CodegenError::TypeError(
+          "function declarations must have a name".to_string(),
+        ));
+      };
+      if name == "main" {
+        return Err(CodegenError::TypeError(
+          "`main` is reserved for the native entrypoint; use a different function name".to_string(),
+        ));
+      }
+      if self.function_sigs.contains_key(&name) {
+        return Err(CodegenError::TypeError(format!(
+          "duplicate function declaration `{name}`"
+        )));
+      }
+
+      let func = &decl.stx.function;
+      if func.stx.async_ || func.stx.generator {
+        return Err(CodegenError::TypeError(format!(
+          "function `{name}` must not be async or a generator"
+        )));
+      }
+
+      let ret = match func.stx.return_type.as_ref() {
+        Some(ret) => Self::type_from_type_expr(ret)?,
+        None => Ty::Number,
+      };
+
+      let mut params = Vec::new();
+      for param in &func.stx.parameters {
+        if param.stx.rest || param.stx.optional {
+          return Err(CodegenError::TypeError(format!(
+            "function `{name}` has unsupported parameter syntax"
+          )));
+        }
+        let param_ty = match param.stx.type_annotation.as_ref() {
+          Some(ann) => Self::type_from_type_expr(ann)?,
+          None => Ty::Number,
+        };
+        params.push(param_ty);
+      }
+
+      self.function_sigs.insert(name, FunctionSig { ret, params });
+    }
+    Ok(())
+  }
+
+  fn compile_function_decls(&mut self, ast: &Node<TopLevel>) -> Result<(), CodegenError> {
+    for stmt in &ast.stx.body {
+      let Stmt::FunctionDecl(decl) = stmt.stx.as_ref() else {
+        continue;
+      };
+      self.compile_function_decl(decl)?;
+    }
+    Ok(())
+  }
+
+  fn compile_function_decl(&mut self, decl: &Node<FuncDecl>) -> Result<(), CodegenError> {
+    let Some(name) = decl.stx.name.as_ref().map(|n| n.stx.name.clone()) else {
+      return Err(CodegenError::TypeError(
+        "function declarations must have a name".to_string(),
+      ));
+    };
+    let sig = self
+      .function_sigs
+      .get(&name)
+      .expect("collected function signatures earlier")
+      .clone();
+
+    let saved = self.take_fn_ctx();
+    self.reset_fn_ctx(Some(sig.ret));
+
+    // Emit function prologue.
+    self.emit("entry:");
+
+    let mut param_decls = Vec::new();
+    // Map parameters into local slots, so we can use the same variable lookup logic as locals.
+    for (idx, param) in decl.stx.function.stx.parameters.iter().enumerate() {
+      let param_name = match param.stx.pattern.stx.pat.stx.as_ref() {
+        Pat::Id(id) => id.stx.name.clone(),
+        _ => {
+          return Err(CodegenError::TypeError(format!(
+            "function `{name}` parameter {idx} must be an identifier"
+          )))
+        }
+      };
+
+      let expected_ty = sig
+        .params
+        .get(idx)
+        .copied()
+        .ok_or_else(|| CodegenError::TypeError("parameter list mismatch".to_string()))?;
+      let llvm_ty = Self::llvm_type_of(expected_ty);
+      param_decls.push(format!("{llvm_ty} %{param_name}"));
+
+      let slot = self.emit_alloca(expected_ty)?;
+      self.emit_store(expected_ty, &format!("%{param_name}"), &slot)?;
+      self.vars.insert(param_name, (expected_ty, slot));
+    }
+
+    match decl.stx.function.stx.body.as_ref() {
+      Some(FuncBody::Block(stmts)) => {
+        for stmt in stmts {
+          self.compile_stmt(stmt)?;
+        }
+      }
+      Some(FuncBody::Expression(expr)) => {
+        let value = self.compile_expr(expr)?;
+        if value.ty != sig.ret {
+          return Err(CodegenError::TypeError(format!(
+            "function `{name}` returns {got:?}, expected {expected:?}",
+            got = value.ty,
+            expected = sig.ret
+          )));
+        }
+        let llvm_ty = Self::llvm_type_of(sig.ret);
+        let value_ir = match sig.ret {
+          Ty::Null | Ty::Undefined => "0".to_string(),
+          _ => value.ir,
+        };
+        self.emit(format!("  ret {llvm_ty} {value_ir}"));
+      }
+      None => {}
+    }
+
+    // Ensure the function is well-formed even if the source forgot a `return`.
+    if !self.block_terminated {
+      match sig.ret {
+        Ty::Void => self.emit("  ret void".to_string()),
+        other => {
+          let llvm_ty = Self::llvm_type_of(other);
+          let value_ir = Self::default_value_ir(other);
+          self.emit(format!("  ret {llvm_ty} {value_ir}"));
+        }
+      }
+    }
+
+    let mut def = String::new();
+    def.push_str(&format!(
+      "define {} @{name}({}) #0 {{\n",
+      Self::llvm_type_of(sig.ret),
+      param_decls.join(", ")
+    ));
+    for line in &self.body {
+      def.push_str(line);
+      def.push('\n');
+    }
+    def.push_str("}\n");
+    self.function_defs.push(def);
+
+    self.restore_fn_ctx(saved);
+    Ok(())
+  }
 }

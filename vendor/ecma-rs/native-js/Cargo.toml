@@ -31,4 +31,5 @@ types-ts-interned = { workspace = true }
 object = { workspace = true }
 tempfile = { workspace = true }
 runtime-native = { workspace = true }
-
+vm-js = { workspace = true }
+wait-timeout = { workspace = true }
