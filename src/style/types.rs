@@ -3407,6 +3407,60 @@ impl Default for TextRendering {
   }
 }
 
+/// CSS `-webkit-font-smoothing` / `-moz-osx-font-smoothing` / `font-smooth`.
+///
+/// These properties are non-standard, but appear frequently in real-world stylesheets (resets and
+/// icon fonts) to control font anti-aliasing modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontSmoothing {
+  /// Use the renderer default.
+  Auto,
+  /// Prefer grayscale anti-aliasing (disable LCD/subpixel AA).
+  Grayscale,
+  /// Prefer LCD/subpixel anti-aliasing when available.
+  Subpixel,
+  /// Disable anti-aliasing.
+  None,
+}
+
+impl Default for FontSmoothing {
+  fn default() -> Self {
+    Self::Auto
+  }
+}
+
+impl FontSmoothing {
+  pub fn parse_webkit(raw: &str) -> Option<Self> {
+    match raw.to_ascii_lowercase().as_str() {
+      "auto" => Some(Self::Auto),
+      "none" => Some(Self::None),
+      "antialiased" => Some(Self::Grayscale),
+      "subpixel-antialiased" => Some(Self::Subpixel),
+      _ => None,
+    }
+  }
+
+  pub fn parse_moz_osx(raw: &str) -> Option<Self> {
+    match raw.to_ascii_lowercase().as_str() {
+      "auto" => Some(Self::Auto),
+      "grayscale" => Some(Self::Grayscale),
+      _ => None,
+    }
+  }
+
+  pub fn parse_font_smooth(raw: &str) -> Option<Self> {
+    match raw.to_ascii_lowercase().as_str() {
+      "auto" => Some(Self::Auto),
+      "never" => Some(Self::None),
+      "always" => Some(Self::Grayscale),
+      // Seen in some real-world stylesheets (treat as aliases).
+      "grayscale" | "antialiased" => Some(Self::Grayscale),
+      "subpixel-antialiased" => Some(Self::Subpixel),
+      _ => None,
+    }
+  }
+}
+
 /// CSS `text-indent`
 ///
 /// Reference: CSS Text Module Level 3

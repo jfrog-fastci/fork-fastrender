@@ -1885,6 +1885,7 @@ fn color_glyph_shadow_matches_golden() {
     allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
+    font_smoothing: fastrender::style::types::FontSmoothing::Auto,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,
     rotation: fastrender::text::pipeline::RunRotation::None,

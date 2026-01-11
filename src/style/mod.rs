@@ -117,6 +117,7 @@ use types::FontPalette;
 use types::FontSizeAdjust;
 use types::FontStretch;
 use types::FontStyle;
+use types::FontSmoothing;
 use types::FontSynthesis;
 use types::FontVariant;
 use types::FontVariantAlternates;
@@ -1192,6 +1193,7 @@ pub struct ComputedStyle {
   pub text_justify: TextJustify,
   pub text_rendering: TextRendering,
   pub allow_subpixel_aa: bool,
+  pub font_smoothing: FontSmoothing,
   pub text_indent: TextIndent,
   pub text_size_adjust: TextSizeAdjust,
   pub text_wrap: TextWrap,
@@ -1639,6 +1641,7 @@ impl Default for ComputedStyle {
       text_justify: TextJustify::Auto,
       text_rendering: TextRendering::Auto,
       allow_subpixel_aa: true,
+      font_smoothing: FontSmoothing::Auto,
       text_indent: TextIndent::default(),
       text_size_adjust: TextSizeAdjust::Auto,
       text_overflow: TextOverflow::clip(),

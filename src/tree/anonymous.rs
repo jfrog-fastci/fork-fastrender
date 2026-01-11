@@ -1067,6 +1067,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.text_justify = parent.text_justify;
   style.text_rendering = parent.text_rendering;
   style.allow_subpixel_aa = parent.allow_subpixel_aa;
+  style.font_smoothing = parent.font_smoothing;
   style.text_indent = parent.text_indent;
   style.text_wrap = parent.text_wrap;
   style.text_decoration_skip_box = parent.text_decoration_skip_box;

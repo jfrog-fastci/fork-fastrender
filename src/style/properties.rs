@@ -7143,8 +7143,9 @@ pub(crate) fn apply_property_from_source(
     "text-align-last" => styles.text_align_last = source.text_align_last,
     "text-justify" => styles.text_justify = source.text_justify,
     "text-rendering" => styles.text_rendering = source.text_rendering,
-    "-webkit-font-smoothing" | "-moz-osx-font-smoothing" => {
-      styles.allow_subpixel_aa = source.allow_subpixel_aa
+    "-webkit-font-smoothing" | "-moz-osx-font-smoothing" | "font-smooth" => {
+      styles.allow_subpixel_aa = source.allow_subpixel_aa;
+      styles.font_smoothing = source.font_smoothing;
     }
     "text-size-adjust" => styles.text_size_adjust = source.text_size_adjust,
     "text-wrap" => styles.text_wrap = source.text_wrap,
@@ -13880,21 +13881,17 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
-    "-webkit-font-smoothing" => {
+    "-webkit-font-smoothing" | "-moz-osx-font-smoothing" | "font-smooth" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        if kw.eq_ignore_ascii_case("antialiased") || kw.eq_ignore_ascii_case("none") {
-          styles.allow_subpixel_aa = false;
-        } else if kw.eq_ignore_ascii_case("subpixel-antialiased") || kw.eq_ignore_ascii_case("auto") {
-          styles.allow_subpixel_aa = true;
-        }
-      }
-    }
-    "-moz-osx-font-smoothing" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        if kw.eq_ignore_ascii_case("grayscale") {
-          styles.allow_subpixel_aa = false;
-        } else if kw.eq_ignore_ascii_case("auto") {
-          styles.allow_subpixel_aa = true;
+        let parsed = match property {
+          "-webkit-font-smoothing" => FontSmoothing::parse_webkit(kw),
+          "-moz-osx-font-smoothing" => FontSmoothing::parse_moz_osx(kw),
+          "font-smooth" => FontSmoothing::parse_font_smooth(kw),
+          _ => None,
+        };
+        if let Some(value) = parsed {
+          styles.font_smoothing = value;
+          styles.allow_subpixel_aa = matches!(value, FontSmoothing::Auto | FontSmoothing::Subpixel);
         }
       }
     }

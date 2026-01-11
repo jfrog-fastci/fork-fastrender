@@ -3,6 +3,7 @@ use fastrender::paint::display_list::{
   DisplayItem, DisplayList, FontVariation, GlyphInstance, ListMarkerItem, TextItem,
 };
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
+use fastrender::style::types::FontSmoothing;
 use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
 use fastrender::text::pipeline::RunRotation;
@@ -61,6 +62,7 @@ fn text_item_from_run(run: &ShapedRun, origin: Point) -> TextItem {
     allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
+    font_smoothing: FontSmoothing::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,
@@ -88,6 +90,7 @@ fn list_marker_from_run(run: &ShapedRun, origin: Point) -> ListMarkerItem {
     allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
+    font_smoothing: FontSmoothing::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,

@@ -215,6 +215,7 @@ fn render_legacy_text_shadows(
       blend_mode: tiny_skia::BlendMode::SourceOver,
       clip_mask: None,
       allow_subpixel_aa: true,
+      font_smoothing: fastrender::style::types::FontSmoothing::Auto,
     };
 
     rasterizer

@@ -515,6 +515,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-shadow",
   "-webkit-font-smoothing",
   "-moz-osx-font-smoothing",
+  "font-smooth",
   "-webkit-text-fill-color",
   "-webkit-text-stroke",
   "-webkit-text-stroke-width",
@@ -3382,6 +3383,11 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "transition-behavior" => return supports_transition_behavior_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
+    "-webkit-font-smoothing" => return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_webkit(kw)),
+    "-moz-osx-font-smoothing" => {
+      return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_moz_osx(kw));
+    }
+    "font-smooth" => return keyword_parse(parsed, |kw| crate::style::types::FontSmoothing::parse_font_smooth(kw)),
     "container-type" => {
       return supports_container_type_value(raw_value);
     }

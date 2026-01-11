@@ -214,6 +214,7 @@ mod text_cache_test;
 mod text_justify_display_list_test;
 mod text_decoration_line_through_golden_test;
 mod text_decoration_auto_snapping;
+mod font_smoothing_subpixel_aa_test;
 mod text_subpixel_aa_test;
 mod text_subpixel_aa_gamma_test;
 mod text_decoration_skip_display_list_test;

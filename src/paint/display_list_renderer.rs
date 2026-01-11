@@ -5327,6 +5327,7 @@ impl DisplayListRenderer {
       allow_subpixel_aa: item.allow_subpixel_aa,
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
+      font_smoothing: item.font_smoothing,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -5353,6 +5354,7 @@ impl DisplayListRenderer {
       allow_subpixel_aa: scaled.allow_subpixel_aa,
       stroke_width: scaled.stroke_width,
       stroke_color: scaled.stroke_color,
+      font_smoothing: scaled.font_smoothing,
       shadows: scaled.shadows,
       font_size: scaled.font_size,
       advance_width: scaled.advance_width,
@@ -13719,6 +13721,7 @@ impl DisplayListRenderer {
       opacity: 1.0,
       blend_mode: SkiaBlendMode::SourceOver,
       allow_subpixel_aa: false,
+      font_smoothing: crate::style::types::FontSmoothing::Auto,
     };
 
     for run in &scaled_runs {
@@ -13750,30 +13753,34 @@ impl DisplayListRenderer {
         })
         .collect();
       let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
+      let run_state = TextRenderState {
+        font_smoothing: run.font_smoothing,
+        ..state
+      };
       rasterizer
         .render_glyph_run(
-        &positions,
-        font,
-        run.font_size * run.scale,
-        run.synthetic_bold,
-        run.synthetic_oblique,
-        run.palette_index,
-        run.palette_overrides.as_slice(),
-        run.palette_override_hash,
-        &hb_variations,
-        rotation,
-        run.origin.x,
-        run.origin.y,
-        Rgba::WHITE,
-        state,
-        &mut src_pixmap,
-      )
-      .map_err(|err| match err {
-        Error::Render(render_err) => render_err,
-        other => RenderError::RasterizationFailed {
-          reason: other.to_string(),
-        },
-      })?;
+          &positions,
+          font,
+          run.font_size * run.scale,
+          run.synthetic_bold,
+          run.synthetic_oblique,
+          run.palette_index,
+          run.palette_overrides.as_slice(),
+          run.palette_override_hash,
+          &hb_variations,
+          rotation,
+          run.origin.x,
+          run.origin.y,
+          Rgba::WHITE,
+          run_state,
+          &mut src_pixmap,
+        )
+        .map_err(|err| match err {
+          Error::Render(render_err) => render_err,
+          other => RenderError::RasterizationFailed {
+            reason: other.to_string(),
+          },
+        })?;
     }
 
     // Projectively warp the alpha surface into canvas space.
@@ -15599,7 +15606,7 @@ impl DisplayListRenderer {
       self.render_text_shadows(&font, item)?;
     }
 
-    self.canvas.draw_text_run_with_stroke(
+    self.canvas.draw_text_run_with_stroke_and_font_smoothing(
       item.origin,
       &item.glyphs,
       &font,
@@ -15616,6 +15623,7 @@ impl DisplayListRenderer {
       item.palette_overrides.as_slice(),
       item.palette_override_hash,
       &item.variations,
+      item.font_smoothing,
     )?;
     if let Some(emphasis) = &item.emphasis {
       self.render_emphasis(emphasis, item.allow_subpixel_aa)?;
@@ -15637,6 +15645,7 @@ impl DisplayListRenderer {
       allow_subpixel_aa: item.allow_subpixel_aa,
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
+      font_smoothing: item.font_smoothing,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -16372,6 +16381,7 @@ impl DisplayListRenderer {
         blend_mode: SkiaBlendMode::SourceOver,
         clip_mask: None,
         allow_subpixel_aa: item.allow_subpixel_aa,
+        font_smoothing: item.font_smoothing,
       };
 
       // Ignore text rasterizer failures so shadows don't prevent painting the rest of the scene.

@@ -57,6 +57,7 @@ use crate::paint::pixmap::new_pixmap;
 use crate::paint::pixmap::new_pixmap_with_context;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
+use crate::style::types::FontSmoothing;
 use crate::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use crate::text::font_db::LoadedFont;
 use crate::text::font_instance::{glyph_transform, FontInstance, GlyphOutlineMetrics};
@@ -985,7 +986,10 @@ pub struct TextRenderState<'a> {
   pub opacity: f32,
   /// Blend mode for the glyph draw.
   pub blend_mode: SkiaBlendMode,
+  /// Whether subpixel AA is allowed for this draw (e.g. disabled for clip masks).
   pub allow_subpixel_aa: bool,
+  /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
+  pub font_smoothing: FontSmoothing,
 }
 
 /// Optional stroke to apply when rasterizing text (e.g. `-webkit-text-stroke`).
@@ -1003,6 +1007,7 @@ impl<'a> Default for TextRenderState<'a> {
       opacity: 1.0,
       blend_mode: SkiaBlendMode::SourceOver,
       allow_subpixel_aa: true,
+      font_smoothing: FontSmoothing::Auto,
     }
   }
 }
@@ -1673,6 +1678,10 @@ impl TextRasterizer {
     }
     let inv_scale = 1.0 / scale.abs();
 
+    let antialias_enabled = !matches!(state.font_smoothing, FontSmoothing::None);
+    let allow_subpixel_aa = state.allow_subpixel_aa
+      && matches!(state.font_smoothing, FontSmoothing::Auto | FontSmoothing::Subpixel);
+
     // Create paint with fill color
     let mut paint = Paint::default();
     paint.set_color_rgba8(
@@ -1681,7 +1690,7 @@ impl TextRasterizer {
       color.b,
       (fill_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
     );
-    paint.anti_alias = true;
+    paint.anti_alias = antialias_enabled;
     paint.blend_mode = state.blend_mode;
 
     // Create paint/stroke params for the optional stroke.
@@ -1694,7 +1703,7 @@ impl TextRasterizer {
         stroke.color.b,
         (stroke_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
       );
-      stroke_paint.anti_alias = true;
+      stroke_paint.anti_alias = antialias_enabled;
       stroke_paint.blend_mode = state.blend_mode;
       stroke_style.width = (stroke.width.abs() * inv_scale).max(0.0);
       stroke_style.line_join = tiny_skia::LineJoin::Round;
@@ -1842,8 +1851,9 @@ impl TextRasterizer {
             //
             // This is intentionally guarded by a runtime toggle so golden tests remain stable.
             let mut used_subpixel = false;
-            if self.subpixel_aa_enabled
-              && state.allow_subpixel_aa
+            if antialias_enabled
+              && allow_subpixel_aa
+              && self.subpixel_aa_enabled
               && state.blend_mode == SkiaBlendMode::SourceOver
               && rotation.is_none()
             {

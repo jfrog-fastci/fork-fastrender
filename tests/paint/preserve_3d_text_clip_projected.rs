@@ -5,7 +5,7 @@ use fastrender::paint::display_list::{
 };
 use fastrender::paint::display_list_renderer::DisplayListRenderer;
 use fastrender::style::color::Rgba;
-use fastrender::style::types::{BackfaceVisibility, TransformStyle};
+use fastrender::style::types::{BackfaceVisibility, FontSmoothing, TransformStyle};
 use fastrender::text::font_db::FontConfig;
 use fastrender::text::font_loader::FontContext;
 use fastrender::Rect;
@@ -100,6 +100,7 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
     allow_subpixel_aa: true,
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
+    font_smoothing: FontSmoothing::Auto,
     palette_index: shaped.palette_index,
     palette_overrides: shaped.palette_overrides.clone(),
     palette_override_hash: shaped.palette_override_hash,

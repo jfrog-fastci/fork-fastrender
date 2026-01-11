@@ -63,6 +63,7 @@ use crate::style::types::MaskComposite;
 use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
+use crate::style::types::FontSmoothing;
 use crate::style::types::ResolvedTextDecoration;
 use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextEmphasisStyle;
@@ -875,6 +876,9 @@ pub struct TextItem {
   /// Text stroke color.
   pub stroke_color: Rgba,
 
+  /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
+  pub font_smoothing: FontSmoothing,
+
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
 
@@ -937,6 +941,7 @@ impl Default for TextItem {
       allow_subpixel_aa: true,
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
+      font_smoothing: FontSmoothing::Auto,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -1171,6 +1176,9 @@ pub struct ListMarkerItem {
   /// Text stroke color.
   pub stroke_color: Rgba,
 
+  /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
+  pub font_smoothing: FontSmoothing,
+
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
 
@@ -1229,6 +1237,7 @@ impl Default for ListMarkerItem {
       allow_subpixel_aa: true,
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
+      font_smoothing: FontSmoothing::Auto,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,

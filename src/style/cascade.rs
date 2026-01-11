@@ -18779,6 +18779,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.text_justify = parent.text_justify;
   styles.text_rendering = parent.text_rendering;
   styles.allow_subpixel_aa = parent.allow_subpixel_aa;
+  styles.font_smoothing = parent.font_smoothing;
   styles.text_indent = parent.text_indent;
   styles.text_wrap = parent.text_wrap;
   styles.text_decoration_skip_box = parent.text_decoration_skip_box;
