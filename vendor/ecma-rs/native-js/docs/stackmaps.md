@@ -76,6 +76,10 @@ layout**:
 - `deopt_count` deopt operand locations (if any), followed by
 - `(base, derived)` relocation pairs (two locations per `gc.relocate`).
 
+Note: GC roots are encoded as `(base, derived)` pairs. For interior pointers (`base != derived`),
+relocation must preserve the observed base→derived delta (see
+[`Derived / interior pointer relocation pairs`](#derived--interior-pointer-relocation-pairs)).
+
 The default `rewrite-statepoints-for-gc` ID is still useful for debugging:
 
 - LLVM 18 uses `0xABCDEF00` (decimal `2882400000`) when a callsite does not specify an explicit
