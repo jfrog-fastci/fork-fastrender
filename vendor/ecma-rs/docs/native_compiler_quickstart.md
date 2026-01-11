@@ -296,7 +296,8 @@ It:
 
 Today the harness includes:
 
-- a fixtures test (`native-oracle-harness/tests/fixtures.rs`) that runs `*.ts`/`*.tsx` fixtures with `// EXPECT:` (or `*.out`) and compares the observed output, and
+- a unit test that asserts `*.ts` fixtures successfully erase to JS and execute in the oracle runtime.
+- a fixtures test (`native-oracle-harness/tests/fixtures.rs`) that runs `*.ts`/`*.tsx` fixtures with `// EXPECT:` (or `*.out`) and compares the observed output.
 - promise/microtask tests (under `native-oracle-harness/tests/`) that run `*.js` fixtures directly.
 
 It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --strict-native` (alias: `--native-strict`)
@@ -329,6 +330,7 @@ Guidelines for fixtures:
   - a sibling `*.out` file with the same basename.
   The harness evaluates `String(globalThis.__native_result)` after a microtask checkpoint and compares it to the expected output.
 - For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script completion value is a
+  For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script completion value is a
   `string` or `Promise<string>` (the harness does not currently provide a macro-task/event loop).
 
 To add a new fixture:

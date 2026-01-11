@@ -37,7 +37,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   for path in paths {
     let src = fs::read_to_string(&path)?;
     let Some(expected) = parse_expected(&src, &path) else {
-      eprintln!("SKIP {} (no // EXPECT: and no .out)", path.display());
+      failures += 1;
+      eprintln!(
+        "FAIL {} (missing // EXPECT: comment and no .out file)",
+        path.display()
+      );
       continue;
     };
     let actual = match run_fixture_ts_with_name(&path.to_string_lossy(), &src) {
@@ -66,4 +70,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
   }
 }
-
