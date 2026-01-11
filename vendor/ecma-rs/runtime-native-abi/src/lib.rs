@@ -310,7 +310,8 @@ impl PromiseRef {
 unsafe impl Send for PromiseRef {}
 unsafe impl Sync for PromiseRef {}
 
-/// Payload layout for promises returned from [`rt_parallel_spawn_promise`].
+/// Payload layout for promises returned from [`rt_parallel_spawn_promise`] (or
+/// [`rt_parallel_spawn_promise_rooted`]).
 ///
 /// The runtime allocates a payload buffer described by this struct. The worker task can write its
 /// result into `rt_promise_payload_ptr(promise)` and then call `rt_promise_fulfill` (or
@@ -590,6 +591,11 @@ extern "C" {
   pub fn rt_parallel_spawn_promise(
     task: RtParallelPromiseTaskFn,
     data: *mut u8,
+    layout: PromiseLayout,
+  ) -> PromiseRef;
+  pub fn rt_parallel_spawn_promise_rooted(
+    task: RtParallelPromiseTaskFn,
+    data: GcPtr,
     layout: PromiseLayout,
   ) -> PromiseRef;
   pub fn rt_spawn_blocking(
@@ -1054,6 +1060,7 @@ mod tests {
       "rt_parallel_join(",
       "rt_parallel_for(",
       "rt_parallel_spawn_promise(",
+      "rt_parallel_spawn_promise_rooted(",
       "rt_spawn_blocking(",
       "rt_spawn_blocking_rooted(",
       "rt_promise_init(",

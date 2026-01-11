@@ -1,6 +1,7 @@
 use crate::abi::PromiseRef;
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
 use crate::async_runtime::PromiseLayout;
+use crate::async_rt::gc::Root;
 use crate::threading::ThreadKind;
 use core::sync::atomic::Ordering;
 
@@ -14,19 +15,26 @@ struct PromiseTask {
   func: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
   promise: PromiseRef,
+  root: Option<Root>,
 }
 
 extern "C" fn promise_task_trampoline(ptr: *mut u8) {
   // Safety: allocated by `spawn_promise` as a `Box<PromiseTask>`.
   let task = unsafe { Box::from_raw(ptr as *mut PromiseTask) };
-  (task.func)(task.data, task.promise);
+  let data_for_cb = task
+    .root
+    .as_ref()
+    .map(|r| r.ptr())
+    .unwrap_or(task.data);
+  (task.func)(data_for_cb, task.promise);
   // Box dropped here.
 }
 
-pub(crate) fn spawn_promise(
+fn spawn_promise_impl(
   func: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
   layout: PromiseLayout,
+  root: Option<Root>,
 ) -> PromiseRef {
   // Ensure the async runtime is initialized so promise settlement can wake a
   // thread blocked in the platform reactor wait syscall (`epoll_wait`/`kevent`).
@@ -54,6 +62,7 @@ pub(crate) fn spawn_promise(
     func,
     data,
     promise,
+    root,
   });
   let wrapper_ptr = Box::into_raw(wrapper) as *mut u8;
 
@@ -61,4 +70,23 @@ pub(crate) fn spawn_promise(
   crate::rt_parallel().spawn_detached(promise_task_trampoline, wrapper_ptr);
 
   promise
+}
+
+pub(crate) fn spawn_promise(
+  func: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  layout: PromiseLayout,
+) -> PromiseRef {
+  spawn_promise_impl(func, data, layout, None)
+}
+
+pub(crate) fn spawn_promise_rooted(
+  func: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  layout: PromiseLayout,
+) -> PromiseRef {
+  // Safety: caller must uphold the rooted-task contract that `data` is the base pointer of a
+  // GC-managed object.
+  let root = unsafe { Root::new_unchecked(data) };
+  spawn_promise_impl(func, data, layout, Some(root))
 }

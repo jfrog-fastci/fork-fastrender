@@ -53,6 +53,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_thread_detach(",
     "rt_keep_alive_gc_ref(",
     "rt_parallel_spawn_rooted(",
+    "rt_parallel_spawn_promise_rooted(",
     "rt_queue_microtask_rooted(",
     "rt_async_sleep(",
     "rt_queue_microtask(",
@@ -209,6 +210,11 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _parallel_spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> runtime_native::abi::TaskId =
     runtime_native::rt_parallel_spawn_rooted;
   let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = runtime_native::rt_queue_microtask_rooted;
+  let _parallel_spawn_promise_rooted: extern "C" fn(
+    extern "C" fn(*mut u8, runtime_native::abi::PromiseRef),
+    *mut u8,
+    runtime_native::PromiseLayout,
+  ) -> runtime_native::abi::PromiseRef = runtime_native::rt_parallel_spawn_promise_rooted;
   let _set_timeout_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
     runtime_native::rt_set_timeout_rooted;
   let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
@@ -291,6 +297,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _root_pop,
     _parallel_spawn_rooted,
     _queue_microtask_rooted,
+    _parallel_spawn_promise_rooted,
     _set_timeout_rooted,
     _set_interval_rooted,
     _io_register,

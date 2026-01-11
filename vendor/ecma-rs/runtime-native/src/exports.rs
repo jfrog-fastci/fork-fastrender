@@ -1194,6 +1194,26 @@ pub extern "C" fn rt_parallel_spawn_promise(
   })
 }
 
+/// Like [`rt_parallel_spawn_promise`], but `data` is a GC-managed object that the runtime will keep
+/// alive until the worker task finishes executing.
+///
+/// Contract:
+/// - `data` must be a pointer to the base of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until the task completes.
+/// - The worker callback receives the (possibly relocated) pointer after any GC relocation.
+#[no_mangle]
+pub extern "C" fn rt_parallel_spawn_promise_rooted(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::parallel_integration::spawn_promise_rooted(task, data, promise_layout)
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),
@@ -2758,7 +2778,8 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
   })
 }
 
-/// Return the payload buffer associated with a promise created by `rt_parallel_spawn_promise`.
+/// Return the payload buffer associated with a promise created by `rt_parallel_spawn_promise` (or
+/// `rt_parallel_spawn_promise_rooted`).
 ///
 /// For non-payload promises, this may return null.
 #[no_mangle]

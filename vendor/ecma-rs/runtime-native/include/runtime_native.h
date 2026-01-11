@@ -597,6 +597,14 @@ void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), u
 // Spawn CPU-bound work on the parallel worker pool and return a promise that can
 // be awaited by the async runtime.
 PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
+// Like `rt_parallel_spawn_promise`, but `data` is a GC-managed object that the runtime will keep
+// alive until the worker task finishes executing.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until the task completes.
+// - The worker callback receives the (possibly relocated) pointer after any GC relocation.
+PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
 
 // -----------------------------------------------------------------------------
 // Blocking thread pool
@@ -627,7 +635,8 @@ void rt_promise_reject(PromiseRef p);
 bool rt_promise_try_reject(PromiseRef p);
 // Mark a promise as handled for unhandled-rejection tracking.
 void rt_promise_mark_handled(PromiseRef p);
-// Returns the payload pointer for promises created by `rt_parallel_spawn_promise`.
+// Returns the payload pointer for promises created by `rt_parallel_spawn_promise` or
+// `rt_parallel_spawn_promise_rooted`.
 uint8_t* rt_promise_payload_ptr(PromiseRef p);
 
 // -----------------------------------------------------------------------------
