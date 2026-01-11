@@ -28,6 +28,19 @@ pub use crate::unhandled_rejection::PromiseRejectionEvent;
 /// This intentionally does *not* tear down any background threads (if/when they are introduced);
 /// it only clears per-process queues and registrations so each test starts from a blank slate.
 pub fn reset_runtime_state() {
+  // Tests may panic while a stop-the-world epoch is active, leaving the process in a permanently
+  // "stopped" state. Always resume before clearing any other state so subsequent tests can't hang
+  // in safepoint polls.
+  crate::rt_gc_resume_world();
+
+  // Integration tests run on a fixed pool of test-harness threads. If a test registers the current
+  // thread and then panics before calling `threading::unregister_current_thread`, that registration
+  // can leak into the next test that happens to run on the same harness thread.
+  //
+  // Keep tests isolated by best-effort unregistering the current thread here. This is idempotent:
+  // if the thread is already unregistered, it is a no-op.
+  crate::threading::unregister_current_thread();
+
   async_rt::clear_state_for_tests();
   crate::unhandled_rejection::clear_state_for_tests();
   crate::async_runtime::clear_state_for_tests();
