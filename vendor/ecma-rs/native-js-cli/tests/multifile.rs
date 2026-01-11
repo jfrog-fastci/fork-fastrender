@@ -351,6 +351,31 @@ fn errors_on_cycles_through_reexports_deterministically() {
 }
 
 #[test]
+fn errors_on_cycles_through_export_all_deterministically() {
+  let dir = tempdir().unwrap();
+  let a = dir.path().join("a.ts");
+  let b = dir.path().join("b.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&a, "export * from './b';\n").unwrap();
+  fs::write(&b, "export * from './a';\n").unwrap();
+  fs::write(
+    &main,
+    "import './a';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("cyclic module dependency"));
+}
+
+#[test]
 fn reexports_create_runtime_module_dependencies() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
