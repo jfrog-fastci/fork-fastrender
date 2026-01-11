@@ -274,6 +274,7 @@ pub(crate) struct WorldStoppedRememberedSet;
 impl WorldStoppedRememberedSet {
   #[inline]
   pub(crate) fn new() -> Self {
+    registry::for_each_thread(|thread| thread.remset_drain_raw(|obj| remembered_set().insert(obj)));
     Self
   }
 }

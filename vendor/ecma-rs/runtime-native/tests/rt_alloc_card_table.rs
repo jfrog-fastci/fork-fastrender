@@ -45,6 +45,7 @@ fn rt_alloc_array_installs_card_table_for_large_old_pointer_arrays() {
 #[test]
 fn rt_alloc_array_old_fallback_installs_card_table_once_nursery_is_exhausted() {
   let _rt = TestRuntimeGuard::new();
+  let _ = runtime_native::rt_alloc_array(1, 1);
   runtime_native::rt_gc_collect();
 
   let ptr_size = core::mem::size_of::<*mut u8>();
