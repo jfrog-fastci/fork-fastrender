@@ -883,7 +883,7 @@ impl WindowRealm {
         }
       }
 
-      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+      let mut host_ctx = VmJsHostContext::default();
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
 
       let mut first_err: Option<VmError> = None;
@@ -10394,6 +10394,9 @@ fn current_script_state_handle_from_vm_host(
     }
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return Some(document.current_script_handle().clone());
+    }
+    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
+      return ctx.current_script_state().cloned();
     }
     None
   }

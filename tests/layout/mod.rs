@@ -198,6 +198,7 @@ mod grid_abspos_negative_line_counts_from_explicit_grid;
 mod grid_auto_height_does_not_fill_viewport;
 mod grid_auto_placement_dense;
 mod grid_auto_placement_column_dense;
+mod grid_auto_placement_row_locked;
 mod grid_auto_min_size_compressible_replaced;
 mod grid_replaced_items_preserve_fragment_content;
 mod grid_cyclic_percentage_replaced_min_content;
