@@ -82,6 +82,7 @@ pub mod runtime;
 pub mod thread;
 pub mod thread_registry;
 pub mod stackmaps;
+pub mod stackmaps_validate;
 pub mod stackmaps_loader;
 pub mod stackmap_loader;
 pub mod statepoints;
@@ -147,6 +148,7 @@ pub use thread_registry::{
 };
 pub use gc_roots::{RelocPair, StackRootEnumerator};
 pub use stackmaps::StackMaps;
+pub use stackmaps_validate::{validate_stackmaps, ValidationError};
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use rt_trace::rt_debug_snapshot_counters;
 pub use rt_trace::RtDebugCountersSnapshot;
