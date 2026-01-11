@@ -90,10 +90,17 @@ main:
 
 .section .note.GNU-stack,"",@progbits
 "#,
-  )
-  .context("write asm")?;
+    )
+    .context("write asm")?;
 
-  let clang = find_clang()?;
+  let clang = match find_clang() {
+    Ok(clang) => clang,
+    Err(_) => {
+      eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+      return Ok(());
+    }
+  };
+  let lld_fuse = find_lld_fuse_arg();
 
   let status = Command::new(clang)
     .arg("-c")
@@ -143,19 +150,23 @@ main:
   }
 
   // Fixed: native-js link helpers always inject `runtime-native/link/stackmaps.ld`.
-  let out_with_script = td.path().join("b.out");
-  link_elf_executable_with_options(
-    &out_with_script,
-    &[obj_path.clone()],
-    LinkOpts {
-      gc_sections: true,
-      ..Default::default()
-    },
-  )
-  .context("link with KEEP() linker script")?;
-
-  if !has_section_containing(&out_with_script, "llvm_stackmaps")? {
-    bail!("expected llvm_stackmaps section(s) to survive --gc-sections when kept via linker script");
+  if lld_fuse.is_some() {
+    let out_with_script = td.path().join("b.out");
+    link_elf_executable_with_options(
+      &out_with_script,
+      &[obj_path.clone()],
+      LinkOpts {
+        gc_sections: true,
+        ..Default::default()
+      },
+    )
+    .context("link with KEEP() linker script")?;
+ 
+    if !has_section_containing(&out_with_script, "llvm_stackmaps")? {
+      bail!("expected llvm_stackmaps section(s) to survive --gc-sections when kept via linker script");
+    }
+  } else {
+    eprintln!("skipping lld linker-script check: lld not found in PATH");
   }
 
   // Ensure the same fragment is accepted by GNU ld too (in addition to lld).
