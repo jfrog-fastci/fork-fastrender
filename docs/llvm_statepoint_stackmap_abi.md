@@ -91,7 +91,8 @@ Project default: use `flags = 0` unless a specific flag is required.
 
 On x86_64 LLVM 18, `llvm-readobj --stackmap` surfaces this value as the second
 constant header location in each record (location `#2`), immediately after the
-leading callconv header location `#1`.
+callconv header location `#1` (the statepoint callsite calling convention ID,
+usually `0` for `ccc`).
 Depending on whether LLVM chooses to use the stackmap constant pool, `#2` may be
 printed as either `Constant <flags>` or `ConstantIndex ... (<flags>)`; the value
 must match the IR `flags` immarg either way.

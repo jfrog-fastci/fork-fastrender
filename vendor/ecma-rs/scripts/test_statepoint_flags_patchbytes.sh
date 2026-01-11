@@ -209,6 +209,29 @@ extract_location2_constant() {
   printf '%s' "${val}"
 }
 
+extract_location1_constant() {
+  local stackmap="$1"
+  local val
+  val="$(
+    printf '%s\n' "${stackmap}" | awk '
+      /#1: Constant / {
+        v=$3
+        sub(/,/, "", v)
+        print v
+        exit
+      }
+      /#1: (ConstIndex|ConstantIndex) / {
+        if (match($0, /\(([0-9-]+)\)/, m)) {
+          print m[1]
+          exit
+        }
+      }
+    '
+  )"
+  [[ "${val}" =~ ^-?[0-9]+$ ]] || die "failed to parse '#1' constant value from llvm-readobj output"
+  printf '%s' "${val}"
+}
+
 OFF_A="$(extract_instruction_offset "${STACKMAP_A}")"
 OFF_B="$(extract_instruction_offset "${STACKMAP_B}")"
 
@@ -325,6 +348,34 @@ FLAGS3_GOT="$(extract_location2_constant "${FLAGS3_STACKMAP}")"
 if [[ "${FLAGS3_GOT}" != "3" ]]; then
   echo "${FLAGS3_STACKMAP}" >&2
   die "flags=3 fixture: expected stackmap constant #2 (flags) to be 3, got ${FLAGS3_GOT}"
+fi
+
+# Verify stackmap constant #1 encodes the callsite calling convention (fastcc = 8).
+CALLCONV_IR="${tmpdir}/callconv_fastcc.ll"
+cat >"${CALLCONV_IR}" <<'EOF'
+target triple = "x86_64-pc-linux-gnu"
+
+declare void @callee()
+declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+
+define void @test(ptr %obj) gc "coreclr" {
+entry:
+  %tok = call fastcc token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+    i64 0, i32 0,
+    ptr elementtype(void ()) @callee,
+    i32 0, i32 0,
+    i32 0, i32 0) [ "gc-live"(ptr %obj) ]
+  ret void
+}
+EOF
+
+CALLCONV_OBJ="${tmpdir}/callconv_fastcc.o"
+run_llc "${CALLCONV_IR}" "${CALLCONV_OBJ}"
+CALLCONV_STACKMAP="$("${LLVM_READOBJ}" --stackmap "${CALLCONV_OBJ}")"
+CALLCONV_GOT="$(extract_location1_constant "${CALLCONV_STACKMAP}")"
+if [[ "${CALLCONV_GOT}" != "8" ]]; then
+  echo "${CALLCONV_STACKMAP}" >&2
+  die "fastcc fixture: expected stackmap constant #1 (callconv) to be 8, got ${CALLCONV_GOT}"
 fi
 
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
