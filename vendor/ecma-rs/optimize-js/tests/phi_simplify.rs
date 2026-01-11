@@ -1,5 +1,5 @@
 use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-use optimize_js::il::inst::{Arg, Const, Inst, InstTyp};
+use optimize_js::il::inst::{Arg, Const, Inst, InstTyp, ValueTypeSummary};
 use optimize_js::opt::optpass_cfg_prune::optpass_cfg_prune;
 use optimize_js::opt::optpass_impossible_branches::optpass_impossible_branches;
 use optimize_js::ssa::phi_simplify::{simplify_phis, validate_phis};
@@ -121,6 +121,11 @@ fn empty_phi_is_replaced_with_defined_value_when_used() {
   let (tgt, arg) = block1[0].as_var_assign();
   assert_eq!(tgt, 7);
   assert_eq!(*arg, Arg::Const(Const::Undefined));
+  assert_eq!(
+    block1[0].value_type,
+    ValueTypeSummary::UNDEFINED,
+    "expected simplified empty Phi to preserve const-derived value type"
+  );
   let (_, use_arg) = block1[1].as_var_assign();
   assert_eq!(*use_arg, Arg::Var(7));
 }
