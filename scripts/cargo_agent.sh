@@ -201,7 +201,22 @@ fi
 # the monorepo package. To target the vendored workspace explicitly, use:
 #   - `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`, or
 #   - `bash scripts/cargo_agent.sh ... --manifest-path vendor/ecma-rs/Cargo.toml`.
-if [[ "$*" != *"--manifest-path"* ]]; then
+has_manifest_path=0
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  # Stop once we reach the argument delimiter. Anything after `--` is forwarded
+  # to rustc / the test harness / the executed binary, and should not be
+  # interpreted as Cargo flags.
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
+  if [[ "${argv[$i]}" == "--manifest-path" || "${argv[$i]}" == --manifest-path=* ]]; then
+    has_manifest_path=1
+    break
+  fi
+done
+
+if [[ "${has_manifest_path}" -eq 0 ]]; then
   argv=("$@")
   subcmd_pos=0
   if [[ "${argv[0]:-}" == +* ]]; then
@@ -399,6 +414,9 @@ fi
 needs_rustc_bootstrap=0
 argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
   manifest_path=""
   if [[ "${argv[$i]}" == "--manifest-path" ]]; then
     manifest_path="${argv[$((i + 1))]:-}"
@@ -655,6 +673,9 @@ run_cargo() {
   # invoking that workspace from the repo root via `--manifest-path`, ensure the
   # env var is set even when Cargo doesn't discover the nested `.cargo` config.
   for ((i = 0; i < ${#cargo_cmd[@]}; i++)); do
+    if [[ "${cargo_cmd[$i]}" == "--" ]]; then
+      break
+    fi
     if [[ "${cargo_cmd[$i]}" == "--manifest-path" ]]; then
       manifest_path="${cargo_cmd[$((i + 1))]:-}"
       break
