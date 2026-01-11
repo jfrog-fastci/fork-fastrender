@@ -158,7 +158,7 @@ When linking from Rust, you still need to pass the script to the final link step
 RUSTFLAGS="\
   -C force-frame-pointers=yes \
   -C linker=clang-18 \
-  -C link-arg=-fuse-ld=lld \
+  -C link-arg=-fuse-ld=lld-18 \
   -C link-arg=-Wl,-T,$PWD/runtime-native/link/stackmaps.ld" \
   bash scripts/cargo_agent.sh build
 ```
