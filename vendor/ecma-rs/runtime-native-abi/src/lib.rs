@@ -188,7 +188,11 @@ extern "C" {
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
 
   // Async
+  pub fn rt_promise_init(p: PromiseRef);
+  pub fn rt_promise_fulfill(p: PromiseRef);
+  pub fn rt_promise_reject(p: PromiseRef);
   pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
+  pub fn rt_async_spawn_deferred(coro: *mut Coroutine) -> PromiseRef;
   pub fn rt_async_poll() -> bool;
 }
 
@@ -267,7 +271,11 @@ mod tests {
       "rt_parallel_spawn(",
       "rt_parallel_join(",
       "rt_parallel_for(",
+      "rt_promise_init(",
+      "rt_promise_fulfill(",
+      "rt_promise_reject(",
       "rt_async_spawn(",
+      "rt_async_spawn_deferred(",
       "rt_async_poll(",
     ] {
       assert!(
