@@ -58,6 +58,40 @@ pub enum ValidationError {
   },
 
   #[error(
+    "callsite pc=0x{pc:x} patchpoint_id={patchpoint_id} instruction_offset={instruction_offset}: register root location #{location_index} uses forbidden DWARF reg {dwarf_reg} ({kind}); register roots must not use SP/FP/IP"
+  )]
+  ForbiddenRegisterRoot {
+    pc: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    location_index: usize,
+    dwarf_reg: u16,
+    kind: &'static str,
+  },
+
+  #[error(
+    "callsite pc=0x{pc:x} patchpoint_id={patchpoint_id} instruction_offset={instruction_offset}: register root location #{location_index} uses unsupported DWARF reg {dwarf_reg}"
+  )]
+  UnsupportedRegisterRoot {
+    pc: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    location_index: usize,
+    dwarf_reg: u16,
+  },
+
+  #[error(
+    "callsite pc=0x{pc:x} patchpoint_id={patchpoint_id} instruction_offset={instruction_offset}: register root location #{location_index} has non-zero offset {offset}; Register locations must use offset=0"
+  )]
+  NonZeroRegisterOffset {
+    pc: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    location_index: usize,
+    offset: i32,
+  },
+
+  #[error(
     "callsite pc=0x{pc:x} patchpoint_id={patchpoint_id} instruction_offset={instruction_offset}: pointer location #{location_index} has unaligned offset {offset} (ptr size {ptr_size})"
   )]
   UnalignedOffset {
@@ -86,6 +120,10 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
 
   let allowed_base_regs = allowed_base_regs_for_target();
   let ptr_size = std::mem::size_of::<usize>() as u16;
+  // Dummy register context used to validate that a `Location::Register` DWARF reg number is one
+  // the runtime can map into its saved `RegContext`.
+  let mut dummy_regs = crate::arch::RegContext::default();
+  let dummy_regs_ptr: *mut crate::arch::RegContext = &mut dummy_regs;
 
   for (pc, callsite) in maps.iter() {
     let record = callsite.record;
@@ -125,23 +163,103 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
     }
 
     for (location_index, loc) in filtered.iter().enumerate() {
-      // Start strict: only stack-addressable slots that can be updated in-place are supported by
-      // the runtime scanner. (`Register` / `Direct` roots are currently rejected.)
-      let (size, dwarf_reg, offset) = match **loc {
+      // Stack roots must be addressable so a moving GC can update them in-place:
+      // - `Indirect [SP/FP + off]` spill slots are always supported.
+      // - `Register` roots are supported by rewriting the stopped thread's saved register file
+      //   (captured at the safepoint) and treating each register as a mutable lvalue.
+      //
+      // `Direct` locations are immediate values (reg+offset) and are not addressable, so we reject
+      // them for now.
+      match **loc {
         Location::Indirect {
           size,
           dwarf_reg,
           offset,
-        } => (size, dwarf_reg, offset),
-        Location::Register { .. } => {
-          return Err(ValidationError::UnsupportedLocationKind {
-            pc,
-            patchpoint_id,
-            instruction_offset,
-            location_index,
-            kind: "Register",
-          })
+        } => {
+          if size != ptr_size {
+            return Err(ValidationError::UnexpectedPointerSize {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              size,
+              ptr_size,
+            });
+          }
+
+          if !allowed_base_regs.contains(&dwarf_reg) {
+            return Err(ValidationError::UnsupportedBaseReg {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              dwarf_reg,
+              allowed: allowed_base_regs,
+            });
+          }
+
+          let ptr_size_i32 = ptr_size as i32;
+          if offset.rem_euclid(ptr_size_i32) != 0 {
+            return Err(ValidationError::UnalignedOffset {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              offset,
+              ptr_size: ptr_size_i32,
+            });
+          }
         }
+
+        Location::Register {
+          size,
+          dwarf_reg,
+          offset,
+        } => {
+          if size != ptr_size {
+            return Err(ValidationError::UnexpectedPointerSize {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              size,
+              ptr_size,
+            });
+          }
+
+          if offset != 0 {
+            return Err(ValidationError::NonZeroRegisterOffset {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              offset,
+            });
+          }
+
+          if let Some(kind) = crate::arch::regs::forbidden_gc_root_reg(dwarf_reg) {
+            return Err(ValidationError::ForbiddenRegisterRoot {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              dwarf_reg,
+              kind,
+            });
+          }
+
+          // Ensure the runtime can actually map this DWARF reg into its saved RegContext.
+          if unsafe { crate::arch::regs::reg_slot_ptr(dummy_regs_ptr, dwarf_reg) }.is_none() {
+            return Err(ValidationError::UnsupportedRegisterRoot {
+              pc,
+              patchpoint_id,
+              instruction_offset,
+              location_index,
+              dwarf_reg,
+            });
+          }
+        }
+
         Location::Direct { .. } => {
           return Err(ValidationError::UnsupportedLocationKind {
             pc,
@@ -170,40 +288,6 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
           })
         }
       };
-
-      if size != ptr_size {
-        return Err(ValidationError::UnexpectedPointerSize {
-          pc,
-          patchpoint_id,
-          instruction_offset,
-          location_index,
-          size,
-          ptr_size,
-        });
-      }
-
-      if !allowed_base_regs.contains(&dwarf_reg) {
-        return Err(ValidationError::UnsupportedBaseReg {
-          pc,
-          patchpoint_id,
-          instruction_offset,
-          location_index,
-          dwarf_reg,
-          allowed: allowed_base_regs,
-        });
-      }
-
-      let ptr_size_i32 = ptr_size as i32;
-      if offset.rem_euclid(ptr_size_i32) != 0 {
-        return Err(ValidationError::UnalignedOffset {
-          pc,
-          patchpoint_id,
-          instruction_offset,
-          location_index,
-          offset,
-          ptr_size: ptr_size_i32,
-        });
-      }
     }
   }
 

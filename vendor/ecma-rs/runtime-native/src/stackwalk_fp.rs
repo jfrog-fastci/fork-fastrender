@@ -131,6 +131,22 @@ pub enum WalkError {
     "unsupported stackmap root base register dwarf_reg={dwarf_reg} at return address {return_addr:#x}"
   )]
   UnsupportedBaseRegister { return_addr: u64, dwarf_reg: u16 },
+  #[error(
+    "missing saved RegContext while evaluating register root dwarf_reg={dwarf_reg} at return address {return_addr:#x}"
+  )]
+  MissingRegContext { return_addr: u64, dwarf_reg: u16 },
+  #[error(
+    "register root uses forbidden DWARF reg {dwarf_reg} ({kind}) at return address {return_addr:#x}"
+  )]
+  ForbiddenRegisterRoot {
+    return_addr: u64,
+    dwarf_reg: u16,
+    kind: &'static str,
+  },
+  #[error(
+    "unsupported register root DWARF reg {dwarf_reg} at return address {return_addr:#x}"
+  )]
+  UnsupportedRegisterRoot { return_addr: u64, dwarf_reg: u16 },
   #[error("stackmap root address overflow: base={base:#x} offset={offset}")]
   RootAddressOverflow { base: u64, offset: i32 },
 
@@ -409,6 +425,16 @@ pub unsafe fn walk_gc_roots_from_fp(
   start_fp: u64,
   bounds: Option<StackBounds>,
   stackmaps: &StackMaps,
+  visit: impl FnMut(*mut u8),
+) -> Result<(), WalkError> {
+  walk_gc_roots_from_fp_with_reg_context(start_fp, bounds, stackmaps, core::ptr::null_mut(), visit)
+}
+
+unsafe fn walk_gc_roots_from_fp_with_reg_context(
+  start_fp: u64,
+  bounds: Option<StackBounds>,
+  stackmaps: &StackMaps,
+  reg_ctx: *mut crate::arch::RegContext,
   mut visit: impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
   if start_fp == 0 {
@@ -453,7 +479,15 @@ pub unsafe fn walk_gc_roots_from_fp(
     let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
     match stackmaps.lookup(caller_ra) {
       Some(callsite) => {
-        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, Some(caller_sp), &mut visit)?;
+        enumerate_roots_for_frame(
+          caller_fp,
+          caller_ra,
+          callsite,
+          bounds,
+          Some(caller_sp),
+          reg_ctx,
+          &mut visit,
+        )?;
       }
       None => {
         #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -546,7 +580,15 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
       // - x86_64: `sp = sp_entry + 8` (return address pushed by `call`)
       // - aarch64: `sp = sp_entry` (`bl` does not push a return address)
       let caller_sp = caller_sp_override_from_safepoint_ctx(ctx);
-      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp, &mut visit)?;
+      enumerate_roots_for_frame(
+        caller_fp,
+        caller_ra,
+        callsite,
+        bounds,
+        caller_sp,
+        ctx.regs,
+        &mut visit,
+      )?;
     }
     None => {
       #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -567,7 +609,7 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   // Continue walking older frames. Starting from the managed frame pointer means the delegated
   // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
   // managed frame we just handled above.
-  walk_gc_roots_from_fp(caller_fp, Some(bounds), stackmaps, visit)
+  walk_gc_roots_from_fp_with_reg_context(caller_fp, Some(bounds), stackmaps, ctx.regs, visit)
 }
 
 /// Walk the frame-pointer chain and enumerate GC relocation pairs (`(base, derived)` slots).
@@ -606,6 +648,22 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
   start_fp: u64,
   bounds: Option<StackBounds>,
   stackmaps: &StackMaps,
+  visit_frame_reloc_pairs: impl FnMut(u64, &[(*mut usize, *mut usize)]),
+) -> Result<(), WalkError> {
+  walk_gc_root_pairs_from_fp_with_reg_context(
+    start_fp,
+    bounds,
+    stackmaps,
+    core::ptr::null_mut(),
+    visit_frame_reloc_pairs,
+  )
+}
+
+unsafe fn walk_gc_root_pairs_from_fp_with_reg_context(
+  start_fp: u64,
+  bounds: Option<StackBounds>,
+  stackmaps: &StackMaps,
+  reg_ctx: *mut crate::arch::RegContext,
   mut visit_frame_reloc_pairs: impl FnMut(u64, &[(*mut usize, *mut usize)]),
 ) -> Result<(), WalkError> {
   if start_fp == 0 {
@@ -662,6 +720,7 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
       callsite,
       bounds,
       Some(caller_sp),
+      reg_ctx,
       &mut pairs_scratch,
     )?;
     if !pairs.is_empty() {
@@ -719,6 +778,7 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
       callsite,
       bounds,
       caller_sp,
+      ctx.regs,
       &mut pairs_scratch,
     )?;
     if !pairs.is_empty() {
@@ -726,7 +786,7 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
     }
   }
 
-  walk_gc_root_pairs_from_fp(caller_fp, Some(bounds), stackmaps, visit_frame_reloc_pairs)
+  walk_gc_root_pairs_from_fp_with_reg_context(caller_fp, Some(bounds), stackmaps, ctx.regs, visit_frame_reloc_pairs)
 }
 
 /// Walk GC relocation pairs for a thread parked in a stop-the-world safepoint.
@@ -897,6 +957,7 @@ fn enumerate_roots_for_frame(
   callsite: CallSite<'_>,
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
+  reg_ctx: *mut crate::arch::RegContext,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
   // `.llvm_stackmaps` may contain records other than GC statepoints (e.g. from
@@ -959,8 +1020,8 @@ fn enumerate_roots_for_frame(
   let mut entry_len = 0usize;
 
   for pair in statepoint.gc_pairs() {
-    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
-    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.base)?;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
 
@@ -1050,10 +1111,10 @@ fn enumerate_root_pairs_for_frame<'a>(
   callsite: CallSite<'_>,
   bounds: StackBounds,
   caller_sp_override: Option<u64>,
+  reg_ctx: *mut crate::arch::RegContext,
   scratch: &'a mut RootPairsScratch,
 ) -> Result<&'a [(*mut usize, *mut usize)], WalkError> {
   scratch.clear();
-
   // Only statepoint callsites contribute GC root relocation pairs.
   let statepoint = match crate::statepoints::StatepointRecord::new(callsite.record) {
     Ok(sp) => sp,
@@ -1093,8 +1154,8 @@ fn enumerate_root_pairs_for_frame<'a>(
   }
 
   for pair in statepoint.gc_pairs() {
-    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
-    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.base)?;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, reg_ctx, &pair.derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;
     validate_root_slot(derived_slot, bounds, caller_ra)?;
 
@@ -1125,6 +1186,7 @@ fn eval_root_location(
   caller_fp: u64,
   caller_sp: u64,
   caller_ra: u64,
+  reg_ctx: *mut crate::arch::RegContext,
   loc: &Location,
 ) -> Result<u64, WalkError> {
   match *loc {
@@ -1145,8 +1207,30 @@ fn eval_root_location(
       add_signed_u64(base, offset).ok_or(WalkError::RootAddressOverflow { base, offset })
     }
 
-    // Statepoint GC roots should always be spilled, addressable slots. Treat
-    // register roots or direct-address expressions as a hard error with context.
+    Location::Register { dwarf_reg, .. } => {
+      if reg_ctx.is_null() {
+        return Err(WalkError::MissingRegContext {
+          return_addr: caller_ra,
+          dwarf_reg,
+        });
+      }
+      if let Some(kind) = crate::arch::regs::forbidden_gc_root_reg(dwarf_reg) {
+        return Err(WalkError::ForbiddenRegisterRoot {
+          return_addr: caller_ra,
+          dwarf_reg,
+          kind,
+        });
+      }
+      let Some(slot) = (unsafe { crate::arch::regs::reg_slot_ptr(reg_ctx, dwarf_reg) }) else {
+        return Err(WalkError::UnsupportedRegisterRoot {
+          return_addr: caller_ra,
+          dwarf_reg,
+        });
+      };
+      Ok(slot as u64)
+    }
+
+    // Treat direct-address expressions or constants as hard errors with context.
     _ => Err(WalkError::UnsupportedGcLocation {
       return_addr: caller_ra,
       loc: loc.clone(),
@@ -1285,7 +1369,7 @@ mod tests {
 
     let bounds = StackBounds { lo: 0, hi: 0x10_000 };
     let mut visited = false;
-    enumerate_roots_for_frame(0x1000, 0x2000, callsite, bounds, None, &mut |_| {
+    enumerate_roots_for_frame(0x1000, 0x2000, callsite, bounds, None, core::ptr::null_mut(), &mut |_| {
       visited = true;
     })
     .unwrap();

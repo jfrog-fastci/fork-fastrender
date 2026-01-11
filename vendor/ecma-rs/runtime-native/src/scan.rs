@@ -27,6 +27,16 @@ pub enum ScanError {
   #[error("missing DWARF register {dwarf_reg} while evaluating location {loc:?}")]
   MissingRegister { dwarf_reg: u16, loc: Location },
 
+  #[error("stackmap register root uses forbidden DWARF register {dwarf_reg} ({kind}) in location {loc:?}")]
+  ForbiddenRegisterRoot {
+    dwarf_reg: u16,
+    kind: &'static str,
+    loc: Location,
+  },
+
+  #[error("stackmap register root uses unsupported DWARF register {dwarf_reg} in location {loc:?}")]
+  UnsupportedRegisterRoot { dwarf_reg: u16, loc: Location },
+
   #[error("address overflow while computing {kind} location address: base=0x{base:x} offset={offset}")]
   AddressOverflow {
     kind: &'static str,
@@ -154,7 +164,7 @@ pub trait RootVisitor {
 /// [`RootVisitor::visit_derived_pair`], including cases where `base == derived` but the two values
 /// are stored in distinct slots (LLVM may emit duplicates).
 pub fn scan_roots(
-  thread_ctx: &ThreadContext,
+  thread_ctx: &mut ThreadContext,
   stackmaps: &StackMaps,
   visitor: &mut impl RootVisitor,
 ) -> Result<(), ScanError> {
@@ -253,11 +263,16 @@ pub fn slot_addr_x86_64(
 /// Returns the address of each *pointer-sized spill slot* as a `(base_slot, derived_slot)` tuple.
 ///
 /// Notes:
-/// - For now, this helper only supports `Indirect` locations, which is the common LLVM 18 output
-///   for statepoint roots after `rewrite-statepoints-for-gc`.
-/// - `Register` and `Direct` locations are treated as unsupported and return an error.
+/// - This helper supports:
+///   - `Indirect` spill slots (the common LLVM 18 output after `rewrite-statepoints-for-gc`), and
+///   - `Register` roots (by returning lvalue pointers into `thread_ctx`).
+/// - `Register` locations are supported by returning a pointer into `thread_ctx`'s saved register
+///   file. This allows a moving GC to rewrite register-located roots by mutating `thread_ctx`
+///   in-place while the thread is stopped.
+/// - `Direct` locations are immediate values (reg + offset) and are not addressable, so they are
+///   treated as unsupported and return an error.
 pub fn scan_reloc_pairs(
-  thread_ctx: &ThreadContext,
+  thread_ctx: &mut ThreadContext,
   stackmaps: &StackMaps,
 ) -> Result<Vec<(*mut usize, *mut usize)>, ScanError> {
   let ip = thread_ctx
@@ -294,7 +309,7 @@ pub fn scan_reloc_pairs(
   Ok(pairs)
 }
 
-fn slot_addr(ctx: &ThreadContext, loc: &Location) -> Result<*mut usize, ScanError> {
+fn slot_addr(ctx: &mut ThreadContext, loc: &Location) -> Result<*mut usize, ScanError> {
   match *loc {
     Location::Indirect {
       dwarf_reg, offset, ..
@@ -311,15 +326,31 @@ fn slot_addr(ctx: &ThreadContext, loc: &Location) -> Result<*mut usize, ScanErro
       Ok(addr as usize as *mut usize)
     }
 
+    Location::Register { dwarf_reg, .. } => {
+      if let Some(kind) = crate::arch::regs::forbidden_gc_root_reg(dwarf_reg) {
+        return Err(ScanError::ForbiddenRegisterRoot {
+          dwarf_reg,
+          kind,
+          loc: loc.clone(),
+        });
+      }
+      let Some(slot) = (unsafe { crate::arch::regs::reg_slot_ptr(ctx as *mut ThreadContext, dwarf_reg) }) else {
+        return Err(ScanError::UnsupportedRegisterRoot {
+          dwarf_reg,
+          loc: loc.clone(),
+        });
+      };
+      Ok(slot)
+    }
+
     // `Direct` locations in LLVM stackmaps mean "value is (reg + offset)" (no memory indirection).
     //
     // `scan_reloc_pairs` currently only supports addressable stack slots (i.e. `Indirect` spill
-    // slots). If we ever need to support `Direct` and `Register` roots, this API likely needs to
-    // return a richer "root slot" abstraction (stack slot vs register) instead of raw pointers.
-    Location::Direct { .. }
-    | Location::Register { .. }
-    | Location::Constant { .. }
-    | Location::ConstIndex { .. } => Err(ScanError::UnsupportedLocation { loc: loc.clone() }),
+    // slots) and register-located roots (treated as lvalues inside `thread_ctx`). `Direct` values
+    // are not addressable, so they are rejected.
+    Location::Direct { .. } | Location::Constant { .. } | Location::ConstIndex { .. } => {
+      Err(ScanError::UnsupportedLocation { loc: loc.clone() })
+    }
   }
 }
 

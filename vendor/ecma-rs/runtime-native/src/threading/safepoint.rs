@@ -404,11 +404,13 @@ pub(crate) fn fixup_safepoint_context_to_nearest_managed(
   #[cfg(not(target_arch = "x86_64"))]
   let sp_entry = sp_callsite;
 
+  let regs = ctx.regs;
   ctx = SafepointContext {
     sp_entry: sp_entry as usize,
     sp: sp_callsite as usize,
     fp: cursor.fp as usize,
     ip: cursor.pc as usize,
+    regs,
   };
 
   ctx
@@ -672,6 +674,7 @@ fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegCont
     sp: sp_entry,
     fp: caller_fp as usize,
     ip: caller_pc as usize,
+    regs: regs.cast(),
   };
   let ctx = fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
 
@@ -697,11 +700,10 @@ fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegCont
   notify_state_change();
   coord.threads_waiting.fetch_sub(1, Ordering::SeqCst);
 
-  // Note: `regs` lives on the assembly stub's stack. If/when we support
-  // register-located roots, the GC can update it in-place while the thread is
-  // blocked here, and the assembly epilogue will restore the updated registers
+  // Note: `regs` lives on the assembly stub's stack. While the thread is stopped,
+  // the GC can update this register file in-place (e.g. to relocate register-located
+  // stackmap roots), and the assembly epilogue will restore the updated registers
   // before returning to managed code.
-  let _ = regs;
 }
 
 /// Request a global stop-the-world safepoint.

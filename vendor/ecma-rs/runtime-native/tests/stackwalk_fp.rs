@@ -247,6 +247,7 @@ fn derived_pointers_are_traced_via_base_and_relocated_via_pairs() {
     sp: caller_sp_callsite,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   // Marking/tracing uses base slots only.
@@ -852,6 +853,7 @@ fn out_of_bounds_caller_sp_is_rejected() {
     sp: caller_sp,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
   let res = unsafe { walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |_| {}) };
   assert!(matches!(res, Err(WalkError::StackPointerOutOfBounds { .. })));

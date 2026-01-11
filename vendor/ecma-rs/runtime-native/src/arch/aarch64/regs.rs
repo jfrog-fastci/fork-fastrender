@@ -35,3 +35,43 @@ impl RegContext {
   }
 }
 
+/// DWARF register number for the frame pointer (X29).
+pub const DWARF_REG_FP: u16 = 29;
+/// DWARF register number for the stack pointer (SP).
+pub const DWARF_REG_SP: u16 = 31;
+/// DWARF register number for the program counter (PC).
+pub const DWARF_REG_IP: u16 = 32;
+
+/// Returns `Some(kind)` if `dwarf_reg` is not a valid register for a GC root.
+///
+/// Under our frame-pointer stack walking policy, SP/FP/IP are never treated as GC roots:
+/// - SP/FP are used to address stack slots.
+/// - IP is the return PC / stackmap lookup key.
+#[inline]
+pub fn forbidden_gc_root_reg(dwarf_reg: u16) -> Option<&'static str> {
+  match dwarf_reg {
+    DWARF_REG_SP => Some("SP"),
+    DWARF_REG_FP => Some("FP"),
+    DWARF_REG_IP => Some("IP"),
+    _ => None,
+  }
+}
+
+/// Maps a DWARF register number to a mutable pointer-sized slot inside the runtime's saved register
+/// file (`stackmap_context::ThreadContext`).
+///
+/// Returns `None` if `dwarf_reg` is not part of the supported DWARF GPR set.
+///
+/// Note: this does **not** apply the GC-root forbidden-reg filter; callers should use
+/// [`forbidden_gc_root_reg`] to reject SP/FP/IP.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub unsafe fn reg_slot_ptr(regs: *mut crate::arch::RegContext, dwarf_reg: u16) -> Option<*mut usize> {
+  let regs = regs.as_mut()?;
+  Some(match dwarf_reg {
+    0..=30 => regs.x.as_mut_ptr().add(dwarf_reg as usize).cast::<usize>(),
+    31 => (&mut regs.sp as *mut u64).cast::<usize>(),
+    32 => (&mut regs.pc as *mut u64).cast::<usize>(),
+    _ => return None,
+  })
+}

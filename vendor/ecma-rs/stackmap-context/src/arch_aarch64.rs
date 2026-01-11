@@ -6,6 +6,7 @@ pub const DWARF_REG_SP: u16 = 31;
 pub const DWARF_REG_IP: u16 = 32;
 
 /// Linux `aarch64` general purpose register state.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadContext {
   /// X0..X30.

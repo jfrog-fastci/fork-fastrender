@@ -77,6 +77,7 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
     sp,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
   let mut visited_ctx = Vec::<(usize, usize)>::new();
   unsafe {
@@ -111,6 +112,7 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
     sp: 0,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
   let mut visited_entry_only = Vec::<(usize, usize)>::new();
   unsafe {
@@ -145,6 +147,7 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
     sp: 0,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
   let res = unsafe {
     walk_gc_root_pairs_from_safepoint_context(&ctx_missing_sp, Some(bounds), &stackmaps, |_ra, _pairs| {})

@@ -878,8 +878,8 @@ impl StackMaps {
       return Err(StackMapError::UnexpectedEof);
     }
 
-    // Fail fast if LLVM/codegen start emitting statepoint roots in registers or
-    // otherwise violate our spill-to-stack assumptions.
+    // Fail fast in debug builds if LLVM/codegen violate our statepoint stackmap layout
+    // assumptions (e.g. non-addressable root locations).
     #[cfg(any(debug_assertions, feature = "verify-statepoints"))]
     {
       use crate::statepoint_verify::{

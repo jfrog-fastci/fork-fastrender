@@ -91,6 +91,7 @@ extern "C" fn rt_gc_safepoint_slow_impl(caller_fp: usize, caller_pc: usize, sp_e
       sp,
       fp: caller_fp,
       ip: caller_pc,
+      regs: core::ptr::null_mut(),
     };
     let mut published_ctx = false;
 

@@ -485,6 +485,7 @@ fn root_pairs_from_safepoint_context_use_ctx_sp() {
     sp: caller_sp,
     fp: caller_fp,
     ip: return_address,
+    regs: core::ptr::null_mut(),
   };
 
   let mut seen: Vec<(usize, usize)> = Vec::new();

@@ -1,5 +1,7 @@
 use core::arch::global_asm;
 
+pub mod regs;
+
 // Assembly is written in Intel syntax for readability.
 //
 // `rt_capture_safepoint_context(out)`:
@@ -34,28 +36,78 @@ runtime_native_capture_safepoint_context:
   mov qword ptr [rdi + 8], rdx
   mov qword ptr [rdi + 16], r8
   mov qword ptr [rdi + 24], r9
+  mov qword ptr [rdi + 32], 0 // regs (no reg context outside safepoint slow path)
   ret
   .globl runtime_native_gc_safepoint_slow_asm
 runtime_native_gc_safepoint_slow_asm:
   // epoch: rdi
-  // Capture the entry stack pointer and return address before touching RSP.
-  mov rax, rsp                // sp_entry
-  mov rcx, qword ptr [rsp]    // ip (return address)
-  lea r8, [rax + 8]           // sp (post-call; stackmap SP)
+  // Stack frame layout (184 bytes total, keeps 16-byte alignment before the call):
+  //
+  //   [rsp + 0 .. 136)   = stackmap_context::ThreadContext (RegContext)
+  //   [rsp + 136 .. 176) = SafepointContext (5 * u64)
+  //   [rsp + 176 .. 184) = padding
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - rsp = post-call SP (sp_entry + 8)
+  // - rip = return address loaded from [sp_entry]
+  sub rsp, 184
 
-  // Reserve space for SafepointContext (32 bytes) and align stack to 16 bytes
-  // before calling into Rust.
-  sub rsp, 40
-
+  // Save GPRs into RegContext (offsets match stackmap-context x86_64 ThreadContext).
   mov qword ptr [rsp + 0], rax
-  mov qword ptr [rsp + 8], r8
-  mov qword ptr [rsp + 16], rbp
-  mov qword ptr [rsp + 24], rcx
+  mov qword ptr [rsp + 8], rdx
+  mov qword ptr [rsp + 16], rcx
+  mov qword ptr [rsp + 24], rbx
+  mov qword ptr [rsp + 32], rsi
+  mov qword ptr [rsp + 40], rdi
+  mov qword ptr [rsp + 48], rbp
+  // rsp (DWARF reg 7) and rip (DWARF reg 16) are filled below with stackmap semantics.
+  mov qword ptr [rsp + 64], r8
+  mov qword ptr [rsp + 72], r9
+  mov qword ptr [rsp + 80], r10
+  mov qword ptr [rsp + 88], r11
+  mov qword ptr [rsp + 96], r12
+  mov qword ptr [rsp + 104], r13
+  mov qword ptr [rsp + 112], r14
+  mov qword ptr [rsp + 120], r15
 
-  lea rsi, [rsp]              // arg1: &ctx (arg0 already in rdi)
+  // Compute callee-entry sp and callsite return address.
+  lea rax, [rsp + 184]        // sp_entry (original rsp)
+  mov rcx, qword ptr [rax]    // ip (return address into caller)
+  lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
+
+  // Fill in stackmap-semantics rsp/rip in RegContext.
+  mov qword ptr [rsp + 56], rdx  // rsp
+  mov qword ptr [rsp + 128], rcx // rip
+
+  // Fill SafepointContext at [rsp + 136].
+  mov qword ptr [rsp + 136 + 0], rax  // sp_entry
+  mov qword ptr [rsp + 136 + 8], rdx  // sp
+  mov qword ptr [rsp + 136 + 16], rbp // fp
+  mov qword ptr [rsp + 136 + 24], rcx // ip
+  lea r8, [rsp + 0]
+  mov qword ptr [rsp + 136 + 32], r8  // regs = &RegContext
+
+  lea rsi, [rsp + 136]         // arg1: &SafepointContext (arg0 already in rdi)
   call runtime_native_gc_safepoint_slow_impl
 
-  add rsp, 40
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  mov rax, qword ptr [rsp + 0]
+  mov rdx, qword ptr [rsp + 8]
+  mov rcx, qword ptr [rsp + 16]
+  mov rbx, qword ptr [rsp + 24]
+  mov rsi, qword ptr [rsp + 32]
+  mov rdi, qword ptr [rsp + 40]
+  mov rbp, qword ptr [rsp + 48]
+  mov r8, qword ptr [rsp + 64]
+  mov r9, qword ptr [rsp + 72]
+  mov r10, qword ptr [rsp + 80]
+  mov r11, qword ptr [rsp + 88]
+  mov r12, qword ptr [rsp + 96]
+  mov r13, qword ptr [rsp + 104]
+  mov r14, qword ptr [rsp + 112]
+  mov r15, qword ptr [rsp + 120]
+
+  add rsp, 184
   ret
 
   // LLVM `place-safepoints` polls this symbol. It must capture the *managed*
@@ -73,27 +125,76 @@ runtime_native_gc_safepoint_poll_asm:
   test rax, 1
   jz .Lgc_safepoint_poll_ret
 
-  // Capture caller SP/FP/RA at poll entry.
-  mov rcx, rsp                // sp_entry
-  mov rdx, qword ptr [rsp]    // ip (return address to caller)
-  lea r8, [rcx + 8]           // sp (post-call; stackmap SP)
+  // Stack frame layout (184 bytes total, keeps 16-byte alignment before the call):
+  //
+  //   [rsp + 0 .. 136)   = stackmap_context::ThreadContext (RegContext)
+  //   [rsp + 136 .. 176) = SafepointContext (5 * u64)
+  //   [rsp + 176 .. 184) = padding
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - rsp = post-call SP (sp_entry + 8)
+  // - rip = return address loaded from [sp_entry]
+  sub rsp, 184
 
-  // Reserve space for SafepointContext (32 bytes) and align stack to 16 bytes
-  // before calling into Rust.
-  sub rsp, 40
+  // Save GPRs into RegContext (offsets match stackmap-context x86_64 ThreadContext).
+  mov qword ptr [rsp + 0], rax
+  mov qword ptr [rsp + 8], rdx
+  mov qword ptr [rsp + 16], rcx
+  mov qword ptr [rsp + 24], rbx
+  mov qword ptr [rsp + 32], rsi
+  mov qword ptr [rsp + 40], rdi
+  mov qword ptr [rsp + 48], rbp
+  // rsp (DWARF reg 7) and rip (DWARF reg 16) are filled below with stackmap semantics.
+  mov qword ptr [rsp + 64], r8
+  mov qword ptr [rsp + 72], r9
+  mov qword ptr [rsp + 80], r10
+  mov qword ptr [rsp + 88], r11
+  mov qword ptr [rsp + 96], r12
+  mov qword ptr [rsp + 104], r13
+  mov qword ptr [rsp + 112], r14
+  mov qword ptr [rsp + 120], r15
 
-  mov qword ptr [rsp + 0], rcx
-  mov qword ptr [rsp + 8], r8
-  mov qword ptr [rsp + 16], rbp
-  mov qword ptr [rsp + 24], rdx
+  // Compute callee-entry sp and callsite return address.
+  lea rax, [rsp + 184]        // sp_entry (original rsp)
+  mov rcx, qword ptr [rax]    // ip (return address into caller)
+  lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
+
+  // Fill in stackmap-semantics rsp/rip in RegContext.
+  mov qword ptr [rsp + 56], rdx  // rsp
+  mov qword ptr [rsp + 128], rcx // rip
+
+  // Fill SafepointContext at [rsp + 136].
+  mov qword ptr [rsp + 136 + 0], rax  // sp_entry
+  mov qword ptr [rsp + 136 + 8], rdx  // sp
+  mov qword ptr [rsp + 136 + 16], rbp // fp
+  mov qword ptr [rsp + 136 + 24], rcx // ip
+  lea r8, [rsp + 0]
+  mov qword ptr [rsp + 136 + 32], r8  // regs = &RegContext
 
   // Call the Rust slow-path implementation directly so the published context
   // corresponds to the managed poll callsite.
-  mov rdi, rax
-  lea rsi, [rsp]
+  mov rdi, qword ptr [rsp + 0]
+  lea rsi, [rsp + 136]
   call runtime_native_gc_safepoint_slow_impl
 
-  add rsp, 40
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  mov rax, qword ptr [rsp + 0]
+  mov rdx, qword ptr [rsp + 8]
+  mov rcx, qword ptr [rsp + 16]
+  mov rbx, qword ptr [rsp + 24]
+  mov rsi, qword ptr [rsp + 32]
+  mov rdi, qword ptr [rsp + 40]
+  mov rbp, qword ptr [rsp + 48]
+  mov r8, qword ptr [rsp + 64]
+  mov r9, qword ptr [rsp + 72]
+  mov r10, qword ptr [rsp + 80]
+  mov r11, qword ptr [rsp + 88]
+  mov r12, qword ptr [rsp + 96]
+  mov r13, qword ptr [rsp + 104]
+  mov r14, qword ptr [rsp + 112]
+  mov r15, qword ptr [rsp + 120]
+
+  add rsp, 184
 .Lgc_safepoint_poll_ret:
   ret
 

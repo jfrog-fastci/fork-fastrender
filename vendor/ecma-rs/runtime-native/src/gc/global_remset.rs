@@ -317,8 +317,8 @@ impl RememberedSet for WorldStoppedRememberedSet {
     }
 
     // Also scan per-thread remembered-set buffers. The write barrier records into a thread-local
-    // buffer to avoid a contended global atomic on every insertion; stop-the-world GC must treat
-    // those buffers as part of the remembered set.
+    // buffer (falling back to the global buffer on overflow) to avoid a contended global atomic on
+    // every insertion, so stop-the-world GC must consult both sources.
     registry::for_each_thread(|thread| {
       thread.remset_for_each_raw(|obj| {
         if obj.is_null() {
@@ -350,9 +350,8 @@ impl RememberedSet for WorldStoppedRememberedSet {
     }
 
     // Clear per-thread buffers too. These entries are only visible to stop-the-world GC; if we
-    // leave them behind then:
-    // - future minor GCs can rescan stale remembered objects, and
-    // - `remembered_set_contains` (header bit) will remain set unexpectedly.
+    // leave them behind then future minor GCs can rescan stale remembered objects, and the per-object
+    // `REMEMBERED` bits would remain set (suppressing future write-barrier inserts as duplicates).
     registry::for_each_thread(|thread| {
       thread.remset_drain_raw(|obj| {
         if obj.is_null() {

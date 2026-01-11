@@ -453,7 +453,13 @@ fn location_to_root_slot(regs: &FrameRegs, loc: &Location, bounds: Option<StackB
       }
       Some(slot)
     }
-    RootSlot::Reg { .. } => Some(slot),
+    RootSlot::Reg { dwarf_reg } => {
+      // Register roots must never treat SP/FP/IP as GC pointers under our frame-pointer policy.
+      if crate::arch::regs::forbidden_gc_root_reg(dwarf_reg).is_some() {
+        return None;
+      }
+      Some(slot)
+    }
   }
 }
 

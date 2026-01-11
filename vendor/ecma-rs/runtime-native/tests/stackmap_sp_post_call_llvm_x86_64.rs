@@ -152,6 +152,7 @@ fn llvm_statepoint_stackmap_sp_is_post_call_rsp() {
     sp: sp_post_call,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
@@ -183,4 +184,3 @@ fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
-

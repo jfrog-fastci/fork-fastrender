@@ -90,7 +90,7 @@ fn scan_roots_splits_plain_roots_and_derived_pairs() {
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
   let mut seen = Seen::default();
-  scan_roots(&ctx, &stackmaps, &mut seen).expect("scan_roots");
+  scan_roots(&mut ctx, &stackmaps, &mut seen).expect("scan_roots");
 
   seen.roots.sort_unstable();
   seen.derived_pairs.sort_unstable();
@@ -98,4 +98,3 @@ fn scan_roots_splits_plain_roots_and_derived_pairs() {
   assert_eq!(seen.roots, vec![same_addr]);
   assert_eq!(seen.derived_pairs, vec![(derived_base_addr, derived_derived_addr)]);
 }
-

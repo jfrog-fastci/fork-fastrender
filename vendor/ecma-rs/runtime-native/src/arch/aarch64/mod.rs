@@ -41,31 +41,111 @@ runtime_native_capture_safepoint_context:
   str x2, [x0, #8]
   str x4, [x0, #16]
   str x5, [x0, #24]
+  str xzr, [x0, #32]  // regs (no reg context outside safepoint slow path)
   ret
 
   // Legacy slow-path entrypoint used by some tests and runtime-internal polls.
   .globl runtime_native_gc_safepoint_slow_asm
 runtime_native_gc_safepoint_slow_asm:
   // epoch: x0
-  // Capture SP/FP/LR before touching the stack.
-  mov x2, sp          // sp_entry
-  mov x3, x2          // sp (stackmap SP)
-  mov x4, x29         // fp
-  mov x5, x30         // original return address (ip)
+  // Stack frame layout (304 bytes total, maintains 16-byte SP alignment):
+  //
+  //   [sp + 0 .. 264)   = stackmap_context::ThreadContext (RegContext)
+  //   [sp + 264 .. 304) = SafepointContext (5 * u64)
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - sp = callsite SP (same as callee-entry SP on AArch64)
+  // - pc = return address (captured from x30)
+  sub sp, sp, #304
 
-  // Allocate SafepointContext (32 bytes). Keep 16-byte stack alignment.
-  sub sp, sp, #32
-  str x2, [sp, #0]
-  str x3, [sp, #8]
-  str x4, [sp, #16]
-  str x5, [sp, #24]
+  // Save X0..X30 into RegContext.x[0..30].
+  str x0, [sp, #0]
+  str x1, [sp, #8]
+  str x2, [sp, #16]
+  str x3, [sp, #24]
+  str x4, [sp, #32]
+  str x5, [sp, #40]
+  str x6, [sp, #48]
+  str x7, [sp, #56]
+  str x8, [sp, #64]
+  str x9, [sp, #72]
+  str x10, [sp, #80]
+  str x11, [sp, #88]
+  str x12, [sp, #96]
+  str x13, [sp, #104]
+  str x14, [sp, #112]
+  str x15, [sp, #120]
+  str x16, [sp, #128]
+  str x17, [sp, #136]
+  str x18, [sp, #144]
+  str x19, [sp, #152]
+  str x20, [sp, #160]
+  str x21, [sp, #168]
+  str x22, [sp, #176]
+  str x23, [sp, #184]
+  str x24, [sp, #192]
+  str x25, [sp, #200]
+  str x26, [sp, #208]
+  str x27, [sp, #216]
+  str x28, [sp, #224]
+  str x29, [sp, #232]
+  str x30, [sp, #240]
 
-  mov x1, sp
+  // Compute original/callsite SP (sp_entry) and return address (x30).
+  add x2, sp, #304      // sp_entry (original sp)
+  mov x3, x2            // sp (stackmap SP)
+  mov x4, x29           // fp
+  mov x5, x30           // ip (return address)
+
+  // Fill RegContext.sp and RegContext.pc.
+  str x3, [sp, #248]    // sp
+  str x5, [sp, #256]    // pc
+
+  // Fill SafepointContext at [sp + 264].
+  str x2, [sp, #264]    // sp_entry
+  str x3, [sp, #272]    // sp
+  str x4, [sp, #280]    // fp
+  str x5, [sp, #288]    // ip
+  add x6, sp, #0
+  str x6, [sp, #296]    // regs = &RegContext
+
+  add x1, sp, #264
   bl runtime_native_gc_safepoint_slow_impl
 
-  // Restore the original link register so `ret` returns to the caller.
-  ldr x30, [sp, #24]
-  add sp, sp, #32
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  ldr x0, [sp, #0]
+  ldr x1, [sp, #8]
+  ldr x2, [sp, #16]
+  ldr x3, [sp, #24]
+  ldr x4, [sp, #32]
+  ldr x5, [sp, #40]
+  ldr x6, [sp, #48]
+  ldr x7, [sp, #56]
+  ldr x8, [sp, #64]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #80]
+  ldr x11, [sp, #88]
+  ldr x12, [sp, #96]
+  ldr x13, [sp, #104]
+  ldr x14, [sp, #112]
+  ldr x15, [sp, #120]
+  ldr x16, [sp, #128]
+  ldr x17, [sp, #136]
+  ldr x18, [sp, #144]
+  ldr x19, [sp, #152]
+  ldr x20, [sp, #160]
+  ldr x21, [sp, #168]
+  ldr x22, [sp, #176]
+  ldr x23, [sp, #184]
+  ldr x24, [sp, #192]
+  ldr x25, [sp, #200]
+  ldr x26, [sp, #208]
+  ldr x27, [sp, #216]
+  ldr x28, [sp, #224]
+  ldr x29, [sp, #232]
+  ldr x30, [sp, #240]
+
+  add sp, sp, #304
   ret
 
   // LLVM `place-safepoints` poll hook.
@@ -81,25 +161,104 @@ runtime_native_gc_safepoint_poll_asm:
   ldar x0, [x9]
   tbz x0, #0, .Lgc_safepoint_poll_ret
 
-  // Capture SP/FP/LR before touching the stack.
-  mov x2, sp          // sp_entry
-  mov x3, x2          // sp (stackmap SP)
-  mov x4, x29         // fp
-  mov x5, x30         // original return address (ip)
+  // Stack frame layout (304 bytes total, maintains 16-byte SP alignment):
+  //
+  //   [sp + 0 .. 264)   = stackmap_context::ThreadContext (RegContext)
+  //   [sp + 264 .. 304) = SafepointContext (5 * u64)
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - sp = callsite SP (same as callee-entry SP on AArch64)
+  // - pc = return address (captured from x30)
+  sub sp, sp, #304
 
-  // Allocate SafepointContext (32 bytes). Keep 16-byte stack alignment.
-  sub sp, sp, #32
-  str x2, [sp, #0]
-  str x3, [sp, #8]
-  str x4, [sp, #16]
-  str x5, [sp, #24]
+  // Save X0..X30 into RegContext.x[0..30].
+  str x0, [sp, #0]
+  str x1, [sp, #8]
+  str x2, [sp, #16]
+  str x3, [sp, #24]
+  str x4, [sp, #32]
+  str x5, [sp, #40]
+  str x6, [sp, #48]
+  str x7, [sp, #56]
+  str x8, [sp, #64]
+  str x9, [sp, #72]
+  str x10, [sp, #80]
+  str x11, [sp, #88]
+  str x12, [sp, #96]
+  str x13, [sp, #104]
+  str x14, [sp, #112]
+  str x15, [sp, #120]
+  str x16, [sp, #128]
+  str x17, [sp, #136]
+  str x18, [sp, #144]
+  str x19, [sp, #152]
+  str x20, [sp, #160]
+  str x21, [sp, #168]
+  str x22, [sp, #176]
+  str x23, [sp, #184]
+  str x24, [sp, #192]
+  str x25, [sp, #200]
+  str x26, [sp, #208]
+  str x27, [sp, #216]
+  str x28, [sp, #224]
+  str x29, [sp, #232]
+  str x30, [sp, #240]
 
-  mov x1, sp
+  // Compute original/callsite SP (sp_entry) and return address (x30).
+  add x2, sp, #304      // sp_entry (original sp)
+  mov x3, x2            // sp (stackmap SP)
+  mov x4, x29           // fp
+  mov x5, x30           // ip (return address)
+
+  // Fill RegContext.sp and RegContext.pc.
+  str x3, [sp, #248]    // sp
+  str x5, [sp, #256]    // pc
+
+  // Fill SafepointContext at [sp + 264].
+  str x2, [sp, #264]    // sp_entry
+  str x3, [sp, #272]    // sp
+  str x4, [sp, #280]    // fp
+  str x5, [sp, #288]    // ip
+  add x6, sp, #0
+  str x6, [sp, #296]    // regs = &RegContext
+
+  add x1, sp, #264
   bl runtime_native_gc_safepoint_slow_impl
 
-  // Restore the original link register so `ret` returns to the caller.
-  ldr x30, [sp, #24]
-  add sp, sp, #32
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  ldr x0, [sp, #0]
+  ldr x1, [sp, #8]
+  ldr x2, [sp, #16]
+  ldr x3, [sp, #24]
+  ldr x4, [sp, #32]
+  ldr x5, [sp, #40]
+  ldr x6, [sp, #48]
+  ldr x7, [sp, #56]
+  ldr x8, [sp, #64]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #80]
+  ldr x11, [sp, #88]
+  ldr x12, [sp, #96]
+  ldr x13, [sp, #104]
+  ldr x14, [sp, #112]
+  ldr x15, [sp, #120]
+  ldr x16, [sp, #128]
+  ldr x17, [sp, #136]
+  ldr x18, [sp, #144]
+  ldr x19, [sp, #152]
+  ldr x20, [sp, #160]
+  ldr x21, [sp, #168]
+  ldr x22, [sp, #176]
+  ldr x23, [sp, #184]
+  ldr x24, [sp, #192]
+  ldr x25, [sp, #200]
+  ldr x26, [sp, #208]
+  ldr x27, [sp, #216]
+  ldr x28, [sp, #224]
+  ldr x29, [sp, #232]
+  ldr x30, [sp, #240]
+
+  add sp, sp, #304
 .Lgc_safepoint_poll_ret:
   ret
   "#
@@ -130,31 +289,111 @@ runtime_native_capture_safepoint_context:
   str x2, [x0, #8]
   str x4, [x0, #16]
   str x5, [x0, #24]
+  str xzr, [x0, #32]  // regs (no reg context outside safepoint slow path)
   ret
 
   // Legacy slow-path entrypoint used by some tests and runtime-internal polls.
   .globl runtime_native_gc_safepoint_slow_asm
 runtime_native_gc_safepoint_slow_asm:
   // epoch: x0
-  // Capture SP/FP/LR before touching the stack.
-  mov x2, sp          // sp_entry
-  mov x3, x2          // sp (stackmap SP)
-  mov x4, x29         // fp
-  mov x5, x30         // original return address (ip)
+  // Stack frame layout (304 bytes total, maintains 16-byte SP alignment):
+  //
+  //   [sp + 0 .. 264)   = stackmap_context::ThreadContext (RegContext)
+  //   [sp + 264 .. 304) = SafepointContext (5 * u64)
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - sp = callsite SP (same as callee-entry SP on AArch64)
+  // - pc = return address (captured from x30)
+  sub sp, sp, #304
 
-  // Allocate SafepointContext (32 bytes). Keep 16-byte stack alignment.
-  sub sp, sp, #32
-  str x2, [sp, #0]
-  str x3, [sp, #8]
-  str x4, [sp, #16]
-  str x5, [sp, #24]
+  // Save X0..X30 into RegContext.x[0..30].
+  str x0, [sp, #0]
+  str x1, [sp, #8]
+  str x2, [sp, #16]
+  str x3, [sp, #24]
+  str x4, [sp, #32]
+  str x5, [sp, #40]
+  str x6, [sp, #48]
+  str x7, [sp, #56]
+  str x8, [sp, #64]
+  str x9, [sp, #72]
+  str x10, [sp, #80]
+  str x11, [sp, #88]
+  str x12, [sp, #96]
+  str x13, [sp, #104]
+  str x14, [sp, #112]
+  str x15, [sp, #120]
+  str x16, [sp, #128]
+  str x17, [sp, #136]
+  str x18, [sp, #144]
+  str x19, [sp, #152]
+  str x20, [sp, #160]
+  str x21, [sp, #168]
+  str x22, [sp, #176]
+  str x23, [sp, #184]
+  str x24, [sp, #192]
+  str x25, [sp, #200]
+  str x26, [sp, #208]
+  str x27, [sp, #216]
+  str x28, [sp, #224]
+  str x29, [sp, #232]
+  str x30, [sp, #240]
 
-  mov x1, sp
+  // Compute original/callsite SP (sp_entry) and return address (x30).
+  add x2, sp, #304      // sp_entry (original sp)
+  mov x3, x2            // sp (stackmap SP)
+  mov x4, x29           // fp
+  mov x5, x30           // ip (return address)
+
+  // Fill RegContext.sp and RegContext.pc.
+  str x3, [sp, #248]    // sp
+  str x5, [sp, #256]    // pc
+
+  // Fill SafepointContext at [sp + 264].
+  str x2, [sp, #264]    // sp_entry
+  str x3, [sp, #272]    // sp
+  str x4, [sp, #280]    // fp
+  str x5, [sp, #288]    // ip
+  add x6, sp, #0
+  str x6, [sp, #296]    // regs = &RegContext
+
+  add x1, sp, #264
   bl runtime_native_gc_safepoint_slow_impl
 
-  // Restore the original link register so `ret` returns to the caller.
-  ldr x30, [sp, #24]
-  add sp, sp, #32
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  ldr x0, [sp, #0]
+  ldr x1, [sp, #8]
+  ldr x2, [sp, #16]
+  ldr x3, [sp, #24]
+  ldr x4, [sp, #32]
+  ldr x5, [sp, #40]
+  ldr x6, [sp, #48]
+  ldr x7, [sp, #56]
+  ldr x8, [sp, #64]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #80]
+  ldr x11, [sp, #88]
+  ldr x12, [sp, #96]
+  ldr x13, [sp, #104]
+  ldr x14, [sp, #112]
+  ldr x15, [sp, #120]
+  ldr x16, [sp, #128]
+  ldr x17, [sp, #136]
+  ldr x18, [sp, #144]
+  ldr x19, [sp, #152]
+  ldr x20, [sp, #160]
+  ldr x21, [sp, #168]
+  ldr x22, [sp, #176]
+  ldr x23, [sp, #184]
+  ldr x24, [sp, #192]
+  ldr x25, [sp, #200]
+  ldr x26, [sp, #208]
+  ldr x27, [sp, #216]
+  ldr x28, [sp, #224]
+  ldr x29, [sp, #232]
+  ldr x30, [sp, #240]
+
+  add sp, sp, #304
   ret
 
   // LLVM `place-safepoints` poll hook.
@@ -170,25 +409,104 @@ runtime_native_gc_safepoint_poll_asm:
   ldar x0, [x9]
   tbz x0, #0, .Lgc_safepoint_poll_ret
 
-  // Capture SP/FP/LR before touching the stack.
-  mov x2, sp          // sp_entry
-  mov x3, x2          // sp (stackmap SP)
-  mov x4, x29         // fp
-  mov x5, x30         // original return address (ip)
+  // Stack frame layout (304 bytes total, maintains 16-byte SP alignment):
+  //
+  //   [sp + 0 .. 264)   = stackmap_context::ThreadContext (RegContext)
+  //   [sp + 264 .. 304) = SafepointContext (5 * u64)
+  //
+  // Note: the saved RegContext uses *stackmap semantics* for SP/IP:
+  // - sp = callsite SP (same as callee-entry SP on AArch64)
+  // - pc = return address (captured from x30)
+  sub sp, sp, #304
 
-  // Allocate SafepointContext (32 bytes). Keep 16-byte stack alignment.
-  sub sp, sp, #32
-  str x2, [sp, #0]
-  str x3, [sp, #8]
-  str x4, [sp, #16]
-  str x5, [sp, #24]
+  // Save X0..X30 into RegContext.x[0..30].
+  str x0, [sp, #0]
+  str x1, [sp, #8]
+  str x2, [sp, #16]
+  str x3, [sp, #24]
+  str x4, [sp, #32]
+  str x5, [sp, #40]
+  str x6, [sp, #48]
+  str x7, [sp, #56]
+  str x8, [sp, #64]
+  str x9, [sp, #72]
+  str x10, [sp, #80]
+  str x11, [sp, #88]
+  str x12, [sp, #96]
+  str x13, [sp, #104]
+  str x14, [sp, #112]
+  str x15, [sp, #120]
+  str x16, [sp, #128]
+  str x17, [sp, #136]
+  str x18, [sp, #144]
+  str x19, [sp, #152]
+  str x20, [sp, #160]
+  str x21, [sp, #168]
+  str x22, [sp, #176]
+  str x23, [sp, #184]
+  str x24, [sp, #192]
+  str x25, [sp, #200]
+  str x26, [sp, #208]
+  str x27, [sp, #216]
+  str x28, [sp, #224]
+  str x29, [sp, #232]
+  str x30, [sp, #240]
 
-  mov x1, sp
+  // Compute original/callsite SP (sp_entry) and return address (x30).
+  add x2, sp, #304      // sp_entry (original sp)
+  mov x3, x2            // sp (stackmap SP)
+  mov x4, x29           // fp
+  mov x5, x30           // ip (return address)
+
+  // Fill RegContext.sp and RegContext.pc.
+  str x3, [sp, #248]    // sp
+  str x5, [sp, #256]    // pc
+
+  // Fill SafepointContext at [sp + 264].
+  str x2, [sp, #264]    // sp_entry
+  str x3, [sp, #272]    // sp
+  str x4, [sp, #280]    // fp
+  str x5, [sp, #288]    // ip
+  add x6, sp, #0
+  str x6, [sp, #296]    // regs = &RegContext
+
+  add x1, sp, #264
   bl runtime_native_gc_safepoint_slow_impl
 
-  // Restore the original link register so `ret` returns to the caller.
-  ldr x30, [sp, #24]
-  add sp, sp, #32
+  // Restore registers from RegContext (potentially rewritten by the GC).
+  ldr x0, [sp, #0]
+  ldr x1, [sp, #8]
+  ldr x2, [sp, #16]
+  ldr x3, [sp, #24]
+  ldr x4, [sp, #32]
+  ldr x5, [sp, #40]
+  ldr x6, [sp, #48]
+  ldr x7, [sp, #56]
+  ldr x8, [sp, #64]
+  ldr x9, [sp, #72]
+  ldr x10, [sp, #80]
+  ldr x11, [sp, #88]
+  ldr x12, [sp, #96]
+  ldr x13, [sp, #104]
+  ldr x14, [sp, #112]
+  ldr x15, [sp, #120]
+  ldr x16, [sp, #128]
+  ldr x17, [sp, #136]
+  ldr x18, [sp, #144]
+  ldr x19, [sp, #152]
+  ldr x20, [sp, #160]
+  ldr x21, [sp, #168]
+  ldr x22, [sp, #176]
+  ldr x23, [sp, #184]
+  ldr x24, [sp, #192]
+  ldr x25, [sp, #200]
+  ldr x26, [sp, #208]
+  ldr x27, [sp, #216]
+  ldr x28, [sp, #224]
+  ldr x29, [sp, #232]
+  ldr x30, [sp, #240]
+
+  add sp, sp, #304
 .Lgc_safepoint_poll_ret:
   ret
   "#

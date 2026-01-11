@@ -38,6 +38,7 @@ extern "C" fn install_synthetic_safepoint_context(_cursor: FrameCursor) {
       sp,
       fp,
       ip: ip as usize,
+      regs: core::ptr::null_mut(),
     },
   );
   HOOK_INSTALLED_CTX.store(true, Ordering::Release);

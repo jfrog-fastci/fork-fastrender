@@ -36,8 +36,11 @@
  * Use:
  * - non-PIE output: `runtime-native/link/stackmaps_nopie.ld`
  * - GNU ld PIE:     `runtime-native/link/stackmaps_gnuld.ld`
- */
-
+ *
+ * Anchor at `.dynamic`: it is present in PIE/DSO links (even `-nostdlib`
+ * minimal links), and is inside the RELRO block so stackmaps stay covered by
+ * PT_GNU_RELRO.
+  */
 SECTIONS {
   /* Keep stackmaps/faultmaps in RELRO-friendly data (writable during relocation,
    * then protected by `PT_GNU_RELRO`). */
@@ -47,14 +50,12 @@ SECTIONS {
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
+
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
-    /* Legacy: some objects/tools still use the `.llvm_stackmaps` name. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
-    /* StackMap v3 uses 64-bit fields and is 8-byte aligned; keep the exported
-     * symbol range 8-byte aligned even if the linker inserts padding between
-     * concatenated blobs. */
+
     . = ALIGN(8);
     __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
@@ -63,13 +64,9 @@ SECTIONS {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
-    /* Legacy: some objects/tools still use the `.llvm_faultmaps` name. */
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-/* Anchor at `.dynamic`: it is present in PIE/DSO links (even `-nostdlib`
- * minimal links), and is inside the RELRO block so stackmaps stay covered by
- * PT_GNU_RELRO. */
 } INSERT BEFORE .dynamic;

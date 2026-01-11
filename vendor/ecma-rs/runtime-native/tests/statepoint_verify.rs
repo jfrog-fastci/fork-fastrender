@@ -38,7 +38,7 @@ fn statepoint_aarch64_fixture_verifies() {
 }
 
 #[test]
-fn verifier_rejects_register_locations() {
+fn verifier_rejects_forbidden_register_roots() {
   let _rt = TestRuntimeGuard::new();
   let mut bytes = STATEPOINT_X86_64.to_vec();
 
@@ -67,6 +67,7 @@ fn verifier_rejects_register_locations() {
 
   assert_eq!(err.patchpoint_id, 0xABCDEF00);
   assert_eq!(err.location_index, Some(3));
+  assert!(err.message.contains("forbidden"));
   let loc = err.location.expect("expected location details for VerifyError");
   assert_eq!(loc.kind, "Register");
   assert_eq!(loc.dwarf_reg, 7);
@@ -84,7 +85,7 @@ fn verifier_rejects_register_locations() {
 }
 
 #[test]
-fn verifier_rejects_register_locations_with_custom_statepoint_id() {
+fn verifier_rejects_forbidden_register_locations_with_custom_statepoint_id() {
   let _rt = TestRuntimeGuard::new();
   // LLVM allows overriding the statepoint ID / StackMap patchpoint_id via the
   // `"statepoint-id"` callsite directive. The verifier should still treat such
@@ -104,7 +105,7 @@ fn verifier_rejects_register_locations_with_custom_statepoint_id() {
         Location::Constant { size: 8, value: 0 }, // callconv
         Location::Constant { size: 8, value: 0 }, // flags
         Location::Constant { size: 8, value: 0 }, // deopt_count
-        // One GC pair; base is invalid (Register) and should be rejected.
+        // One GC pair; base is a forbidden register root (SP) and should be rejected.
         Location::Register {
           size: 8,
           dwarf_reg: 7,
@@ -132,7 +133,7 @@ fn verifier_rejects_register_locations_with_custom_statepoint_id() {
   assert_eq!(err.location_index, Some(3));
   let loc = err.location.expect("expected location details for VerifyError");
   assert_eq!(loc.kind, "Register");
-  assert!(err.message.contains("GC root is held in a register"));
+  assert!(err.message.contains("forbidden"));
 }
 
 #[test]
@@ -327,9 +328,7 @@ fn stackmaps_parse_runs_statepoint_verifier() {
   match err {
     runtime_native::stackmaps::StackMapError::StatepointVerify(v) => {
       assert_eq!(v.location_index, Some(3));
-      let loc = v.location.expect("expected location details for VerifyError");
-      assert_eq!(loc.kind, "Register");
-      assert!(v.message.contains("GC root is held in a register"));
+      assert!(v.message.contains("forbidden"));
     }
     other => panic!("expected StatepointVerify error, got {other:?}"),
   }

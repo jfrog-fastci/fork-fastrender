@@ -8,6 +8,7 @@ pub const DWARF_REG_IP: u16 = 16;
 /// Linux `x86_64` general purpose register state.
 ///
 /// The field set intentionally matches the DWARF GPR set used by LLVM stackmaps.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ThreadContext {
   pub rax: u64,

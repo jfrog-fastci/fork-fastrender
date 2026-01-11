@@ -121,7 +121,7 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
   let mut seen: Vec<(usize, usize, usize, usize)> = Vec::new();
-  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
   for (base_slot, derived_slot) in pairs {
     unsafe {
       seen.push((
@@ -206,7 +206,7 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
-  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
   assert!(
     pairs.iter().any(|&(b, d)| b as usize == base_addr && d as usize == derived_addr),
     "expected scan to return the derived pair even with custom patchpoint_id"
@@ -236,7 +236,7 @@ fn scan_reloc_pairs_skips_deopt_operands() {
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
-  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
 
   assert_eq!(pairs.len(), sp.gc_pair_count());
   for (base_slot, derived_slot) in pairs {
@@ -334,6 +334,6 @@ fn invalid_statepoint_layout_yields_no_reloc_pairs_or_slots() {
   let mut ctx = ThreadContext::default();
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, 0).unwrap();
-  let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
+  let pairs = scan_reloc_pairs(&mut ctx, &stackmaps).expect("scan");
   assert!(pairs.is_empty());
 }

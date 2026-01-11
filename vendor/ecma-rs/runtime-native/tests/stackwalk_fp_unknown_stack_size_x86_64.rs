@@ -81,6 +81,7 @@ fn stackwalk_supports_fp_relative_locations_with_unknown_stack_size() {
     sp: 0,
     fp: caller_fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
   let mut visited_pairs_ctx = Vec::<(usize, usize)>::new();
   unsafe {
@@ -102,4 +103,3 @@ fn align_up(v: usize, align: usize) -> usize {
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
-

@@ -57,6 +57,7 @@ fn sp_relative_stackmap_locations_use_post_call_rsp() {
     sp: sp_post_call,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let mut visited: Vec<usize> = Vec::new();
@@ -115,6 +116,7 @@ fn sp_relative_stackmap_locations_use_post_call_rsp_for_pair_walker() {
     sp: sp_post_call,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let mut visited: Vec<(usize, usize)> = Vec::new();
@@ -174,6 +176,7 @@ fn sp_relative_stackmap_locations_resolve_offsets_0_and_8_using_post_call_rsp() 
     sp: sp_post_call,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let mut visited: Vec<usize> = Vec::new();
@@ -225,6 +228,7 @@ fn sp_relative_stackmap_locations_work_with_unknown_stack_size_in_top_frame() {
     sp: sp_post_call,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let mut visited: Vec<usize> = Vec::new();
@@ -276,6 +280,7 @@ fn sp_relative_stackmap_locations_can_derive_post_call_rsp_from_sp_entry_when_sp
     sp: 0,
     fp,
     ip: callsite_ra as usize,
+    regs: core::ptr::null_mut(),
   };
 
   let mut visited: Vec<usize> = Vec::new();

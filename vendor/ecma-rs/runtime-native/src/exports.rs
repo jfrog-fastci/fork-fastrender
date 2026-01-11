@@ -873,6 +873,7 @@ pub extern "C" fn rt_gc_collect() {
             sp: sp_callsite as usize,
             fp: cursor.fp as usize,
             ip: cursor.pc as usize,
+            regs: core::ptr::null_mut(),
           }
         }
         None => fallback_ctx,

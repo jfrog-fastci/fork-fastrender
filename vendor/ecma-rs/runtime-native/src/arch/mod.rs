@@ -10,6 +10,16 @@ use std::mem::MaybeUninit;
 /// Pointer-sized word width for the current target.
 pub const WORD_SIZE: usize = std::mem::size_of::<usize>();
 
+/// Register context captured at safepoints for stackmap evaluation and register-located roots.
+///
+/// This is an architecture-specific DWARF register file (GPRs + IP + SP) used by the stackmap
+/// scanner.
+///
+/// Important: stackmap semantics define `DWARF_REG_SP`/`DWARF_REG_IP` in terms of the *callsite*
+/// (i.e. the return address PC recorded in the stackmap), which may differ from the callee-entry
+/// machine state (notably on x86_64 where `call` pushes the return address).
+pub type RegContext = stackmap_context::ThreadContext;
+
 /// Minimal execution context recorded for a thread parked in a safepoint.
 ///
 /// The values here intentionally represent the state at the *call site* that
@@ -37,7 +47,24 @@ pub struct SafepointContext {
   pub sp: usize,
   pub fp: usize,
   pub ip: usize,
+  /// Pointer to the saved register file at the safepoint callsite.
+  ///
+  /// - This points into memory owned by the stopped thread (currently the stack frame created by
+  ///   `rt_gc_safepoint_slow`).
+  /// - It is only valid while the thread remains parked in the safepoint slow path.
+  /// - GC root scanning treats `LocationKind::Register` locations as mutable lvalues inside this
+  ///   register file.
+  pub regs: *mut RegContext,
 }
+
+// SAFETY: `SafepointContext` is a POD snapshot of a thread's call-site machine state plus an
+// optional raw pointer into that thread's saved register file.
+//
+// The pointer is only meaningful while the thread is parked in a stop-the-world safepoint. The GC
+// already requires external synchronization (world stopped) before dereferencing it. Making the
+// context `Send`/`Sync` allows the runtime to publish it in the global thread registry.
+unsafe impl Send for SafepointContext {}
+unsafe impl Sync for SafepointContext {}
 
 extern "C" {
   fn runtime_native_capture_safepoint_context(out: *mut SafepointContext);
@@ -85,6 +112,18 @@ mod x86_64;
 // architecture-specific assembly is gated inside the module.
 pub mod aarch64;
 
+/// Architecture-specific DWARF register helpers used by stack scanning.
+///
+/// This is a small shim over `stackmap-context` that:
+/// - rejects SP/FP/IP as GC root registers, and
+/// - provides pointer-to-slot access for register-located roots (`LocationKind::Register`).
+pub mod regs {
+  #[cfg(target_arch = "aarch64")]
+  pub use super::aarch64::regs::*;
+  #[cfg(target_arch = "x86_64")]
+  pub use super::x86_64::regs::*;
+}
+
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("runtime-native safepoint context capture is only supported on x86_64 and aarch64");
 
@@ -96,10 +135,11 @@ mod tests {
   fn safepoint_context_layout_is_stable() {
     use std::mem::offset_of;
 
-    assert_eq!(std::mem::size_of::<SafepointContext>(), 4 * WORD_SIZE);
+    assert_eq!(std::mem::size_of::<SafepointContext>(), 5 * WORD_SIZE);
     assert_eq!(offset_of!(SafepointContext, sp_entry), 0);
     assert_eq!(offset_of!(SafepointContext, sp), WORD_SIZE);
     assert_eq!(offset_of!(SafepointContext, fp), WORD_SIZE * 2);
     assert_eq!(offset_of!(SafepointContext, ip), WORD_SIZE * 3);
+    assert_eq!(offset_of!(SafepointContext, regs), WORD_SIZE * 4);
   }
 }

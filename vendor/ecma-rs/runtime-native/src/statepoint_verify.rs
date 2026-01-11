@@ -1,9 +1,14 @@
 //! Verifier for LLVM `gc.statepoint` stackmap conventions.
 //!
-//! Our GC design currently assumes that all GC roots at statepoints are spilled
-//! into addressable stack slots (`Indirect` spill slots relative to SP/FP). LLVM *can*
-//! legally encode roots in registers, so we keep a runtime verifier to fail fast
-//! if codegen or LLVM changes break that assumption.
+//! Historically we tried to enforce that all GC roots at statepoints are spilled
+//! into addressable stack slots (SP/FP-relative `Indirect` locations).
+//!
+//! LLVM may legally encode GC roots in registers. The runtime supports register
+//! roots by rewriting a stopped thread's saved register file and treating each
+//! register as a mutable lvalue.
+//!
+//! This verifier is kept as a deterministic structural check to catch unexpected
+//! stackmap layout regressions and obviously-invalid root encodings early.
 //!
 //! Note: `patchpoint_id` is **not** a reliable discriminator for identifying statepoint
 //! stackmap records. LLVM 18+ allows arbitrary/user-assigned IDs via the callsite
@@ -53,6 +58,32 @@ impl DwarfArch {
     match self {
       DwarfArch::X86_64 => X86_64_DWARF_REG_FP,
       DwarfArch::AArch64 => AARCH64_DWARF_REG_FP,
+    }
+  }
+
+  pub fn instruction_pointer_dwarf_reg(self) -> u16 {
+    match self {
+      // x86_64 SysV: RIP
+      DwarfArch::X86_64 => 16,
+      // AArch64 ELF: PC
+      DwarfArch::AArch64 => 32,
+    }
+  }
+
+  pub fn forbidden_gc_root_reg(self, dwarf_reg: u16) -> Option<&'static str> {
+    match dwarf_reg {
+      reg if reg == self.stack_pointer_dwarf_reg() => Some("SP"),
+      reg if reg == self.frame_pointer_dwarf_reg() => Some("FP"),
+      reg if reg == self.instruction_pointer_dwarf_reg() => Some("IP"),
+      _ => None,
+    }
+  }
+
+  pub fn is_supported_dwarf_reg(self, dwarf_reg: u16) -> bool {
+    match self {
+      // runtime-native currently only captures these GPRs in its RegContext.
+      DwarfArch::X86_64 => dwarf_reg <= 16,
+      DwarfArch::AArch64 => dwarf_reg <= 32,
     }
   }
 
@@ -231,7 +262,8 @@ impl Error for LoadError {
 /// Parse an LLVM `.llvm_stackmaps` section and (optionally) verify our statepoint invariants.
 ///
 /// In debug builds (or when compiled with the `verify-statepoints` feature), this enforces the
-/// spill-to-stack convention for all statepoint records.
+/// runtime's statepoint stackmap invariants (addressable `Indirect` spill slots or supported
+/// `Register` roots, pointer-sized locations, etc).
 pub fn load_stackmap(section: &[u8], arch: DwarfArch) -> Result<StackMap, LoadError> {
   let stackmaps = parse_all_stackmaps(section).map_err(LoadError::Parse)?;
   let stackmap = merge_stackmap_tables(stackmaps).map_err(LoadError::Parse)?;
@@ -304,9 +336,10 @@ pub fn verify_statepoint_stackmap(
   stackmap: &StackMap,
   opts: VerifyStatepointOptions,
 ) -> Result<(), VerifyError> {
-  let sp_reg = opts.arch.stack_pointer_dwarf_reg();
-  let fp_reg = opts.arch.frame_pointer_dwarf_reg();
-  let ptr_size = opts.arch.pointer_size();
+  let arch = opts.arch;
+  let sp_reg = arch.stack_pointer_dwarf_reg();
+  let fp_reg = arch.frame_pointer_dwarf_reg();
+  let ptr_size = arch.pointer_size();
 
   let mut record_index = 0usize;
   for func in &stackmap.functions {
@@ -335,7 +368,7 @@ pub fn verify_statepoint_stackmap(
         continue;
       }
 
-      verify_statepoint_record(stackmap, func, rec, sp_reg, fp_reg, ptr_size)?;
+      verify_statepoint_record(stackmap, func, rec, arch, sp_reg, fp_reg, ptr_size)?;
     }
   }
 
@@ -554,6 +587,7 @@ fn verify_statepoint_record(
   _stackmap: &StackMap,
   func: &StackSizeRecord,
   rec: &StackMapRecord,
+  arch: DwarfArch,
   sp_reg: u16,
   fp_reg: u16,
   ptr_size: u16,
@@ -596,20 +630,22 @@ fn verify_statepoint_record(
     let base_idx = start + pair_idx * 2;
     let base = &pair.base;
     let derived = &pair.derived;
-    verify_indirect_root_slot(
+    verify_root_location(
       callsite,
       rec.patchpoint_id,
       func.stack_size,
+      arch,
       sp_reg,
       fp_reg,
       ptr_size,
       base_idx,
       base,
     )?;
-    verify_indirect_root_slot(
+    verify_root_location(
       callsite,
       rec.patchpoint_id,
       func.stack_size,
+      arch,
       sp_reg,
       fp_reg,
       ptr_size,
@@ -621,7 +657,63 @@ fn verify_statepoint_record(
   Ok(())
 }
 
-fn verify_indirect_root_slot(
+fn verify_root_location(
+  callsite: u64,
+  patchpoint_id: u64,
+  stack_size: StackSize,
+  arch: DwarfArch,
+  sp_reg: u16,
+  fp_reg: u16,
+  ptr_size: u16,
+  location_index: usize,
+  loc: &Location,
+) -> Result<(), VerifyError> {
+  match *loc {
+    Location::Indirect {
+      size,
+      dwarf_reg,
+      offset,
+    } => verify_indirect_slot(
+      callsite,
+      patchpoint_id,
+      stack_size,
+      sp_reg,
+      fp_reg,
+      ptr_size,
+      location_index,
+      size,
+      dwarf_reg,
+      offset,
+      loc,
+    ),
+
+    Location::Register {
+      size,
+      dwarf_reg,
+      offset,
+    } => verify_register_root(
+      callsite,
+      patchpoint_id,
+      arch,
+      ptr_size,
+      location_index,
+      size,
+      dwarf_reg,
+      offset,
+      loc,
+    ),
+
+    _ => Err(VerifyError::new_location(
+      callsite,
+      patchpoint_id,
+      location_index,
+      loc,
+      "expected addressable GC root location (Indirect spill slot or Register)".to_string(),
+    )),
+  }
+}
+
+fn verify_indirect_slot(
   callsite: u64,
   patchpoint_id: u64,
   stack_size: StackSize,
@@ -629,37 +721,11 @@ fn verify_indirect_root_slot(
   fp_reg: u16,
   ptr_size: u16,
   location_index: usize,
+  size: u16,
+  dwarf_reg: u16,
+  offset: i32,
   loc: &Location,
 ) -> Result<(), VerifyError> {
-  let (size, dwarf_reg, offset) = match *loc {
-    Location::Indirect {
-      size,
-      dwarf_reg,
-      offset,
-    } => (size, dwarf_reg, offset),
-    Location::Register { .. } => {
-      return Err(VerifyError::new_location(
-        callsite,
-        patchpoint_id,
-        location_index,
-        loc,
-        "GC root is held in a register, but runtime-native currently only supports stack slots; \
-ensure LLVM codegen disables register roots at statepoints (e.g. \
-`--fixup-allow-gcptr-in-csr=false` or `--fixup-max-csr-statepoints=0`)."
-          .to_string(),
-      ))
-    }
-    _ => {
-      return Err(VerifyError::new_location(
-        callsite,
-        patchpoint_id,
-        location_index,
-        loc,
-        "expected Indirect SP/FP-relative spill slot for GC root".to_string(),
-      ))
-    }
-  };
-
   if size != ptr_size {
     return Err(VerifyError::new_location(
       callsite,
@@ -702,6 +768,65 @@ ensure LLVM codegen disables register roots at statepoints (e.g. \
       location_index,
       loc,
       format!("expected base register SP (DWARF reg {sp_reg}) or FP (DWARF reg {fp_reg})"),
+    ));
+  }
+
+  Ok(())
+}
+
+fn verify_register_root(
+  callsite: u64,
+  patchpoint_id: u64,
+  arch: DwarfArch,
+  ptr_size: u16,
+  location_index: usize,
+  size: u16,
+  dwarf_reg: u16,
+  offset: i32,
+  loc: &Location,
+) -> Result<(), VerifyError> {
+  if size != ptr_size {
+    return Err(VerifyError::new_location(
+      callsite,
+      patchpoint_id,
+      location_index,
+      loc,
+      format!("expected pointer-sized slot (size={ptr_size})"),
+    ));
+  }
+
+  // StackMap v3 includes an `offset` field for all location kinds, but it is semantically unused
+  // for `Register` locations. Treat non-zero offsets as suspicious to avoid silently misinterpreting
+  // unexpected encodings.
+  if offset != 0 {
+    return Err(VerifyError::new_location(
+      callsite,
+      patchpoint_id,
+      location_index,
+      loc,
+      "expected Register location offset=0".to_string(),
+    ));
+  }
+
+  if let Some(kind) = arch.forbidden_gc_root_reg(dwarf_reg) {
+    return Err(VerifyError::new_location(
+      callsite,
+      patchpoint_id,
+      location_index,
+      loc,
+      format!(
+        "register root uses forbidden DWARF reg {dwarf_reg} ({kind}); register roots must not use SP/FP/IP"
+      ),
+    ));
+  }
+
+  if !arch.is_supported_dwarf_reg(dwarf_reg) {
+    return Err(VerifyError::new_location(
+      callsite,
+      patchpoint_id,
+      location_index,
+      loc,
+      format!("register root uses unsupported DWARF reg {dwarf_reg}"),
     ));
   }
 
