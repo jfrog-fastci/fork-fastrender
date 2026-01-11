@@ -1,6 +1,9 @@
 #[cfg(target_arch = "x86_64")]
 use runtime_native::{walk_gc_root_pairs_from_fp, walk_gc_roots_from_fp, StackMaps, WalkError};
 
+#[cfg(target_arch = "x86_64")]
+use runtime_native::stackmaps::StackSize;
+
 #[cfg(target_arch = "aarch64")]
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
@@ -62,7 +65,9 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   // Regression guard: ensure our synthetic frame pointers model a callsite with extra SP
   // adjustment (e.g. outgoing stack args) such that the old `fp - stack_size` reconstruction would
   // be wrong for non-top frames.
-  let stack_size = callsites[1].1.stack_size;
+  let StackSize::Known(stack_size) = callsites[1].1.stack_size else {
+    panic!("fixture callsites should have a known stack_size");
+  };
   let old_locals = stack_size.checked_sub(8).expect("stack_size < FP_RECORD_SIZE");
   let old_sp = (caller2_fp as u64)
     .checked_sub(old_locals)
@@ -754,16 +759,14 @@ fn out_of_bounds_caller_sp_is_rejected() {
 fn misaligned_root_slot_is_rejected() {
   let bytes = build_stackmaps_with_shared_base_derived_offsets(&[1]);
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
-  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
 
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
   let start_fp = align_up(base + 128, 16);
+  let caller_fp = align_up(base + 256, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
@@ -771,7 +774,7 @@ fn misaligned_root_slot_is_rejected() {
     write_u64(caller_fp + 0, 0);
     write_u64(caller_fp + 8, 0);
     // Base slot is [SP + 0].
-    write_u64(caller_sp + 0, 0xdead_beef);
+    write_u64(caller_sp_callsite + 0, 0xdead_beef);
   }
 
   let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();

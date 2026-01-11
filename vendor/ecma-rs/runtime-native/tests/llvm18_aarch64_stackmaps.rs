@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use object::{Object, ObjectSection};
-use runtime_native::stackmaps::Location;
+use runtime_native::stackmaps::{Location, StackSize};
 use runtime_native::statepoints::StatepointRecord;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -140,7 +140,8 @@ fn llvm18_statepoint_stackmaps_codegen_aarch64() {
   assert_eq!(stackmaps.version, 3);
   assert_eq!(stackmaps.functions.len(), 1);
   assert_eq!(
-    stackmaps.functions[0].stack_size, 48,
+    stackmaps.functions[0].stack_size,
+    StackSize::Known(48),
     "unexpected AArch64 stack_size; if LLVM output changed, update this test"
   );
   assert_eq!(stackmaps.records.len(), 2);

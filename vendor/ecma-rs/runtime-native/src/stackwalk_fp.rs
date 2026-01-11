@@ -1,4 +1,4 @@
-use crate::stackmaps::{CallSite, Location, StackMaps};
+use crate::stackmaps::{CallSite, Location, StackMaps, StackSize};
 use crate::stackwalk::StackBounds;
 use crate::gc_roots::RelocPair;
 use crate::statepoints::RootSlot;
@@ -84,10 +84,6 @@ pub enum WalkError {
     fp_record_size: u64,
   },
   #[error(
-    "stackmap function record for return address {return_addr:#x} reports unknown stack_size (u64::MAX)"
-  )]
-  UnknownStackSize { return_addr: u64 },
-  #[error(
     "stack pointer underflow while computing caller SP: caller_fp={caller_fp:#x} stack_size={stack_size} fp_record_size={fp_record_size}"
   )]
   StackPointerUnderflow {
@@ -95,6 +91,10 @@ pub enum WalkError {
     stack_size: u64,
     fp_record_size: u64,
   },
+  #[error(
+    "stackmap function record for return address {return_addr:#x} reports unknown stack_size (u64::MAX; dynamic alloca / stack realignment), and an SP-relative root required SP"
+  )]
+  UnknownStackSize { return_addr: u64 },
   #[error("caller stack pointer {caller_sp:#x} is outside stack bounds [{lo:#x}, {hi:#x})")]
   StackPointerOutOfBounds { caller_sp: u64, lo: u64, hi: u64 },
   #[error(
@@ -380,12 +380,12 @@ pub unsafe fn walk_gc_roots_from_fp(
     let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
     match stackmaps.lookup(caller_ra) {
       Some(callsite) => {
-        enumerate_roots_for_frame_with_caller_sp(
+        enumerate_roots_for_frame(
           caller_fp,
-          caller_sp,
           caller_ra,
           callsite,
           bounds,
+          Some(caller_sp),
           &mut visit,
         )?;
       }
@@ -476,29 +476,11 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
   match stackmaps.lookup(caller_ra) {
     Some(callsite) => {
-      let looks_like_statepoint =
-        callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-          && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-            .iter()
-            .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-      if looks_like_statepoint {
-        // Prefer the captured stackmap-semantics SP for the top frame. This is
-        // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
-        // stackmap base (return address pushed by `call`).
-        let caller_sp = if ctx.sp != 0 {
-          ctx.sp as u64
-        } else {
-          caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
-        };
-        enumerate_roots_for_frame_with_caller_sp(
-          caller_fp,
-          caller_sp,
-          caller_ra,
-          callsite,
-          bounds,
-          &mut visit,
-        )?;
-      }
+      // Prefer the captured stackmap-semantics SP for the top managed frame. On x86_64 the callee
+      // entry RSP points at the return address (8 bytes lower than the stackmap base), so we store
+      // the correct post-call SP in `ctx.sp`.
+      let caller_sp = (ctx.sp != 0).then_some(ctx.sp as u64);
+      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp, &mut visit)?;
     }
     None => {
       #[cfg(any(debug_assertions, feature = "conservative_roots"))]
@@ -585,7 +567,7 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
     if let Some(callsite) = stackmaps.lookup(caller_ra) {
       let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
       let pairs =
-        enumerate_root_pairs_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds)?;
+        enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, bounds, Some(caller_sp))?;
       if !pairs.is_empty() {
         visit_frame_reloc_pairs(caller_ra, &pairs);
       }
@@ -633,25 +615,12 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
     });
   }
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
-    let looks_like_statepoint =
-      callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-        && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-          .iter()
-          .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-    if looks_like_statepoint {
-      // Prefer the captured stackmap-semantics SP for the top frame. This is
-      // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
-      // stackmap base (return address pushed by `call`).
-      let caller_sp = if ctx.sp != 0 {
-        ctx.sp as u64
-      } else {
-        caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
-      };
-      let pairs =
-        enumerate_root_pairs_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds)?;
-      if !pairs.is_empty() {
-        visit_frame_reloc_pairs(caller_ra, &pairs);
-      }
+    // Prefer the captured stackmap-semantics SP for the top managed frame (see the note in
+    // `walk_gc_roots_from_safepoint_context`).
+    let caller_sp = (ctx.sp != 0).then_some(ctx.sp as u64);
+    let pairs = enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, bounds, caller_sp)?;
+    if !pairs.is_empty() {
+      visit_frame_reloc_pairs(caller_ra, &pairs);
     }
   }
 
@@ -723,7 +692,7 @@ fn is_canonical_pc(_pc: u64) -> bool {
 fn caller_sp_from_stack_size(
   caller_fp: u64,
   caller_ra: u64,
-  stack_size: u64,
+  stack_size: StackSize,
 ) -> Result<u64, WalkError> {
   // NOTE: This uses the stackmap function record's fixed `stack_size` to relate `FP` and `SP`.
   // That is only valid when the caller's `SP` at the callsite matches the function's fixed frame
@@ -732,13 +701,12 @@ fn caller_sp_from_stack_size(
   // It is kept only as a fallback for the top frame when the safepoint context does not provide a
   // stackmap-semantics `SP` (`ctx.sp == 0`). Non-top frames must derive callsite `SP` from the
   // callee frame pointer (see `caller_sp_callsite_from_callee_fp`).
-  //
-  // Some LLVM configurations emit `stack_size = u64::MAX` for dynamic/realigned frames.
-  if stack_size == u64::MAX {
+  let StackSize::Known(stack_size) = stack_size else {
     return Err(WalkError::UnknownStackSize {
       return_addr: caller_ra,
     });
-  }
+  };
+
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {
       return_addr: caller_ra,
@@ -783,14 +751,31 @@ fn caller_sp_from_stack_size(
   Ok(caller_sp)
 }
 
-fn enumerate_roots_for_frame_with_caller_sp(
+fn location_uses_sp(loc: &Location) -> bool {
+  matches!(
+    *loc,
+    Location::Indirect {
+      dwarf_reg: arch::DWARF_SP,
+      ..
+    }
+  )
+}
+
+fn enumerate_roots_for_frame(
   caller_fp: u64,
-  caller_sp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
   bounds: Option<StackBounds>,
+  caller_sp_override: Option<u64>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
+  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
+  // addition to GC statepoints. Identify statepoints by their layout (LLVM 18 observed): the first
+  // three locations are constant header entries (callconv, flags, deopt_count).
+  //
+  // Important: the StackMap record `patchpoint_id` is **not** a stable marker (LLVM supports
+  // overriding it via the `"statepoint-id"` callsite attribute), so do not rely on it to detect
+  // statepoints.
   let looks_like_statepoint =
     callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
@@ -800,22 +785,37 @@ fn enumerate_roots_for_frame_with_caller_sp(
     return Ok(());
   }
 
-  if let Some(bounds) = bounds {
-    if caller_sp < bounds.lo || caller_sp > bounds.hi {
-      return Err(WalkError::StackPointerOutOfBounds {
-        caller_sp,
-        lo: bounds.lo,
-        hi: bounds.hi,
-      });
-    }
-  }
-
   let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
     WalkError::InvalidStatepoint {
       return_addr: caller_ra,
       source,
     }
   })?;
+
+  let needs_sp = statepoint
+    .gc_pairs()
+    .iter()
+    .any(|pair| location_uses_sp(&pair.base) || location_uses_sp(&pair.derived));
+  let caller_sp = if needs_sp {
+    match caller_sp_override {
+      Some(sp) => sp,
+      None => caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?,
+    }
+  } else {
+    0
+  };
+
+  if needs_sp {
+    if let Some(bounds) = bounds {
+      if caller_sp < bounds.lo || caller_sp > bounds.hi {
+        return Err(WalkError::StackPointerOutOfBounds {
+          caller_sp,
+          lo: bounds.lo,
+          hi: bounds.hi,
+        });
+      }
+    }
+  }
 
   // Collect + dedup within this frame to avoid double-visiting the same slot
   // (LLVM can emit duplicated locations for relocated values).
@@ -898,12 +898,12 @@ fn enumerate_roots_for_frame_with_caller_sp(
   Ok(())
 }
 
-fn enumerate_root_pairs_for_frame_with_caller_sp(
+fn enumerate_root_pairs_for_frame(
   caller_fp: u64,
-  caller_sp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
   bounds: Option<StackBounds>,
+  caller_sp_override: Option<u64>,
 ) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
   let looks_like_statepoint =
     callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
@@ -914,22 +914,37 @@ fn enumerate_root_pairs_for_frame_with_caller_sp(
     return Ok(Vec::new());
   }
 
-  if let Some(bounds) = bounds {
-    if caller_sp < bounds.lo || caller_sp > bounds.hi {
-      return Err(WalkError::StackPointerOutOfBounds {
-        caller_sp,
-        lo: bounds.lo,
-        hi: bounds.hi,
-      });
-    }
-  }
-
   let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
     WalkError::InvalidStatepoint {
       return_addr: caller_ra,
       source,
     }
   })?;
+
+  let needs_sp = statepoint
+    .gc_pairs()
+    .iter()
+    .any(|pair| location_uses_sp(&pair.base) || location_uses_sp(&pair.derived));
+  let caller_sp = if needs_sp {
+    match caller_sp_override {
+      Some(sp) => sp,
+      None => caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?,
+    }
+  } else {
+    0
+  };
+
+  if needs_sp {
+    if let Some(bounds) = bounds {
+      if caller_sp < bounds.lo || caller_sp > bounds.hi {
+        return Err(WalkError::StackPointerOutOfBounds {
+          caller_sp,
+          lo: bounds.lo,
+          hi: bounds.hi,
+        });
+      }
+    }
+  }
 
   let mut pairs: Vec<(u64, u64)> = Vec::with_capacity(statepoint.gc_pair_count());
   for pair in statepoint.gc_pairs() {

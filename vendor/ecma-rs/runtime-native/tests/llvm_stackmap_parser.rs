@@ -159,7 +159,13 @@ fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
 
   // Verify statepoint location layout: 3 constants + 1 base/derived pair.
   assert_eq!(record.locations.len(), 5);
-  assert!(callsite.stack_size > 0);
+  assert!(
+    callsite
+      .stack_size
+      .as_u64()
+      .expect("stack_size should be known for this fixture")
+      > 0
+  );
   for i in 0..3 {
     assert_eq!(
       record.locations[i],

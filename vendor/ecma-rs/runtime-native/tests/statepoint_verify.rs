@@ -1,4 +1,4 @@
-use runtime_native::stackmaps::{Location, StackMap, StackMapRecord, StackSizeRecord};
+use runtime_native::stackmaps::{Location, StackMap, StackMapRecord, StackSize, StackSizeRecord};
 use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
   LLVM_STATEPOINT_PATCHPOINT_ID,
@@ -88,7 +88,7 @@ fn verifier_rejects_register_locations_with_custom_statepoint_id() {
     version: 3,
     functions: vec![StackSizeRecord {
       address: 0x1000,
-      stack_size: 32,
+      stack_size: StackSize::Known(32),
       record_count: 1,
     }],
     constants: vec![],
@@ -136,7 +136,7 @@ fn verifier_accepts_nonzero_flags_header() {
     version: 3,
     functions: vec![StackSizeRecord {
       address: 0x1000,
-      stack_size: 32,
+      stack_size: StackSize::Known(32),
       record_count: 1,
     }],
     constants: vec![],
@@ -179,7 +179,7 @@ fn verifier_accepts_deopt_operands() {
     version: 3,
     functions: vec![StackSizeRecord {
       address: 0x1000,
-      stack_size: 32,
+      stack_size: StackSize::Known(32),
       record_count: 1,
     }],
     constants: vec![],

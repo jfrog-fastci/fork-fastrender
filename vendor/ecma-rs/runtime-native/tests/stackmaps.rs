@@ -100,6 +100,7 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
 fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord};
   use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+  use runtime_native::stackmaps::StackSize;
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
@@ -136,7 +137,7 @@ fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
   };
 
   let callsite = CallSite {
-    stack_size: 32,
+    stack_size: StackSize::Known(32),
     record: &rec,
   };
 
@@ -150,6 +151,7 @@ fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
 fn callsite_reloc_pairs_skip_deopt_operands() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord};
   use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+  use runtime_native::stackmaps::StackSize;
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
@@ -184,7 +186,7 @@ fn callsite_reloc_pairs_skip_deopt_operands() {
   };
 
   let callsite = CallSite {
-    stack_size: 32,
+    stack_size: StackSize::Known(32),
     record: &rec,
   };
 
@@ -212,6 +214,7 @@ fn callsite_reloc_pairs_skip_deopt_operands() {
 #[test]
 fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord};
+  use runtime_native::stackmaps::StackSize;
 
   // Record that looks like a statepoint (3 constant headers + even tail), but uses a non-default
   // `patchpoint_id`.
@@ -240,7 +243,7 @@ fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
   };
 
   let callsite = CallSite {
-    stack_size: 32,
+    stack_size: StackSize::Known(32),
     record: &rec,
   };
 
@@ -260,7 +263,7 @@ fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn callsite_reloc_pairs_require_statepoint_layout() {
-  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+  use runtime_native::stackmaps::{CallSite, StackMapRecord, StackSize};
 
   // Record that does *not* have the LLVM statepoint header prefix (3 leading constants). Even if it
   // has an even number of pointer-bearing locations, `reloc_pairs` must treat it as a non-statepoint
@@ -284,7 +287,7 @@ fn callsite_reloc_pairs_require_statepoint_layout() {
   };
 
   let callsite = CallSite {
-    stack_size: 32,
+    stack_size: StackSize::Known(32),
     record: &rec,
   };
 

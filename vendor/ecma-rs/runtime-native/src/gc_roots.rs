@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use crate::stack_walk::{FpWalkError, FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMaps};
-use crate::stackwalk::{compute_sp, StackBounds, DWARF_FP_REG, DWARF_SP_REG};
+use crate::stackwalk::{StackBounds, DWARF_FP_REG, DWARF_SP_REG};
 use crate::statepoints::{eval_location, RegFile, RootSlot};
 use stackmap_context::ThreadContext;
 
@@ -346,13 +346,13 @@ fn visit_callsite_reloc_pairs(
   bounds: Option<StackBounds>,
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
-  // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller function's `SP` at the
-  // safepoint. When walking frames via frame pointers we typically only have FP, so use the
-  // stackmap function record's `stack_size` to reconstruct that SP.
+  // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller function's stack pointer
+  // at the safepoint call site. When walking via frame pointers, we can recover that callsite SP
+  // from the callee frame pointer; [`StackWalker`] exposes it as `FrameView::caller_cfa`.
   let Ok(caller_fp) = u64::try_from(frame.caller_fp) else {
     return false;
   };
-  let Some(caller_sp) = compute_sp(caller_fp, callsite.stack_size) else {
+  let Ok(caller_sp) = u64::try_from(frame.caller_cfa) else {
     return false;
   };
 

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::Location;
+  use runtime_native::stackmaps::{Location, StackSize};
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -42,7 +42,10 @@ mod x86_64 {
       // Compute caller SP using the same formula as the walker (x86_64):
       //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
       // FP_RECORD_SIZE=8 on x86_64.
-      let caller_sp = (caller_fp as u64) - (callsite.stack_size - 8);
+      let StackSize::Known(stack_size) = callsite.stack_size else {
+        panic!("fixture callsites should have a known stack_size");
+      };
+      let caller_sp = (caller_fp as u64) - (stack_size - 8);
 
       let mut expected_slots: Vec<usize> = Vec::new();
       for pair in statepoint.gc_pairs() {
@@ -107,7 +110,7 @@ mod x86_64 {
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
-  use runtime_native::stackmaps::Location;
+  use runtime_native::stackmaps::{Location, StackSize};
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
@@ -146,7 +149,10 @@ mod aarch64 {
       // Compute caller SP using the same formula as the walker (AArch64):
       //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
       // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
-      let caller_sp = (caller_fp as u64) - (callsite.stack_size - 16);
+      let StackSize::Known(stack_size) = callsite.stack_size else {
+        panic!("fixture callsites should have a known stack_size");
+      };
+      let caller_sp = (caller_fp as u64) - (stack_size - 16);
 
       let mut expected_slots: Vec<usize> = Vec::new();
       for pair in statepoint.gc_pairs() {

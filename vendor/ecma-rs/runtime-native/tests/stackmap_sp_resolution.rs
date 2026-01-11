@@ -6,7 +6,7 @@
 //! StackMap function record's `stack_size` to reconstruct that SP.
 
 use object::{Object, ObjectSection};
-use runtime_native::stackmaps::{CallSite, StackMap};
+use runtime_native::stackmaps::{CallSite, StackMap, StackSize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -265,7 +265,10 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch) {
         if found.is_some() {
           panic!("found multiple candidate callsites with exactly one GC root slot");
         }
-        found = Some((fp_offsets[0], callsite.stack_size));
+        let StackSize::Known(stack_size) = callsite.stack_size else {
+          panic!("expected stack_size to be known for stackmap_sp_resolution test");
+        };
+        found = Some((fp_offsets[0], stack_size));
       }
     }
   }

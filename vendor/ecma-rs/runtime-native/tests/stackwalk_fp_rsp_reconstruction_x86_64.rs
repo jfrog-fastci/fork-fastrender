@@ -1,6 +1,8 @@
 #![cfg(target_arch = "x86_64")]
 
-use runtime_native::{stackwalk::StackBounds, walk_gc_roots_from_fp, StackMaps};
+use runtime_native::stackmaps::StackSize;
+use runtime_native::stackwalk::StackBounds;
+use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
 #[test]
 fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
@@ -25,7 +27,7 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   let bytes = build_stackmaps_with_rsp_slots();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  assert_eq!(callsite.stack_size, 24);
+  assert_eq!(callsite.stack_size, StackSize::Known(24));
 
   // Fake stack memory (addresses increase upward; stack grows downward).
   let mut stack = vec![0u8; 256];
@@ -48,7 +50,11 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   //   by: `caller_fp = caller_sp_callsite + stack_size - 8`.
   //
   // Combining these gives: `caller_fp = callee_fp + stack_size + 8`.
-  let caller_fp = start_fp + (callsite.stack_size as usize) + 8;
+  let stack_size = callsite
+    .stack_size
+    .as_u64()
+    .expect("fixture stack_size should be known") as usize;
+  let caller_fp = start_fp + stack_size + 8;
   assert_eq!(caller_fp % 16, 0, "expected caller FP to stay 16B-aligned");
   assert!(caller_fp > start_fp, "caller FP must be above callee FP");
 

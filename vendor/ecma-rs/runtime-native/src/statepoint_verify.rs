@@ -6,11 +6,12 @@
 //! if codegen or LLVM changes break that assumption.
 
 use crate::stackmaps::{
-  parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSizeRecord,
+  parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSize, StackSizeRecord,
   STACKMAP_VERSION,
 };
 use crate::statepoints::{
-  StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP,
+  StatepointError, StatepointRecord, AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_FP,
+  X86_64_DWARF_REG_SP,
 };
 use std::error::Error;
 use std::fmt;
@@ -41,6 +42,13 @@ impl DwarfArch {
     match self {
       DwarfArch::X86_64 => X86_64_DWARF_REG_SP,
       DwarfArch::AArch64 => AARCH64_DWARF_REG_SP,
+    }
+  }
+
+  pub fn frame_pointer_dwarf_reg(self) -> u16 {
+    match self {
+      DwarfArch::X86_64 => X86_64_DWARF_REG_FP,
+      DwarfArch::AArch64 => AARCH64_DWARF_REG_FP,
     }
   }
 
@@ -293,6 +301,7 @@ pub fn verify_statepoint_stackmap(
   opts: VerifyStatepointOptions,
 ) -> Result<(), VerifyError> {
   let sp_reg = opts.arch.stack_pointer_dwarf_reg();
+  let fp_reg = opts.arch.frame_pointer_dwarf_reg();
   let ptr_size = opts.arch.pointer_size();
 
   let mut record_index = 0usize;
@@ -318,7 +327,7 @@ pub fn verify_statepoint_stackmap(
         continue;
       }
 
-      verify_statepoint_record(stackmap, func, rec, sp_reg, ptr_size)?;
+      verify_statepoint_record(stackmap, func, rec, sp_reg, fp_reg, ptr_size)?;
     }
   }
 
@@ -434,6 +443,7 @@ fn verify_statepoint_record(
   func: &StackSizeRecord,
   rec: &StackMapRecord,
   sp_reg: u16,
+  fp_reg: u16,
   ptr_size: u16,
 ) -> Result<(), VerifyError> {
   let callsite = func.address.wrapping_add(rec.instruction_offset as u64);
@@ -474,20 +484,22 @@ fn verify_statepoint_record(
     let base_idx = start + pair_idx * 2;
     let base = &pair.base;
     let derived = &pair.derived;
-    verify_indirect_sp_slot(
+    verify_indirect_root_slot(
       callsite,
       rec.patchpoint_id,
       func.stack_size,
       sp_reg,
+      fp_reg,
       ptr_size,
       base_idx,
       base,
     )?;
-    verify_indirect_sp_slot(
+    verify_indirect_root_slot(
       callsite,
       rec.patchpoint_id,
       func.stack_size,
       sp_reg,
+      fp_reg,
       ptr_size,
       base_idx + 1,
       derived,
@@ -497,11 +509,12 @@ fn verify_statepoint_record(
   Ok(())
 }
 
-fn verify_indirect_sp_slot(
+fn verify_indirect_root_slot(
   callsite: u64,
   patchpoint_id: u64,
-  stack_size: u64,
+  stack_size: StackSize,
   sp_reg: u16,
+  fp_reg: u16,
   ptr_size: u16,
   location_index: usize,
   loc: &Location,
@@ -545,26 +558,38 @@ ensure LLVM codegen disables register roots at statepoints (e.g. \
     ));
   }
 
-  if dwarf_reg != sp_reg {
+  if dwarf_reg == sp_reg {
+    // Conservative bound: LLVM records stack slots as offsets from SP. We require a non-negative
+    // offset. If the function stack size is known, additionally ensure it doesn't exceed the
+    // total frame size.
+    let offset64 = offset as i64;
+    if offset64 < 0 {
+      return Err(VerifyError::new_location(
+        callsite,
+        patchpoint_id,
+        location_index,
+        loc,
+        "expected non-negative SP offset".to_string(),
+      ));
+    }
+    if let StackSize::Known(stack_size) = stack_size {
+      if (offset64 as u64) > stack_size {
+        return Err(VerifyError::new_location(
+          callsite,
+          patchpoint_id,
+          location_index,
+          loc,
+          format!("expected offset within [0, {stack_size}]"),
+        ));
+      }
+    }
+  } else if dwarf_reg != fp_reg {
     return Err(VerifyError::new_location(
       callsite,
       patchpoint_id,
       location_index,
       loc,
-      format!("expected base register SP (DWARF reg {sp_reg})"),
-    ));
-  }
-
-  // Conservative bound: LLVM records stack slots as offsets from SP. We require a non-negative
-  // offset that doesn't exceed the total frame size.
-  let offset64 = offset as i64;
-  if offset64 < 0 || (offset64 as u64) > stack_size {
-    return Err(VerifyError::new_location(
-      callsite,
-      patchpoint_id,
-      location_index,
-      loc,
-      format!("expected offset within [0, {stack_size}]"),
+      format!("expected base register SP (DWARF reg {sp_reg}) or FP (DWARF reg {fp_reg})"),
     ));
   }
 

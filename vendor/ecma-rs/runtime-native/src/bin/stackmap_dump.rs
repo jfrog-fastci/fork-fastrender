@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use runtime_native::stackmaps::{parse_all_stackmaps, Location, StackMap};
+use runtime_native::stackmaps::{parse_all_stackmaps, Location, StackMap, StackSize};
 use serde::Serialize;
 use std::io::Write;
 use std::path::PathBuf;
@@ -158,7 +158,7 @@ struct JsonFunction {
   stackmap_index: usize,
   index: usize,
   address: String,
-  stack_size: u64,
+  stack_size: Option<u64>,
   record_count: u64,
 }
 
@@ -207,7 +207,7 @@ fn json_summary(stackmaps: &[StackMap]) -> JsonOutput {
         stackmap_index,
         index: global_index,
         address: fmt_hex_u64(f.address),
-        stack_size: f.stack_size,
+        stack_size: f.stack_size.as_u64(),
         record_count: f.record_count,
       });
       global_index += 1;
@@ -300,12 +300,16 @@ fn print_summary(stackmaps: &[StackMap]) -> Result<()> {
   let mut idx: usize = 0;
   for sm in stackmaps {
     for f in &sm.functions {
-    println!(
-      "  [{idx}] addr={} stack_size={} records={}",
-      fmt_hex_u64(f.address),
-      f.stack_size,
-      f.record_count
-    );
+      let stack_size = match f.stack_size {
+        StackSize::Known(v) => v.to_string(),
+        StackSize::Unknown => "unknown".to_string(),
+      };
+      println!(
+        "  [{idx}] addr={} stack_size={} records={}",
+        fmt_hex_u64(f.address),
+        stack_size,
+        f.record_count
+      );
       idx += 1;
     }
   }

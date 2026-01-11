@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
-use runtime_native::stackmaps::{Location, StackMap, StackMaps};
+use runtime_native::stackmaps::{Location, StackMap, StackMaps, StackSize};
 
 #[test]
 fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
@@ -14,7 +14,7 @@ fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
 
   let func = &stackmap.functions[0];
   assert_eq!(func.address, 0);
-  assert_eq!(func.stack_size, 24);
+  assert_eq!(func.stack_size, StackSize::Known(24));
   assert_eq!(func.record_count, 2);
 
   let rec99 = stackmap

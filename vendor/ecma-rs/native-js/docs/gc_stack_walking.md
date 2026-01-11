@@ -53,6 +53,26 @@ frame-pointer requirement, we would need to move to unwinding-based stack walkin
 
 Until then, **frame pointers + no tail calls** are treated as a hard invariant.
 
+## Dynamic stack adjustments (`alloca`, stack realignment)
+
+LLVM StackMap function records include a `stack_size` field. When a function performs **dynamic**
+stack adjustments (e.g. variable-size `alloca` or stack realignment), LLVM 18 may emit
+`stack_size = -1` (encoded as `u64::MAX`) to indicate the frame size is unknown.
+
+This matters because many stackmap GC roots are described as `Indirect [SP + off]`, which requires
+knowing the caller's stack pointer at the safepoint callsite:
+
+- The runtime treats this sentinel value as "unknown".
+- When frame pointers are enforced, stack walking does not need `stack_size` to recover a callsite
+  stack pointer:
+  - for non-top frames it derives the caller's callsite SP from the callee frame pointer
+    (`caller_sp_callsite = callee_fp + 16`),
+  - for the top managed frame it captures the caller SP at safepoint entry.
+
+Codegen policy: **avoid dynamic `alloca` / stack realignment in functions that participate in GC
+statepoints/safepoints**. Prefer heap allocation or fixed-size stack slots. FP-relative root
+locations may still work in practice, but are not guaranteed across LLVM versions/opts.
+
 ## GC root locations: must be spilled stack slots
 
 LLVM stackmaps can describe live values as either:

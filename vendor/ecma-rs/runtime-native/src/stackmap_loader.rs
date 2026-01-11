@@ -1,4 +1,4 @@
-use crate::stackmaps::{CallSite, StackMaps};
+use crate::stackmaps::{CallSite, StackMaps, StackSize};
 use anyhow::Context;
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::ops::Range;
@@ -695,7 +695,7 @@ pub struct StackMapIndex {
 #[derive(Debug, Clone, Copy)]
 struct GlobalCallsiteEntry {
   pc: u64,
-  stack_size: u64,
+  stack_size: StackSize,
   blob_index: usize,
   stackmap_index: usize,
   record_index: usize,

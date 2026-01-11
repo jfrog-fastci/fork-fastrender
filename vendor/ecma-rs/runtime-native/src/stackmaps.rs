@@ -29,6 +29,25 @@ use thiserror::Error;
 pub const STACKMAP_VERSION: u8 = 3;
 const STACKMAP_HEADER_SIZE: usize = 16;
 
+/// Stack size from the stackmap function record.
+///
+/// LLVM may report `stack_size = -1` (`u64::MAX`) when the function has dynamic stack adjustments
+/// (e.g. variable-size `alloca` or stack realignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackSize {
+  Known(u64),
+  Unknown,
+}
+
+impl StackSize {
+  pub fn as_u64(self) -> Option<u64> {
+    match self {
+      StackSize::Known(v) => Some(v),
+      StackSize::Unknown => None,
+    }
+  }
+}
+
 /// x86_64 SysV DWARF register number for RBP.
 pub const X86_64_DWARF_REG_RBP: u16 = 6;
 /// x86_64 SysV DWARF register number for RSP.
@@ -101,6 +120,9 @@ pub enum StackMapError {
   )]
   StackSlotOffsetOverflow { stack_size: u64, off: i32 },
 
+  #[error("stackmap function record reports unknown stack size (dynamic alloca / stack realignment)")]
+  UnknownStackSize,
+
   #[error(transparent)]
   StatepointVerify(#[from] crate::statepoint_verify::VerifyError),
 
@@ -157,10 +179,18 @@ impl StackMap {
 
     let mut functions = Vec::with_capacity(num_functions);
     for _ in 0..num_functions {
+      let address = c.read_u64()?;
+      let raw_stack_size = c.read_u64()?;
+      let stack_size = if raw_stack_size == u64::MAX {
+        StackSize::Unknown
+      } else {
+        StackSize::Known(raw_stack_size)
+      };
+      let record_count = c.read_u64()?;
       functions.push(StackSizeRecord {
-        address: c.read_u64()?,
-        stack_size: c.read_u64()?,
-        record_count: c.read_u64()?,
+        address,
+        stack_size,
+        record_count,
       });
     }
 
@@ -377,7 +407,7 @@ fn parse_live_outs(c: &mut Cursor<'_>, mode: LiveOutHeaderMode) -> Result<Vec<Li
 #[derive(Debug, Clone)]
 pub struct StackSizeRecord {
   pub address: u64,
-  pub stack_size: u64,
+  pub stack_size: StackSize,
   pub record_count: u64,
 }
 
@@ -640,7 +670,7 @@ pub struct CallsiteEntry {
   /// adjustments like outgoing stack argument pushes. Runtimes must not reconstruct callsite `SP`
   /// from `stack_size`; instead derive it from the callee frame pointer when frame pointers are
   /// enforced (see `stackwalk_fp`).
-  pub stack_size: u64,
+  pub stack_size: StackSize,
   pub stackmap_index: usize,
   pub record_index: usize,
 }
@@ -648,7 +678,7 @@ pub struct CallsiteEntry {
 #[derive(Debug, Clone, Copy)]
 pub struct CallSite<'a> {
   /// See [`CallsiteEntry::stack_size`].
-  pub stack_size: u64,
+  pub stack_size: StackSize,
   pub record: &'a StackMapRecord,
 }
 
@@ -775,22 +805,26 @@ impl<'a> CallSite<'a> {
 
     let sp_relative_to_fp_relative =
       |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
-      if self.stack_size < frame_record_size {
-        return Err(StackMapError::StackSizeTooSmall {
-          stack_size: self.stack_size,
-          frame_record_size,
-        });
-      }
+        let Some(stack_size) = self.stack_size.as_u64() else {
+          return Err(StackMapError::UnknownStackSize);
+        };
 
-      let fp_off = (frame_record_size as i128) - (self.stack_size as i128) + (offset as i128);
-      if !(i32::MIN as i128..=i32::MAX as i128).contains(&fp_off) {
-        return Err(StackMapError::StackSlotOffsetOverflow {
-          stack_size: self.stack_size,
-          off: offset,
-        });
-      }
-      Ok(fp_off as i32)
-    };
+        if stack_size < frame_record_size {
+          return Err(StackMapError::StackSizeTooSmall {
+            stack_size,
+            frame_record_size,
+          });
+        }
+
+        let fp_off = (frame_record_size as i128) - (stack_size as i128) + (offset as i128);
+        if !(i32::MIN as i128..=i32::MAX as i128).contains(&fp_off) {
+          return Err(StackMapError::StackSlotOffsetOverflow {
+            stack_size,
+            off: offset,
+          });
+        }
+        Ok(fp_off as i32)
+      };
 
     let location_fp_offset = |dwarf_reg: u16, offset: i32| -> Result<i32, StackMapError> {
       match dwarf_reg {
@@ -1147,7 +1181,7 @@ impl StackMaps {
 #[derive(Clone, Debug)]
 pub struct CallSiteHandle {
   pc: u64,
-  stack_size: u64,
+  stack_size: StackSize,
   stackmaps: Arc<StackMaps>,
   stackmap_index: usize,
   record_index: usize,
@@ -1160,7 +1194,7 @@ impl CallSiteHandle {
   }
 
   #[inline]
-  pub fn stack_size(&self) -> u64 {
+  pub fn stack_size(&self) -> StackSize {
     self.stack_size
   }
 
@@ -1405,6 +1439,7 @@ mod tests {
   use super::Location;
   use super::StackMap;
   use super::StackMapError;
+  use super::StackSize;
   use super::StackMaps;
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
@@ -1552,7 +1587,7 @@ mod tests {
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();
-    assert_eq!(callsite.stack_size, 32);
+    assert_eq!(callsite.stack_size, StackSize::Known(32));
 
     let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
     assert_eq!(
