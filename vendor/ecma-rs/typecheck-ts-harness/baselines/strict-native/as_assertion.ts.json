@@ -8,24 +8,6 @@
       "start": 38,
       "end": 53,
       "severity": "error",
-      "message": "Type '123' is not assignable to type 'string'."
-    },
-    {
-      "engine": "rust",
-      "code": "TC4005",
-      "file": "/as_assertion.ts",
-      "start": 38,
-      "end": 53,
-      "severity": "error",
-      "message": "Type 'unknown' is not assignable to type 'string'."
-    },
-    {
-      "engine": "rust",
-      "code": "TC4005",
-      "file": "/as_assertion.ts",
-      "start": 38,
-      "end": 53,
-      "severity": "error",
       "message": "unsafe type assertion: expression type is not assignable to the asserted type"
     }
   ]

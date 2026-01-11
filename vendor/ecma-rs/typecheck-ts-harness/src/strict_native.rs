@@ -326,7 +326,6 @@ fn run_case(
 
   let file_set = HarnessFileSet::new(&test.files);
   let mut compiler_options = test.options.to_compiler_options();
-  compiler_options.strict_native = true;
   compiler_options.native_strict = true;
   let host = HarnessHost::new(file_set.clone(), compiler_options);
   let roots = file_set.root_keys();
