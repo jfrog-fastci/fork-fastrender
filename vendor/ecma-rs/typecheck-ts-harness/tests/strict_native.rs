@@ -47,6 +47,11 @@ fn strict_native_fixture_set_has_baselines() {
 
   let baselines_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("baselines/strict-native");
   for case in cases {
+    assert!(
+      !case.options.lib.is_empty(),
+      "strict-native fixture {} should declare an explicit @lib list to avoid loading the default `dom` lib",
+      case.id
+    );
     let baseline_path = baseline_path_for(&baselines_root, &case.id);
     assert!(
       baseline_path.exists(),
