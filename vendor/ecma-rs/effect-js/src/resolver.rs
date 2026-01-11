@@ -326,13 +326,28 @@ fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerR
 ///
 /// This is intentionally conservative and only models a subset of patterns:
 /// - `const ns = require("node:fs")`
+/// - `var ns = require("node:fs")`
 /// - `const { readFile, writeFile: wf } = require("node:fs")`
 /// - `const rf = require("node:fs").readFile`
+/// - `const rf = fs.readFile` (where `fs` is a known require binding)
+/// - `const { readFile } = fs` (where `fs` is a known require binding)
 pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> RequireBindings {
-  let mut bindings = RequireBindings::default();
+  let seed = RequireBindings::default();
+  collect_require_bindings_seeded(lower, body_id, &seed)
+}
+
+fn collect_require_bindings_seeded(
+  lower: &LowerResult,
+  body_id: BodyId,
+  seed: &RequireBindings,
+) -> RequireBindings {
+  let mut out = RequireBindings::default();
   let Some(body) = lower.body(body_id) else {
-    return bindings;
+    return out;
   };
+
+  let local_decls = collect_lexical_names(lower, body);
+  let mut available = seed.clone();
 
   for stmt_id in body.root_stmts.iter().copied() {
     let stmt = &body.stmts[stmt_id.0 as usize];
@@ -342,7 +357,7 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
     };
     if !matches!(
       var_decl.kind,
-      hir_js::VarDeclKind::Const | hir_js::VarDeclKind::Let
+      hir_js::VarDeclKind::Const | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Var
     ) {
       continue;
     }
@@ -354,28 +369,23 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
       match &body.pats[decl.pat.0 as usize].kind {
         PatKind::Ident(local) => {
           if let Some((module, path)) = extract_require_member_path(lower, body, init) {
-            bindings.insert(
-              *local,
-              start,
-              BindingTarget {
-                module,
-                path,
-              },
-            );
-          } else if let Some(target) = extract_alias_target(lower, body, init, &bindings, start) {
-            bindings.insert(*local, start, target);
+            let target = BindingTarget { module, path };
+            out.insert(*local, start, target.clone());
+            available.insert(*local, start, target);
+          } else if let Some(target) =
+            extract_alias_target(lower, body, init, &available, &out, &local_decls, start)
+          {
+            out.insert(*local, start, target.clone());
+            available.insert(*local, start, target);
           }
         }
         PatKind::Object(obj) => {
           if obj.rest.is_some() {
             continue;
           }
-          let resolved = extract_require_member_path(lower, body, init).map(|(module, path)| {
-            BindingTarget {
-              module,
-              path,
-            }
-          }).or_else(|| extract_alias_target(lower, body, init, &bindings, start));
+          let resolved = extract_require_member_path(lower, body, init)
+            .map(|(module, path)| BindingTarget { module, path })
+            .or_else(|| extract_alias_target(lower, body, init, &available, &out, &local_decls, start));
           let Some(BindingTarget { module, path: prefix_path }) = resolved else {
             continue;
           };
@@ -394,14 +404,12 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
           for (local, key) in collected {
             let mut path = prefix_path.clone();
             path.push(key);
-            bindings.insert(
-              local,
-              start,
-              BindingTarget {
-                module: module.clone(),
-                path,
-              },
-            );
+            let target = BindingTarget {
+              module: module.clone(),
+              path,
+            };
+            out.insert(local, start, target.clone());
+            available.insert(local, start, target);
           }
         }
         _ => {}
@@ -409,20 +417,23 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
     }
   }
 
-  bindings
+  out
 }
 
 fn extract_alias_target(
   lower: &LowerResult,
   body: &Body,
   expr: ExprId,
-  bindings: &RequireBindings,
+  available: &RequireBindings,
+  local: &RequireBindings,
+  local_decls: &BTreeSet<NameId>,
   use_start: u32,
 ) -> Option<BindingTarget> {
   let (base, member_path) = flatten_member_chain(lower, body, expr)?;
   let ExprKind::Ident(name) = &body.exprs[base.0 as usize].kind else {
     return None;
   };
+  let bindings = if local_decls.contains(name) { local } else { available };
   let target = bindings.resolve(*name, use_start)?;
   let mut path = target.path.clone();
   path.extend(member_path);
@@ -551,15 +562,19 @@ pub fn resolve_api_call<'a>(
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
   let local_decls = collect_lexical_names(lower, body);
-  let local_bindings = collect_require_bindings(lower, body_id);
-  let require_bindings = if body_id == lower.hir.root_body {
-    local_bindings.clone()
-  } else {
+  let mut seed = RequireBindings::default();
+  if body_id != lower.hir.root_body {
     // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
     // executes after module initialization, so treat the root body bindings as hoisted for the
     // purpose of best-effort resolution.
-    let mut bindings = collect_require_bindings(lower, lower.hir.root_body);
-    bindings.hoist_all(0);
+    seed = collect_require_bindings(lower, lower.hir.root_body);
+    seed.hoist_all(0);
+  }
+  let local_bindings = collect_require_bindings_seeded(lower, body_id, &seed);
+  let require_bindings = if body_id == lower.hir.root_body {
+    local_bindings.clone()
+  } else {
+    let mut bindings = seed.clone();
     bindings.extend(local_bindings.clone());
     bindings
   };
@@ -620,15 +635,19 @@ pub fn resolve_api_call_typed<'a>(
  
   let use_start = body.exprs[call.callee.0 as usize].span.start;
   let local_decls = collect_lexical_names(lower, body);
-  let local_bindings = collect_require_bindings(lower, body_id);
-  let require_bindings = if body_id == lower.hir.root_body {
-    local_bindings.clone()
-  } else {
+  let mut seed = RequireBindings::default();
+  if body_id != lower.hir.root_body {
     // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
     // executes after module initialization, so treat the root body bindings as hoisted for the
     // purpose of best-effort resolution.
-    let mut bindings = collect_require_bindings(lower, lower.hir.root_body);
-    bindings.hoist_all(0);
+    seed = collect_require_bindings(lower, lower.hir.root_body);
+    seed.hoist_all(0);
+  }
+  let local_bindings = collect_require_bindings_seeded(lower, body_id, &seed);
+  let require_bindings = if body_id == lower.hir.root_body {
+    local_bindings.clone()
+  } else {
+    let mut bindings = seed.clone();
     bindings.extend(local_bindings.clone());
     bindings
   };
@@ -720,6 +739,17 @@ mod tests {
     let calls = resolved_calls(
       r#"
         const fs = require('node:fs');
+        fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_namespace_require_with_var_decl() {
+    let calls = resolved_calls(
+      r#"
+        var fs = require('node:fs');
         fs.readFile('x', () => {});
       "#,
     );
@@ -958,6 +988,21 @@ mod tests {
   }
 
   #[test]
+  fn resolves_alias_from_root_require_inside_nested_bodies() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        function foo() {
+          const rf = fs.readFile;
+          rf('x', () => {});
+        }
+
+        const fs = require('node:fs');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
   fn does_not_resolve_outer_binding_when_shadowed_by_param() {
     let calls = resolved_calls_all_bodies(
       r#"
@@ -965,6 +1010,21 @@ mod tests {
 
         function foo(fs: any) {
           fs.readFile('x', () => {});
+        }
+      "#,
+    );
+    assert_eq!(calls, Vec::<String>::new());
+  }
+
+  #[test]
+  fn does_not_resolve_outer_binding_alias_when_shadowed_by_param() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        const fs = require('node:fs');
+
+        function foo(fs: any) {
+          const rf = fs.readFile;
+          rf('x', () => {});
         }
       "#,
     );
