@@ -64,18 +64,18 @@ enum Commands {
 fn main() {
   let cli = Cli::parse();
 
-  match cli.command {
+  match cli.command.as_ref() {
     Some(Commands::Check { entries }) => {
       if entries.is_empty() {
         eprintln!("native-js-cli check: expected at least one entry file");
         exit(2);
       }
       for entry in entries {
-        let _ = compile_file_to_ir(&cli, &entry);
+        let _ = compile_file_to_ir(&cli, entry);
       }
     }
     Some(Commands::Build { entry, output }) => {
-      let ir = compile_file_to_ir(&cli, &entry);
+      let ir = compile_file_to_ir(&cli, entry);
       write_ir_debug(&cli, &ir);
       let (ll_path, tmpdir) = write_ir_to_tempfile(&ir);
       let _keep_tmpdir = tmpdir;
@@ -89,7 +89,7 @@ fn main() {
         .arg("ir")
         .arg(&ll_path)
         .arg("-o")
-        .arg(&output)
+        .arg(output)
         .status()
         .unwrap_or_else(|err| {
           eprintln!("failed to invoke clang: {err}");
@@ -101,13 +101,13 @@ fn main() {
       }
     }
     Some(Commands::Run { entry, args }) => {
-      let ir = compile_file_to_ir(&cli, &entry);
+      let ir = compile_file_to_ir(&cli, entry);
       write_ir_debug(&cli, &ir);
       let (exe_path, _tmpdir) = compile_ir_to_temp_exe(&ir);
-      run_exe(&exe_path, &args);
+      run_exe(&exe_path, args);
     }
     Some(Commands::EmitIr { entry, output }) => {
-      let ir = compile_file_to_ir(&cli, &entry);
+      let ir = compile_file_to_ir(&cli, entry);
       if let Some(path) = output.as_deref() {
         if let Err(err) = fs::write(path, &ir) {
           eprintln!("failed to write {}: {err}", path.display());
@@ -242,4 +242,3 @@ fn find_clang() -> Option<&'static str> {
   }
   None
 }
-
