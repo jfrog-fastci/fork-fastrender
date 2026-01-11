@@ -187,6 +187,7 @@ mod system_font_precedence_duplicate_family;
 mod float_blockification;
 mod float_line_box_intrusion;
 mod float_line_boxes_do_not_spurious_clear;
+mod phoronix_float_layout;
 mod float_grid_container_uses_own_formatting_context;
 mod float_inline_floats_do_not_expand_non_bfc_height;
 mod float_logical_sides;
