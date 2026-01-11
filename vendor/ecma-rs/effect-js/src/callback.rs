@@ -58,6 +58,43 @@ pub fn callsite_info_for_args(
   }
 }
 
+pub fn eval_callsite_info_for_args(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  kb: &KnowledgeBase,
+) -> crate::eval::CallSiteInfo {
+  let Some(body_ref) = lowered.body(body) else {
+    return crate::eval::CallSiteInfo::default();
+  };
+  let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
+    return crate::eval::CallSiteInfo::default();
+  };
+  let callback_expr = match &expr.kind {
+    ExprKind::Call(call) => call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { callback, .. }
+    | ExprKind::ArrayFilter { callback, .. }
+    | ExprKind::ArrayReduce { callback, .. }
+    | ExprKind::ArrayFind { callback, .. }
+    | ExprKind::ArrayEvery { callback, .. }
+    | ExprKind::ArraySome { callback, .. } => Some(*callback),
+    _ => None,
+  };
+
+  let Some(callback_expr) = callback_expr else {
+    return crate::eval::CallSiteInfo::default();
+  };
+  let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
+
+  crate::eval::CallSiteInfo {
+    callback_purity: callback.map(|cb| cb.purity),
+    callback_effects: callback.map(|cb| cb.effects),
+    callback_uses_index: callback.map(|cb| cb.uses_index).unwrap_or(false),
+    callback_uses_array: callback.map(|cb| cb.uses_array).unwrap_or(false),
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssocType {
   Boolean,
@@ -1028,6 +1065,23 @@ mod tests {
     assert_eq!(info.callback_is_pure, Some(true));
     assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn eval_callsite_info_includes_callback_effects_and_purity() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i, a) => a);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = eval_callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_purity, Some(Purity::Pure));
+    assert_eq!(info.callback_effects, Some(EffectSet::empty()));
+    assert!(!info.callback_uses_index);
+    assert!(info.callback_uses_array);
   }
 
   #[test]

@@ -26,7 +26,9 @@ pub mod typed;
 pub use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
 
 pub use api::ApiId;
-pub use callback::{analyze_inline_callback, callsite_info_for_args, CallbackInfo};
+pub use callback::{
+  analyze_inline_callback, callsite_info_for_args, eval_callsite_info_for_args, CallbackInfo,
+};
 pub use api_use::{resolve_api_use, ApiUseKind, ResolvedApiUse};
 pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
