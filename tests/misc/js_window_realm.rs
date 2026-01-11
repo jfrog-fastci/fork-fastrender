@@ -3975,3 +3975,110 @@ fn window_response_clone_throws_when_body_used() -> Result<()> {
   assert_eq!(clone_error, "TypeError");
   Ok(())
 }
+
+#[test]
+fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200),
+  );
+  let mut host = host_state_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  if let Err(err) = exec_script_in_window_host(
+    &mut host,
+    r#"
+  globalThis.__events = "";
+  globalThis.__status = 0;
+  globalThis.__text = "";
+  const xhr = new XMLHttpRequest();
+  xhr.onreadystatechange = () => { globalThis.__events += "rs:" + xhr.readyState + ","; };
+  xhr.onload = () => { globalThis.__events += "load,"; };
+  xhr.onerror = () => { globalThis.__events += "error,"; };
+  xhr.onloadend = () => { globalThis.__events += "loadend,"; };
+  xhr.withCredentials = true;
+  xhr.open("GET", "https://example.com/data", false);
+  xhr.send();
+  globalThis.__status = xhr.status;
+  globalThis.__text = xhr.responseText;
+  "#,
+  ) {
+    let realm = host.window_mut();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    return Err(Error::Other(format_vm_error(heap, err)));
+  }
+
+  let (events, status, text) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let events = get_data_prop(&mut scope, global, "__events");
+    let status = get_data_prop(&mut scope, global, "__status");
+    let text = get_data_prop(&mut scope, global, "__text");
+    (
+      get_string(scope.heap(), events),
+      status,
+      get_string(scope.heap(), text),
+    )
+  };
+
+  assert_eq!(events, "rs:1,rs:4,load,loadend,");
+  assert_eq!(status, Value::Number(200.0));
+  assert_eq!(text, "hello");
+  assert_eq!(
+    fetcher.last_request_credentials_mode(),
+    Some(FetchCredentialsMode::Include),
+    "expected XHR withCredentials=true to map to FetchCredentialsMode::Include"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_xhr_open_undefined_async_defaults_to_true() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = host_state_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script_in_event_loop(
+      event_loop,
+      r#"
+  globalThis.__log = "";
+  const xhr = new XMLHttpRequest();
+  xhr.onloadend = () => { globalThis.__log += "loadend"; };
+  xhr.open("GET", "https://example.com/data", undefined);
+  xhr.send();
+  globalThis.__log += "after_send";
+  "#,
+    )?;
+    Ok(())
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let log = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let value = get_data_prop(&mut scope, global, "__log");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(log, "after_sendloadend");
+  Ok(())
+}

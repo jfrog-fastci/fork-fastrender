@@ -18,8 +18,8 @@ use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
 use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use crate::resource::web_fetch::WebFetchLimits;
 use crate::resource::{
-  origin_from_url, DocumentOrigin, FetchDestination, FetchRequest, FetchedResource, HttpRequest,
-  ReferrerPolicy, ResourceFetcher,
+  origin_from_url, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
+  FetchedResource, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use http::StatusCode;
 use std::char::decode_utf16;
@@ -120,6 +120,7 @@ struct XhrState {
   status: u16,
   status_text: String,
   with_credentials: bool,
+  async_flag: bool,
 
   request: Option<RequestSnapshot>,
   // Monotonic counter incremented for each `send()`. Used to ignore stale tasks.
@@ -141,6 +142,7 @@ impl Default for XhrState {
       status: 0,
       status_text: String::new(),
       with_credentials: false,
+      async_flag: true,
       request: None,
       request_seq: 0,
       send_in_progress: false,
@@ -643,13 +645,12 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
 
   let method_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let url_val = args.get(1).copied().unwrap_or(Value::Undefined);
-  let async_val = args.get(2).copied().unwrap_or(Value::Bool(true));
-  let async_flag = scope.heap().to_boolean(async_val)?;
-  if !async_flag {
-    return Err(VmError::Unimplemented(
-      "XMLHttpRequest.open async=false is not implemented",
-    ));
-  }
+  // WebIDL: `open(..., optional boolean async = true, ...)` => `undefined` uses the default.
+  let async_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  let async_flag = match async_val {
+    Value::Undefined => true,
+    other => scope.heap().to_boolean(other)?,
+  };
 
   let method = to_rust_string_limited(scope.heap_mut(), method_val, XHR_METHOD_MAX_BYTES, XHR_METHOD_TOO_LONG_ERROR)?;
   let url_input =
@@ -673,6 +674,7 @@ fn xhr_open_native<Host: WindowRealmHost + 'static>(
     xhr.response_text.clear();
     xhr.send_in_progress = false;
     xhr.aborted = false;
+    xhr.async_flag = async_flag;
     xhr.request = Some(RequestSnapshot {
       method,
       url,
@@ -755,10 +757,10 @@ fn xhr_set_request_header_native(
 }
 
 fn xhr_send_native<Host: WindowRealmHost + 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -803,14 +805,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     return Err(VmError::TypeError(XHR_BODY_TOO_LONG_ERROR));
   }
 
-  let Some(event_loop) = current_event_loop_mut::<Host>() else {
-    return Err(VmError::TypeError(
-      "XMLHttpRequest.send called without an active EventLoop",
-    ));
-  };
-
   // Snapshot request data and transition to "in-flight" under the env lock.
-  let (request_seq, request) = with_env_state_mut(env_id, |state| {
+  let (request_seq, request, async_flag, credentials_mode) = with_env_state_mut(env_id, |state| {
     let xhr = state
       .xhrs
       .get_mut(&xhr_id)
@@ -818,6 +814,12 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     if xhr.ready_state != XHR_OPENED || xhr.send_in_progress {
       return Err(VmError::TypeError("XMLHttpRequest.send invalid state"));
     }
+    let credentials_mode = if xhr.with_credentials {
+      FetchCredentialsMode::Include
+    } else {
+      FetchCredentialsMode::SameOrigin
+    };
+    let async_flag = xhr.async_flag;
     let mut req = xhr
       .request
       .clone()
@@ -828,8 +830,99 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     xhr.aborted = false;
     xhr.request_seq = xhr.request_seq.saturating_add(1);
     let seq = xhr.request_seq;
-    Ok((seq, req))
+    Ok((seq, req, async_flag, credentials_mode))
   })?;
+
+  if !async_flag {
+    // Synchronous XHR: run the fetch inline and dispatch events synchronously. This keeps FastRender
+    // compatible with scripts that still rely on `open(..., false)`.
+    let fetch_req = {
+      let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch)
+        .with_credentials_mode(credentials_mode);
+      if let Some(referrer) = document_url.as_deref() {
+        fr = fr.with_referrer_url(referrer);
+      }
+      if let Some(origin) = document_origin.as_ref() {
+        fr = fr.with_client_origin(origin);
+      }
+      fr = fr.with_referrer_policy(referrer_policy);
+      fr
+    };
+
+    let http_req = HttpRequest {
+      fetch: fetch_req,
+      method: &request.method,
+      redirect: crate::resource::web_fetch::RequestRedirect::Follow,
+      headers: request.headers.as_slice(),
+      body: request.body.as_deref(),
+    };
+
+    let result: crate::error::Result<FetchedResource> = fetcher.fetch_http_request(http_req);
+
+    let mut is_error = false;
+    let mut status: u16 = 0;
+    let mut status_text: String = String::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    match result {
+      Ok(res) => {
+        bytes = res.bytes;
+        if bytes.len() > limits.max_response_body_bytes {
+          is_error = true;
+        } else {
+          status = res.status.unwrap_or(200);
+          status_text = StatusCode::from_u16(status)
+            .ok()
+            .and_then(|s| s.canonical_reason())
+            .unwrap_or("")
+            .to_string();
+          if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
+            status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
+          }
+        }
+      }
+      Err(_) => {
+        is_error = true;
+      }
+    }
+
+    let should_dispatch = with_env_state_mut(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get_mut(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      xhr.send_in_progress = false;
+      xhr.ready_state = XHR_DONE;
+      if is_error {
+        xhr.status = 0;
+        xhr.status_text.clear();
+        xhr.response_bytes.clear();
+        xhr.response_text.clear();
+      } else {
+        xhr.status = status;
+        xhr.status_text = status_text;
+        xhr.response_text = String::from_utf8_lossy(&bytes).to_string();
+        xhr.response_bytes = bytes;
+      }
+      Ok(true)
+    })?;
+
+    if !should_dispatch {
+      return Ok(Value::Undefined);
+    }
+
+    let outcome_event: &'static str = if is_error { "error" } else { "load" };
+    let events = ["readystatechange", outcome_event, "loadend"];
+    for event_type in events {
+      dispatch_xhr_event(vm, scope, host, hooks, xhr_obj, event_type)?;
+    }
+    return Ok(Value::Undefined);
+  }
+
+  let Some(event_loop) = current_event_loop_mut::<Host>() else {
+    return Err(VmError::TypeError(
+      "XMLHttpRequest.send called without an active EventLoop",
+    ));
+  };
 
   // Keep the wrapper alive until the final `loadend`/`abort` event runs.
   let root = scope.heap_mut().add_root(Value::Object(xhr_obj))?;
@@ -857,7 +950,8 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
     }
 
     let fetch_req = {
-      let mut fr = FetchRequest::new(&request.url, FetchDestination::Fetch);
+      let mut fr =
+        FetchRequest::new(&request.url, FetchDestination::Fetch).with_credentials_mode(credentials_mode);
       if let Some(referrer) = document_url.as_deref() {
         fr = fr.with_referrer_url(referrer);
       }
