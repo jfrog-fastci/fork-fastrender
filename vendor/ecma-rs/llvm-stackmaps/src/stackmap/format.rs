@@ -107,6 +107,11 @@ pub struct LiveOut {
 #[derive(Debug, Clone)]
 pub struct StackMapRecord {
     /// StackMap record / patchpoint ID.
+    ///
+    /// **Important:** LLVM does **not** guarantee this ID is unique. LLVM 18 can emit multiple
+    /// records with the same ID (e.g. multiple statepoints inside one function).
+    ///
+    /// The runtime lookup key is [`StackMapRecord::callsite_pc`] (the return address).
     pub id: u64,
     /// Byte offset from function start.
     pub instruction_offset: u32,
@@ -132,4 +137,3 @@ pub struct Callsite {
     pub pc: u64,
     pub record_index: usize,
 }
-
