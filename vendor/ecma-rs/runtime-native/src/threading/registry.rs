@@ -315,6 +315,13 @@ pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
 
 /// Unregister the current thread from the global registry.
 pub fn unregister_current_thread() {
+  // If a stop-the-world request is active, enter the safepoint before
+  // unregistering. This prevents a mutator from "disappearing" from the thread
+  // registry mid-STW, which could otherwise allow GC to proceed without
+  // scanning its stack.
+  if current_thread_state().is_some() {
+    safepoint::rt_gc_safepoint();
+  }
   clear_tls_thread_registration();
 }
 

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 #[test]
 fn thread_attach_detach_registry_and_tls() {
+  let _rt = runtime_native::test_util::TestRuntimeGuard::new();
   let n = 8usize;
   let runtime = Arc::new(Runtime::new());
 
@@ -61,6 +62,7 @@ fn thread_attach_detach_registry_and_tls() {
 
 #[test]
 fn stop_the_world_blocks_attach() {
+  let _rt = runtime_native::test_util::TestRuntimeGuard::new();
   let runtime = Arc::new(Runtime::new());
 
   let guard = runtime.attach_current_thread().expect("attach main");
@@ -98,5 +100,61 @@ fn stop_the_world_blocks_attach() {
   handle.join().unwrap();
 
   drop(guard);
+  assert_eq!(runtime.thread_count(), 0);
+}
+
+#[test]
+fn global_stop_the_world_does_not_deadlock_thread_detach() {
+  let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+  let runtime = Arc::new(Runtime::new());
+
+  // Register the main thread as a GC mutator so the global stop-the-world
+  // coordinator will wait for it.
+  runtime_native::rt_thread_init(0);
+
+  let guard = runtime.attach_current_thread().expect("attach main");
+
+  let (tx_epoch, rx_epoch) = mpsc::channel();
+  let (tx_go, rx_go) = mpsc::channel();
+  let (tx_stopped, rx_stopped) = mpsc::channel();
+
+  let handle = thread::spawn(move || {
+    // Register the coordinator thread so `rt_gc_wait_for_world_stopped_timeout`
+    // will skip it when checking for quiescence.
+    runtime_native::rt_thread_init(3);
+
+    let stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+    tx_epoch.send(stop_epoch).unwrap();
+
+    // Wait until the main thread is about to detach (and therefore will enter a
+    // safepoint if needed).
+    rx_go.recv().unwrap();
+
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_secs(2));
+    runtime_native::rt_gc_resume_world();
+    runtime_native::rt_thread_deinit();
+    tx_stopped.send(stopped).unwrap();
+  });
+
+  // Wait for the stop-the-world request to be active.
+  let _stop_epoch = rx_epoch.recv().unwrap();
+  tx_go.send(()).unwrap();
+
+  // Dropping the guard must not deadlock even if a global STW is active. The
+  // detach path should cooperate by entering the safepoint instead of blocking
+  // blindly.
+  drop(guard);
+
+  runtime_native::rt_thread_deinit();
+
+  let stopped = rx_stopped
+    .recv_timeout(Duration::from_secs(3))
+    .expect("coordinator thread should report STW result");
+  assert!(
+    stopped,
+    "world did not reach safepoint in time; thread detach likely blocked without acknowledging STW"
+  );
+
+  handle.join().unwrap();
   assert_eq!(runtime.thread_count(), 0);
 }

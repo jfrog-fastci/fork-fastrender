@@ -63,9 +63,13 @@ impl Runtime {
     }
 
     // Avoid mutating the thread registry while a stop-the-world safepoint is in
-    // progress. This is a placeholder until the per-runtime registry is wired
-    // into the GC's own coordinator.
-    crate::threading::safepoint::wait_while_stop_the_world();
+    // progress.
+    //
+    // Important: use the *cooperative* safepoint poll instead of
+    // `wait_while_stop_the_world`. The current thread may itself be a registered
+    // mutator, in which case blocking without first acknowledging the safepoint
+    // request could deadlock the STW coordinator.
+    crate::threading::safepoint_poll();
 
     // Prevent attach/detach while a stop-the-world phase is active.
     let _world = self.world_lock.read();
@@ -108,8 +112,9 @@ impl Runtime {
     }
 
     // Avoid mutating the thread registry while a stop-the-world safepoint is in
-    // progress. This blocks detach until GC resumes.
-    crate::threading::safepoint::wait_while_stop_the_world();
+    // progress. See `attach_current_thread_raw` for why we use the cooperative
+    // safepoint poll here.
+    crate::threading::safepoint_poll();
 
     // Prevent detach while a stop-the-world phase is active.
     let _world = self.world_lock.read();
