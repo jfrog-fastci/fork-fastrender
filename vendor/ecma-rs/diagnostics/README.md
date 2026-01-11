@@ -35,7 +35,7 @@ repo-wide policy and registry):
 - `TN####`: `typecheck-ts` strict-native diagnostics
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)
 - `OPT####`: `optimize-js`
-- `MINIFYTS####`: `minify-js` TypeScript erasure/minification
+- `MINIFYTS####`: `ts-erase` TypeScript erasure/lowering
 - `MINIFY####`: minify tooling (e.g. benchmarks)
 - `EMIT####`: `emit-js` emitter
 - `EFF####`: `effect-js` effect inference

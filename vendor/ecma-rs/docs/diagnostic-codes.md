@@ -53,8 +53,7 @@ prefixes for planned crates) and where they come from.
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
-| `VMJS####` | `vm-js` | JavaScript interpreter diagnostics (kept for other projects; not used by the native toolchain). |
-| `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
+| `MINIFYTS####` | `ts-erase` | TypeScript erasure/lowering diagnostics. |
 | `MINIFY####` | `minify-js` tooling | Currently used by the benchmark harness (`bench/minify-js`). |
 | `CONF####` | `parse-js` tooling | Parser conformance runner diagnostics. |
 | `T262####` | `test262` tooling | test262 runner diagnostics. |
