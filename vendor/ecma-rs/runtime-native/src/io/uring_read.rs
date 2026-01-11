@@ -21,7 +21,9 @@ use crate::gc::{GcHeap, RootHandle, OBJ_HEADER_SIZE};
 use crate::threading;
 use crate::threading::ThreadKind;
 
-use super::limits::{IoCounters, IoLimitError, IoLimits, IoLimiter, IoPermit};
+use super::limits::{IoLimitError, IoLimits, IoLimiter, IoPermit};
+#[cfg(test)]
+use super::limits::IoCounters;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
