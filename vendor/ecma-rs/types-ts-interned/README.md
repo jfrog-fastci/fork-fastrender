@@ -42,9 +42,8 @@ From the repo root:
 # one-time
 bash scripts/cargo_agent.sh install cargo-fuzz
 
-# AddressSanitizer (the default `cargo-fuzz` sanitizer) reserves a very large virtual address space
-# for shadow memory. When running through `scripts/cargo_agent.sh`, lift the default RLIMIT_AS cap:
-export FASTR_CARGO_LIMIT_AS=unlimited
+# Note: `cargo-fuzz` defaults to AddressSanitizer, which reserves a very large virtual address space
+# for shadow memory. `scripts/cargo_agent.sh` automatically bumps RLIMIT_AS for `fuzz` subcommands.
 
 # run the fuzzer
 bash scripts/cargo_agent.sh fuzz run type_graph

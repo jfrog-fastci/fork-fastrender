@@ -40,9 +40,9 @@ bash scripts/cargo_agent.sh install cargo-fuzz
 Quick smoke runs:
 
 ```
-# AddressSanitizer needs a very large virtual address space for its shadow
-# memory mapping, so disable the default RLIMIT_AS cap while fuzzing.
-export FASTR_CARGO_LIMIT_AS=unlimited
+# `cargo-fuzz` defaults to AddressSanitizer, which reserves a very large virtual address space for
+# shadow memory. `scripts/cargo_agent.sh` automatically bumps RLIMIT_AS for `fuzz` subcommands; set
+# `FASTR_FUZZ_LIMIT_AS` / `FASTR_CARGO_LIMIT_AS` if you need to override it.
 
 bash scripts/cargo_agent.sh fuzz run css_parser -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run selectors fuzz/corpus/selectors tests/fuzz_corpus -- -max_total_time=10

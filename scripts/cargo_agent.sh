@@ -53,6 +53,7 @@ fi
 #   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
 #   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
+#   FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
 #   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #   FASTR_RUST_TEST_THREADS  Default `RUST_TEST_THREADS` for `cargo test` (default: min(nproc, 32))
 #
@@ -77,6 +78,7 @@ Environment:
   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
+  FASTR_FUZZ_LIMIT_AS      Address-space cap for `scripts/cargo_agent.sh fuzz ...` runs (default: 32T)
   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
   FASTR_RUST_TEST_THREADS  Default RUST_TEST_THREADS for `cargo test` (default: min(nproc, 32))
 
@@ -468,6 +470,11 @@ if [[ "${limit_as_defaulted}" -eq 1 ]]; then
   # address-space purposes.
   if [[ "${subcmd}" == "xtask" ]]; then
     limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
+  elif [[ "${subcmd}" == "fuzz" ]]; then
+    # `cargo-fuzz` defaults to AddressSanitizer, which reserves a very large amount of virtual
+    # address space for shadow memory (~15TiB on x86_64). The default RLIMIT_AS (64G) prevents the
+    # fuzzer from starting, so bump the default cap for fuzz runs unless the caller overrides it.
+    limit_as="${FASTR_FUZZ_LIMIT_AS:-32T}"
   elif [[ "${subcmd}" == "run" ]]; then
     for ((i = subcmd_pos + 1; i < ${#argv[@]}; i++)); do
       if [[ "${argv[$i]}" == "--" ]]; then
