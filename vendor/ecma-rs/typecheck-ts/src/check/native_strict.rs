@@ -1,7 +1,7 @@
 use crate::codes;
 use crate::BodyCheckResult;
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
-use hir_js::{Body, BodyKind, ExprKind, Literal, NameInterner, ObjectKey, PatKind, StmtKind};
+use hir_js::{Body, ExprKind, Literal, NameInterner, ObjectKey, PatKind, StmtKind};
 use std::collections::{HashMap, HashSet};
 use types_ts_interned::{RelateCtx, TypeId, TypeKind, TypeStore};
 
@@ -203,11 +203,6 @@ pub fn validate_native_strict_body(
   }
 
   let strict_null_checks = relate.options.strict_null_checks;
-  let body_is_non_arrow_function = matches!(body.kind, BodyKind::Function)
-    && body
-      .function
-      .as_ref()
-      .is_some_and(|function| !function.is_arrow);
 
   for (idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
@@ -302,6 +297,41 @@ pub fn validate_native_strict_body(
           ));
         }
       }
+      ExprKind::Object(obj) => {
+        for prop in &obj.properties {
+          let key = match prop {
+            hir_js::ObjectProperty::KeyValue { key, .. } => key,
+            hir_js::ObjectProperty::Getter { key, .. } => key,
+            hir_js::ObjectProperty::Setter { key, .. } => key,
+            hir_js::ObjectProperty::Spread(_) => continue,
+          };
+
+          let ObjectKey::Computed(key_expr) = key else {
+            continue;
+          };
+          let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+            continue;
+          };
+
+          let key_is_literal = matches!(
+            &key.kind,
+            ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
+          );
+          if key_is_literal {
+            continue;
+          }
+
+          let span = result
+            .expr_spans
+            .get(key_expr.0 as usize)
+            .copied()
+            .unwrap_or(key.span);
+          diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
+            "computed property access requires a constant key when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
+        }
+      }
       ExprKind::TypeAssertion {
         expr: inner,
         const_assertion,
@@ -370,7 +400,7 @@ pub fn validate_native_strict_body(
         }
       }
       ExprKind::Ident(name) => {
-        if body_is_non_arrow_function && *name == arguments_name {
+        if *name == arguments_name {
           let span = result
             .expr_spans
             .get(idx)
@@ -378,6 +408,46 @@ pub fn validate_native_strict_body(
             .unwrap_or(expr.span);
           diagnostics.push(codes::NATIVE_STRICT_ARGUMENTS.error(
             "`arguments` is forbidden when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
+        }
+      }
+      _ => {}
+    }
+  }
+
+  for pat in &body.pats {
+    match &pat.kind {
+      PatKind::Ident(name) => {
+        if *name == arguments_name {
+          diagnostics.push(codes::NATIVE_STRICT_ARGUMENTS.error(
+            "`arguments` is forbidden when `native_strict` is enabled",
+            Span::new(file, pat.span),
+          ));
+        }
+      }
+      PatKind::Object(obj) => {
+        for prop in &obj.props {
+          let ObjectKey::Computed(key_expr) = &prop.key else {
+            continue;
+          };
+          let Some(key) = body.exprs.get(key_expr.0 as usize) else {
+            continue;
+          };
+          let key_is_literal = matches!(
+            &key.kind,
+            ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
+          );
+          if key_is_literal {
+            continue;
+          }
+          let span = result
+            .expr_spans
+            .get(key_expr.0 as usize)
+            .copied()
+            .unwrap_or(key.span);
+          diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
+            "computed property access requires a constant key when `native_strict` is enabled",
             Span::new(file, span),
           ));
         }

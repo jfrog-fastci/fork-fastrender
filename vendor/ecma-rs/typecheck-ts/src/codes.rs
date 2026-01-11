@@ -786,14 +786,14 @@ pub const NATIVE_STRICT_WITH: Code = Code::new(
 
 /// TC4004: `arguments` is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `arguments` identifier.
+/// - Primary span: the `arguments` identifier (use site or binding site).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_ARGUMENTS: Code = Code::new(
   "TC4004",
   "arguments is forbidden in native-strict mode",
-  "`arguments` identifier expression",
-  &["primary: `arguments` identifier"],
+  "`arguments` identifier expression or binding",
+  &["primary: `arguments` identifier expression or binding"],
   &[],
 );
 
@@ -824,10 +824,10 @@ pub const NATIVE_STRICT_NONNULL_ASSERTION: Code = Code::new(
   &[],
 );
 
-/// TC4007: Computed property access requires a constant key when `native_strict`
-/// is enabled.
+/// TC4007: Computed property access (or computed property names) require a
+/// constant key when `native_strict` is enabled.
 ///
-/// - Primary span: the computed key expression (`obj[key]` highlights `key`).
+/// - Primary span: the computed key expression (e.g. `obj[key]` highlights `key`).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_COMPUTED_PROPERTY_KEY: Code = Code::new(

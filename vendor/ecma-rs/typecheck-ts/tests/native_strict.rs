@@ -127,6 +127,22 @@ fn native_strict_bans_arguments_in_non_arrow_function() {
 }
 
 #[test]
+fn native_strict_bans_arguments_bindings() {
+  let source = "function f(arguments: number) { return 0; }";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("arguments").expect("arguments") as u32;
+  let span = TextRange::new(start, start + "arguments".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_ARGUMENTS.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict arguments diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_unsafe_type_assertions() {
   let source = "const x = {} as { a: number };";
   let (diagnostics, file_id) = check(source, true);
@@ -162,10 +178,10 @@ fn native_strict_bans_non_null_assertions_on_maybe_nullish_values() {
 #[test]
 fn native_strict_bans_non_constant_computed_member_keys() {
   let source = r#"
-const obj: { [key: string]: number } = { a: 1 };
-const k = 'a';
-obj[k];
-obj["a"];
+ const obj: { [key: string]: number } = { a: 1 };
+ const k = 'a';
+ obj[k];
+ obj["a"];
 "#;
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("obj[k]").expect("obj[k]") as u32 + 4;
@@ -181,6 +197,22 @@ obj["a"];
   );
   assert_eq!(computed[0].primary.file, file_id);
   assert_eq!(computed[0].primary.range, span);
+}
+
+#[test]
+fn native_strict_bans_non_constant_computed_object_literal_keys() {
+  let source = "const key = \"a\"; const obj = { [key]: 1 };";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("[key]").expect("[key]") as u32 + 1;
+  let span = TextRange::new(start, start + "key".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected computed-key diagnostic at {span:?}, got {diagnostics:?}"
+  );
 }
 
 #[test]
