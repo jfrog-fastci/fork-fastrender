@@ -545,9 +545,7 @@ fn container_query_matches(
       eval_style_query(style_query, container, container_parent, ctx)
     }
     ContainerQuery::ScrollState(scroll_query) => {
-      if !scroll_state_query_has_known_feature(scroll_query) {
-        QueryResult::Unknown
-      } else if !container.container_type.supports_scroll_state() {
+      if !container.container_type.supports_scroll_state() {
         QueryResult::False
       } else {
         eval_scroll_state_query(scroll_query, container)
@@ -587,7 +585,7 @@ fn container_query_matches(
       result
     }
     ContainerQuery::Or(list) => {
-      let mut result = QueryResult::False;
+      let mut saw_unknown = false;
       for inner in list {
         match container_query_matches(
           container_id,
@@ -598,15 +596,16 @@ fn container_query_matches(
           guard,
           memo,
         ) {
-          QueryResult::True => {
-            result = QueryResult::True;
-            break;
-          }
-          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::True => return QueryResult::True,
+          QueryResult::Unknown => saw_unknown = true,
           QueryResult::False => {}
         }
       }
-      result
+      if saw_unknown {
+        QueryResult::Unknown
+      } else {
+        QueryResult::False
+      }
     }
   };
 
@@ -1633,17 +1632,6 @@ fn eval_style_query(
       }
       result
     }
-  }
-}
-
-fn scroll_state_query_has_known_feature(query: &ScrollStateQueryExpr) -> bool {
-  match query {
-    ScrollStateQueryExpr::Unknown => false,
-    ScrollStateQueryExpr::Feature(feature) => !matches!(feature, ScrollStateFeature::Unknown { .. }),
-    ScrollStateQueryExpr::Not(inner) => scroll_state_query_has_known_feature(inner),
-    ScrollStateQueryExpr::And(list) | ScrollStateQueryExpr::Or(list) => list
-      .iter()
-      .any(scroll_state_query_has_known_feature),
   }
 }
 
