@@ -354,9 +354,11 @@ fn cmd_run(
     }
   };
 
-  let code = status.code().unwrap_or(1);
-  println!("{code}");
-  ExitCode::SUCCESS
+  if status.success() {
+    ExitCode::SUCCESS
+  } else {
+    ExitCode::from(status.code().unwrap_or(1) as u8)
+  }
 }
 
 fn collect_check_diagnostics(program: &Program, entry_file: FileId) -> Vec<Diagnostic> {

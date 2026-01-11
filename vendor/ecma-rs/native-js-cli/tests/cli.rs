@@ -99,7 +99,7 @@ fn emit_llvm_ir_contains_symbols() {
 }
 
 #[test]
-fn run_prints_exit_code() {
+fn run_exits_with_program_exit_code() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
   fs::write(&entry, "export function main(): number { return 42; }\n").unwrap();
@@ -111,8 +111,8 @@ fn run_prints_exit_code() {
     .arg("--")
     .arg("--dummy-arg")
     .assert()
-    .success()
-    .stdout("42\n");
+    .failure()
+    .code(42);
 }
 
 #[test]

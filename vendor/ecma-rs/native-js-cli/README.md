@@ -237,11 +237,11 @@ It expects the entry file to export a `main()` function.
 Preflight-check the entry file (typecheck + strict subset validation + entrypoint checks), without
 producing an executable:
 
-```bash
-# From the repo root:
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
-  check path/to/entry.ts
-```
+ ```bash
+ # From the repo root:
+ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+   check path/to/entry.ts
+ ```
 
 > Note: `native-js check` performs the same typechecking + subset validation as
 > `native-js build`/`run`, but stops before producing/linking an executable.
@@ -268,16 +268,7 @@ Also emit LLVM IR (for debugging):
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
-  --emit llvm-ir --emit-path /tmp/out.ll \
-  build path/to/entry.ts -o /tmp/out
-```
-
-Also emit the intermediate object file:
-
-```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
-  --emit obj --emit-path /tmp/out.o \
-  build path/to/entry.ts -o /tmp/out
+  build path/to/entry.ts -o /tmp/out --emit-ir /tmp/out.ll
 ```
 
 Run immediately:
@@ -298,7 +289,8 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 
 - `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
   for module resolution.
-- `--emit=llvm-ir|bc|obj|asm --emit-path <PATH>`: write an intermediate artifact.
+- `build --emit-ir <PATH.ll>`: also write the emitted LLVM IR (for debugging).
+- `emit-ir -o <PATH.ll>`: write LLVM IR without producing an executable.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
 - `--debug`: best-effort debug build (passes `-g` to the system linker).
 
@@ -309,7 +301,7 @@ renders source-context diagnostics (file/line caret spans) from:
 
 - `typecheck-ts` (TypeScript type errors)
 - `native-js` validators (`NJS####` codes):
-  - strict subset (`native_js::validate::validate_strict_subset`): `NJS0009` / `NJS0010`
+  - backend subset (`native_js::validate::validate_strict_subset`): `NJS0009` / `NJS0010`
   - entrypoint checks (`native_js::strict::entrypoint`): `NJS0108..NJS0111`
 - `native-js` HIR-based code generation (when it fails)
 
@@ -327,7 +319,7 @@ error[NJS0009]: property access is not supported by native-js yet
 
 - The HIR-based backend is still extremely small (enough for early smoke tests).
   `native-js-cli` remains the better tool for builtin/lowering debugging.
-- `build`/`run` enforce the current native backend subset via
+- `check`/`build`/`run` enforce the current native backend subset via
   `native_js::validate::validate_strict_subset` (`NJS0009` / `NJS0010`), which
   currently rejects many common JS/TS constructs (objects/arrays, property
   access, async/await, etc). See [`native-js/README.md`](../native-js/README.md)
