@@ -49,5 +49,9 @@ buffer provisioning):
 This matches the crate's **policy B**: explicit shutdown/drain is required (drive CQE processing and
 cancel as needed) before dropping the driver.
 
+`runtime-native`'s Linux `io::uring_read::UringDriver` follows the same policy:
+callers must use its explicit `shutdown_and_drain()` API before drop. Dropping a `UringDriver` with
+in-flight ops is a bug (debug panic / release safe-by-leak).
+
 When the `debug_stability` feature is enabled, extra assertions verify that SQE-referenced pointers
 are not dropped before CQE processing.
