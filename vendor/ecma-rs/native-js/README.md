@@ -229,11 +229,15 @@ println!(\"wrote {}\", artifact.path.display());
 > multi-file ES module programs: it codegens the entry file’s exported `main()`
 > plus transitive runtime `import` dependencies (including side-effect-only
 > imports; type-only imports/re-exports are ignored), running module initializers in dependency order (matching source
-> import order for sibling imports). Re-export statements (`export { foo } from`,
+> request order for sibling imports/re-exports). Re-export statements (`export { foo } from`,
 > `export * from`) are included in the runtime dependency graph for module
 > initialization ordering, but the entrypoint itself must still be a local
-> `export function main()` in the entry file. Many import/export forms are still
-> not supported yet (e.g. default exports and namespace imports).
+> `export function main()` in the entry file.
+>
+> Type-only exports/re-exports do **not** trigger module evaluation (see the
+> `type_only_reexport_does_not_execute_module` integration test in `native-js-cli`). Cyclic runtime
+> module dependencies are rejected with `NJS0146`. Many import/export forms are still not supported
+> yet (e.g. default exports and namespace imports).
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by `native-js-cli --pipeline checked` and the `native-js`

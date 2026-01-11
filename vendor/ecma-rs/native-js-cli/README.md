@@ -446,7 +446,8 @@ imports can resolve through them.
 
 Type-only re-exports (e.g. `export { type T } from "./dep"`) are ignored for
 runtime (they are erased from JS output), so they do **not** execute the
-dependency module.
+dependency module (see the `type_only_reexport_does_not_execute_module`
+integration test).
 
 Module initializers run in dependency order (matching source request order for
 sibling imports/re-exports) before calling the entry file’s exported `main()`.
