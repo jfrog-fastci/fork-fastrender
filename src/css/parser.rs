@@ -660,6 +660,59 @@ fn parse_rule_list_with_context<'i, 't>(
   )
 }
 
+/// Parse a group rule's `{ ... }` contents.
+///
+/// At the top level, group rules like `@media`/`@supports` contain a nested rule list.
+/// When nested within a style rule's block (i.e. `parent_selectors` is present), CSS Nesting
+/// allows the group rule's block to contain both:
+/// - declarations that apply to the parent style rule under the group rule condition, and
+/// - nested rules that inherit the parent selector context.
+///
+/// Spec ref: CSS Nesting Module Level 1, "Nested Group Rules".
+fn parse_group_rule_contents<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  errors: &mut CssErrorCollector,
+  parent_selectors: Option<&SelectorList<FastRenderSelectorImpl>>,
+  css_source: &str,
+  media_ctx: Option<&MediaContext>,
+  media_query_cache: &mut Option<&mut MediaQueryCache>,
+  parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
+) -> std::result::Result<Vec<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
+  if let Some(parent_selectors) = parent_selectors {
+    let (declarations, nested_rules) = parse_style_block(
+      parser,
+      errors,
+      parent_selectors,
+      css_source,
+      media_ctx,
+      media_query_cache.as_deref_mut(),
+      parsed_media_query_list_cache,
+      namespace_state,
+    )?;
+    if declarations.is_empty() {
+      Ok(nested_rules)
+    } else {
+      Ok(vec![CssRule::Style(StyleRule {
+        selectors: parent_selectors.clone(),
+        declarations,
+        nested_rules,
+      })])
+    }
+  } else {
+    Ok(parse_rule_list_with_context(
+      parser,
+      errors,
+      None,
+      css_source,
+      media_ctx,
+      media_query_cache.as_deref_mut(),
+      parsed_media_query_list_cache,
+      namespace_state,
+    ))
+  }
+}
+
 /// Recover from a parse error by skipping to the next rule
 fn recover_from_error<'i, 't>(parser: &mut Parser<'i, 't>) {
   while !parser.is_exhausted() {
@@ -1280,16 +1333,16 @@ fn parse_media_rule<'i, 't>(
 
   // Parse the nested rules from the block we already matched.
   let nested_rules = parser.parse_nested_block(|nested_parser| {
-    Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+    parse_group_rule_contents(
       nested_parser,
       errors,
       parent_selectors,
       css_source,
       media_ctx,
-      media_query_cache.as_deref_mut(),
+      &mut media_query_cache,
       parsed_media_query_list_cache,
       namespace_state,
-    ))
+    )
   })?;
 
   Ok(Some(CssRule::Media(MediaRule {
@@ -1328,16 +1381,16 @@ fn parse_container_rule<'i, 't>(
 
   let mut media_query_cache = media_query_cache;
   let nested_rules = parser.parse_nested_block(|nested_parser| {
-    Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+    parse_group_rule_contents(
       nested_parser,
       errors,
       parent_selectors,
       css_source,
       media_ctx,
-      media_query_cache.as_deref_mut(),
+      &mut media_query_cache,
       parsed_media_query_list_cache,
       namespace_state,
-    ))
+    )
   })?;
 
   let Some(conditions) = parse_container_prelude(prelude) else {
@@ -2288,16 +2341,16 @@ fn parse_starting_style_rule<'i, 't>(
   parser.expect_curly_bracket_block()?;
   let mut media_query_cache = media_query_cache;
   let nested_rules = parser.parse_nested_block(|nested_parser| {
-    Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+    parse_group_rule_contents(
       nested_parser,
       errors,
       parent_selectors,
       css_source,
       media_ctx,
-      media_query_cache.as_deref_mut(),
+      &mut media_query_cache,
       parsed_media_query_list_cache,
       namespace_state,
-    ))
+    )
   })?;
 
   Ok(Some(CssRule::StartingStyle(StartingStyleRule {
@@ -2379,16 +2432,16 @@ fn parse_scope_rule<'i, 't>(
 
   let mut media_query_cache = media_query_cache;
   let nested_rules = parser.parse_nested_block(|nested_parser| {
-    Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+    parse_group_rule_contents(
       nested_parser,
       errors,
       parent_selectors,
       css_source,
       media_ctx,
-      media_query_cache.as_deref_mut(),
+      &mut media_query_cache,
       parsed_media_query_list_cache,
       namespace_state,
-    ))
+    )
   })?;
 
   Ok(Some(CssRule::Scope(ScopeRule {
@@ -2434,16 +2487,16 @@ fn parse_supports_rule<'i, 't>(
 
   let mut media_query_cache = media_query_cache;
   let rules = parser.parse_nested_block(|nested| {
-    Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+    parse_group_rule_contents(
       nested,
       errors,
       parent_selectors,
       css_source,
       media_ctx,
-      media_query_cache.as_deref_mut(),
+      &mut media_query_cache,
       parsed_media_query_list_cache,
       namespace_state,
-    ))
+    )
   })?;
   Ok(Some(CssRule::Supports(SupportsRule { condition, rules })))
 }
@@ -3070,16 +3123,16 @@ fn parse_layer_rule<'i, 't>(
   let rules = if saw_block {
     let mut media_query_cache = media_query_cache;
     parser.parse_nested_block(|nested| {
-      Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
+      parse_group_rule_contents(
         nested,
         errors,
         parent_selectors,
         css_source,
         media_ctx,
-        media_query_cache.as_deref_mut(),
+        &mut media_query_cache,
         parsed_media_query_list_cache,
         namespace_state,
-      ))
+      )
     })?
   } else {
     Vec::new()

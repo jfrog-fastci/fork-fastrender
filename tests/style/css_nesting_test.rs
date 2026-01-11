@@ -70,6 +70,26 @@ fn nested_rules_inside_media_inherit_parent_selector() {
 }
 
 #[test]
+fn nested_media_allows_declarations_in_group_rule_block() {
+  let css = ".wrap { color: red; @media (min-width: 500px) { color: blue; } }";
+  let sheet = parse_stylesheet(css).expect("stylesheet");
+  let dom = DomNode {
+    node_type: DomNodeType::Element {
+      tag_name: "div".into(),
+      namespace: HTML_NAMESPACE.to_string(),
+      attributes: vec![("class".into(), "wrap".into())],
+    },
+    children: vec![],
+  };
+
+  let narrow = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(320.0, 480.0));
+  assert_eq!(narrow.styles.color, Rgba::rgb(255, 0, 0));
+
+  let wide = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  assert_eq!(wide.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn nested_rule_order_follows_parent() {
   let css = ".item { color: red; & { color: rgb(0, 255, 0); } }";
   let sheet = parse_stylesheet(css).expect("stylesheet");
