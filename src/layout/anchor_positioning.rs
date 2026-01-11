@@ -34,10 +34,17 @@ pub(crate) struct AnchorBox {
   pub direction: Direction,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AnchorQueryContext {
+  pub query_parent_box_id: Option<usize>,
+  pub implicit_anchor_box_id: Option<usize>,
+}
+
 /// Lookup table mapping `anchor-name` identifiers (e.g. `--tooltip`) to anchor rectangles.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AnchorIndex {
   by_name: HashMap<String, HashMap<Option<usize>, AnchorBox>>,
+  by_box_id: HashMap<usize, AnchorBox>,
   scope_chain_by_box_id: HashMap<usize, Vec<ScopeEntry>>,
 }
 
@@ -45,6 +52,7 @@ impl AnchorIndex {
   pub(crate) fn new() -> Self {
     Self {
       by_name: HashMap::new(),
+      by_box_id: HashMap::new(),
       scope_chain_by_box_id: HashMap::new(),
     }
   }
@@ -110,7 +118,12 @@ impl AnchorIndex {
       .copied()
   }
 
+  pub(crate) fn get_anchor_by_box_id(&self, box_id: usize) -> Option<AnchorBox> {
+    self.by_box_id.get(&box_id).copied()
+  }
+
   pub(crate) fn insert_names_for_box(&mut self, box_id: usize, names: &[String], anchor: AnchorBox) {
+    self.by_box_id.entry(box_id).or_insert(anchor);
     let scope_chain = self
       .scope_chain_by_box_id
       .get(&box_id)
@@ -222,15 +235,15 @@ impl AnchorIndex {
         .insert(box_id, scope_stack.clone());
     }
     if let Some(style) = fragment.style.as_deref() {
-      self.insert_names_with_scopes(
-        &style.anchor_names,
-        AnchorBox {
-          rect: transformed_bounds,
-          writing_mode: style.writing_mode,
-          direction: style.direction,
-        },
-        scope_stack,
-      );
+      let anchor = AnchorBox {
+        rect: transformed_bounds,
+        writing_mode: style.writing_mode,
+        direction: style.direction,
+      };
+      if let Some(box_id) = box_id {
+        self.by_box_id.insert(box_id, anchor);
+      }
+      self.insert_names_with_scopes(&style.anchor_names, anchor, scope_stack);
     }
 
     let child_origin = parent_origin.translate(fragment.bounds.origin);

@@ -54,7 +54,7 @@ use crate::geometry::Size;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
-use crate::layout::anchor_positioning::AnchorIndex;
+use crate::layout::anchor_positioning::{AnchorIndex, AnchorQueryContext};
 use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
@@ -2794,7 +2794,7 @@ pub fn resolve_positioned_style(
     viewport,
     font_context,
     None,
-    None,
+    AnchorQueryContext::default(),
   )
 }
 
@@ -2808,7 +2808,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   viewport: Size,
   font_context: &FontContext,
   anchors: Option<&AnchorIndex>,
-  query_parent_box_id: Option<usize>,
+  anchor_query: AnchorQueryContext,
 ) -> PositionedStyle {
   let mut resolved = PositionedStyle::default();
   resolved.position = style.position;
@@ -2831,11 +2831,20 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let resolve_anchor_inset =
     |func: &crate::style::types::AnchorFunction, edge: InsetEdge| -> Option<f32> {
-    let anchor_name = func.name.as_deref().or_else(|| match &style.position_anchor {
-      crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
-      _ => None,
-    })?;
-    let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
+    let anchors = anchors?;
+    let anchor = if let Some(anchor_name) = func.name.as_deref() {
+      anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
+    } else {
+      match &style.position_anchor {
+        crate::style::types::PositionAnchor::Name(name) => {
+          anchors.get_anchor_for_query(name, anchor_query.query_parent_box_id)?
+        }
+        crate::style::types::PositionAnchor::Auto => {
+          anchors.get_anchor_by_box_id(anchor_query.implicit_anchor_box_id?)?
+        }
+        _ => return None,
+      }
+    };
     let anchor_rect = anchor.rect;
     let cb_rect = containing_block.rect;
 
@@ -2965,11 +2974,20 @@ pub(crate) fn resolve_positioned_style_with_anchors(
 
   let resolve_anchor_size =
     |func: &crate::style::types::AnchorSizeFunction| -> Option<f32> {
-      let anchor_name = func.name.as_deref().or_else(|| match &style.position_anchor {
-        crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
-        _ => None,
-      })?;
-      let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
+      let anchors = anchors?;
+      let anchor = if let Some(anchor_name) = func.name.as_deref() {
+        anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
+      } else {
+        match &style.position_anchor {
+          crate::style::types::PositionAnchor::Name(name) => {
+            anchors.get_anchor_for_query(name, anchor_query.query_parent_box_id)?
+          }
+          crate::style::types::PositionAnchor::Auto => {
+            anchors.get_anchor_by_box_id(anchor_query.implicit_anchor_box_id?)?
+          }
+          _ => return None,
+        }
+      };
       let rect = anchor.rect;
       let value = match func.axis {
         crate::style::types::AnchorSizeAxis::Width => rect.width(),
@@ -3184,7 +3202,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   viewport: Size,
   font_context: &FontContext,
   anchors: Option<&AnchorIndex>,
-  query_parent_box_id: Option<usize>,
+  anchor_query: AnchorQueryContext,
 ) -> Result<(PositionedStyle, AbsoluteLayoutResult), LayoutError> {
   const OVERFLOW_EPSILON: f32 = 0.01;
 
@@ -3674,17 +3692,22 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     style: &ComputedStyle,
     containing_block: &ContainingBlock,
     anchors: Option<&AnchorIndex>,
-    query_parent_box_id: Option<usize>,
+    anchor_query: AnchorQueryContext,
   ) -> Option<PositionAreaContext> {
     let tracks = style
       .position_area
       .resolve_tracks(style.writing_mode, style.direction)?;
 
-    let anchor_name = match &style.position_anchor {
-      crate::style::types::PositionAnchor::Name(name) => name.as_str(),
+    let anchors = anchors?;
+    let anchor = match &style.position_anchor {
+      crate::style::types::PositionAnchor::Name(name) => {
+        anchors.get_anchor_for_query(name, anchor_query.query_parent_box_id)?
+      }
+      crate::style::types::PositionAnchor::Auto => {
+        anchors.get_anchor_by_box_id(anchor_query.implicit_anchor_box_id?)?
+      }
       _ => return None,
     };
-    let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
     let anchor_rect = anchor.rect;
     let cb_rect = containing_block.rect;
 
@@ -3897,7 +3920,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   }
 
   let base_position_area =
-    resolve_position_area_context(base_style, containing_block, anchors, query_parent_box_id);
+    resolve_position_area_context(base_style, containing_block, anchors, anchor_query);
   let base_cb = base_position_area
     .as_ref()
     .map(|ctx| ctx.containing_block)
@@ -3909,7 +3932,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     viewport,
     font_context,
     anchors,
-    query_parent_box_id,
+    anchor_query,
   );
   let base_inline_auto = base_position_area
     .as_ref()
@@ -4035,7 +4058,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
 
     let position_area =
-      resolve_position_area_context(&trial_style, containing_block, anchors, query_parent_box_id);
+      resolve_position_area_context(&trial_style, containing_block, anchors, anchor_query);
     let trial_cb = position_area
       .as_ref()
       .map(|ctx| ctx.containing_block)
@@ -4047,7 +4070,7 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       viewport,
       font_context,
       anchors,
-      query_parent_box_id,
+      anchor_query,
     );
 
     let key = candidate_key(&trial_positioned, &trial_cb);

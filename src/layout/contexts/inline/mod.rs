@@ -274,6 +274,7 @@ struct PositionedChild {
   ///
   /// Used to resolve `anchor-scope` during `anchor()` lookup.
   parent_box_id: Option<usize>,
+  implicit_anchor_box_id: Option<usize>,
 }
 
 fn ensure_box_id(node: &BoxNode) -> usize {
@@ -892,11 +893,14 @@ impl InlineFormattingContext {
           abs_cb_stack.last().copied()
         };
         let anchor = self.create_static_position_anchor(child);
+        let implicit_anchor_box_id =
+          child.generated_pseudo.is_some().then_some(parent_box_id).flatten();
         positioned_children.push(PositionedChild {
           node: BoxNodeRef::new(child),
           box_id,
           containing_block_id,
           parent_box_id,
+          implicit_anchor_box_id,
         });
         current_items.push(anchor);
         whitespace.note_ignorable();
@@ -1875,11 +1879,14 @@ impl InlineFormattingContext {
             .iter()
             .filter(|desc| desc.style.position.is_absolutely_positioned())
           {
+            let implicit_anchor_box_id =
+              positioned_child.generated_pseudo.is_some().then_some(replaced_box_id);
             positioned_children.push(PositionedChild {
               node: BoxNodeRef::new(positioned_child),
               box_id: ensure_box_id(positioned_child),
               containing_block_id: Some(replaced_box_id),
               parent_box_id: replaced_parent_box_id,
+              implicit_anchor_box_id,
             });
           }
           self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
@@ -2118,11 +2125,14 @@ impl InlineFormattingContext {
           abs_cb_stack.last().copied()
         };
         let anchor = self.create_static_position_anchor(child);
+        let implicit_anchor_box_id =
+          child.generated_pseudo.is_some().then_some(parent_box_id).flatten();
         positioned_children.push(PositionedChild {
           node: BoxNodeRef::new(child),
           box_id,
           containing_block_id,
           parent_box_id,
+          implicit_anchor_box_id,
         });
         items.push(anchor);
         whitespace.note_ignorable();
@@ -3099,11 +3109,14 @@ impl InlineFormattingContext {
             .iter()
             .filter(|desc| desc.style.position.is_absolutely_positioned())
           {
+            let implicit_anchor_box_id =
+              positioned_child.generated_pseudo.is_some().then_some(replaced_box_id);
             positioned_children.push(PositionedChild {
               node: BoxNodeRef::new(positioned_child),
               box_id: ensure_box_id(positioned_child),
               containing_block_id: Some(replaced_box_id),
               parent_box_id: replaced_parent_box_id,
+              implicit_anchor_box_id,
             });
           }
           self.flush_pending_collapsible_space(whitespace, &mut items)?;
@@ -13802,6 +13815,7 @@ impl InlineFormattingContext {
           box_id,
           containing_block_id,
           parent_box_id,
+          implicit_anchor_box_id,
         } = *positioned_child;
         // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
         // current layout run. The tree is not moved while `layout_with_floats` executes.
@@ -13941,13 +13955,17 @@ impl InlineFormattingContext {
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: parent_box_id,
+          implicit_anchor_box_id,
+        };
         let positioned_style = resolve_positioned_style_with_anchors(
           &original_style,
           &positioning_cb,
           viewport_size,
           &font_context,
           anchors_for_cb,
-          parent_box_id,
+          anchor_query,
         );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = original_style.width_keyword.is_some()
@@ -14055,7 +14073,7 @@ impl InlineFormattingContext {
             viewport_size,
             &font_context,
             anchors_for_cb,
-            parent_box_id,
+            anchor_query,
           )?;
         let border_size_physical = Size::new(
           result.size.width + actual_horizontal,

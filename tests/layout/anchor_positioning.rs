@@ -12,7 +12,7 @@ use fastrender::style::types::{
   PositionAnchor, PositionTryOrder, WritingMode,
 };
 use fastrender::style::values::Length;
-use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::Point;
 use fastrender::Rect;
@@ -2202,5 +2202,125 @@ fn anchor_positioning_scoped_anchors_are_not_visible_outside_the_scope_subtree()
     (overlay_fragment.bounds.y() - 9.0).abs() < 0.1,
     "anchors scoped to a sibling subtree should not be visible (got y={})",
     overlay_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn anchor_positioning_position_anchor_auto_uses_implicit_anchor_for_pseudo_elements() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let parent_id = 1usize;
+  let pseudo_id = 2usize;
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Block;
+  parent_style.position = Position::Relative;
+  parent_style.width = Some(Length::px(50.0));
+  parent_style.height = Some(Length::px(20.0));
+  parent_style.width_keyword = None;
+  parent_style.height_keyword = None;
+  let parent_style = Arc::new(parent_style);
+
+  let mut pseudo_style = ComputedStyle::default();
+  pseudo_style.display = Display::Block;
+  pseudo_style.position = Position::Absolute;
+  pseudo_style.position_anchor = PositionAnchor::Auto;
+  pseudo_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  pseudo_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  pseudo_style.width = Some(Length::px(10.0));
+  pseudo_style.height = Some(Length::px(10.0));
+  pseudo_style.width_keyword = None;
+  pseudo_style.height_keyword = None;
+  let mut pseudo =
+    BoxNode::new_block(Arc::new(pseudo_style), FormattingContextType::Block, vec![]);
+  pseudo.id = pseudo_id;
+  pseudo.generated_pseudo = Some(GeneratedPseudoElement::Before);
+
+  let mut parent = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![pseudo]);
+  parent.id = parent_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![parent]);
+  container.id = 200;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let parent_bounds = find_abs_bounds_by_box_id(&fragment, parent_id).expect("parent bounds");
+  let pseudo_bounds = find_abs_bounds_by_box_id(&fragment, pseudo_id).expect("pseudo bounds");
+
+  assert!(
+    (pseudo_bounds.x() - parent_bounds.x()).abs() < 0.1,
+    "pseudo left should resolve against the originating element's left edge"
+  );
+  assert!(
+    (pseudo_bounds.y() - parent_bounds.max_y()).abs() < 0.1,
+    "pseudo top should resolve against the originating element's bottom edge"
+  );
+}
+
+#[test]
+fn anchor_positioning_position_anchor_auto_uses_fallback_when_no_implicit_anchor_exists() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let overlay_id = 1usize;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Auto;
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: Some(Length::px(123.0)),
+  });
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  container.id = 201;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_bounds = find_abs_bounds_by_box_id(&fragment, overlay_id).expect("overlay bounds");
+  assert!(
+    (overlay_bounds.y() - 123.0).abs() < 0.1,
+    "non-pseudo elements with position-anchor:auto should fall back when no implicit anchor exists (got y={})",
+    overlay_bounds.y()
   );
 }

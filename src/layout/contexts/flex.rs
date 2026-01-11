@@ -463,6 +463,7 @@ struct PositionedCandidate {
   preferred_min_block: Option<f32>,
   preferred_block: Option<f32>,
   is_replaced: bool,
+  implicit_anchor_box_id: Option<usize>,
 }
 
 fn ensure_box_id(node: &BoxNode) -> usize {
@@ -4822,13 +4823,17 @@ impl FormattingContext for FlexFormattingContext {
         let child_fragment = fc.layout(&layout_child, &child_constraints)?;
 
         let anchors_for_cb = Some(&anchor_index);
+        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
         let positioned_style = resolve_positioned_style_with_anchors(
           &original_style,
           &cb,
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
-          Some(root_box_id),
+          crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(root_box_id),
+            implicit_anchor_box_id,
+          },
         );
         let has_inline_keyword = positioned_style.width_keyword.is_some()
           || positioned_style.min_width_keyword.is_some()
@@ -4900,6 +4905,7 @@ impl FormattingContext for FlexFormattingContext {
           preferred_min_block,
           preferred_block,
           is_replaced,
+          implicit_anchor_box_id,
         });
       }
 
@@ -4983,7 +4989,10 @@ impl FormattingContext for FlexFormattingContext {
             self.viewport_size,
             &self.font_context,
             Some(&anchor_index),
-            Some(root_box_id),
+            crate::layout::anchor_positioning::AnchorQueryContext {
+              query_parent_box_id: Some(root_box_id),
+              implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+            },
           )?;
         let relayout_for_inset_resolved_size =
           crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
@@ -10939,13 +10948,18 @@ impl FlexFormattingContext {
                     .unwrap_or(CrateAvailableSpace::Indefinite),
                 );
                 let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
+                let implicit_anchor_box_id =
+                  positioned_child.generated_pseudo.is_some().then_some(child_box.id);
                 let mut positioned_style = resolve_positioned_style_with_anchors(
                   &original_style,
                   &cb,
                   self.viewport_size,
                   &font_context,
                   None,
-                  Some(child_box.id),
+                  crate::layout::anchor_positioning::AnchorQueryContext {
+                    query_parent_box_id: Some(child_box.id),
+                    implicit_anchor_box_id,
+                  },
                 );
                 positioned_style.width_keyword = original_style.width_keyword;
                 positioned_style.min_width_keyword = original_style.min_width_keyword;
@@ -12304,7 +12318,10 @@ impl FlexFormattingContext {
             self.viewport_size,
             &self.font_context,
             Some(anchor_index),
-            Some(query_parent_box_id),
+            crate::layout::anchor_positioning::AnchorQueryContext {
+              query_parent_box_id: Some(query_parent_box_id),
+              implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+            },
           )?;
         Size::new(
           (result.size.width + actual_horizontal).max(0.0),

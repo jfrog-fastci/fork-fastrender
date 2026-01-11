@@ -311,6 +311,7 @@ struct PositionedCandidate {
   source: ContainingBlockSource,
   static_position: Option<Point>,
   query_parent_id: usize,
+  implicit_anchor_box_id: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -2835,6 +2836,7 @@ impl BlockFormattingContext {
         source,
         static_position,
         query_parent_id,
+        implicit_anchor_box_id,
       } in positioned_children
       {
         let original_style = pos_child.style.clone();
@@ -2888,13 +2890,17 @@ impl BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(query_parent_id),
+          implicit_anchor_box_id,
+        };
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &pos_child.style,
           &positioning_cb,
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
-          Some(query_parent_id),
+          anchor_query,
         );
 
         // When both insets are specified and the corresponding size is `auto`, the absolute
@@ -3144,7 +3150,7 @@ impl BlockFormattingContext {
             self.viewport_size,
             &self.font_context,
             anchors_for_cb,
-            Some(query_parent_id),
+            anchor_query,
           )?;
         let border_size_physical = Size::new(
           result.size.width + actual_horizontal,
@@ -4196,13 +4202,18 @@ impl BlockFormattingContext {
             .unwrap_or(AvailableSpace::Indefinite),
         );
         let mut child_fragment = fc.layout(&layout_child, &child_constraints)?;
+        let implicit_anchor_box_id =
+          positioned_child.generated_pseudo.is_some().then_some(child.id);
         let mut positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &original_style,
           &cb,
           self.viewport_size,
           &self.font_context,
           None,
-          Some(child.id),
+          crate::layout::anchor_positioning::AnchorQueryContext {
+            query_parent_box_id: Some(child.id),
+            implicit_anchor_box_id,
+          },
         );
         positioned_style.width_keyword = original_style.width_keyword;
         positioned_style.min_width_keyword = original_style.min_width_keyword;
@@ -5331,11 +5342,13 @@ impl BlockFormattingContext {
             }
             _ => ContainingBlockSource::Explicit(*nearest_positioned_cb),
           };
+          let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(parent.id);
           positioned_children.push(PositionedCandidate {
             node: child,
             source,
             static_position,
             query_parent_id: parent.id,
+            implicit_anchor_box_id,
           });
         }
         return Ok(None);
@@ -5956,11 +5969,13 @@ impl BlockFormattingContext {
           }
           _ => ContainingBlockSource::Explicit(*nearest_positioned_cb),
         };
+        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(parent.id);
         positioned_children.push(PositionedCandidate {
           node: child.clone(),
           source,
           static_position,
           query_parent_id: parent.id,
+          implicit_anchor_box_id,
         });
         continue;
       }
@@ -10146,6 +10161,7 @@ impl FormattingContext for BlockFormattingContext {
         source,
         static_position,
         query_parent_id,
+        implicit_anchor_box_id,
       } in positioned_children
       {
         let original_style = child.style.clone();
@@ -10188,13 +10204,17 @@ impl FormattingContext for BlockFormattingContext {
         );
 
         // Resolve positioned style against the containing block.
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(query_parent_id),
+          implicit_anchor_box_id,
+        };
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &original_style,
           &positioning_cb,
           self.viewport_size,
           &self.font_context,
           anchors_for_cb,
-          Some(query_parent_id),
+          anchor_query,
         );
 
         let relayout_for_definite_insets = (positioned_style.width.is_auto()
@@ -10405,7 +10425,7 @@ impl FormattingContext for BlockFormattingContext {
             self.viewport_size,
             &self.font_context,
             anchors_for_cb,
-            Some(query_parent_id),
+            anchor_query,
           )?;
         let border_size_physical = Size::new(
           result.size.width + actual_horizontal,

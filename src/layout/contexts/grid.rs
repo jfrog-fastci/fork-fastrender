@@ -7608,7 +7608,7 @@ impl GridFormattingContext {
           self.viewport_size,
           &self.font_context,
           None,
-          None,
+          crate::layout::anchor_positioning::AnchorQueryContext::default(),
         )?;
       let relayout_for_inset_resolved_size =
         crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
@@ -13093,6 +13093,7 @@ impl FormattingContext for GridFormattingContext {
         );
 
         let anchors_for_cb = Some(&anchor_index);
+        let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
         let positioned_style =
           crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
             &child.style,
@@ -13100,7 +13101,10 @@ impl FormattingContext for GridFormattingContext {
             ctx.viewport_size,
             &ctx.font_context,
             anchors_for_cb,
-            Some(root_box_id),
+            crate::layout::anchor_positioning::AnchorQueryContext {
+              query_parent_box_id: Some(root_box_id),
+              implicit_anchor_box_id,
+            },
           );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).
@@ -13307,7 +13311,10 @@ impl FormattingContext for GridFormattingContext {
             ctx.viewport_size,
             &ctx.font_context,
             anchors_for_cb,
-            Some(root_box_id),
+            crate::layout::anchor_positioning::AnchorQueryContext {
+              query_parent_box_id: Some(root_box_id),
+              implicit_anchor_box_id,
+            },
           )?;
         let relayout_for_inset_resolved_size =
           crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
