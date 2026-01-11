@@ -30,6 +30,7 @@ use crate::style::media::MediaQuery;
 use crate::style::types::Appearance;
 use crate::style::types::Overflow;
 use crate::style::ComputedStyle;
+use crate::text::caret::CaretAffinity;
 use crate::tree::debug::DebugInfo;
 use std::fmt;
 use std::sync::Arc;
@@ -37,7 +38,12 @@ use std::sync::Arc;
 pub use crate::html::images::{ImageSelectionContext, SelectedImageSource};
 
 fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
+  value.trim_matches(|c: char| {
+    matches!(
+      c,
+      '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+    )
+  })
 }
 
 /// Parsed `crossorigin` attribute state for `<img>` elements.
@@ -248,6 +254,8 @@ pub enum FormControlKind {
     /// When the control isn't focused (or the interaction layer hasn't provided a caret), this
     /// defaults to the end of `value`.
     caret: usize,
+    /// Visual affinity for the caret when the logical boundary maps to multiple x positions.
+    caret_affinity: CaretAffinity,
     /// Optional selection range in character indices (start, end), where `start < end`.
     selection: Option<(usize, usize)>,
   },
@@ -265,6 +273,8 @@ pub enum FormControlKind {
     cols: Option<u32>,
     /// Caret position in character indices.
     caret: usize,
+    /// Visual affinity for the caret when the logical boundary maps to multiple x positions.
+    caret_affinity: CaretAffinity,
     /// Optional selection range in character indices (start, end), where `start < end`.
     selection: Option<(usize, usize)>,
   },
@@ -402,7 +412,11 @@ impl FormControlKind {
           "none".to_string()
         } else if selected_option_count == 1 {
           let (label, value) = first_selected.unwrap_or(("", ""));
-          let text = if trim_ascii_whitespace(label).is_empty() { value } else { label };
+          let text = if trim_ascii_whitespace(label).is_empty() {
+            value
+          } else {
+            label
+          };
           let text = truncate_for_snapshot(text, MAX_SELECTED_LABEL_CHARS);
           format!("{text:?}")
         } else {
@@ -2069,7 +2083,11 @@ mod tests {
 
     let mut footnote = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
     for _ in 0..depth {
-      footnote = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![footnote]);
+      footnote = BoxNode::new_block(
+        default_style(),
+        FormattingContextType::Block,
+        vec![footnote],
+      );
     }
 
     node.footnote_body = Some(Box::new(footnote));

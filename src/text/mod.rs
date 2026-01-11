@@ -81,11 +81,12 @@ pub(crate) mod script_fallback;
 // ============================================================================
 
 pub(crate) mod bidi_controls;
+pub mod caret;
 pub mod cluster;
 pub mod caret;
 pub mod emoji;
-mod emoji_tables;
 pub(crate) mod emoji_presentation;
+mod emoji_tables;
 pub mod hyphenation;
 pub mod justify;
 pub mod line_break;

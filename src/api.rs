@@ -99,6 +99,7 @@ use crate::html::viewport::ViewportLength;
 use crate::image_loader::ImageCache;
 use crate::image_output::encode_image;
 use crate::image_output::OutputFormat;
+use crate::interaction::InteractionState;
 use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
@@ -119,10 +120,11 @@ use crate::layout::flex_profile::reset_flex_profile;
 use crate::layout::formatting_context::intrinsic_cache_clear;
 use crate::layout::formatting_context::intrinsic_cache_reset_counters;
 use crate::layout::formatting_context::intrinsic_cache_stats;
-use crate::layout::formatting_context::{
-  set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
-};
 use crate::layout::formatting_context::LayoutError as FormattingLayoutError;
+use crate::layout::formatting_context::{
+  set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint,
+  set_fragmentainer_block_size_hint,
+};
 use crate::layout::fragment_clone_profile::{
   fragment_clone_profile_enabled, log_fragment_clone_profile, reset_fragment_clone_profile,
 };
@@ -154,7 +156,6 @@ use crate::resource::{
   FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
   ResourcePolicy,
 };
-use crate::interaction::InteractionState;
 use crate::scroll::ScrollState;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
@@ -5567,7 +5568,8 @@ fn paint_fragment_tree_with_state(
 
   let offset = Point::new(viewport_inset.x - scroll.x, viewport_inset.y - scroll.y);
   let mut scroll_state_for_paint = scroll_state.clone();
-  scroll_state_for_paint.viewport = Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
+  scroll_state_for_paint.viewport =
+    Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
   let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
     &fragment_tree,
     target_width,
@@ -6950,7 +6952,10 @@ impl FastRender {
           rec.stats.cascade.has_evaluated = Some(has_counters.evaluated);
         }
       }
-      let artifact_request = artifacts.as_deref().map(|store| store.request()).unwrap_or_default();
+      let artifact_request = artifacts
+        .as_deref()
+        .map(|store| store.request())
+        .unwrap_or_default();
 
       let LayoutArtifacts {
         styled_tree,
@@ -7120,8 +7125,11 @@ impl FastRender {
       let viewport_size = layout_viewport;
       // See note in `prepare_html` re: visual vs layout viewport when meta viewport applies zoom.
       let paint_viewport = resolved_viewport.visual_viewport;
-      let viewport_inset =
-        viewport_scrollport_inset_for_scrollbar_gutter(&styled_tree, layout_viewport, paint_viewport);
+      let viewport_inset = viewport_scrollport_inset_for_scrollbar_gutter(
+        &styled_tree,
+        layout_viewport,
+        paint_viewport,
+      );
       let mut scroll_state =
         crate::scroll::ScrollState::from_parts(Point::new(scroll_x, scroll_y), element_scrolls);
       let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
@@ -7395,7 +7403,10 @@ impl FastRender {
       }
 
       let accessibility = if capture_accessibility {
-        Some(crate::accessibility::build_accessibility_tree(&styled_tree, None))
+        Some(crate::accessibility::build_accessibility_tree(
+          &styled_tree,
+          None,
+        ))
       } else {
         None
       };
@@ -10695,22 +10706,22 @@ impl FastRender {
               None,
               Some(&mut local_media_query_cache),
               meta_color_scheme.clone(),
-                false,
-                crate::style::cascade::CascadeOptions::default(),
-              ) {
-                Ok(mut prepared) => prepared
-                  .apply(
-                    target_fragment.as_deref(),
-                    interaction_state,
-                    None,
-                    None,
-                    None,
-                    None,
-                  )
-                  .unwrap_or_else(|_| {
-                    apply_style_set_with_media_target_and_imports_cached(
-                      dom_for_style,
-                      &style_set,
+              false,
+              crate::style::cascade::CascadeOptions::default(),
+            ) {
+              Ok(mut prepared) => prepared
+                .apply(
+                  target_fragment.as_deref(),
+                  interaction_state,
+                  None,
+                  None,
+                  None,
+                  None,
+                )
+                .unwrap_or_else(|_| {
+                  apply_style_set_with_media_target_and_imports_cached(
+                    dom_for_style,
+                    &style_set,
                     &media_ctx,
                     target_fragment.as_deref(),
                     None,
@@ -11290,7 +11301,9 @@ impl FastRender {
     // Keep animated image (e.g. GIF) frame sampling aligned with the requested animation time, so
     // renders captured at a specific timestamp (fixtures, chrome baselines, etc.) see the same
     // image frame throughout layout/paint.
-    self.image_cache.set_animation_time_ms(options.animation_time);
+    self
+      .image_cache
+      .set_animation_time_ms(options.animation_time);
     self
       .layout_engine
       .image_cache_mut()
@@ -19096,7 +19109,11 @@ fn build_container_query_context(
         }
       }
 
-      collect_stuck_masks(&fragments.root, &sticky_fragments.root, &mut stuck_by_box_id);
+      collect_stuck_masks(
+        &fragments.root,
+        &sticky_fragments.root,
+        &mut stuck_by_box_id,
+      );
       for (original_extra, adjusted_extra) in fragments
         .additional_fragments
         .iter()
@@ -20044,8 +20061,8 @@ mod tests {
     let base_fp = super::style_layout_fingerprint(&base);
 
     let mut updated = base;
-    updated.position_area = crate::style::types::PositionArea::parse("block-start")
-      .expect("parse position-area");
+    updated.position_area =
+      crate::style::types::PositionArea::parse("block-start").expect("parse position-area");
     assert_ne!(
       base_fp,
       super::style_layout_fingerprint(&updated),
@@ -21396,6 +21413,7 @@ mod tests {
         size_attr: None,
         kind: TextControlKind::Plain,
         caret: 0,
+        caret_affinity: crate::text::caret::CaretAffinity::Downstream,
         selection: None,
       },
       appearance: crate::style::types::Appearance::Auto,
@@ -21639,8 +21657,7 @@ mod tests {
       ));
 
     let scroll_state = ScrollState::default();
-    let font_context =
-      FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+    let font_context = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
     let ctx = super::build_container_query_context(
       &font_context,
       &box_tree,
@@ -21771,8 +21788,7 @@ mod tests {
     );
 
     let scroll_state = ScrollState::default();
-    let font_context =
-      FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+    let font_context = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
     let ctx = super::build_container_query_context(
       &font_context,
       &box_tree,
@@ -26882,6 +26898,7 @@ mod tests {
         size_attr: None,
         kind: TextControlKind::Plain,
         caret: 0,
+        caret_affinity: crate::text::caret::CaretAffinity::Downstream,
         selection: None,
       },
       appearance: crate::style::types::Appearance::Auto,
@@ -28487,9 +28504,15 @@ mod tests {
       </head><body></body></html>"#;
 
     let mut renderer = FastRender::new().expect("renderer");
-    let baseline = renderer.render_html(baseline_html, 16, 16).expect("baseline render");
-    let blocked = renderer.render_html(blocked_html, 16, 16).expect("blocked render");
-    let styled = renderer.render_html(styled_html, 16, 16).expect("styled render");
+    let baseline = renderer
+      .render_html(baseline_html, 16, 16)
+      .expect("baseline render");
+    let blocked = renderer
+      .render_html(blocked_html, 16, 16)
+      .expect("blocked render");
+    let styled = renderer
+      .render_html(styled_html, 16, 16)
+      .expect("styled render");
 
     assert_ne!(
       styled.data(),
@@ -28510,15 +28533,22 @@ mod tests {
     // Also ensure per-document CSP state does not leak across repeated `render_html` calls on a
     // reused `FastRender` instance.
     let baseline_html = "<!doctype html><html><body></body></html>";
-    let styled_html = r#"<!doctype html><html><body style="background: rgb(1, 2, 3)"></body></html>"#;
+    let styled_html =
+      r#"<!doctype html><html><body style="background: rgb(1, 2, 3)"></body></html>"#;
     let blocked_html = r#"<!doctype html><html><head>
         <meta http-equiv="Content-Security-Policy" content="style-src-attr 'none'">
       </head><body style="background: rgb(1, 2, 3)"></body></html>"#;
 
     let mut renderer = FastRender::new().expect("renderer");
-    let baseline = renderer.render_html(baseline_html, 16, 16).expect("baseline render");
-    let blocked = renderer.render_html(blocked_html, 16, 16).expect("blocked render");
-    let styled = renderer.render_html(styled_html, 16, 16).expect("styled render");
+    let baseline = renderer
+      .render_html(baseline_html, 16, 16)
+      .expect("baseline render");
+    let blocked = renderer
+      .render_html(blocked_html, 16, 16)
+      .expect("blocked render");
+    let styled = renderer
+      .render_html(styled_html, 16, 16)
+      .expect("styled render");
 
     assert_ne!(
       styled.data(),

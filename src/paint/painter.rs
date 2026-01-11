@@ -83,7 +83,6 @@ use crate::style::color::Color;
 use crate::style::color::Rgba;
 use crate::style::display::Display;
 use crate::style::position::Position;
-use crate::style::PhysicalSide;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
 use crate::style::types::BackfaceVisibility;
@@ -109,9 +108,9 @@ use crate::style::types::FilterFunction;
 use crate::style::types::FontWeight;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
+use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
-use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MaskOrigin;
 use crate::style::types::MixBlendMode;
@@ -124,6 +123,8 @@ use crate::style::types::TextDecorationThickness;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
+use crate::style::PhysicalSide;
+use crate::text::caret::{caret_stops_for_runs, caret_x_for_position, CaretAffinity};
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -144,8 +145,8 @@ use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
 use crate::tree::box_tree::{
-  CrossOriginAttribute, FormControl, FormControlKind, ImageDecodingAttribute, ImageLoadingAttribute,
-  SelectItem, TextControlKind,
+  CrossOriginAttribute, FormControl, FormControlKind, ImageDecodingAttribute,
+  ImageLoadingAttribute, SelectItem, TextControlKind,
 };
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -1813,7 +1814,11 @@ impl Painter {
     self.pixmap.fill(color);
   }
 
-  fn stacking_clip_for_style(&self, style: &ComputedStyle, abs_bounds: Rect) -> Option<StackingClip> {
+  fn stacking_clip_for_style(
+    &self,
+    style: &ComputedStyle,
+    abs_bounds: Rect,
+  ) -> Option<StackingClip> {
     // Honor overflow clipping: when overflow is hidden/scroll/clip, restrict painting. This
     // prevents offscreen children from flooding the viewport when their layout positions explode.
     let clip_x = matches!(
@@ -1865,18 +1870,16 @@ impl Painter {
         0.0
       };
 
-      let clip_box_x =
-        if !style.containment.paint && matches!(style.overflow_x, Overflow::Clip) {
-          style.overflow_clip_margin.visual_box
-        } else {
-          crate::style::types::VisualBox::PaddingBox
-        };
-      let clip_box_y =
-        if !style.containment.paint && matches!(style.overflow_y, Overflow::Clip) {
-          style.overflow_clip_margin.visual_box
-        } else {
-          crate::style::types::VisualBox::PaddingBox
-        };
+      let clip_box_x = if !style.containment.paint && matches!(style.overflow_x, Overflow::Clip) {
+        style.overflow_clip_margin.visual_box
+      } else {
+        crate::style::types::VisualBox::PaddingBox
+      };
+      let clip_box_y = if !style.containment.paint && matches!(style.overflow_y, Overflow::Clip) {
+        style.overflow_clip_margin.visual_box
+      } else {
+        crate::style::types::VisualBox::PaddingBox
+      };
 
       let rect_for_visual_box = |vb: crate::style::types::VisualBox| -> Rect {
         match vb {
@@ -2005,29 +2008,25 @@ impl Painter {
         let left = match &clip.left {
           ClipComponent::Auto => abs_bounds.x(),
           ClipComponent::Length(len) => {
-            abs_bounds.x()
-              + resolve_length_for_paint(len, font_size, root_font, width, viewport)
+            abs_bounds.x() + resolve_length_for_paint(len, font_size, root_font, width, viewport)
           }
         };
         let top = match &clip.top {
           ClipComponent::Auto => abs_bounds.y(),
           ClipComponent::Length(len) => {
-            abs_bounds.y()
-              + resolve_length_for_paint(len, font_size, root_font, height, viewport)
+            abs_bounds.y() + resolve_length_for_paint(len, font_size, root_font, height, viewport)
           }
         };
         let right = match &clip.right {
           ClipComponent::Auto => abs_bounds.x() + width,
           ClipComponent::Length(len) => {
-            abs_bounds.x()
-              + resolve_length_for_paint(len, font_size, root_font, width, viewport)
+            abs_bounds.x() + resolve_length_for_paint(len, font_size, root_font, width, viewport)
           }
         };
         let bottom = match &clip.bottom {
           ClipComponent::Auto => abs_bounds.y() + height,
           ClipComponent::Length(len) => {
-            abs_bounds.y()
-              + resolve_length_for_paint(len, font_size, root_font, height, viewport)
+            abs_bounds.y() + resolve_length_for_paint(len, font_size, root_font, height, viewport)
           }
         };
 
@@ -2112,25 +2111,27 @@ impl Painter {
       && !has_fixed_cb_ancestor;
     let (offset, applied_element_scroll) = if is_viewport_fixed {
       (
-        offset.translate(Point::new(-applied_element_scroll.x, -applied_element_scroll.y)),
+        offset.translate(Point::new(
+          -applied_element_scroll.x,
+          -applied_element_scroll.y,
+        )),
         Point::ZERO,
       )
     } else {
       (offset, applied_element_scroll)
     };
     let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-    let needs_viewport_scroll_cancel =
-      style_ref.is_some_and(|style| matches!(style.position, Position::Fixed))
-        && !skip_viewport_scroll_cancel;
+    let needs_viewport_scroll_cancel = style_ref
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+      && !skip_viewport_scroll_cancel;
     let skip_viewport_scroll_cancel_for_children =
       skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
-    let viewport_scroll = if self.scroll_state.viewport.x.is_finite()
-      && self.scroll_state.viewport.y.is_finite()
-    {
-      self.scroll_state.viewport
-    } else {
-      Point::ZERO
-    };
+    let viewport_scroll =
+      if self.scroll_state.viewport.x.is_finite() && self.scroll_state.viewport.y.is_finite() {
+        self.scroll_state.viewport
+      } else {
+        Point::ZERO
+      };
     let offset = if needs_viewport_scroll_cancel {
       Point::new(offset.x + viewport_scroll.x, offset.y + viewport_scroll.y)
     } else {
@@ -2360,22 +2361,22 @@ impl Painter {
         )?;
       }
 
-        let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
-        if clip.is_some() {
-          items.push(DisplayCommand::StackingContext {
-            rect: abs_bounds,
-            opacity: 1.0,
-            transform: None,
-            transform_3d: None,
-            blend_mode: MixBlendMode::Normal,
-            isolated: false,
-            mask: None,
-            mask_border: None,
-            filters: Vec::new(),
-            backdrop_filters: Vec::new(),
-            // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
-            // compositing the layer; only the explicit `clip` should apply.
-            radii: BorderRadii::ZERO,
+      let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
+      if clip.is_some() {
+        items.push(DisplayCommand::StackingContext {
+          rect: abs_bounds,
+          opacity: 1.0,
+          transform: None,
+          transform_3d: None,
+          blend_mode: MixBlendMode::Normal,
+          isolated: false,
+          mask: None,
+          mask_border: None,
+          filters: Vec::new(),
+          backdrop_filters: Vec::new(),
+          // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
+          // compositing the layer; only the explicit `clip` should apply.
+          radii: BorderRadii::ZERO,
           clip,
           has_clip_path: false,
           clip_path: None,
@@ -2563,7 +2564,9 @@ impl Painter {
       .unwrap_or(MixBlendMode::Normal);
     let has_blend_mode_children = !is_root_context
       && local_commands.iter().any(|cmd| match cmd {
-        DisplayCommand::StackingContext { blend_mode, .. } => !matches!(blend_mode, MixBlendMode::Normal),
+        DisplayCommand::StackingContext { blend_mode, .. } => {
+          !matches!(blend_mode, MixBlendMode::Normal)
+        }
         _ => false,
       });
     let will_change_needs_backdrop_root_boundary = matches!(blend_mode, MixBlendMode::Normal)
@@ -2586,12 +2589,14 @@ impl Painter {
       .map(|s| resolve_filters(&s.backdrop_filter, s, viewport, &self.font_ctx, svg_filters))
       .unwrap_or_default();
     let has_backdrop = !backdrop_filters.is_empty();
-    let clip: Option<StackingClip> = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
+    let clip: Option<StackingClip> =
+      style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
     let clip_path = match style_ref {
       Some(style) => match &style.clip_path {
         crate::style::types::ClipPath::Url(src, reference_override) => {
           let trimmed = trim_ascii_whitespace_html_css(src);
-          let reference = reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
+          let reference =
+            reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
           let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
             style,
             abs_bounds,
@@ -2635,10 +2640,7 @@ impl Painter {
       .style
       .clone()
       .filter(|s| s.mask_layers.iter().any(|layer| layer.image.is_some()));
-    let mask_border = fragment
-      .style
-      .clone()
-      .filter(|s| s.mask_border.is_active());
+    let mask_border = fragment.style.clone().filter(|s| s.mask_border.is_active());
     if opacity < 1.0
       || transform.is_some()
       || transform_3d.is_some()
@@ -2810,11 +2812,7 @@ impl Painter {
     }
   }
 
-  fn outline_bounds(
-    abs_bounds: Rect,
-    style: &ComputedStyle,
-    viewport: (f32, f32),
-  ) -> Option<Rect> {
+  fn outline_bounds(abs_bounds: Rect, style: &ComputedStyle, viewport: (f32, f32)) -> Option<Rect> {
     let outline_style = style.outline_style.to_border_style();
     let width = resolve_length_for_paint(
       &style.outline_width,
@@ -2885,32 +2883,32 @@ impl Painter {
       }
     }
 
-      // HTML canvas background propagation: when the root element background is transparent,
-      // propagate the body element background. The layout tree may flatten the body box when it has
-      // no paintable background, so avoid falling back to "first paintable child" heuristics for
-      // renderer-produced trees (it can incorrectly promote a descendant background to the canvas).
-      if let Some(html_id) = html.box_id() {
-        if let Some(body_id) = html_id.checked_add(1) {
-          // `<body>` is normally the first child of `<html>` (and therefore `box_id == html_id+1`),
-          // but it may not be a direct fragment child in all layout modes. Search by box id rather
-          // than assuming a fixed tree shape.
-          let mut stack: Vec<&FragmentNode> = vec![html];
-          while let Some(node) = stack.pop() {
-            if node.box_id() == Some(body_id) {
-              if let Some(style) = node.style.clone() {
-                if Self::has_paintable_background(&style) {
-                  return Some(style);
-                }
+    // HTML canvas background propagation: when the root element background is transparent,
+    // propagate the body element background. The layout tree may flatten the body box when it has
+    // no paintable background, so avoid falling back to "first paintable child" heuristics for
+    // renderer-produced trees (it can incorrectly promote a descendant background to the canvas).
+    if let Some(html_id) = html.box_id() {
+      if let Some(body_id) = html_id.checked_add(1) {
+        // `<body>` is normally the first child of `<html>` (and therefore `box_id == html_id+1`),
+        // but it may not be a direct fragment child in all layout modes. Search by box id rather
+        // than assuming a fixed tree shape.
+        let mut stack: Vec<&FragmentNode> = vec![html];
+        while let Some(node) = stack.pop() {
+          if node.box_id() == Some(body_id) {
+            if let Some(style) = node.style.clone() {
+              if Self::has_paintable_background(&style) {
+                return Some(style);
               }
-              break;
             }
-            for child in node.children.iter().rev() {
-              stack.push(child);
-            }
+            break;
+          }
+          for child in node.children.iter().rev() {
+            stack.push(child);
           }
         }
-        return fragment.style.clone();
       }
+      return fragment.style.clone();
+    }
 
     // Fallback for fragment trees without box IDs (mostly unit tests): treat the first paintable
     // child as the body element.
@@ -3297,8 +3295,7 @@ impl Painter {
 
         // Constrain the stacking layer to the visible viewport (expanded by filter outsets).
         // If a context is entirely outside the viewport, skip it.
-        let (filter_l, filter_t, filter_r, filter_b) =
-          compute_filter_outset(&filters, bounds, 1.0);
+        let (filter_l, filter_t, filter_r, filter_b) = compute_filter_outset(&filters, bounds, 1.0);
         let (back_l, back_t, back_r, back_b) =
           compute_filter_outset(&backdrop_filters, bounds, 1.0);
         let expand_l = filter_l.max(back_l);
@@ -3611,12 +3608,12 @@ impl Painter {
                   return Ok(());
                 }
 
-                let view_w =
-                  if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
-                    mask_bounds_css.width()
-                  } else {
-                    1.0
-                  };
+                let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0
+                {
+                  mask_bounds_css.width()
+                } else {
+                  1.0
+                };
                 let view_h =
                   if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
                     mask_bounds_css.height()
@@ -3643,13 +3640,10 @@ impl Painter {
                 };
 
                 let cache_key = format!("svg-clip-path-fragment:{id}");
-                let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
-                  &svg,
-                  canvas_w,
-                  canvas_h,
-                  &cache_key,
-                  self.scale,
-                ) {
+                let clip_pixmap = match base_painter
+                  .image_cache
+                  .render_svg_pixmap_at_size(&svg, canvas_w, canvas_h, &cache_key, self.scale)
+                {
                   Ok(pixmap) => pixmap,
                   Err(crate::Error::Render(RenderError::Timeout { stage, elapsed })) => {
                     return Err(RenderError::Timeout { stage, elapsed });
@@ -3721,12 +3715,12 @@ impl Painter {
                   return Ok(());
                 }
 
-                let view_w =
-                  if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0 {
-                    mask_bounds_css.width()
-                  } else {
-                    1.0
-                  };
+                let view_w = if mask_bounds_css.width().is_finite() && mask_bounds_css.width() > 0.0
+                {
+                  mask_bounds_css.width()
+                } else {
+                  1.0
+                };
                 let view_h =
                   if mask_bounds_css.height().is_finite() && mask_bounds_css.height() > 0.0 {
                     mask_bounds_css.height()
@@ -3753,13 +3747,10 @@ impl Painter {
                 };
 
                 let cache_key = format!("svg-clip-path-external:{id}");
-                let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
-                  &svg,
-                  canvas_w,
-                  canvas_h,
-                  &cache_key,
-                  self.scale,
-                ) {
+                let clip_pixmap = match base_painter
+                  .image_cache
+                  .render_svg_pixmap_at_size(&svg, canvas_w, canvas_h, &cache_key, self.scale)
+                {
                   Ok(pixmap) => pixmap,
                   Err(crate::Error::Render(RenderError::Timeout { stage, elapsed })) => {
                     return Err(RenderError::Timeout { stage, elapsed });
@@ -3877,15 +3868,14 @@ impl Painter {
         let mut dest_quad_device = src_quad;
         let mut projected = true;
         let layer_bounds_css = Rect::from_xywh(0.0, 0.0, bounds.width(), bounds.height());
-          for (idx, corner) in rect_corners(layer_bounds_css).iter().enumerate() {
-            let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
-            if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0
-            {
-              projected = false;
-              break;
-            }
-            dest_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
+        for (idx, corner) in rect_corners(layer_bounds_css).iter().enumerate() {
+          let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
+          if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0 {
+            projected = false;
+            break;
           }
+          dest_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
+        }
         if !projected {
           dest_quad_device = src_quad;
         }
@@ -3904,15 +3894,15 @@ impl Painter {
           );
           let mut backdrop_quad_device = [Point::ZERO; 4];
           let mut projected = true;
-           for (idx, corner) in rect_corners(root_local).iter().enumerate() {
-             let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
+          for (idx, corner) in rect_corners(root_local).iter().enumerate() {
+            let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
             if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0
             {
               projected = false;
               break;
             }
-             backdrop_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
-           }
+            backdrop_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
+          }
           let backdrop_bounds_device = if projected {
             quad_bounds(&backdrop_quad_device)
           } else {
@@ -4704,10 +4694,13 @@ impl Painter {
           if render_w == 0 || render_h == 0 {
             return Ok(None);
           }
-          match self
-            .image_cache
-            .render_svg_pixmap_at_size(svg, render_w, render_h, &resolved_src, self.scale)
-          {
+          match self.image_cache.render_svg_pixmap_at_size(
+            svg,
+            render_w,
+            render_h,
+            &resolved_src,
+            self.scale,
+          ) {
             Ok(pixmap) => pixmap,
             Err(_) => return Ok(None),
           }
@@ -4749,18 +4742,21 @@ impl Painter {
           }
         });
 
-        let resolve_width =
-          |value: BorderImageWidthValue, border: f32, axis: f32, auto: Option<f32>| -> f32 {
-            match value {
-              BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
-              BorderImageWidthValue::Number(n) => (n * border).max(0.0),
-              BorderImageWidthValue::Length(len) => {
-                resolve_length_for_paint(&len, style.font_size, style.root_font_size, axis, viewport)
-                  .max(0.0)
-              }
-              BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+        let resolve_width = |value: BorderImageWidthValue,
+                             border: f32,
+                             axis: f32,
+                             auto: Option<f32>|
+         -> f32 {
+          match value {
+            BorderImageWidthValue::Auto => auto.unwrap_or(border).max(0.0),
+            BorderImageWidthValue::Number(n) => (n * border).max(0.0),
+            BorderImageWidthValue::Length(len) => {
+              resolve_length_for_paint(&len, style.font_size, style.root_font_size, axis, viewport)
+                .max(0.0)
             }
-          };
+            BorderImageWidthValue::Percentage(p) => ((p / 100.0) * axis).max(0.0),
+          }
+        };
         let target_widths = BorderWidths {
           top: resolve_width(
             style.mask_border.width.top,
@@ -4800,7 +4796,14 @@ impl Painter {
           rect_css.width() + outsets.left + outsets.right,
           rect_css.height() + outsets.top + outsets.bottom,
         );
-        (pixmap, img_w, img_h, target_widths, outer_rect_css, resolved_mode)
+        (
+          pixmap,
+          img_w,
+          img_h,
+          target_widths,
+          outer_rect_css,
+          resolved_mode,
+        )
       }
       BackgroundImage::LinearGradient { .. }
       | BackgroundImage::RepeatingLinearGradient { .. }
@@ -4826,14 +4829,26 @@ impl Painter {
           }
         };
         let target_widths = BorderWidths {
-          top: resolve_width(style.mask_border.width.top, border_widths.top, rect_css.height()),
-          right: resolve_width(style.mask_border.width.right, border_widths.right, rect_css.width()),
+          top: resolve_width(
+            style.mask_border.width.top,
+            border_widths.top,
+            rect_css.height(),
+          ),
+          right: resolve_width(
+            style.mask_border.width.right,
+            border_widths.right,
+            rect_css.width(),
+          ),
           bottom: resolve_width(
             style.mask_border.width.bottom,
             border_widths.bottom,
             rect_css.height(),
           ),
-          left: resolve_width(style.mask_border.width.left, border_widths.left, rect_css.width()),
+          left: resolve_width(
+            style.mask_border.width.left,
+            border_widths.left,
+            rect_css.width(),
+          ),
         };
         let outsets = resolve_border_image_outset(
           &style.mask_border.outset,
@@ -4857,7 +4872,14 @@ impl Painter {
           return Ok(None);
         };
         let pixmap = Arc::new(pixmap);
-        (pixmap, img_w, img_h, target_widths, outer_rect_css, resolved_mode)
+        (
+          pixmap,
+          img_w,
+          img_h,
+          target_widths,
+          outer_rect_css,
+          resolved_mode,
+        )
       }
       BackgroundImage::None => return Ok(None),
     };
@@ -4963,7 +4985,10 @@ impl Painter {
 
       // `mask-border-slice` default behavior: when `fill` is not set, the center is treated as
       // fully opaque.
-      if !style.mask_border.slice.fill && inner_rect_device.width() > 0.0 && inner_rect_device.height() > 0.0 {
+      if !style.mask_border.slice.fill
+        && inner_rect_device.width() > 0.0
+        && inner_rect_device.height() > 0.0
+      {
         if let Some(inner_clip) = inner_rect_device.intersection(clip_rect_device) {
           if inner_clip.width() > 0.0 && inner_clip.height() > 0.0 {
             if let Some(rect) = SkiaRect::from_xywh(
@@ -5581,12 +5606,7 @@ impl Painter {
           let resolved_svg = if contains_foreign_object_tag(svg) {
             let foreign_object_dpr =
               crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-                svg,
-                self.scale,
-                tile_w,
-                tile_h,
-                img_w,
-                img_h,
+                svg, self.scale, tile_w, tile_h, img_w, img_h,
               );
             crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
               svg,
@@ -6250,8 +6270,12 @@ impl Painter {
     let radii = self.device_radii(radii_css);
     let gap = gap.map(|gap| {
       let (start, end) = match gap.edge {
-        PhysicalSide::Top | PhysicalSide::Bottom => (self.device_x(gap.start), self.device_x(gap.end)),
-        PhysicalSide::Left | PhysicalSide::Right => (self.device_y(gap.start), self.device_y(gap.end)),
+        PhysicalSide::Top | PhysicalSide::Bottom => {
+          (self.device_x(gap.start), self.device_x(gap.end))
+        }
+        PhysicalSide::Left | PhysicalSide::Right => {
+          (self.device_y(gap.start), self.device_y(gap.end))
+        }
       };
       (gap.edge, start.min(end), start.max(end))
     });
@@ -7102,7 +7126,8 @@ impl Painter {
         if tile_w <= 0.0 {
           return;
         }
-        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -7148,7 +7173,8 @@ impl Painter {
         if tile_w <= 0.0 {
           return;
         }
-        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -7173,7 +7199,8 @@ impl Painter {
         if tile_h <= 0.0 {
           return;
         }
-        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -7219,7 +7246,8 @@ impl Painter {
         if tile_h <= 0.0 {
           return;
         }
-        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -7983,7 +8011,11 @@ impl Painter {
     crossorigin: CrossOriginAttribute,
     referrer_policy: Option<crate::resource::ReferrerPolicy>,
   ) -> bool {
-    if !dest_width.is_finite() || !dest_height.is_finite() || dest_width <= 0.0 || dest_height <= 0.0 {
+    if !dest_width.is_finite()
+      || !dest_height.is_finite()
+      || dest_width <= 0.0
+      || dest_height <= 0.0
+    {
       return false;
     }
     let dpr = if self.scale.is_finite() && self.scale > 0.0 {
@@ -7997,10 +8029,11 @@ impl Painter {
     if dest_pixels <= ASYNC_IMAGE_DECODE_MAX_DEST_PIXELS {
       return false;
     }
-    let meta = match self
-      .image_cache
-      .probe_with_crossorigin_and_referrer_policy(src, crossorigin, referrer_policy)
-    {
+    let meta = match self.image_cache.probe_with_crossorigin_and_referrer_policy(
+      src,
+      crossorigin,
+      referrer_policy,
+    ) {
       Ok(meta) => meta,
       Err(_) => return false,
     };
@@ -8060,7 +8093,8 @@ impl Painter {
         style.overflow_y,
         Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
       ) || style.containment.paint;
-      let internal_clip_form_control = matches!(replaced_type, ReplacedType::FormControl(_)) && !clip_x && !clip_y;
+      let internal_clip_form_control =
+        matches!(replaced_type, ReplacedType::FormControl(_)) && !clip_x && !clip_y;
       if internal_clip_form_control {
         clip_x = true;
         clip_y = true;
@@ -8089,7 +8123,11 @@ impl Painter {
                     padding_rect.height(),
                   )
                 };
-                (clip_bounds, crate::style::types::BackgroundBox::ContentBox, false)
+                (
+                  clip_bounds,
+                  crate::style::types::BackgroundBox::ContentBox,
+                  false,
+                )
               } else {
                 (
                   content_rect,
@@ -8139,7 +8177,14 @@ impl Painter {
     match replaced_type {
       ReplacedType::FormControl(control) => {
         if let Some(style) = style {
-          if self.paint_form_control(control, style, content_rect, padding_rect, clip_mask, box_id) {
+          if self.paint_form_control(
+            control,
+            style,
+            content_rect,
+            padding_rect,
+            clip_mask,
+            box_id,
+          ) {
             return;
           }
         }
@@ -8231,7 +8276,9 @@ impl Painter {
         src,
         referrer_policy,
       } => {
-        if let Some(image) = self.render_iframe_srcdoc(html, src, *referrer_policy, content_rect, style) {
+        if let Some(image) =
+          self.render_iframe_srcdoc(html, src, *referrer_policy, content_rect, style)
+        {
           if let Some(pixmap) =
             PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
           {
@@ -8342,7 +8389,8 @@ impl Painter {
         srcdoc: None,
         referrer_policy,
       } => {
-        if let Some(image) = self.render_iframe_src(content, *referrer_policy, content_rect, style) {
+        if let Some(image) = self.render_iframe_src(content, *referrer_policy, content_rect, style)
+        {
           if let Some(pixmap) =
             PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
           {
@@ -8846,7 +8894,10 @@ impl Painter {
     }
 
     let foreign_object_dpr = (|| {
-      let meta = self.image_cache.probe_svg_content(&content.svg, "inline-svg").ok()?;
+      let meta = self
+        .image_cache
+        .probe_svg_content(&content.svg, "inline-svg")
+        .ok()?;
       let image_resolution = style.map(|s| s.image_resolution).unwrap_or_default();
       let orientation = style
         .map(|s| s.image_orientation.resolve(meta.orientation, false))
@@ -8880,14 +8931,16 @@ impl Painter {
       if dest_w <= 0.0 || dest_h <= 0.0 {
         return None;
       }
-      Some(crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-        &content.svg,
-        self.scale,
-        dest_w,
-        dest_h,
-        img_w_css,
-        img_h_css,
-      ))
+      Some(
+        crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+          &content.svg,
+          self.scale,
+          dest_w,
+          dest_h,
+          img_w_css,
+          img_h_css,
+        ),
+      )
     })()
     .unwrap_or(self.scale);
 
@@ -8965,9 +9018,10 @@ impl Painter {
           Some((pos, std::borrow::Cow::Owned(combined)))
         }
         (Some(pos), Some(defs), None) => Some((pos, std::borrow::Cow::Owned(defs))),
-        (Some(pos), None, Some(style)) => Some((pos, std::borrow::Cow::Borrowed(
-          style.style_element.as_ref(),
-        ))),
+        (Some(pos), None, Some(style)) => Some((
+          pos,
+          std::borrow::Cow::Borrowed(style.style_element.as_ref()),
+        )),
         _ => None,
       };
 
@@ -9065,15 +9119,17 @@ impl Painter {
 
     let render_w = dest_w_device.ceil().max(1.0) as u32;
     let render_h = dest_h_device.ceil().max(1.0) as u32;
-    let pixmap = self.image_cache.render_svg_pixmap_at_size_with_injected_style(
-      content,
-      insert_pos,
-      injected_markup,
-      render_w,
-      render_h,
-      "inline-svg",
-      self.scale,
-    );
+    let pixmap = self
+      .image_cache
+      .render_svg_pixmap_at_size_with_injected_style(
+        content,
+        insert_pos,
+        injected_markup,
+        render_w,
+        render_h,
+        "inline-svg",
+        self.scale,
+      );
     let pixmap = match pixmap {
       Ok(pixmap) => pixmap,
       Err(_) => return false,
@@ -9120,7 +9176,13 @@ impl Painter {
   ) where
     F: FnOnce(&mut Painter, Option<&Mask>),
   {
-    fn crop_clip_mask(mask: &Mask, origin_x: i32, origin_y: i32, width: u32, height: u32) -> Option<Mask> {
+    fn crop_clip_mask(
+      mask: &Mask,
+      origin_x: i32,
+      origin_y: i32,
+      width: u32,
+      height: u32,
+    ) -> Option<Mask> {
       if width == 0 || height == 0 {
         return None;
       }
@@ -9257,9 +9319,14 @@ impl Painter {
       clip_mask
     };
     let transform = Transform::from_translate(x0 as f32, y0 as f32);
-    self
-      .pixmap
-      .draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, transform, composite_clip_mask);
+    self.pixmap.draw_pixmap(
+      0,
+      0,
+      layer_pixmap.as_ref(),
+      &paint,
+      transform,
+      composite_clip_mask,
+    );
   }
 
   fn paint_form_control(
@@ -9315,7 +9382,8 @@ impl Painter {
       if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
       }
-      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height()) else {
+      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height())
+      else {
         return;
       };
       let path = PathBuilder::from_rect(sk_rect);
@@ -9336,11 +9404,17 @@ impl Painter {
       );
     }
 
-    fn fill_rect_masked_crisp(pixmap: &mut Pixmap, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+    fn fill_rect_masked_crisp(
+      pixmap: &mut Pixmap,
+      rect: Rect,
+      color: Rgba,
+      clip_mask: Option<&Mask>,
+    ) {
       if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
       }
-      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height()) else {
+      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height())
+      else {
         return;
       };
       let mut paint = Paint::default();
@@ -9430,6 +9504,7 @@ impl Painter {
         placeholder_style,
         kind,
         caret,
+        caret_affinity,
         selection,
         ..
       } => {
@@ -9566,8 +9641,12 @@ impl Painter {
           }
 
           let metrics_runs = shape_text_runs(self, sample_text, &text_style);
-          let metrics =
-            TextItem::metrics_from_runs(&self.font_ctx, &metrics_runs, line_height, text_style.font_size);
+          let metrics = TextItem::metrics_from_runs(
+            &self.font_ctx,
+            &metrics_runs,
+            line_height,
+            text_style.font_size,
+          );
           let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
           let baseline_y = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -9588,6 +9667,7 @@ impl Painter {
           } else {
             0.0
           };
+          let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
 
           if let Some((sel_start, sel_end)) = *selection {
             let sel_start = sel_start.min(max_chars);
@@ -9629,14 +9709,8 @@ impl Painter {
           };
           if !caret_color.is_transparent() {
             let caret_idx = (*caret).min(max_chars);
-            let caret_x_local = if text_runs.is_empty() {
-              fallback_char_advance * caret_idx as f32
-            } else {
-              crate::text::caret::x_for_char_idx(display_text, &text_runs, caret_idx)
-                .unwrap_or(0.0)
-                .clamp(0.0, total_advance)
-            };
-            let caret_x = start_x + caret_x_local;
+            let caret_x = start_x
+              + caret_x_for_position(&caret_stops, caret_idx, *caret_affinity).unwrap_or(0.0);
             let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
             let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
@@ -9709,6 +9783,7 @@ impl Painter {
         placeholder,
         placeholder_style,
         caret,
+        caret_affinity,
         selection,
         ..
       } => {
@@ -9773,8 +9848,12 @@ impl Painter {
           metrics_sample = "M";
         }
         let metrics_runs = shape_text_runs(self, metrics_sample, &text_style);
-        let metrics =
-          TextItem::metrics_from_runs(&self.font_ctx, &metrics_runs, line_height, text_style.font_size);
+        let metrics = TextItem::metrics_from_runs(
+          &self.font_ctx,
+          &metrics_runs,
+          line_height,
+          text_style.font_size,
+        );
         let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
 
         let caret_color = match style.caret_color {
@@ -9784,8 +9863,16 @@ impl Painter {
 
         let mut y = rect.y();
         let mut line_start = 0usize;
-        let mut last_visible_line: Option<(/*line*/ &str, /*len*/ usize, Rect, f32, f32, f32, f32, f32)> =
-          None;
+        let mut last_visible_line: Option<(
+          /*line*/ &str,
+          /*len*/ usize,
+          Rect,
+          f32,
+          f32,
+          f32,
+          f32,
+          f32,
+        )> = None;
         for line in display_text.split('\n') {
           if y > rect.y() + rect.height() {
             break;
@@ -9803,6 +9890,7 @@ impl Painter {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
+          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
 
           let baseline_y = y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -9883,19 +9971,8 @@ impl Painter {
           if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
             if !caret_color.is_transparent() {
               let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
-              let fallback_char_advance = if line_len > 0 {
-                (fallback_advance / line_len as f32).max(0.0)
-              } else {
-                0.0
-              };
-              let caret_x_local = if line_runs.is_empty() {
-                fallback_char_advance * caret_col as f32
-              } else {
-                crate::text::caret::x_for_char_idx(line, &line_runs, caret_col)
-                  .unwrap_or(0.0)
-                  .clamp(0.0, total_advance)
-              };
-              let caret_x = start_x + caret_x_local;
+              let caret_x = start_x
+                + caret_x_for_position(&caret_stops, caret_col, *caret_affinity).unwrap_or(0.0);
               let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
               let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
               let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -9918,23 +9995,22 @@ impl Painter {
           // If the caret lands on a line that is completely clipped out of the textarea, clamp it
           // to the last visible line so it remains paintable without implementing textarea
           // scrolling.
-          if let Some((line, line_len, line_rect, start_x, total_advance, fallback_advance, top, bottom)) =
-            last_visible_line
+          if let Some((
+            line,
+            line_len,
+            line_rect,
+            start_x,
+            total_advance,
+            fallback_advance,
+            top,
+            bottom,
+          )) = last_visible_line
           {
             let line_runs = shape_text_runs(self, line, &text_style);
-            let fallback_char_advance = if line_len > 0 {
-              (fallback_advance / line_len as f32).max(0.0)
-            } else {
-              0.0
-            };
-            let caret_x_local = if line_runs.is_empty() {
-              fallback_char_advance * line_len as f32
-            } else {
-              crate::text::caret::x_for_char_idx(line, &line_runs, line_len)
-                .unwrap_or(0.0)
-                .clamp(0.0, total_advance)
-            };
-            let caret_x = start_x + caret_x_local;
+            let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+            let caret_x = start_x
+              + caret_x_for_position(&caret_stops, line_len, CaretAffinity::Downstream)
+                .unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -10177,7 +10253,12 @@ impl Painter {
               let arrow_rect = if style.direction == Direction::Rtl {
                 Rect::from_xywh(padding_rect.x(), rect.y(), arrow_space, rect.height())
               } else {
-                Rect::from_xywh(padding_rect.max_x() - arrow_space, rect.y(), arrow_space, rect.height())
+                Rect::from_xywh(
+                  padding_rect.max_x() - arrow_space,
+                  rect.y(),
+                  arrow_space,
+                  rect.height(),
+                )
               };
               (arrow_rect, false)
             } else {
@@ -10186,7 +10267,12 @@ impl Painter {
               let arrow_rect = if style.direction == Direction::Rtl {
                 Rect::from_xywh(rect.x(), rect.y(), arrow_space, rect.height())
               } else {
-                Rect::from_xywh(rect.max_x() - arrow_space, rect.y(), arrow_space, rect.height())
+                Rect::from_xywh(
+                  rect.max_x() - arrow_space,
+                  rect.y(),
+                  arrow_space,
+                  rect.height(),
+                )
               };
               (arrow_rect, true)
             };
@@ -10384,80 +10470,81 @@ impl Painter {
           )
         };
 
-        let paint_outset_box_shadows = |painter: &mut Painter,
-                                        rect: Rect,
-                                        radii: BorderRadii,
-                                        style: &ComputedStyle,
-                                        clip_mask: Option<&Mask>| {
-          if style.box_shadow.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
-          }
-          let percentage_base = rect.width().max(0.0);
-          let device_rect = painter.device_rect(rect);
-          let device_radii = painter.device_radii(radii);
-          // CSS Backgrounds and Borders: box-shadow lists are ordered front-to-back (first is on
-          // top), but we paint back-to-front so later shadows don't cover earlier ones.
-          for shadow in style.box_shadow.iter().rev() {
-            if shadow.inset {
-              continue;
+        let paint_outset_box_shadows =
+          |painter: &mut Painter,
+           rect: Rect,
+           radii: BorderRadii,
+           style: &ComputedStyle,
+           clip_mask: Option<&Mask>| {
+            if style.box_shadow.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+              return;
             }
-            let offset_x = resolve_length_for_paint(
-              &shadow.offset_x,
-              style.font_size,
-              style.root_font_size,
-              percentage_base,
-              viewport,
-            );
-            let offset_y = resolve_length_for_paint(
-              &shadow.offset_y,
-              style.font_size,
-              style.root_font_size,
-              percentage_base,
-              viewport,
-            );
-            let blur_radius = resolve_length_for_paint(
-              &shadow.blur_radius,
-              style.font_size,
-              style.root_font_size,
-              percentage_base,
-              viewport,
-            )
-            .max(0.0);
-            let spread = resolve_length_for_paint(
-              &shadow.spread_radius,
-              style.font_size,
-              style.root_font_size,
-              percentage_base,
-              viewport,
-            )
-            .max(-1e6);
-            if !offset_x.is_finite()
-              || !offset_y.is_finite()
-              || !blur_radius.is_finite()
-              || !spread.is_finite()
-            {
-              continue;
+            let percentage_base = rect.width().max(0.0);
+            let device_rect = painter.device_rect(rect);
+            let device_radii = painter.device_radii(radii);
+            // CSS Backgrounds and Borders: box-shadow lists are ordered front-to-back (first is on
+            // top), but we paint back-to-front so later shadows don't cover earlier ones.
+            for shadow in style.box_shadow.iter().rev() {
+              if shadow.inset {
+                continue;
+              }
+              let offset_x = resolve_length_for_paint(
+                &shadow.offset_x,
+                style.font_size,
+                style.root_font_size,
+                percentage_base,
+                viewport,
+              );
+              let offset_y = resolve_length_for_paint(
+                &shadow.offset_y,
+                style.font_size,
+                style.root_font_size,
+                percentage_base,
+                viewport,
+              );
+              let blur_radius = resolve_length_for_paint(
+                &shadow.blur_radius,
+                style.font_size,
+                style.root_font_size,
+                percentage_base,
+                viewport,
+              )
+              .max(0.0);
+              let spread = resolve_length_for_paint(
+                &shadow.spread_radius,
+                style.font_size,
+                style.root_font_size,
+                percentage_base,
+                viewport,
+              )
+              .max(-1e6);
+              if !offset_x.is_finite()
+                || !offset_y.is_finite()
+                || !blur_radius.is_finite()
+                || !spread.is_finite()
+              {
+                continue;
+              }
+              let shadow = crate::paint::rasterize::BoxShadow {
+                offset_x: painter.device_length(offset_x),
+                offset_y: painter.device_length(offset_y),
+                blur_radius: painter.device_length(blur_radius),
+                spread_radius: painter.device_length(spread),
+                color: shadow.color,
+                inset: false,
+              };
+              let _ = crate::paint::rasterize::render_box_shadow_masked(
+                &mut painter.pixmap,
+                device_rect.x(),
+                device_rect.y(),
+                device_rect.width(),
+                device_rect.height(),
+                &device_radii,
+                &shadow,
+                clip_mask,
+              );
             }
-            let shadow = crate::paint::rasterize::BoxShadow {
-              offset_x: painter.device_length(offset_x),
-              offset_y: painter.device_length(offset_y),
-              blur_radius: painter.device_length(blur_radius),
-              spread_radius: painter.device_length(spread),
-              color: shadow.color,
-              inset: false,
-            };
-            let _ = crate::paint::rasterize::render_box_shadow_masked(
-              &mut painter.pixmap,
-              device_rect.x(),
-              device_rect.y(),
-              device_rect.width(),
-              device_rect.height(),
-              &device_radii,
-              &shadow,
-              clip_mask,
-            );
-          }
-        };
+          };
 
         let paint_rounded_border = |painter: &mut Painter,
                                     rect: Rect,
@@ -10513,11 +10600,19 @@ impl Painter {
 
         let default_knob_diameter = padding_rect.height().min(16.0);
         let knob_width = thumb_style
-          .and_then(|style| style.width.map(|len| resolve_px(style, len, padding_rect.width())))
+          .and_then(|style| {
+            style
+              .width
+              .map(|len| resolve_px(style, len, padding_rect.width()))
+          })
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
         let knob_height = thumb_style
-          .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
+          .and_then(|style| {
+            style
+              .height
+              .map(|len| resolve_px(style, len, padding_rect.height()))
+          })
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
 
@@ -10665,97 +10760,109 @@ impl Painter {
           )
         };
 
-        let paint_track = |painter: &mut Painter,
-                           clip_mask: Option<&Mask>,
-                           track_rect: Rect,
-                           track_height: f32| {
-          if let Some(track_style) = track_style {
-            let track_radii = resolve_border_radii(Some(track_style), track_rect);
-            paint_outset_box_shadows(painter, track_rect, track_radii, track_style, clip_mask);
-            painter.paint_background(
-              track_rect.x(),
-              track_rect.y(),
-              track_rect.width(),
-              track_rect.height(),
-              track_style,
-            );
-          } else {
-            let radii = BorderRadii::uniform(track_height / 2.0);
-            let device_track_rect = painter.device_rect(track_rect);
-            let device_radii = painter.device_radii(radii);
-            fill_rounded_rect_masked(
-              &mut painter.pixmap,
-              device_track_rect,
-              device_radii,
-              Rgba::rgb(190, 190, 190),
-              clip_mask,
-            );
-          }
-
-          if !appearance_none {
-            let filled_rect = if style.direction == crate::style::types::Direction::Rtl {
-              Rect::from_xywh(
-                knob_center_x,
-                track_rect.y(),
-                (track_rect.max_x() - knob_center_x).max(0.0),
-                track_rect.height(),
-              )
-            } else {
-              Rect::from_xywh(
+        let paint_track =
+          |painter: &mut Painter, clip_mask: Option<&Mask>, track_rect: Rect, track_height: f32| {
+            if let Some(track_style) = track_style {
+              let track_radii = resolve_border_radii(Some(track_style), track_rect);
+              paint_outset_box_shadows(painter, track_rect, track_radii, track_style, clip_mask);
+              painter.paint_background(
                 track_rect.x(),
                 track_rect.y(),
-                (knob_center_x - track_rect.x()).max(0.0),
+                track_rect.width(),
                 track_rect.height(),
-              )
-            };
-            if filled_rect.width() > 0.0 {
-              let radii = BorderRadii::uniform(track_height / 2.0)
-                .clamped(filled_rect.width(), filled_rect.height());
-              let device_fill_rect = painter.device_rect(filled_rect);
+                track_style,
+              );
+            } else {
+              let radii = BorderRadii::uniform(track_height / 2.0);
+              let device_track_rect = painter.device_rect(track_rect);
               let device_radii = painter.device_radii(radii);
               fill_rounded_rect_masked(
                 &mut painter.pixmap,
-                device_fill_rect,
+                device_track_rect,
                 device_radii,
-                muted_accent,
+                Rgba::rgb(190, 190, 190),
                 clip_mask,
               );
             }
-          }
 
-          if let Some(track_style) = track_style {
-            let device_track_rect = painter.device_rect(track_rect);
-            let device_radii = painter.device_radii(resolve_border_radii(Some(track_style), track_rect));
-            paint_rounded_border(
-              painter,
-              track_rect,
-              device_track_rect,
-              device_radii,
-              track_style,
-              clip_mask,
-            );
-          }
-        };
+            if !appearance_none {
+              let filled_rect = if style.direction == crate::style::types::Direction::Rtl {
+                Rect::from_xywh(
+                  knob_center_x,
+                  track_rect.y(),
+                  (track_rect.max_x() - knob_center_x).max(0.0),
+                  track_rect.height(),
+                )
+              } else {
+                Rect::from_xywh(
+                  track_rect.x(),
+                  track_rect.y(),
+                  (knob_center_x - track_rect.x()).max(0.0),
+                  track_rect.height(),
+                )
+              };
+              if filled_rect.width() > 0.0 {
+                let radii = BorderRadii::uniform(track_height / 2.0)
+                  .clamped(filled_rect.width(), filled_rect.height());
+                let device_fill_rect = painter.device_rect(filled_rect);
+                let device_radii = painter.device_radii(radii);
+                fill_rounded_rect_masked(
+                  &mut painter.pixmap,
+                  device_fill_rect,
+                  device_radii,
+                  muted_accent,
+                  clip_mask,
+                );
+              }
+            }
+
+            if let Some(track_style) = track_style {
+              let device_track_rect = painter.device_rect(track_rect);
+              let device_radii =
+                painter.device_radii(resolve_border_radii(Some(track_style), track_rect));
+              paint_rounded_border(
+                painter,
+                track_rect,
+                device_track_rect,
+                device_radii,
+                track_style,
+                clip_mask,
+              );
+            }
+          };
 
         if should_paint_track {
           let track_height = track_style
-            .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
+            .and_then(|style| {
+              style
+                .height
+                .map(|len| resolve_px(style, len, padding_rect.height()))
+            })
             .filter(|px| px.is_finite() && *px > 0.0)
             .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
 
           if track_height > 0.0 {
             let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-            let track_rect =
-              Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+            let track_rect = Rect::from_xywh(
+              padding_rect.x(),
+              track_y,
+              padding_rect.width(),
+              track_height,
+            );
             if let Some(track_style) = track_style {
               let track_opacity = track_style.opacity.clamp(0.0, 1.0);
               if track_opacity <= 0.0 {
                 // Fully transparent track pseudo-element.
               } else if track_opacity < 1.0 - 1e-6 {
                 let bounds = opacity_layer_bounds(track_rect, track_style);
-                self.paint_with_opacity_layer(track_opacity, bounds, clip_mask, |painter, layer_clip_mask| {
-                  paint_track(painter, layer_clip_mask, track_rect, track_height);
-                });
+                self.paint_with_opacity_layer(
+                  track_opacity,
+                  bounds,
+                  clip_mask,
+                  |painter, layer_clip_mask| {
+                    paint_track(painter, layer_clip_mask, track_rect, track_height);
+                  },
+                );
               } else {
                 paint_track(self, clip_mask, track_rect, track_height);
               }
@@ -10813,9 +10920,14 @@ impl Painter {
             // Fully transparent thumb pseudo-element.
           } else if thumb_opacity < 1.0 - 1e-6 {
             let bounds = opacity_layer_bounds(knob_rect, style_for_thumb);
-            self.paint_with_opacity_layer(thumb_opacity, bounds, clip_mask, |painter, layer_clip_mask| {
-              paint_thumb(painter, layer_clip_mask);
-            });
+            self.paint_with_opacity_layer(
+              thumb_opacity,
+              bounds,
+              clip_mask,
+              |painter, layer_clip_mask| {
+                paint_thumb(painter, layer_clip_mask);
+              },
+            );
           } else {
             paint_thumb(self, clip_mask);
           }
@@ -10843,9 +10955,13 @@ impl Painter {
               width: 1.0 * self.scale,
               ..Default::default()
             };
-            self
-              .pixmap
-              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), clip_mask);
+            self.pixmap.stroke_path(
+              &path,
+              &stroke_paint,
+              &stroke,
+              Transform::identity(),
+              clip_mask,
+            );
           }
         }
         true
@@ -10895,7 +11011,11 @@ impl Painter {
             track_rect.height(),
           )
         } else {
-          let denom = if *max > 0.0 && max.is_finite() { *max } else { 1.0 };
+          let denom = if *max > 0.0 && max.is_finite() {
+            *max
+          } else {
+            1.0
+          };
           let ratio = (*value / denom).clamp(0.0, 1.0);
           let fill_w = (track_rect.width() * ratio).max(0.0);
           let fill_x = if style.direction == crate::style::types::Direction::Rtl {
@@ -10903,12 +11023,7 @@ impl Painter {
           } else {
             track_rect.x()
           };
-          Rect::from_xywh(
-            fill_x,
-            track_rect.y(),
-            fill_w,
-            track_rect.height(),
-          )
+          Rect::from_xywh(fill_x, track_rect.y(), fill_w, track_rect.height())
         };
         if fill_rect.width() <= 0.0 {
           return true;
@@ -10991,12 +11106,7 @@ impl Painter {
         } else {
           track_rect.x()
         };
-        let fill_rect = Rect::from_xywh(
-          fill_x,
-          track_rect.y(),
-          fill_w,
-          track_rect.height(),
-        );
+        let fill_rect = Rect::from_xywh(fill_x, track_rect.y(), fill_w, track_rect.height());
         if fill_rect.width() <= 0.0 {
           return true;
         }
@@ -11041,7 +11151,11 @@ impl Painter {
           } else if optimum_zone == MeterZone::Mid {
             warn_color
           } else if optimum_zone == MeterZone::Low {
-            if value_zone == MeterZone::Mid { warn_color } else { bad_color }
+            if value_zone == MeterZone::Mid {
+              warn_color
+            } else {
+              bad_color
+            }
           } else if value_zone == MeterZone::Mid {
             warn_color
           } else {
@@ -11152,11 +11266,12 @@ impl Painter {
           .as_deref()
           .filter(|v| !v.is_empty())
           .map(|v| {
-            let name = v
-              .rsplit(|c| c == '/' || c == '\\')
-              .next()
-              .unwrap_or(v);
-            if name.is_empty() { v } else { name }
+            let name = v.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(v);
+            if name.is_empty() {
+              v
+            } else {
+              name
+            }
           })
           .unwrap_or("No file chosen");
 
@@ -11182,7 +11297,13 @@ impl Painter {
 
         let viewport = (self.css_width, self.css_height);
         let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
-          resolve_length_for_paint(&len, style.font_size, style.root_font_size, percentage_base, viewport)
+          resolve_length_for_paint(
+            &len,
+            style.font_size,
+            style.root_font_size,
+            percentage_base,
+            viewport,
+          )
         };
 
         let measured_button_text_w = measure_shaped_advance(self, button_label, &button_text_style);
@@ -11320,17 +11441,18 @@ impl Painter {
         }
 
         if button_rect.width() > 0.0 && button_rect.height() > 0.0 {
-          let label_rect = if let Some(size) = self.measure_alt_text(button_label, &button_text_style) {
-            let start_x = button_rect.x() + ((button_rect.width() - size.width).max(0.0) / 2.0);
-            Rect::from_xywh(
-              start_x,
-              button_rect.y(),
-              size.width.min(button_rect.width()),
-              button_rect.height(),
-            )
-          } else {
-            button_rect
-          };
+          let label_rect =
+            if let Some(size) = self.measure_alt_text(button_label, &button_text_style) {
+              let start_x = button_rect.x() + ((button_rect.width() - size.width).max(0.0) / 2.0);
+              Rect::from_xywh(
+                start_x,
+                button_rect.y(),
+                size.width.min(button_rect.width()),
+                button_rect.height(),
+              )
+            } else {
+              button_rect
+            };
           let _ = self.paint_alt_text(button_label, &button_text_style, label_rect, clip_mask);
         }
 
@@ -11504,10 +11626,11 @@ impl Painter {
         }
       }
     } else {
-      match self
-        .image_cache
-        .load_with_crossorigin_and_referrer_policy(&resolved_src, crossorigin, referrer_policy)
-      {
+      match self.image_cache.load_with_crossorigin_and_referrer_policy(
+        &resolved_src,
+        crossorigin,
+        referrer_policy,
+      ) {
         Ok(img) => img,
         Err(e) => {
           if log_image_fail {
@@ -11605,12 +11728,7 @@ impl Painter {
         let resolved_svg = if contains_foreign_object_tag(svg) {
           let foreign_object_dpr =
             crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-              svg,
-              self.scale,
-              dest_w,
-              dest_h,
-              img_w_css,
-              img_h_css,
+              svg, self.scale, dest_w, dest_h, img_w_css, img_h_css,
             );
           crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
             svg,
@@ -11844,12 +11962,7 @@ impl Painter {
       let resolved_svg = if contains_foreign_object_tag(content) {
         let foreign_object_dpr =
           crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-            content,
-            self.scale,
-            dest_w,
-            dest_h,
-            img_w_css,
-            img_h_css,
+            content, self.scale, dest_w, dest_h, img_w_css, img_h_css,
           );
         crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
           content,
@@ -11965,12 +12078,7 @@ impl Painter {
         let resolved_svg = if contains_foreign_object_tag(svg) {
           let foreign_object_dpr =
             crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-              svg,
-              self.scale,
-              dest_w,
-              dest_h,
-              img_w_css,
-              img_h_css,
+              svg, self.scale, dest_w, dest_h, img_w_css, img_h_css,
             );
           crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
             svg,
@@ -12427,7 +12535,10 @@ impl Painter {
       }
 
       let should_wrap = break_opportunity.is_some_and(|brk| {
-        if matches!(brk.break_type, crate::text::line_break::BreakType::Mandatory) {
+        if matches!(
+          brk.break_type,
+          crate::text::line_break::BreakType::Mandatory
+        ) {
           preserves_newlines
         } else {
           allows_soft_wrap && remaining.advance > line_rect.width()
@@ -12502,8 +12613,9 @@ impl Painter {
 
       // Either the remaining text fits, wrapping is disabled, or we couldn't split cleanly.
       let start_x = Self::aligned_text_start_x(style, line_rect, remaining.advance);
-      let half_leading =
-        (remaining.metrics.line_height - (remaining.metrics.ascent + remaining.metrics.descent)) / 2.0;
+      let half_leading = (remaining.metrics.line_height
+        - (remaining.metrics.ascent + remaining.metrics.descent))
+        / 2.0;
       let baseline_y = y + half_leading + remaining.metrics.baseline_offset;
 
       self.paint_shaped_runs(
@@ -12684,8 +12796,12 @@ impl Painter {
         let resolved = if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size).unwrap_or(0.0)
         } else if l.unit.is_viewport_relative() {
-          l.resolve_with_viewport_for_writing_mode(self.css_width, self.css_height, style.writing_mode)
-            .unwrap_or_else(|| l.to_px())
+          l.resolve_with_viewport_for_writing_mode(
+            self.css_width,
+            self.css_height,
+            style.writing_mode,
+          )
+          .unwrap_or_else(|| l.to_px())
         } else {
           resolve_font_relative_length(l, style, &self.font_ctx)
         };
@@ -12819,8 +12935,12 @@ impl Painter {
         if l.unit == LengthUnit::Percent {
           Some(l.resolve_against(style.font_size).unwrap_or(0.0) * self.scale)
         } else if l.unit.is_viewport_relative() {
-          l.resolve_with_viewport_for_writing_mode(self.css_width, self.css_height, style.writing_mode)
-            .map(|v| v * self.scale)
+          l.resolve_with_viewport_for_writing_mode(
+            self.css_width,
+            self.css_height,
+            style.writing_mode,
+          )
+          .map(|v| v * self.scale)
         } else {
           Some(resolve_font_relative_length(l, style, &self.font_ctx) * self.scale)
         }
@@ -14172,7 +14292,8 @@ impl Painter {
         };
 
         let mut cluster_advance = 0.0_f32;
-        while glyph_idx < run.glyphs.len() && run.glyphs[glyph_idx].cluster as usize == cluster_start
+        while glyph_idx < run.glyphs.len()
+          && run.glyphs[glyph_idx].cluster as usize == cluster_start
         {
           let glyph = &run.glyphs[glyph_idx];
           let inline_advance = if inline_vertical {
@@ -14229,12 +14350,12 @@ impl Painter {
 
           match style.text_emphasis_style {
             crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
-              let default_shape =
-                if crate::style::is_vertical_typographic_mode(style.writing_mode) {
-                  crate::style::types::TextEmphasisShape::Sesame
-                } else {
-                  crate::style::types::TextEmphasisShape::Circle
-                };
+              let default_shape = if crate::style::is_vertical_typographic_mode(style.writing_mode)
+              {
+                crate::style::types::TextEmphasisShape::Sesame
+              } else {
+                crate::style::types::TextEmphasisShape::Circle
+              };
               let shape = shape.unwrap_or(default_shape);
               self.draw_emphasis_mark(
                 mark_center_x,
@@ -14565,10 +14686,10 @@ fn decode_data_url_to_string(data_url: &str) -> Result<String> {
     data_url,
     MAX_IMPORTED_CSS_BYTES.saturating_add(1),
   )
-    .map(|resource| resource.bytes)
-    .map_err(|err| RenderError::InvalidParameters {
-      message: format!("Invalid data URL: {err}"),
-    })?;
+  .map(|resource| resource.bytes)
+  .map_err(|err| RenderError::InvalidParameters {
+    message: format!("Invalid data URL: {err}"),
+  })?;
 
   if decoded.len() > MAX_IMPORTED_CSS_BYTES {
     return Err(
@@ -14666,8 +14787,7 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
               RenderError::InvalidParameters {
                 message: format!(
                   "@import stylesheet exceeds {} bytes: {}",
-                  MAX_IMPORTED_CSS_BYTES,
-                  resolved
+                  MAX_IMPORTED_CSS_BYTES, resolved
                 ),
               }
               .into(),
@@ -14702,8 +14822,7 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
               RenderError::InvalidParameters {
                 message: format!(
                   "@import stylesheet exceeds {} bytes: {}",
-                  MAX_IMPORTED_CSS_BYTES,
-                  resolved
+                  MAX_IMPORTED_CSS_BYTES, resolved
                 ),
               }
               .into(),
@@ -14822,12 +14941,7 @@ fn stacking_context_bounds(
     let mut projected = [Point::ZERO; 4];
     for (idx, corner) in corners.iter().enumerate() {
       let (tx, ty, _tz, tw) = transform.transform_point(corner.x, corner.y, 0.0);
-      if !tx.is_finite()
-        || !ty.is_finite()
-        || !tw.is_finite()
-        || tw.abs() < 1e-6
-        || tw < 0.0
-      {
+      if !tx.is_finite() || !ty.is_finite() || !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0 {
         return None;
       }
       projected[idx] = Point::new(tx / tw, ty / tw);
@@ -14845,7 +14959,14 @@ fn stacking_context_bounds(
   let outline_bounds = compute_outline_bounds(commands);
   if let Some(desc) = compute_descendant_bounds(commands, rect, viewport, clip_root) {
     let clipped = if let Some(clip) = clip {
-      clip_non_outline(commands, desc, clip.rect, clip.clip_x, clip.clip_y, viewport)
+      clip_non_outline(
+        commands,
+        desc,
+        clip.rect,
+        clip.clip_x,
+        clip.clip_y,
+        viewport,
+      )
     } else {
       desc
     };
@@ -15079,7 +15200,9 @@ fn resolve_filter_length(
   }
 
   if len.unit.is_container_query_relative()
-    || len.calc.is_some_and(|calc| calc.has_container_query_relative())
+    || len
+      .calc
+      .is_some_and(|calc| calc.has_container_query_relative())
   {
     return None;
   }
@@ -15613,14 +15736,14 @@ fn apply_spread_alpha_horizontal(
         })?,
     )
     .ok_or(RenderError::InvalidParameters {
-      message: format!(
-        "drop shadow spread: buffer size overflow (width={width}, radius={radius})"
-      ),
+      message: format!("drop shadow spread: buffer size overflow (width={width}, radius={radius})"),
     })?;
 
-  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
-    message: format!("drop shadow spread: window size overflow (radius={radius})"),
-  })?;
+  let queue_capacity = window_size
+    .checked_add(1)
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
   let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
   queue
     .try_reserve_exact(queue_capacity)
@@ -15716,9 +15839,11 @@ fn apply_spread_alpha_vertical(
       ),
     })?;
 
-  let queue_capacity = window_size.checked_add(1).ok_or(RenderError::InvalidParameters {
-    message: format!("drop shadow spread: window size overflow (radius={radius})"),
-  })?;
+  let queue_capacity = window_size
+    .checked_add(1)
+    .ok_or(RenderError::InvalidParameters {
+      message: format!("drop shadow spread: window size overflow (radius={radius})"),
+    })?;
   let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
   queue
     .try_reserve_exact(queue_capacity)
@@ -17356,9 +17481,12 @@ fn paint_mask_border_patch(
   // number of tiles (e.g. a huge width with a near-zero height and repeat-x=space).
   const MAX_BORDER_IMAGE_TILES_PER_AXIS: f32 = 4096.0;
   let paint_repeated_patch = |dest: &mut Pixmap| {
-    let Some(dest_sk_rect) =
-      SkiaRect::from_xywh(clip_rect.x(), clip_rect.y(), clip_rect.width(), clip_rect.height())
-    else {
+    let Some(dest_sk_rect) = SkiaRect::from_xywh(
+      clip_rect.x(),
+      clip_rect.y(),
+      clip_rect.width(),
+      clip_rect.height(),
+    ) else {
       return;
     };
     let mut paint = Paint::default();
@@ -17727,7 +17855,11 @@ fn compute_background_size(
         if area_w <= 0.0 || area_h <= 0.0 {
           return (area_w, area_h);
         }
-        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        let area_ratio = if area_h != 0.0 {
+          area_w / area_h
+        } else {
+          f32::INFINITY
+        };
         if area_ratio > ratio {
           (area_w, area_w / ratio)
         } else {
@@ -17744,7 +17876,11 @@ fn compute_background_size(
         if area_w <= 0.0 || area_h <= 0.0 {
           return (area_w, area_h);
         }
-        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        let area_ratio = if area_h != 0.0 {
+          area_w / area_h
+        } else {
+          f32::INFINITY
+        };
         if area_ratio > ratio {
           (area_h * ratio, area_h)
         } else {
@@ -17798,7 +17934,11 @@ fn compute_background_size(
             if area_w <= 0.0 || area_h <= 0.0 {
               (area_w, area_h)
             } else {
-              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+              let area_ratio = if area_h != 0.0 {
+                area_w / area_h
+              } else {
+                f32::INFINITY
+              };
               if area_ratio > ratio {
                 (area_h * ratio, area_h)
               } else {
@@ -18499,7 +18639,9 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
     Some(budget) => {
       let cancel = active_deadline().and_then(|deadline| deadline.cancel_callback());
       let deadline = RenderDeadline::new(Some(budget), cancel);
-      with_deadline(Some(&deadline), || optimizer.optimize_checked(display_list, viewport_rect))
+      with_deadline(Some(&deadline), || {
+        optimizer.optimize_checked(display_list, viewport_rect)
+      })
     }
     None => optimizer.optimize_checked(display_list, viewport_rect),
   };
@@ -18998,8 +19140,8 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::text::font_loader::FontContext;
   use crate::tree::box_tree::CrossOriginAttribute;
-  use crate::tree::box_tree::ImageDecodingAttribute;
   use crate::tree::box_tree::ForeignObjectInfo;
+  use crate::tree::box_tree::ImageDecodingAttribute;
   use crate::tree::box_tree::SrcsetCandidate;
   use crate::tree::box_tree::SrcsetDescriptor;
   use crate::Position;
@@ -19094,15 +19236,9 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_measure_alt_text_does_not_trim_nbsp() {
     let font_ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
-    let painter = Painter::with_resources_scaled(
-      10,
-      10,
-      Rgba::TRANSPARENT,
-      font_ctx,
-      ImageCache::new(),
-      1.0,
-    )
-    .expect("painter");
+    let painter =
+      Painter::with_resources_scaled(10, 10, Rgba::TRANSPARENT, font_ctx, ImageCache::new(), 1.0)
+        .expect("painter");
     let style = ComputedStyle::default();
     assert!(painter.measure_alt_text(" ", &style).is_none());
     assert!(painter.measure_alt_text("\u{00A0}", &style).is_some());
@@ -19131,15 +19267,9 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(Arc::new(fetcher));
 
     let font_ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
-    let mut painter = Painter::with_resources_scaled(
-      10,
-      10,
-      Rgba::TRANSPARENT,
-      font_ctx,
-      image_cache,
-      1.0,
-    )
-    .expect("painter");
+    let mut painter =
+      Painter::with_resources_scaled(10, 10, Rgba::TRANSPARENT, font_ctx, image_cache, 1.0)
+        .expect("painter");
 
     let svg = "\u{00A0}<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"></svg>";
     let painted = painter.paint_svg(svg, None, 0.0, 0.0, 10.0, 10.0, None);
@@ -19186,8 +19316,8 @@ mod tests {
     let bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
     painter.paint_with_opacity_layer(0.5, bounds, Some(&mask), |layer, clip| {
       let rect = layer.device_rect(bounds);
-      let sk_rect = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height())
-        .expect("rect");
+      let sk_rect =
+        SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height()).expect("rect");
       let path = PathBuilder::from_rect(sk_rect);
 
       let mut blue = Paint::default();
@@ -19318,15 +19448,17 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(
-        &foreign,
-        "data:image/png;base64,abc",
-        0,
-        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      )
-      .expect("foreignObject image tag");
-    assert!(!output.contains("<g"), "visible overflow should not introduce wrapper groups");
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+    )
+    .expect("foreignObject image tag");
+    assert!(
+      !output.contains("<g"),
+      "visible overflow should not introduce wrapper groups"
+    );
     assert_eq!(output.match_indices("clip-path=").count(), 1);
     assert!(output.contains("clip-path=\"url(#foo)\""));
   }
@@ -19351,20 +19483,16 @@ mod tests {
       overflow_y: Overflow::Hidden,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(
-        &foreign,
-        "data:image/png;base64,abc",
-        0,
-        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
     )
-      .expect("foreignObject image tag");
+    .expect("foreignObject image tag");
     assert!(output.contains("<g clip-path=\"url(#foo)\">"));
     let clip_prefix = "<clipPath id=\"";
-    let clip_start = output
-      .find(clip_prefix)
-      .expect("clipPath start")
-      + clip_prefix.len();
+    let clip_start = output.find(clip_prefix).expect("clipPath start") + clip_prefix.len();
     let clip_end = clip_start + output[clip_start..].find('"').expect("clipPath id end");
     let clip_id = &output[clip_start..clip_end];
     assert!(
@@ -19398,16 +19526,16 @@ mod tests {
       overflow_y: Overflow::Clip,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(
-        &foreign,
-        "data:image/png;base64,abc",
-        0,
-        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      )
-      .expect("foreignObject image tag");
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+    )
+    .expect("foreignObject image tag");
     assert!(
-      output.contains("<rect x=\"-1.000000\" y=\"0.000000\" width=\"3.000000\" height=\"1.000000\""),
+      output
+        .contains("<rect x=\"-1.000000\" y=\"0.000000\" width=\"3.000000\" height=\"1.000000\""),
       "expected clip rect to extend in x for visible overflow, got {output:?}"
     );
   }
@@ -19429,16 +19557,16 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(
-        &foreign,
-        "data:image/png;base64,abc",
-        0,
-        Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      )
-      .expect("foreignObject image tag");
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+      Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
+    )
+    .expect("foreignObject image tag");
     assert!(
-      output.contains("<rect x=\"0.000000\" y=\"-1.000000\" width=\"1.000000\" height=\"3.000000\""),
+      output
+        .contains("<rect x=\"0.000000\" y=\"-1.000000\" width=\"1.000000\" height=\"3.000000\""),
       "expected clip rect to extend in y for visible overflow, got {output:?}"
     );
   }
@@ -22214,17 +22342,8 @@ mod tests {
     assert!((tw - 30.0).abs() < 0.01);
     assert!((th - 10.0).abs() < 0.01);
 
-    let (tw, th) = compute_background_size(
-      &layer,
-      16.0,
-      16.0,
-      (50.0, 60.0),
-      50.0,
-      60.0,
-      0.0,
-      0.0,
-      None,
-    );
+    let (tw, th) =
+      compute_background_size(&layer, 16.0, 16.0, (50.0, 60.0), 50.0, 60.0, 0.0, 0.0, None);
     assert!((tw - 50.0).abs() < 0.01);
     assert!((th - 60.0).abs() < 0.01);
   }

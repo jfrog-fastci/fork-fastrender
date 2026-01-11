@@ -1,3 +1,4 @@
+use crate::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
 
 /// Internal, non-DOM-visible interaction state for a single document/tab.
@@ -105,6 +106,8 @@ pub struct TextEditPaintState {
   pub node_id: usize,
   /// Caret position in character indices.
   pub caret: usize,
+  /// Visual affinity for the caret when the logical boundary maps to multiple x positions.
+  pub caret_affinity: CaretAffinity,
   /// Optional selection range in character indices (start, end), where `start < end`.
   pub selection: Option<(usize, usize)>,
 }

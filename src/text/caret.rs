@@ -1,3 +1,20 @@
+//! Caret positioning utilities for shaped text.
+//!
+//! FastRender shapes text into bidi-reordered [`ShapedRun`]s. Mapping between logical character
+//! boundaries (character indices) and visual x positions is not always one-to-one:
+//!
+//! - Within a single run, a logical caret boundary maps to a single visual x.
+//! - At LTR/RTL run boundaries a single logical boundary can have **two** valid visual caret
+//!   positions (a "split caret"), one attached to the upstream run and one attached to the
+//!   downstream run.
+//!
+//! This module provides:
+//!
+//! - `x_for_char_idx` / `char_idx_for_x` / `selection_segments_for_char_range`: helpers that pick a
+//!   single x for a given logical boundary.
+//! - `CaretAffinity` + `CaretStop` + `caret_stops_for_runs`: a full visual caret stop list that can
+//!   represent split caret boundaries.
+
 use crate::text::pipeline::ShapedRun;
 
 const DEFAULT_FALLBACK_FONT_SIZE_PX: f32 = 16.0;
@@ -18,7 +35,16 @@ fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
   value.clamp(min, max)
 }
 
+fn run_advance(run: &ShapedRun) -> f32 {
+  if run.advance.is_finite() {
+    run.advance.max(0.0)
+  } else {
+    0.0
+  }
+}
+
 fn char_boundary_byte_offsets(text: &str) -> Vec<usize> {
+  // `char_indices` already yields the 0 boundary for non-empty strings.
   let mut out: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
   out.push(text.len());
   out
@@ -52,32 +78,49 @@ fn run_visual_positions(runs: &[ShapedRun]) -> Vec<RunVisualPosition<'_>> {
   let mut out = Vec::with_capacity(runs.len());
   for run in runs {
     out.push(RunVisualPosition { run, start_x: pen_x });
-    let advance = if run.advance.is_finite() { run.advance.max(0.0) } else { 0.0 };
-    pen_x += advance;
+    pen_x += run_advance(run);
   }
   out
 }
 
-fn prefix_width_for_local_byte(run: &ShapedRun, local_byte: usize) -> f32 {
-  let mut width = 0.0f32;
-  for glyph in &run.glyphs {
-    if (glyph.cluster as usize) < local_byte {
-      width += glyph.x_advance;
+fn x_within_run_for_local_byte(run: &ShapedRun, local_byte: usize) -> f32 {
+  let advance = run_advance(run);
+  let local_byte = local_byte.min(run.end.saturating_sub(run.start));
+
+  if run.glyphs.is_empty() {
+    let x = if run.direction.is_rtl() {
+      if local_byte == 0 { advance } else { 0.0 }
+    } else {
+      if local_byte == 0 { 0.0 } else { advance }
+    };
+    return clamp_f32(x, 0.0, advance);
+  }
+
+  let mut x = 0.0f32;
+  if run.direction.is_rtl() {
+    // HarfBuzz emits RTL runs in visual order (left-to-right) with clusters in descending order.
+    for glyph in &run.glyphs {
+      let cluster = glyph.cluster as usize;
+      if cluster < local_byte {
+        break;
+      }
+      x += glyph.x_advance;
+    }
+  } else {
+    // LTR: clusters are non-decreasing.
+    for glyph in &run.glyphs {
+      let cluster = glyph.cluster as usize;
+      if cluster >= local_byte {
+        break;
+      }
+      x += glyph.x_advance;
     }
   }
-  if width.is_finite() { width.max(0.0) } else { 0.0 }
-}
 
-fn x_within_run_for_local_byte(run: &ShapedRun, local_byte: usize) -> f32 {
-  let advance = if run.advance.is_finite() { run.advance.max(0.0) } else { 0.0 };
-  let prefix = prefix_width_for_local_byte(run, local_byte);
-  let mut x_local = if run.direction.is_rtl() {
-    advance - prefix
-  } else {
-    prefix
-  };
-  x_local = clamp_f32(x_local, 0.0, advance);
-  x_local
+  if !x.is_finite() {
+    x = 0.0;
+  }
+  clamp_f32(x, 0.0, advance)
 }
 
 fn x_for_byte_offset(text: &str, runs: &[ShapedRun], byte_offset: usize) -> Option<f32> {
@@ -95,6 +138,27 @@ fn x_for_byte_offset(text: &str, runs: &[ShapedRun], byte_offset: usize) -> Opti
       let local_byte = byte_offset.saturating_sub(pos.run.start);
       let x = pos.start_x + x_within_run_for_local_byte(pos.run, local_byte);
       return Some(x);
+    }
+  }
+  candidate_at_end.map(|pos| {
+    let local_byte = byte_offset.saturating_sub(pos.run.start);
+    pos.start_x + x_within_run_for_local_byte(pos.run, local_byte)
+  })
+}
+
+fn x_for_byte_offset_with_positions(
+  text_len: usize,
+  positions: &[RunVisualPosition<'_>],
+  byte_offset: usize,
+) -> Option<f32> {
+  let mut candidate_at_end: Option<RunVisualPosition<'_>> = None;
+  for pos in positions {
+    if byte_offset == text_len && pos.run.end == byte_offset {
+      candidate_at_end = Some(*pos);
+    }
+    if pos.run.start <= byte_offset && byte_offset < pos.run.end {
+      let local_byte = byte_offset.saturating_sub(pos.run.start);
+      return Some(pos.start_x + x_within_run_for_local_byte(pos.run, local_byte));
     }
   }
   candidate_at_end.map(|pos| {
@@ -179,27 +243,6 @@ pub fn char_idx_for_x(text: &str, runs: &[ShapedRun], x: f32) -> usize {
   best_idx
 }
 
-fn x_for_byte_offset_with_positions(
-  text_len: usize,
-  positions: &[RunVisualPosition<'_>],
-  byte_offset: usize,
-) -> Option<f32> {
-  let mut candidate_at_end: Option<RunVisualPosition<'_>> = None;
-  for pos in positions {
-    if byte_offset == text_len && pos.run.end == byte_offset {
-      candidate_at_end = Some(*pos);
-    }
-    if pos.run.start <= byte_offset && byte_offset < pos.run.end {
-      let local_byte = byte_offset.saturating_sub(pos.run.start);
-      return Some(pos.start_x + x_within_run_for_local_byte(pos.run, local_byte));
-    }
-  }
-  candidate_at_end.map(|pos| {
-    let local_byte = byte_offset.saturating_sub(pos.run.start);
-    pos.start_x + x_within_run_for_local_byte(pos.run, local_byte)
-  })
-}
-
 /// Maps a logical selection range (`start..end` in character indices) to one or more visual
 /// segments.
 ///
@@ -241,7 +284,7 @@ pub fn selection_segments_for_char_range(
   let mut pen_x = 0.0f32;
   for run in runs {
     let run_start_x = pen_x;
-    let run_advance = if run.advance.is_finite() { run.advance.max(0.0) } else { 0.0 };
+    let run_advance = run_advance(run);
     pen_x += run_advance;
 
     let overlap_start = start_byte.max(run.start);
@@ -265,12 +308,189 @@ pub fn selection_segments_for_char_range(
   segments
 }
 
+/// Which side of a logical caret boundary the caret is visually associated with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaretAffinity {
+  /// The caret is associated with the text *before* the boundary.
+  Upstream,
+  /// The caret is associated with the text *after* the boundary.
+  Downstream,
+}
+
+impl Default for CaretAffinity {
+  fn default() -> Self {
+    Self::Downstream
+  }
+}
+
+/// A single caret stop in visual (x) order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaretStop {
+  /// Character boundary index (Unicode scalar value index, not bytes).
+  pub char_idx: usize,
+  /// X position in CSS px relative to the start of the shaped line (0 = left edge).
+  pub x: f32,
+  /// Affinity for this caret stop.
+  pub affinity: CaretAffinity,
+}
+
+fn char_idx_for_byte(boundaries: &[usize], byte_idx: usize) -> usize {
+  match boundaries.binary_search(&byte_idx) {
+    Ok(idx) => idx,
+    Err(idx) => idx,
+  }
+}
+
+fn x_for_byte_in_run(run: &ShapedRun, target_byte: usize) -> f32 {
+  let target_byte = target_byte.clamp(run.start, run.end);
+  let local_byte = target_byte.saturating_sub(run.start);
+  x_within_run_for_local_byte(run, local_byte)
+}
+
+/// Build a list of visual caret stops from shaped runs.
+///
+/// The returned stops are ordered in the same visual order as the shaped runs: left-to-right in
+/// physical x coordinates. Stops can share the same `char_idx` when a logical boundary has two
+/// distinct visual positions (split caret).
+pub fn caret_stops_for_runs(text: &str, runs: &[ShapedRun], fallback_advance: f32) -> Vec<CaretStop> {
+  let boundaries = char_boundary_byte_offsets(text);
+  let char_count = boundaries.len().saturating_sub(1);
+  if char_count == 0 {
+    return vec![CaretStop {
+      char_idx: 0,
+      x: 0.0,
+      affinity: CaretAffinity::Downstream,
+    }];
+  }
+
+  if runs.is_empty() {
+    // No shaping: fall back to uniform advance across the available width.
+    let total = if fallback_advance.is_finite() {
+      fallback_advance.max(0.0)
+    } else {
+      0.0
+    };
+    let avg = if char_count > 0 {
+      total / char_count as f32
+    } else {
+      0.0
+    };
+    return (0..=char_count)
+      .map(|char_idx| CaretStop {
+        char_idx,
+        x: avg * char_idx as f32,
+        affinity: if char_idx == char_count {
+          CaretAffinity::Upstream
+        } else {
+          CaretAffinity::Downstream
+        },
+      })
+      .collect();
+  }
+
+  let mut out: Vec<CaretStop> = Vec::new();
+  let mut run_origin_x = 0.0f32;
+
+  for run in runs {
+    let start_char = char_idx_for_byte(&boundaries, run.start);
+    let end_char = char_idx_for_byte(&boundaries, run.end);
+    let (min_char, max_char) = if start_char <= end_char {
+      (start_char, end_char)
+    } else {
+      (end_char, start_char)
+    };
+
+    let mut push_boundary = |char_idx: usize, x_local: f32, is_end: bool| {
+      let affinity = if is_end {
+        CaretAffinity::Upstream
+      } else {
+        CaretAffinity::Downstream
+      };
+      let x = run_origin_x + x_local;
+      if let Some(prev) = out.last() {
+        if prev.char_idx == char_idx && (prev.x - x).abs() <= 1e-3 {
+          // Collapse identical duplicate stops (e.g. font fallback splitting a run without changing
+          // direction/level). Keep the existing stop to preserve stable ordering.
+          return;
+        }
+      }
+      out.push(CaretStop {
+        char_idx,
+        x,
+        affinity,
+      });
+    };
+
+    if run.direction.is_rtl() {
+      for char_idx in (min_char..=max_char).rev() {
+        let byte_idx = boundaries
+          .get(char_idx)
+          .copied()
+          .unwrap_or(run.end)
+          .clamp(run.start, run.end);
+        let x_local = x_for_byte_in_run(run, byte_idx);
+        push_boundary(char_idx, x_local, byte_idx == run.end);
+      }
+    } else {
+      for char_idx in min_char..=max_char {
+        let byte_idx = boundaries
+          .get(char_idx)
+          .copied()
+          .unwrap_or(run.end)
+          .clamp(run.start, run.end);
+        let x_local = x_for_byte_in_run(run, byte_idx);
+        push_boundary(char_idx, x_local, byte_idx == run.end);
+      }
+    }
+
+    run_origin_x += run_advance(run);
+  }
+
+  out
+}
+
+/// Find the caret stop index matching the given logical caret position.
+///
+/// This prefers an exact `(char_idx, affinity)` match. If none exists (e.g. callers provide a
+/// default affinity at a boundary that only has an upstream stop), it falls back to a downstream
+/// stop, then to the first stop with the same `char_idx`.
+pub fn caret_stop_index(stops: &[CaretStop], char_idx: usize, affinity: CaretAffinity) -> Option<usize> {
+  if stops.is_empty() {
+    return None;
+  }
+
+  let mut fallback_downstream: Option<usize> = None;
+  let mut fallback_any: Option<usize> = None;
+
+  for (idx, stop) in stops.iter().enumerate() {
+    if stop.char_idx != char_idx {
+      continue;
+    }
+    fallback_any.get_or_insert(idx);
+    if stop.affinity == CaretAffinity::Downstream {
+      fallback_downstream.get_or_insert(idx);
+    }
+    if stop.affinity == affinity {
+      return Some(idx);
+    }
+  }
+
+  fallback_downstream.or(fallback_any)
+}
+
+/// Resolve an x coordinate for the given caret position.
+pub fn caret_x_for_position(stops: &[CaretStop], char_idx: usize, affinity: CaretAffinity) -> Option<f32> {
+  let idx = caret_stop_index(stops, char_idx, affinity)?;
+  Some(stops[idx].x)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
   use crate::style::color::Rgba;
   use crate::text::font_db::{FontStretch, FontWeight, LoadedFont};
-  use crate::text::pipeline::{Direction, GlyphPosition, ShapedRun};
+  use crate::text::pipeline::{Direction, GlyphPosition, RunRotation, ShapedRun};
   use rustybuzz::Feature;
   use std::sync::Arc;
 
@@ -323,7 +543,7 @@ mod tests {
       features: Arc::<[Feature]>::from(Vec::<Feature>::new().into_boxed_slice()),
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
-      rotation: crate::text::pipeline::RunRotation::None,
+      rotation: RunRotation::None,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::<(u16, Rgba)>::new()),
       palette_override_hash: 0,
@@ -383,5 +603,85 @@ mod tests {
     // RTL run occupies x=[0,2], selects "C" -> segment (1,2). LTR run occupies x=[2,4],
     // selects "b" -> segment (3,4).
     assert_eq!(segments, vec![(1.0, 2.0), (3.0, 4.0)]);
+  }
+
+  #[test]
+  fn caret_stops_for_empty_text_returns_single_stop() {
+    let stops = caret_stops_for_runs("", &[], 0.0);
+    assert_eq!(stops.len(), 1);
+    assert_eq!(
+      stops[0],
+      CaretStop {
+        char_idx: 0,
+        x: 0.0,
+        affinity: CaretAffinity::Downstream,
+      }
+    );
+  }
+
+  #[test]
+  fn caret_stops_include_split_caret_for_mixed_direction_text() {
+    use crate::style::ComputedStyle;
+    use crate::text::font_loader::FontContext;
+    use crate::text::pipeline::ShapingPipeline;
+
+    let text = "ABC אבג";
+    let style = ComputedStyle::default();
+    let ctx = FontContext::new();
+    let runs = ShapingPipeline::new().shape(text, &style, &ctx).expect("shape");
+    let stops = caret_stops_for_runs(text, &runs, 0.0);
+
+    let split: Vec<&CaretStop> = stops.iter().filter(|s| s.char_idx == 4).collect();
+    assert!(
+      split.len() >= 2,
+      "expected split caret stops at boundary char_idx=4; stops={:?}",
+      stops
+    );
+
+    let distinct_x: std::collections::HashSet<i32> =
+      split.iter().map(|s| (s.x * 10.0).round() as i32).collect();
+    assert!(
+      distinct_x.len() >= 2,
+      "expected split caret stops to have different x positions; split={split:?}"
+    );
+  }
+
+  #[test]
+  fn caret_stop_navigation_traverses_both_affinities() {
+    use crate::style::ComputedStyle;
+    use crate::text::font_loader::FontContext;
+    use crate::text::pipeline::ShapingPipeline;
+
+    let text = "ABC אבג";
+    let style = ComputedStyle::default();
+    let ctx = FontContext::new();
+    let runs = ShapingPipeline::new().shape(text, &style, &ctx).expect("shape");
+    let stops = caret_stops_for_runs(text, &runs, 0.0);
+
+    let indices: Vec<usize> = stops
+      .iter()
+      .enumerate()
+      .filter(|(_, s)| s.char_idx == 4)
+      .map(|(idx, _)| idx)
+      .collect();
+    assert!(indices.len() >= 2, "expected at least two stops for char_idx=4");
+
+    // Starting from the leftmost stop at char_idx=4, walk forward until we reach another stop with
+    // the same logical boundary. This mirrors ArrowRight repeatedly stepping through visual stops.
+    let start = indices[0];
+    let mut idx = start;
+    let mut saw_second = false;
+    while idx + 1 < stops.len() {
+      idx += 1;
+      if stops[idx].char_idx == 4 && (stops[idx].x - stops[start].x).abs() > 1e-3 {
+        saw_second = true;
+        break;
+      }
+    }
+    assert!(
+      saw_second,
+      "expected visual caret navigation to encounter the second split caret stop; stops={:?}",
+      stops
+    );
   }
 }

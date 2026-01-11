@@ -1291,7 +1291,9 @@ fn svg_inlined_presentation_attr(name: &str) -> bool {
 }
 
 fn attrs_need_svg_inlined_presentation_stripping(attrs: &[(String, String)]) -> bool {
-  attrs.iter().any(|(name, _)| svg_inlined_presentation_attr(name))
+  attrs
+    .iter()
+    .any(|(name, _)| svg_inlined_presentation_attr(name))
 }
 
 fn strip_svg_inlined_presentation_attrs(attrs: &mut Vec<(String, String)>) {
@@ -2375,7 +2377,10 @@ fn serialize_svg_mask_subtree_with_namespaces(
 
       if current_ns == SVG_NAMESPACE {
         if is_root {
-          merge_style_attribute(&mut attrs, &format!("color: {}", format_css_color(styled.styles.color)));
+          merge_style_attribute(
+            &mut attrs,
+            &format!("color: {}", format_css_color(styled.styles.color)),
+          );
         } else if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
@@ -2520,7 +2525,11 @@ pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
       } => {
         let is_svg = namespace == SVG_NAMESPACE;
         if is_svg {
-          if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+          if let Some(id) = styled
+            .node
+            .get_attribute_ref("id")
+            .filter(|id| !id.is_empty())
+          {
             ids.insert(id.to_string());
           }
 
@@ -2641,7 +2650,11 @@ pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
       }
 
       if namespace == SVG_NAMESPACE {
-        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+        if let Some(id) = styled
+          .node
+          .get_attribute_ref("id")
+          .filter(|id| !id.is_empty())
+        {
           if !out.contains_key(id) {
             out.insert(
               id.to_string(),
@@ -2660,7 +2673,11 @@ pub fn collect_svg_id_defs_raw(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
-  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg_style: bool, out: &mut HashSet<String>) {
+  fn collect_referenced_svg_ids(
+    styled: &StyledNode,
+    in_svg_style: bool,
+    out: &mut HashSet<String>,
+  ) {
     match &styled.node.node_type {
       crate::dom::DomNodeType::Element {
         tag_name,
@@ -2762,35 +2779,30 @@ pub fn collect_svg_mask_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     masks: &mut HashMap<String, String>,
   ) {
-    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
-      &styled.node.node_type
-    {
-      attributes
-        .iter()
-        .any(|(name, _)| name.starts_with("xmlns"))
-        .then(|| {
-          let mut updated = inherited_xmlns.to_vec();
-          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-            if let Some(existing) = updated
-              .iter_mut()
-              .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            {
-              existing.1 = value.clone();
-            } else {
-              updated.push((name.clone(), value.clone()));
+    let owned_namespaces =
+      if let crate::dom::DomNodeType::Element { attributes, .. } = &styled.node.node_type {
+        attributes
+          .iter()
+          .any(|(name, _)| name.starts_with("xmlns"))
+          .then(|| {
+            let mut updated = inherited_xmlns.to_vec();
+            for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+              if let Some(existing) = updated
+                .iter_mut()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+              {
+                existing.1 = value.clone();
+              } else {
+                updated.push((name.clone(), value.clone()));
+              }
             }
-          }
-          updated
-        })
-    } else {
-      None
-    };
+            updated
+          })
+      } else {
+        None
+      };
     let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
-    if let crate::dom::DomNodeType::Element {
-      tag_name,
-      ..
-    } = &styled.node.node_type
-    {
+    if let crate::dom::DomNodeType::Element { tag_name, .. } = &styled.node.node_type {
       if tag_name.eq_ignore_ascii_case("mask") {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !masks.contains_key(id) {
@@ -2829,35 +2841,30 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     filters: &mut HashMap<String, String>,
   ) {
-    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
-      &styled.node.node_type
-    {
-      attributes
-        .iter()
-        .any(|(name, _)| name.starts_with("xmlns"))
-        .then(|| {
-          let mut updated = inherited_xmlns.to_vec();
-          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-            if let Some(existing) = updated
-              .iter_mut()
-              .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            {
-              existing.1 = value.clone();
-            } else {
-              updated.push((name.clone(), value.clone()));
+    let owned_namespaces =
+      if let crate::dom::DomNodeType::Element { attributes, .. } = &styled.node.node_type {
+        attributes
+          .iter()
+          .any(|(name, _)| name.starts_with("xmlns"))
+          .then(|| {
+            let mut updated = inherited_xmlns.to_vec();
+            for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+              if let Some(existing) = updated
+                .iter_mut()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+              {
+                existing.1 = value.clone();
+              } else {
+                updated.push((name.clone(), value.clone()));
+              }
             }
-          }
-          updated
-        })
-    } else {
-      None
-    };
+            updated
+          })
+      } else {
+        None
+      };
     let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
-    if let crate::dom::DomNodeType::Element {
-      tag_name,
-      ..
-    } = &styled.node.node_type
-    {
+    if let crate::dom::DomNodeType::Element { tag_name, .. } = &styled.node.node_type {
       if tag_name.eq_ignore_ascii_case("filter") {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !filters.contains_key(id) {
@@ -3024,7 +3031,11 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
   fn collect_defined_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
     if let crate::dom::DomNodeType::Element { namespace, .. } = &styled.node.node_type {
       if namespace == SVG_NAMESPACE {
-        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+        if let Some(id) = styled
+          .node
+          .get_attribute_ref("id")
+          .filter(|id| !id.is_empty())
+        {
           out.insert(id.to_string());
         }
       }
@@ -3081,36 +3092,31 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     inherited_xmlns: &[(String, String)],
     out: &mut HashMap<String, IndexedNode<'a>>,
   ) {
-    let owned_namespaces = if let crate::dom::DomNodeType::Element { attributes, .. } =
-      &styled.node.node_type
-    {
-      attributes
-        .iter()
-        .any(|(name, _)| name.starts_with("xmlns"))
-        .then(|| {
-          let mut updated = inherited_xmlns.to_vec();
-          for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
-            if let Some(existing) = updated
-              .iter_mut()
-              .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            {
-              existing.1 = value.clone();
-            } else {
-              updated.push((name.clone(), value.clone()));
+    let owned_namespaces =
+      if let crate::dom::DomNodeType::Element { attributes, .. } = &styled.node.node_type {
+        attributes
+          .iter()
+          .any(|(name, _)| name.starts_with("xmlns"))
+          .then(|| {
+            let mut updated = inherited_xmlns.to_vec();
+            for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+              if let Some(existing) = updated
+                .iter_mut()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+              {
+                existing.1 = value.clone();
+              } else {
+                updated.push((name.clone(), value.clone()));
+              }
             }
-          }
-          updated
-        })
-    } else {
-      None
-    };
+            updated
+          })
+      } else {
+        None
+      };
     let namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
 
-    if let crate::dom::DomNodeType::Element {
-      namespace,
-      ..
-    } = &styled.node.node_type
-    {
+    if let crate::dom::DomNodeType::Element { namespace, .. } = &styled.node.node_type {
       if namespace == SVG_NAMESPACE {
         if let Some(id) = styled
           .node
@@ -3492,7 +3498,10 @@ fn serialize_svg_subtree(
     use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 
     fn attr_might_contain_css_value(name: &str) -> bool {
-      let local = name.rsplit_once(':').map(|(_, local)| local).unwrap_or(name);
+      let local = name
+        .rsplit_once(':')
+        .map(|(_, local)| local)
+        .unwrap_or(name);
       // Only scan attributes that are parsed as CSS values by SVG/CSS presentation attributes.
       // Many SVG elements contain large `d=` path data, and running var() detection over those
       // strings is needlessly expensive.
@@ -4006,7 +4015,10 @@ fn serialize_svg_subtree(
             .unwrap_or(attributes)
             .iter()
             .any(|(name, value)| {
-              let local = name.rsplit_once(':').map(|(_, local)| local).unwrap_or(name);
+              let local = name
+                .rsplit_once(':')
+                .map(|(_, local)| local)
+                .unwrap_or(name);
               (local.eq_ignore_ascii_case("style")
                 || local.eq_ignore_ascii_case("fill")
                 || local.eq_ignore_ascii_case("stroke")
@@ -4596,7 +4608,10 @@ fn generate_boxes_for_styled_into(
         // descendants can participate in layout, e.g. inline-flex icon+text buttons.)
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled, interaction_state) {
-          if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
+          if !matches!(
+            form_control.appearance,
+            crate::style::types::Appearance::None
+          ) {
             // Form controls short-circuit box generation as replaced elements, but we still need to
             // honor authored ::before/::after pseudo-elements so real-world patterns like styled
             // search icons render. To keep layout complexity manageable, only attach out-of-flow
@@ -4686,10 +4701,8 @@ fn generate_boxes_for_styled_into(
               Vec::new()
             };
             let ancestor_len = stack.len().saturating_sub(1);
-            let style = transform_style_for_box_generation_if_needed(
-              &styled.styles,
-              &stack[..ancestor_len],
-            );
+            let style =
+              transform_style_for_box_generation_if_needed(&styled.styles, &stack[..ancestor_len]);
             if let Some(box_node) = create_replaced_box_from_styled(
               styled,
               style,
@@ -5670,7 +5683,12 @@ fn build_appearance_none_form_control_fallback(
     } else {
       '\u{200e}'
     };
-    push_text(children, Arc::clone(&styled.styles), strut.to_string(), None);
+    push_text(
+      children,
+      Arc::clone(&styled.styles),
+      strut.to_string(),
+      None,
+    );
   };
 
   match &form_control.control {
@@ -5681,7 +5699,10 @@ fn build_appearance_none_form_control_fallback(
       kind,
       ..
     } => {
-      let preedit = form_control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+      let preedit = form_control
+        .ime_preedit
+        .as_deref()
+        .filter(|t| !t.is_empty());
       let mut text: Option<String> = None;
       let mut style = Arc::clone(&styled.styles);
       let mut pseudo = None;
@@ -5742,7 +5763,10 @@ fn build_appearance_none_form_control_fallback(
       ..
     } => {
       suppress_dom_children = true;
-      let preedit = form_control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+      let preedit = form_control
+        .ime_preedit
+        .as_deref()
+        .filter(|t| !t.is_empty());
       let mut text: Option<String> = None;
       let mut style = Arc::clone(&styled.styles);
       let mut pseudo = None;
@@ -5750,14 +5774,14 @@ fn build_appearance_none_form_control_fallback(
         text = Some(value.clone());
       } else if preedit.is_none() {
         if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
-        text = Some(ph.clone());
-        if let Some(ph_style) = placeholder_style
-          .as_ref()
-          .or(form_control.placeholder_style.as_ref())
-        {
-          style = Arc::clone(ph_style);
-          pseudo = Some(GeneratedPseudoElement::Placeholder);
-        }
+          text = Some(ph.clone());
+          if let Some(ph_style) = placeholder_style
+            .as_ref()
+            .or(form_control.placeholder_style.as_ref())
+          {
+            style = Arc::clone(ph_style);
+            pseudo = Some(GeneratedPseudoElement::Placeholder);
+          }
         }
       }
 
@@ -6887,9 +6911,11 @@ fn create_form_control_replaced(
 
       let value_char_len = value.chars().count();
       let mut caret = value_char_len;
+      let mut caret_affinity = crate::text::caret::CaretAffinity::Downstream;
       let mut selection: Option<(usize, usize)> = None;
       if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
         caret = edit.caret.min(value_char_len);
+        caret_affinity = edit.caret_affinity;
         selection = edit.selection.and_then(|(start, end)| {
           let start = start.min(value_char_len);
           let end = end.min(value_char_len);
@@ -6910,6 +6936,7 @@ fn create_form_control_replaced(
         size_attr,
         kind,
         caret,
+        caret_affinity,
         selection,
       }
     };
@@ -6967,9 +6994,11 @@ fn create_form_control_replaced(
     let value = textarea_value.unwrap_or_default();
     let value_char_len = value.chars().count();
     let mut caret = value_char_len;
+    let mut caret_affinity = crate::text::caret::CaretAffinity::Downstream;
     let mut selection: Option<(usize, usize)> = None;
     if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(styled.node_id)) {
       caret = edit.caret.min(value_char_len);
+      caret_affinity = edit.caret_affinity;
       selection = edit.selection.and_then(|(start, end)| {
         let start = start.min(value_char_len);
         let end = end.min(value_char_len);
@@ -6996,6 +7025,7 @@ fn create_form_control_replaced(
           .get_attribute_ref("cols")
           .and_then(|c| c.parse::<u32>().ok()),
         caret,
+        caret_affinity,
         selection,
       },
       appearance,
@@ -10194,15 +10224,9 @@ mod tests {
           _ => panic!("expected element"),
         }
       }
-      let box_node = create_replaced_box_from_styled(
-        &styled,
-        style.clone(),
-        "",
-        None,
-        Vec::new(),
-        false,
-      )
-      .expect("expected replaced box");
+      let box_node =
+        create_replaced_box_from_styled(&styled, style.clone(), "", None, Vec::new(), false)
+          .expect("expected replaced box");
       match &box_node.box_type {
         BoxType::Replaced(replaced) => {
           assert_eq!(
@@ -10231,15 +10255,9 @@ mod tests {
       _ => panic!("expected element"),
     }
 
-    let box_node = create_replaced_box_from_styled(
-      &styled,
-      default_style(),
-      "",
-      None,
-      Vec::new(),
-      true,
-    )
-    .expect("expected replaced box");
+    let box_node =
+      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), true)
+        .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {
@@ -10261,15 +10279,9 @@ mod tests {
       _ => panic!("expected element"),
     }
 
-    let box_node = create_replaced_box_from_styled(
-      &styled,
-      default_style(),
-      "",
-      None,
-      Vec::new(),
-      false,
-    )
-    .expect("expected replaced box");
+    let box_node =
+      create_replaced_box_from_styled(&styled, default_style(), "", None, Vec::new(), false)
+        .expect("expected replaced box");
     match &box_node.box_type {
       BoxType::Replaced(replaced) => match &replaced.replaced_type {
         ReplacedType::Video { poster, .. } => {

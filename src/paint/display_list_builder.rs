@@ -45,9 +45,9 @@ use crate::math::{layout_mathml, MathFragment};
 use crate::paint::clip_path::resolve_clip_path;
 use crate::paint::display_list::BlendMode;
 use crate::paint::display_list::BlendModeItem;
+use crate::paint::display_list::BorderGap;
 use crate::paint::display_list::BorderImageItem;
 use crate::paint::display_list::BorderImageSourceItem;
-use crate::paint::display_list::BorderGap;
 use crate::paint::display_list::BorderItem;
 use crate::paint::display_list::BorderRadii;
 use crate::paint::display_list::BorderSide;
@@ -127,7 +127,6 @@ use crate::style::color::Rgba;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
 use crate::style::position::Position;
-use crate::style::PhysicalSide;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
 use crate::style::types::BackfaceVisibility;
@@ -167,6 +166,8 @@ use crate::style::types::TransformStyle;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
+use crate::style::PhysicalSide;
+use crate::text::caret::{caret_stops_for_runs, caret_x_for_position, CaretAffinity};
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -174,10 +175,10 @@ use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::CrossOriginAttribute;
-use crate::tree::box_tree::ImageDecodingAttribute;
-use crate::tree::box_tree::ImageLoadingAttribute;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
+use crate::tree::box_tree::ImageDecodingAttribute;
+use crate::tree::box_tree::ImageLoadingAttribute;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::box_tree::SvgContent;
@@ -2053,20 +2054,19 @@ impl DisplayListBuilder {
           // `overflow: hidden` clips to the padding box. When the padding box has no area in a
           // clipped axis (e.g. `width: 0; overflow: hidden`), no descendant pixels can be visible,
           // so skip content painting rather than treating this as "no clip".
-          if (clip_x && rects.padding.width() <= 0.0) || (clip_y && rects.padding.height() <= 0.0)
-          {
+          if (clip_x && rects.padding.width() <= 0.0) || (clip_y && rects.padding.height() <= 0.0) {
             skip_contents = true;
             None
           } else {
-          Self::overflow_clip_from_style_with_rects(
-            style,
-            rects,
-            clip_x,
-            clip_y,
-            overflow_bounds,
-            self.viewport,
-            self.build_breakdown.as_deref(),
-          )
+            Self::overflow_clip_from_style_with_rects(
+              style,
+              rects,
+              clip_x,
+              clip_y,
+              overflow_bounds,
+              self.viewport,
+              self.build_breakdown.as_deref(),
+            )
           }
         } else {
           None
@@ -2110,9 +2110,9 @@ impl DisplayListBuilder {
         && !crate::paint::stacking::creates_stacking_context(style, None, false)
     });
     if push_backface_visibility {
-      self
-        .list
-        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+      self.list.push(DisplayItem::PushBackfaceVisibility(
+        BackfaceVisibility::Hidden,
+      ));
     }
 
     if push_opacity {
@@ -2491,9 +2491,9 @@ impl DisplayListBuilder {
         && !crate::paint::stacking::creates_stacking_context(style, None, false)
     });
     if push_backface_visibility {
-      self
-        .list
-        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+      self.list.push(DisplayItem::PushBackfaceVisibility(
+        BackfaceVisibility::Hidden,
+      ));
     }
     if push_opacity {
       self.push_opacity(opacity);
@@ -2731,9 +2731,9 @@ impl DisplayListBuilder {
       return 0;
     }
     for _ in 0..depth {
-      self
-        .list
-        .push(DisplayItem::PushBackfaceVisibility(BackfaceVisibility::Hidden));
+      self.list.push(DisplayItem::PushBackfaceVisibility(
+        BackfaceVisibility::Hidden,
+      ));
     }
     depth
   }
@@ -2875,7 +2875,8 @@ impl DisplayListBuilder {
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
     let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
     let style_has_mask_border = root_style.is_some_and(|style| style.mask_border.is_active());
-    let mask_border = root_style.and_then(|style| self.resolve_mask_border(style, root_border_bounds));
+    let mask_border =
+      root_style.and_then(|style| self.resolve_mask_border(style, root_border_bounds));
     let is_paged_media_page_root = is_root
       && root_fragment.is_some_and(|fragment| {
         Self::get_box_id(fragment).is_none()
@@ -2944,8 +2945,12 @@ impl DisplayListBuilder {
 
         let target_w = canvas.0.max(scroll_max_x);
         let target_h = canvas.1.max(scroll_max_y);
-        let default_target_rect =
-          Rect::from_xywh(root_border_bounds.x(), root_border_bounds.y(), target_w, target_h);
+        let default_target_rect = Rect::from_xywh(
+          root_border_bounds.x(),
+          root_border_bounds.y(),
+          target_w,
+          target_h,
+        );
         // CSS Page 3 draws the document canvas background as the page box background, which is
         // confined to the page area (inside the page margins).
         //
@@ -3166,7 +3171,9 @@ impl DisplayListBuilder {
     };
     let clip_path_mask = root_style.and_then(|style| {
       let (src, reference_override) = match &style.clip_path {
-        crate::style::types::ClipPath::Url(src, reference_override) => (src.as_str(), *reference_override),
+        crate::style::types::ClipPath::Url(src, reference_override) => {
+          (src.as_str(), *reference_override)
+        }
         _ => return None,
       };
 
@@ -3309,7 +3316,8 @@ impl DisplayListBuilder {
       mask.is_some(),
       style_has_clip_path,
     );
-    let ancestor_backface_pushed = self.push_backface_visibility_chain(context.backface_visibility_depth);
+    let ancestor_backface_pushed =
+      self.push_backface_visibility_chain(context.backface_visibility_depth);
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
     // Track whether this stacking context has any *descendant* stacking context that requires
@@ -3471,10 +3479,7 @@ impl DisplayListBuilder {
       pushed_clips += 1;
     } else if let Some((image, rect)) = clip_path_mask {
       self.list.push(DisplayItem::PushClip(ClipItem {
-        shape: ClipShape::AlphaMask {
-          image,
-          rect,
-        },
+        shape: ClipShape::AlphaMask { image, rect },
       }));
       pushed_clips += 1;
     }
@@ -3570,7 +3575,8 @@ impl DisplayListBuilder {
       }
       match item {
         Layer6Item::Positioned(fragment) => {
-          let backface_pushed = self.push_backface_visibility_chain(fragment.backface_visibility_depth);
+          let backface_pushed =
+            self.push_backface_visibility_chain(fragment.backface_visibility_depth);
           let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_content_offset);
           self.build_fragment(
             &fragment.fragment,
@@ -4329,8 +4335,9 @@ impl DisplayListBuilder {
 
     let image_cache = self.image_cache.as_ref()?;
     let resolved_doc_url = image_cache.resolve_url(doc_url);
-    let cached =
-      image_cache.load_with_crossorigin(&resolved_doc_url, CrossOriginAttribute::None).ok()?;
+    let cached = image_cache
+      .load_with_crossorigin(&resolved_doc_url, CrossOriginAttribute::None)
+      .ok()?;
     if !cached.is_vector {
       return None;
     }
@@ -4842,9 +4849,11 @@ impl DisplayListBuilder {
       if stops.len() == 1 {
         return vec![(
           0.0,
-          stops[0]
-            .color
-            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+          stops[0].color.to_rgba_with_scheme_and_forced_colors(
+            current_color,
+            is_dark,
+            forced_colors,
+          ),
         )];
       }
       let denom = (stops.len() - 1) as f32;
@@ -5241,7 +5250,11 @@ impl DisplayListBuilder {
           if area_w <= 0.0 || area_h <= 0.0 {
             return (area_w, area_h);
           }
-          let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+          let area_ratio = if area_h != 0.0 {
+            area_w / area_h
+          } else {
+            f32::INFINITY
+          };
           if area_ratio > ratio {
             (area_w, area_w / ratio)
           } else {
@@ -5258,7 +5271,11 @@ impl DisplayListBuilder {
           if area_w <= 0.0 || area_h <= 0.0 {
             return (area_w, area_h);
           }
-          let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+          let area_ratio = if area_h != 0.0 {
+            area_w / area_h
+          } else {
+            f32::INFINITY
+          };
           if area_ratio > ratio {
             (area_h * ratio, area_h)
           } else {
@@ -5322,7 +5339,11 @@ impl DisplayListBuilder {
                 if area_w <= 0.0 || area_h <= 0.0 {
                   (area_w, area_h)
                 } else {
-                  let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+                  let area_ratio = if area_h != 0.0 {
+                    area_w / area_h
+                  } else {
+                    f32::INFINITY
+                  };
                   if area_ratio > ratio {
                     (area_h * ratio, area_h)
                   } else {
@@ -5879,11 +5900,12 @@ impl DisplayListBuilder {
         let current = style_opt.map(|s| s.color).unwrap_or(Rgba::BLACK);
         let color = style_opt
           .map(|s| {
-            s.webkit_text_fill_color.to_rgba_with_scheme_and_forced_colors(
-              current,
-              s.used_dark_color_scheme,
-              s.forced_colors,
-            )
+            s.webkit_text_fill_color
+              .to_rgba_with_scheme_and_forced_colors(
+                current,
+                s.used_dark_color_scheme,
+                s.forced_colors,
+              )
           })
           .unwrap_or(current);
         let shadows = Self::text_shadows_from_style(style_opt, self.viewport);
@@ -6324,7 +6346,9 @@ impl DisplayListBuilder {
                     let angle = dy.atan2(dx);
                     let transform = Transform3D::translate(start.x, start.y, 0.0)
                       .multiply(&Transform3D::rotate_z(angle));
-                    self.list.push(DisplayItem::PushTransform(TransformItem { transform }));
+                    self
+                      .list
+                      .push(DisplayItem::PushTransform(TransformItem { transform }));
                     self.list.push(DisplayItem::FillRect(FillRectItem {
                       rect: Rect::from_xywh(0.0, -thickness * 0.5, len, thickness),
                       color: paint_color,
@@ -6531,8 +6555,10 @@ impl DisplayListBuilder {
           // `<embed>` / `<object>` are special: when the URL isn't a valid image, Chrome may still
           // render HTML content. We model that by attempting an iframe render after rejecting the
           // placeholder.
-          let try_iframe_fallback =
-            matches!(replaced_type, ReplacedType::Embed { .. } | ReplacedType::Object { .. });
+          let try_iframe_fallback = matches!(
+            replaced_type,
+            ReplacedType::Embed { .. } | ReplacedType::Object { .. }
+          );
           // Once an `<img>`/`<picture>` candidate has been selected, browsers do not fall back to
           // the `<img src>` (or other candidates) when the chosen resource fails to decode (e.g.
           // `srcset` points at markup). Instead they render the "broken image" placeholder (+alt).
@@ -6592,24 +6618,24 @@ impl DisplayListBuilder {
             )
           });
           if let Some(image) = decoded {
-             let (content_rect, clip_radii) =
-               self.replaced_content_rect_and_radii(rect, style_for_image);
-             let candidate = match candidate {
-               Some(c) => c,
-               None => {
-                 self.emit_replaced_placeholder(replaced_type, fragment, rect);
-                 if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
-                   let _ = self.emit_alt_text(alt, fragment, rect);
-                 }
-                 break 'paint;
-               }
-             };
+            let (content_rect, clip_radii) =
+              self.replaced_content_rect_and_radii(rect, style_for_image);
+            let candidate = match candidate {
+              Some(c) => c,
+              None => {
+                self.emit_replaced_placeholder(replaced_type, fragment, rect);
+                if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
+                  let _ = self.emit_alt_text(alt, fragment, rect);
+                }
+                break 'paint;
+              }
+            };
 
-             let mut image = image;
-             let (dest_x, dest_y, dest_w, dest_h) = {
-               let (fit, position, font_size, root_font_size) =
-                 if let Some(style) = fragment.style.as_deref() {
-                   (
+            let mut image = image;
+            let (dest_x, dest_y, dest_w, dest_h) = {
+              let (fit, position, font_size, root_font_size) =
+                if let Some(style) = fragment.style.as_deref() {
+                  (
                     style.object_fit,
                     style.object_position,
                     style.font_size,
@@ -6631,108 +6657,115 @@ impl DisplayListBuilder {
                 root_font_size,
                 self.viewport,
               )
-               .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
-             };
+              .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
+            };
 
-             let dest_rect = Rect::from_xywh(
-               content_rect.x() + dest_x,
-               content_rect.y() + dest_y,
-               dest_w,
-               dest_h,
-             );
+            let dest_rect = Rect::from_xywh(
+              content_rect.x() + dest_x,
+              content_rect.y() + dest_y,
+              dest_w,
+              dest_h,
+            );
 
-             // SVG `<img>` needs to be rasterized at the used size so root `preserveAspectRatio`
-             // letterboxing is applied in the correct viewport.
-             if let Some(image_cache) = self.image_cache.as_ref() {
-               let trimmed = trim_ascii_whitespace_start(candidate.url);
-               let inline_svg = trimmed.starts_with('<');
+            // SVG `<img>` needs to be rasterized at the used size so root `preserveAspectRatio`
+            // letterboxing is applied in the correct viewport.
+            if let Some(image_cache) = self.image_cache.as_ref() {
+              let trimmed = trim_ascii_whitespace_start(candidate.url);
+              let inline_svg = trimmed.starts_with('<');
 
-               let maybe_cached = if inline_svg {
-                 let mut hasher = DefaultHasher::new();
-                 trimmed.hash(&mut hasher);
-                 let cache_key = format!("inline-svg:{:016x}:{}", hasher.finish(), trimmed.len());
-                 image_cache
-                   .render_svg(trimmed)
-                   .ok()
-                   .map(|img| (cache_key, "inline-svg".to_string(), img))
-               } else {
-                 let resolved_src = image_cache.resolve_url(candidate.url);
-                 image_cache
-                   .load_with_crossorigin_and_referrer_policy(
-                     &resolved_src,
-                     crossorigin,
-                     referrer_policy,
-                   )
-                   .ok()
-                   .map(|img| (resolved_src.clone(), resolved_src, img))
-               };
+              let maybe_cached = if inline_svg {
+                let mut hasher = DefaultHasher::new();
+                trimmed.hash(&mut hasher);
+                let cache_key = format!("inline-svg:{:016x}:{}", hasher.finish(), trimmed.len());
+                image_cache
+                  .render_svg(trimmed)
+                  .ok()
+                  .map(|img| (cache_key, "inline-svg".to_string(), img))
+              } else {
+                let resolved_src = image_cache.resolve_url(candidate.url);
+                image_cache
+                  .load_with_crossorigin_and_referrer_policy(
+                    &resolved_src,
+                    crossorigin,
+                    referrer_policy,
+                  )
+                  .ok()
+                  .map(|img| (resolved_src.clone(), resolved_src, img))
+              };
 
-               if let Some((cache_base_url, render_url, cached)) = maybe_cached {
-                 if cached.is_vector {
-                   if let Some(svg_markup) = cached.svg_content.as_deref() {
-                     let image_resolution = style_for_image
-                       .map(|s| s.image_resolution)
-                       .unwrap_or_default();
-                     let orientation = style_for_image
-                       .map(|s| s.image_orientation.resolve(cached.orientation, false))
-                       .unwrap_or_else(|| {
-                         ImageOrientation::default().resolve(cached.orientation, false)
-                       });
-                     let used_resolution =
-                       image_resolution.used_resolution(None, cached.resolution, self.device_pixel_ratio);
+              if let Some((cache_base_url, render_url, cached)) = maybe_cached {
+                if cached.is_vector {
+                  if let Some(svg_markup) = cached.svg_content.as_deref() {
+                    let image_resolution = style_for_image
+                      .map(|s| s.image_resolution)
+                      .unwrap_or_default();
+                    let orientation = style_for_image
+                      .map(|s| s.image_orientation.resolve(cached.orientation, false))
+                      .unwrap_or_else(|| {
+                        ImageOrientation::default().resolve(cached.orientation, false)
+                      });
+                    let used_resolution = image_resolution.used_resolution(
+                      None,
+                      cached.resolution,
+                      self.device_pixel_ratio,
+                    );
 
-                     let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
-                       self.device_pixel_ratio
-                     } else {
-                       1.0
-                     };
+                    let base_dpr =
+                      if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+                        self.device_pixel_ratio
+                      } else {
+                        1.0
+                      };
 
-                     if dest_w.is_finite() && dest_h.is_finite() && dest_w > 0.0 && dest_h > 0.0 {
-                       let render_w = (dest_w * base_dpr).ceil().max(1.0) as u32;
-                       let render_h = (dest_h * base_dpr).ceil().max(1.0) as u32;
+                    if dest_w.is_finite() && dest_h.is_finite() && dest_w > 0.0 && dest_h > 0.0 {
+                      let render_w = (dest_w * base_dpr).ceil().max(1.0) as u32;
+                      let render_h = (dest_h * base_dpr).ceil().max(1.0) as u32;
 
-                       let cache_key = ImageKey::new(
-                         format!("{cache_base_url}:{render_w}x{render_h}"),
-                         crossorigin,
-                         referrer_policy,
-                         orientation,
-                         false,
-                         used_resolution,
-                         self.device_pixel_ratio,
-                       );
+                      let cache_key = ImageKey::new(
+                        format!("{cache_base_url}:{render_w}x{render_h}"),
+                        crossorigin,
+                        referrer_policy,
+                        orientation,
+                        false,
+                        used_resolution,
+                        self.device_pixel_ratio,
+                      );
 
-                       if let Some(existing) = {
-                         let mut decoded_cache = self
-                           .decoded_image_cache
-                           .lock()
-                           .unwrap_or_else(|e| e.into_inner());
-                         decoded_cache.get(&cache_key)
-                       } {
-                         image = existing;
-                       } else {
-                         fn contains_foreign_object_tag(svg: &str) -> bool {
-                           const NEEDLE: &[u8] = b"foreignobject";
-                           let bytes = svg.as_bytes();
-                           bytes
-                             .windows(NEEDLE.len())
-                             .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-                         }
+                      if let Some(existing) = {
+                        let mut decoded_cache = self
+                          .decoded_image_cache
+                          .lock()
+                          .unwrap_or_else(|e| e.into_inner());
+                        decoded_cache.get(&cache_key)
+                      } {
+                        image = existing;
+                      } else {
+                        fn contains_foreign_object_tag(svg: &str) -> bool {
+                          const NEEDLE: &[u8] = b"foreignobject";
+                          let bytes = svg.as_bytes();
+                          bytes
+                            .windows(NEEDLE.len())
+                            .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+                        }
 
-                         let (render_w_unoriented, render_h_unoriented) = if orientation.quarter_turns % 2 == 1 {
-                           (render_h, render_w)
-                         } else {
-                           (render_w, render_h)
-                         };
+                        let (render_w_unoriented, render_h_unoriented) =
+                          if orientation.quarter_turns % 2 == 1 {
+                            (render_h, render_w)
+                          } else {
+                            (render_w, render_h)
+                          };
 
-                         let svg_to_render: Cow<'_, str> = if contains_foreign_object_tag(svg_markup) {
-                           let (rendered_w_css, rendered_h_css) = if orientation.quarter_turns % 2 == 1 {
-                             (dest_h, dest_w)
-                           } else {
-                             (dest_w, dest_h)
-                           };
-                           let intrinsic_w_css = cached.width() as f32;
-                           let intrinsic_h_css = cached.height() as f32;
-                           let foreign_object_dpr =
+                        let svg_to_render: Cow<'_, str> = if contains_foreign_object_tag(svg_markup)
+                        {
+                          let (rendered_w_css, rendered_h_css) =
+                            if orientation.quarter_turns % 2 == 1 {
+                              (dest_h, dest_w)
+                            } else {
+                              (dest_w, dest_h)
+                            };
+                          let intrinsic_w_css = cached.width() as f32;
+                          let intrinsic_h_css = cached.height() as f32;
+                          let foreign_object_dpr =
                              crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
                                svg_markup,
                                base_dpr,
@@ -6741,78 +6774,80 @@ impl DisplayListBuilder {
                                intrinsic_w_css,
                                intrinsic_h_css,
                              );
-                           crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
-                             svg_markup,
-                             "",
-                             &self.font_ctx,
-                             image_cache,
-                             foreign_object_dpr,
-                             self.max_iframe_depth,
-                           )
-                           .map(Cow::Owned)
-                           .unwrap_or_else(|| Cow::Borrowed(svg_markup))
-                         } else {
-                           Cow::Borrowed(svg_markup)
-                         };
+                          crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+                            svg_markup,
+                            "",
+                            &self.font_ctx,
+                            image_cache,
+                            foreign_object_dpr,
+                            self.max_iframe_depth,
+                          )
+                          .map(Cow::Owned)
+                          .unwrap_or_else(|| Cow::Borrowed(svg_markup))
+                        } else {
+                          Cow::Borrowed(svg_markup)
+                        };
 
-                         if let Ok(pixmap) = image_cache.render_svg_pixmap_at_size(
-                           svg_to_render.as_ref(),
-                           render_w_unoriented,
-                           render_h_unoriented,
-                           &render_url,
-                           base_dpr,
-                         ) {
-                           let image_data = if orientation.quarter_turns % 4 == 0 && !orientation.flip_x {
-                             let mut data = ImageData::from_pixmap(pixmap.as_ref(), dest_w, dest_h);
-                             data.has_intrinsic_ratio = image.has_intrinsic_ratio;
-                             Arc::new(data)
-                           } else {
-                             let mut rgba = image::RgbaImage::from_raw(
-                               render_w_unoriented,
-                               render_h_unoriented,
-                               pixmap.data().to_vec(),
-                             )
-                             .unwrap_or_else(|| image::RgbaImage::new(1, 1));
-                             match orientation.quarter_turns % 4 {
-                               0 => {}
-                               1 => rgba = image::imageops::rotate90(&rgba),
-                               2 => rgba = image::imageops::rotate180(&rgba),
-                               3 => rgba = image::imageops::rotate270(&rgba),
-                               _ => {}
-                             }
-                             if orientation.flip_x {
-                               rgba = image::imageops::flip_horizontal(&rgba);
-                             }
-                             let (w, h) = rgba.dimensions();
-                             let mut data =
-                               ImageData::new_premultiplied(w, h, dest_w, dest_h, rgba.into_raw());
-                             data.has_intrinsic_ratio = image.has_intrinsic_ratio;
-                             Arc::new(data)
-                           };
+                        if let Ok(pixmap) = image_cache.render_svg_pixmap_at_size(
+                          svg_to_render.as_ref(),
+                          render_w_unoriented,
+                          render_h_unoriented,
+                          &render_url,
+                          base_dpr,
+                        ) {
+                          let image_data = if orientation.quarter_turns % 4 == 0
+                            && !orientation.flip_x
+                          {
+                            let mut data = ImageData::from_pixmap(pixmap.as_ref(), dest_w, dest_h);
+                            data.has_intrinsic_ratio = image.has_intrinsic_ratio;
+                            Arc::new(data)
+                          } else {
+                            let mut rgba = image::RgbaImage::from_raw(
+                              render_w_unoriented,
+                              render_h_unoriented,
+                              pixmap.data().to_vec(),
+                            )
+                            .unwrap_or_else(|| image::RgbaImage::new(1, 1));
+                            match orientation.quarter_turns % 4 {
+                              0 => {}
+                              1 => rgba = image::imageops::rotate90(&rgba),
+                              2 => rgba = image::imageops::rotate180(&rgba),
+                              3 => rgba = image::imageops::rotate270(&rgba),
+                              _ => {}
+                            }
+                            if orientation.flip_x {
+                              rgba = image::imageops::flip_horizontal(&rgba);
+                            }
+                            let (w, h) = rgba.dimensions();
+                            let mut data =
+                              ImageData::new_premultiplied(w, h, dest_w, dest_h, rgba.into_raw());
+                            data.has_intrinsic_ratio = image.has_intrinsic_ratio;
+                            Arc::new(data)
+                          };
 
-                           let mut decoded_cache = self
-                             .decoded_image_cache
-                             .lock()
-                             .unwrap_or_else(|e| e.into_inner());
-                           if let Some(existing) = decoded_cache.get(&cache_key) {
-                             image = existing;
-                           } else {
-                             decoded_cache.insert(cache_key, image_data.clone());
-                             image = image_data;
-                           }
-                         }
-                       }
-                     }
-                   }
-                 }
-               }
-             }
-             let clip_contents = Self::replaced_content_clip_item(
-               style_for_image,
-               content_rect,
-               dest_rect,
-               clip_radii,
-             );
+                          let mut decoded_cache = self
+                            .decoded_image_cache
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                          if let Some(existing) = decoded_cache.get(&cache_key) {
+                            image = existing;
+                          } else {
+                            decoded_cache.insert(cache_key, image_data.clone());
+                            image = image_data;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            let clip_contents = Self::replaced_content_clip_item(
+              style_for_image,
+              content_rect,
+              dest_rect,
+              clip_radii,
+            );
             if let Some(clip) = clip_contents.as_ref() {
               self.list.push(DisplayItem::PushClip(clip.clone()));
             }
@@ -7056,18 +7091,23 @@ impl DisplayListBuilder {
       return true;
     }
 
-    side(style.border_top_width, style.border_top_style, style.border_top_color)
-      || side(
-        style.border_right_width,
-        style.border_right_style,
-        style.border_right_color,
-      )
-      || side(
-        style.border_bottom_width,
-        style.border_bottom_style,
-        style.border_bottom_color,
-      )
-      || side(style.border_left_width, style.border_left_style, style.border_left_color)
+    side(
+      style.border_top_width,
+      style.border_top_style,
+      style.border_top_color,
+    ) || side(
+      style.border_right_width,
+      style.border_right_style,
+      style.border_right_color,
+    ) || side(
+      style.border_bottom_width,
+      style.border_bottom_style,
+      style.border_bottom_color,
+    ) || side(
+      style.border_left_width,
+      style.border_left_style,
+      style.border_left_color,
+    )
   }
 
   fn should_propagate_root_border(
@@ -7089,9 +7129,7 @@ impl DisplayListBuilder {
     let epsilon = 0.51;
 
     let matches_gutter = |diff: f32| {
-      diff <= epsilon
-        || (diff - gutter).abs() <= epsilon
-        || (diff - gutter * 2.0).abs() <= epsilon
+      diff <= epsilon || (diff - gutter).abs() <= epsilon || (diff - gutter * 2.0).abs() <= epsilon
     };
 
     (diff_w > epsilon || diff_h > epsilon) && matches_gutter(diff_w) && matches_gutter(diff_h)
@@ -7220,7 +7258,11 @@ impl DisplayListBuilder {
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
         let suppress_box_id = Self::get_box_id(html).unwrap_or(usize::MAX);
-        return Some((style, suppress_box_id, Rect::new(html_origin, html.bounds.size)));
+        return Some((
+          style,
+          suppress_box_id,
+          Rect::new(html_origin, html.bounds.size),
+        ));
       }
     }
 
@@ -7268,7 +7310,10 @@ impl DisplayListBuilder {
             continue;
           }
           let suppress_box_id = Self::get_box_id(child).unwrap_or(usize::MAX);
-          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
+          let rect = Rect::new(
+            html_origin.translate(child.bounds.origin),
+            child.bounds.size,
+          );
           return Some((style, suppress_box_id, rect));
         }
       }
@@ -7565,7 +7610,12 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     culling_rect: Option<Rect>,
   ) {
-    self.emit_background_from_style_with_text_clip_and_culling_rect(rect, style, None, culling_rect);
+    self.emit_background_from_style_with_text_clip_and_culling_rect(
+      rect,
+      style,
+      None,
+      culling_rect,
+    );
   }
 
   fn emit_background_from_style_with_text_clip(
@@ -8082,10 +8132,14 @@ impl DisplayListBuilder {
 
                 let cx = tile_rect.x() + tile_w / 2.0;
                 let cy = tile_rect.y() + tile_h / 2.0;
-                let start =
-                  Point::new(cx - dx * len - intersection.x(), cy - dy * len - intersection.y());
-                let end =
-                  Point::new(cx + dx * len - intersection.x(), cy + dy * len - intersection.y());
+                let start = Point::new(
+                  cx - dx * len - intersection.x(),
+                  cy - dy * len - intersection.y(),
+                );
+                let end = Point::new(
+                  cx + dx * len - intersection.x(),
+                  cy + dy * len - intersection.y(),
+                );
 
                 self.emit_background_tile(DisplayItem::LinearGradient(LinearGradientItem {
                   rect: intersection,
@@ -8180,10 +8234,14 @@ impl DisplayListBuilder {
 
                 let cx = tile_rect.x() + tile_w / 2.0;
                 let cy = tile_rect.y() + tile_h / 2.0;
-                let start =
-                  Point::new(cx - dx * len - intersection.x(), cy - dy * len - intersection.y());
-                let end =
-                  Point::new(cx + dx * len - intersection.x(), cy + dy * len - intersection.y());
+                let start = Point::new(
+                  cx - dx * len - intersection.x(),
+                  cy - dy * len - intersection.y(),
+                );
+                let end = Point::new(
+                  cx + dx * len - intersection.x(),
+                  cy + dy * len - intersection.y(),
+                );
 
                 self.emit_background_tile(DisplayItem::LinearGradient(LinearGradientItem {
                   rect: intersection,
@@ -8692,7 +8750,10 @@ impl DisplayListBuilder {
           if rounded_x ^ rounded_y
             && matches!(
               layer.size,
-              BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
+              BackgroundSize::Explicit(
+                BackgroundSizeComponent::Auto,
+                BackgroundSizeComponent::Auto
+              )
             )
           {
             if let Some(aspect) = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0) {
@@ -8783,19 +8844,15 @@ impl DisplayListBuilder {
 
             let svg_markup = svg;
             let resolved_svg = if contains_foreign_object_tag(svg_markup) {
-              let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+              let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0
+              {
                 self.device_pixel_ratio
               } else {
                 1.0
               };
               let foreign_object_dpr =
                 crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-                  svg_markup,
-                  base_dpr,
-                  tile_w,
-                  tile_h,
-                  img_w,
-                  img_h,
+                  svg_markup, base_dpr, tile_w, tile_h, img_w, img_h,
                 );
               crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
                 svg_markup,
@@ -8813,10 +8870,11 @@ impl DisplayListBuilder {
             let render_w = (tile_w * self.device_pixel_ratio).ceil().max(1.0) as u32;
             let render_h = (tile_h * self.device_pixel_ratio).ceil().max(1.0) as u32;
 
-            let used_resolution =
-              style
-                .image_resolution
-                .used_resolution(None, cached.resolution, self.device_pixel_ratio);
+            let used_resolution = style.image_resolution.used_resolution(
+              None,
+              cached.resolution,
+              self.device_pixel_ratio,
+            );
             let cache_url = format!("{resolved_src}:{render_w}x{render_h}");
             let cache_key = ImageKey::new(
               cache_url,
@@ -8956,7 +9014,11 @@ impl DisplayListBuilder {
                     && src_rect.y().abs() < 1e-3
                     && (src_rect.width() - image.width as f32).abs() < 1e-3
                     && (src_rect.height() - image.height as f32).abs() < 1e-3;
-                  if full_src_rect { None } else { Some(src_rect) }
+                  if full_src_rect {
+                    None
+                  } else {
+                    Some(src_rect)
+                  }
                 };
 
                 self.emit_background_tile(DisplayItem::Image(ImageItem {
@@ -9961,9 +10023,9 @@ impl DisplayListBuilder {
         if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size)
         } else if l.unit.is_viewport_relative() {
-          self
-            .viewport
-            .and_then(|(vw, vh)| l.resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode))
+          self.viewport.and_then(|(vw, vh)| {
+            l.resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode)
+          })
         } else {
           Some(resolve_font_relative_length(l, style, &self.font_ctx))
         }
@@ -10712,7 +10774,11 @@ impl DisplayListBuilder {
       .webkit_text_stroke_width
       .resolve_with_context(None, vw, vh, run_font_size, style.root_font_size)
       .unwrap_or(0.0);
-    let width = if width.is_finite() { width.max(0.0) } else { 0.0 };
+    let width = if width.is_finite() {
+      width.max(0.0)
+    } else {
+      0.0
+    };
     (width, stroke_color)
   }
 
@@ -11159,13 +11225,12 @@ impl DisplayListBuilder {
       );
 
       let metrics_scaled = Self::resolve_scaled_metrics(style, &builder.font_ctx);
-      let line_height =
-        compute_line_height_with_metrics_viewport(
-          style,
-          metrics_scaled.as_ref(),
-          Some(viewport),
-          builder.font_ctx.root_font_metrics(),
-        );
+      let line_height = compute_line_height_with_metrics_viewport(
+        style,
+        metrics_scaled.as_ref(),
+        Some(viewport),
+        builder.font_ctx.root_font_metrics(),
+      );
       let metrics =
         InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
       let baseline_offset_y = if center_y {
@@ -11285,6 +11350,7 @@ impl DisplayListBuilder {
         placeholder_style,
         kind,
         caret,
+        caret_affinity,
         selection,
         ..
       } => {
@@ -11418,13 +11484,12 @@ impl DisplayListBuilder {
 
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
-        let line_height =
-          compute_line_height_with_metrics_viewport(
-            &text_style,
-            metrics_scaled.as_ref(),
-            viewport,
-            self.font_ctx.root_font_metrics(),
-          );
+        let line_height = compute_line_height_with_metrics_viewport(
+          &text_style,
+          metrics_scaled.as_ref(),
+          viewport,
+          self.font_ctx.root_font_metrics(),
+        );
         let baseline_offset_y = if line_height.is_finite() {
           (text_rect.height() - line_height) / 2.0
         } else {
@@ -11465,7 +11530,8 @@ impl DisplayListBuilder {
             text_style.font_size,
           );
           let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-          let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+          let baseline_y =
+            text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
           let bottom = baseline_y + metrics.descent;
 
@@ -11484,8 +11550,12 @@ impl DisplayListBuilder {
           } else {
             0.0
           };
+          let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
 
-          if preedit.is_some() && !matches!(kind, TextControlKind::Password) && text_style.color.a > f32::EPSILON {
+          if preedit.is_some()
+            && !matches!(kind, TextControlKind::Password)
+            && text_style.color.a > f32::EPSILON
+          {
             let committed_len = value.chars().count();
             let preedit_start = if committed_is_empty {
               0
@@ -11557,15 +11627,19 @@ impl DisplayListBuilder {
             CaretColor::Auto => style.color,
           };
           if !caret_color.is_transparent() {
-            let caret_idx = if preedit.is_some() { max_chars } else { (*caret).min(max_chars) };
-            let caret_x_local = if text_runs.is_empty() {
-              fallback_char_advance * caret_idx as f32
+            let caret_idx = if preedit.is_some() {
+              max_chars
             } else {
-              crate::text::caret::x_for_char_idx(display_text, &text_runs, caret_idx)
-                .unwrap_or(0.0)
-                .clamp(0.0, total_advance)
+              (*caret).min(max_chars)
             };
-            let caret_x = start_x + caret_x_local;
+            let caret_affinity_for_paint = if preedit.is_some() {
+              CaretAffinity::Downstream
+            } else {
+              *caret_affinity
+            };
+            let caret_x = start_x
+              + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
+                .unwrap_or(0.0);
             let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
             let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
@@ -11638,6 +11712,7 @@ impl DisplayListBuilder {
         placeholder,
         placeholder_style,
         caret,
+        caret_affinity,
         selection,
         ..
       } => {
@@ -11690,13 +11765,12 @@ impl DisplayListBuilder {
         };
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
-        let line_height =
-          compute_line_height_with_metrics_viewport(
-            &text_style,
-            metrics_scaled.as_ref(),
-            viewport,
-            self.font_ctx.root_font_metrics(),
-          );
+        let line_height = compute_line_height_with_metrics_viewport(
+          &text_style,
+          metrics_scaled.as_ref(),
+          viewport,
+          self.font_ctx.root_font_metrics(),
+        );
 
         let selection_color = Rgba {
           r: 0,
@@ -11706,22 +11780,35 @@ impl DisplayListBuilder {
         };
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
-        let caret_idx = if preedit.is_some() { max_chars } else { (*caret).min(max_chars) };
+        let caret_idx = if preedit.is_some() {
+          max_chars
+        } else {
+          (*caret).min(max_chars)
+        };
+        let caret_affinity_for_paint = if preedit.is_some() {
+          CaretAffinity::Downstream
+        } else {
+          *caret_affinity
+        };
         let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
         let caret_color = match style.caret_color {
           CaretColor::Color(c) => c,
           CaretColor::Auto => style.color,
         };
         let mut caret_rect: Option<Rect> = None;
-        let mut last_visible_line: Option<(/*line*/ &str, /*len*/ usize, Rect, f32, f32, f32, f32, f32)> =
-          None;
+        let mut last_visible_line: Option<(
+          /*line*/ &str,
+          /*len*/ usize,
+          Rect,
+          f32,
+          f32,
+          f32,
+          f32,
+          f32,
+        )> = None;
         let preedit_range = preedit.map(|_| {
           let committed_len = value.chars().count();
-          let start = if committed_is_empty {
-            0
-          } else {
-            committed_len
-          };
+          let start = if committed_is_empty { 0 } else { committed_len };
           (start.min(max_chars), max_chars)
         });
 
@@ -11757,6 +11844,7 @@ impl DisplayListBuilder {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
+          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
 
           let baseline_y = y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -11834,15 +11922,15 @@ impl DisplayListBuilder {
 
           if control.focused && !control.disabled {
             if let Some((pre_start, pre_end)) = preedit_range {
-              let seg_start = pre_start.max(line_start).min(line_end);
-              let seg_end = pre_end.max(line_start).min(line_end);
-              if seg_start < seg_end && text_style.color.a > f32::EPSILON {
-                let start_col = seg_start - line_start;
-                let end_col = seg_end - line_start;
-                let underline_y = (bottom - 1.0).max(top);
-                let fallback_char_advance = if line_len > 0 {
-                  (fallback_advance / line_len as f32).max(0.0)
-                } else {
+                let seg_start = pre_start.max(line_start).min(line_end);
+                let seg_end = pre_end.max(line_start).min(line_end);
+                if seg_start < seg_end && text_style.color.a > f32::EPSILON {
+                  let start_col = seg_start - line_start;
+                  let end_col = seg_end - line_start;
+                  let underline_y = (bottom - 1.0).max(top);
+                  let fallback_char_advance = if line_len > 0 {
+                    (fallback_advance / line_len as f32).max(0.0)
+                  } else {
                   0.0
                 };
                 let segments = if line_runs.is_empty() {
@@ -11880,19 +11968,9 @@ impl DisplayListBuilder {
           if caret_rect.is_none() && caret_idx <= line_end && control.focused && !control.disabled {
             if !caret_color.is_transparent() {
               let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
-              let fallback_char_advance = if line_len > 0 {
-                (fallback_advance / line_len as f32).max(0.0)
-              } else {
-                0.0
-              };
-              let caret_x_local = if line_runs.is_empty() {
-                fallback_char_advance * caret_col as f32
-              } else {
-                crate::text::caret::x_for_char_idx(line, &line_runs, caret_col)
-                  .unwrap_or(0.0)
-                  .clamp(0.0, total_advance)
-              };
-              let caret_x = start_x + caret_x_local;
+              let caret_x = start_x
+                + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint)
+                  .unwrap_or(0.0);
               let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
               let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
               let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -11915,23 +11993,25 @@ impl DisplayListBuilder {
           // If the caret is positioned on a line that is fully clipped out of the textarea (common
           // when `line-height: normal` grows due to variable font MVAR metrics), clamp the caret to
           // the last visible line so it remains paintable.
-          if let Some((line, line_len, line_rect, start_x, total_advance, fallback_advance, top, bottom)) =
-            last_visible_line
+          if let Some((
+            line,
+            line_len,
+            line_rect,
+            start_x,
+            total_advance,
+            _fallback_advance,
+            top,
+            bottom,
+          )) = last_visible_line
           {
             let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
-            let fallback_char_advance = if line_len > 0 {
-              (fallback_advance / line_len as f32).max(0.0)
-            } else {
-              0.0
-            };
-            let caret_x_local = if line_runs.is_empty() {
-              fallback_char_advance * line_len as f32
-            } else {
-              crate::text::caret::x_for_char_idx(line, &line_runs, line_len)
-                .unwrap_or(0.0)
-                .clamp(0.0, total_advance)
-            };
-            let caret_x = start_x + caret_x_local;
+            let caret_x = start_x
+              + caret_x_for_position(
+                &caret_stops_for_runs(line, &line_runs, total_advance),
+                line_len,
+                CaretAffinity::Downstream,
+              )
+              .unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
@@ -11987,7 +12067,8 @@ impl DisplayListBuilder {
             0.0
           };
           let (text_rect, scrollbar_rect) = if scrollbar_width > 0.0 {
-            let (text, scrollbar) = Self::split_rect_inline_end(content_rect, style, scrollbar_width);
+            let (text, scrollbar) =
+              Self::split_rect_inline_end(content_rect, style, scrollbar_width);
             (text, Some(scrollbar))
           } else {
             (content_rect, None)
@@ -12308,9 +12389,9 @@ impl DisplayListBuilder {
             style
               .height
               .map(|len| resolve_px(style, len, padding_rect.height()))
-           })
-           .filter(|px| px.is_finite() && *px > 0.0)
-           .unwrap_or(default_knob_diameter);
+          })
+          .filter(|px| px.is_finite() && *px > 0.0)
+          .unwrap_or(default_knob_diameter);
 
         let knob_travel = (padding_rect.width() - knob_width).max(0.0);
         let knob_center_x = if inline_positive {
@@ -12371,7 +12452,11 @@ impl DisplayListBuilder {
 
               if let Some(track_style) = track_style {
                 self.emit_box_shadows_from_style(track_rect, track_style, false);
-                self.emit_background_from_style_with_culling_rect(track_rect, track_style, culling_rect);
+                self.emit_background_from_style_with_culling_rect(
+                  track_rect,
+                  track_style,
+                  culling_rect,
+                );
               } else {
                 self
                   .list
@@ -12381,7 +12466,7 @@ impl DisplayListBuilder {
                     radii: BorderRadii::uniform(track_height / 2.0),
                   }));
               }
-  
+
               if !appearance_none {
                 let filled_rect = if inline_positive {
                   Rect::from_xywh(
@@ -12447,7 +12532,11 @@ impl DisplayListBuilder {
             };
 
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
-            self.emit_background_from_style_with_culling_rect(knob_rect, style_for_thumb, culling_rect);
+            self.emit_background_from_style_with_culling_rect(
+              knob_rect,
+              style_for_thumb,
+              culling_rect,
+            );
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
             self.emit_border_from_style(knob_rect, style_for_thumb, None);
           }
@@ -12523,7 +12612,11 @@ impl DisplayListBuilder {
             track_rect.height(),
           )
         } else {
-          let denom = if *max > 0.0 && max.is_finite() { *max } else { 1.0 };
+          let denom = if *max > 0.0 && max.is_finite() {
+            *max
+          } else {
+            1.0
+          };
           let ratio = (*value / denom).clamp(0.0, 1.0);
           let fill_w = (track_rect.width() * ratio).max(0.0);
           let fill_x = if style.direction == crate::style::types::Direction::Rtl {
@@ -12532,12 +12625,7 @@ impl DisplayListBuilder {
           } else {
             track_rect.x()
           };
-          Rect::from_xywh(
-            fill_x,
-            track_rect.y(),
-            fill_w,
-            track_rect.height(),
-          )
+          Rect::from_xywh(fill_x, track_rect.y(), fill_w, track_rect.height())
         };
         if fill_rect.width() <= 0.0 {
           return true;
@@ -12622,12 +12710,7 @@ impl DisplayListBuilder {
         } else {
           track_rect.x()
         };
-        let fill_rect = Rect::from_xywh(
-          fill_x,
-          track_rect.y(),
-          fill_w,
-          track_rect.height(),
-        );
+        let fill_rect = Rect::from_xywh(fill_x, track_rect.y(), fill_w, track_rect.height());
         if fill_rect.width() <= 0.0 {
           return true;
         }
@@ -12672,7 +12755,11 @@ impl DisplayListBuilder {
           } else if optimum_zone == MeterZone::Mid {
             warn_color
           } else if optimum_zone == MeterZone::Low {
-            if value_zone == MeterZone::Mid { warn_color } else { bad_color }
+            if value_zone == MeterZone::Mid {
+              warn_color
+            } else {
+              bad_color
+            }
           } else if value_zone == MeterZone::Mid {
             warn_color
           } else {
@@ -12866,7 +12953,11 @@ impl DisplayListBuilder {
 
         if let Some(button_style) = button_pseudo_style {
           self.emit_box_shadows_from_style(button_rect, button_style, false);
-          self.emit_background_from_style_with_culling_rect(button_rect, button_style, culling_rect);
+          self.emit_background_from_style_with_culling_rect(
+            button_rect,
+            button_style,
+            culling_rect,
+          );
           self.emit_box_shadows_from_style(button_rect, button_style, true);
           self.emit_border_from_style(button_rect, button_style, None);
         } else if !appearance_none {
@@ -13162,8 +13253,9 @@ impl DisplayListBuilder {
         | crate::style::types::WhiteSpace::BreakSpaces
     );
     let breaks = crate::text::line_break::find_break_opportunities(text);
-    let has_mandatory_break =
-      breaks.iter().any(|brk| brk.is_mandatory() && brk.byte_offset < text.len());
+    let has_mandatory_break = breaks
+      .iter()
+      .any(|brk| brk.is_mandatory() && brk.byte_offset < text.len());
 
     let needs_wrap = crate::style::inline_axis_is_horizontal(style.writing_mode)
       && max_width.is_finite()
@@ -13195,10 +13287,14 @@ impl DisplayListBuilder {
         }
       }
 
-      let break_opportunities: Vec<crate::text::line_break::BreakOpportunity> = if allows_soft_wrap {
+      let break_opportunities: Vec<crate::text::line_break::BreakOpportunity> = if allows_soft_wrap
+      {
         breaks
       } else {
-        breaks.into_iter().filter(|brk| brk.is_mandatory()).collect()
+        breaks
+          .into_iter()
+          .filter(|brk| brk.is_mandatory())
+          .collect()
       };
       let lines = crate::text::line_break::break_lines(&glyphs, max_width, &break_opportunities);
 
@@ -13542,9 +13638,10 @@ impl DisplayListBuilder {
     let svg = injected_svg.as_deref().unwrap_or(svg);
 
     let style_injection = content.document_css_injection.as_ref();
-    let defs_injection = self.svg_id_defs.as_ref().and_then(|defs| {
-      crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg)
-    });
+    let defs_injection = self
+      .svg_id_defs
+      .as_ref()
+      .and_then(|defs| crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg));
 
     let mut insert_pos = injected_insert_pos.or_else(|| style_injection.map(|inj| inj.insert_pos));
     if let Some(pos) = insert_pos {
@@ -13580,7 +13677,10 @@ impl DisplayListBuilder {
           hasher.write(injected.as_bytes());
           hasher.write(suffix.as_bytes());
           hasher.write_u8(0xff);
-          (hasher.finish(), prefix.len() + injected.len() + suffix.len())
+          (
+            hasher.finish(),
+            prefix.len() + injected.len() + suffix.len(),
+          )
         }
         _ => {
           let mut hasher = DefaultHasher::new();
@@ -13719,7 +13819,11 @@ impl DisplayListBuilder {
     let Some(image_cache) = self.image_cache.as_ref() else {
       return false;
     };
-    if !dest_width.is_finite() || !dest_height.is_finite() || dest_width <= 0.0 || dest_height <= 0.0 {
+    if !dest_width.is_finite()
+      || !dest_height.is_finite()
+      || dest_width <= 0.0
+      || dest_height <= 0.0
+    {
       return false;
     }
     let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
@@ -13817,11 +13921,20 @@ impl DisplayListBuilder {
 
     let decode_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
     let (css_w, css_h) = if decorative {
-      let (w, h) =
-        image.css_natural_dimensions(orientation, &image_resolution, self.device_pixel_ratio, None);
+      let (w, h) = image.css_natural_dimensions(
+        orientation,
+        &image_resolution,
+        self.device_pixel_ratio,
+        None,
+      );
       (w.unwrap_or(0.0), h.unwrap_or(0.0))
     } else {
-      match image.css_dimensions(orientation, &image_resolution, self.device_pixel_ratio, None) {
+      match image.css_dimensions(
+        orientation,
+        &image_resolution,
+        self.device_pixel_ratio,
+        None,
+      ) {
         Some(dimensions) => dimensions,
         None => {
           if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
@@ -14436,8 +14549,17 @@ mod tests {
     let layer = BackgroundLayer::default();
     // No intrinsic dimensions (img_w/img_h=0) but an intrinsic ratio. `auto auto` sizing should act
     // like `contain` and preserve the ratio within the positioning area.
-    let (w, h) =
-      DisplayListBuilder::compute_background_size(&layer, 16.0, 16.0, None, 200.0, 100.0, 0.0, 0.0, Some(1.0));
+    let (w, h) = DisplayListBuilder::compute_background_size(
+      &layer,
+      16.0,
+      16.0,
+      None,
+      200.0,
+      100.0,
+      0.0,
+      0.0,
+      Some(1.0),
+    );
     assert!((w - 100.0).abs() < 1e-6);
     assert!((h - 100.0).abs() < 1e-6);
   }
@@ -16616,11 +16738,15 @@ mod tests {
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(2.0))),
+            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(
+              2.0,
+            ))),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(2.0))),
+            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(
+              2.0,
+            ))),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
