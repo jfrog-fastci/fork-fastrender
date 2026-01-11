@@ -250,6 +250,8 @@ Promise.all([t]);
   // Promise.all(...)
   let promise_all_call = find_expr(root_body, |_, kind| {
     match kind {
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { .. } => true,
       ExprKind::Call(call) => {
         if call.is_new {
           return false;
@@ -272,8 +274,6 @@ Promise.all([t]);
         lowered.names.resolve(*obj_name) == Some("Promise")
           && lowered.names.resolve(*prop_name) == Some("all")
       }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::PromiseAll { .. } => true,
       _ => false,
     }
   });

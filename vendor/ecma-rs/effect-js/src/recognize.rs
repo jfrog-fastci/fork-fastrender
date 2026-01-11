@@ -466,9 +466,9 @@ fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPatte
       RecognizedPattern::GuardClause { stmt, .. } => stmt_span(body, *stmt)
         .map(|(s, e)| (s, e, 9, stmt.0))
         .unwrap_or((u32::MAX, u32::MAX, 9, stmt.0)),
-      RecognizedPattern::MapGetOrDefault { map, .. } => expr_span(body, *map)
-        .map(|(s, e)| (s, e, 10, map.0))
-        .unwrap_or((u32::MAX, u32::MAX, 10, map.0)),
+      RecognizedPattern::MapGetOrDefault { conditional, .. } => expr_span(body, *conditional)
+        .map(|(s, e)| (s, e, 10, conditional.0))
+        .unwrap_or((u32::MAX, u32::MAX, 10, conditional.0)),
     }
   }
 
@@ -1413,42 +1413,13 @@ pub fn recognize_patterns_typed(
   }
 
   // 1) Canonical call sites, using types to gate prototype/instance methods.
-  for (idx, expr) in body_ref.exprs.iter().enumerate() {
+  for (idx, _expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    if matches!(expr.kind, ExprKind::Call(_)) {
-      if let Some(api) = resolve_api_call_typed(lowered, body, expr_id, types) {
-        patterns.push(RecognizedPattern::CanonicalCall {
-          call: expr_id,
-          api,
-        });
-      }
-      continue;
-    }
-
-    // When `hir-js` semantic-ops lowering is enabled, some high-value prototype
-    // calls are represented as dedicated nodes instead of `Call(Member(...))`.
-    // Treat those as canonical call sites as well, gated by types.
-    #[cfg(feature = "hir-semantic-ops")]
-    match &expr.kind {
-      ExprKind::ArrayMap { array, .. } if types.expr_is_array(body, *array) => {
-        patterns.push(RecognizedPattern::CanonicalCall {
-          call: expr_id,
-          api: ApiId::ArrayPrototypeMap,
-        });
-      }
-      ExprKind::ArrayFilter { array, .. } if types.expr_is_array(body, *array) => {
-        patterns.push(RecognizedPattern::CanonicalCall {
-          call: expr_id,
-          api: ApiId::ArrayPrototypeFilter,
-        });
-      }
-      ExprKind::ArrayReduce { array, .. } if types.expr_is_array(body, *array) => {
-        patterns.push(RecognizedPattern::CanonicalCall {
-          call: expr_id,
-          api: ApiId::ArrayPrototypeReduce,
-        });
-      }
-      _ => {}
+    if let Some(api) = resolve_api_call_typed(lowered, body, expr_id, types) {
+      patterns.push(RecognizedPattern::CanonicalCall {
+        call: expr_id,
+        api,
+      });
     }
   }
 

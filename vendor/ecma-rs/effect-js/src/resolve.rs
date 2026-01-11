@@ -18,6 +18,12 @@ fn ident_name<'a>(lowered: &'a LowerResult, name: hir_js::NameId) -> Option<&'a 
 pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<ApiId> {
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
+
+  #[cfg(feature = "hir-semantic-ops")]
+  if matches!(&call.kind, ExprKind::PromiseAll { .. }) {
+    return Some(ApiId::PromiseAll);
+  }
+
   let ExprKind::Call(call) = &call.kind else {
     return None;
   };
@@ -143,6 +149,15 @@ pub fn resolve_api_call_best_effort_untyped(
 
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
+
+  #[cfg(feature = "hir-semantic-ops")]
+  match &call.kind {
+    ExprKind::ArrayMap { .. } => return Some(ApiId::ArrayPrototypeMap),
+    ExprKind::ArrayFilter { .. } => return Some(ApiId::ArrayPrototypeFilter),
+    ExprKind::ArrayReduce { .. } => return Some(ApiId::ArrayPrototypeReduce),
+    _ => {}
+  }
+
   let ExprKind::Call(call) = &call.kind else {
     return None;
   };
@@ -232,6 +247,21 @@ pub fn resolve_api_call_typed(
 
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
+
+  #[cfg(feature = "hir-semantic-ops")]
+  match &call.kind {
+    ExprKind::ArrayMap { array, .. } if receiver_is_array(types, body, *array) => {
+      return Some(ApiId::ArrayPrototypeMap);
+    }
+    ExprKind::ArrayFilter { array, .. } if receiver_is_array(types, body, *array) => {
+      return Some(ApiId::ArrayPrototypeFilter);
+    }
+    ExprKind::ArrayReduce { array, .. } if receiver_is_array(types, body, *array) => {
+      return Some(ApiId::ArrayPrototypeReduce);
+    }
+    _ => {}
+  }
+
   let ExprKind::Call(call) = &call.kind else {
     return None;
   };
@@ -377,7 +407,6 @@ pub fn resolve_call(
           }
           (elements == promises.as_slice()).then_some(ExprId(idx as u32))
         });
-
       return Some(ResolvedCall {
         call: call_expr,
         api: api.name.clone(),
