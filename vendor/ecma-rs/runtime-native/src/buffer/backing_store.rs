@@ -219,7 +219,7 @@ impl BackingStore {
     self.inner_nn().is_some_and(|inner| unsafe { inner.as_ref() }.borrow_state.load(Ordering::Acquire) != 0)
   }
 
-  pub fn try_with_slice<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Result<R, BorrowError> {
+  pub fn try_with_slice<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> Result<R, BorrowError> {
     if self.is_io_borrowed() {
       return Err(BorrowError::Borrowed);
     }
@@ -231,7 +231,7 @@ impl BackingStore {
 
   pub fn try_with_slice_mut<R>(
     &mut self,
-    f: impl FnOnce(&mut [u8]) -> R,
+    f: impl for<'a> FnOnce(&'a mut [u8]) -> R,
   ) -> Result<R, BorrowError> {
     if self.is_io_borrowed() {
       return Err(BorrowError::Borrowed);

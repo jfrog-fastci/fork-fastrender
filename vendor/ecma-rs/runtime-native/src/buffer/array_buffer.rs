@@ -160,7 +160,7 @@ impl ArrayBuffer {
     Ok(store.try_borrow_io_write()?)
   }
 
-  pub fn try_with_slice<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Result<R, ArrayBufferError> {
+  pub fn try_with_slice<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> Result<R, ArrayBufferError> {
     let Some(store) = self.backing_store.as_ref() else {
       return Err(ArrayBufferError::Detached);
     };
@@ -169,7 +169,7 @@ impl ArrayBuffer {
 
   pub fn try_with_slice_mut<R>(
     &mut self,
-    f: impl FnOnce(&mut [u8]) -> R,
+    f: impl for<'a> FnOnce(&'a mut [u8]) -> R,
   ) -> Result<R, ArrayBufferError> {
     let Some(store) = self.backing_store.as_mut() else {
       return Err(ArrayBufferError::Detached);
