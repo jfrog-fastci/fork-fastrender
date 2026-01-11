@@ -190,7 +190,7 @@ struct LocalAllocFlowFacts {
   /// Allocation-defining SSA temps (allocation id = temp).
   alloc_vars: BTreeSet<u32>,
   /// SSA temps that may refer to non-local objects (e.g. parameters, global loads, unknown call
-  /// results, or the result of `GetProp`).
+  /// results).
   ///
   /// This is used to conservatively treat `PropAssign` into such values as an escape sink even when
   /// they may also alias a local allocation (e.g. via `Phi`).
@@ -264,7 +264,6 @@ fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
         }
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
           let (tgt, obj, _op, _prop) = inst.as_bin();
-          facts.external_defs.insert(tgt);
           facts.getprops.push((tgt, obj.clone()));
         }
         _ => {}
@@ -289,6 +288,33 @@ fn ext_for_arg(var_ext: &BTreeMap<u32, EscapeState>, arg: &Arg) -> EscapeState {
     Arg::Var(v) => var_ext.get(v).copied().unwrap_or(EscapeState::NoEscape),
     // Builtins and nested functions are not local allocations.
     Arg::Builtin(_) | Arg::Fn(_) => EscapeState::GlobalEscape,
+    Arg::Const(_) => EscapeState::NoEscape,
+  }
+}
+
+fn is_internal_literal_marker_builtin(name: &str) -> bool {
+  matches!(
+    name,
+    "__optimize_js_array_hole"
+      | "__optimize_js_object_prop"
+      | "__optimize_js_object_prop_computed"
+      | "__optimize_js_object_spread"
+  )
+}
+
+fn ext_for_stored_value(var_ext: &BTreeMap<u32, EscapeState>, arg: &Arg) -> EscapeState {
+  match arg {
+    Arg::Var(v) => var_ext.get(v).copied().unwrap_or(EscapeState::NoEscape),
+    Arg::Builtin(name) => {
+      // Marker builtins are not real values stored into objects/arrays; ignore them here so we
+      // don't falsely taint literal containers as "external".
+      if is_internal_literal_marker_builtin(name) {
+        EscapeState::NoEscape
+      } else {
+        EscapeState::GlobalEscape
+      }
+    }
+    Arg::Fn(_) => EscapeState::GlobalEscape,
     Arg::Const(_) => EscapeState::NoEscape,
   }
 }
@@ -329,6 +355,7 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
     join_escape(&mut var_ext, v, EscapeState::GlobalEscape);
   }
   let mut stored_into: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+  let mut stored_external: BTreeMap<u32, EscapeState> = BTreeMap::new();
 
   let mut changed = true;
   while changed {
@@ -402,24 +429,49 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
       if entry.len() != before {
         changed = true;
       }
+
+      let mut ext = EscapeState::NoEscape;
+      for arg in args.iter() {
+        ext = ext.join(ext_for_stored_value(&var_ext, arg));
+        if ext == EscapeState::Unknown {
+          break;
+        }
+      }
+      if ext != EscapeState::NoEscape {
+        let entry_ext = stored_external.entry(*container).or_insert(EscapeState::NoEscape);
+        let next = entry_ext.join(ext);
+        if next != *entry_ext {
+          *entry_ext = next;
+          changed = true;
+        }
+      }
     }
 
     // Property stores: `obj[prop] = val` stores `val` into any possible container allocation.
     for (obj, val) in facts.prop_assigns.iter() {
       let value_allocs = allocs_for_arg(&var_allocs, val);
-      if value_allocs.is_empty() {
-        continue;
-      }
+      let value_ext = ext_for_stored_value(&var_ext, val);
       let container_allocs = allocs_for_arg(&var_allocs, obj);
       if container_allocs.is_empty() {
         continue;
       }
       for container in container_allocs {
-        let entry = stored_into.entry(container).or_default();
-        let before = entry.len();
-        entry.extend(value_allocs.iter().copied());
-        if entry.len() != before {
-          changed = true;
+        if !value_allocs.is_empty() {
+          let entry = stored_into.entry(container).or_default();
+          let before = entry.len();
+          entry.extend(value_allocs.iter().copied());
+          if entry.len() != before {
+            changed = true;
+          }
+        }
+
+        if value_ext != EscapeState::NoEscape {
+          let entry_ext = stored_external.entry(container).or_insert(EscapeState::NoEscape);
+          let next = entry_ext.join(value_ext);
+          if next != *entry_ext {
+            *entry_ext = next;
+            changed = true;
+          }
         }
       }
     }
@@ -427,23 +479,34 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
     // Property loads: `tgt = obj[prop]` may read any allocation stored into the receiver.
     for (tgt, obj) in facts.getprops.iter() {
       let container_allocs = allocs_for_arg(&var_allocs, obj);
-      if container_allocs.is_empty() {
-        continue;
-      }
       let mut loaded = BTreeSet::new();
+      let mut loaded_ext = EscapeState::NoEscape;
       for container in container_allocs {
         if let Some(values) = stored_into.get(&container) {
           loaded.extend(values.iter().copied());
         }
+        if let Some(ext) = stored_external.get(&container) {
+          loaded_ext = loaded_ext.join(*ext);
+        }
       }
-      if loaded.is_empty() {
-        continue;
+      if !loaded.is_empty() {
+        let entry = var_allocs.entry(*tgt).or_default();
+        let before = entry.len();
+        entry.extend(loaded);
+        if entry.len() != before {
+          changed = true;
+        }
       }
-      let entry = var_allocs.entry(*tgt).or_default();
-      let before = entry.len();
-      entry.extend(loaded);
-      if entry.len() != before {
-        changed = true;
+
+      let receiver_ext = ext_for_arg(&var_ext, obj);
+      loaded_ext = loaded_ext.join(receiver_ext);
+      if loaded_ext != EscapeState::NoEscape {
+        let entry = var_ext.entry(*tgt).or_insert(EscapeState::NoEscape);
+        let next = entry.join(loaded_ext);
+        if next != *entry {
+          *entry = next;
+          changed = true;
+        }
       }
     }
   }
@@ -900,6 +963,106 @@ mod tests {
     let escape = analyze_cfg_escapes(&cfg);
     assert_eq!(escape_of(&escape, 0), EscapeState::NoEscape);
     assert_eq!(escape_of(&escape, 1), EscapeState::GlobalEscape);
+  }
+
+  #[test]
+  fn getprop_loaded_local_allocation_is_not_treated_as_external_receiver() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::call(
+            1,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::prop_assign(
+            Arg::Var(0),
+            Arg::Const(Const::Str("x".to_string())),
+            Arg::Var(1),
+          ),
+          Inst::bin(
+            2,
+            Arg::Var(0),
+            BinOp::GetProp,
+            Arg::Const(Const::Str("x".to_string())),
+          ),
+          Inst::call(
+            3,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::prop_assign(
+            Arg::Var(2),
+            Arg::Const(Const::Str("y".to_string())),
+            Arg::Var(3),
+          ),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 0), EscapeState::NoEscape);
+    assert_eq!(escape_of(&escape, 1), EscapeState::NoEscape);
+    assert_eq!(escape_of(&escape, 3), EscapeState::NoEscape);
+  }
+
+  #[test]
+  fn getprop_loaded_param_object_propagates_arg_escape() {
+    // %99 has no definition, so the analysis treats it as a parameter/input.
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::prop_assign(
+            Arg::Var(0),
+            Arg::Const(Const::Str("x".to_string())),
+            Arg::Var(99),
+          ),
+          Inst::bin(
+            1,
+            Arg::Var(0),
+            BinOp::GetProp,
+            Arg::Const(Const::Str("x".to_string())),
+          ),
+          Inst::call(
+            2,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::prop_assign(
+            Arg::Var(1),
+            Arg::Const(Const::Str("y".to_string())),
+            Arg::Var(2),
+          ),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(99));
   }
 
   #[test]
