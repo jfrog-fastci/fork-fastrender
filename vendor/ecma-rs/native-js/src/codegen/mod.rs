@@ -1,55 +1,20 @@
-//! Native code generation backends for `native-js`.
-//!
-//! This module currently contains:
-//! - `emit_llvm_module`: a minimal `parse-js`-driven LLVM IR emitter (used by
-//!   `compile_typescript_to_llvm_ir` / the `native-js-cli` binary).
-//! - [`codegen`]: an experimental HIR-driven backend used by the typechecked
-//!   `native-js` CLI (`native-js-cli --bin native-js`).
-//!
-//! ## Diagnostic codes
-//!
-//! The HIR backend emits stable `NJS01xx` codes for codegen failures:
-//!
-//! - `NJS0100`: failed to access lowered HIR for entry file
-//! - `NJS0101`: failed to access lowered HIR for `main` body
-//! - `NJS0102`: missing function metadata for `main` body
-//! - `NJS0103`: expression id out of bounds
-//! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
-//! - `NJS0105`: unsupported unary operator
-//! - `NJS0106`: unsupported binary operator
-//! - `NJS0107`: unsupported expression / assignment / update operator in `main`
-//! - `NJS0112`: statement id out of bounds
-//! - `NJS0113`: unsupported statement / variable declaration kind in `main`
-//! - `NJS0114`: unknown identifier in `main`
-//! - `NJS0115`: not all control-flow paths in `main` return a value
-//! - `NJS0116`: `return` without a value is only supported when `main` returns `void`/`undefined`
-//! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
-//! - `NJS0118`: variable declarations must have an initializer
-//! - `NJS0119`: unknown loop label for `break`
-//! - `NJS0120`: `break` is only supported inside loops
-//! - `NJS0121`: unknown loop label for `continue`
-//! - `NJS0122`: `continue` is only supported inside loops
-//! - `NJS0123`: failed to resolve call signature for exported `main`
-//! - `NJS0124`: only labeled loops are supported in native-js codegen
-//!
-//! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
-//! (`NJS0108..NJS0111`).
-
+use crate::resolve::BindingId;
 use crate::strict::Entrypoint;
+use crate::Resolver;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
-  AssignOp, BinaryOp, ExprId, ExprKind, ForInit, Literal, NameId, PatId, PatKind, StmtId, StmtKind,
-  UnaryOp, UpdateOp, VarDecl, VarDeclKind,
+  AssignOp, BinaryOp, ExprId, ExprKind, FileKind, ForInit, ImportKind, Literal, NameId, PatKind,
+  StmtId, StmtKind, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
 };
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::module::Module;
+use inkwell::module::{Linkage, Module};
 use inkwell::types::IntType;
-use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::values::{FunctionValue, GlobalValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 
 pub struct CodegenOptions {
@@ -71,41 +36,9 @@ pub fn codegen<'ctx>(
   entrypoint: Entrypoint,
   options: CodegenOptions,
 ) -> Result<Module<'ctx>, Vec<Diagnostic>> {
-  let lowered = program.hir_lowered(entry_file).ok_or_else(|| {
-    vec![Diagnostic::error(
-      "NJS0100",
-      "failed to access lowered HIR for entry file",
-      Span::new(entry_file, TextRange::new(0, 0)),
-    )]
-  })?;
-  let hir_body = lowered.body(entrypoint.main_body).ok_or_else(|| {
-    vec![Diagnostic::error(
-      "NJS0101",
-      "failed to access lowered HIR for `main` body",
-      Span::new(entry_file, TextRange::new(0, 0)),
-    )]
-  })?;
-
-  let module = context.create_module(&options.module_name);
-  let i32_ty = context.i32_type();
-
-  let ts_main = declare_ts_main(context, &module, i32_ty);
-  let allow_void_return = main_allows_void_return(program, entrypoint.main_def, entry_file)?;
-  build_ts_main(
-    context,
-    &module,
-    i32_ty,
-    ts_main,
-    hir_body,
-    lowered.names.as_ref(),
-    entry_file,
-    allow_void_return,
-  )?;
-
-  let c_main = declare_c_main(context, &module, i32_ty);
-  build_c_main(context, c_main, ts_main, i32_ty);
-
-  Ok(module)
+  let mut cg = ProgramCodegen::new(context, program, &options.module_name);
+  cg.compile(entry_file, entrypoint)?;
+  Ok(cg.finish())
 }
 
 fn main_allows_void_return(
@@ -129,140 +62,529 @@ fn main_allows_void_return(
   ))
 }
 
-fn declare_ts_main<'ctx>(
+struct ProgramCodegen<'ctx, 'p> {
   context: &'ctx Context,
-  module: &Module<'ctx>,
+  module: Module<'ctx>,
   i32_ty: IntType<'ctx>,
-) -> FunctionValue<'ctx> {
-  let func = module.add_function("ts_main", i32_ty.fn_type(&[], false), None);
-  crate::stack_walking::apply_stack_walking_attrs(context, func);
-  func
+  bool_ty: IntType<'ctx>,
+  program: &'p Program,
+  resolver: Resolver<'p>,
+  exported_defs: HashSet<DefId>,
+  globals: HashMap<DefId, GlobalValue<'ctx>>,
+  functions: HashMap<DefId, FunctionValue<'ctx>>,
+  file_inits: HashMap<FileId, FunctionValue<'ctx>>,
 }
 
-fn declare_c_main<'ctx>(
-  context: &'ctx Context,
-  module: &Module<'ctx>,
-  i32_ty: IntType<'ctx>,
-) -> FunctionValue<'ctx> {
-  // Define `main` with no parameters (`int main(void)`), since our generated
-  // wrapper does not currently use `argc`/`argv`.
-  //
-  // This also avoids passing a raw `ptr` argument through a function marked with
-  // our GC strategy (`gc "coreclr"`), which would violate the GC pointer
-  // discipline lint (all pointers in GC function signatures must be
-  // `ptr addrspace(1)`).
-  let func = module.add_function("main", i32_ty.fn_type(&[], false), None);
-  crate::stack_walking::apply_stack_walking_attrs(context, func);
-  func
-}
-
-fn build_ts_main<'ctx>(
-  context: &'ctx Context,
-  module: &Module<'ctx>,
-  i32_ty: IntType<'ctx>,
-  func: FunctionValue<'ctx>,
-  hir_body: &hir_js::Body,
-  names: &hir_js::NameInterner,
-  entry_file: FileId,
-  allow_void_return: bool,
-) -> Result<(), Vec<Diagnostic>> {
-  let builder = context.create_builder();
-  let alloca_builder = context.create_builder();
-  let printf = declare_printf(context, module);
-
-  let entry_bb = context.append_basic_block(func, "entry");
-  builder.position_at_end(entry_bb);
-
-  let mut cg = HirCodegen {
-    context,
-    builder,
-    alloca_builder,
-    func,
-    i32_ty,
-    bool_ty: context.bool_type(),
-    printf,
-    body: hir_body,
-    names,
-    entry_file,
-    locals: LocalEnv::new(),
-    loop_stack: Vec::new(),
-    allow_void_return,
-  };
-
-  let Some(function_meta) = &hir_body.function else {
-    return Err(vec![Diagnostic::error(
-      "NJS0102",
-      "missing function metadata for `main` body",
-      Span::new(entry_file, hir_body.span),
-    )]);
-  };
-
-  match function_meta.body {
-    hir_js::FunctionBody::Expr(expr) => {
-      let value = cg.codegen_expr(expr)?;
-      let ret = if cg.allow_void_return {
-        i32_ty.const_zero()
-      } else {
-        value
-      };
-      cg.builder.build_return(Some(&ret)).expect("failed to build return");
+impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
+  fn new(context: &'ctx Context, program: &'p Program, module_name: &str) -> Self {
+    Self {
+      context,
+      module: context.create_module(module_name),
+      i32_ty: context.i32_type(),
+      bool_ty: context.bool_type(),
+      program,
+      resolver: Resolver::new(program),
+      exported_defs: HashSet::new(),
+      globals: HashMap::new(),
+      functions: HashMap::new(),
+      file_inits: HashMap::new(),
     }
-    hir_js::FunctionBody::Block(ref stmts) => {
-      let mut fallthrough = true;
-      for &stmt_id in stmts {
-        fallthrough = cg.codegen_stmt(stmt_id)?;
-        if !fallthrough {
-          break;
-        }
-      }
+  }
 
-      if fallthrough && !cg.allow_void_return {
-        return Err(vec![Diagnostic::error(
-          "NJS0115",
-          "not all control-flow paths in `main` return a value",
-          Span::new(entry_file, hir_body.span),
-        )]);
+  fn finish(self) -> Module<'ctx> {
+    self.module
+  }
+
+  fn compile(&mut self, entry_file: FileId, entrypoint: Entrypoint) -> Result<(), Vec<Diagnostic>> {
+    let Some(lowered) = self.program.hir_lowered(entry_file) else {
+      return Err(vec![Diagnostic::error(
+        "NJS0100",
+        "failed to access lowered HIR for entry file",
+        Span::new(entry_file, TextRange::new(0, 0)),
+      )]);
+    };
+    if matches!(lowered.hir.file_kind, FileKind::Dts) {
+      return Err(vec![Diagnostic::error(
+        "NJS0100",
+        "entry file must not be a declaration file",
+        Span::new(entry_file, TextRange::new(0, 0)),
+      )]);
+    }
+
+    let main_def = entrypoint.main_def;
+    let allow_void_main_return = main_allows_void_return(self.program, main_def, entry_file)?;
+
+    let files = self.runtime_files(entry_file);
+    self.collect_exported_defs(&files);
+    let init_order = self.init_order(entry_file, &files);
+
+    for file in &files {
+      self.ensure_file_init(*file);
+    }
+
+    // Predeclare all top-level functions (so calls can reference them).
+    let mut function_bodies: Vec<(DefId, FileId, hir_js::BodyId)> = Vec::new();
+    for file in &files {
+      let Some(lowered) = self.program.hir_lowered(*file) else {
+        continue;
+      };
+      for def in &lowered.defs {
+        if def.parent.is_some() {
+          continue;
+        }
+        if def.path.kind != hir_js::DefKind::Function {
+          continue;
+        }
+        let Some(body_id) = def.body else {
+          continue;
+        };
+        let Some(body) = lowered.body(body_id) else {
+          continue;
+        };
+        let Some(function) = body.function.as_ref() else {
+          continue;
+        };
+        self.ensure_ts_function(def.id, function.params.len());
+        function_bodies.push((def.id, *file, body_id));
       }
-      if fallthrough {
-        cg.builder
-          .build_return(Some(&i32_ty.const_zero()))
-          .expect("failed to build implicit return");
+    }
+
+    let Some(main_fn) = self.functions.get(&main_def).copied() else {
+      return Err(vec![Diagnostic::error(
+        "NJS0101",
+        "failed to locate exported `main` function for codegen",
+        Span::new(entry_file, TextRange::new(0, 0)),
+      )]);
+    };
+
+    // Define all file init functions.
+    for file in &files {
+      self.build_file_init(*file)?;
+    }
+
+    // Define all top-level functions.
+    for (def, file, body_id) in function_bodies {
+      let allow_void_return = def == main_def && allow_void_main_return;
+      self.build_ts_function(def, file, body_id, allow_void_return)?;
+    }
+
+    // Build C entrypoint wrapper that runs module initializers and then calls TS main.
+    self.build_c_main(main_fn, &init_order);
+
+    Ok(())
+  }
+
+  fn runtime_files(&self, entry_file: FileId) -> Vec<FileId> {
+    let mut visited: HashSet<FileId> = HashSet::new();
+    let mut queue: VecDeque<FileId> = VecDeque::new();
+    queue.push_back(entry_file);
+
+    while let Some(file) = queue.pop_front() {
+      if visited.contains(&file) {
+        continue;
+      }
+      let Some(lowered) = self.program.hir_lowered(file) else {
+        continue;
+      };
+      if matches!(lowered.hir.file_kind, FileKind::Dts) {
+        continue;
+      }
+      visited.insert(file);
+      for dep in file_import_deps(self.program, &lowered) {
+        queue.push_back(dep);
+      }
+    }
+
+    let mut files: Vec<FileId> = visited.into_iter().collect();
+    files.sort_by_key(|id| id.0);
+    files
+  }
+
+  fn collect_exported_defs(&mut self, files: &[FileId]) {
+    self.exported_defs.clear();
+    for file in files {
+      for entry in self.program.exports_of(*file).values() {
+        if let Some(def) = entry.def {
+          self.exported_defs.insert(def);
+        }
       }
     }
   }
 
-  Ok(())
+  fn init_order(&self, entry_file: FileId, files: &[FileId]) -> Vec<FileId> {
+    let file_set: HashSet<FileId> = files.iter().copied().collect();
+    let mut deps: HashMap<FileId, Vec<FileId>> = HashMap::new();
+    for file in files {
+      let Some(lowered) = self.program.hir_lowered(*file) else {
+        continue;
+      };
+      let mut out: Vec<FileId> = file_import_deps(self.program, &lowered)
+        .into_iter()
+        .filter(|dep| file_set.contains(dep))
+        .collect();
+      out.sort_by_key(|id| id.0);
+      out.dedup();
+      deps.insert(*file, out);
+    }
+
+    let mut visited = HashSet::<FileId>::new();
+    let mut visiting = HashSet::<FileId>::new();
+    let mut order = Vec::new();
+    topo_visit(entry_file, &deps, &mut visited, &mut visiting, &mut order);
+    order
+  }
+
+  fn ensure_file_init(&mut self, file: FileId) {
+    if self.file_inits.contains_key(&file) {
+      return;
+    }
+    let name = crate::llvm_symbol_for_file_init(file);
+    let fn_ty = self.context.void_type().fn_type(&[], false);
+    let func = self.module.add_function(&name, fn_ty, Some(Linkage::Internal));
+    crate::stack_walking::apply_stack_walking_attrs(self.context, func);
+    self.file_inits.insert(file, func);
+  }
+
+  fn ensure_ts_function(&mut self, def: DefId, param_count: usize) {
+    if self.functions.contains_key(&def) {
+      return;
+    }
+    let name = crate::llvm_symbol_for_def(self.program, def);
+    let params: Vec<_> = std::iter::repeat(self.i32_ty.into())
+      .take(param_count)
+      .collect();
+    let fn_ty = self.i32_ty.fn_type(&params, false);
+    let linkage = if self.exported_defs.contains(&def) {
+      None
+    } else {
+      Some(Linkage::Internal)
+    };
+    let func = self.module.add_function(&name, fn_ty, linkage);
+    crate::stack_walking::apply_stack_walking_attrs(self.context, func);
+    self.functions.insert(def, func);
+  }
+
+  fn build_file_init(&mut self, file: FileId) -> Result<(), Vec<Diagnostic>> {
+    let Some(func) = self.file_inits.get(&file).copied() else {
+      return Ok(());
+    };
+    if func.get_first_basic_block().is_some() {
+      return Ok(());
+    }
+    let Some(lowered) = self.program.hir_lowered(file) else {
+      return Ok(());
+    };
+    let Some(body) = lowered.body(lowered.root_body()) else {
+      return Ok(());
+    };
+
+    let mut cg = FnCodegen::new(
+      self,
+      func,
+      file,
+      body,
+      lowered.names.as_ref(),
+      CodegenMode::FileInit,
+      ReturnKind::Void,
+      false,
+    );
+
+    let mut fallthrough = true;
+    for &stmt in &body.root_stmts {
+      fallthrough = cg.codegen_stmt(stmt)?;
+      if !fallthrough {
+        break;
+      }
+    }
+    if fallthrough {
+      cg.builder.build_return(None).expect("failed to build return");
+    }
+    Ok(())
+  }
+
+  fn build_ts_function(
+    &mut self,
+    def: DefId,
+    file: FileId,
+    body_id: hir_js::BodyId,
+    allow_void_return: bool,
+  ) -> Result<(), Vec<Diagnostic>> {
+    let Some(func) = self.functions.get(&def).copied() else {
+      return Ok(());
+    };
+    if func.get_first_basic_block().is_some() {
+      return Ok(());
+    }
+
+    let Some(lowered) = self.program.hir_lowered(file) else {
+      return Ok(());
+    };
+    let hir_body = lowered.body(body_id).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0101",
+        "failed to access lowered HIR for function body",
+        Span::new(file, TextRange::new(0, 0)),
+      )]
+    })?;
+    let Some(function_meta) = hir_body.function.as_ref() else {
+      return Err(vec![Diagnostic::error(
+        "NJS0102",
+        "missing function metadata",
+        Span::new(file, hir_body.span),
+      )]);
+    };
+
+    let mut cg = FnCodegen::new(
+      self,
+      func,
+      file,
+      hir_body,
+      lowered.names.as_ref(),
+      CodegenMode::TsFunction,
+      ReturnKind::I32,
+      allow_void_return,
+    );
+
+    // Parameters.
+    for (idx, param) in function_meta.params.iter().enumerate() {
+      let binding = cg
+        .cg
+        .resolver
+        .for_file(file)
+        .resolve_pat_ident(hir_body, param.pat)
+        .ok_or_else(|| {
+          vec![Diagnostic::error(
+            "NJS0122",
+            "unsupported parameter pattern",
+            Span::new(file, hir_body.span),
+          )]
+        })?;
+
+      let debug_name = hir_body
+        .pats
+        .get(param.pat.0 as usize)
+        .and_then(|pat| match pat.kind {
+          PatKind::Ident(name) => cg.names.resolve(name),
+          _ => None,
+        })
+        .unwrap_or("param");
+
+      let slot = cg.ensure_local_slot(binding, debug_name);
+      let value = func
+        .get_nth_param(idx as u32)
+        .expect("missing param")
+        .into_int_value();
+      cg.builder.build_store(slot, value).expect("store param");
+
+      if let Some(name) = cg.pat_ident_name(param.pat) {
+        cg.env.bind(name, binding);
+      }
+    }
+
+    match function_meta.body {
+      hir_js::FunctionBody::Expr(expr) => {
+        let value = cg.codegen_expr(expr)?;
+        let ret = if allow_void_return {
+          cg.cg.i32_ty.const_zero()
+        } else {
+          value
+        };
+        cg.builder
+          .build_return(Some(&ret))
+          .expect("failed to build return");
+      }
+      hir_js::FunctionBody::Block(ref stmts) => {
+        let mut fallthrough = true;
+        for &stmt in stmts {
+          fallthrough = cg.codegen_stmt(stmt)?;
+          if !fallthrough {
+            break;
+          }
+        }
+
+        if fallthrough {
+          if allow_void_return {
+            cg.builder
+              .build_return(Some(&cg.cg.i32_ty.const_zero()))
+              .expect("failed to build implicit return");
+          } else {
+            return Err(vec![Diagnostic::error(
+              "NJS0115",
+              "not all control-flow paths return a value in this codegen subset",
+              Span::new(file, hir_body.span),
+            )]);
+          }
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  fn build_c_main(&mut self, ts_main: FunctionValue<'ctx>, init_order: &[FileId]) {
+    // Define `main` with no parameters (`int main(void)`), since our generated
+    // wrapper does not currently use `argc`/`argv`.
+    //
+    // This also avoids passing a raw `ptr` argument through a function marked with
+    // our GC strategy (`gc \"coreclr\"`), which would violate the GC pointer
+    // discipline lint (all pointers in GC function signatures must be
+    // `ptr addrspace(1)`).
+    let c_main = self.module.add_function("main", self.i32_ty.fn_type(&[], false), None);
+    crate::stack_walking::apply_stack_walking_attrs(self.context, c_main);
+
+    let builder = self.context.create_builder();
+    let bb = self.context.append_basic_block(c_main, "entry");
+    builder.position_at_end(bb);
+
+    for file in init_order {
+      if let Some(init) = self.file_inits.get(file).copied() {
+        let _ = builder.build_call(init, &[], "init");
+      }
+    }
+
+    let call = builder
+      .build_call(ts_main, &[], "ret")
+      .expect("failed to build call");
+    let ret_val = call
+      .try_as_basic_value()
+      .left()
+      .map(|v| v.into_int_value())
+      .unwrap_or_else(|| self.i32_ty.const_zero());
+    builder
+      .build_return(Some(&ret_val))
+      .expect("failed to build return");
+  }
+
+  fn ensure_global_var(&mut self, def: DefId, span: Span) -> Result<GlobalValue<'ctx>, Vec<Diagnostic>> {
+    if let Some(existing) = self.globals.get(&def).copied() {
+      return Ok(existing);
+    }
+
+    let Some(kind) = self.program.def_kind(def) else {
+      return Err(vec![Diagnostic::error(
+        "NJS0140",
+        "failed to resolve definition kind for global binding",
+        span,
+      )]);
+    };
+
+    match kind {
+      typecheck_ts::DefKind::Var(_) | typecheck_ts::DefKind::VarDeclarator(_) => {
+        let name = crate::llvm_symbol_for_def(self.program, def);
+        let global = self.module.add_global(self.i32_ty, None, &name);
+        global.set_initializer(&self.i32_ty.const_zero());
+        if !self.exported_defs.contains(&def) {
+          global.set_linkage(Linkage::Internal);
+        }
+        self.globals.insert(def, global);
+        Ok(global)
+      }
+      typecheck_ts::DefKind::Import(import) => match import.target {
+        typecheck_ts::ImportTarget::File(target_file) => {
+          let Some(target) = self
+            .program
+            .exports_of(target_file)
+            .get(import.original.as_str())
+            .and_then(|entry| entry.def)
+          else {
+            return Err(vec![Diagnostic::error(
+              "NJS0141",
+              format!("failed to resolve imported binding `{}`", import.original),
+              span,
+            )]);
+          };
+          self.ensure_global_var(target, span)
+        }
+        _ => Err(vec![Diagnostic::error(
+          "NJS0141",
+          "unresolved import in codegen",
+          span,
+        )]),
+      },
+      other => Err(vec![Diagnostic::error(
+        "NJS0142",
+        format!("unsupported global binding kind in codegen: {other:?}"),
+        span,
+      )]),
+    }
+  }
+
+  fn resolve_import_def(&self, def: DefId, span: Span) -> Result<DefId, Vec<Diagnostic>> {
+    let mut cur = def;
+    let mut seen = HashSet::<DefId>::new();
+    loop {
+      if !seen.insert(cur) {
+        return Err(vec![Diagnostic::error(
+          "NJS0141",
+          "cyclic import resolution in codegen",
+          span,
+        )]);
+      }
+
+      let Some(kind) = self.program.def_kind(cur) else {
+        return Err(vec![Diagnostic::error(
+          "NJS0140",
+          "failed to resolve definition kind for imported binding",
+          span,
+        )]);
+      };
+
+      let typecheck_ts::DefKind::Import(import) = kind else {
+        return Ok(cur);
+      };
+
+      match import.target {
+        typecheck_ts::ImportTarget::File(target_file) => {
+          let Some(target) = self
+            .program
+            .exports_of(target_file)
+            .get(import.original.as_str())
+            .and_then(|entry| entry.def)
+          else {
+            return Err(vec![Diagnostic::error(
+              "NJS0141",
+              format!("failed to resolve imported binding `{}`", import.original),
+              span,
+            )]);
+          };
+          cur = target;
+        }
+        _ => {
+          return Err(vec![Diagnostic::error(
+            "NJS0141",
+            "unresolved import in codegen",
+            span,
+          )]);
+        }
+      }
+    }
+  }
 }
 
-fn build_c_main<'ctx>(
-  context: &'ctx Context,
-  c_main: FunctionValue<'ctx>,
-  ts_main: FunctionValue<'ctx>,
-  i32_ty: IntType<'ctx>,
-) {
-  let builder = context.create_builder();
-  let bb = context.append_basic_block(c_main, "entry");
-  builder.position_at_end(bb);
-
-  let call = builder
-    .build_call(ts_main, &[], "ret")
-    .expect("failed to build call");
-  crate::stack_walking::mark_call_notail(call);
-  let ret_val = call
-    .try_as_basic_value()
-    .left()
-    .map(|v| v.into_int_value())
-    .unwrap_or_else(|| i32_ty.const_zero());
-  builder
-    .build_return(Some(&ret_val))
-    .expect("failed to build return");
+#[derive(Clone, Copy, Debug)]
+enum ReturnKind {
+  I32,
+  Void,
 }
 
-struct LocalEnv<'ctx> {
-  scopes: Vec<HashMap<NameId, PointerValue<'ctx>>>,
+#[derive(Clone, Copy, Debug)]
+enum CodegenMode {
+  TsFunction,
+  FileInit,
 }
 
-impl<'ctx> LocalEnv<'ctx> {
+#[derive(Clone, Copy)]
+struct LoopContext<'ctx> {
+  break_bb: BasicBlock<'ctx>,
+  continue_bb: BasicBlock<'ctx>,
+  label: Option<NameId>,
+}
+
+struct LocalEnv {
+  scopes: Vec<HashMap<NameId, BindingId>>,
+}
+
+impl LocalEnv {
   fn new() -> Self {
     Self {
       scopes: vec![HashMap::new()],
@@ -275,60 +597,72 @@ impl<'ctx> LocalEnv<'ctx> {
 
   fn pop_scope(&mut self) {
     self.scopes.pop();
-    if self.scopes.is_empty() {
-      // Internal invariant: the function always has a root scope.
-      self.scopes.push(HashMap::new());
-    }
   }
 
-  fn insert(&mut self, name: NameId, ptr: PointerValue<'ctx>) {
+  fn bind(&mut self, name: NameId, binding: BindingId) {
     if let Some(scope) = self.scopes.last_mut() {
-      scope.insert(name, ptr);
+      scope.insert(name, binding);
     }
   }
 
-  fn lookup(&self, name: NameId) -> Option<PointerValue<'ctx>> {
+  fn resolve(&self, name: NameId) -> Option<BindingId> {
     for scope in self.scopes.iter().rev() {
-      if let Some(ptr) = scope.get(&name).copied() {
-        return Some(ptr);
+      if let Some(binding) = scope.get(&name) {
+        return Some(*binding);
       }
     }
     None
   }
 }
 
-#[derive(Clone, Copy)]
-struct LoopContext<'ctx> {
-  label: Option<NameId>,
-  break_bb: BasicBlock<'ctx>,
-  continue_bb: BasicBlock<'ctx>,
-}
-
-struct HirCodegen<'ctx, 'a> {
-  context: &'ctx Context,
+struct FnCodegen<'ctx, 'p, 'a> {
+  cg: &'a mut ProgramCodegen<'ctx, 'p>,
   builder: Builder<'ctx>,
   alloca_builder: Builder<'ctx>,
   func: FunctionValue<'ctx>,
-  i32_ty: IntType<'ctx>,
-  bool_ty: IntType<'ctx>,
-  printf: FunctionValue<'ctx>,
   body: &'a hir_js::Body,
   names: &'a hir_js::NameInterner,
-  entry_file: FileId,
-  locals: LocalEnv<'ctx>,
+  file: FileId,
+  locals: HashMap<BindingId, PointerValue<'ctx>>,
+  env: LocalEnv,
   loop_stack: Vec<LoopContext<'ctx>>,
+  mode: CodegenMode,
+  return_kind: ReturnKind,
   allow_void_return: bool,
 }
 
-impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
-  fn span_of_stmt(&self, stmt: StmtId) -> Span {
-    let range = self
-      .body
-      .stmts
-      .get(stmt.0 as usize)
-      .map(|s| s.span)
-      .unwrap_or(self.body.span);
-    Span::new(self.entry_file, range)
+impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
+  fn new(
+    cg: &'a mut ProgramCodegen<'ctx, 'p>,
+    func: FunctionValue<'ctx>,
+    file: FileId,
+    body: &'a hir_js::Body,
+    names: &'a hir_js::NameInterner,
+    mode: CodegenMode,
+    return_kind: ReturnKind,
+    allow_void_return: bool,
+  ) -> Self {
+    let builder = cg.context.create_builder();
+    let alloca_builder = cg.context.create_builder();
+
+    let entry_bb = cg.context.append_basic_block(func, "entry");
+    builder.position_at_end(entry_bb);
+
+    Self {
+      cg,
+      builder,
+      alloca_builder,
+      func,
+      body,
+      names,
+      file,
+      locals: HashMap::new(),
+      env: LocalEnv::new(),
+      loop_stack: Vec::new(),
+      mode,
+      return_kind,
+      allow_void_return,
+    }
   }
 
   fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
@@ -336,35 +670,78 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       vec![Diagnostic::error(
         "NJS0112",
         "statement id out of bounds",
-        Span::new(self.entry_file, self.body.span),
+        Span::new(self.file, self.body.span),
       )]
     })
   }
 
-  fn expr(&self, expr: ExprId) -> Result<&hir_js::Expr, Vec<Diagnostic>> {
+  fn expr_data(&self, expr: ExprId) -> Result<&hir_js::Expr, Vec<Diagnostic>> {
     self.body.exprs.get(expr.0 as usize).ok_or_else(|| {
       vec![Diagnostic::error(
         "NJS0103",
         "expression id out of bounds",
-        Span::new(self.entry_file, self.body.span),
+        Span::new(self.file, self.body.span),
       )]
     })
   }
 
-  fn pat(&self, pat: PatId) -> Result<&hir_js::Pat, Vec<Diagnostic>> {
-    self.body.pats.get(pat.0 as usize).ok_or_else(|| {
-      vec![Diagnostic::error(
-        "NJS0117",
-        "pattern id out of bounds",
-        Span::new(self.entry_file, self.body.span),
-      )]
-    })
+  fn pat_ident_name(&self, pat: hir_js::PatId) -> Option<NameId> {
+    let pat = self.body.pats.get(pat.0 as usize)?;
+    match pat.kind {
+      PatKind::Ident(name) => Some(name),
+      PatKind::Assign { target, .. } => self.pat_ident_name(target),
+      PatKind::AssignTarget(expr) => {
+        let expr = self.body.exprs.get(expr.0 as usize)?;
+        match expr.kind {
+          ExprKind::Ident(name) => Some(name),
+          _ => None,
+        }
+      }
+      _ => None,
+    }
+  }
+
+  fn ensure_local_slot(&mut self, binding: BindingId, debug_name: &str) -> PointerValue<'ctx> {
+    if let Some(existing) = self.locals.get(&binding).copied() {
+      return existing;
+    }
+
+    let entry_bb = self
+      .func
+      .get_first_basic_block()
+      .expect("function must have an entry block");
+    if let Some(first) = entry_bb.get_first_instruction() {
+      self.alloca_builder.position_before(&first);
+    } else {
+      self.alloca_builder.position_at_end(entry_bb);
+    }
+
+    let slot = self
+      .alloca_builder
+      .build_alloca(self.cg.i32_ty, debug_name)
+      .expect("failed to build alloca");
+    self.locals.insert(binding, slot);
+    slot
+  }
+
+  fn bool_to_i32(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
+    self
+      .builder
+      .build_int_z_extend(v, self.cg.i32_ty, "bool")
+      .expect("failed to zext bool")
+  }
+
+  fn is_truthy_i1(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
+    self
+      .builder
+      .build_int_compare(IntPredicate::NE, v, self.cg.i32_ty.const_zero(), "truthy")
+      .expect("failed to build truthy compare")
   }
 
   fn codegen_stmt(&mut self, stmt_id: StmtId) -> Result<bool, Vec<Diagnostic>> {
     let (kind, span) = {
       let stmt = self.stmt(stmt_id)?;
-      (stmt.kind.clone(), Span::new(self.entry_file, stmt.span))
+      (stmt.kind.clone(), Span::new(self.file, stmt.span))
     };
 
     match kind {
@@ -376,32 +753,51 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         let _ = self.codegen_expr(expr)?;
         Ok(true)
       }
+      StmtKind::Return(Some(_)) if matches!(self.return_kind, ReturnKind::Void) => Err(vec![
+        Diagnostic::error("NJS0116", "`return <expr>` is not supported here", span),
+      ]),
       StmtKind::Return(Some(expr)) => {
         let value = self.codegen_expr(expr)?;
         let ret = if self.allow_void_return {
-          self.i32_ty.const_zero()
+          self.cg.i32_ty.const_zero()
         } else {
           value
         };
-        self.builder.build_return(Some(&ret)).expect("failed to build return");
-        Ok(false)
-      }
-      StmtKind::Return(None) => {
-        if !self.allow_void_return {
-          return Err(vec![Diagnostic::error(
-            "NJS0116",
-            "`return` without a value is not supported in `main` yet",
-            span,
-          )]);
-        }
         self
           .builder
-          .build_return(Some(&self.i32_ty.const_zero()))
+          .build_return(Some(&ret))
           .expect("failed to build return");
         Ok(false)
       }
+      StmtKind::Return(None) if matches!(self.return_kind, ReturnKind::Void) => {
+        self
+          .builder
+          .build_return(None)
+          .expect("failed to build return");
+        Ok(false)
+      }
+      StmtKind::Return(None) if self.allow_void_return => {
+        self
+          .builder
+          .build_return(Some(&self.cg.i32_ty.const_zero()))
+          .expect("failed to build return");
+        Ok(false)
+      }
+      StmtKind::Return(None) => Err(vec![Diagnostic::error(
+        "NJS0116",
+        "`return` without a value is not supported in this codegen subset",
+        span,
+      )]),
+      StmtKind::Decl(_) => match self.mode {
+        CodegenMode::FileInit => Ok(true),
+        CodegenMode::TsFunction => Err(vec![Diagnostic::error(
+          "NJS0113",
+          "nested declarations are not supported in this codegen subset",
+          span,
+        )]),
+      },
       StmtKind::Block(stmts) => {
-        self.locals.push_scope();
+        self.env.push_scope();
         let mut fallthrough = true;
         for stmt_id in stmts {
           fallthrough = self.codegen_stmt(stmt_id)?;
@@ -409,7 +805,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
             break;
           }
         }
-        self.locals.pop_scope();
+        self.env.pop_scope();
         Ok(fallthrough)
       }
       StmtKind::If {
@@ -424,7 +820,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         test,
         update,
         body,
-      } => self.codegen_for(None, init.as_ref(), test, update, body),
+      } => self.codegen_for(None, init.as_ref(), test, update, body, span),
       StmtKind::Var(decl) => {
         self.codegen_var_decl(&decl, span)?;
         Ok(true)
@@ -457,16 +853,11 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         "`with` statements are not supported yet",
         span,
       )]),
-      other => Err(vec![Diagnostic::error(
-        "NJS0113",
-        format!("unsupported statement in `main`: {other:?}"),
-        span,
-      )]),
     }
   }
 
   fn codegen_print_stmt(&mut self, expr: ExprId) -> Result<bool, Vec<Diagnostic>> {
-    let expr = self.expr(expr)?;
+    let expr = self.expr_data(expr)?;
     let ExprKind::Call(call) = &expr.kind else {
       return Ok(false);
     };
@@ -493,28 +884,29 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
   }
 
   fn callee_is_global_intrinsic(&self, expr: ExprId, name: &str) -> bool {
-    let Ok(expr) = self.expr(expr) else {
+    let Ok(expr) = self.expr_data(expr) else {
       return false;
     };
-    let ExprKind::Ident(ident) = &expr.kind else {
+    let ExprKind::Ident(ident) = expr.kind else {
       return false;
     };
-    if self.names.resolve(*ident) != Some(name) {
+    if self.names.resolve(ident) != Some(name) {
       return false;
     }
     // Don't treat a shadowed local binding as an intrinsic.
-    self.locals.lookup(*ident).is_none()
+    self.env.resolve(ident).is_none()
   }
 
   fn emit_print_i32(&self, value: IntValue<'ctx>) {
+    let printf = declare_printf(self.cg.context, &self.cg.module);
     let fmt = self
       .builder
-      .build_global_string_ptr("%d\n", "native_js_print_fmt")
+      .build_global_string_ptr("%d\\n", "native_js_print_fmt")
       .expect("failed to create printf format string");
     self
       .builder
       .build_call(
-        self.printf,
+        printf,
         &[fmt.as_pointer_value().into(), value.into()],
         "native_js_print",
       )
@@ -551,11 +943,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     Ok(false)
   }
 
-  fn codegen_continue(
-    &mut self,
-    label: Option<NameId>,
-    span: Span,
-  ) -> Result<bool, Vec<Diagnostic>> {
+  fn codegen_continue(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
     let target = if let Some(label) = label {
       self
         .loop_stack
@@ -585,7 +973,12 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     Ok(false)
   }
 
-  fn codegen_labeled(&mut self, label: NameId, body: StmtId, span: Span) -> Result<bool, Vec<Diagnostic>> {
+  fn codegen_labeled(
+    &mut self,
+    label: NameId,
+    body: StmtId,
+    span: Span,
+  ) -> Result<bool, Vec<Diagnostic>> {
     let kind = self.stmt(body)?.kind.clone();
     match kind {
       StmtKind::While { test, body } => self.codegen_while(Some(label), test, body),
@@ -595,45 +988,13 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         test,
         update,
         body,
-      } => self.codegen_for(Some(label), init.as_ref(), test, update, body),
+      } => self.codegen_for(Some(label), init.as_ref(), test, update, body, span),
       _ => Err(vec![Diagnostic::error(
         "NJS0124",
         "only labeled loops are supported in native-js codegen",
         span,
       )]),
     }
-  }
-
-  fn ensure_entry_alloca(&mut self, name: NameId) -> PointerValue<'ctx> {
-    let entry_bb = self
-      .func
-      .get_first_basic_block()
-      .expect("ts_main must have an entry block");
-    if let Some(first) = entry_bb.get_first_instruction() {
-      self.alloca_builder.position_before(&first);
-    } else {
-      self.alloca_builder.position_at_end(entry_bb);
-    }
-
-    let debug_name = self.names.resolve(name).unwrap_or("local");
-    self
-      .alloca_builder
-      .build_alloca(self.i32_ty, debug_name)
-      .expect("failed to build alloca")
-  }
-
-  fn bool_to_i32(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
-    self
-      .builder
-      .build_int_z_extend(v, self.i32_ty, "bool")
-      .expect("failed to zext bool")
-  }
-
-  fn is_truthy_i1(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
-    self
-      .builder
-      .build_int_compare(IntPredicate::NE, v, self.i32_ty.const_zero(), "truthy")
-      .expect("failed to build truthy compare")
   }
 
   fn codegen_if(
@@ -645,11 +1006,11 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     let cond_val = self.codegen_expr(test)?;
     let cond_i1 = self.is_truthy_i1(cond_val);
 
-    let then_bb = self.context.append_basic_block(self.func, "if.then");
+    let then_bb = self.cg.context.append_basic_block(self.func, "if.then");
 
     // If there is no alternate, the false branch falls through directly.
     if alternate.is_none() {
-      let cont_bb = self.context.append_basic_block(self.func, "if.end");
+      let cont_bb = self.cg.context.append_basic_block(self.func, "if.end");
       self
         .builder
         .build_conditional_branch(cond_i1, then_bb, cont_bb)
@@ -668,7 +1029,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       return Ok(true);
     }
 
-    let else_bb = self.context.append_basic_block(self.func, "if.else");
+    let else_bb = self.cg.context.append_basic_block(self.func, "if.else");
     self
       .builder
       .build_conditional_branch(cond_i1, then_bb, else_bb)
@@ -679,7 +1040,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
 
     let mut cont_bb = None;
     if then_fallthrough {
-      let bb = self.context.append_basic_block(self.func, "if.end");
+      let bb = self.cg.context.append_basic_block(self.func, "if.end");
       self
         .builder
         .build_unconditional_branch(bb)
@@ -690,7 +1051,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     self.builder.position_at_end(else_bb);
     let else_fallthrough = self.codegen_stmt(alternate.expect("checked above"))?;
     if else_fallthrough {
-      let bb = cont_bb.unwrap_or_else(|| self.context.append_basic_block(self.func, "if.end"));
+      let bb = cont_bb.unwrap_or_else(|| self.cg.context.append_basic_block(self.func, "if.end"));
       self
         .builder
         .build_unconditional_branch(bb)
@@ -706,10 +1067,15 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     }
   }
 
-  fn codegen_while(&mut self, label: Option<NameId>, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
-    let cond_bb = self.context.append_basic_block(self.func, "while.cond");
-    let body_bb = self.context.append_basic_block(self.func, "while.body");
-    let end_bb = self.context.append_basic_block(self.func, "while.end");
+  fn codegen_while(
+    &mut self,
+    label: Option<NameId>,
+    test: ExprId,
+    body: StmtId,
+  ) -> Result<bool, Vec<Diagnostic>> {
+    let cond_bb = self.cg.context.append_basic_block(self.func, "while.cond");
+    let body_bb = self.cg.context.append_basic_block(self.func, "while.body");
+    let end_bb = self.cg.context.append_basic_block(self.func, "while.end");
 
     self
       .builder
@@ -726,9 +1092,9 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
 
     self.builder.position_at_end(body_bb);
     self.loop_stack.push(LoopContext {
-      label,
       break_bb: end_bb,
       continue_bb: cond_bb,
+      label,
     });
     let body_fallthrough = self.codegen_stmt(body)?;
     if body_fallthrough {
@@ -743,10 +1109,15 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     Ok(true)
   }
 
-  fn codegen_do_while(&mut self, label: Option<NameId>, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
-    let body_bb = self.context.append_basic_block(self.func, "do.body");
-    let cond_bb = self.context.append_basic_block(self.func, "do.cond");
-    let end_bb = self.context.append_basic_block(self.func, "do.end");
+  fn codegen_do_while(
+    &mut self,
+    label: Option<NameId>,
+    test: ExprId,
+    body: StmtId,
+  ) -> Result<bool, Vec<Diagnostic>> {
+    let body_bb = self.cg.context.append_basic_block(self.func, "do.body");
+    let cond_bb = self.cg.context.append_basic_block(self.func, "do.cond");
+    let end_bb = self.cg.context.append_basic_block(self.func, "do.end");
 
     self
       .builder
@@ -754,9 +1125,9 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       .expect("failed to build branch");
 
     self.loop_stack.push(LoopContext {
-      label,
       break_bb: end_bb,
       continue_bb: cond_bb,
+      label,
     });
 
     self.builder.position_at_end(body_bb);
@@ -789,26 +1160,23 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     test: Option<ExprId>,
     update: Option<ExprId>,
     body: StmtId,
+    span: Span,
   ) -> Result<bool, Vec<Diagnostic>> {
-    // `for (let i = 0; ... )` introduces a scope for the loop.
-    self.locals.push_scope();
-
     if let Some(init) = init {
       match init {
         ForInit::Expr(expr) => {
           let _ = self.codegen_expr(*expr)?;
         }
         ForInit::Var(decl) => {
-          let span = self.span_of_stmt(body);
           self.codegen_var_decl(decl, span)?;
         }
       }
     }
 
-    let cond_bb = self.context.append_basic_block(self.func, "for.cond");
-    let body_bb = self.context.append_basic_block(self.func, "for.body");
-    let update_bb = self.context.append_basic_block(self.func, "for.update");
-    let end_bb = self.context.append_basic_block(self.func, "for.end");
+    let cond_bb = self.cg.context.append_basic_block(self.func, "for.cond");
+    let body_bb = self.cg.context.append_basic_block(self.func, "for.body");
+    let update_bb = self.cg.context.append_basic_block(self.func, "for.update");
+    let end_bb = self.cg.context.append_basic_block(self.func, "for.end");
 
     self
       .builder
@@ -820,7 +1188,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       let v = self.codegen_expr(test)?;
       self.is_truthy_i1(v)
     } else {
-      self.bool_ty.const_int(1, false)
+      self.cg.bool_ty.const_int(1, false)
     };
     self
       .builder
@@ -829,9 +1197,9 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
 
     self.builder.position_at_end(body_bb);
     self.loop_stack.push(LoopContext {
-      label,
       break_bb: end_bb,
       continue_bb: update_bb,
+      label,
     });
     let body_fallthrough = self.codegen_stmt(body)?;
     if body_fallthrough {
@@ -852,7 +1220,6 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       .expect("failed to build branch");
 
     self.builder.position_at_end(end_bb);
-    self.locals.pop_scope();
     Ok(true)
   }
 
@@ -869,46 +1236,92 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     }
 
     for declarator in decl.declarators.iter() {
-      let (name, pat_span) = {
-        let pat = self.pat(declarator.pat)?;
-        let name = match &pat.kind {
-          PatKind::Ident(name) => *name,
-          _ => {
-            return Err(vec![Diagnostic::error(
-              "NJS0117",
-              "unsupported pattern in variable declaration (expected identifier)",
-              Span::new(self.entry_file, pat.span),
-            )]);
-          }
-        };
-        (name, pat.span)
-      };
+      let binding = self
+        .cg
+        .resolver
+        .for_file(self.file)
+        .resolve_pat_ident(self.body, declarator.pat)
+        .ok_or_else(|| {
+          let pat_span = self
+            .body
+            .pats
+            .get(declarator.pat.0 as usize)
+            .map(|pat| pat.span)
+            .unwrap_or(span.range);
+          vec![Diagnostic::error(
+            "NJS0122",
+            "unsupported variable binding pattern",
+            Span::new(self.file, pat_span),
+          )]
+        })?;
+
+      let debug_name = self
+        .body
+        .pats
+        .get(declarator.pat.0 as usize)
+        .and_then(|pat| match pat.kind {
+          PatKind::Ident(name) => self.names.resolve(name),
+          _ => None,
+        })
+        .unwrap_or("local");
 
       let Some(init) = declarator.init else {
         return Err(vec![Diagnostic::error(
           "NJS0118",
           "variable declarations must have an initializer in native-js codegen",
-          Span::new(self.entry_file, pat_span),
+          span,
         )]);
       };
 
       let value = self.codegen_expr(init)?;
-      let ptr = self.ensure_entry_alloca(name);
-      self
-        .builder
-        .build_store(ptr, value)
-        .expect("failed to build store");
-      self.locals.insert(name, ptr);
+
+      match binding {
+        BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
+          let global = self.cg.ensure_global_var(def, span)?;
+          self
+            .builder
+            .build_store(global.as_pointer_value(), value)
+            .expect("failed to build store");
+        }
+        _ => {
+          let slot = self.ensure_local_slot(binding, debug_name);
+          self
+            .builder
+            .build_store(slot, value)
+            .expect("failed to build store");
+
+          if let Some(name) = self.pat_ident_name(declarator.pat) {
+            self.env.bind(name, binding);
+          }
+        }
+      }
     }
     Ok(())
   }
 
+  fn ptr_for_binding(&mut self, binding: BindingId, span: Span) -> Result<PointerValue<'ctx>, Vec<Diagnostic>> {
+    if let Some(ptr) = self.locals.get(&binding).copied() {
+      return Ok(ptr);
+    }
+    match binding {
+      BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
+        let global = self.cg.ensure_global_var(def, span)?;
+        Ok(global.as_pointer_value())
+      }
+      _ => Err(vec![Diagnostic::error(
+        "NJS0114",
+        "use of unknown/unbound identifier in native-js codegen",
+        span,
+      )]),
+    }
+  }
+
   fn codegen_expr(&mut self, expr: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
     let (kind, span) = {
-      let expr_data = self.expr(expr)?;
+      let expr_data = self.expr_data(expr)?;
       (
         expr_data.kind.clone(),
-        Span::new(self.entry_file, expr_data.span),
+        Span::new(self.file, expr_data.span),
       )
     };
 
@@ -916,14 +1329,14 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
-      ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(self.i32_ty, &raw).ok_or_else(|| {
+      ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(self.cg.i32_ty, &raw).ok_or_else(|| {
         vec![Diagnostic::error(
           "NJS0104",
           format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
           span,
         )]
       }),
-      ExprKind::Literal(Literal::Boolean(b)) => Ok(self.i32_ty.const_int(u64::from(b), false)),
+      ExprKind::Literal(Literal::Boolean(b)) => Ok(self.cg.i32_ty.const_int(u64::from(b), false)),
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
         match op {
@@ -937,7 +1350,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
           UnaryOp::Not => {
             let is_false = self
               .builder
-              .build_int_compare(IntPredicate::EQ, inner, self.i32_ty.const_zero(), "not")
+              .build_int_compare(IntPredicate::EQ, inner, self.cg.i32_ty.const_zero(), "not")
               .expect("failed to build compare");
             Ok(self.bool_to_i32(is_false))
           }
@@ -1021,129 +1434,131 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         Ok(v)
       }
       ExprKind::Ident(name) => {
-        let Some(ptr) = self.locals.lookup(name) else {
-          let label = self.names.resolve(name).unwrap_or("<unknown>");
-          return Err(vec![Diagnostic::error(
-            "NJS0114",
-            format!("unknown identifier `{label}` in native-js codegen"),
-            span,
-          )]);
-        };
-        Ok(
+        let binding = if let Some(binding) = self.env.resolve(name) {
+          binding
+        } else {
           self
-            .builder
-            .build_load(self.i32_ty, ptr, "load")
-            .expect("failed to build load")
-            .into_int_value(),
-        )
-      }
-      ExprKind::Assignment { op, target, value } => {
-        let (name, pat_span) = {
-          let pat = self.pat(target)?;
-          let name = match &pat.kind {
-            PatKind::Ident(name) => *name,
-            _ => {
-              return Err(vec![Diagnostic::error(
-                "NJS0117",
-                "unsupported assignment target (expected identifier)",
-                Span::new(self.entry_file, pat.span),
-              )]);
-            }
-          };
-          (name, pat.span)
+            .cg
+            .resolver
+            .for_file(self.file)
+            .resolve_expr_ident(self.body, expr)
+            .ok_or_else(|| vec![Diagnostic::error("NJS0130", "failed to resolve identifier", span)])?
         };
 
-        let Some(ptr) = self.locals.lookup(name) else {
-          let label = self.names.resolve(name).unwrap_or("<unknown>");
-          return Err(vec![Diagnostic::error(
-            "NJS0114",
-            format!("unknown identifier `{label}` in assignment"),
-            Span::new(self.entry_file, pat_span),
-          )]);
-        };
-
-        let rhs = self.codegen_expr(value)?;
-        let out = match op {
-          AssignOp::Assign => rhs,
-          AssignOp::AddAssign
-          | AssignOp::SubAssign
-          | AssignOp::MulAssign
-          | AssignOp::DivAssign
-          | AssignOp::RemAssign => {
-            let cur = self
+        if let Some(ptr) = self.locals.get(&binding).copied() {
+          return Ok(
+            self
               .builder
-              .build_load(self.i32_ty, ptr, "load")
+              .build_load(self.cg.i32_ty, ptr, "load")
               .expect("failed to build load")
-              .into_int_value();
-            match op {
-              AssignOp::AddAssign => self
+              .into_int_value(),
+          );
+        }
+
+        match binding {
+          BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
+            let global = self.cg.ensure_global_var(def, span)?;
+            Ok(
+              self
                 .builder
-                .build_int_add(cur, rhs, "addassign")
-                .expect("failed to build add"),
-              AssignOp::SubAssign => self
-                .builder
-                .build_int_sub(cur, rhs, "subassign")
-                .expect("failed to build sub"),
-              AssignOp::MulAssign => self
-                .builder
-                .build_int_mul(cur, rhs, "mulassign")
-                .expect("failed to build mul"),
-              AssignOp::DivAssign => self
-                .builder
-                .build_int_signed_div(cur, rhs, "divassign")
-                .expect("failed to build div"),
-              AssignOp::RemAssign => self
-                .builder
-                .build_int_signed_rem(cur, rhs, "remassign")
-                .expect("failed to build rem"),
-              _ => unreachable!(),
-            }
+                .build_load(self.cg.i32_ty, global.as_pointer_value(), "global.load")
+                .expect("failed to build load")
+                .into_int_value(),
+            )
           }
           _ => {
-            return Err(vec![Diagnostic::error(
-              "NJS0107",
-              format!("unsupported assignment operator `{op:?}`"),
+            let label = self.names.resolve(name).unwrap_or("<unknown>");
+            Err(vec![Diagnostic::error(
+              "NJS0114",
+              format!("unknown identifier `{label}` in native-js codegen"),
               span,
-            )]);
+            )])
           }
+        }
+      }
+      ExprKind::Assignment { op, target, value } => {
+        let binding = if let Some(name) = self.pat_ident_name(target) {
+          if let Some(binding) = self.env.resolve(name) {
+            binding
+          } else {
+            self
+              .cg
+              .resolver
+              .for_file(self.file)
+              .resolve_pat_ident(self.body, target)
+              .ok_or_else(|| {
+                let pat_span = self
+                  .body
+                  .pats
+                  .get(target.0 as usize)
+                  .map(|pat| pat.span)
+                  .unwrap_or(span.range);
+                vec![Diagnostic::error(
+                  "NJS0132",
+                  "unsupported assignment target",
+                  Span::new(self.file, pat_span),
+                )]
+              })?
+          }
+        } else {
+          self
+            .cg
+            .resolver
+            .for_file(self.file)
+            .resolve_pat_ident(self.body, target)
+            .ok_or_else(|| {
+              let pat_span = self
+                .body
+                .pats
+                .get(target.0 as usize)
+                .map(|pat| pat.span)
+                .unwrap_or(span.range);
+              vec![Diagnostic::error(
+                "NJS0132",
+                "unsupported assignment target",
+                Span::new(self.file, pat_span),
+              )]
+            })?
         };
 
-        self
-          .builder
-          .build_store(ptr, out)
-          .expect("failed to build store");
-        Ok(out)
+        let ptr = self.ptr_for_binding(binding, span)?;
+        let rhs = self.codegen_expr(value)?;
+        self.codegen_assignment_to_ptr(ptr, span, &op, rhs)
       }
       ExprKind::Update { op, expr, prefix } => {
-        let (name, target_span) = {
-          let inner = self.expr(expr)?;
-          let name = match &inner.kind {
-            ExprKind::Ident(name) => *name,
-            _ => {
-              return Err(vec![Diagnostic::error(
-                "NJS0107",
-                "unsupported update target (expected identifier)",
-                Span::new(self.entry_file, inner.span),
-              )]);
-            }
-          };
-          (name, inner.span)
-        };
-        let Some(ptr) = self.locals.lookup(name) else {
-          let label = self.names.resolve(name).unwrap_or("<unknown>");
+        let inner = self.expr_data(expr)?;
+        let ExprKind::Ident(name) = inner.kind else {
           return Err(vec![Diagnostic::error(
-            "NJS0114",
-            format!("unknown identifier `{label}` in update"),
-            Span::new(self.entry_file, target_span),
+            "NJS0107",
+            "unsupported update target (expected identifier)",
+            Span::new(self.file, inner.span),
           )]);
         };
+
+        let binding = if let Some(binding) = self.env.resolve(name) {
+          binding
+        } else {
+          self
+            .cg
+            .resolver
+            .for_file(self.file)
+            .resolve_expr_ident(self.body, expr)
+            .ok_or_else(|| {
+              vec![Diagnostic::error(
+                "NJS0130",
+                "failed to resolve update target",
+                Span::new(self.file, inner.span),
+              )]
+            })?
+        };
+        let ptr = self.ptr_for_binding(binding, Span::new(self.file, inner.span))?;
 
         let old = self
           .builder
-          .build_load(self.i32_ty, ptr, "load")
+          .build_load(self.cg.i32_ty, ptr, "load")
           .expect("failed to build load")
           .into_int_value();
-        let one = self.i32_ty.const_int(1, false);
+        let one = self.cg.i32_ty.const_int(1, false);
         let new = match op {
           UpdateOp::Increment => self
             .builder
@@ -1160,13 +1575,245 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
           .expect("failed to build store");
         Ok(if prefix { new } else { old })
       }
+      ExprKind::Call(call) => {
+        if call.optional || call.is_new {
+          return Err(vec![Diagnostic::error(
+            "NJS0144",
+            "unsupported call syntax in codegen",
+            span,
+          )]);
+        }
+
+        let callee_expr = self
+          .body
+          .exprs
+          .get(call.callee.0 as usize)
+          .ok_or_else(|| vec![Diagnostic::error("NJS0103", "callee id out of bounds", span)])?;
+        if !matches!(callee_expr.kind, ExprKind::Ident(_)) {
+          return Err(vec![Diagnostic::error(
+            "NJS0144",
+            "only direct identifier calls are supported in this codegen subset",
+            span,
+          )]);
+        }
+
+        let binding = self
+          .cg
+          .resolver
+          .for_file(self.file)
+          .resolve_expr_ident(self.body, call.callee)
+          .ok_or_else(|| vec![Diagnostic::error("NJS0130", "failed to resolve call callee", span)])?;
+        let BindingId::Def(def) = binding else {
+          return Err(vec![Diagnostic::error(
+            "NJS0144",
+            "callee must resolve to a global function definition",
+            span,
+          )]);
+        };
+
+        let resolved = self.cg.resolve_import_def(def, span)?;
+        let Some(target) = self.cg.functions.get(&resolved).copied() else {
+          return Err(vec![Diagnostic::error(
+            "NJS0145",
+            "call to unknown function in codegen",
+            span,
+          )]);
+        };
+        if def != resolved {
+          self.cg.functions.entry(def).or_insert(target);
+        }
+
+        let mut args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+          if arg.spread {
+            return Err(vec![Diagnostic::error(
+              "NJS0144",
+              "spread arguments are not supported in this codegen subset",
+              span,
+            )]);
+          }
+          let value = self.codegen_expr(arg.expr)?;
+          args.push(value.into());
+        }
+
+        let call = self
+          .builder
+          .build_call(target, &args, "call")
+          .expect("failed to build call");
+        let ret = call
+          .try_as_basic_value()
+          .left()
+          .ok_or_else(|| vec![Diagnostic::error("NJS0145", "void call not supported", span)])?
+          .into_int_value();
+        Ok(ret)
+      }
       _ => Err(vec![Diagnostic::error(
         "NJS0107",
-        "unsupported expression in `main`",
+        "unsupported expression in native-js codegen",
         span,
       )]),
     }
   }
+
+  fn codegen_assignment_to_ptr(
+    &self,
+    ptr: PointerValue<'ctx>,
+    span: Span,
+    op: &AssignOp,
+    rhs: IntValue<'ctx>,
+  ) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let out = match op {
+      AssignOp::Assign => rhs,
+      AssignOp::AddAssign
+      | AssignOp::SubAssign
+      | AssignOp::MulAssign
+      | AssignOp::DivAssign
+      | AssignOp::RemAssign => {
+        let cur = self
+          .builder
+          .build_load(self.cg.i32_ty, ptr, "load")
+          .expect("failed to build load")
+          .into_int_value();
+        match op {
+          AssignOp::AddAssign => self
+            .builder
+            .build_int_add(cur, rhs, "addassign")
+            .expect("failed to build add"),
+          AssignOp::SubAssign => self
+            .builder
+            .build_int_sub(cur, rhs, "subassign")
+            .expect("failed to build sub"),
+          AssignOp::MulAssign => self
+            .builder
+            .build_int_mul(cur, rhs, "mulassign")
+            .expect("failed to build mul"),
+          AssignOp::DivAssign => self
+            .builder
+            .build_int_signed_div(cur, rhs, "divassign")
+            .expect("failed to build div"),
+          AssignOp::RemAssign => self
+            .builder
+            .build_int_signed_rem(cur, rhs, "remassign")
+            .expect("failed to build rem"),
+          _ => unreachable!(),
+        }
+      }
+      _ => {
+        return Err(vec![Diagnostic::error(
+          "NJS0134",
+          format!("unsupported assignment operator `{op:?}`"),
+          span,
+        )]);
+      }
+    };
+
+    self
+      .builder
+      .build_store(ptr, out)
+      .expect("failed to build store");
+    Ok(out)
+  }
+}
+
+fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
+  let mut deps = Vec::new();
+  for import in &lowered.hir.imports {
+    let ImportKind::Es(es) = &import.kind else {
+      continue;
+    };
+    if es.is_type_only {
+      continue;
+    }
+
+    let mut defs = Vec::new();
+    if let Some(binding) = &es.default {
+      defs.push(binding.local_def);
+    }
+    if let Some(binding) = &es.namespace {
+      defs.push(binding.local_def);
+    }
+    for named in &es.named {
+      if named.is_type_only {
+        continue;
+      }
+      defs.push(named.local_def);
+    }
+
+    for def in defs.into_iter().flatten() {
+      let Some(kind) = program.def_kind(def) else {
+        continue;
+      };
+      if let typecheck_ts::DefKind::Import(import) = kind {
+        if let typecheck_ts::ImportTarget::File(target) = import.target {
+          deps.push(target);
+        }
+      }
+    }
+  }
+  deps.sort_by_key(|id| id.0);
+  deps.dedup();
+  deps
+}
+
+fn topo_visit(
+  file: FileId,
+  deps: &HashMap<FileId, Vec<FileId>>,
+  visited: &mut HashSet<FileId>,
+  visiting: &mut HashSet<FileId>,
+  out: &mut Vec<FileId>,
+) {
+  if visited.contains(&file) {
+    return;
+  }
+  if !visiting.insert(file) {
+    // Cycle: best-effort, keep deterministic order.
+    return;
+  }
+  if let Some(children) = deps.get(&file) {
+    for dep in children {
+      topo_visit(*dep, deps, visited, visiting, out);
+    }
+  }
+  visiting.remove(&file);
+  visited.insert(file);
+  out.push(file);
+}
+
+fn is_toplevel_def(program: &Program, def: DefId) -> bool {
+  let Some(lowered) = program.hir_lowered(def.file()) else {
+    return false;
+  };
+  let mut cur = def;
+  loop {
+    let Some(data) = lowered.def(cur) else {
+      return false;
+    };
+    // `hir-js` scopes many local bindings under their owning function/method
+    // definition. Top-level module bindings (including `let`/`const` globals and
+    // imports) have no function-like ancestor.
+    match data.path.kind {
+      hir_js::DefKind::Function
+      | hir_js::DefKind::Method
+      | hir_js::DefKind::Constructor
+      | hir_js::DefKind::Getter
+      | hir_js::DefKind::Setter => return false,
+      _ => {}
+    }
+    let Some(parent) = data.parent else {
+      break;
+    };
+    cur = parent;
+  }
+  true
+}
+
+fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("printf") {
+    return existing;
+  }
+  let i32_ty = context.i32_type();
+  let ptr_ty = context.i8_type().ptr_type(AddressSpace::default());
+  module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
 }
 
 fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'ctx>> {
@@ -1197,15 +1844,6 @@ fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'c
   let value = i64::from_str_radix(digits, radix).ok()?;
   let value = i32::try_from(value).ok()?;
   Some(i32_ty.const_int(value as u64, true))
-}
-
-fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("printf") {
-    return existing;
-  }
-  let i32_ty = context.i32_type();
-  let ptr_ty = context.ptr_type(AddressSpace::default());
-  module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
 }
 
 mod builtins;

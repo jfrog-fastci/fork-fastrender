@@ -103,6 +103,7 @@ fn hir_codegen_emits_stack_walking_attributes() {
   );
 
   let entrypoint = strict::entrypoint(&program, file).expect("valid entrypoint");
+  let ts_main_sym = native_js::llvm_symbol_for_def(&program, entrypoint.main_def);
 
   let context = Context::create();
   let module = codegen::codegen(
@@ -115,19 +116,19 @@ fn hir_codegen_emits_stack_walking_attributes() {
   .expect("codegen");
 
   let ir = module.print_to_string().to_string();
-  let ts_def = extract_def_line(&ir, "define i32 @ts_main");
+  let ts_def = extract_def_line(&ir, &format!("define i32 @{ts_main_sym}"));
   let main_def = extract_def_line(&ir, "define i32 @main");
 
   assert!(
     ts_def.contains("gc \"coreclr\""),
-    "ts_main missing `gc \"coreclr\"`:\n{ts_def}\n\nIR:\n{ir}"
+    "generated TS main missing `gc \"coreclr\"`:\n{ts_def}\n\nIR:\n{ir}"
   );
   assert!(
     main_def.contains("gc \"coreclr\""),
     "main missing `gc \"coreclr\"`:\n{main_def}\n\nIR:\n{ir}"
   );
 
-  let ts_group = extract_attr_group(&ir, "define i32 @ts_main");
+  let ts_group = extract_attr_group(&ir, &format!("define i32 @{ts_main_sym}"));
   let main_group = extract_attr_group(&ir, "define i32 @main");
   assert_attr_group_has_stack_walking_attrs(&ir, ts_group);
   assert_attr_group_has_stack_walking_attrs(&ir, main_group);

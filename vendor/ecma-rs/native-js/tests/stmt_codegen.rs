@@ -86,8 +86,8 @@ fn run_main(source: &str) -> i32 {
 
   unsafe {
     let main = engine
-      .get_function::<unsafe extern "C" fn() -> i32>("ts_main")
-      .expect("get ts_main");
+      .get_function::<unsafe extern "C" fn() -> i32>("main")
+      .expect("get main");
     main.call()
   }
 }

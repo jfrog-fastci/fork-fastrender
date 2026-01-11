@@ -100,10 +100,8 @@ impl<'p> Resolver<'p> {
       };
       let binding = if let Some(def) = info.def {
         BindingId::Def(def)
-      } else if info.file == Some(file) {
-        BindingId::Symbol(symbol)
       } else {
-        continue;
+        BindingId::Symbol(symbol)
       };
       occurrences.push(ResolvedOccurrence { range, binding });
     }
@@ -285,10 +283,8 @@ export function run() {
       let info = program.symbol_info(symbol).expect("symbol info");
       let expected = if let Some(def) = info.def {
         BindingId::Def(def)
-      } else if info.file == Some(file) {
-        BindingId::Symbol(symbol)
       } else {
-        panic!("unexpected symbol info for identifier: {info:?}");
+        BindingId::Symbol(symbol)
       };
       assert_eq!(
         file_resolver.resolve_expr_ident(run_body, expr_id),
