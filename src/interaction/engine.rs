@@ -761,6 +761,35 @@ mod tests {
     assert_eq!(input_value(&mut dom, input_id), "aZbc");
     assert_eq!(engine.text_edit.as_ref().unwrap().caret, 2);
   }
+
+  #[test]
+  fn style_for_styled_node_id_ignores_pseudo_element_boxes() {
+    use crate::style::display::FormattingContextType;
+    use crate::style::types::Direction;
+    use crate::tree::box_tree::GeneratedPseudoElement;
+
+    let mut pseudo_style = ComputedStyle::default();
+    pseudo_style.direction = Direction::Ltr;
+    let pseudo_style = Arc::new(pseudo_style);
+
+    let mut real_style = ComputedStyle::default();
+    real_style.direction = Direction::Rtl;
+    let real_style = Arc::new(real_style);
+
+    let mut pseudo = BoxNode::new_block(pseudo_style, FormattingContextType::Block, vec![]);
+    pseudo.styled_node_id = Some(1);
+    pseudo.generated_pseudo = Some(GeneratedPseudoElement::Before);
+
+    let mut real = BoxNode::new_block(real_style, FormattingContextType::Block, vec![]);
+    real.styled_node_id = Some(1);
+
+    let root_style = Arc::new(ComputedStyle::default());
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![pseudo, real]);
+    let tree = BoxTree::new(root);
+
+    let style = style_for_styled_node_id(&tree, 1).expect("style");
+    assert_eq!(style.direction, Direction::Rtl);
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
