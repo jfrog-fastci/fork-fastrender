@@ -266,6 +266,7 @@ pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
   // `rt_gc_collect`) we may be several runtime frames away from the nearest
   // managed callsite that has a stackmap record. Recover that callsite cursor by
   // walking the FP chain.
+  //
   // Call `arch::capture_safepoint_context` directly from this helper (avoid
   // routing it through combinators like `unwrap_or_else`) so the capture
   // implementation can reliably walk out to the *outer* caller frame.
@@ -305,7 +306,17 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   }
   let _resume = ResumeOnDrop;
 
-  let timeout = Duration::from_secs(2);
+  // Stop-the-world handshakes can legitimately take longer in debug builds:
+  // - unit tests run in parallel by default and may have many registered worker threads at once
+  // - debug builds are significantly slower, and the system may be under heavy contention
+  //
+  // Keep release builds strict (we want to catch real deadlocks quickly), but give debug builds more
+  // slack to avoid flaky timeouts.
+  let timeout = if cfg!(debug_assertions) {
+    Duration::from_secs(5)
+  } else {
+    Duration::from_secs(2)
+  };
   if !crate::rt_gc_wait_for_world_stopped_timeout(timeout) {
     threading::safepoint::dump_stop_the_world_timeout(stop_epoch, timeout);
     panic!("world did not reach safepoint in time (timeout={timeout:?}, epoch={stop_epoch})");

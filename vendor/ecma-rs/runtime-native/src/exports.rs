@@ -10,6 +10,7 @@ use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::alloc;
 use crate::async_runtime::PromiseLayout;
+use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_runtime;
@@ -912,6 +913,7 @@ pub extern "C" fn rt_gc_collect() {
       // decides to collect), the nearest managed frame is suspended at the
       // callsite into the *outermost* runtime frame (which has a stackmap
       // record). Recover that managed callsite cursor by walking the FP chain.
+      //
       // Call `capture_safepoint_context` directly from this function on fallback.
       //
       // The capture helper walks the frame-pointer chain assuming it is invoked
