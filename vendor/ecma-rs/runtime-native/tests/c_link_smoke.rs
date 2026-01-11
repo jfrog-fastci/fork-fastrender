@@ -105,6 +105,7 @@ fn c_can_link_and_call_runtime_native() {
   fs::write(
     &c_path,
     r#"
+#define _GNU_SOURCE
 #include "runtime_native.h"
 #include <unistd.h>
 static void set_int(uint8_t* data) {
@@ -174,8 +175,12 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
 
   // Drive the event loop until the promise settles.
-  for (int i = 0; i < 1000 && !settled; i++) {
+  //
+  // Under heavy CI load, the blocking worker may not run immediately, so the timer can fire
+  // before the promise settles. That's OK: this is a C link smoke test, not a latency test.
+  for (int i = 0; i < 5000 && !settled; i++) {
     rt_async_poll_legacy();
+    usleep(1000);
   }
   rt_clear_timer(t);
   if (!settled) {

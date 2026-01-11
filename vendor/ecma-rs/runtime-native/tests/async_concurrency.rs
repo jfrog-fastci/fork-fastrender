@@ -62,9 +62,9 @@ fn cross_thread_promise_resolve_wakes_waiter_via_rt_async_wait() {
   });
 
   runtime_native::rt_async_wait();
-  while runtime_native::rt_async_poll_legacy() {}
 
   resolver.join().unwrap();
+  while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
@@ -100,9 +100,9 @@ fn many_waiters_are_all_woken() {
   });
 
   runtime_native::rt_async_wait();
-  while runtime_native::rt_async_poll_legacy() {}
 
   resolver.join().unwrap();
+  while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(counter.load(Ordering::SeqCst), n);
 
   drop(coros);

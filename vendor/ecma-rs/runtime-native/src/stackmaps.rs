@@ -196,23 +196,25 @@ impl StackMap {
         )?);
       }
 
-      // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
-      c.align_to(8)?;
-      let _padding = c.read_u16()?;
-      let num_live_outs = c.read_u16()? as usize;
-      if num_live_outs > c.remaining() / LiveOut::BYTE_SIZE {
-        return Err(StackMapError::UnexpectedEof);
-      }
-      let mut live_outs = Vec::with_capacity(num_live_outs);
-      for _ in 0..num_live_outs {
-        let dwarf_reg = c.read_u16()?;
-        let _reserved = c.read_u8()?;
-        let size = c.read_u8()?;
-        live_outs.push(LiveOut { dwarf_reg, size });
-      }
-
-      // Records are 8-byte aligned after the live-out array.
-      c.align_to(8)?;
+      // Live-out trailer parsing is unfortunately not consistent across all LLVM / target
+      // configurations we encounter in the wild:
+      //
+      // - Some producers align the live-out header to 8 bytes after the locations array.
+      // - Others emit the header immediately after the last location entry.
+      //
+      // Parse the aligned form first (it matches our synthetic unit tests), and fall back to the
+      // unaligned form when the aligned parse would run off the end of the section.
+      let live_outs = {
+        let saved_off = c.off;
+        match parse_live_outs(&mut c, LiveOutHeaderMode::AlignedTo8) {
+          Ok(v) => v,
+          Err(StackMapError::UnexpectedEof) => {
+            c.off = saved_off;
+            parse_live_outs(&mut c, LiveOutHeaderMode::Unaligned)?
+          }
+          Err(e) => return Err(e),
+        }
+      };
 
       records.push(StackMapRecord {
         patchpoint_id,
@@ -308,6 +310,37 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   }
 
   Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveOutHeaderMode {
+  AlignedTo8,
+  Unaligned,
+}
+
+fn parse_live_outs(c: &mut Cursor<'_>, mode: LiveOutHeaderMode) -> Result<Vec<LiveOut>, StackMapError> {
+  if mode == LiveOutHeaderMode::AlignedTo8 {
+    c.align_to(8)?;
+  }
+
+  // Live-out header: u16 Padding; u16 NumLiveOuts.
+  let _padding = c.read_u16()?;
+  let num_live_outs = c.read_u16()? as usize;
+  if num_live_outs > c.remaining() / LiveOut::BYTE_SIZE {
+    return Err(StackMapError::UnexpectedEof);
+  }
+
+  let mut live_outs = Vec::with_capacity(num_live_outs);
+  for _ in 0..num_live_outs {
+    let dwarf_reg = c.read_u16()?;
+    let _reserved = c.read_u8()?;
+    let size = c.read_u8()?;
+    live_outs.push(LiveOut { dwarf_reg, size });
+  }
+
+  // Records are 8-byte aligned after the live-out array.
+  c.align_to(8)?;
+  Ok(live_outs)
 }
 
 #[derive(Debug, Clone)]
