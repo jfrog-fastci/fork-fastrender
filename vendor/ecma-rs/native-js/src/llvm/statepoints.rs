@@ -52,9 +52,18 @@ use std::os::raw::c_uint;
 pub struct StatepointConfig {
   /// The statepoint ID (becomes the StackMap record's patchpoint ID).
   pub id: u64,
-  /// Reserved for patchable callsites (usually `0` for our usage).
+  /// Reserved for patchable callsites.
+  ///
+  /// - `0`: LLVM emits a normal call.
+  /// - `>0`: LLVM reserves a patchable region at the callsite (x86_64: a NOP sled) and the
+  ///   stackmap record key (`instruction offset`) points to the end of that reserved region.
+  ///
+  /// See `docs/llvm_statepoint_stackmap_abi.md` for the project-level ABI assumptions.
   pub num_patch_bytes: u32,
-  /// Statepoint flags (usually `0`).
+  /// Statepoint flags.
+  ///
+  /// On LLVM 18, the IR verifier only accepts values in the range `0..=3` (two-bit mask).
+  /// This project currently uses `0`.
   pub flags: u32,
 }
 
@@ -181,6 +190,12 @@ pub fn build_statepoint_call_indirect<'ctx>(
   gc_live: &[PointerValue<'ctx>],
   name: &str,
 ) -> LLVMValueRef {
+  assert!(
+    config.flags <= 3,
+    "LLVM 18 accepts only gc.statepoint flags in range 0..=3 (two-bit mask); got {}",
+    config.flags
+  );
+
   let statepoint = statepoint_p0_decl(ctx, module);
 
   let i64_ty = ctx.i64_type();
