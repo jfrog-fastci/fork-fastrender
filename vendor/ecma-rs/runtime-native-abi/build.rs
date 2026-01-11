@@ -110,6 +110,31 @@ fn main() {
     }
   }
 
+  // cbindgen sometimes emits `struct Foo` references inside function-pointer typedefs before the
+  // corresponding tag has been declared at file scope. In C, that introduces a *prototype-scope*
+  // tag (a distinct type), which breaks the ABI and triggers `-Wvisibility` warnings.
+  //
+  // Insert explicit forward declarations so these `struct` tags are declared at file scope before
+  // first use.
+  if !header.contains("typedef struct RtCoroutineHeader RtCoroutineHeader;") {
+    if let Some(pos) = header.find("typedef enum RtCoroStatus (*RtCoroResumeFn)(struct RtCoroutineHeader") {
+      header.insert_str(pos, "typedef struct RtCoroutineHeader RtCoroutineHeader;\n");
+      modified = true;
+    }
+  }
+  if !header.contains("typedef struct PromiseResolveInput PromiseResolveInput;") {
+    if let Some(pos) = header.find("typedef struct ThenableVTable {") {
+      header.insert_str(pos, "typedef struct PromiseResolveInput PromiseResolveInput;\n");
+      modified = true;
+    }
+  }
+  if !header.contains("typedef struct Coroutine Coroutine;") {
+    if let Some(pos) = header.find("typedef struct CoroutineStep (*CoroutineResumeFn)(struct Coroutine") {
+      header.insert_str(pos, "typedef struct Coroutine Coroutine;\n");
+      modified = true;
+    }
+  }
+
   // cbindgen does not currently emit thread-local `extern` statics. The runtime exposes `RT_THREAD`
   // as a TLS pointer to the current thread record so generated code can load it directly.
   //
