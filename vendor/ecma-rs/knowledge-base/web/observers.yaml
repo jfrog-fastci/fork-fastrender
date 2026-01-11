@@ -3,7 +3,6 @@
 - name: MutationObserver
   kind: constructor
   aliases:
-    - MutationObserver
     - window.MutationObserver
     - globalThis.MutationObserver
   since: "baseline"
@@ -50,7 +49,6 @@
 - name: IntersectionObserver
   kind: constructor
   aliases:
-    - IntersectionObserver
     - window.IntersectionObserver
     - globalThis.IntersectionObserver
   since: "baseline"
@@ -108,7 +106,6 @@
 - name: ResizeObserver
   kind: constructor
   aliases:
-    - ResizeObserver
     - window.ResizeObserver
     - globalThis.ResizeObserver
   since: "baseline"
@@ -149,5 +146,16 @@
   effects:
     Custom:
       flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+
+- name: ResizeObserver.prototype.takeRecords
+  kind: function
+  aliases:
+    - ResizeObserver.prototype.takeRecords
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | WRITES_GLOBAL | ALLOCATES
       throws: Never
   purity: Impure
