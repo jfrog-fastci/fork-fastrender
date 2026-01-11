@@ -1733,7 +1733,12 @@ fn distribute_space_up_to_limits(
       })
       .filter(|track| track_is_affected(track))
       .map(|track| {
-        (track_limit(track) - track_affected_property(track)) / track_distribution_proportion(track)
+        // When distributing space in multiple iterations we must take into account the amount of
+        // space already allocated to a track in prior iterations. Failing to do so can cause tracks
+        // to grow past their limit (and steal space from other tracks), which then cascades into
+        // incorrect grid layouts (e.g. wrapped tracks when there is enough space for max-content).
+        (track_limit(track) - (track_affected_property(track) + track.item_incurred_increase))
+          / track_distribution_proportion(track)
       })
       .min_by(|a, b| a.total_cmp(b))
       .unwrap(); // We will never pass an empty track list to this function
@@ -1745,7 +1750,8 @@ fn distribute_space_up_to_limits(
     for track in tracks.iter_mut().filter(|track| track_is_affected(track)) {
       let increase = iteration_item_incurred_increase * track_distribution_proportion(track);
       if increase > 0.0
-        && track_affected_property(track) + increase <= track_limit(track) + THRESHOLD
+        && track_affected_property(track) + track.item_incurred_increase + increase
+          <= track_limit(track) + THRESHOLD
       {
         track.item_incurred_increase += increase;
         space_to_distribute -= increase;
@@ -1762,6 +1768,7 @@ mod tests {
   use crate::tree::MeasureOutput;
 
   use crate::geometry::Point;
+  use crate::style::{MaxTrackSizingFunction, MinTrackSizingFunction};
 
   fn build_grid_baseline_tree() -> (TaffyTree<()>, NodeId, [NodeId; 2]) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1848,5 +1855,53 @@ mod tests {
       assert_eq!(child1_layout.location, expected_child1.location);
       assert_eq!(child2_layout.location, expected_child2.location);
     }
+  }
+
+  #[test]
+  fn distribute_space_up_to_limits_respects_existing_allocations() {
+    // Regression test for `distribute_space_up_to_limits`: when space is distributed in multiple
+    // iterations (because some tracks hit their growth limits before others), we must account for
+    // the space already allocated to each track when computing both:
+    // - the next iteration's per-track increase limit
+    // - whether a given track can accept a proposed increase
+    //
+    // If we don't, a track can receive increases that push it past its limit, which in turn causes
+    // later grid sizing steps to produce incorrect track widths.
+
+    let mut tracks = vec![
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+    ];
+
+    // Base sizes are 0, but growth limits differ.
+    tracks[0].base_size = 0.0;
+    tracks[0].growth_limit = 5.0;
+
+    tracks[1].base_size = 0.0;
+    tracks[1].growth_limit = 10.0;
+
+    tracks[2].base_size = 0.0;
+    tracks[2].growth_limit = 100.0;
+
+    let remaining = super::distribute_space_up_to_limits(
+      30.0,
+      &mut tracks,
+      |_| true,
+      |_| 1.0,
+      |track| track.base_size,
+      |track| track.growth_limit,
+    );
+
+    assert!(remaining.abs() < 0.01, "expected all space to be distributed");
+
+    let final_sizes: Vec<f32> = tracks
+      .iter()
+      .map(|track| track.base_size + track.item_incurred_increase)
+      .collect();
+
+    assert!((final_sizes[0] - 5.0).abs() < 1e-5);
+    assert!((final_sizes[1] - 10.0).abs() < 1e-5);
+    assert!((final_sizes[2] - 15.0).abs() < 1e-5);
   }
 }
