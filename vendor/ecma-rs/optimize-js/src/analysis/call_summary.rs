@@ -85,6 +85,7 @@ enum VarDef {
   Alias(u32),
   Const,
   FreshAlloc,
+  Phi(Vec<Arg>),
   CallFn { id: usize, args: Vec<Arg> },
   Unknown,
 }
@@ -139,6 +140,7 @@ fn build_var_defs(
         Arg::Const(_) => VarDef::Const,
         _ => VarDef::Unknown,
       },
+      InstTyp::Phi => VarDef::Phi(inst.args.clone()),
       InstTyp::Call => {
         let (tgt, callee, _this, args, spreads) = inst.as_call();
         if tgt.is_none() {
@@ -215,6 +217,21 @@ fn resolve_var_origin(
     }
     Some(VarDef::Const) => Origin::Const,
     Some(VarDef::FreshAlloc) => Origin::FreshAlloc,
+    Some(VarDef::Phi(args)) => {
+      let mut merged: Option<Origin> = None;
+      for arg in args {
+        let origin = resolve_arg_origin(arg, param_to_index, defs, callee_summaries, visiting);
+        merged = match merged {
+          None => Some(origin),
+          Some(prev) if prev == origin => Some(prev),
+          _ => Some(Origin::Unknown),
+        };
+        if merged == Some(Origin::Unknown) {
+          break;
+        }
+      }
+      merged.unwrap_or(Origin::Unknown)
+    }
     Some(VarDef::CallFn { id, args }) => {
       match callee_summaries.get(*id) {
         Some(summary) => match &summary.return_kind {
@@ -248,6 +265,7 @@ fn summarize_function(
   func: &crate::ProgramFunction,
   callee_summaries: &[FnSummary],
 ) -> FnSummary {
+  let cfg = func.analyzed_cfg();
   let mut param_escape = vec![EscapeState::NoEscape; func.params.len()];
   let param_to_index: HashMap<u32, usize> = func
     .params
@@ -257,11 +275,11 @@ fn summarize_function(
     .map(|(idx, var)| (var, idx))
     .collect();
 
-  let defs = build_var_defs(&func.body, callee_summaries);
+  let defs = build_var_defs(cfg, callee_summaries);
 
   let mut return_origins = Vec::<Origin>::new();
 
-  for inst in collect_insts(&func.body) {
+  for inst in collect_insts(cfg) {
     match inst.t {
       InstTyp::Call => {
         let (_tgt, callee, _this, args, spreads) = inst.as_call();
