@@ -181,18 +181,21 @@ impl Clone for CancellationToken {
 #[derive(Debug)]
 pub enum IoOpKind {
   Write { fd: OwnedFd },
+  Read { fd: OwnedFd },
 }
 
 impl IoOpKind {
   pub fn raw_fd(&self) -> RawFd {
     match self {
       IoOpKind::Write { fd } => fd.as_raw_fd(),
+      IoOpKind::Read { fd } => fd.as_raw_fd(),
     }
   }
 
   pub fn poll_events(&self) -> i16 {
     match self {
       IoOpKind::Write { .. } => libc::POLLOUT,
+      IoOpKind::Read { .. } => libc::POLLIN,
     }
   }
 }

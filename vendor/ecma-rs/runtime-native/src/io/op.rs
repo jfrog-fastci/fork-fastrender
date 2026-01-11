@@ -3,8 +3,8 @@ use super::iovec::PinnedIoVec;
 use super::iovec::PinnedMsgHdr;
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
 use crate::buffer::{
-  ArrayBuffer, ArrayBufferError, BackingStore, BorrowError, BorrowGuardRead, PinnedBackingStore,
-  TypedArrayError, Uint8Array,
+  ArrayBuffer, ArrayBufferError, BackingStore, BorrowError, BorrowGuardRead, BorrowGuardWrite,
+  PinnedBackingStore, TypedArrayError, Uint8Array,
 };
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -30,6 +30,11 @@ impl IoBuf {
   }
 
   #[inline]
+  pub fn as_mut_ptr(&self) -> *mut u8 {
+    self.ptr as *mut u8
+  }
+
+  #[inline]
   pub fn len(&self) -> usize {
     self.len
   }
@@ -47,7 +52,10 @@ pub struct IoOp {
   bufs: Vec<IoBuf>,
   // NOTE: keep this after `bufs` so backing stores outlive the pointer descriptors.
   _pinned: Vec<PinnedBackingStore>,
-  _borrows: Vec<BorrowGuardRead>,
+  // For write-like ops (`write(2)`, `send(2)`): kernel reads from the buffer.
+  _borrows_read: Vec<BorrowGuardRead>,
+  // For read-like ops (`read(2)`, `recv(2)`): kernel writes into the buffer.
+  _borrows_write: Vec<BorrowGuardWrite>,
   #[allow(dead_code)]
   pinned_iovecs: Option<PinnedIoVec>,
   #[cfg(unix)]
@@ -64,6 +72,45 @@ impl IoOp {
     range: Range<usize>,
   ) -> Result<Self, IoLimitError> {
     Self::pin_vectored(limiter, vec![(store, range)])
+  }
+
+  /// Pins a single [`BackingStore`] range for a read-like I/O operation.
+  ///
+  /// This is intended for `read(2)`/`recv(2)`-style ops where the kernel may write into the user
+  /// buffer. It acquires an exclusive write borrow on the backing store for the lifetime of the op.
+  pub fn pin_backing_store_range_for_read(
+    limiter: &Arc<IoLimiter>,
+    store: BackingStore,
+    range: Range<usize>,
+  ) -> Result<Self, IoLimitError> {
+    if range.start > range.end || range.end > store.byte_len() {
+      return Err(IoLimitError::InvalidRange);
+    }
+    let total_pinned_bytes = store.alloc_len();
+    let permit = limiter.try_acquire(total_pinned_bytes)?;
+
+    let borrow = store.try_borrow_io_write().map_err(|err| match err {
+      BorrowError::Borrowed => IoLimitError::BufferBorrowed,
+      BorrowError::ReadBorrowOverflow => IoLimitError::LimitExceeded("max read borrows"),
+      BorrowError::NotUnique => IoLimitError::BufferBorrowed,
+    })?;
+
+    let pinned = store.pin_guard();
+    let base = pinned.as_ptr();
+    // SAFETY: bounds checked above.
+    let ptr = unsafe { base.add(range.start) } as *const u8;
+    let len = range.end - range.start;
+
+    Ok(Self {
+      bufs: vec![IoBuf { ptr, len }],
+      _pinned: vec![pinned],
+      _borrows_read: Vec::new(),
+      _borrows_write: vec![borrow],
+      pinned_iovecs: None,
+      #[cfg(unix)]
+      pinned_msghdr: None,
+      _permit: permit,
+    })
   }
 
   /// Pins a single [`ArrayBuffer`] range for an I/O operation.
@@ -83,6 +130,25 @@ impl IoOp {
       return Err(IoLimitError::BufferNotAlive);
     };
     Self::pin_backing_store_range(limiter, store, range)
+  }
+
+  /// Pins a single [`ArrayBuffer`] range for a read-like I/O operation.
+  pub fn pin_array_buffer_range_for_read(
+    limiter: &Arc<IoLimiter>,
+    buf: &ArrayBuffer,
+    range: Range<usize>,
+  ) -> Result<Self, IoLimitError> {
+    if buf.is_detached() {
+      return Err(IoLimitError::BufferNotAlive);
+    }
+    if range.start > range.end || range.end > buf.byte_len() {
+      return Err(IoLimitError::InvalidRange);
+    }
+
+    let Some(store) = buf.backing_store_handle() else {
+      return Err(IoLimitError::BufferNotAlive);
+    };
+    Self::pin_backing_store_range_for_read(limiter, store, range)
   }
 
   /// Pins a [`Uint8Array`] sub-range for an I/O operation.
@@ -117,6 +183,46 @@ impl IoOp {
   /// Pins an entire [`Uint8Array`] view for an I/O operation.
   pub fn pin_uint8_array(limiter: &Arc<IoLimiter>, view: &Uint8Array) -> Result<Self, IoLimitError> {
     Self::pin_uint8_array_range(limiter, view, 0..view.length())
+  }
+
+  /// Pins a [`Uint8Array`] sub-range for a read-like I/O operation.
+  ///
+  /// The kernel may write into the buffer (`read(2)`, `recv(2)`), so this acquires an exclusive
+  /// write borrow for the lifetime of the op.
+  ///
+  /// The provided `range` is relative to the start of the view (not the underlying `ArrayBuffer`).
+  pub fn pin_uint8_array_range_for_read(
+    limiter: &Arc<IoLimiter>,
+    view: &Uint8Array,
+    range: Range<usize>,
+  ) -> Result<Self, IoLimitError> {
+    if view.is_detached() {
+      return Err(IoLimitError::BufferNotAlive);
+    }
+    if range.start > range.end || range.end > view.length() {
+      return Err(IoLimitError::InvalidRange);
+    }
+
+    let store = view.backing_store_handle().map_err(|err| match err {
+      TypedArrayError::Buffer(ArrayBufferError::Detached) => IoLimitError::BufferNotAlive,
+      _ => IoLimitError::InvalidRange,
+    })?;
+
+    let view_base = view.byte_offset();
+    let abs_start = view_base
+      .checked_add(range.start)
+      .ok_or(IoLimitError::InvalidRange)?;
+    let abs_end = view_base.checked_add(range.end).ok_or(IoLimitError::InvalidRange)?;
+
+    Self::pin_backing_store_range_for_read(limiter, store, abs_start..abs_end)
+  }
+
+  /// Pins an entire [`Uint8Array`] view for a read-like I/O operation.
+  pub fn pin_uint8_array_for_read(
+    limiter: &Arc<IoLimiter>,
+    view: &Uint8Array,
+  ) -> Result<Self, IoLimitError> {
+    Self::pin_uint8_array_range_for_read(limiter, view, 0..view.length())
   }
 
   /// Pins multiple ranges for a single vectored I/O operation.
@@ -196,7 +302,8 @@ impl IoOp {
     Ok(Self {
       bufs: io_bufs,
       _pinned: pinned,
-      _borrows: borrows,
+      _borrows_read: borrows,
+      _borrows_write: Vec::new(),
       pinned_iovecs: None,
       #[cfg(unix)]
       pinned_msghdr: None,
@@ -245,7 +352,8 @@ impl IoOp {
       bufs: io_bufs,
       // The backing stores are owned (and pinned) by the `PinnedIoVec` itself.
       _pinned: Vec::new(),
-      _borrows: borrows,
+      _borrows_read: borrows,
+      _borrows_write: Vec::new(),
       pinned_iovecs: Some(pinned_iovecs),
       #[cfg(unix)]
       pinned_msghdr: None,

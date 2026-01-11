@@ -156,6 +156,15 @@ impl IoRuntime {
     self.write_with_debug_hooks(fd, view, range, &[], None)
   }
 
+  /// Submit a non-blocking `read(2)` operation and return the associated promise.
+  ///
+  /// The read is performed on a dedicated OS thread. The bytes are pinned (pointer stability) and
+  /// the backing store is exclusively borrowed for the lifetime of the op (data-race safety while
+  /// the kernel writes into the buffer).
+  pub fn read(&self, fd: OwnedFd, view: &Uint8Array, range: Range<usize>) -> io::Result<PromiseRef> {
+    self.read_with_debug_hooks(fd, view, range, &[], None)
+  }
+
   /// Submit a non-blocking `write(2)` using pinned `ArrayBuffer`/`TypedArray` backing stores.
   ///
   /// The caller supplies a [`super::PinnedIoVec`] (which owns backing-store pin guards). The pinned
@@ -267,6 +276,56 @@ impl IoRuntime {
     }
   }
 
+  #[doc(hidden)]
+  pub fn read_with_debug_hooks(
+    &self,
+    fd: OwnedFd,
+    view: &Uint8Array,
+    range: Range<usize>,
+    roots: &[*mut u8],
+    debug: Option<IoOpDebugHooks>,
+  ) -> io::Result<PromiseRef> {
+    if self.inner.state() != RuntimeState::Running {
+      return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
+    }
+
+    let promise = async_rt::promise::promise_new();
+    let cancel = super::op_registry::CancellationToken::new()?;
+
+    let pinned = super::op::IoOp::pin_uint8_array_range_for_read(&self.inner.limiter, view, range)?;
+    let root_pins = roots.iter().copied().map(RootPin::new).collect::<Vec<_>>();
+
+    let (id, op) = {
+      let mut reg = self.inner.registry.lock();
+      let id = reg.alloc_id();
+      let op = Arc::new(IoOpRecord::new(
+        id,
+        IoOpKind::Read { fd },
+        pinned,
+        promise,
+        cancel,
+        root_pins,
+        debug,
+      ));
+      reg.insert(Arc::clone(&op));
+      (id, op)
+    };
+
+    let rt_weak = Arc::downgrade(&self.inner);
+    let spawn_res = std::thread::Builder::new()
+      .name(format!("rt-io-op-{}", id.as_u64()))
+      .spawn(move || io_worker(op, rt_weak));
+
+    match spawn_res {
+      Ok(_) => Ok(promise),
+      Err(e) => {
+        // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
+        let _ = self.inner.registry.lock().remove(id);
+        Err(io::Error::new(io::ErrorKind::Other, e))
+      }
+    }
+  }
+
   /// Test-only helper: number of operations currently present in the registry.
   #[doc(hidden)]
   pub fn debug_registry_len(&self) -> usize {
@@ -359,87 +418,174 @@ fn run_io(op: &IoOpRecord) -> IoOpOutcome {
   ];
 
   let bufs = op.pinned.bufs();
-  let mut buf_idx: usize = 0;
-  let mut offset: usize = 0;
-  let mut total_written: usize = 0;
+  match &op.kind {
+    IoOpKind::Write { .. } => {
+      let mut buf_idx: usize = 0;
+      let mut offset: usize = 0;
+      let mut total_written: usize = 0;
 
-  while buf_idx < bufs.len() {
-    // Skip empty segments.
-    while buf_idx < bufs.len() && bufs[buf_idx].len() == 0 {
-      buf_idx += 1;
-      offset = 0;
-    }
-    if buf_idx >= bufs.len() {
-      break;
-    }
+      while buf_idx < bufs.len() {
+        // Skip empty segments.
+        while buf_idx < bufs.len() && bufs[buf_idx].len() == 0 {
+          buf_idx += 1;
+          offset = 0;
+        }
+        if buf_idx >= bufs.len() {
+          break;
+        }
 
-    let buf = bufs[buf_idx];
-    debug_assert!(offset <= buf.len());
-    if offset == buf.len() {
-      buf_idx += 1;
-      offset = 0;
-      continue;
-    }
+        let buf = bufs[buf_idx];
+        debug_assert!(offset <= buf.len());
+        if offset == buf.len() {
+          buf_idx += 1;
+          offset = 0;
+          continue;
+        }
 
-    if op.cancel.is_cancelled() {
-      return IoOpOutcome::Canceled;
-    }
+        if op.cancel.is_cancelled() {
+          return IoOpOutcome::Canceled;
+        }
 
-    let rc = unsafe {
-      libc::write(
-        data_fd,
-        buf.as_ptr().wrapping_add(offset) as *const libc::c_void,
-        buf.len() - offset,
-      )
-    };
+        let rc = unsafe {
+          libc::write(
+            data_fd,
+            buf.as_ptr().wrapping_add(offset) as *const libc::c_void,
+            buf.len() - offset,
+          )
+        };
 
-    if rc > 0 {
-      let n = rc as usize;
-      offset += n;
-      total_written = total_written.saturating_add(n);
-      continue;
-    }
+        if rc > 0 {
+          let n = rc as usize;
+          offset += n;
+          total_written = total_written.saturating_add(n);
+          continue;
+        }
 
-    if rc == 0 {
-      // `write` returning 0 with a non-zero count is unexpected; treat as I/O error.
-      return IoOpOutcome::Err(libc::EIO);
-    }
+        if rc == 0 {
+          // `write` returning 0 with a non-zero count is unexpected; treat as I/O error.
+          return IoOpOutcome::Err(libc::EIO);
+        }
 
-    let err = io::Error::last_os_error();
-    if err.kind() == io::ErrorKind::Interrupted {
-      continue;
-    }
-
-    if err.kind() != io::ErrorKind::WouldBlock {
-      return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
-    }
-
-    // EAGAIN: wait for POLLOUT or cancellation.
-    loop {
-      fds[0].revents = 0;
-      fds[1].revents = 0;
-
-      let poll_rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-      if poll_rc < 0 {
         let err = io::Error::last_os_error();
         if err.kind() == io::ErrorKind::Interrupted {
           continue;
         }
-        return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
+
+        if err.kind() != io::ErrorKind::WouldBlock {
+          return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
+        }
+
+        // EAGAIN: wait for POLLOUT or cancellation.
+        loop {
+          fds[0].revents = 0;
+          fds[1].revents = 0;
+
+          let poll_rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+          if poll_rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+              continue;
+            }
+            return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
+          }
+
+          if fds[1].revents != 0 {
+            op.cancel.drain();
+            return IoOpOutcome::Canceled;
+          }
+
+          if fds[0].revents != 0 {
+            break;
+          }
+        }
       }
 
-      if fds[1].revents != 0 {
-        op.cancel.drain();
-        return IoOpOutcome::Canceled;
+      IoOpOutcome::Ok(total_written)
+    }
+    IoOpKind::Read { .. } => {
+      let mut buf_idx: usize = 0;
+      let mut offset: usize = 0;
+      let mut total_read: usize = 0;
+
+      'outer: while buf_idx < bufs.len() {
+        // Skip empty segments.
+        while buf_idx < bufs.len() && bufs[buf_idx].len() == 0 {
+          buf_idx += 1;
+          offset = 0;
+        }
+        if buf_idx >= bufs.len() {
+          break;
+        }
+
+        let buf = bufs[buf_idx];
+        debug_assert!(offset <= buf.len());
+        if offset == buf.len() {
+          buf_idx += 1;
+          offset = 0;
+          continue;
+        }
+
+        if op.cancel.is_cancelled() {
+          return IoOpOutcome::Canceled;
+        }
+
+        let rc = unsafe {
+          libc::read(
+            data_fd,
+            buf.as_mut_ptr().wrapping_add(offset) as *mut libc::c_void,
+            buf.len() - offset,
+          )
+        };
+
+        if rc > 0 {
+          let n = rc as usize;
+          offset += n;
+          total_read = total_read.saturating_add(n);
+          continue;
+        }
+
+        if rc == 0 {
+          // EOF.
+          break 'outer;
+        }
+
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+
+        if err.kind() != io::ErrorKind::WouldBlock {
+          return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
+        }
+
+        // EAGAIN: wait for POLLIN or cancellation.
+        loop {
+          fds[0].revents = 0;
+          fds[1].revents = 0;
+
+          let poll_rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+          if poll_rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+              continue;
+            }
+            return IoOpOutcome::Err(err.raw_os_error().unwrap_or(libc::EIO));
+          }
+
+          if fds[1].revents != 0 {
+            op.cancel.drain();
+            return IoOpOutcome::Canceled;
+          }
+
+          if fds[0].revents != 0 {
+            break;
+          }
+        }
       }
 
-      if fds[0].revents != 0 {
-        break;
-      }
+      IoOpOutcome::Ok(total_read)
     }
   }
-
-  IoOpOutcome::Ok(total_written)
 }
 
 #[cfg(unix)]

@@ -373,8 +373,15 @@ fn parallel_spawn_promise_wakes_blocked_async_poll() {
   );
 
   let (tx, rx) = mpsc::channel();
+  // `rt_async_poll_legacy` can return spuriously (e.g. if the waker fd already has a pending
+  // signal). Keep polling until the promise continuation has actually run so this test remains
+  // deterministic under contention.
+  let continuations_for_poll = continuations.clone();
   std::thread::spawn(move || {
-    runtime_native::rt_async_poll_legacy();
+    while continuations_for_poll.load(Ordering::Acquire) == 0 {
+      runtime_native::rt_async_poll_legacy();
+      std::thread::yield_now();
+    }
     tx.send(()).unwrap();
   });
 
