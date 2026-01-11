@@ -129,6 +129,10 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("declare ptr @rt_alloc_pinned"),
     "missing rt_alloc_pinned:\n{ir}"
   );
+  assert!(
+    ir.contains("declare ptr @rt_alloc_array"),
+    "missing rt_alloc_array:\n{ir}"
+  );
   // ABI regression guards: `rt_alloc` / `rt_alloc_pinned` take `RtShapeId` as a 32-bit integer.
   let alloc_params = fns.rt_alloc.get_type().get_param_types();
   assert_eq!(alloc_params.len(), 2);
@@ -168,6 +172,25 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     "rt_alloc_pinned must return an addrspace(0) pointer in the stable ABI"
   );
 
+  let alloc_array_params = fns.rt_alloc_array.get_type().get_param_types();
+  assert_eq!(alloc_array_params.len(), 2);
+  assert_eq!(alloc_array_params[0].into_int_type().get_bit_width(), 64);
+  assert_eq!(alloc_array_params[1].into_int_type().get_bit_width(), 64);
+  let alloc_array_ret = fns
+    .rt_alloc_array
+    .get_type()
+    .get_return_type()
+    .expect("rt_alloc_array returns ptr");
+  assert!(
+    alloc_array_ret.is_pointer_type(),
+    "rt_alloc_array return type must be a pointer, got {alloc_array_ret:?}"
+  );
+  assert_eq!(
+    alloc_array_ret.into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_alloc_array must return an addrspace(0) pointer in the stable ABI"
+  );
+
   // These are MayGC runtime functions and must not have `_gc` wrapper functions.
   assert!(
     !ir.contains("rt_alloc_gc"),
@@ -176,6 +199,10 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   assert!(
     !ir.contains("rt_alloc_pinned_gc"),
     "unexpected rt_alloc_pinned_gc wrapper function in IR:\n{ir}"
+  );
+  assert!(
+    !ir.contains("rt_alloc_array_gc"),
+    "unexpected rt_alloc_array_gc wrapper function in IR:\n{ir}"
   );
   assert!(
     !ir.contains("rt_gc_safepoint_gc"),

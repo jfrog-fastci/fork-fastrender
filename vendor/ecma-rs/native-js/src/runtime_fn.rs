@@ -17,6 +17,11 @@ pub enum RuntimeFn {
   Alloc,
   /// Pinned allocation entrypoint: always may trigger GC.
   AllocPinned,
+  /// Allocate a GC-managed array object (`rt_alloc_array`).
+  ///
+  /// Arrays have a dynamic size derived from their header, so they use a shared
+  /// `TypeDescriptor` and are special-cased by the GC for tracing/sizing.
+  AllocArray,
   /// Convenience GC safepoint poll (`rt_gc_safepoint()`).
   ///
   /// Compiled code should prefer `GcSafepointSlow` + `RT_GC_EPOCH` polling so the runtime can
@@ -117,6 +122,13 @@ impl RuntimeFn {
       },
       RuntimeFn::AllocPinned => RuntimeFnSpec {
         name: "rt_alloc_pinned",
+        may_gc: true,
+        gc_ptr_args: 0,
+        gc_handle_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::AllocArray => RuntimeFnSpec {
+        name: "rt_alloc_array",
         may_gc: true,
         gc_ptr_args: 0,
         gc_handle_args: 0,

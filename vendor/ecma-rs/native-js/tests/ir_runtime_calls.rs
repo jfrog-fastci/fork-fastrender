@@ -100,6 +100,18 @@ fn build_test_ir() -> String {
     .expect("rt_alloc returns value")
     .into_pointer_value();
 
+  // Array allocation is also MayGC and should be statepointed.
+  let len = context.i64_type().const_int(2, false);
+  let elem_size = context.i64_type().const_int(1, false);
+  let _ = rt
+    .emit_runtime_call(
+      &builder,
+      RuntimeFn::AllocArray,
+      &[len.into(), elem_size.into()],
+      "alloc_array",
+    )
+    .expect("emit alloc array");
+
   // KeepAlive is NoGC and must not be rewritten into a statepoint even when it uses a value
   // produced by a MayGC call.
   rt
@@ -135,10 +147,21 @@ fn alloc_is_statepointed_write_barrier_is_not() {
       .any(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("rt.fp.rt_alloc")),
     "statepoint does not call the rt_alloc function pointer:\n{ir}"
   );
+  assert!(
+    ir.contains("store ptr @rt_alloc_array"),
+    "missing rt_alloc_array function pointer materialization:\n{ir}"
+  );
+  assert!(
+    ir.lines()
+      .any(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("rt.fp.rt_alloc_array")),
+    "statepoint does not call the rt_alloc_array function pointer:\n{ir}"
+  );
 
   // There should be no direct (non-statepoint) call to the allocator.
   assert!(!ir.contains("call ptr @rt_alloc"));
   assert!(!ir.contains("call ptr addrspace(1) @rt_alloc"));
+  assert!(!ir.contains("call ptr @rt_alloc_array"));
+  assert!(!ir.contains("call ptr addrspace(1) @rt_alloc_array"));
 
   // Leaf poll stays a normal call (and must be marked `notail`).
   assert!(

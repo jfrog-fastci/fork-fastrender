@@ -10,6 +10,7 @@ fn runtime_call_registry_has_gc_safety_metadata() {
   for f in [
     RuntimeFn::Alloc,
     RuntimeFn::AllocPinned,
+    RuntimeFn::AllocArray,
     RuntimeFn::GcSafepoint,
     RuntimeFn::GcSafepointSlow,
     RuntimeFn::GcCollect,

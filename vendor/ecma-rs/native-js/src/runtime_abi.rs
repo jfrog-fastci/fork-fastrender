@@ -92,6 +92,13 @@ fn runtime_meta(f: RuntimeFn) -> RuntimeFnMeta {
       codegen_ret: AbiTy::GcPtr,
       codegen_params: &[AbiTy::I64, AbiTy::I32],
     },
+    RuntimeFn::AllocArray => RuntimeFnMeta {
+      symbol: "rt_alloc_array",
+      runtime_ret: AbiTy::RawPtr,
+      runtime_params: &[AbiTy::I64, AbiTy::I64],
+      codegen_ret: AbiTy::GcPtr,
+      codegen_params: &[AbiTy::I64, AbiTy::I64],
+    },
     RuntimeFn::GcSafepoint => RuntimeFnMeta {
       symbol: "rt_gc_safepoint",
       runtime_ret: AbiTy::Void,
@@ -157,6 +164,7 @@ pub struct RuntimeFns<'ctx> {
   // Raw runtime ABI symbols (addrspace(0)).
   pub rt_alloc: FunctionValue<'ctx>,
   pub rt_alloc_pinned: FunctionValue<'ctx>,
+  pub rt_alloc_array: FunctionValue<'ctx>,
   pub rt_gc_safepoint: FunctionValue<'ctx>,
   pub rt_gc_safepoint_slow: FunctionValue<'ctx>,
   pub rt_gc_safepoint_relocate_h: FunctionValue<'ctx>,
@@ -206,6 +214,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     RuntimeFns {
       rt_alloc: self.get_or_declare_raw(RuntimeFn::Alloc),
       rt_alloc_pinned: self.get_or_declare_raw(RuntimeFn::AllocPinned),
+      rt_alloc_array: self.get_or_declare_raw(RuntimeFn::AllocArray),
       rt_gc_safepoint: self.get_or_declare_raw(RuntimeFn::GcSafepoint),
       rt_gc_safepoint_slow: self.get_or_declare_raw(RuntimeFn::GcSafepointSlow),
       rt_gc_safepoint_relocate_h: self.get_or_declare_raw(RuntimeFn::GcSafepointRelocateH),
@@ -640,4 +649,3 @@ pub fn emit_runtime_call<'ctx>(
   crate::stack_walking::mark_call_notail(call);
   Ok(call)
 }
-
