@@ -170,6 +170,9 @@ jobs:
       - name: Generate lockfile
         run: cargo generate-lockfile
 
+      - name: cargo check (runtime-native)
+        run: cargo check -p runtime-native --all-targets --locked
+
       - name: cargo test (runtime-native)
         run: cargo test -p runtime-native --locked
 
