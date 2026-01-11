@@ -117,6 +117,12 @@ all I/O backends. Violations are memory safety bugs.
 - **Finalization drops only the handle:** when an `ArrayBuffer` header becomes unreachable, its
   finalizer must only drop its `BackingStore` handle. The backing store allocation (and external
   bytes accounting) must remain alive as long as any host pin guard still holds a strong reference.
+- **Backing store pointers are not GC pointers:** the `ArrayBuffer` header contains a pointer/handle
+  to a non-moving backing store allocation (malloc/mmap/etc). That field must **never** be treated
+  as a GC-traced pointer:
+  - it must not appear in the runtime's GC trace map / `TypeDescriptor.ptr_offsets`, and
+  - it must not be passed as a `"gc-live"` value to LLVM statepoints (`gc.relocate` must never
+    rewrite it).
 - **GC does not need to scan backing store bytes:** backing store contents are
   treated as raw bytes and must not contain GC pointers.
 
