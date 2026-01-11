@@ -35,6 +35,7 @@ repo-wide policy and registry):
 - `EFFECT####`: `effect-js` effect inference
 - `OPT####`: `optimize-js`
 - `NATIVE####`: `native-js` native codegen
+- `NJS####`: `native-js` native compilation / LLVM backend (short form)
 - `RTNATIVE####`: `runtime-native` native runtime library
 - `MINIFYTS####`: `minify-js` TypeScript erasure/minification
 - `MINIFY####`: minify tooling (e.g. benchmarks)

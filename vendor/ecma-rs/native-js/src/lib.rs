@@ -4,6 +4,7 @@
 //! future TS/HIR lowering will target.
 
 pub mod codegen;
+pub mod codes;
 pub mod emit;
 pub mod strict;
 
