@@ -24,6 +24,9 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
         | ExprKind::ArrayMap { .. }
         | ExprKind::ArrayFilter { .. }
         | ExprKind::ArrayReduce { .. }
+        | ExprKind::ArrayFind { .. }
+        | ExprKind::ArrayEvery { .. }
+        | ExprKind::ArraySome { .. }
         | ExprKind::ArrayChain { .. }
         | ExprKind::KnownApiCall { .. }
         | ExprKind::AwaitExpr { .. } => Some(ExprId(idx as u32)),
@@ -35,7 +38,7 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
 
 #[test]
 fn resolves_static_known_calls() {
-  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);";
+  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);";
   let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
   let body_id = lower.root_body();
   let body = lower.body(body_id).unwrap();
@@ -55,6 +58,64 @@ fn resolves_static_known_calls() {
   assert_eq!(resolved.api, "Promise.all");
   assert_eq!(resolved.api_id, Some(ApiId::PromiseAll));
   assert_eq!(resolved.args.len(), 1);
+
+  let promise_race_span = range_of(source, "Promise.race([])");
+  let promise_race = find_call_expr(body, promise_race_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, promise_race, &db, None).expect("resolve Promise.race");
+  assert_eq!(resolved.api, "Promise.race");
+  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.args.len(), 1);
+}
+
+#[cfg(feature = "hir-semantic-ops")]
+#[test]
+fn resolves_known_api_call_nodes() {
+  use effect_js::hir_rewrite::annotate_known_api_calls;
+
+  let source = "JSON.parse(\"x\");";
+  let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
+  let body_id = lower.root_body();
+  let body = lower.body(body_id).unwrap();
+  let db = effect_js::load_default_api_database();
+
+  let json_call_span = range_of(source, "JSON.parse(\"x\")");
+  let json_call = find_call_expr(body, json_call_span);
+
+  let rewritten = annotate_known_api_calls(&lower, &db, None);
+  let rewritten_body = rewritten.body(body_id).unwrap();
+  let resolved = resolve_call(&rewritten, body_id, rewritten_body, json_call, &db, None)
+    .expect("resolve rewritten JSON.parse");
+  assert_eq!(resolved.api, "JSON.parse");
+  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
+  assert_eq!(resolved.receiver, None);
+  assert_eq!(resolved.args.len(), 1);
+}
+
+#[cfg(feature = "hir-semantic-ops")]
+#[test]
+fn resolves_semantic_array_find_calls_untyped() {
+  let source = "const v = [1].find(x => x);";
+  let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
+  let body_id = lower.root_body();
+  let body = lower.body(body_id).unwrap();
+  let db = effect_js::load_default_api_database();
+
+  let call_span = range_of(source, "[1].find(x => x)");
+  let call_expr = find_call_expr(body, call_span);
+  let resolved = resolve_call(&lower, body_id, body, call_expr, &db, None).expect("resolve find");
+  assert_eq!(resolved.api, "Array.prototype.find");
+  assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.args.len(), 1);
+  let recv = resolved.receiver.expect("receiver");
+  match &body.exprs[recv.0 as usize].kind {
+    ExprKind::Array(arr) => assert_eq!(
+      arr.elements.len(),
+      1,
+      "expected receiver to be the `[1]` array literal"
+    ),
+    other => panic!("expected receiver to be array literal, got {other:?}"),
+  }
 }
 
 #[cfg(feature = "typed")]

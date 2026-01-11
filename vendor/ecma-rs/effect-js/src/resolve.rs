@@ -349,6 +349,43 @@ pub fn resolve_call(
         args: arg0.into_iter().collect(),
       });
     }
+    ExprKind::PromiseRace { promises } => {
+      let api = db.get("Promise.race")?;
+
+      // `hir-js` lowers `Promise.race([..])` into `PromiseRace { promises }`,
+      // discarding the wrapper array-literal expression. Prefer to recover the
+      // original array argument so `ResolvedCall.args` remains consistent with
+      // the `CallExpr` representation (i.e. `Promise.race(<arg0>)`).
+      let span = (expr.span.start, expr.span.end);
+      let arg0 = body
+        .exprs
+        .iter()
+        .enumerate()
+        .find_map(|(idx, candidate)| {
+          if candidate.span.start < span.0 || candidate.span.end > span.1 {
+            return None;
+          }
+          let ExprKind::Array(arr) = &candidate.kind else {
+            return None;
+          };
+          let mut elements = Vec::with_capacity(arr.elements.len());
+          for element in arr.elements.iter() {
+            match element {
+              ArrayElement::Expr(expr) => elements.push(*expr),
+              ArrayElement::Empty | ArrayElement::Spread(_) => return None,
+            }
+          }
+          (elements == promises.as_slice()).then_some(ExprId(idx as u32))
+        });
+
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: ApiId::from_kb_name(&api.name),
+        receiver: None,
+        args: arg0.into_iter().collect(),
+      });
+    }
     ExprKind::ArrayMap { array, callback } => {
       let api = db.get(ApiId::ArrayPrototypeMap.as_str())?;
       return Some(ResolvedCall {
@@ -385,6 +422,48 @@ pub fn resolve_call(
         api_id: Some(ApiId::ArrayPrototypeReduce),
         receiver: Some(*array),
         args,
+      });
+    }
+    ExprKind::ArrayFind { array, callback } => {
+      let api = db.get("Array.prototype.find")?;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: ApiId::from_kb_name(&api.name),
+        receiver: Some(*array),
+        args: vec![*callback],
+      });
+    }
+    ExprKind::ArrayEvery { array, callback } => {
+      let api = db.get("Array.prototype.every")?;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: ApiId::from_kb_name(&api.name),
+        receiver: Some(*array),
+        args: vec![*callback],
+      });
+    }
+    ExprKind::ArraySome { array, callback } => {
+      let api = db.get("Array.prototype.some")?;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: ApiId::from_kb_name(&api.name),
+        receiver: Some(*array),
+        args: vec![*callback],
+      });
+    }
+    ExprKind::KnownApiCall { api, args } => {
+      let kb_id = knowledge_base::ApiId::from_raw(api.raw());
+      let api = db.get_by_id(kb_id)?;
+
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: ApiId::from_kb_name(&api.name),
+        receiver: None,
+        args: args.clone(),
       });
     }
     _ => {}
