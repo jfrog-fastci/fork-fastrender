@@ -26,7 +26,8 @@ without having to reverse-engineer assumptions from codegen.
 >   - retain the section + export `__fastr_stackmaps_start/__fastr_stackmaps_end`
 >     via a tiny linker-script fragment.
 >
-> See: `scripts/native_js_link_linux.sh` and `runtime-native/stackmaps.ld`.
+> See: `scripts/native_js_link_linux.sh` and `runtime-native/link/stackmaps.ld`
+> (`runtime-native/stackmaps.ld` is a compatibility alias).
 
 ## ABI header + external smoke test
 
@@ -382,10 +383,11 @@ The runtime assumes:
 - The compiler must keep `gc.relocate` results live (by using the relocated SSA
   values after the safepoint). If a relocation is DCE’d, LLVM may omit the
   corresponding pair from the stackmap.
-- **v1 limitation:** the runtime currently only supports the common case where
-  `base == derived` for all pairs (no derived / interior pointers live at the
-  safepoint). If LLVM emits `base != derived`, the runtime must reject the
-  stackmap record rather than tracing the derived address as a root.
+- Derived / interior pointers (`base != derived`) are supported:
+  - The runtime treats the **base slot** as the GC root (traced/relocated).
+  - If `base_slot != derived_slot`, the runtime preserves the interior offset and
+    updates the derived slot in-place after relocating the base slot:
+    `derived_new = base_new + (derived_old - base_old)` (with null preserved).
 - No non-pointer values are encoded as `"gc-live"` locations.
 
 See `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md` for the LLVM 18
@@ -423,13 +425,26 @@ They are defined by a small linker-script fragment (the `KEEP` is important so
 
 ```ld
 SECTIONS {
-  .llvm_stackmaps : ALIGN(8) {
+  /* Place stackmaps in RELRO-friendly data so PIE relocations don't require DT_TEXTREL. */
+  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     __start_llvm_stackmaps = .;
-    KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
+    __fastr_stackmaps_start = .;
+    __stackmaps_start = .;
+    __llvm_stackmaps_start = .;
+    KEEP(*(.data.rel.ro.llvm_stackmaps))
+    KEEP(*(.data.rel.ro.llvm_stackmaps.*))
+    KEEP(*(.llvm_stackmaps))
+    KEEP(*(.llvm_stackmaps.*))
     __stop_llvm_stackmaps = .;
+    __fastr_stackmaps_end = .;
+    __stackmaps_end = .;
+    __llvm_stackmaps_end = .;
   }
 } INSERT AFTER .text;
 ```
+
+When linking from Rust/Cargo, enabling the `runtime-native` crate feature
+`llvm_stackmaps_linker` on Linux injects this linker script automatically.
 
 Because these are normal ELF symbols, the dynamic loader applies any necessary
 relocations (PIE or non-PIE). The runtime can therefore read stackmap bytes

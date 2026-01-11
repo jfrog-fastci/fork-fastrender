@@ -321,6 +321,9 @@ Runtime contract:
   derived_new = base_new + delta
   ```
 
+  Null convention:
+  - if `base_old == 0` or `derived_old == 0`, `derived_new` is forced to `0` (null is preserved).
+
 If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
 1. Keep only the **base** pointer live across the safepoint (i.e. only base in `"gc-live"`).
@@ -490,6 +493,7 @@ Current runtime contract (v1):
   - The **base** slot is the GC root (traced/relocated).
   - The derived slot is updated after the base is relocated by preserving the interior offset:
     `derived_new = base_new + (derived_old - base_old)`.
+  - If `base_old == 0` or `derived_old == 0`, the derived slot is forced to `0` (null).
 
 Operationally, for each `(base, derived)` pair:
 
