@@ -57,6 +57,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
         effects.summary.throws = ThrowBehavior::Maybe;
       }
     }
+    InstTyp::Return => {}
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
