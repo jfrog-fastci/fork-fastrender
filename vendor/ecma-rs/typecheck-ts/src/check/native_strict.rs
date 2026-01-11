@@ -713,7 +713,9 @@ pub fn validate_native_strict_body(
                     }
 
                     if let Some(args_for_target) = args_for_target {
-                      let target_is_object_define_property = expr_is_builtin_member(
+                      let mut args_for_target = args_for_target;
+
+                      let mut target_is_object_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
                         global_this_name,
@@ -722,7 +724,7 @@ pub fn validate_native_strict_body(
                         define_property_name,
                         "defineProperty",
                       );
-                      let target_is_reflect_define_property = expr_is_builtin_member(
+                      let mut target_is_reflect_define_property = expr_is_builtin_member(
                         body,
                         target_arg,
                         global_this_name,
@@ -731,7 +733,7 @@ pub fn validate_native_strict_body(
                         define_property_name,
                         "defineProperty",
                       );
-                      let target_is_object_define_properties = expr_is_builtin_member(
+                      let mut target_is_object_define_properties = expr_is_builtin_member(
                         body,
                         target_arg,
                         global_this_name,
@@ -740,7 +742,7 @@ pub fn validate_native_strict_body(
                         define_properties_name,
                         "defineProperties",
                       );
-                      let target_is_object_assign = expr_is_builtin_member(
+                      let mut target_is_object_assign = expr_is_builtin_member(
                         body,
                         target_arg,
                         global_this_name,
@@ -749,6 +751,93 @@ pub fn validate_native_strict_body(
                         assign_name,
                         "assign",
                       );
+
+                      // `Function.prototype.call.call(Object.defineProperty.bind(...), ...)`
+                      // and friends: if the target is a bound builtin, evaluate the effective
+                      // arguments (`bound_args + call_args`) and apply the same prototype-mutation
+                      // heuristics.
+                      if !target_is_object_define_property
+                        && !target_is_reflect_define_property
+                        && !target_is_object_define_properties
+                        && !target_is_object_assign
+                      {
+                        if let Some(target_expr) = body.exprs.get(target_arg.0 as usize) {
+                          if let ExprKind::Call(bound_call) = &target_expr.kind {
+                            if !bound_call.is_new && !bound_call.args.iter().any(|arg| arg.spread) {
+                              if let Some(bound_callee) =
+                                body.exprs.get(bound_call.callee.0 as usize)
+                              {
+                                if let ExprKind::Member(bound_member) = &bound_callee.kind {
+                                  let prop_is_bind = object_key_is_ident(&bound_member.property, bind_name)
+                                    || object_key_is_string(&bound_member.property, "bind")
+                                    || object_key_is_literal_string(body, &bound_member.property, "bind");
+                                  if prop_is_bind {
+                                    let bound_is_object_define_property = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_property_name,
+                                      "defineProperty",
+                                    );
+                                    let bound_is_reflect_define_property = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      reflect_name,
+                                      "Reflect",
+                                      define_property_name,
+                                      "defineProperty",
+                                    );
+                                    let bound_is_object_define_properties = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_properties_name,
+                                      "defineProperties",
+                                    );
+                                    let bound_is_object_assign = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      assign_name,
+                                      "assign",
+                                    );
+                                    if bound_is_object_define_property
+                                      || bound_is_reflect_define_property
+                                      || bound_is_object_define_properties
+                                      || bound_is_object_assign
+                                    {
+                                      target_is_object_define_property = bound_is_object_define_property;
+                                      target_is_reflect_define_property = bound_is_reflect_define_property;
+                                      target_is_object_define_properties = bound_is_object_define_properties;
+                                      target_is_object_assign = bound_is_object_assign;
+
+                                      let mut prefix = Vec::new();
+                                      for arg in bound_call.args.iter().skip(1) {
+                                        // checked above: no spreads
+                                        prefix.push(arg.expr);
+                                      }
+                                      if !prefix.is_empty() {
+                                        let mut combined =
+                                          Vec::with_capacity(prefix.len() + args_for_target.len());
+                                        combined.extend(prefix);
+                                        combined.extend(args_for_target);
+                                        args_for_target = combined;
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
 
                       let mut is_proto_mutation = false;
                       if target_is_object_define_property || target_is_reflect_define_property {
@@ -1298,9 +1387,7 @@ pub fn validate_native_strict_body(
               if prop_is_call || prop_is_apply {
                 if let Some(bound_expr) = body.exprs.get(member.object.0 as usize) {
                   if let ExprKind::Call(bind_call) = &bound_expr.kind {
-                    if !bind_call.is_new
-                      && !bind_call.args.is_empty()
-                      && !bind_call.args.iter().any(|arg| arg.spread)
+                    if !bind_call.is_new && !bind_call.args.iter().any(|arg| arg.spread)
                     {
                       if let Some(bind_callee) = body.exprs.get(bind_call.callee.0 as usize) {
                         if let ExprKind::Member(bind_member) = &bind_callee.kind {
@@ -1538,9 +1625,7 @@ pub fn validate_native_strict_body(
             }
 
             if let ExprKind::Call(bound_call) = &callee.kind {
-              if !bound_call.is_new
-                && !bound_call.args.is_empty()
-                && !bound_call.args.iter().any(|arg| arg.spread)
+              if !bound_call.is_new && !bound_call.args.iter().any(|arg| arg.spread)
               {
                 if let Some(bound_callee) = body.exprs.get(bound_call.callee.0 as usize) {
                   if let ExprKind::Member(bound_member) = &bound_callee.kind {
@@ -1881,7 +1966,7 @@ pub fn validate_native_strict_body(
                         ));
                       }
 
-                      let called_target_is_object_define_property = expr_is_builtin_member(
+                      let mut called_target_is_object_define_property = expr_is_builtin_member(
                         body,
                         called_target,
                         global_this_name,
@@ -1890,7 +1975,7 @@ pub fn validate_native_strict_body(
                         define_property_name,
                         "defineProperty",
                       );
-                      let called_target_is_reflect_define_property = expr_is_builtin_member(
+                      let mut called_target_is_reflect_define_property = expr_is_builtin_member(
                         body,
                         called_target,
                         global_this_name,
@@ -1899,7 +1984,7 @@ pub fn validate_native_strict_body(
                         define_property_name,
                         "defineProperty",
                       );
-                      let called_target_is_object_define_properties = expr_is_builtin_member(
+                      let mut called_target_is_object_define_properties = expr_is_builtin_member(
                         body,
                         called_target,
                         global_this_name,
@@ -1908,7 +1993,7 @@ pub fn validate_native_strict_body(
                         define_properties_name,
                         "defineProperties",
                       );
-                      let called_target_is_object_assign = expr_is_builtin_member(
+                      let mut called_target_is_object_assign = expr_is_builtin_member(
                         body,
                         called_target,
                         global_this_name,
@@ -1917,6 +2002,87 @@ pub fn validate_native_strict_body(
                         assign_name,
                         "assign",
                       );
+
+                      let mut bound_prefix: Vec<hir_js::ExprId> = Vec::new();
+                      if !called_target_is_object_define_property
+                        && !called_target_is_reflect_define_property
+                        && !called_target_is_object_define_properties
+                        && !called_target_is_object_assign
+                      {
+                        if let Some(called_expr) = body.exprs.get(called_target.0 as usize) {
+                          if let ExprKind::Call(bound_call) = &called_expr.kind {
+                            if !bound_call.is_new
+                              && !bound_call.args.iter().any(|arg| arg.spread)
+                            {
+                              if let Some(bound_callee) =
+                                body.exprs.get(bound_call.callee.0 as usize)
+                              {
+                                if let ExprKind::Member(bound_member) = &bound_callee.kind {
+                                  let prop_is_bind =
+                                    object_key_is_ident(&bound_member.property, bind_name)
+                                      || object_key_is_string(&bound_member.property, "bind")
+                                      || object_key_is_literal_string(body, &bound_member.property, "bind");
+                                  if prop_is_bind {
+                                    let bound_is_object_define_property = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_property_name,
+                                      "defineProperty",
+                                    );
+                                    let bound_is_reflect_define_property = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      reflect_name,
+                                      "Reflect",
+                                      define_property_name,
+                                      "defineProperty",
+                                    );
+                                    let bound_is_object_define_properties = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      define_properties_name,
+                                      "defineProperties",
+                                    );
+                                    let bound_is_object_assign = expr_is_builtin_member(
+                                      body,
+                                      bound_member.object,
+                                      global_this_name,
+                                      object_name,
+                                      "Object",
+                                      assign_name,
+                                      "assign",
+                                    );
+                                    if bound_is_object_define_property
+                                      || bound_is_reflect_define_property
+                                      || bound_is_object_define_properties
+                                      || bound_is_object_assign
+                                    {
+                                      called_target_is_object_define_property =
+                                        bound_is_object_define_property;
+                                      called_target_is_reflect_define_property =
+                                        bound_is_reflect_define_property;
+                                      called_target_is_object_define_properties =
+                                        bound_is_object_define_properties;
+                                      called_target_is_object_assign = bound_is_object_assign;
+                                      for arg in bound_call.args.iter().skip(1) {
+                                        bound_prefix.push(arg.expr);
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+
                       if called_target_is_object_define_property
                         || called_target_is_reflect_define_property
                         || called_target_is_object_define_properties
@@ -1939,7 +2105,14 @@ pub fn validate_native_strict_body(
                           } else {
                             None
                           };
-                          if let Some(args_list) = args_for_target {
+                          if let Some(mut args_list) = args_for_target {
+                            if !bound_prefix.is_empty() {
+                              let mut combined =
+                                Vec::with_capacity(bound_prefix.len() + args_list.len());
+                              combined.extend(bound_prefix.iter().copied());
+                              combined.extend(args_list);
+                              args_list = combined;
+                            }
                             if let Some(target_obj) = args_list.first().copied() {
                               let mut is_proto_mutation = expr_chain_contains_proto_mutation(
                                 body,
@@ -2132,9 +2305,7 @@ pub fn validate_native_strict_body(
 
                   if let Some(target_expr) = body.exprs.get(target_arg.0 as usize) {
                     if let ExprKind::Call(bound_call) = &target_expr.kind {
-                      if !bound_call.is_new
-                        && !bound_call.args.is_empty()
-                        && !bound_call.args.iter().any(|arg| arg.spread)
+                      if !bound_call.is_new && !bound_call.args.iter().any(|arg| arg.spread)
                       {
                         if let Some(bound_callee) = body.exprs.get(bound_call.callee.0 as usize) {
                           if let ExprKind::Member(bound_member) = &bound_callee.kind {
