@@ -26,7 +26,7 @@ fn number_builtin_matches_string_to_number() {
 }
 
 #[test]
-fn bigint_and_string_comparisons_follow_string_to_bigint() {
+fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),
     &ConstStr("1".into())
@@ -43,9 +43,28 @@ fn bigint_and_string_comparisons_follow_string_to_bigint() {
     &ConstBigInt(BigInt::from(1)),
     &ConstStr("1n".into())
   ));
+}
+
+#[test]
+fn bigint_and_string_relational_comparisons_use_string_to_number() {
   assert_eq!(
     js_cmp(&ConstBigInt(BigInt::from(3)), &ConstStr(" 4 ".into())),
     Some(Ordering::Less)
+  );
+  assert_eq!(
+    js_cmp(&ConstBigInt(BigInt::from(3)), &ConstStr("4.5".into())),
+    Some(Ordering::Less)
+  );
+  assert_eq!(
+    js_cmp(&ConstStr("4.5".into()), &ConstBigInt(BigInt::from(3))),
+    Some(Ordering::Greater)
+  );
+  assert_eq!(
+    js_cmp(
+      &ConstBigInt(BigInt::from(3)),
+      &ConstStr("not a number".into())
+    ),
+    None
   );
 }
 

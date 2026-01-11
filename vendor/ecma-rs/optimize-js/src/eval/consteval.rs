@@ -412,8 +412,6 @@ fn const_to_js_string(value: &Const) -> String {
 pub fn js_cmp(a: &Const, b: &Const) -> Option<Ordering> {
   match (a, b) {
     (Str(a), Str(b)) => Some(a.cmp(b)),
-    (Str(a), BigInt(b)) => parse_bigint(a).map(|a| a.cmp(b)),
-    (BigInt(a), Str(b)) => parse_bigint(b).map(|b| a.cmp(&b)),
     (BigInt(a), BigInt(b)) => Some(a.cmp(b)),
     (BigInt(a), b) => bigint_number_cmp(a, coerce_to_num(b)),
     (a, BigInt(b)) => bigint_number_cmp(b, coerce_to_num(a)).map(Ordering::reverse),
