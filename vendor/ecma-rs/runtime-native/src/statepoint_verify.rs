@@ -12,12 +12,12 @@
 //! the verifier in [`VerifyMode::StatepointsOnly`].
 
 use crate::stackmaps::{
-  parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSize, StackSizeRecord,
-  STACKMAP_VERSION,
+  parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSize,
+  StackSizeRecord, STACKMAP_VERSION,
 };
 use crate::statepoints::{
-  AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointError, StatepointRecord, X86_64_DWARF_REG_FP,
-  X86_64_DWARF_REG_SP,
+  StatepointError, StatepointRecord, AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP,
+  X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 use std::error::Error;
 use std::fmt;
@@ -561,7 +561,7 @@ ensure LLVM codegen disables register roots at statepoints (e.g. \
         patchpoint_id,
         location_index,
         loc,
-        "expected Indirect SP-relative spill slot for GC root".to_string(),
+        "expected Indirect SP/FP-relative spill slot for GC root".to_string(),
       ))
     }
   };

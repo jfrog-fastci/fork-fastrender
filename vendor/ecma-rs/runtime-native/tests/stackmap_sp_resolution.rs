@@ -1,9 +1,16 @@
 //! Integration test for StackMap SP-relative location resolution.
 //!
 //! LLVM StackMap `Indirect [SP + off]` locations for statepoints are based on the
-//! *function's* SP at the safepoint (after prologue / local allocation). When
-//! walking frames via frame pointers we typically only have FP, so we need the
-//! StackMap function record's `stack_size` to reconstruct that SP.
+//! *function's* SP at the stackmap record PC (the callsite return address).
+//!
+//! In general, a function may adjust `SP` around a particular callsite (e.g. for
+//! outgoing stack arguments), so the StackMap function record's fixed `stack_size`
+//! is **not** sufficient to reconstruct the exact callsite `SP` in all cases.
+//!
+//! This test uses a minimal IR shape where the callsite `SP` matches the fixed
+//! frame size, and validates that `stack_size`-based normalization of
+//! `Indirect [SP + off]` locations to FP-relative offsets matches the machine
+//! code produced by LLVM.
 
 #![cfg(target_os = "linux")]
 
@@ -36,7 +43,9 @@ impl Arch {
 }
 
 fn run_success(cmd: &mut Command) {
-  let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
+  let out = cmd
+    .output()
+    .unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
   if !out.status.success() {
     panic!(
       "command failed: {cmd:?}\nstdout:\n{}\nstderr:\n{}",
@@ -47,7 +56,9 @@ fn run_success(cmd: &mut Command) {
 }
 
 fn capture_stdout(cmd: &mut Command) -> String {
-  let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
+  let out = cmd
+    .output()
+    .unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
   if !out.status.success() {
     panic!(
       "command failed: {cmd:?}\nstdout:\n{}\nstderr:\n{}",
@@ -293,7 +304,8 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch, opt: &str, llc: &str, obj
     "function record_count sum did not match records.len()"
   );
 
-  let (fp_off_from_stackmap, stack_size) = found.expect("failed to find a callsite with 1 root slot");
+  let (fp_off_from_stackmap, stack_size) =
+    found.expect("failed to find a callsite with 1 root slot");
 
   let mut objdump = Command::new(objdump);
   objdump.arg("-d").arg("--no-show-raw-insn");
@@ -304,7 +316,8 @@ fn assert_stackmap_fp_offsets_match_disasm(arch: Arch, opt: &str, llc: &str, obj
 
   let fp_off_from_disasm = disasm_fp_relative_slot_offset(arch, &disasm);
   assert_eq!(
-    fp_off_from_stackmap, fp_off_from_disasm,
+    fp_off_from_stackmap,
+    fp_off_from_disasm,
     "stackmap FP-relative offset does not match disassembly\narch={arch:?}\n\
      stack_size={}\n\
      frame_record_size={}\n\
