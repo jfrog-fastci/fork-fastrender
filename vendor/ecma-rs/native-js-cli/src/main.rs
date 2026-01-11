@@ -44,7 +44,8 @@ struct Cli {
   #[arg(long, value_name = "NAME", global = true)]
   entry_fn: Option<String>,
 
-  /// Disable recognizing builtin calls like `console.log`, `print`, and `assert`.
+  /// Disable recognizing builtin calls like `console.log`, `print`, and `assert` (only affects
+  /// `--pipeline project`).
   #[arg(long, global = true)]
   no_builtins: bool,
 
@@ -443,6 +444,10 @@ fn file_kind_for(path: &Path) -> FileKind {
 fn ensure_checked_pipeline_supported(cli: &Cli) {
   if cli.entry_fn.is_some() {
     eprintln!("--entry-fn is not supported with --pipeline checked (native-js uses `export function main()` as the entrypoint)");
+    exit(2);
+  }
+  if cli.no_builtins {
+    eprintln!("--no-builtins is not supported with --pipeline checked");
     exit(2);
   }
 }

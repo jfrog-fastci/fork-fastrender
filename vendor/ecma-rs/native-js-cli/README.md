@@ -199,6 +199,9 @@ and lowers a handful of builtins:
 Passing `--no-builtins` makes these calls fail with `builtins disabled` so you
 can test the non-builtin path.
 
+This flag is only supported with `--pipeline project` (the checked pipeline has
+different builtin handling).
+
 `console.log` / `print` formatting (current):
 
 - arguments are printed left-to-right, separated by a single space

@@ -520,6 +520,49 @@ fn checked_pipeline_run_prints_stdout() {
 }
 
 #[test]
+fn checked_pipeline_rejects_entry_fn_flag() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--entry-fn")
+    .arg("main")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains(
+      "--entry-fn is not supported with --pipeline checked",
+    ));
+}
+
+#[test]
+fn checked_pipeline_rejects_no_builtins_flag() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 0; }\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(60))
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("--no-builtins")
+    .arg("check")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains(
+      "--no-builtins is not supported with --pipeline checked",
+    ));
+}
+
+#[test]
 fn checked_pipeline_check_succeeds_on_simple_program() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
