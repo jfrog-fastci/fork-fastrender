@@ -17,6 +17,7 @@ members = [
   "knowledge-base",
   "effect-js",
   "emit-js",
+  "runtime-native",
   "vm-js",
   "runtime-js",
   "runtime-native",

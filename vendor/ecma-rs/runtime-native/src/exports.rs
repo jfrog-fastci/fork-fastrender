@@ -18,10 +18,10 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
 }
 
 /// GC safepoint.
-///
-/// Milestone-1 runtime: no-op.
 #[no_mangle]
-pub extern "C" fn rt_gc_safepoint() {}
+pub extern "C" fn rt_gc_safepoint() {
+  crate::threading::safepoint::rt_gc_safepoint();
+}
 
 /// Write barrier for GC.
 ///

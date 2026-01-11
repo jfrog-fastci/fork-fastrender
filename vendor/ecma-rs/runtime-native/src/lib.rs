@@ -10,6 +10,7 @@
 
 pub mod abi;
 pub mod gc;
+pub mod threading;
 
 mod alloc;
 mod async_rt;
@@ -25,6 +26,38 @@ pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
 pub use string::*;
+
+/// Request a stop-the-world GC safepoint.
+///
+/// Internal runtime hook; not a stable public API.
+#[doc(hidden)]
+pub fn rt_gc_request_stop_the_world() -> u64 {
+  threading::safepoint::rt_gc_request_stop_the_world()
+}
+
+/// Block until all registered threads are at a GC safepoint (or parked).
+///
+/// Internal runtime hook; not a stable public API.
+#[doc(hidden)]
+pub fn rt_gc_wait_for_world_stopped() {
+  threading::safepoint::rt_gc_wait_for_world_stopped()
+}
+
+/// Like [`rt_gc_wait_for_world_stopped`], but with a timeout.
+///
+/// Returns `true` if the world stopped in time, `false` otherwise.
+#[doc(hidden)]
+pub fn rt_gc_wait_for_world_stopped_timeout(timeout: std::time::Duration) -> bool {
+  threading::safepoint::rt_gc_wait_for_world_stopped_timeout(timeout)
+}
+
+/// Resume all threads after a stop-the-world GC safepoint.
+///
+/// Internal runtime hook; not a stable public API.
+#[doc(hidden)]
+pub fn rt_gc_resume_world() -> u64 {
+  threading::safepoint::rt_gc_resume_world()
+}
 
 #[cfg(test)]
 mod tests {
