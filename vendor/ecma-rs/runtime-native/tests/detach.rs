@@ -99,6 +99,8 @@ fn detach_while_typed_array_is_pinned_is_rejected() {
 
   let pinned_view = view.pin().expect("pin view should succeed");
   assert_eq!(buf.detach(), Err(ArrayBufferError::Pinned));
+  assert_eq!(buf.transfer().unwrap_err(), ArrayBufferError::Pinned);
+  assert_eq!(buf.resize(16), Err(ArrayBufferError::Pinned));
 
   drop(pinned_view);
   buf.detach().expect("detach after unpin should succeed");

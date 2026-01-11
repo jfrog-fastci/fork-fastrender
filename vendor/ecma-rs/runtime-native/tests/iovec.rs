@@ -150,6 +150,8 @@ mod unix {
 
     // Any pin guard (including those held by iovec descriptors) must block detach/transfer/resize.
     assert_eq!(buf.detach(), Err(ArrayBufferError::Pinned));
+    assert_eq!(buf.transfer().unwrap_err(), ArrayBufferError::Pinned);
+    assert_eq!(buf.resize(16), Err(ArrayBufferError::Pinned));
 
     drop(pinned);
     buf.detach().unwrap();

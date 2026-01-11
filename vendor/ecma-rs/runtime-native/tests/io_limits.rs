@@ -432,6 +432,7 @@ fn pins_block_detach_and_transfer_until_drop() {
 
   assert!(matches!(buf.detach(), Err(ArrayBufferError::Pinned)));
   assert!(matches!(buf.transfer(), Err(ArrayBufferError::Pinned)));
+  assert_eq!(buf.resize(16), Err(ArrayBufferError::Pinned));
 
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
