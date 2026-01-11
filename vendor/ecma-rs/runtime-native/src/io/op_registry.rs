@@ -114,12 +114,27 @@ impl CancellationToken {
     }
 
     let byte = [1u8; 1];
-    unsafe {
-      let _ = libc::write(
-        self.inner.write_fd.as_raw_fd(),
-        byte.as_ptr() as *const libc::c_void,
-        1,
-      );
+    loop {
+      let rc = unsafe {
+        libc::write(
+          self.inner.write_fd.as_raw_fd(),
+          byte.as_ptr() as *const libc::c_void,
+          1,
+        )
+      };
+      if rc == 1 {
+        break;
+      }
+      if rc == -1 {
+        let err = io::Error::last_os_error();
+        match err.kind() {
+          io::ErrorKind::Interrupted => continue,
+          // Nonblocking pipe buffer full: treat as coalesced wake-up.
+          io::ErrorKind::WouldBlock => break,
+          _ => break,
+        }
+      }
+      break;
     }
   }
 
@@ -144,6 +159,9 @@ impl CancellationToken {
         break;
       }
       let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
       if err.kind() == io::ErrorKind::WouldBlock {
         break;
       }
@@ -300,22 +318,29 @@ impl OpRegistry {
 
 #[cfg(unix)]
 fn cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-  unsafe {
-    let mut fds = [0i32; 2];
-    loop {
-      if libc::pipe(fds.as_mut_ptr()) == 0 {
-        break;
-      }
-      let err = io::Error::last_os_error();
-      if err.kind() == io::ErrorKind::Interrupted {
-        continue;
-      }
-      return Err(err);
+  let (read_fd, write_fd) = loop {
+    let mut fds = [-1i32; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc == 0 {
+      break (fds[0], fds[1]);
     }
-    set_nonblocking(fds[0])?;
-    set_nonblocking(fds[1])?;
-    Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])))
-  }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
+
+  // Wrap the fds immediately so they are closed if any subsequent fcntl call fails.
+  // SAFETY: `pipe` returns new, owned file descriptors on success.
+  let read = unsafe { OwnedFd::from_raw_fd(read_fd) };
+  let write = unsafe { OwnedFd::from_raw_fd(write_fd) };
+
+  set_nonblocking(read.as_raw_fd())?;
+  set_nonblocking(write.as_raw_fd())?;
+  set_cloexec(read.as_raw_fd())?;
+  set_cloexec(write.as_raw_fd())?;
+  Ok((read, write))
 }
 
 #[cfg(not(unix))]
@@ -342,6 +367,34 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
   loop {
     let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
     if rc >= 0 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  }
+  Ok(())
+}
+
+#[cfg(unix)]
+fn set_cloexec(fd: RawFd) -> io::Result<()> {
+  let flags = loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if rc != -1 {
+      break rc;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
+
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if rc != -1 {
       break;
     }
     let err = io::Error::last_os_error();
