@@ -27,6 +27,10 @@ jobs:
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
     runs-on: ubuntu-latest
+    # This workflow's scheduled runs primarily exist to keep the macOS kqueue backend
+    # continuously validated. Keep the Linux groundwork job opt-in on schedule to
+    # avoid burning CI minutes running the full vendored suite daily.
+    if: github.event_name != 'schedule'
     defaults:
       run:
         shell: bash
