@@ -77,3 +77,43 @@ bash scripts/cargo_agent.sh run -p diagnostics --example diagnostics_basic
 
 This prints a rendered diagnostic using [`SimpleFiles`](./src/files.rs) as the
 [`render::SourceProvider`](./src/render.rs) implementation.
+
+## UTF-8 source-text public API guard
+
+This repository enforces a simple invariant: **source text is UTF-8** once it
+crosses into our Rust APIs. Byte-to-text decoding (and validation) must happen
+at I/O boundaries (CLI file reads, network, etc.), not deep inside compiler
+crates.
+
+CI (and `cargo test -p diagnostics --test utf8_api_guard`) runs
+[`scripts/check_utf8_apis.sh`](../scripts/check_utf8_apis.sh), which:
+
+- flags new `pub` APIs that take `&[u8]` or `Vec<u8>` **as inputs** in crates
+  that operate on source text
+- allows `pub fn fuzz_*` entry points to take bytes (fuzzers operate on raw
+  bytes)
+- allows byte *output* buffers such as `&mut Vec<u8>`
+- intentionally does **not** scan `third_party/` or runtime crates where byte
+  buffers represent binary data (sockets, typed arrays, stackmaps, object files,
+  etc.)
+
+### In-scope crates
+
+The guard is directory-scoped for determinism and to avoid false positives from
+binary-oriented crates. The current scan set lives in
+[`scripts/check_utf8_apis.sh`](../scripts/check_utf8_apis.sh) and includes the
+`src/` trees of:
+
+- `parse-js`, `parse-js-cli`
+- `hir-js`
+- `typecheck-ts`, `typecheck-ts-cli`
+- `optimize-js`
+- `minify-js`, `minify-js-cli`
+- `semantic-js`
+- `emit-js`
+- `native-js` (excluding `native-js/src/link.rs`, which takes LLVM bitcode bytes)
+
+### Adding a new crate to the guard
+
+If you introduce a new crate that exposes source-text inputs, add its `src/`
+path to the `scoped_paths` list in `scripts/check_utf8_apis.sh`.
