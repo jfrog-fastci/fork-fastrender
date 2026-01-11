@@ -359,10 +359,16 @@ impl Inst {
   }
 
   pub fn var_assign(tgt: u32, arg: Arg) -> Self {
+    let value_type = match &arg {
+      Arg::Const(c) => ValueTypeSummary::from_const(c),
+      Arg::Fn(_) => ValueTypeSummary::FUNCTION,
+      _ => ValueTypeSummary::UNKNOWN,
+    };
     Self {
       t: InstTyp::VarAssign,
       tgts: vec![tgt],
       args: vec![arg],
+      value_type,
       ..Default::default()
     }
   }

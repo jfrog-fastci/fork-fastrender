@@ -264,7 +264,11 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         .insert(tgt, canonical_value.clone())
         .is_none());
       new_inst = Inst::var_assign(tgt, canonical_value);
-      new_inst.value_type = preserved_value_type;
+      // Prefer the original instruction's inferred type when it exists; otherwise
+      // keep the `VarAssign`'s default type (e.g. for constant-folded values).
+      if !preserved_value_type.is_unknown() {
+        new_inst.value_type = preserved_value_type;
+      }
       new_inst.meta = preserved_meta;
     } else {
       let pure_val = match new_inst.t {

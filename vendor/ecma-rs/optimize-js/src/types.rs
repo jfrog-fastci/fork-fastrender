@@ -12,7 +12,9 @@ pub enum Truthiness {
 ///
 /// This is intentionally a *lightweight* abstraction that `optimize-js` can
 /// preserve in the IR even when the full TypeScript type checker is not
-/// available at analysis time. In untyped builds values default to `Unknown`.
+/// available at analysis time. In untyped builds most values default to
+/// `Unknown`, but trivially-known values (e.g. literal constants) may still carry
+/// a precise summary.
 ///
 /// The representation is a bitmask so we can cheaply represent union types.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
