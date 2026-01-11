@@ -51,7 +51,28 @@ pub fn register_reactor_waker(waker: fn()) {
 /// - Before executing mutator code after un-parking, the thread must poll a
 ///   safepoint (e.g. via [`safepoint_poll`]).
 pub fn set_parked(parked: bool) {
-  let is_registered = registry::current_thread_state().is_some();
+  let thread = registry::current_thread_state();
+  let is_registered = thread.is_some();
+  if parked {
+    // A parked thread is treated as *already quiescent* by stop-the-world GC. That is only correct
+    // if there are no live GC pointers in registers/stack at this boundary.
+    //
+    // In Rust runtime code, temporary GC roots are tracked via the per-thread handle stack (see
+    // `roots::RootScope`). If any roots are present, the thread is holding GC pointers in local
+    // variables, which may also still be live in registers. Parking in that state would allow a
+    // moving GC to proceed without updating those registers, risking use-after-move corruption when
+    // the thread resumes from the blocking syscall/lock.
+    if let Some(thread) = &thread {
+      let len = thread.handle_stack_len();
+      debug_assert_eq!(
+        len,
+        0,
+        "thread {:?} attempted to park while holding {len} handle-stack roots; \
+         store GC references in RootHandles/RootRegistry (stable handles) before blocking",
+        thread.id()
+      );
+    }
+  }
   registry::set_current_thread_parked(parked);
   // Leaving the parked/idle state must immediately poll the safepoint barrier
   // so a thread that unblocks during an in-progress stop-the-world GC doesn't
