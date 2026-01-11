@@ -292,31 +292,107 @@ pub fn coerce_to_bool(v: &Const) -> bool {
 }
 
 fn number_to_js_string(value: f64) -> String {
+  // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
+  //
+  // This mirrors the minimal `Number::toString` implementation in `vm-js`. Using `JsNumber`'s
+  // `Display` formatting is incorrect here because it formats numeric *literals* (e.g. `Infinity` as
+  // `1e400`) rather than JS `ToString` (`"Infinity"`).
   if value.is_nan() {
-    return "NaN".into();
+    return "NaN".to_string();
   }
-  // `ToString(-0)` is `"0"`.
   if value == 0.0 {
-    return "0".into();
+    // Covers both +0 and -0.
+    return "0".to_string();
   }
   if value.is_infinite() {
     if value.is_sign_negative() {
-      return "-Infinity".into();
+      return "-Infinity".to_string();
+    } else {
+      return "Infinity".to_string();
     }
-    return "Infinity".into();
   }
 
-  let formatted = JN(value).to_string();
-  // `Number.prototype.toString` always includes an exponent sign (`e+10`, `e-10`).
-  if let Some((mantissa, exp)) = formatted.split_once('e') {
-    if exp.starts_with('-') {
-      formatted
+  let sign = if value.is_sign_negative() { "-" } else { "" };
+  let abs = value.abs();
+
+  // Use `ryu` only to get the digit + exponent decomposition; the final formatting rules match
+  // ECMAScript `Number::toString()` (not Rust's float formatting).
+  let mut buffer = ryu::Buffer::new();
+  let raw = buffer.format_finite(abs);
+  // `ryu` formats `1.0` as `"1.0"`, but ECMAScript `ToString(1)` is `"1"`.
+  let raw = raw.strip_suffix(".0").unwrap_or(raw);
+  let (digits, exp) = parse_ryu_to_decimal(raw);
+  let k = exp + digits.len() as i32;
+
+  let mut out = String::new();
+  out.push_str(sign);
+
+  if k > 0 && k <= 21 {
+    let k = k as usize;
+    if k >= digits.len() {
+      out.push_str(&digits);
+      out.extend(std::iter::repeat('0').take(k - digits.len()));
     } else {
-      format!("{mantissa}e+{exp}")
+      out.push_str(&digits[..k]);
+      out.push('.');
+      out.push_str(&digits[k..]);
     }
-  } else {
-    formatted
+    return out;
   }
+
+  if k <= 0 && k > -6 {
+    out.push_str("0.");
+    out.extend(std::iter::repeat('0').take((-k) as usize));
+    out.push_str(&digits);
+    return out;
+  }
+
+  // Exponential form.
+  let first = digits.as_bytes()[0] as char;
+  out.push(first);
+  if digits.len() > 1 {
+    out.push('.');
+    out.push_str(&digits[1..]);
+  }
+  out.push('e');
+  let exp = k - 1;
+  if exp >= 0 {
+    out.push('+');
+    out.push_str(&exp.to_string());
+  } else {
+    out.push('-');
+    out.push_str(&(-exp).to_string());
+  }
+  out
+}
+
+fn parse_ryu_to_decimal(raw: &str) -> (String, i32) {
+  // `raw` is expected to be ASCII and contain either:
+  // - digits with optional decimal point
+  // - digits with optional decimal point and a trailing `e[+-]?\d+`
+  //
+  // Returns `(digits, exp)` such that `value = digits × 10^exp` and `digits` contains no leading
+  // zeros.
+  let (mantissa, exp_part) = match raw.split_once('e') {
+    Some((mantissa, exp)) => (mantissa, Some(exp)),
+    None => (raw, None),
+  };
+
+  let mut exp: i32 = exp_part.map_or(0, |e| e.parse().unwrap_or(0));
+
+  let mut digits = String::with_capacity(mantissa.len());
+  if let Some((int_part, frac_part)) = mantissa.split_once('.') {
+    digits.push_str(int_part);
+    digits.push_str(frac_part);
+    exp -= frac_part.len() as i32;
+  } else {
+    digits.push_str(mantissa);
+  }
+
+  // Strip leading zeros introduced by `0.xxx` forms.
+  let trimmed = digits.trim_start_matches('0');
+  // `raw` comes from a non-zero number, so we should always have digits.
+  (trimmed.to_string(), exp)
 }
 
 fn const_to_js_string(value: &Const) -> String {

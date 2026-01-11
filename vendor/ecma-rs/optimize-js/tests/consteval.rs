@@ -158,6 +158,26 @@ fn string_concatenation_uses_js_to_string_for_numbers() {
     ),
     other => panic!("unexpected eval result for {large}: {other:?}"),
   }
+
+  // `NumberToString` uses decimal form for 1e20 but exponential form for 1e21.
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(1e20)), &empty),
+    Some(ConstStr("100000000000000000000".into()))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(1e21)), &empty),
+    Some(ConstStr("1e+21".into()))
+  );
+
+  // Scientific notation threshold is < 1e-6.
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(1e-6)), &empty),
+    Some(ConstStr("0.000001".into()))
+  );
+  assert_eq!(
+    maybe_eval_const_bin_expr(BinOp::Add, &ConstNum(JN(1e-7)), &empty),
+    Some(ConstStr("1e-7".into()))
+  );
 }
 
 #[test]
