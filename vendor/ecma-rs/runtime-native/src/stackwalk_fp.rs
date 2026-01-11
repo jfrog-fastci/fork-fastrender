@@ -102,6 +102,24 @@ pub enum WalkError {
   UnsupportedBaseRegister { return_addr: u64, dwarf_reg: u16 },
   #[error("stackmap root address overflow: base={base:#x} offset={offset}")]
   RootAddressOverflow { base: u64, offset: i32 },
+
+  #[error(
+    "derived pointer delta overflow at return address {return_addr:#x} (base=0x{base_val:x} derived=0x{derived_val:x})"
+  )]
+  DerivedPointerDeltaOverflow {
+    return_addr: u64,
+    base_val: u64,
+    derived_val: u64,
+  },
+
+  #[error(
+    "derived pointer relocation overflow at return address {return_addr:#x} (relocated_base=0x{base_val:x} delta={delta})"
+  )]
+  DerivedPointerRelocationOverflow {
+    return_addr: u64,
+    base_val: u64,
+    delta: i64,
+  },
 }
 
 const MAX_FRAMES: usize = 100_000;
@@ -123,9 +141,12 @@ const MAX_FRAMES: usize = 100_000;
 ///   register locations (`Register R#N`), which require rewriting the stopped
 ///   thread's register file when resuming (see `statepoints::RootSlot` and the
 ///   `stackmap-context` crate).
-/// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`)
-///   are currently **rejected**. Codegen should ensure interior pointers are not
-///   live across statepoints.
+/// - Derived pointers (statepoint `(base, derived)` pairs) are supported. The
+///   walker visits only the **base** root slots (for tracing) and then updates
+///   each derived slot in-place after the base slot has potentially been
+///   relocated:
+///
+///   `derived_new = relocated_base + (derived_old - base_old)`
 ///
 /// ## Statepoint-oriented walking
 ///
@@ -357,26 +378,61 @@ fn enumerate_roots_for_frame(
 
   // Collect + dedup within this frame to avoid double-visiting the same slot
   // (LLVM can emit duplicated locations for relocated values).
-  let mut slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pair_count());
+  //
+  // For each `(base, derived)` pair, we always visit the base root slot. If the
+  // derived value is stored in a distinct slot, we compute its byte delta from
+  // the base value and update it after the base has been relocated by the
+  // callback.
+  let mut base_slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pair_count());
+  let mut derived_fixups: Vec<(u64, u64, i64)> = Vec::new(); // (base_slot, derived_slot, delta)
   for (base, derived) in statepoint.gc_pairs() {
-    // If base != derived, LLVM is describing an interior/derived pointer. We
-    // currently don't implement derived-pointer relocation, so fail fast to
-    // avoid silent GC corruption.
-    if base != derived {
-      return Err(WalkError::DerivedPointerNotSupported {
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, base)?;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, derived)?;
+    base_slots.push(base_slot);
+
+    if base_slot != derived_slot {
+      let base_val = unsafe { read_u64(base_slot) };
+      let derived_val = unsafe { read_u64(derived_slot) };
+      let delta_i128 = (derived_val as i128) - (base_val as i128);
+      let delta = i64::try_from(delta_i128).map_err(|_| WalkError::DerivedPointerDeltaOverflow {
         return_addr: caller_ra,
-        base: base.clone(),
-        derived: derived.clone(),
-      });
+        base_val,
+        derived_val,
+      })?;
+      derived_fixups.push((base_slot, derived_slot, delta));
+    }
+  }
+  base_slots.sort_unstable();
+  base_slots.dedup();
+
+  // Deterministic ordering + avoid double-updating the same derived slot.
+  derived_fixups.sort_unstable_by_key(|(base, derived, _)| (*base, *derived));
+  derived_fixups.dedup_by_key(|(base, derived, _)| (*base, *derived));
+
+  let mut fixup_idx = 0usize;
+  for base_slot in base_slots {
+    visit(base_slot as *mut u8);
+
+    // Apply any derived fixups that use this base slot.
+    while fixup_idx < derived_fixups.len() && derived_fixups[fixup_idx].0 < base_slot {
+      fixup_idx += 1;
+    }
+    if fixup_idx >= derived_fixups.len() || derived_fixups[fixup_idx].0 != base_slot {
+      continue;
     }
 
-    slots.push(eval_root_location(caller_fp, caller_sp, caller_ra, base)?);
-  }
-  slots.sort_unstable();
-  slots.dedup();
-
-  for slot_addr in slots {
-    visit(slot_addr as *mut u8);
+    let relocated_base_val = unsafe { read_u64(base_slot) };
+    while fixup_idx < derived_fixups.len() && derived_fixups[fixup_idx].0 == base_slot {
+      let (_base_slot, derived_slot, delta) = derived_fixups[fixup_idx];
+      let new_derived =
+        add_signed_u64_i64(relocated_base_val, delta).ok_or(WalkError::DerivedPointerRelocationOverflow {
+          return_addr: caller_ra,
+          base_val: relocated_base_val,
+          delta,
+        })?;
+      unsafe { write_u64(derived_slot, new_derived) };
+      fixup_idx += 1;
+    }
   }
 
   Ok(())
@@ -426,6 +482,20 @@ unsafe fn read_u64(addr: u64) -> u64 {
   // FP slots are naturally aligned, but use unaligned reads so synthetic tests
   // don't have to care.
   (addr as *const u64).read_unaligned()
+}
+
+#[inline]
+unsafe fn write_u64(addr: u64, val: u64) {
+  (addr as *mut u64).write_unaligned(val);
+}
+
+fn add_signed_u64_i64(base: u64, offset: i64) -> Option<u64> {
+  if offset >= 0 {
+    base.checked_add(offset as u64)
+  } else {
+    let abs = offset.checked_abs()? as u64;
+    base.checked_sub(abs)
+  }
 }
 
 #[inline]

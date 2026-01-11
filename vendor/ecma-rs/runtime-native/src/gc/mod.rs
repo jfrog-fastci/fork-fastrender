@@ -33,7 +33,9 @@ pub(crate) use young::YOUNG_SPACE;
 /// interner) that need a stable, aligned `TypeDescriptor::size`.
 #[inline]
 pub(crate) fn align_up(value: usize, align: usize) -> usize {
-  debug_assert!(align.is_power_of_two());
+  if align == 0 || !align.is_power_of_two() {
+    trap::rt_trap_invalid_arg("align_up: align must be a non-zero power of two");
+  }
   value
     .checked_add(align - 1)
     .map(|v| v & !(align - 1))

@@ -109,8 +109,8 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn derived_pointers_fail_fast() {
-  use runtime_native::WalkError;
+fn derived_pointers_are_relocated_from_base() {
+  use std::collections::BTreeSet;
 
   let bytes = build_stackmaps_with_derived_pointer();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
@@ -136,11 +136,46 @@ fn derived_pointers_fail_fast() {
   }
 
   let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
-  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
-  match res {
-    Err(WalkError::DerivedPointerNotSupported { .. }) => {}
-    other => panic!("expected DerivedPointerNotSupported, got {other:?}"),
+
+  // Populate the base and derived *value* slots described by the stackmap.
+  //
+  // Stackmap uses:
+  //   base   = [SP + 0]
+  //   derived = [SP + 8]
+  let base_val = Box::into_raw(Box::new(0u8)) as u64;
+  let delta = 8u64;
+  unsafe {
+    write_u64(caller_sp + 0, base_val);
+    write_u64(caller_sp + 8, base_val + delta);
   }
+
+  let mut visited = BTreeSet::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.insert(slot as usize);
+
+      // Simulate a moving GC by "relocating" the base pointer in-place. The stack walker should
+      // then update the derived slot to preserve the original offset.
+      let slot_ptr = slot as *mut *mut u8;
+      let old = slot_ptr.read() as u64;
+      let new = old + 0x1000;
+      slot_ptr.write(new as *mut u8);
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
+  assert!(
+    visited.contains(&(caller_sp + 0)),
+    "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
+    caller_sp
+  );
+
+  // Derived slot should have been updated based on the relocated base value.
+  let base_after = unsafe { read_u64(caller_sp + 0) };
+  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  assert_eq!(base_after, base_val + 0x1000);
+  assert_eq!(derived_after, (base_val + 0x1000) + delta);
 }
 
 fn align_up(v: usize, align: usize) -> usize {
@@ -149,6 +184,10 @@ fn align_up(v: usize, align: usize) -> usize {
 
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
+}
+
+unsafe fn read_u64(addr: usize) -> u64 {
+  (addr as *const u64).read_unaligned()
 }
 
 fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
@@ -164,8 +203,8 @@ fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
   // Minimal stackmap section containing one callsite record with one derived
   // pointer pair (base and derived refer to different stack slots).
   //
-  // This is used to assert the stack walker fails fast rather than treating a
-  // derived pointer like an independent GC root slot.
+  // This is used to assert the stack walker can relocate derived pointers after
+  // the base slot has been updated by a moving collector.
   let mut out = Vec::new();
 
   // Header.
