@@ -2031,6 +2031,7 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
+
 fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option<Arc<ComputedStyle>> {
   // Multiple box nodes can map back to the same styled node id (e.g. anonymous wrappers,
   // fragmentation, etc). For interaction purposes we only need a representative computed style
@@ -3855,7 +3856,7 @@ impl InteractionEngine {
             .unwrap_or_else(|| inferred_text_direction_from_dom(&index, focused));
 
           let selection = edit.selection();
- 
+
           // Ensure the shaping style has a direction even when we don't have computed layout style.
           let mut default_style = ComputedStyle::default();
           default_style.direction = base_dir;
