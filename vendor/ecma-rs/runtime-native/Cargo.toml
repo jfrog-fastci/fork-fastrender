@@ -17,6 +17,9 @@ crate-type = ["rlib", "staticlib"]
 # `.llvm_stackmaps` section, and missing symbols would otherwise fail the link.
 llvm_stackmaps_linker = []
 gc_stats = []
+# Enables expensive GC verification helpers (heap integrity checks, forwarding verification,
+# nursery poisoning) intended for tests and debugging.
+gc_debug = []
 
 [dependencies]
 ahash = { workspace = true }

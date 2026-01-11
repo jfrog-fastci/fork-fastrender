@@ -213,3 +213,6 @@ pub(crate) unsafe fn for_each_ptr_slot(mut obj: *mut u8, mut f: impl FnMut(*mut 
     f(slot);
   }
 }
+
+#[cfg(any(debug_assertions, feature = "gc_debug"))]
+mod verify;

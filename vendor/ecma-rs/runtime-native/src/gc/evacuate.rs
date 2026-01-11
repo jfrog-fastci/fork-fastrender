@@ -20,8 +20,18 @@ impl GcHeap {
   pub fn collect_minor(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
     self.stats.minor_collections += 1;
 
+    // Snapshot nursery usage so we can optionally poison the previously-used
+    // region after `reset` (helps surface stale nursery pointers quickly).
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    let nursery_poison_len = self.nursery.allocated_bytes();
+
     {
-      let mut evac = Evacuator { heap: self, worklist: VecDeque::new() };
+      let mut evac = Evacuator {
+        heap: self,
+        worklist: VecDeque::new(),
+        #[cfg(any(debug_assertions, feature = "gc_debug"))]
+        forwarded: Vec::new(),
+      };
 
       roots.for_each_root_slot(&mut |slot| {
         evac.visit_slot(slot);
@@ -34,6 +44,9 @@ impl GcHeap {
       while let Some(obj) = evac.worklist.pop_front() {
         evac.visit_obj(obj);
       }
+
+      #[cfg(any(debug_assertions, feature = "gc_debug"))]
+      evac.heap.verify_forwarding_pairs(&evac.forwarded);
     }
 
     // All nursery pointers reachable from roots/remembered objects should now be
@@ -46,6 +59,10 @@ impl GcHeap {
     unsafe {
       self.nursery.reset();
     }
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    unsafe {
+      ptr::write_bytes(self.nursery.start(), 0xDD, nursery_poison_len);
+    }
     remembered.clear();
     run_weak_cleanups(self);
   }
@@ -54,6 +71,8 @@ impl GcHeap {
 struct Evacuator<'a> {
   heap: &'a mut GcHeap,
   worklist: VecDeque<*mut u8>,
+  #[cfg(any(debug_assertions, feature = "gc_debug"))]
+  forwarded: Vec<(*mut u8, *mut u8)>,
 }
 
 impl Evacuator<'_> {
@@ -74,6 +93,8 @@ impl Evacuator<'_> {
 
       ptr::copy_nonoverlapping(obj, new_obj, size);
       header.set_forwarding_ptr(new_obj);
+      #[cfg(any(debug_assertions, feature = "gc_debug"))]
+      self.forwarded.push((obj, new_obj));
 
       self.worklist.push_back(new_obj);
       new_obj

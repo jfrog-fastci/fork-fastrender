@@ -182,6 +182,9 @@ impl GcHeap {
   }
 
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    super::verify::register_type_descriptor(desc);
+
     let obj = self
       .nursery_tlab
       .alloc(desc.size, OBJ_ALIGN, &self.nursery)
@@ -202,6 +205,9 @@ impl GcHeap {
   }
 
   pub fn alloc_old(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    super::verify::register_type_descriptor(desc);
+
     let obj = self.alloc_old_raw(desc.size, OBJ_ALIGN);
 
     // SAFETY: The allocation is valid for `desc.size` bytes.
