@@ -107,25 +107,40 @@ impl<R> IoOp<R> {
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
+    use std::mem;
     use std::os::fd::RawFd;
     use std::sync::Weak;
 
     use io_uring::{opcode, types, IoUring};
 
     pub struct IoUringDriver {
-        ring: IoUring,
+        ring: Option<IoUring>,
         next_id: u64,
-        in_flight: HashMap<u64, Box<dyn FnOnce(i32) + Send + 'static>>,
+        in_flight: Option<HashMap<u64, Box<dyn FnOnce(i32) + Send + 'static>>>,
     }
 
     impl IoUringDriver {
         /// Create a new `io_uring` instance.
         pub fn new(entries: u32) -> io::Result<Self> {
             Ok(Self {
-                ring: IoUring::new(entries)?,
+                ring: Some(IoUring::new(entries)?),
                 next_id: 1,
-                in_flight: HashMap::new(),
+                in_flight: Some(HashMap::new()),
             })
+        }
+
+        fn ring(&mut self) -> &mut IoUring {
+            self.ring
+                .as_mut()
+                .expect("IoUringDriver used after drop (ring already taken)")
+        }
+
+        fn in_flight(
+            &mut self,
+        ) -> &mut HashMap<u64, Box<dyn FnOnce(i32) + Send + 'static>> {
+            self.in_flight
+                .as_mut()
+                .expect("IoUringDriver used after drop (in_flight already taken)")
         }
 
         fn alloc_id(&mut self) -> OpId {
@@ -136,7 +151,7 @@ mod imp {
 
         fn push_entry(&mut self, entry: &io_uring::squeue::Entry) -> io::Result<()> {
             unsafe {
-                self.ring
+                self.ring()
                     .submission()
                     .push(entry)
                     .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring SQ is full"))?;
@@ -163,7 +178,7 @@ mod imp {
 
             self.push_entry(&entry)?;
 
-            self.in_flight.insert(
+            self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
                     if let Some(shared) = weak.upgrade() {
@@ -173,7 +188,7 @@ mod imp {
             );
 
             // Flush SQEs into the kernel.
-            self.ring.submit()?;
+            self.ring().submit()?;
 
             Ok(IoOp { id, shared })
         }
@@ -197,7 +212,7 @@ mod imp {
 
             self.push_entry(&entry)?;
 
-            self.in_flight.insert(
+            self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
                     if let Some(shared) = weak.upgrade() {
@@ -206,7 +221,7 @@ mod imp {
                 }),
             );
 
-            self.ring.submit()?;
+            self.ring().submit()?;
 
             Ok(IoOp { id, shared })
         }
@@ -225,7 +240,7 @@ mod imp {
                 .user_data(id.0);
             self.push_entry(&entry)?;
 
-            self.in_flight.insert(
+            self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
                     if let Some(shared) = weak.upgrade() {
@@ -234,19 +249,28 @@ mod imp {
                 }),
             );
 
-            self.ring.submit()?;
+            self.ring().submit()?;
 
             Ok(IoOp { id, shared })
         }
 
         /// Process all currently-available CQEs without blocking.
         pub fn poll_completions(&mut self) -> io::Result<usize> {
+            let ring = self
+                .ring
+                .as_mut()
+                .expect("IoUringDriver used after drop (ring already taken)");
+            let in_flight = self
+                .in_flight
+                .as_mut()
+                .expect("IoUringDriver used after drop (in_flight already taken)");
+
             let mut n = 0usize;
-            let mut cq = self.ring.completion();
+            let mut cq = ring.completion();
             while let Some(cqe) = cq.next() {
                 let id = cqe.user_data();
                 let result = cqe.result();
-                if let Some(complete) = self.in_flight.remove(&id) {
+                if let Some(complete) = in_flight.remove(&id) {
                     complete(result);
                 }
                 n += 1;
@@ -260,8 +284,45 @@ mod imp {
             if n != 0 {
                 return Ok(n);
             }
-            self.ring.submit_and_wait(1)?;
+            self.ring().submit_and_wait(1)?;
             self.poll_completions()
+        }
+    }
+
+    impl Drop for IoUringDriver {
+        fn drop(&mut self) {
+            // Best-effort: process any already-ready CQEs so completed ops don't force a leak.
+            let _ = self.poll_completions();
+
+            let in_flight_non_empty = self
+                .in_flight
+                .as_ref()
+                .is_some_and(|m| !m.is_empty());
+            if in_flight_non_empty {
+                // Safety: dropping an io_uring instance while the kernel still has in-flight ops
+                // can lead to use-after-free on both:
+                // - the ring's shared memory mappings (CQE writes), and
+                // - user-provided buffer pointers.
+                //
+                // Leak the ring and the in-flight op resources to preserve memory safety. This
+                // should only happen if the driver is dropped without driving it to completion.
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "runtime-io-uring: dropping IoUringDriver with {} in-flight ops; leaking ring + buffers",
+                    self.in_flight.as_ref().map_or(0, |m| m.len())
+                );
+                if let Some(ring) = self.ring.take() {
+                    mem::forget(ring);
+                }
+                if let Some(in_flight) = self.in_flight.take() {
+                    mem::forget(in_flight);
+                }
+                return;
+            }
+
+            // No in-flight ops left; drop normally.
+            let _ = self.in_flight.take();
+            let _ = self.ring.take();
         }
     }
 }
