@@ -241,12 +241,28 @@ impl TaskState {
 
     // Update `done` while holding the mutex to avoid lost wake-ups between the
     // joiner checking the flag and beginning to wait on the condvar.
-    let _guard = self
-      .done_lock
-      .lock()
-      .unwrap_or_else(|_| std::process::abort());
-    self.done.store(true, Ordering::Release);
-    self.done_cv.notify_all();
+    // If we contend on the completion mutex, enter a GC-safe region while waiting so stop-the-world
+    // coordination doesn't deadlock on a thread blocked in `Mutex::lock`.
+    //
+    // Keep the GC-safe guard alive until after the mutex is released: dropping `GcSafeGuard` may
+    // block while a stop-the-world is active.
+    let mut gc_safe: Option<threading::GcSafeGuard> = None;
+    {
+      let _guard = match self.done_lock.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::WouldBlock) => {
+          gc_safe = Some(threading::enter_gc_safe_region());
+          self
+            .done_lock
+            .lock()
+            .unwrap_or_else(|_| std::process::abort())
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => std::process::abort(),
+      };
+      self.done.store(true, Ordering::Release);
+      self.done_cv.notify_all();
+    }
+    drop(gc_safe);
   }
 }
 
