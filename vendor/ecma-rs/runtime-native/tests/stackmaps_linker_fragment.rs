@@ -52,7 +52,7 @@ fn compile_obj(out_dir: &Path) -> PathBuf {
  .text
  .globl _start
  _start:
-   mov $60, %rax
+    mov $60, %rax
    xor %rdi, %rdi
    syscall
 

@@ -606,11 +606,11 @@ They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
 - `runtime-native/link/stackmaps.ld` (lld-friendly, inserted `AFTER .text`)
-- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening; avoids RWX text segments)
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE/DSO hardening; avoids RWX text segments)
 
 ```ld
 SECTIONS {
-  /* Place stackmaps in RELRO-friendly data so PIE relocations don't require DT_TEXTREL. */
+  /* Place stackmaps in writable data so PIE/DSO relocations don't require DT_TEXTREL. */
   .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
@@ -672,9 +672,11 @@ size_t len = (size_t)(end - start);
 `len == 0` means no stackmaps were linked in (e.g. the program contains no
 statepoints); treat that as “stackmaps unavailable”.
 
-Note: some toolchains will warn about `TEXTREL` when producing PIE binaries if
-`.llvm_stackmaps` ends up requiring runtime relocations; using `-no-pie` avoids
-this in a minimal LLVM 18 experiment.
+Note: PIE binaries require runtime relocations for stackmap function addresses.
+If stackmaps live in a read-only/executable segment, GNU ld can emit `DT_TEXTREL`
+(and lld may reject the link). The repo's native link helpers rewrite input
+objects to use `.data.rel.ro.llvm_stackmaps` and inject the linker fragment to
+avoid `DT_TEXTREL`; see `docs/native_stackmaps.md`.
 
 ### 5.4 Stackmap binary format (LLVM StackMap v3)
 The runtime must parse the `.llvm_stackmaps` section to map an instruction
