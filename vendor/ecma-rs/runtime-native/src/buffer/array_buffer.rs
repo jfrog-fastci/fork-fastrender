@@ -330,7 +330,10 @@ struct GcArrayBuffer {
   buf: ArrayBuffer,
 }
 
-static GC_ARRAY_BUFFER_DESC: TypeDescriptor = TypeDescriptor::new(core::mem::size_of::<GcArrayBuffer>(), &[]);
+// IMPORTANT: `ArrayBuffer.backing_store` points to non-GC memory (malloc/mmap) and must never be
+// treated as a GC reference. That means this descriptor must contain **no** pointer offsets.
+static GC_ARRAY_BUFFER_DESC: TypeDescriptor =
+  TypeDescriptor::new(core::mem::size_of::<GcArrayBuffer>(), &[]);
 
 unsafe fn finalize_gc_array_buffer(heap: &mut GcHeap, obj: *mut u8) {
   // SAFETY: `obj` points at a `GcArrayBuffer` allocation.
@@ -353,5 +356,19 @@ impl GcHeap {
 
     self.register_finalizer(obj, finalize_gc_array_buffer);
     Ok(obj)
+  }
+}
+
+#[cfg(test)]
+mod gc_trace_tests {
+  use super::*;
+
+  #[test]
+  fn arraybuffer_backing_store_is_not_a_gc_traced_field() {
+    let backing_store_off = (OBJ_HEADER_SIZE + core::mem::offset_of!(ArrayBuffer, backing_store)) as u32;
+    assert!(
+      !GC_ARRAY_BUFFER_DESC.ptr_offsets().contains(&backing_store_off),
+      "ArrayBuffer.backing_store must never be included in GC trace maps"
+    );
   }
 }

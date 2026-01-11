@@ -224,6 +224,22 @@ pub fn build_statepoint_call_indirect<'ctx>(
   gc_live: &[PointerValue<'ctx>],
   name: &str,
 ) -> LLVMValueRef {
+  // Statepoint "gc-live" lists must contain only GC pointers (`ptr addrspace(1)` in this project).
+  // Accidentally including a raw/external pointer here is catastrophic: `gc.relocate` may rewrite it
+  // to an unrelated GC object address.
+  for p in gc_live {
+    unsafe {
+      let ty = LLVMTypeOf(p.as_value_ref());
+      let aspace = LLVMGetPointerAddressSpace(ty);
+      assert_eq!(
+        aspace,
+        super::gc::GC_ADDR_SPACE,
+        "gc-live operand must be `ptr addrspace({})`, got addrspace({aspace})",
+        super::gc::GC_ADDR_SPACE
+      );
+    }
+  }
+
   assert!(
     config.flags <= 3,
     "LLVM 18 accepts only gc.statepoint flags in range 0..=3 (two-bit mask); got {}",

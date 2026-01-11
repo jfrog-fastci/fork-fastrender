@@ -52,8 +52,7 @@ use llvm_sys::core::{
   LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
   LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetModuleContext,
   LLVMGlobalGetValueType, LLVMInt32TypeInContext, LLVMInt64TypeInContext,
-  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMLookupIntrinsicID, LLVMSetInstructionCallConv,
-  LLVMTypeOf,
+  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMLookupIntrinsicID, LLVMSetInstructionCallConv, LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef};
 use llvm_sys::LLVMCallConv;
@@ -243,6 +242,26 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     live_gc_ptrs: &[LiveGcPtr<'ctx>],
     ret_ty: Option<BasicTypeEnum<'ctx>>,
   ) -> (Option<BasicValueEnum<'ctx>>, Vec<PointerValue<'ctx>>) {
+    // Protect against catastrophic miscompiles: only `ptr addrspace(1)` values are allowed to
+    // participate in relocation. Raw/external pointers (malloc/mmap backing stores, iovecs, etc.)
+    // must remain `ptr` (addrspace(0)) and must never be fed into `gc.relocate`.
+    for live in live_gc_ptrs {
+      unsafe {
+        let base_ty = LLVMTypeOf(live.base.as_value_ref());
+        let derived_ty = LLVMTypeOf(live.derived.as_value_ref());
+        assert!(
+          LLVMGetTypeKind(base_ty) == LLVMTypeKind::LLVMPointerTypeKind
+            && LLVMGetPointerAddressSpace(base_ty) == GC_ADDR_SPACE,
+          "LiveGcPtr.base must be a `ptr addrspace({GC_ADDR_SPACE})`"
+        );
+        assert!(
+          LLVMGetTypeKind(derived_ty) == LLVMTypeKind::LLVMPointerTypeKind
+            && LLVMGetPointerAddressSpace(derived_ty) == GC_ADDR_SPACE,
+          "LiveGcPtr.derived must be a `ptr addrspace({GC_ADDR_SPACE})`"
+        );
+      }
+    }
+
     let i64_ty = unsafe { LLVMInt64TypeInContext(self.context) };
     let i32_ty = unsafe { LLVMInt32TypeInContext(self.context) };
 
@@ -407,6 +426,82 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     }
 
     (ret_val, relocated)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::llvm::gc;
+  use inkwell::context::Context;
+  use inkwell::AddressSpace;
+
+  #[test]
+  fn statepoint_gc_live_excludes_raw_ptrs() {
+    let ctx = Context::create();
+    let module = ctx.create_module("gc_live_smoke");
+    let builder = ctx.create_builder();
+
+    let gc_ptr_ty = gc::gc_ptr_type(&ctx);
+    let raw_ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // Dummy callee taking both a GC pointer and a raw pointer.
+    let callee_ty = ctx
+      .void_type()
+      .fn_type(&[gc_ptr_ty.into(), raw_ptr_ty.into()], false);
+    let callee_fn = module.add_function("dummy", callee_ty, None);
+
+    // Caller is a GC-managed function; we emit a statepointed call to `dummy`.
+    let caller_ty = ctx
+      .void_type()
+      .fn_type(&[gc_ptr_ty.into(), raw_ptr_ty.into()], false);
+    let caller = module.add_function("caller", caller_ty, None);
+    gc::set_default_gc_strategy(&caller).expect("set gc strategy");
+    let entry = ctx.append_basic_block(caller, "entry");
+    builder.position_at_end(entry);
+
+    let gc_arg = caller
+      .get_nth_param(0)
+      .expect("gc")
+      .into_pointer_value();
+    gc_arg.set_name("gc");
+    let raw_arg = caller
+      .get_nth_param(1)
+      .expect("raw")
+      .into_pointer_value();
+    raw_arg.set_name("raw");
+
+    let callee = StatepointCallee::new(callee_fn.as_global_value().as_pointer_value(), callee_fn.get_type());
+    let call_args: [BasicMetadataValueEnum<'_>; 2] = [gc_arg.into(), raw_arg.into()];
+
+    let mut intrinsics = StatepointIntrinsics::new(&module);
+    intrinsics.emit_statepoint_call(&builder, callee, &call_args, &[], None);
+
+    builder.build_return(None).expect("ret");
+
+    if let Err(err) = module.verify() {
+      panic!(
+        "LLVM module verification failed: {err}\n\nIR:\n{}",
+        module.print_to_string()
+      );
+    }
+
+    let ir = module.print_to_string().to_string();
+    let statepoint_line = ir
+      .lines()
+      .find(|line| line.contains("gc.statepoint") && line.contains("\"gc-live\""))
+      .expect("expected a gc.statepoint line with gc-live bundle");
+    let live_sub = &statepoint_line[statepoint_line
+      .find("\"gc-live\"")
+      .expect("gc-live bundle")..];
+    assert!(
+      live_sub.contains("%gc"),
+      "expected gc pointer to appear in gc-live bundle: {statepoint_line}"
+    );
+    assert!(
+      !live_sub.contains("%raw"),
+      "raw pointers must not appear in gc-live bundle: {statepoint_line}"
+    );
   }
 }
 
