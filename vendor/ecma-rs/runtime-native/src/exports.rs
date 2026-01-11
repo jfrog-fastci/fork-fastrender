@@ -591,8 +591,8 @@ static REMEMBERED_SET: FixedRememberedSet = FixedRememberedSet::new();
 /// Reset write barrier state for tests.
 ///
 /// This clears only process-global state used by the exported barrier:
-/// - the active nursery range (`YOUNG_SPACE`),
-/// - and the runtime's remembered-set tracking (used by GC model tests).
+/// - the active nursery range (`YOUNG_SPACE`), and
+/// - the runtime's remembered-set tracking (used by GC model tests).
 ///
 /// Per-object metadata (e.g. the `REMEMBERED` header bit) is owned by the
 /// objects themselves and is not cleared (the runtime cannot enumerate all
@@ -1418,6 +1418,9 @@ fn maybe_log_rt_io_failure(op: &str, msg: impl core::fmt::Display) {
 /// provided `fd` **must already be set to `O_NONBLOCK`** before calling this
 /// function.
 ///
+/// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not
+/// be zero). To stop watching, call [`rt_io_unregister`].
+///
 /// On failure, this function returns `0`. In debug builds, failures are logged to
 /// stderr to aid diagnosis.
 #[no_mangle]
@@ -1428,6 +1431,15 @@ pub extern "C" fn rt_io_register(
   data: *mut u8,
 ) -> IoWatcherId {
   abort_on_panic(|| {
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      maybe_log_rt_io_failure(
+        "rt_io_register",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      return 0;
+    }
     let _ = crate::rt_ensure_init();
     match async_rt::global().register_io(fd, interests, cb, data) {
       Ok(id) => id.as_raw(),
@@ -1456,9 +1468,21 @@ pub extern "C" fn rt_io_register(
 /// If the watcher is invalid or the underlying fd no longer satisfies the
 /// nonblocking contract, the update is ignored. In debug builds, failures are
 /// logged to stderr.
+///
+/// `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not
+/// be zero). To stop watching, call [`rt_io_unregister`].
 #[no_mangle]
 pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
   abort_on_panic(|| {
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      maybe_log_rt_io_failure(
+        "rt_io_update",
+        format_args!(
+          "id={id} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE; use rt_io_unregister to stop watching)"
+        ),
+      );
+      return;
+    }
     let _ = crate::rt_ensure_init();
     if !async_rt::global().update_io(WatcherId::from_raw(id), interests) {
       maybe_log_rt_io_failure(

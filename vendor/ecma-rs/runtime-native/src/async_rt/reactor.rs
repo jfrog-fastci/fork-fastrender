@@ -10,10 +10,17 @@ use std::sync::{Arc, Mutex};
 static IN_REACTOR_WAIT: AtomicBool = AtomicBool::new(false);
 
 fn ensure_nonblocking(fd: RawFd) -> io::Result<()> {
-  let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-  if flags == -1 {
-    return Err(io::Error::last_os_error());
-  }
+  let flags = loop {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags != -1 {
+      break flags;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
   if flags & libc::O_NONBLOCK == 0 {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
@@ -130,6 +137,12 @@ impl Reactor {
   }
 
   pub fn register(&self, fd: RawFd, interest: Interest, task: Task) -> io::Result<WatcherId> {
+    if interest.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "reactor interest must include READABLE and/or WRITABLE",
+      ));
+    }
     ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
@@ -153,9 +166,15 @@ impl Reactor {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> io::Result<WatcherId> {
+    let interest = rt_interests_to_interest(interests);
+    if interest.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "reactor interest must include RT_IO_READABLE and/or RT_IO_WRITABLE",
+      ));
+    }
     ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
-    let interest = rt_interests_to_interest(interests);
     self.sys.ctl_add(fd, interest, id.as_raw())?;
     self.watchers.lock().unwrap().insert(
       id,
@@ -177,6 +196,9 @@ impl Reactor {
 
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
     let interest = rt_interests_to_interest(interests);
+    if interest.is_empty() {
+      return false;
+    }
     let mut watchers = self.watchers.lock().unwrap();
     let Some(watcher) = watchers.get_mut(&id) else {
       return false;

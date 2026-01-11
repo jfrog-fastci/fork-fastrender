@@ -15,6 +15,11 @@ mod linux {
   use std::mem;
   use std::os::fd::RawFd;
 
+  extern "C" fn set_timeout_flag(data: *mut u8) {
+    let flag = unsafe { &*(data as *const AtomicBool) };
+    flag.store(true, Ordering::SeqCst);
+  }
+
   struct CallbackState {
     fired: AtomicBool,
     events: AtomicU32,
@@ -60,6 +65,37 @@ mod linux {
       let rc = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
       assert!(rc >= 0, "fcntl(F_SETFL) failed: {}", std::io::Error::last_os_error());
     }
+  }
+
+  #[test]
+  fn register_rejects_empty_interests_without_leaking_pending_work() {
+    let _rt = TestRuntimeGuard::new();
+    let (rfd, wfd) = pipe();
+    assert_eq!(
+      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()),
+      0,
+      "expected empty-interest registration to fail"
+    );
+    close(rfd);
+    close(wfd);
+
+    let fired = Box::new(AtomicBool::new(false));
+    let fired_ptr: *mut AtomicBool = Box::into_raw(fired);
+    runtime_native::async_rt::global().schedule_timer(
+      std::time::Instant::now(),
+      runtime_native::async_rt::Task::new(set_timeout_flag, fired_ptr.cast::<u8>()),
+    );
+
+    let pending = rt_async_poll();
+    let fired = unsafe { &*fired_ptr };
+    assert!(fired.load(Ordering::SeqCst), "timer did not fire");
+    unsafe {
+      drop(Box::from_raw(fired_ptr));
+    }
+    assert!(
+      !pending,
+      "async runtime should be idle after the timer if no watcher leaked"
+    );
   }
 
   #[test]
@@ -232,8 +268,13 @@ mod kqueue {
   use runtime_native::abi::RT_IO_READABLE;
   use std::os::fd::RawFd;
   use std::time::Instant;
+  use std::sync::atomic::{AtomicBool, Ordering};
 
   extern "C" fn noop_cb(_events: u32, _data: *mut u8) {}
+  extern "C" fn set_timeout_flag(data: *mut u8) {
+    let flag = unsafe { &*(data as *const AtomicBool) };
+    flag.store(true, Ordering::SeqCst);
+  }
 
   fn set_nonblocking(fd: RawFd) {
     unsafe {
@@ -289,6 +330,37 @@ mod kqueue {
 
     close(rfd);
     close(wfd);
+  }
+
+  #[test]
+  fn register_rejects_empty_interests_without_leaking_pending_work() {
+    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+    let (rfd, wfd) = pipe();
+    assert_eq!(
+      rt_io_register(rfd, 0, noop_cb, std::ptr::null_mut()),
+      0,
+      "expected empty-interest registration to fail"
+    );
+    close(rfd);
+    close(wfd);
+
+    let fired = Box::new(AtomicBool::new(false));
+    let fired_ptr: *mut AtomicBool = Box::into_raw(fired);
+    runtime_native::async_rt::global().schedule_timer(
+      Instant::now(),
+      runtime_native::async_rt::Task::new(set_timeout_flag, fired_ptr.cast::<u8>()),
+    );
+
+    let pending = rt_async_poll();
+    let fired = unsafe { &*fired_ptr };
+    assert!(fired.load(Ordering::SeqCst), "timer did not fire");
+    unsafe {
+      drop(Box::from_raw(fired_ptr));
+    }
+    assert!(
+      !pending,
+      "async runtime should be idle after the timer if no watcher leaked"
+    );
   }
 
   #[test]

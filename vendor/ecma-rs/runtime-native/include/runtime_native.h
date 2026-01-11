@@ -659,6 +659,7 @@ void rt_clear_timer(TimerId id);
 //
 // Contract:
 // - `fd` must be set to `O_NONBLOCK` before registration.
+// - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
 // - Readiness notifications are edge-triggered; consumers must drain reads/writes
 //   until they return `EAGAIN`/`WouldBlock`.
 // - `rt_io_register` returns 0 on failure.
