@@ -15,6 +15,9 @@ fn analyze_reports_known_apis_and_patterns() {
 const xs = [1, 2, 3, 4];
 const sum = xs.map(x => x * 2).filter(x => x > 2).reduce((a, b) => a + b, 0);
 
+const fs = require("node:fs");
+fs.readFile("x", () => {});
+
 async function run(urls: string[]) {
   return Promise.all([fetch(urls[0]), fetch(urls[1])]);
 }
@@ -56,5 +59,8 @@ async function run(urls: string[]) {
     stdout.contains("PromiseAllFetch"),
     "stdout missing PromiseAllFetch:\n{stdout}"
   );
+  assert!(
+    stdout.contains("node:fs.readFile"),
+    "stdout missing node:fs.readFile:\n{stdout}"
+  );
 }
-

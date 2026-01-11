@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use diagnostics::FileId;
-use effect_js::{recognize_patterns_best_effort_untyped, resolve_api_call_best_effort_untyped, ApiId, RecognizedPattern};
+use effect_js::{
+  recognize_patterns_best_effort_untyped, resolve_api_call, resolve_api_call_best_effort_untyped,
+  ApiId, RecognizedPattern,
+};
 use hir_js::{ExprId, ExprKind, FileKind, ObjectKey};
 use knowledge_base::KnowledgeBase;
 use parse_js::{parse_with_options, ParseOptions};
@@ -128,12 +131,38 @@ fn run_analyze(file: PathBuf, ts: bool, tsx: bool) {
   let lowered = hir_js::lower_file(FileId(0), file_kind, &parsed);
   let kb = load_kb_or_exit();
 
-  let calls = resolve_calls_best_effort(&lowered);
-  println!("== API resolution (best-effort) ==");
-  if calls.is_empty() {
+  let kb_calls = resolve_calls_kb(&kb, &lowered);
+  println!("== API resolution (knowledge-base) ==");
+  if kb_calls.is_empty() {
     println!("(no resolved calls)");
   } else {
-    for call in calls {
+    for call in kb_calls {
+      let Some(entry) = kb.get(&call.api) else {
+        println!(
+          "[{}..{}] {} => {}",
+          call.span.start, call.span.end, call.call_text, call.api
+        );
+        continue;
+      };
+      println!(
+        "[{}..{}] {} => {} (effects={:?}, purity={:?})",
+        call.span.start,
+        call.span.end,
+        call.call_text,
+        call.api,
+        entry.effects,
+        entry.purity,
+      );
+    }
+  }
+
+  let builtin_calls = resolve_calls_best_effort_builtin(&lowered);
+  println!();
+  println!("== API resolution (best-effort builtins) ==");
+  if builtin_calls.is_empty() {
+    println!("(no resolved calls)");
+  } else {
+    for call in builtin_calls {
       // Show KB details when available; otherwise fall back to the canonical API name.
       if let Some(entry) = kb.get(call.api.as_str()) {
         println!(
@@ -180,7 +209,47 @@ struct ResolvedCall {
   api: ApiId,
 }
 
-fn resolve_calls_best_effort(lowered: &hir_js::LowerResult) -> Vec<ResolvedCall> {
+#[derive(Debug, Clone)]
+struct KbResolvedCall {
+  span: diagnostics::TextRange,
+  call_text: String,
+  api: String,
+}
+
+fn resolve_calls_kb(kb: &KnowledgeBase, lowered: &hir_js::LowerResult) -> Vec<KbResolvedCall> {
+  let mut out = Vec::new();
+  for (body_id, _) in lowered.body_index.iter() {
+    let Some(body) = lowered.body(*body_id) else {
+      continue;
+    };
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      if !matches!(expr.kind, ExprKind::Call(_)) {
+        continue;
+      }
+      let expr_id = ExprId(idx as u32);
+      let Some(api) = resolve_api_call(kb, lowered, *body_id, expr_id) else {
+        continue;
+      };
+      out.push(KbResolvedCall {
+        span: expr.span,
+        call_text: format_expr_path(body, &lowered.names, expr_id, 8),
+        api: api.to_string(),
+      });
+    }
+  }
+
+  out.sort_by(|a, b| {
+    (a.span.start, a.span.end, a.api.as_str(), a.call_text.as_str()).cmp(&(
+      b.span.start,
+      b.span.end,
+      b.api.as_str(),
+      b.call_text.as_str(),
+    ))
+  });
+  out
+}
+
+fn resolve_calls_best_effort_builtin(lowered: &hir_js::LowerResult) -> Vec<ResolvedCall> {
   let mut out = Vec::new();
   for (body_id, _) in lowered.body_index.iter() {
     let Some(body) = lowered.body(*body_id) else {
