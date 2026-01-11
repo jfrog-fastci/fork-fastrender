@@ -1,9 +1,12 @@
 use runtime_native::current_thread;
 use runtime_native::Runtime;
+use runtime_native::threading;
+use runtime_native::threading::safepoint::StopReason;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -157,4 +160,81 @@ fn global_stop_the_world_does_not_deadlock_thread_detach() {
 
   handle.join().unwrap();
   assert_eq!(runtime.thread_count(), 0);
+}
+
+#[test]
+fn runtime_attach_registers_global_thread_registry() {
+  let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+  let runtime = Runtime::new();
+
+  assert!(
+    threading::registry::current_thread_state().is_none(),
+    "test thread should start out unregistered"
+  );
+
+  let guard = runtime.attach_current_thread().expect("attach");
+  let state = threading::registry::current_thread_state().expect("attach should register global thread");
+  assert_eq!(state.kind(), threading::ThreadKind::External);
+
+  drop(guard);
+  assert!(
+    threading::registry::current_thread_state().is_none(),
+    "detach should unregister global thread"
+  );
+}
+
+#[test]
+fn runtime_stop_the_world_stops_attached_workers() {
+  let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+  let runtime = Arc::new(Runtime::new());
+
+  let main_guard = runtime.attach_current_thread().expect("attach main");
+
+  let start = Arc::new(Barrier::new(2));
+  let stop = Arc::new(AtomicBool::new(false));
+  let (tx_id, rx_id) = mpsc::channel::<u64>();
+
+  let runtime2 = runtime.clone();
+  let start2 = start.clone();
+  let stop2 = stop.clone();
+  let handle = thread::spawn(move || {
+    let guard = runtime2.attach_current_thread().expect("attach worker");
+    let id = threading::registry::current_thread_id()
+      .expect("worker should be registered")
+      .get();
+    tx_id.send(id).unwrap();
+
+    start2.wait();
+
+    while !stop2.load(Ordering::Acquire) {
+      runtime_native::rt_gc_safepoint();
+      std::hint::spin_loop();
+    }
+
+    drop(guard);
+  });
+
+  let worker_id = rx_id.recv_timeout(Duration::from_secs(2)).expect("worker id");
+  start.wait();
+
+  runtime.stop_the_world(StopReason::Test, || {
+    let stop_epoch = runtime_native::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire);
+    assert_eq!(stop_epoch & 1, 1, "expected odd epoch during stop_the_world");
+
+    let mut observed = None;
+    threading::registry::for_each_thread(|thread| {
+      if thread.id().get() == worker_id {
+        observed = Some(thread.safepoint_epoch_observed());
+      }
+    });
+    assert_eq!(
+      observed,
+      Some(stop_epoch),
+      "worker did not publish stop epoch while world was stopped"
+    );
+  });
+
+  stop.store(true, Ordering::Release);
+  handle.join().unwrap();
+  drop(main_guard);
 }
