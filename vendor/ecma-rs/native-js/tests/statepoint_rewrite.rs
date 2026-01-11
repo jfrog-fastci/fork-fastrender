@@ -176,8 +176,8 @@ entry:
     .lines()
     .find(|l| l.contains("@llvm.experimental.gc.result.i64"))
     .unwrap_or_else(|| panic!("missing gc.result in function:\n{func}"));
-  let result_ssa =
-    assigned_ssa(gc_result_line).unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
+  let result_ssa = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
   assert!(
     func.contains(&format!("ret i64 {result_ssa}")),
@@ -218,8 +218,8 @@ entry:
     .lines()
     .find(|l| l.contains("@llvm.experimental.gc.result.p1"))
     .unwrap_or_else(|| panic!("missing gc.result.p1 in function:\n{func}"));
-  let result_ssa =
-    assigned_ssa(gc_result_line).unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
+  let result_ssa = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
 
   assert!(
     func.contains(&format!("ret ptr addrspace(1) {result_ssa}")),
@@ -266,10 +266,12 @@ join:
   );
 
   let mut saw_distinct = false;
+  let mut derived_relocated_ssa: Option<String> = None;
   for line in func.lines() {
     if let Some((base, derived)) = parse_relocate_indices(line) {
       if base != derived {
         saw_distinct = true;
+        derived_relocated_ssa = assigned_ssa(line);
         break;
       }
     }
@@ -278,6 +280,13 @@ join:
   assert!(
     saw_distinct,
     "expected at least one gc.relocate with base_index != derived_index for derived pointer:\n{func}"
+  );
+
+  let derived_relocated_ssa =
+    derived_relocated_ssa.expect("expected derived relocation to be assigned to an SSA value");
+  assert!(
+    func.contains(&format!("load i8, ptr addrspace(1) {derived_relocated_ssa}")),
+    "expected derived relocated SSA ({derived_relocated_ssa}) to be used after safepoint:\n{func}"
   );
 }
 
@@ -375,3 +384,4 @@ entry:
     );
   });
 }
+
