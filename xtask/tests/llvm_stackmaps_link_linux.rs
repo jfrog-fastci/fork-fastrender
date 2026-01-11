@@ -13,7 +13,7 @@ fn repo_root() -> PathBuf {
     .to_path_buf()
 }
 
-fn run_ok(mut cmd: Command, what: &str) {
+fn run_ok(cmd: &mut Command, what: &str) {
   let output = cmd.output().unwrap_or_else(|err| {
     panic!("failed to spawn {what}: {err}");
   });
@@ -26,7 +26,7 @@ fn run_ok(mut cmd: Command, what: &str) {
   );
 }
 
-fn read_to_string(mut cmd: Command, what: &str) -> String {
+fn read_to_string(cmd: &mut Command, what: &str) -> String {
   let output = cmd.output().unwrap_or_else(|err| {
     panic!("failed to spawn {what}: {err}");
   });
