@@ -66,7 +66,11 @@ pub enum RecognizedPattern {
     kind: GuardKind,
   },
 
-  /// `map.get(key) ?? default` / `map.get(key) || default` (typed only).
+  /// Map get-with-default idioms (typed only).
+  ///
+  /// Matches:
+  /// - `map.get(key) ?? default`
+  /// - `map.has(key) ? map.get(key) : default` (including `map.get(key)!`)
   MapGetOrDefault {
     map: ExprId,
     key: ExprId,
@@ -770,6 +774,21 @@ pub fn recognize_patterns_typed(
     }
 
     // MapGetOrDefault.
+    if let ExprKind::Conditional {
+      test,
+      consequent,
+      alternate,
+    } = &expr.kind
+    {
+      if let Some((map, key)) = map_get_or_default_conditional(lowered, body_ref, body, *test, *consequent, types) {
+        patterns.push(RecognizedPattern::MapGetOrDefault {
+          map,
+          key,
+          default: *alternate,
+        });
+      }
+    }
+
     if let ExprKind::Binary { op, left, right } = &expr.kind {
       if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
         continue;
@@ -810,6 +829,118 @@ pub fn recognize_patterns_typed(
 
   sort_patterns_by_span(body_ref, &mut patterns);
   patterns
+}
+
+#[cfg(feature = "typed")]
+fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
+fn expr_equivalent(body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
+  let a = strip_transparent_wrappers(body, a);
+  let b = strip_transparent_wrappers(body, b);
+  let Some(a_expr) = body.exprs.get(a.0 as usize) else {
+    return false;
+  };
+  let Some(b_expr) = body.exprs.get(b.0 as usize) else {
+    return false;
+  };
+
+  match (&a_expr.kind, &b_expr.kind) {
+    (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+    (ExprKind::Literal(a), ExprKind::Literal(b)) => a == b,
+    (ExprKind::Member(a), ExprKind::Member(b)) => {
+      if a.optional || b.optional {
+        return false;
+      }
+      match (&a.property, &b.property) {
+        (hir_js::ObjectKey::Ident(a), hir_js::ObjectKey::Ident(b)) if a == b => {}
+        (hir_js::ObjectKey::String(a), hir_js::ObjectKey::String(b)) if a == b => {}
+        (hir_js::ObjectKey::Number(a), hir_js::ObjectKey::Number(b)) if a == b => {}
+        _ => return false,
+      }
+      expr_equivalent(body, a.object, b.object)
+    }
+    _ => false,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn match_single_arg_member_call<'a>(
+  lowered: &'a LowerResult,
+  body: &hir_js::Body,
+  call_expr: ExprId,
+) -> Option<(ExprId, &'a str, ExprId)> {
+  let call_expr = strip_transparent_wrappers(body, call_expr);
+  let call = body.exprs.get(call_expr.0 as usize)?;
+  let ExprKind::Call(call) = &call.kind else {
+    return None;
+  };
+  if call.optional || call.is_new || call.args.len() != 1 {
+    return None;
+  }
+  let arg0 = call.args.first()?;
+  if arg0.spread {
+    return None;
+  }
+ 
+  let callee = strip_transparent_wrappers(body, call.callee);
+  let callee = body.exprs.get(callee.0 as usize)?;
+  let ExprKind::Member(member) = &callee.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+  let hir_js::ObjectKey::Ident(prop) = member.property else {
+    return None;
+  };
+  let prop = lowered.names.resolve(prop)?;
+
+  Some((member.object, prop, arg0.expr))
+}
+
+#[cfg(feature = "typed")]
+fn map_get_or_default_conditional(
+  lowered: &LowerResult,
+  body_ref: &hir_js::Body,
+  body_id: BodyId,
+  test: ExprId,
+  consequent: ExprId,
+  types: &impl crate::types::TypeProvider,
+) -> Option<(ExprId, ExprId)> {
+  let (has_recv, has_prop, has_key) = match_single_arg_member_call(lowered, body_ref, test)?;
+  if has_prop != "has" {
+    return None;
+  }
+  if !types.expr_is_named_ref(body_id, strip_transparent_wrappers(body_ref, has_recv), "Map") {
+    return None;
+  }
+
+  let (get_recv, get_prop, get_key) = match_single_arg_member_call(lowered, body_ref, consequent)?;
+  if get_prop != "get" {
+    return None;
+  }
+  if !types.expr_is_named_ref(body_id, strip_transparent_wrappers(body_ref, get_recv), "Map") {
+    return None;
+  }
+
+  if !expr_equivalent(body_ref, has_recv, get_recv) || !expr_equivalent(body_ref, has_key, get_key) {
+    return None;
+  }
+
+  Some((get_recv, get_key))
 }
 
 #[cfg(feature = "typed")]

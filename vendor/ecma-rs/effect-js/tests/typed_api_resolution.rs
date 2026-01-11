@@ -2,7 +2,7 @@
 
 use effect_js::{recognize_patterns_typed, recognize_patterns_untyped, ApiId, RecognizedPattern};
 use effect_js::typed::TypedProgram;
-use hir_js::{ExprId, ExprKind, ObjectKey};
+use hir_js::{ExprId, ExprKind, Literal, ObjectKey};
 use std::sync::Arc;
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
@@ -23,6 +23,7 @@ const m: Map<string, number> = new Map();
 m.has("a");
 m.get("a");
 const v = m.get("a") ?? 0;
+const w = m.has("__effect_js_key__") ? m.get("__effect_js_key__")! : 12345;
 
 const p: Promise<number> = Promise.resolve(1);
 p.then(x => x + 1);
@@ -115,6 +116,23 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(patterns
     .iter()
     .any(|pat| matches!(pat, RecognizedPattern::MapGetOrDefault { .. })));
+
+  let conditional_default = body
+    .exprs
+    .iter()
+    .enumerate()
+    .find_map(|(idx, expr)| match &expr.kind {
+      ExprKind::Literal(Literal::Number(n)) if n == "12345" => Some(ExprId(idx as u32)),
+      _ => None,
+    })
+    .expect("found default literal used in conditional MapGetOrDefault expression");
+  assert!(
+    patterns.iter().any(|pat| matches!(
+      pat,
+      RecognizedPattern::MapGetOrDefault { default, .. } if *default == conditional_default
+    )),
+    "expected MapGetOrDefault for `m.has(k) ? m.get(k) : default` conditional"
+  );
 
   // JsonParseTyped relies on a declared annotation and should work without typing.
   let untyped = recognize_patterns_untyped(&lowered, root_body);

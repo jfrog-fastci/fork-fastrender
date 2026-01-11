@@ -1,6 +1,9 @@
-use effect_js::{recognize_patterns_best_effort_untyped, ApiDatabase, RecognizedPattern};
+use effect_js::{ApiDatabase, RecognizedPattern};
 use hir_js::{BodyId, ExprId, ExprKind};
 use std::collections::BTreeSet;
+
+#[cfg(not(feature = "typed"))]
+use effect_js::recognize_patterns_best_effort_untyped;
 
 #[cfg(feature = "typed")]
 use effect_js::{recognize_patterns_typed, typed::TypedProgram};
