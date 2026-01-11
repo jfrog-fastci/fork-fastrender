@@ -1624,7 +1624,11 @@ impl BrowserTabHost {
     //
     // This matters even when the script ultimately does not run (e.g. empty inline scripts), as the
     // checkpoint can mutate the document (including this `<script>` element).
-    if spec.parser_inserted && self.js_execution_depth.get() == 0 {
+    //
+    // When using the streaming parser pipeline, the checkpoint is performed at the script
+    // end-tag boundary (before we compute the final `ScriptElementSpec`). Avoid duplicating the
+    // checkpoint here during an active streaming parse.
+    if spec.parser_inserted && !self.streaming_parse_active && self.js_execution_depth.get() == 0 {
       self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
     }
 
@@ -6463,6 +6467,41 @@ mod tests {
     QUEUE_MICROTASK_HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
   }
 
+  thread_local! {
+    static MICROTASK_CHECKPOINT_TEST_COUNTER: RefCell<Option<Arc<AtomicUsize>>> = const { RefCell::new(None) };
+  }
+
+  fn microtask_checkpoint_counting_hook(
+    _host: &mut BrowserTabHost,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    MICROTASK_CHECKPOINT_TEST_COUNTER.with(|slot| {
+      if let Some(counter) = slot.borrow().as_ref() {
+        counter.fetch_add(1, Ordering::SeqCst);
+      }
+    });
+    Ok(())
+  }
+
+  struct MicrotaskCheckpointTestCounterGuard {
+    prev: Option<Arc<AtomicUsize>>,
+  }
+
+  impl MicrotaskCheckpointTestCounterGuard {
+    fn install(counter: Arc<AtomicUsize>) -> Self {
+      let prev = MICROTASK_CHECKPOINT_TEST_COUNTER.with(|slot| slot.borrow_mut().replace(counter));
+      Self { prev }
+    }
+  }
+
+  impl Drop for MicrotaskCheckpointTestCounterGuard {
+    fn drop(&mut self) {
+      MICROTASK_CHECKPOINT_TEST_COUNTER.with(|slot| {
+        *slot.borrow_mut() = self.prev.take();
+      });
+    }
+  }
+
   struct QueueMicrotaskHookGuard {
     id: u64,
   }
@@ -6517,6 +6556,38 @@ mod tests {
     let s = scope.alloc_string(name)?;
     scope.push_root(Value::String(s))?;
     Ok(PropertyKey::from_string(s))
+  }
+
+  #[test]
+  fn streaming_parser_does_not_double_run_pre_script_microtask_checkpoint() -> Result<()> {
+    // The streaming parser driver performs a microtask checkpoint at `</script>` boundaries before
+    // preparing the parser-inserted script, and then performs the post-script checkpoint after
+    // executing. Ensure we don't accidentally run the pre-script checkpoint twice (which would be a
+    // spec-shaped ordering hazard once additional features start queueing microtasks during script
+    // preparation).
+    let counter = Arc::new(AtomicUsize::new(0));
+    let _guard = MicrotaskCheckpointTestCounterGuard::install(Arc::clone(&counter));
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+    tab
+      .event_loop
+      .set_microtask_checkpoint_hook(Some(microtask_checkpoint_counting_hook));
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    // Use a small budget that still reaches the first `</script>` boundary in the initial parse
+    // call (first pump requests input, second pump yields the script boundary).
+    tab.host.js_execution_options.dom_parse_budget = crate::js::ParseBudget::new(2);
+
+    let _ = tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
+
+    assert_eq!(
+      counter.load(Ordering::SeqCst),
+      2,
+      "expected exactly one pre-script + one post-script microtask checkpoint during initial streaming parse"
+    );
+    Ok(())
   }
 
   fn record_host_native(
