@@ -254,3 +254,11 @@ pub fn drain_promise_rejection_events() -> Vec<PromiseRejectionEvent> {
 pub fn gc_set_young_range_for_heap(heap: &GcHeap) {
   crate::rt_gc_set_young_range(heap.nursery.start(), heap.nursery.end());
 }
+
+/// Override the current thread's published safepoint context.
+///
+/// This is intended for integration tests that need to construct synthetic stacks without relying
+/// on the test binary containing a `.llvm_stackmaps` section.
+pub fn set_current_thread_safepoint_context_for_tests(ctx: crate::arch::SafepointContext) {
+  crate::threading::registry::set_current_thread_safepoint_context(ctx);
+}
