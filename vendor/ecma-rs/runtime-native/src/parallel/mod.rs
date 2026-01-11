@@ -135,13 +135,17 @@ impl ParallelRuntime {
     let mut tasks: Vec<Arc<TaskState>> = Vec::with_capacity(ids.len());
     let mut live = self.live_task_ids.lock();
     for &TaskId(id) in ids {
-      // `TaskId` is an opaque handle and must be unique within a join call.
-      // Duplicates would cause UB (double `Arc::from_raw`), so fail loudly.
-      if id == 0
-        || (id as usize) % std::mem::align_of::<TaskState>() != 0
-        || !seen.insert(id)
-        || !live.remove(&id)
-      {
+      // `TaskId` is an opaque handle. Reject clearly-invalid pointers and unknown
+      // task IDs, but tolerate duplicates within the same join call by
+      // de-duplicating before `Arc::from_raw` (avoids double-decrementing the
+      // leaked strong count).
+      if id == 0 || (id as usize) % std::mem::align_of::<TaskState>() != 0 {
+        std::process::abort();
+      }
+      if !seen.insert(id) {
+        continue;
+      }
+      if !live.remove(&id) {
         std::process::abort();
       }
 
@@ -292,10 +296,16 @@ struct Scheduler {
 
 impl Scheduler {
   fn new() -> Self {
-    let worker_count = std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
+    let worker_count = std::env::var("RT_NUM_THREADS")
       .ok()
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&n| n > 0)
+      .or_else(|| {
+        std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
+          .ok()
+          .and_then(|v| v.parse::<usize>().ok())
+          .filter(|&n| n > 0)
+      })
       .unwrap_or_else(|| thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
     let mut workers: Vec<Worker<Arc<TaskState>>> = Vec::with_capacity(worker_count);
