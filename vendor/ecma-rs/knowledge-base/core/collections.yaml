@@ -1,3 +1,11 @@
+- name: Map
+  kind: constructor
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Allocating
+
 - name: Map.prototype.get
   effects: Pure
   purity: Pure
@@ -48,6 +56,15 @@
       base: MAY_THROW
       args: [0]
   purity: Impure
+
+- name: Set
+  kind: constructor
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Allocating
+
 - name: Set.prototype.add
   effects:
     Custom:

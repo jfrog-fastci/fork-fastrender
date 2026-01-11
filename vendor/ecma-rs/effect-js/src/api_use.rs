@@ -697,6 +697,24 @@ mod tests {
         properties: Default::default(),
       },
       ApiSemantics {
+        id: ApiId::from_name("Map"),
+        name: "Map".to_string(),
+        kind: ApiKind::Constructor,
+        aliases: vec![],
+        effects: EffectTemplate::Unknown,
+        effect_summary: EffectSet::UNKNOWN,
+        purity: PurityTemplate::Unknown,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
         id: ApiId::from_name("Response.prototype.json"),
         name: "Response.prototype.json".to_string(),
         kind: ApiKind::Function,
@@ -896,6 +914,32 @@ mod tests {
       Some(ResolvedApiUse {
         api: ApiId::from_name("Foo.prototype.bar"),
         kind: ApiUseKind::Set,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_map_constructor() {
+    let source = r#"new Map();"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => call.is_new && matches!(
+        body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+        Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("Map")
+      ),
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Map"),
+        kind: ApiUseKind::Construct,
       })
     );
   }
