@@ -1,7 +1,7 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
+use parking_lot::{RwLock, RwLockWriteGuard};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -294,6 +294,12 @@ impl<T> HandleTable<T> {
     let mut guard = HandleTableStwGuard { guard };
     f(&mut guard)
   }
+
+  pub(crate) fn clear_for_tests(&self) {
+    let mut inner = self.inner.write();
+    inner.slots.clear();
+    inner.free_head = None;
+  }
 }
 
 struct HandleTableInner<T> {
@@ -405,18 +411,18 @@ impl<T> Drop for PersistentHandle<'_, T> {
 /// An owned persistent handle that can be stored in host queues.
 ///
 /// Unlike [`PersistentHandle`], this type does not borrow the handle table; instead it keeps a
-/// shared reference to a mutex-protected table so it can be moved into long-lived host state (async
-/// tasks, I/O watchers, timers).
+/// shared reference to the table so it can be moved into long-lived host state (async tasks, I/O
+/// watchers, timers).
 #[must_use]
 pub struct OwnedGcHandle<T> {
-  table: Arc<Mutex<HandleTable<T>>>,
+  table: Arc<HandleTable<T>>,
   id: Option<HandleId>,
 }
 
 impl<T> OwnedGcHandle<T> {
   /// Allocates a new persistent handle in `table`.
-  pub fn new(table: Arc<Mutex<HandleTable<T>>>, ptr: NonNull<T>) -> Self {
-    let id = table.lock().alloc(ptr);
+  pub fn new(table: Arc<HandleTable<T>>, ptr: NonNull<T>) -> Self {
+    let id = table.alloc(ptr);
     Self {
       table,
       id: Some(id),
@@ -433,7 +439,7 @@ impl<T> OwnedGcHandle<T> {
   #[inline]
   pub fn release(mut self) {
     if let Some(id) = self.id.take() {
-      self.table.lock().free(id);
+      let _ = self.table.free(id);
     }
   }
 }
@@ -443,6 +449,6 @@ impl<T> Drop for OwnedGcHandle<T> {
     let Some(id) = self.id.take() else {
       return;
     };
-    self.table.lock().free(id);
+    let _ = self.table.free(id);
   }
 }

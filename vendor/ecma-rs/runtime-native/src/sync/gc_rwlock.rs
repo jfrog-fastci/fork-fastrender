@@ -3,6 +3,12 @@ use parking_lot::RwLock;
 use parking_lot::RwLockReadGuard;
 use parking_lot::RwLockWriteGuard;
 
+impl<T> std::fmt::Debug for GcAwareRwLock<T> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("GcAwareRwLock").finish_non_exhaustive()
+  }
+}
+
 /// A `parking_lot::RwLock` wrapper that is aware of the runtime's stop-the-world
 /// safepoint mechanism.
 ///
@@ -82,4 +88,3 @@ impl<T: Default> Default for GcAwareRwLock<T> {
     Self::new(T::default())
   }
 }
-
