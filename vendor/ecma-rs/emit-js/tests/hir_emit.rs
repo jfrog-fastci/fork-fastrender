@@ -583,18 +583,11 @@ fn visit_expr(body: &Body, expr_id: hir_js::ExprId, visited: &mut HashSet<hir_js
       }
     }
     ExprKind::Jsx(elem) => visit_jsx_elem(body, elem, visited),
-    ExprKind::Literal(_)
-    | ExprKind::Ident(_)
-    | ExprKind::This
-    | ExprKind::Super
-    | ExprKind::ImportMeta
-    | ExprKind::NewTarget
-    | ExprKind::FunctionExpr { .. }
-    | ExprKind::ClassExpr { .. }
-    | ExprKind::TypeAssertion { .. }
-    | ExprKind::NonNull { .. }
-    | ExprKind::Satisfies { .. } => {}
+    ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::NonNull { expr }
+    | ExprKind::Satisfies { expr, .. } => visit_expr(body, *expr, visited),
     ExprKind::Missing => unreachable!("missing expressions should be caught earlier"),
+    _ => {}
   }
 }
 

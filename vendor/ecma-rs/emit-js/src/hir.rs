@@ -20,6 +20,7 @@ use hir_js::{
 };
 #[cfg(feature = "semantic-ops")]
 use hir_js::ArrayChainOp;
+use parse_js::loc::Loc;
 use parse_js::operator::{OperatorName, OPERATORS};
 use std::fmt::Write;
 
@@ -1538,9 +1539,6 @@ fn expr_prec(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> Result<Prec,
       };
       Prec::new(OPERATORS[&op].precedence)
     }
-    ExprKind::Template(_) => PRIMARY_PRECEDENCE,
-    ExprKind::Array(_) => PRIMARY_PRECEDENCE,
-    ExprKind::Object(_) => PRIMARY_PRECEDENCE,
     ExprKind::FunctionExpr { is_arrow, .. } => {
       if *is_arrow {
         ARROW_FUNCTION_PRECEDENCE
@@ -1548,20 +1546,13 @@ fn expr_prec(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> Result<Prec,
         PRIMARY_PRECEDENCE
       }
     }
-    ExprKind::ClassExpr { .. } => PRIMARY_PRECEDENCE,
     ExprKind::Literal(Literal::Undefined) => Prec::new(OPERATORS[&OperatorName::Void].precedence),
-    ExprKind::Literal(_) => PRIMARY_PRECEDENCE,
     ExprKind::ImportCall { .. } => CALL_MEMBER_PRECEDENCE,
-    ExprKind::This
-    | ExprKind::Super
-    | ExprKind::Ident(_)
-    | ExprKind::ImportMeta
-    | ExprKind::NewTarget => PRIMARY_PRECEDENCE,
-    ExprKind::Jsx(_) => PRIMARY_PRECEDENCE,
     ExprKind::TypeAssertion { expr, .. }
     | ExprKind::NonNull { expr }
     | ExprKind::Satisfies { expr, .. } => return expr_prec(ctx, body, *expr),
     ExprKind::Missing => return Err(EmitError::unsupported("missing expression")),
+    _ => PRIMARY_PRECEDENCE,
   };
   Ok(prec)
 }
@@ -1573,6 +1564,7 @@ fn emit_expr_no_parens(
   expr_id: ExprId,
 ) -> EmitResult {
   let expr = ctx.expr(body, expr_id);
+  #[allow(unreachable_patterns)]
   match &expr.kind {
     ExprKind::Missing => return Err(EmitError::unsupported("missing expression")),
     ExprKind::Ident(id) => em.write_identifier(ctx.name(*id)),
@@ -1863,6 +1855,12 @@ fn emit_expr_no_parens(
     ExprKind::ImportMeta => em.write_str("import.meta"),
     ExprKind::NewTarget => em.write_str("new.target"),
     ExprKind::Jsx(jsx) => emit_jsx_elem(em, ctx, body, jsx)?,
+    _ => {
+      return Err(
+        EmitError::unsupported("semantic op expression not supported")
+          .with_loc(Loc(expr.span.start as usize, expr.span.end as usize)),
+      );
+    }
   }
   Ok(())
 }
