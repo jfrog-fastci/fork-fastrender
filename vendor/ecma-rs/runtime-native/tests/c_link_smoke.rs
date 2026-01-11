@@ -166,7 +166,7 @@ int main(void) {
   // test isn't flaky under contention.
   int timer_fired = 0;
   TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 2000);
- 
+
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
@@ -175,9 +175,9 @@ int main(void) {
   //
   // Under heavy CI load, the blocking worker may not run immediately. That's OK: this is a C
   // link smoke test, not a latency test.
-  for (int i = 0; i < 5000 && !settled; i++) {
+  for (int i = 0; i < 5000 && !settled && !timer_fired; i++) {
     rt_async_poll_legacy();
-    if (!settled) {
+    if (!settled && !timer_fired) {
       sleep_us(1000);
     }
   }
@@ -185,6 +185,11 @@ int main(void) {
   if (!settled) {
     rt_thread_deinit();
     return 10;
+  }
+  if (timer_fired) {
+    // Event loop did not wake promptly (likely blocked until timeout).
+    rt_thread_deinit();
+    return 1;
   }
 
   enum { N = 4096 };
