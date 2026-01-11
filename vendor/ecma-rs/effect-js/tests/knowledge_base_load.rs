@@ -1,4 +1,5 @@
 use effect_js::{ApiDatabase, EffectSet, EffectTemplate, Purity, PurityTemplate};
+use effect_model::ThrowBehavior;
 
 #[test]
 fn knowledge_base_loads_from_embedded() {
@@ -28,12 +29,12 @@ fn knowledge_base_loads_from_embedded() {
   }
 
   let json_parse = db.get("JSON.parse").expect("JSON.parse present");
-  assert!(json_parse.effect_summary.contains(EffectSet::MAY_THROW));
+  assert!(json_parse.effect_summary.throws != ThrowBehavior::Never);
 
   let array_map = db
     .get("Array.prototype.map")
     .expect("Array.prototype.map present");
-  assert!(array_map.effect_summary.contains(EffectSet::ALLOCATES));
+  assert!(array_map.effect_summary.flags.contains(EffectSet::ALLOCATES));
   match &array_map.effects {
     EffectTemplate::DependsOnArgs { base, args } => {
       assert!(base.contains(EffectSet::ALLOCATES));
@@ -50,5 +51,5 @@ fn knowledge_base_loads_from_embedded() {
   );
 
   let fetch = db.get("fetch").expect("fetch present");
-  assert!(fetch.effect_summary.contains(EffectSet::IO));
+  assert!(fetch.effect_summary.flags.contains(EffectSet::IO));
 }
