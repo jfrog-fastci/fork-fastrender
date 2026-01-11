@@ -46,6 +46,24 @@ fn has_gc_leaf_attr(func: inkwell::values::FunctionValue<'_>) -> bool {
   }
 }
 
+fn has_string_attr(func: inkwell::values::FunctionValue<'_>, key: &[u8]) -> bool {
+  debug_assert!(key.last() == Some(&0), "attribute key must be NUL-terminated");
+  unsafe {
+    !LLVMGetStringAttributeAtIndex(
+      func.as_value_ref(),
+      LLVMAttributeFunctionIndex,
+      key.as_ptr().cast(),
+      (key.len() - 1) as u32,
+    )
+    .is_null()
+  }
+}
+
+fn has_stack_walking_frame_attrs(func: inkwell::values::FunctionValue<'_>) -> bool {
+  // See `native-js/src/stack_walking.rs`.
+  has_string_attr(func, b"frame-pointer\0") && has_string_attr(func, b"disable-tail-calls\0")
+}
+
 fn runtime_native_arch() -> Option<DwarfArch> {
   if cfg!(target_arch = "x86_64") {
     Some(DwarfArch::X86_64)
@@ -289,6 +307,10 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("define internal void @rt_write_barrier_gc"),
     "missing rt_write_barrier_gc wrapper:\n{ir}"
   );
+  assert!(
+    has_stack_walking_frame_attrs(fns.rt_write_barrier_gc),
+    "expected rt_write_barrier_gc wrapper to have stack-walking frame attrs"
+  );
   let wb = function_block(&ir, "@rt_write_barrier_gc");
   assert!(
     wb.contains("store ptr @rt_write_barrier"),
@@ -325,6 +347,10 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("define internal void @rt_write_barrier_range_gc"),
     "missing rt_write_barrier_range_gc wrapper:\n{ir}"
   );
+  assert!(
+    has_stack_walking_frame_attrs(fns.rt_write_barrier_range_gc),
+    "expected rt_write_barrier_range_gc wrapper to have stack-walking frame attrs"
+  );
   let wbr = function_block(&ir, "@rt_write_barrier_range_gc");
   assert!(
     wbr.contains("store ptr @rt_write_barrier_range"),
@@ -359,6 +385,10 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   assert!(
     ir.contains("define internal void @rt_keep_alive_gc_ref_gc"),
     "missing rt_keep_alive_gc_ref_gc wrapper:\n{ir}"
+  );
+  assert!(
+    has_stack_walking_frame_attrs(fns.rt_keep_alive_gc_ref_gc),
+    "expected rt_keep_alive_gc_ref_gc wrapper to have stack-walking frame attrs"
   );
   let keep_alive_line = ir
     .lines()
