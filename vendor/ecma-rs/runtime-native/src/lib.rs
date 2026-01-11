@@ -449,20 +449,14 @@ pub fn rt_gc_resume_world() -> u64 {
   threading::safepoint::rt_gc_resume_world()
 }
 
-// Unit tests need a `.llvm_stackmaps` section to validate the linker-script
-// based loader without requiring LLVM statepoints in the Rust code.
+// Unit tests need a stackmaps section to validate the in-process loader without
+// requiring LLVM statepoints in the Rust code.
 //
-// When the build script can generate and link `stackmap_test.o`, we already have
-// a real `.llvm_stackmaps` section and must not add a dummy one (the format is
-// not concatenation-friendly). Otherwise, add a minimal, valid StackMap v3
-// header so `stackmaps_section()` can find something to parse.
-#[cfg(all(
-  test,
-  target_os = "linux",
-  runtime_native_no_stackmap_test_artifact
-))]
+// This is **unit-test-only** (`cfg(test)`), so it is not present in integration
+// tests (which link the real `stackmap_test.o` artifact produced by `build.rs`).
+#[cfg(all(test, target_os = "linux"))]
+#[used]
 #[link_section = ".llvm_stackmaps"]
-#[no_mangle]
 pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
   // Version (v3)
   3, 0, 0, 0, // reserved + padding to u32 boundary
@@ -982,7 +976,6 @@ mod tests {
     );
     #[cfg(all(
       target_os = "linux",
-      runtime_native_no_stackmap_test_artifact,
       target_pointer_width = "64",
       target_endian = "little"
     ))]
