@@ -57,7 +57,7 @@ Strict-native rejects (hard error, not warning):
 - Dynamic code execution: `eval()`, `Function()`, `new Function()`
 - `with`
 - `arguments`
-- Computed property access with non-constant keys in strict paths (`obj[key]` where `key` is not a constant)
+- Computed property access / computed property names with non-constant keys (e.g. `obj[key]`, `{ [key]: ... }`, `{ [key]: v } = ...`)
 - Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
 - `Proxy` (disallowed or extremely restricted)
 
@@ -67,10 +67,10 @@ Strict-native rejects (hard error, not warning):
 - `TC4001`: `eval(...)` (incl `globalThis.eval(...)`)
 - `TC4002`: `Function(...)` / `new Function(...)`
 - `TC4003`: `with`
-- `TC4004`: `arguments` (in function scopes)
+- `TC4004`: `arguments` (use sites and binding sites)
 - `TC4005`: unsafe type assertions
 - `TC4006`: non-null assertions on maybe-nullish values
-- `TC4007`: computed property access with non-constant keys (`obj[key]`)
+- `TC4007`: computed property access / computed property names with non-constant keys
 - `TC4008`: `Proxy` (incl `Proxy.revocable(...)`)
 - `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, etc.)
 
