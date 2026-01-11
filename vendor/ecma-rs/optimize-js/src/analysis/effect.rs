@@ -61,6 +61,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     InstTyp::Throw => {
       effects.summary.throws = ThrowBehavior::Always;
     }
+    InstTyp::Return => {}
     InstTyp::PropAssign => {
       effects.writes.insert(EffectLocation::Heap);
       effects.summary.throws = ThrowBehavior::Maybe;
