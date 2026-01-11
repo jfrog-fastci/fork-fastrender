@@ -273,6 +273,16 @@ InternedId rt_string_intern(const uint8_t* s, size_t len);
 // - The returned `TaskId` must be joined exactly once.
 TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
 void rt_parallel_join(const TaskId* tasks, size_t count);
+// Parallel-for convenience API.
+//
+// Executes `body(i, data)` for each `i` in `[start, end)`. If `end <= start` it is a no-op.
+//
+// The runtime may fall back to sequential execution for small ranges (to avoid task overhead) or
+// when configured with a single worker thread.
+//
+// Adaptive chunking:
+// - target chunks: workers * 4
+// - minimum iterations per task: RT_PAR_FOR_MIN_GRAIN (default: 1024)
 void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);
 
 // -----------------------------------------------------------------------------
