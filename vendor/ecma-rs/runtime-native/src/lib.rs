@@ -1194,6 +1194,7 @@ mod tests {
   fn effective_worker_count() -> usize {
     std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
       .ok()
+      .or_else(|| std::env::var("RT_NUM_THREADS").ok())
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&n| n > 0)
       .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))

@@ -110,20 +110,24 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
     return;
   }
   if promise.is_null() {
-    // Treat null as "never settles": discard all nodes so they don't leak.
+    // Treat null as "never settles": discard the whole list so it doesn't leak.
     while !head.is_null() {
       let next = unsafe { (*head).next };
-      let node = head;
-      let vtable = unsafe { (*node).vtable };
+      unsafe {
+        (*head).next = null_mut();
+      }
+      let vtable = unsafe { (*head).vtable };
       if vtable.is_null() {
         std::process::abort();
       }
-      ((unsafe { &*vtable }).drop)(node);
+      ((unsafe { &*vtable }).drop)(head);
       head = next;
     }
     return;
   }
 
+  // Root the promise once and clone the handle into each task so the promise remains valid even if
+  // it relocates under a moving GC while the reaction jobs are queued.
   let promise = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
   let mut tasks: Vec<Task> = Vec::new();
   while !head.is_null() {
