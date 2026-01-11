@@ -142,9 +142,14 @@ fn extract_nullish_comparison(inst: &Inst) -> Option<NullishComparison> {
 
   let left = inst.args.get(0)?;
   let right = inst.args.get(1)?;
+  let is_nullish = |arg: &Arg| {
+    matches!(arg, Arg::Const(Const::Null | Const::Undefined))
+      || matches!(arg, Arg::Builtin(name) if name == "undefined")
+  };
+
   let tested_var = match (left, right) {
-    (Arg::Var(v), Arg::Const(Const::Null | Const::Undefined))
-    | (Arg::Const(Const::Null | Const::Undefined), Arg::Var(v)) => *v,
+    (Arg::Var(v), other) if is_nullish(other) => *v,
+    (other, Arg::Var(v)) if is_nullish(other) => *v,
     _ => return None,
   };
 
@@ -679,5 +684,51 @@ mod tests {
     assert_eq!(narrowing.var, 0);
     assert_eq!(narrowing.when_true, Nullability::Nullish);
     assert_eq!(narrowing.when_false, Nullability::NonNullish);
+  }
+
+  #[test]
+  fn annotate_program_records_nullability_narrowing_for_builtin_undefined() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::unknown_load(0, "x".to_string()),
+            Inst::bin(
+              1,
+              Arg::Var(0),
+              BinOp::StrictEq,
+              Arg::Builtin("undefined".to_string()),
+            ),
+            Inst::cond_goto(Arg::Var(1), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+      &[(0, 1), (0, 2)],
+    );
+    let mut program = Program {
+      functions: Vec::new(),
+      top_level: ProgramFunction {
+        debug: None,
+        body: cfg,
+        params: Vec::new(),
+        stats: OptimizationStats::default(),
+      },
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let _analyses = annotate_program(&mut program);
+
+    let insts = program.top_level.body.bblocks.get(0);
+    let narrowing = insts
+      .last()
+      .and_then(|inst| inst.meta.nullability_narrowing)
+      .expect("expected CondGoto to record nullability narrowing");
+    assert_eq!(narrowing.var, 0);
+    assert_eq!(narrowing.when_true, Nullability::Nullish);
+    assert_eq!(narrowing.when_false, Nullability::Unknown);
   }
 }
