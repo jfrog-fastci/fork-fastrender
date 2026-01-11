@@ -268,6 +268,14 @@ All microtask sources enqueue into this same queue:
 Microtasks are drained **to exhaustion** at a microtask checkpoint. Jobs enqueued while draining are
 appended to the same FIFO queue and are executed in the **same** checkpoint.
 
+### Thread-safety
+
+Enqueuing microtasks is **thread-safe**:
+
+- `rt_queue_microtask` (and related helpers) may be called from any OS thread.
+- If the event-loop thread is blocked in `rt_async_wait` / the reactor wait syscall, a cross-thread
+  enqueue will wake it so pending microtasks can be observed.
+
 ## Microtask checkpoint helpers
 
 Two Rust entry points execute pending work without blocking:
@@ -309,6 +317,22 @@ Bindings should implement `queueMicrotask(cb)` by:
 
 This avoids allocating a promise/coroutine frame for simple callbacks while still integrating with
 the runtime's single-consumer microtask checkpoint semantics.
+
+### GC-managed microtask payloads (`rt_queue_microtask_rooted`)
+
+`rt_queue_microtask` takes an opaque `data` pointer that must remain valid until the callback runs.
+If `data` is a **GC-managed object pointer** (and the GC is moving), embedders must keep the object
+alive *and* tolerate relocation.
+
+For this use-case, the runtime also exposes:
+
+- `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
+
+Contract:
+
+- `data` must be a pointer to the **base** of a GC-managed object (start of its header).
+- The runtime registers a strong GC root for `data` until the microtask executes.
+- If the GC relocates the object, the callback receives the **updated** pointer.
 
 ## Exported symbols (async)
 
