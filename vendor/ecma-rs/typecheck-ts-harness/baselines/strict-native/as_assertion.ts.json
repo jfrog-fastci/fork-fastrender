@@ -3,57 +3,30 @@
   "diagnostics": [
     {
       "engine": "rust",
-      "code": "TC3000",
+      "code": "TC4005",
       "file": "/as_assertion.ts",
-      "start": 6,
-      "end": 11,
+      "start": 38,
+      "end": 53,
       "severity": "error",
-      "message": "`value` implicitly has an `any` type"
+      "message": "Type '123' is not assignable to type 'string'."
     },
     {
       "engine": "rust",
-      "code": "TC4000",
+      "code": "TC4005",
       "file": "/as_assertion.ts",
-      "start": 6,
-      "end": 11,
+      "start": 38,
+      "end": 53,
       "severity": "error",
-      "message": "`any` is forbidden when `native_strict` is enabled"
+      "message": "Type 'unknown' is not assignable to type 'string'."
     },
     {
       "engine": "rust",
-      "code": "TC4000",
+      "code": "TC4005",
       "file": "/as_assertion.ts",
-      "start": 6,
-      "end": 11,
+      "start": 38,
+      "end": 53,
       "severity": "error",
-      "message": "forbidden `any` type"
-    },
-    {
-      "engine": "rust",
-      "code": "TC4000",
-      "file": "/as_assertion.ts",
-      "start": 40,
-      "end": 45,
-      "severity": "error",
-      "message": "`any` is forbidden when `native_strict` is enabled"
-    },
-    {
-      "engine": "rust",
-      "code": "TC4000",
-      "file": "/as_assertion.ts",
-      "start": 40,
-      "end": 45,
-      "severity": "error",
-      "message": "forbidden `any` type"
-    },
-    {
-      "engine": "rust",
-      "code": "TC4000",
-      "file": "/as_assertion.ts",
-      "start": 40,
-      "end": 55,
-      "severity": "error",
-      "message": "forbidden `any` type"
+      "message": "unsafe type assertion: expression type is not assignable to the asserted type"
     }
   ]
 }

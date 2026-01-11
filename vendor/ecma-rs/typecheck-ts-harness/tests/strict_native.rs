@@ -72,15 +72,18 @@ fn baseline_path_for(baselines_root: &Path, id: &str) -> PathBuf {
 fn strict_native_cli_matches_built_in_baselines() {
   // Run a small representative subset of fixtures to keep integration tests fast
   // while still exercising the CLI, baseline parsing, and comparison logic.
-  let report = run_strict_native_json(&["--filter", "{any.ts,as_const_ok.ts,global_eval.ts}"]);
-  assert_eq!(report["summary"]["total"], 3);
+  let report = run_strict_native_json(&[
+    "--filter",
+    "{any.ts,as_assertion.ts,as_const_ok.ts,non_null_assertion.ts,proxy.ts}",
+  ]);
+  assert_eq!(report["summary"]["total"], 5);
   assert_eq!(report["summary"]["matched"], report["summary"]["total"]);
   assert_eq!(report["summary"]["mismatched"], 0);
   assert_eq!(report["summary"]["errors"], 0);
   assert_eq!(report["summary"]["updated"], 0);
 
   let ids = ids(&report);
-  assert_eq!(ids.len(), 3, "summary.total should match results length");
+  assert_eq!(ids.len(), 5, "summary.total should match results length");
   assert!(
     ids.windows(2).all(|w| w[0] <= w[1]),
     "results should be sorted by id"
@@ -90,13 +93,10 @@ fn strict_native_cli_matches_built_in_baselines() {
 #[test]
 fn strict_native_cli_shard_matches_sorted_index_strategy() {
   let root = fixtures_root();
-  let filter = build_filter(Some("computed_*")).expect("build computed_* filter");
+  let filter = build_filter(Some("{proxy.ts,proxy_revocable.ts}")).expect("build proxy filter");
   let cases = discover_conformance_tests(&root, &filter, &vec!["ts".to_string()])
-    .expect("discover computed_* strict-native fixtures");
-  assert!(
-    cases.len() >= 2,
-    "expected at least two computed_* strict-native fixtures for sharding test"
-  );
+    .expect("discover proxy strict-native fixtures");
+  assert_eq!(cases.len(), 2, "expected exactly two proxy fixtures for sharding test");
 
   let shard = Shard::parse("0/2").expect("parse shard spec");
   let expected_ids: Vec<_> = cases
@@ -106,7 +106,12 @@ fn strict_native_cli_shard_matches_sorted_index_strategy() {
     .map(|(_, case)| case.id.clone())
     .collect();
 
-  let shard0 = run_strict_native_json(&["--filter", "computed_*", "--shard", "0/2"]);
+  let shard0 = run_strict_native_json(&[
+    "--filter",
+    "{proxy.ts,proxy_revocable.ts}",
+    "--shard",
+    "0/2",
+  ]);
   let shard0_ids = ids(&shard0);
   assert_eq!(shard0_ids, expected_ids);
 }
