@@ -43,6 +43,7 @@ aliasStr.toLowerCase();
 const m: Map<string, number> = new Map();
 m.has("a");
 m.get("a");
+m.set("a", 1);
 const v = m.get("a") ?? 0;
 const w = m.has("__effect_js_key__") ? m.get("__effect_js_key__")! : 12345;
 
@@ -50,8 +51,18 @@ type MapAlias = Map<string, number>;
 const aliasMap: MapAlias = m;
 aliasMap.has("a");
 aliasMap.get("a");
+aliasMap.set("a", 2);
 const v2 = aliasMap.get("a") ?? 0;
 const v3 = aliasMap.get("__effect_js_alias_key__")! ?? 54321;
+
+const s: Set<string> = new Set();
+s.has("a");
+s.add("a");
+
+type SetAlias = Set<string>;
+const aliasSet: SetAlias = s;
+aliasSet.has("a");
+aliasSet.add("a");
 
 const p: Promise<number> = Promise.resolve(1);
 p.then(x => x + 1);
@@ -105,6 +116,9 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   let string_split = kb.id_of("String.prototype.split").unwrap();
   let map_get = kb.id_of("Map.prototype.get").unwrap();
   let map_has = kb.id_of("Map.prototype.has").unwrap();
+  let map_set = kb.id_of("Map.prototype.set").unwrap();
+  let set_has = kb.id_of("Set.prototype.has").unwrap();
+  let set_add = kb.id_of("Set.prototype.add").unwrap();
   let promise_then = kb.id_of("Promise.prototype.then").unwrap();
 
   assert!(apis.contains(&node_read_file));
@@ -115,6 +129,9 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(apis.contains(&string_split));
   assert!(apis.contains(&map_get));
   assert!(apis.contains(&map_has));
+  assert!(apis.contains(&map_set));
+  assert!(apis.contains(&set_has));
+  assert!(apis.contains(&set_add));
   assert!(apis.contains(&promise_then));
 
   let find_member_call = |recv_expected: &str, prop_expected: &str| -> ExprId {
@@ -181,6 +198,24 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
   assert!(patterns.iter().any(|pat| matches!(
     pat,
     RecognizedPattern::CanonicalCall { call, api } if *call == alias_map_has_call && *api == map_has
+  )));
+
+  let alias_map_set_call = find_member_call("aliasMap", "set");
+  assert!(patterns.iter().any(|pat| matches!(
+    pat,
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_map_set_call && *api == map_set
+  )));
+
+  let alias_set_has_call = find_member_call("aliasSet", "has");
+  assert!(patterns.iter().any(|pat| matches!(
+    pat,
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_set_has_call && *api == set_has
+  )));
+
+  let alias_set_add_call = find_member_call("aliasSet", "add");
+  assert!(patterns.iter().any(|pat| matches!(
+    pat,
+    RecognizedPattern::CanonicalCall { call, api } if *call == alias_set_add_call && *api == set_add
   )));
 
   let alias_promise_then_call = find_member_call("aliasPromise", "then");

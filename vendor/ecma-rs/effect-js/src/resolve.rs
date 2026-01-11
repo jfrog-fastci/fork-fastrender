@@ -280,6 +280,12 @@ impl<'a> ApiCallResolver<'a> {
       }
     }
 
+    if types.expr_is_named_ref(body, member.object, "Set") {
+      if let Some(api) = resolve_prototype_call("Set") {
+        return Some(api);
+      }
+    }
+
     if types.expr_is_named_ref(body, member.object, "Promise") {
       if let Some(api) = resolve_prototype_call("Promise") {
         return Some(api);
