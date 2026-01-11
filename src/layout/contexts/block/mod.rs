@@ -4621,6 +4621,39 @@ impl BlockFormattingContext {
       }
       false
     };
+    let subtree_float_sides = |root: &BoxNode| -> (bool, bool) {
+      if establishes_bfc(&root.style) {
+        return (false, false);
+      }
+      let mut seen_left = false;
+      let mut seen_right = false;
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.style.running_position.is_some()
+          || matches!(node.style.position, Position::Absolute | Position::Fixed)
+        {
+          continue;
+        }
+        if node.style.float.is_floating() {
+          if let Some(side) = resolve_float_side(node.style.float, style.writing_mode, style.direction) {
+            match side {
+              FloatSide::Left => seen_left = true,
+              FloatSide::Right => seen_right = true,
+            }
+            if seen_left && seen_right {
+              return (true, true);
+            }
+          }
+        }
+        if establishes_bfc(&node.style) {
+          continue;
+        }
+        for child in &node.children {
+          stack.push(child);
+        }
+      }
+      (seen_left, seen_right)
+    };
 
     let inline_subtree_generates_line_boxes = |root: &BoxNode| -> bool {
       let mut stack = vec![root];
@@ -4789,6 +4822,13 @@ impl BlockFormattingContext {
           self.collapsed_block_margins_cached(child, containing_width, child_mode, cache);
         if child_margins.collapsible_through {
           chain = chain.collapse_with(child_margins.top.collapse_with(child_margins.bottom));
+          // Track floats in collapsible-through subtrees so we can stop tunneling into later
+          // `clear` blocks. On float-based two-column layouts, anonymous wrappers can contain floats
+          // while remaining "empty" for margin-collapsing; those floats still introduce clearance
+          // that breaks adjoining margins.
+          let (left, right) = subtree_float_sides(child);
+          seen_left_float |= left;
+          seen_right_float |= right;
           continue;
         }
         chain = chain.collapse_with(child_margins.top);
@@ -13026,6 +13066,69 @@ mod tests {
     assert!(
       !margins.collapsible_through,
       "A block that contains a float and a later clearing block should not be treated as collapsible-through"
+    );
+  }
+
+  #[test]
+  fn margin_collapse_first_child_does_not_tunnel_past_float_in_collapsible_through_subtree() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.display = Display::Block;
+    spacer_style.margin_top = Some(Length::px(15.0));
+    spacer_style.margin_bottom = Some(Length::px(15.0));
+
+    let mut float_wrapper_style = ComputedStyle::default();
+    float_wrapper_style.display = Display::Block;
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+
+    let mut clear_style = ComputedStyle::default();
+    clear_style.display = Display::Block;
+    clear_style.clear = Clear::Both;
+    clear_style.margin_top = Some(Length::px(20.0));
+
+    let mut spacer = BoxNode::new_block(
+      Arc::new(spacer_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 2;
+
+    let mut float_child = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+    float_child.id = 4;
+
+    let mut float_wrapper = BoxNode::new_block(
+      Arc::new(float_wrapper_style),
+      FormattingContextType::Block,
+      vec![float_child],
+    );
+    float_wrapper.id = 3;
+
+    let mut clear_block = BoxNode::new_block(
+      Arc::new(clear_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    clear_block.id = 5;
+
+    let mut parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![spacer, float_wrapper, clear_block],
+    );
+    parent.id = 1_000;
+
+    let margins = bfc.collapsed_block_margins(&parent, 800.0, CollapsedMarginMode::Normal);
+    assert!(
+      (margins.top.resolve() - 15.0).abs() < 0.01,
+      "expected margin collapsing to stop before the cleared block when a float exists inside a collapsible-through subtree; got {}",
+      margins.top.resolve()
     );
   }
 

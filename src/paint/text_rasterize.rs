@@ -1603,6 +1603,20 @@ impl TextRasterizer {
       .unwrap_or(0.0);
     let draw_stroke = stroke_alpha > 0.0;
 
+    let glyph_run_advance = || {
+      let mut cursor_x = x;
+      let mut cursor_y = 0.0_f32;
+      for glyph in glyphs {
+        cursor_x += glyph.x_advance;
+        cursor_y += glyph.y_advance;
+      }
+      if cursor_y.abs() > (cursor_x - x).abs() {
+        cursor_y
+      } else {
+        cursor_x - x
+      }
+    };
+
     // `font-size: 0` is valid CSS and should simply suppress glyph painting (and yield
     // zero-sized glyph transforms). Avoid treating it as a paint-time failure.
     if glyphs.is_empty()
@@ -1610,18 +1624,7 @@ impl TextRasterizer {
       || !font_size.is_finite()
       || font_size <= 0.0
     {
-      let mut cursor_x = x;
-      let mut cursor_y = 0.0_f32;
-      for glyph in glyphs {
-        cursor_x += glyph.x_advance;
-        cursor_y += glyph.y_advance;
-      }
-      let advance = if cursor_y.abs() > (cursor_x - x).abs() {
-        cursor_y
-      } else {
-        cursor_x - x
-      };
-      return Ok(advance);
+      return Ok(glyph_run_advance());
     }
 
     // Note: The shared glyph/color caches are used from multiple threads when paint parallelism is
@@ -1663,18 +1666,7 @@ impl TextRasterizer {
     if !scale.is_finite() || scale == 0.0 {
       // `scale == 0` can happen with `font-size: 0` (handled above) or extreme underflow. Treat it
       // like a no-op paint instead of crashing the entire render.
-      let mut cursor_x = x;
-      let mut cursor_y = 0.0_f32;
-      for glyph in glyphs {
-        cursor_x += glyph.x_advance;
-        cursor_y += glyph.y_advance;
-      }
-      let advance = if cursor_y.abs() > (cursor_x - x).abs() {
-        cursor_y
-      } else {
-        cursor_x - x
-      };
-      return Ok(advance);
+      return Ok(glyph_run_advance());
     }
     let inv_scale = 1.0 / scale.abs();
 
@@ -2554,6 +2546,45 @@ mod tests {
   fn test_text_rasterizer_with_capacity() {
     let rasterizer = TextRasterizer::with_cache_capacity(500);
     assert_eq!(rasterizer.cache_size(), 0);
+  }
+
+  #[test]
+  fn text_rasterizer_font_size_zero_does_not_error() {
+    let font = FontContext::new()
+      .get_sans_serif()
+      .expect("expected bundled sans-serif font for tests");
+
+    let glyphs = [GlyphPosition {
+      glyph_id: 0,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 12.0,
+      y_advance: 0.0,
+    }];
+
+    let mut rasterizer = TextRasterizer::new();
+    let mut pixmap = new_pixmap(4, 4).unwrap();
+    let advance = rasterizer
+      .render_glyph_run(
+        &glyphs,
+        &font,
+        0.0,
+        0.0,
+        0.0,
+        0,
+        &[],
+        0,
+        &[],
+        None,
+        0.0,
+        0.0,
+        Rgba::BLACK,
+        TextRenderState::default(),
+        &mut pixmap,
+      )
+      .expect("font-size:0 should not error");
+    assert_eq!(advance, 12.0);
   }
 
   #[test]
