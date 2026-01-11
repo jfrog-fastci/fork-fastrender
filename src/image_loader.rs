@@ -459,6 +459,54 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
   })
 }
 
+fn css_display_value_is_none(value: &str) -> bool {
+  let mut tokens = value.split_ascii_whitespace();
+  let Some(first) = tokens.next() else {
+    return false;
+  };
+  if !first.eq_ignore_ascii_case("none") {
+    return false;
+  }
+  for token in tokens {
+    // `!important` is parsed outside of the property value in CSS, but inline `style=""` strings
+    // often include it and we only need a best-effort check for `display:none`.
+    if token.eq_ignore_ascii_case("!important") {
+      continue;
+    }
+    // Common legacy IE hack used in the wild: `display:none \9`. Treat the trailing `\9` token
+    // as ignorable so we still recognize that the element is non-displayed in modern parsers.
+    if token.eq_ignore_ascii_case("\\9") {
+      continue;
+    }
+    return false;
+  }
+  true
+}
+
+fn svg_node_has_display_none(node: roxmltree::Node<'_, '_>) -> bool {
+  if let Some(display) = node.attribute("display") {
+    if trim_ascii_whitespace(display).eq_ignore_ascii_case("none") {
+      return true;
+    }
+  }
+  let Some(style) = node.attribute("style") else {
+    return false;
+  };
+  for decl in style.split(';') {
+    let decl = decl.trim();
+    if decl.is_empty() {
+      continue;
+    }
+    let Some((name, value)) = decl.split_once(':') else {
+      continue;
+    };
+    if name.trim().eq_ignore_ascii_case("display") && css_display_value_is_none(value) {
+      return true;
+    }
+  }
+  false
+}
+
 fn svg_xml_base_chain_for_node<'a, 'input>(node: roxmltree::Node<'a, 'input>) -> Vec<&'a str> {
   let mut chain = Vec::new();
   for ancestor in node.ancestors().filter(|n| n.is_element()) {
@@ -5698,6 +5746,9 @@ impl ImageCache {
           let is_image_src =
             local_name == "src" && tag_name.eq_ignore_ascii_case("image");
           if is_image_href || is_image_src {
+            if svg_node_has_display_none(node) {
+              continue;
+            }
             check_url(value, &base, ResourceKind::Image)?;
             continue;
           }
@@ -9669,6 +9720,31 @@ impl Clone for ImageCache {
     ctx.policy.same_origin_only = true;
     cache.set_resource_context(Some(ctx));
     cache
+  }
+
+  #[test]
+  fn svg_policy_ignores_display_none_image_src() {
+    use crate::html::content_security_policy::CspPolicy;
+
+    let doc_url = "https://doc.test/";
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+
+    let mut cache = ImageCache::new();
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = false;
+    ctx.csp = CspPolicy::from_values(["img-src 'self'"]);
+    assert!(ctx.csp.is_some(), "CSP should parse");
+    cache.set_resource_context(Some(ctx));
+
+    // Real-world SVGs (notably embedded in HTML) sometimes include `<image src="...">` elements
+    // guarded by legacy IE hacks like `display:none \\9`. Modern parsers treat that as non-displayed
+    // content, so policy enforcement should not fail the entire SVG document.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image src="https://cross.test/a.png" style="border:none;display:none \9" width="10" height="10"/></svg>"#;
+    cache
+      .probe_svg_content(svg, "inline-svg")
+      .expect("hidden external <image src> should not trigger CSP/policy checks");
   }
 
   #[test]

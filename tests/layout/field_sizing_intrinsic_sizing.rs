@@ -65,6 +65,28 @@ fn textarea_field_sizing_content_empty_does_not_collapse_width() {
 }
 
 #[test]
+fn textarea_rows_one_respects_authored_line_height() {
+  // google.com uses a <textarea rows="1"> for the search input. FastRender's UA stylesheet used to
+  // clamp all textareas to a larger min-height, which made the search box far too tall.
+  let html = "<style>textarea { padding: 0; border: 0; line-height: 22px; }</style>\
+    <textarea rows=\"1\"></textarea>";
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("dom");
+  let tree = renderer.layout_document(&dom, 400, 200).expect("layout");
+
+  let mut bounds = Vec::new();
+  collect_form_control_bounds(&tree.root, &mut bounds);
+  assert_eq!(bounds.len(), 1, "expected exactly one textarea");
+
+  let height = bounds[0].height();
+  assert!(
+    (height - 22.0).abs() <= 0.5,
+    "expected rows=1 textarea to be 22px tall (content-box), got {height}",
+  );
+}
+
+#[test]
 fn input_field_sizing_content_shrinks_intrinsic_width() {
   let html = "<style>input { padding: 0; border: 0; }</style>\
     <div><input value=\"0\"></div>\

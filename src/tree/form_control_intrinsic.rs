@@ -326,3 +326,67 @@ pub(crate) fn intrinsic_content_size_for_form_control(
     FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::css::parser::parse_stylesheet;
+  use crate::dom;
+  use crate::style::cascade;
+  use crate::text::font_loader::FontContext;
+  use crate::tree::box_generation::generate_box_tree;
+  use crate::tree::box_tree::{BoxType, ReplacedType};
+
+  fn find_textarea_form_control<'a>(
+    node: &'a crate::tree::box_tree::BoxNode,
+  ) -> Option<(&'a FormControl, &'a ComputedStyle)> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::FormControl(control) = &repl.replaced_type {
+        if matches!(control.control, FormControlKind::TextArea { .. }) {
+          return Some((control, &node.style));
+        }
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(hit) = find_textarea_form_control(child) {
+        return Some(hit);
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn textarea_intrinsic_height_respects_rows_and_line_height() {
+    // google.com search uses a <textarea rows="1"> with explicit line-height. If we ignore either,
+    // the control becomes too tall and breaks the search box layout.
+    let html = r#"
+      <html>
+        <body>
+          <textarea class="gLFyf" rows="1"></textarea>
+        </body>
+      </html>
+    "#;
+
+    let dom = dom::parse_html(html).expect("parse html");
+    // Include the competing `.gLFyf { line-height: 40px }` rule from the real google.com fixture so
+    // this test catches any bug where the `textarea.gLFyf` override is not applied.
+    let stylesheet = parse_stylesheet(
+      ".gLFyf,.Rd7rGe,.YacQv,.jOAti{font:16px Google Sans,Roboto,Arial,sans-serif;line-height:40px;font-size:16px;flex:100%;}textarea.gLFyf,.Rd7rGe,.YacQv,.jOAti{line-height:22px;border-bottom:8px solid transparent;padding-top:14px;overflow-x:hidden}",
+    )
+    .expect("parse stylesheet");
+    let styled = cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled).expect("box generation");
+    let (control, style) =
+      find_textarea_form_control(&box_tree.root).expect("textarea form control");
+
+    let viewport = Size::new(800.0, 600.0);
+    let font_context = FontContext::new();
+    let size =
+      intrinsic_content_size_for_form_control(control, style, viewport, None, &font_context, None);
+
+    assert!(
+      (size.height - 22.0).abs() < 0.01,
+      "expected 22px content height (rows=1, line-height=22px), got {size:?}",
+    );
+  }
+}

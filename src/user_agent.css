@@ -458,7 +458,6 @@ input[type="file"]::-webkit-file-upload-button {
 
 textarea {
     white-space: pre-wrap;
-    min-height: 3em;
     cursor: text;
 }
 

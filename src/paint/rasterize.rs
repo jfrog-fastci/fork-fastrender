@@ -153,7 +153,11 @@ pub struct BoxShadow {
   pub offset_x: f32,
   /// Vertical offset (positive = down)
   pub offset_y: f32,
-  /// Blur radius (CSS blur radius)
+  /// Gaussian sigma for the blur kernel (in device pixels).
+  ///
+  /// Callers should convert the CSS `box-shadow` blur radius to sigma using
+  /// [`crate::paint::blur::css_shadow_blur_radius_to_sigma`] during display-list construction
+  /// (and then scale to device pixels).
   pub blur_radius: f32,
   /// Spread radius (expands/contracts shadow)
   pub spread_radius: f32,
@@ -163,15 +167,15 @@ pub struct BoxShadow {
   pub inset: bool,
 }
 
-/// Convert a CSS `box-shadow` blur radius into the gaussian sigma used by the blur implementation.
+/// Returns the gaussian sigma used by the blur implementation.
 ///
-/// Browsers (including Chrome/Skia) interpret the CSS blur radius as *roughly twice* the gaussian
-/// sigma. Using sigma directly makes shadows far too diffuse, producing large visual diffs on pages
-/// that depend on soft drop shadows (e.g. nginx.org's header).
+/// FastRender stores `box-shadow` blur radii in sigma space throughout paint (matching
+/// [`crate::paint::blur::css_shadow_blur_radius_to_sigma`]). This helper is retained so call sites
+/// consistently clamp invalid values.
 #[inline]
 pub(crate) fn box_shadow_blur_radius_to_sigma(blur_radius: f32) -> f32 {
-  if blur_radius.is_finite() && blur_radius > 0.0 {
-    blur_radius * 0.5
+  if blur_radius.is_finite() {
+    blur_radius.max(0.0)
   } else {
     0.0
   }
@@ -2432,10 +2436,15 @@ mod tests {
   }
 
   #[test]
-  fn box_shadow_blur_radius_converts_to_sigma() {
+  fn box_shadow_blur_radius_is_sigma() {
     assert_eq!(box_shadow_blur_radius_to_sigma(0.0), 0.0);
     assert_eq!(box_shadow_blur_radius_to_sigma(-1.0), 0.0);
-    assert!((box_shadow_blur_radius_to_sigma(10.0) - 5.0).abs() < 1e-6);
+    assert!((box_shadow_blur_radius_to_sigma(10.0) - 10.0).abs() < 1e-6);
+    assert_eq!(
+      box_shadow_blur_radius_to_sigma(f32::NAN),
+      0.0,
+      "NaN sigma should clamp to 0"
+    );
   }
 
   #[test]
