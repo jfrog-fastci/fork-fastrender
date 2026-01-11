@@ -1,6 +1,9 @@
+#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+
 use runtime_native::gc_roots::StackRootEnumerator;
 use runtime_native::stackmaps::StackMaps;
 use runtime_native::stackwalk::StackBounds;
+use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 
 #[test]
 fn frame_pointer_stack_walker_and_slot_addressing() {
@@ -167,7 +170,7 @@ fn minimal_stackmap_section(instruction_offset: u32) -> Vec<u8> {
   push_u64(&mut bytes, 1); // record_count
 
   // Record header.
-  push_u64(&mut bytes, 0); // patchpoint_id
+  push_u64(&mut bytes, LLVM_STATEPOINT_PATCHPOINT_ID); // patchpoint_id
   push_u32(&mut bytes, instruction_offset);
   push_u16(&mut bytes, 0); // reserved
   push_u16(&mut bytes, 5); // num_locations
@@ -224,5 +227,16 @@ fn minimal_stackmap_section_with_offsets(instruction_offset: u32, base_off: i32,
   let derived_offset_pos = locations_start + 4 * LOCATION_LEN + OFFSET_IN_LOCATION;
   bytes[base_offset_pos..base_offset_pos + 4].copy_from_slice(&base_off.to_le_bytes());
   bytes[derived_offset_pos..derived_offset_pos + 4].copy_from_slice(&derived_off.to_le_bytes());
+
+  // Ensure the stackmap verifier accepts the synthetic record even when we set large offsets:
+  // `verify_indirect_sp_slot` requires `offset <= stack_size`. This helper is only used by tests
+  // that intentionally craft out-of-bounds *addresses* (relative to a tiny synthetic stack), so we
+  // bump the recorded stack_size to keep the record structurally valid.
+  let max_off = base_off.max(derived_off);
+  if max_off > 0 {
+    // StackSizeRecord layout: [header:16] [func_addr:u64] [stack_size:u64] [record_count:u64]
+    let stack_size_pos = HEADER_LEN + 8;
+    bytes[stack_size_pos..stack_size_pos + 8].copy_from_slice(&(max_off as u64).to_le_bytes());
+  }
   bytes
 }

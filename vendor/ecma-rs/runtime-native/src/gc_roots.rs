@@ -27,6 +27,7 @@ use std::ptr;
 use crate::stack_walk::{FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMapRecord, StackMaps};
 use crate::stackwalk::StackBounds;
+use crate::statepoints::StatepointRecord;
 
 /// A `(base, derived)` relocation pair.
 ///
@@ -226,25 +227,20 @@ fn visit_callsite_reloc_pairs(
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
   let record: &StackMapRecord = callsite.record;
-  let non_const: Vec<&Location> = record
-    .locations
-    .iter()
-    .filter(|loc| !matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }))
-    .collect();
+  let statepoint = StatepointRecord::new(record).unwrap_or_else(|err| {
+    panic!(
+      "failed to decode statepoint stackmap record at return_address=0x{:x} (patchpoint_id=0x{:x}): {err}",
+      frame.return_address, record.patchpoint_id
+    )
+  });
 
-  assert!(
-    non_const.len() % 2 == 0,
-    "stackmap record at return_address=0x{:x} has odd number of non-constant locations ({})",
-    frame.return_address,
-    non_const.len()
-  );
-
-  // LLVM 18 statepoint lowering emits locations in (base, derived) order for each gc.relocate.
-  for chunk in non_const.chunks_exact(2) {
-    let Some(base_slot) = location_to_slot(frame, chunk[0], bounds) else {
+  // LLVM 18 statepoint lowering emits locations in (base, derived) order for each `gc.relocate`
+  // call. This iterator already skips the 3-entry statepoint header and any deopt operands.
+  for (base, derived) in statepoint.gc_pairs() {
+    let Some(base_slot) = location_to_slot(frame, base, bounds) else {
       return false;
     };
-    let Some(derived_slot) = location_to_slot(frame, chunk[1], bounds) else {
+    let Some(derived_slot) = location_to_slot(frame, derived, bounds) else {
       return false;
     };
     f(RelocPair {
@@ -284,7 +280,6 @@ fn location_to_slot(frame: &FrameView, loc: &Location, bounds: Option<StackBound
     _ => None,
   }
 }
-
 fn add_signed_usize(base: usize, offset: i32) -> Option<usize> {
   if offset >= 0 {
     base.checked_add(offset as usize)
