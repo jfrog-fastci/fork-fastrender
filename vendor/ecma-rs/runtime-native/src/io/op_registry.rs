@@ -188,10 +188,14 @@ impl IoOpKind {
 pub(crate) struct IoOpRecord {
   id: IoOpId,
   pub(crate) kind: IoOpKind,
-  pub(crate) pinned: PinnedIoOp,
   pub(crate) promise: PromiseRef,
   pub(crate) cancel: CancellationToken,
   pub(crate) roots: Vec<RootPin>,
+  /// Pinned backing store + accounting permit.
+  ///
+  /// NOTE: Keep this *after* `roots` so dropping an op cannot observe
+  /// `inflight_ops_current == 0` while root pins are still registered.
+  pub(crate) pinned: PinnedIoOp,
   pub(crate) debug: Option<IoOpDebugHooks>,
   outcome: Mutex<Option<IoOpOutcome>>,
 }
@@ -214,10 +218,10 @@ impl IoOpRecord {
     Self {
       id,
       kind,
-      pinned,
       promise,
       cancel,
       roots,
+      pinned,
       debug,
       outcome: Mutex::new(None),
     }
@@ -316,4 +320,3 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
   }
   Ok(())
 }
-
