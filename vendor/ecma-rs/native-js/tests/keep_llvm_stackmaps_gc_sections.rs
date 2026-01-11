@@ -175,7 +175,8 @@ main:
     eprintln!("skipping lld linker-script check: lld not found in PATH");
   }
 
-  // Ensure the same fragment is accepted by GNU ld too (in addition to lld).
+  // Also ensure GNU ld can link while retaining stackmaps (uses the GNU
+  // ld-specific fragment).
   let out_with_script_ld = td.path().join("c.out");
   link_elf_executable_with_options(
     &out_with_script_ld,

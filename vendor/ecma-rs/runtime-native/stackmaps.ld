@@ -7,9 +7,7 @@
  */
 
 SECTIONS {
-  /* Keep stackmaps/faultmaps in RELRO-friendly data (writable during relocation,
-   * then protected by `PT_GNU_RELRO`). */
-  .data.rel.ro : ALIGN(8) {
+  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
@@ -25,10 +23,12 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
+  }
 
-    /* Faultmaps are emitted by some patchpoint configurations. Keep them for
-     * parity with `.llvm_stackmaps` and to avoid accidental removal under
-     * `--gc-sections`. */
+  /* Faultmaps are emitted by some patchpoint configurations. Keep them for
+   * parity with `.llvm_stackmaps` and to avoid accidental removal under
+   * `--gc-sections`. */
+  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))

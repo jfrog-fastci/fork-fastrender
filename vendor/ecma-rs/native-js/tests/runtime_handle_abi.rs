@@ -142,7 +142,9 @@ fn runtime_handle_abi_uses_pointer_to_slot_at_statepoint() {
   // as its call argument.
   let statepoint_line = func
     .lines()
-    .find(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("rt_gc_safepoint_relocate_h"))
+    .find(|l| {
+      l.contains("@llvm.experimental.gc.statepoint") && l.contains("rt_gc_safepoint_relocate_h")
+    })
     .unwrap_or_else(|| panic!("missing statepointed call to relocate helper in:\n{func}"));
   assert!(
     statepoint_line.contains("ptr %slot"),
@@ -181,4 +183,113 @@ fn runtime_handle_abi_uses_pointer_to_slot_at_statepoint() {
     func.contains("ret ptr addrspace(1) %"),
     "expected function to return a ptr addrspace(1):\n{func}"
   );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod linux {
+  use inkwell::context::AsContextRef as _;
+  use inkwell::context::Context;
+  use inkwell::values::AsValueRef as _;
+  use inkwell::AddressSpace;
+  use llvm_sys::core::{LLVMBuildRet, LLVMGetInsertBlock};
+  use native_js::emit::{emit_object, TargetConfig};
+  use native_js::gc::roots::{GcFrame, GcHandleArg, HandleAbiArg};
+  use native_js::gc::statepoint::StatepointEmitter;
+  use native_js::llvm::gc as llvm_gc;
+  use native_js::runtime_abi::{RuntimeAbi, RuntimeFn};
+  use object::Object as _;
+
+  #[test]
+  fn handle_abi_calls_root_slots_and_produce_stackmaps() {
+    native_js::llvm::init_native_target().expect("failed to init native target");
+
+    let context = Context::create();
+    let module = context.create_module("runtime_handle_abi_manual_statepoint");
+    let builder = context.create_builder();
+
+    let rt = RuntimeAbi::new(&context, &module);
+    let relocate = rt.get_or_declare_raw(RuntimeFn::GcSafepointRelocateH);
+
+    let gc_ptr_ty = context.ptr_type(AddressSpace::from(1u16));
+
+    // define ptr addrspace(1) @test(ptr addrspace(1) %p) gc "coreclr"
+    let test_ty = gc_ptr_ty.fn_type(&[gc_ptr_ty.into()], false);
+    let test_fn = module.add_function("test", test_ty, None);
+    llvm_gc::set_default_gc_strategy(&test_fn).expect("GC strategy contains NUL byte");
+
+    let entry = context.append_basic_block(test_fn, "entry");
+    builder.position_at_end(entry);
+
+    unsafe {
+      let builder_ref = builder.as_mut_ptr();
+      let entry_block = LLVMGetInsertBlock(builder_ref);
+      let frame = GcFrame::new((&context).as_ctx_ref(), entry_block);
+      let mut statepoints =
+        StatepointEmitter::new((&context).as_ctx_ref(), module.as_mut_ptr(), frame.gc_ptr_ty());
+
+      let p = test_fn
+        .get_nth_param(0)
+        .expect("missing %p")
+        .into_pointer_value();
+      p.set_name("p");
+
+      // Root the GC pointer in a slot, then pass the *slot address* as a handle.
+      let slot = frame.root_base(builder_ref, p.as_value_ref());
+      let call = frame.safepoint_call_handle_abi(
+        builder_ref,
+        &mut statepoints,
+        relocate.as_value_ref(),
+        &[HandleAbiArg::GcPtrAsHandle(GcHandleArg::Slot(slot))],
+      );
+
+      let out = call.result.expect("rt_gc_safepoint_relocate_h returns a value");
+      LLVMBuildRet(builder_ref, out);
+    }
+
+    if let Err(err) = module.verify() {
+      panic!("module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+    }
+
+    let ir = module.print_to_string().to_string();
+
+    // Handle passed to the runtime must be the address of the root slot (a `ptr`), not the GC
+    // pointer value itself.
+    assert!(
+      ir.contains("alloca ptr addrspace(1)") && ir.contains("%gc_root0"),
+      "expected a rooted slot named %gc_root0:\n{ir}"
+    );
+
+    let func = super::function_block(&ir, "@test");
+    let statepoint_line = func
+      .lines()
+      .find(|l| l.contains("@llvm.experimental.gc.statepoint") && l.contains("%gc_root0"))
+      .expect("statepoint call line");
+    assert!(
+      statepoint_line.contains("ptr %gc_root0"),
+      "expected statepoint to pass handle `ptr %gc_root0`, got:\n{statepoint_line}\n\n{func}"
+    );
+    assert!(
+      !statepoint_line.contains("ptr addrspace(1) %gc_root0"),
+      "handle must be addrspace(0) ptr, got:\n{statepoint_line}\n\n{func}"
+    );
+
+    // The GC pointer value (loaded from the slot) must appear in `"gc-live"` so stackmaps contain
+    // it.
+    assert!(
+      func.contains("\"gc-live\"") && func.contains("ptr addrspace(1) %gc_live0"),
+      "expected rooted GC pointer to appear in gc-live bundle:\n{func}"
+    );
+    assert!(
+      func.contains("@llvm.experimental.gc.relocate.p1"),
+      "expected gc.relocate for the rooted pointer:\n{func}"
+    );
+
+    // Ensure we can produce an object with `.llvm_stackmaps`.
+    let obj = emit_object(&module, TargetConfig::default());
+    let file = object::File::parse(&*obj).expect("parse object file");
+    assert!(
+      file.section_by_name(".llvm_stackmaps").is_some(),
+      "missing .llvm_stackmaps section"
+    );
+  }
 }

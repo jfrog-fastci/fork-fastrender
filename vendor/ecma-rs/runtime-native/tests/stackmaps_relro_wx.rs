@@ -115,6 +115,8 @@ entry:
     rename_script.exists(),
     "missing helper script at {rename_script:?}"
   );
+  // This test links with `gcc` (GNU ld). Use the GNU ld-specific fragment to
+  // avoid RWX LOAD segments when stackmaps must be writable during relocation.
   let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
   assert!(
     linker_script.exists(),

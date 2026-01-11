@@ -41,10 +41,11 @@ use crate::gc::statepoint::StatepointEmitter;
 use crate::runtime_fn::GcEffect;
 use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
-  LLVMDisposeBuilder, LLVMGetConstOpcode, LLVMGetFirstInstruction, LLVMGetOperand,
-  LLVMGetReturnType, LLVMGetStringAttributeAtIndex, LLVMGetTypeKind, LLVMGlobalGetValueType,
-  LLVMIsAConstantExpr, LLVMIsAFunction, LLVMSetTailCallKind, LLVMPointerType,
-  LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMVoidTypeInContext,
+  LLVMDisposeBuilder, LLVMFunctionType, LLVMGetConstOpcode, LLVMGetFirstInstruction, LLVMGetOperand,
+  LLVMGetPointerAddressSpace, LLVMGetReturnType, LLVMGetStringAttributeAtIndex, LLVMGetTypeKind,
+  LLVMGlobalGetValueType, LLVMIsAConstantExpr, LLVMIsAFunction, LLVMSetTailCallKind,
+  LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMTypeOf,
+  LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{
   LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef,
@@ -53,6 +54,12 @@ use llvm_sys::{LLVMOpcode, LLVMTailCallKind, LLVMTypeKind};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
+
+/// A `runtime-native` handle ABI value: `GcHandle = *mut *mut u8`.
+///
+/// In LLVM IR this is represented as a normal `ptr` (addrspace(0)) that points to a GC root slot
+/// (`alloca ptr addrspace(1)`).
+pub type GcHandle = LLVMValueRef;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct GcSlot {
@@ -160,6 +167,35 @@ pub struct RootScope<'a> {
   rooted_len: usize,
 }
 
+/// A GC pointer argument that must cross a `may_gc` runtime boundary.
+///
+/// Such arguments must be passed using the handle ABI so the runtime can safely reload the
+/// (possibly relocated) pointer value after any allocation/safepoint.
+#[derive(Clone, Copy, Debug)]
+pub enum GcHandleArg {
+  /// Use an existing GC root slot.
+  Slot(GcSlot),
+  /// Root this GC pointer value in a temporary slot for the duration of the call.
+  Value(LLVMValueRef),
+}
+
+/// Argument to a handle-ABI runtime call.
+#[derive(Clone, Copy, Debug)]
+pub enum HandleAbiArg {
+  /// Pass `value` directly as a normal call argument (no special rooting).
+  Value(LLVMValueRef),
+  /// Pass a GC pointer argument as a handle (`GcHandle` / pointer-to-slot).
+  GcPtrAsHandle(GcHandleArg),
+}
+
+/// Result of a handle-ABI runtime call.
+#[derive(Debug)]
+pub struct HandleAbiCall {
+  pub result: Option<LLVMValueRef>,
+  /// One relocated GC pointer value per [`GcHandleArg`] passed as a handle (in encounter order).
+  pub relocated: Vec<LLVMValueRef>,
+}
+
 impl Drop for RootScope<'_> {
   fn drop(&mut self) {
     self.frame.rooted.borrow_mut().truncate(self.rooted_len);
@@ -195,6 +231,14 @@ impl GcFrame {
 
   pub fn gc_ptr_ty(&self) -> LLVMTypeRef {
     self.gc_ptr_ty
+  }
+
+  /// Materialize a `GcHandle` from an existing GC root slot.
+  ///
+  /// The returned value is the *address of the slot* (`ptr`), suitable for passing to
+  /// `runtime-native` `*_h` entrypoints that accept handles.
+  pub fn gc_handle(&self, slot: GcSlot) -> GcHandle {
+    slot.as_alloca()
   }
 
   /// Allocate a new stack slot (`alloca`) of GC pointer type and store `init` into it.
@@ -283,6 +327,100 @@ impl GcFrame {
     let out = f(slot);
     drop(scope);
     out
+  }
+
+  /// Emit a statepointed call to a `may_gc` runtime function that expects GC pointer arguments via
+  /// the handle ABI (`GcHandle = *mut *mut u8`).
+  ///
+  /// For each [`HandleAbiArg::GcPtrAsHandle`]:
+  /// - ensures there is an address-taken root slot containing the pointer,
+  /// - passes the slot address as a `GcHandle`,
+  /// - after the call, reloads the slot to obtain the relocated pointer value.
+  pub unsafe fn safepoint_call_handle_abi(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee: LLVMValueRef,
+    call_args: &[HandleAbiArg],
+  ) -> HandleAbiCall {
+    // Any temporary slots created for this call should not leak into the caller's rooted set.
+    let scope = self.scope();
+
+    let mut handle_slots: Vec<GcSlot> = Vec::new();
+    let mut lowered_args: Vec<LLVMValueRef> = Vec::with_capacity(call_args.len());
+
+    for &arg in call_args {
+      match arg {
+        HandleAbiArg::Value(v) => lowered_args.push(v),
+        HandleAbiArg::GcPtrAsHandle(gc_arg) => match gc_arg {
+          GcHandleArg::Slot(slot) => {
+            // Ensure the slot is treated as a GC root for the duration of this call.
+            //
+            // In normal usage, `slot` will already be in the frame's rooted set. This is a
+            // best-effort safeguard for callers that hold onto slots across `RootScope`s.
+            let already_rooted = self.rooted.borrow().iter().any(|r| match r {
+              GcRoot::Base(s) => *s == slot,
+              GcRoot::Derived { base, derived } => *base == slot || *derived == slot,
+            });
+            if !already_rooted {
+              self.rooted.borrow_mut().push(GcRoot::Base(slot));
+            }
+            lowered_args.push(self.gc_handle(slot));
+            handle_slots.push(slot);
+          }
+          GcHandleArg::Value(ptr) => {
+            let slot = self.root_base(builder, ptr);
+            lowered_args.push(self.gc_handle(slot));
+            handle_slots.push(slot);
+          }
+        },
+      }
+    }
+
+    // `runtime-native` exports handle-ABI entrypoints with raw pointer types (`ptr`/addrspace(0)),
+    // but `native-js` models GC pointers as `ptr addrspace(1)`.
+    //
+    // When emitting statepoints manually, the statepoint machinery needs the *callsite* function
+    // type to determine which `gc.result.*` intrinsic overload to use. If we use the callee
+    // declaration's raw signature (`ptr @foo(...)`), LLVM will emit `gc.result.p0` and the module
+    // becomes invalid when the caller expects a GC pointer (`ptr addrspace(1)`).
+    //
+    // Therefore, for handle-ABI calls that pass at least one GC pointer via a handle slot, we
+    // treat any pointer return type as a GC pointer at the statepoint boundary. This is consistent
+    // with `runtime-native/docs/gc_handle_abi.md`: handle-ABI `may_gc` functions return `GcPtr`
+    // values (GC-managed pointers) even though the exported C ABI uses raw pointers.
+    let mut callee_fn_ty = LLVMGlobalGetValueType(callee);
+    if !handle_slots.is_empty() {
+      let ret_ty = LLVMGetReturnType(callee_fn_ty);
+      if LLVMGetTypeKind(ret_ty) == LLVMTypeKind::LLVMPointerTypeKind
+        && LLVMGetPointerAddressSpace(ret_ty) == 0
+      {
+        let mut param_tys: Vec<LLVMTypeRef> = lowered_args
+          .iter()
+          .copied()
+          .map(|v| unsafe { LLVMTypeOf(v) })
+          .collect();
+        callee_fn_ty = LLVMFunctionType(
+          self.gc_ptr_ty,
+          param_tys.as_mut_ptr(),
+          param_tys.len() as u32,
+          0,
+        );
+      }
+    }
+
+    let result =
+      self.safepoint_call_inner(builder, statepoints, callee, callee_fn_ty, &lowered_args);
+
+    // Reload each handle slot to obtain the post-statepoint relocated pointer.
+    let mut relocated = Vec::with_capacity(handle_slots.len());
+    for (idx, slot) in handle_slots.into_iter().enumerate() {
+      relocated.push(self.load(builder, slot, &format!("handle_relocated{idx}")));
+    }
+
+    drop(scope);
+
+    HandleAbiCall { result, relocated }
   }
 
   unsafe fn safepoint_call_inner(

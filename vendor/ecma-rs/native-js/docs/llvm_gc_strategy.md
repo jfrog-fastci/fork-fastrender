@@ -70,15 +70,42 @@ LLVM stackmaps only describe LLVM-generated frames; they do **not** describe Rus
 Therefore, **MayGC** runtime entrypoints must either:
 
 - take **no GC pointer arguments**, or
-- take **handles** (or another runtime-managed rooting mechanism), or
+- take **handles** (pointer-to-slot, `GcHandle = *mut *mut u8`), or
 - explicitly root/pin any pointer arguments before triggering GC.
 
 `native-js` enforces this as a codegen-time invariant for registered runtime calls.
+
+Handle ABI recap:
+
+- The *caller* owns a stack/root slot (`alloca ptr addrspace(1)`) containing the GC pointer.
+- The runtime receives `&mut slot` as `GcHandle` (`ptr` in LLVM IR).
+- During a GC, the collector updates the slot in-place (using stackmap information from the
+  caller's statepoint).
+- The runtime may safely reload `*handle` after any allocation/safepoint.
 
 See `runtime-native/docs/gc_handle_abi.md` for the full compiler/runtime contract. In particular,
 new `may_gc` runtime entrypoints that need to accept GC-managed pointer arguments should be exposed
 using the handle ABI (`GcHandle = *mut *mut u8`) and named with a `*_h` suffix (e.g.
 `rt_gc_safepoint_relocate_h`).
+
+### Runtime ABI safety rule: MayGC runtime calls must be *direct* (no wrapper frames)
+
+`runtime-native`'s stop-the-world safepoint slow path (`rt_gc_safepoint_slow`) captures the
+**immediate caller's** `(SP, FP, return address)` via a small assembly shim and uses the captured
+return address as the lookup key into LLVM's `.llvm_stackmaps` table.
+
+If `native-js` were to insert an intermediate wrapper frame between compiled code and a `may_gc`
+runtime entrypoint (e.g. `rt_alloc_gc` calling `rt_alloc`), the captured return address would point
+into the wrapper. Since wrappers are not GC-managed (`gc "coreclr"`) they do not have stackmap
+records, and stackmap lookup would fail.
+
+Therefore, **any call that may trigger GC must be a direct callsite from a GC-managed compiled
+function**, so the call instruction's return address has a stackmap record produced by
+`rewrite-statepoints-for-gc`.
+
+This rule is independent of the "no raw GC pointer args" rule above: wrappers are forbidden even
+when the runtime function takes no GC pointer arguments (e.g. allocation), because the safepoint
+context capture cares about the call *frame*, not just the argument values.
 
 ### Safepoint polls and lowering
 
