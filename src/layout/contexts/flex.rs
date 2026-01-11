@@ -268,16 +268,40 @@ fn snap_intrinsic_border_box_size(value: f32) -> f32 {
 
 #[inline]
 fn subtree_has_in_flow_layout_content(root: &BoxNode) -> bool {
+  // The flex intrinsic-width fast paths use this heuristic to decide whether returning a 0px block
+  // size is safe. Some real-world pages (e.g. dailymail.co.uk) use clearfix pseudo-elements like:
+  //
+  //   .cleared::after { content: "."; display: block; line-height: 0; font-size: 0; height: 0; }
+  //
+  // These nodes technically contain a text box, but the authored `line-height: 0` means they do
+  // not establish any line boxes and should not force us to fall back to a full layout during
+  // intrinsic sizing. If we do, block layout may expand to the viewport width, polluting flex base
+  // size resolution and breaking auto-margins / alignment.
+  let eps = 0.01;
   let mut stack: Vec<&BoxNode> = root.children.iter().collect();
   while let Some(node) = stack.pop() {
     if node.style.running_position.is_some() || !node.style.position.is_in_flow() {
       continue;
     }
-    if matches!(
-      node.box_type,
-      BoxType::Text(_) | BoxType::LineBreak(_) | BoxType::Marker(_) | BoxType::Replaced(_)
-    ) {
-      return true;
+    let line_height = match node.style.line_height {
+      crate::style::types::LineHeight::Normal => node.style.font_size * 1.2,
+      crate::style::types::LineHeight::Number(n) => node.style.font_size * n,
+      crate::style::types::LineHeight::Length(len) => len.to_px(),
+      crate::style::types::LineHeight::Percentage(pct) => node.style.font_size * (pct / 100.0),
+    };
+    match &node.box_type {
+      BoxType::Text(text) => {
+        if !text.text.is_empty() && line_height > eps {
+          return true;
+        }
+      }
+      BoxType::LineBreak(_) | BoxType::Marker(_) => {
+        if line_height > eps {
+          return true;
+        }
+      }
+      BoxType::Replaced(_) => return true,
+      _ => {}
     }
     stack.extend(node.children.iter());
   }
@@ -17546,6 +17570,82 @@ mod tests {
       (fragment.children[1].bounds.x() - 20.0).abs() < 0.01,
       "expected centered item at x=20 (1040 - 1000 / 2); got {:?}",
       fragment.children[1].bounds
+    );
+  }
+
+  #[test]
+  fn flex_auto_margin_not_blocked_by_clearfix_pseudo_element() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+
+    let left_id = 81001usize;
+    let mut left_style = ComputedStyle::default();
+    left_style.display = Display::Block;
+    left_style.width = Some(Length::px(100.0));
+    left_style.height = Some(Length::px(10.0));
+    left_style.width_keyword = None;
+    left_style.height_keyword = None;
+    let mut left = BoxNode::new_block(Arc::new(left_style), FormattingContextType::Block, vec![]);
+    left.id = left_id;
+
+    let right_id = 81002usize;
+    let mut right_style = ComputedStyle::default();
+    right_style.display = Display::Block;
+    right_style.width = Some(Length::px(50.0));
+    right_style.height = Some(Length::px(10.0));
+    right_style.width_keyword = None;
+    right_style.height_keyword = None;
+    right_style.margin_left = None; // margin-left: auto
+    let mut right = BoxNode::new_block(Arc::new(right_style), FormattingContextType::Block, vec![]);
+    right.id = right_id;
+
+    // Simulate the ubiquitous clearfix pattern used by dailymail.co.uk:
+    // `.cleared::after { content:"."; display:block; line-height:0; font-size:0; height:0; }`.
+    //
+    // This pseudo-element becomes a flex item when its parent is `display:flex`. It must remain
+    // 0-sized; otherwise the flex base size computation can treat it as viewport-wide and break
+    // auto-margin alignment of sibling items.
+    let pseudo_id = 81003usize;
+    let mut pseudo_style = ComputedStyle::default();
+    pseudo_style.display = Display::Block;
+    pseudo_style.height = Some(Length::px(0.0));
+    pseudo_style.height_keyword = None;
+    pseudo_style.font_size = 0.0;
+    pseudo_style.line_height = LineHeight::Length(Length::px(0.0));
+    let pseudo_style = Arc::new(pseudo_style);
+
+    let mut text_style = (*pseudo_style).clone();
+    text_style.display = Display::Inline;
+    let pseudo_text = BoxNode::new_text(Arc::new(text_style), ".".to_string());
+
+    let mut pseudo = BoxNode::new_block(pseudo_style, FormattingContextType::Block, vec![pseudo_text]);
+    pseudo.id = pseudo_id;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![left, right, pseudo],
+    );
+
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite(500.0, 100.0))
+      .unwrap();
+
+    let right_fragment = find_block_child(&fragment, right_id);
+    assert!(
+      (right_fragment.bounds.x() - 450.0).abs() < 0.01,
+      "expected auto-margin item to be flush-right at x=450; got {:?}",
+      right_fragment.bounds
+    );
+
+    let pseudo_fragment = find_block_child(&fragment, pseudo_id);
+    assert!(
+      pseudo_fragment.bounds.width() <= 0.01,
+      "expected clearfix pseudo-element flex item to remain 0-width; got {:?}",
+      pseudo_fragment.bounds
     );
   }
 
