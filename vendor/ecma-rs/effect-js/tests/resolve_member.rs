@@ -12,11 +12,35 @@ export {};
 interface URL {
   pathname: string;
   href: string;
+  origin: string;
+  protocol: string;
+  host: string;
+  hostname: string;
+  port: string;
+  search: string;
+  hash: string;
 }
 
-const u: URL = { pathname: "", href: "" };
+const u: URL = {
+  pathname: "",
+  href: "",
+  origin: "",
+  protocol: "",
+  host: "",
+  hostname: "",
+  port: "",
+  search: "",
+  hash: "",
+};
 u.pathname;
 u.href;
+u.origin;
+u.protocol;
+u.host;
+u.hostname;
+u.port;
+u.search;
+u.hash;
 
 const xs: number[] = [1];
 xs.length;
@@ -80,6 +104,13 @@ fn resolves_known_member_reads_typed() {
 
   let pathname = find_member_expr(&lowered, body, "u", "pathname");
   let href = find_member_expr(&lowered, body, "u", "href");
+  let origin = find_member_expr(&lowered, body, "u", "origin");
+  let protocol = find_member_expr(&lowered, body, "u", "protocol");
+  let host = find_member_expr(&lowered, body, "u", "host");
+  let hostname = find_member_expr(&lowered, body, "u", "hostname");
+  let port = find_member_expr(&lowered, body, "u", "port");
+  let search = find_member_expr(&lowered, body, "u", "search");
+  let hash = find_member_expr(&lowered, body, "u", "hash");
   let length = find_member_expr(&lowered, body, "xs", "length");
 
   let resolved_pathname = resolve_member(&lowered, root_body, pathname, &types).expect("resolve u.pathname");
@@ -93,6 +124,31 @@ fn resolves_known_member_reads_typed() {
   let resolved_href = resolve_member(&lowered, root_body, href, &types).expect("resolve u.href");
   assert_eq!(resolved_href.api.as_str(), "URL.prototype.href");
 
+  let resolved_origin =
+    resolve_member(&lowered, root_body, origin, &types).expect("resolve u.origin");
+  assert_eq!(resolved_origin.api.as_str(), "URL.prototype.origin");
+
+  let resolved_protocol =
+    resolve_member(&lowered, root_body, protocol, &types).expect("resolve u.protocol");
+  assert_eq!(resolved_protocol.api.as_str(), "URL.prototype.protocol");
+
+  let resolved_host = resolve_member(&lowered, root_body, host, &types).expect("resolve u.host");
+  assert_eq!(resolved_host.api.as_str(), "URL.prototype.host");
+
+  let resolved_hostname =
+    resolve_member(&lowered, root_body, hostname, &types).expect("resolve u.hostname");
+  assert_eq!(resolved_hostname.api.as_str(), "URL.prototype.hostname");
+
+  let resolved_port = resolve_member(&lowered, root_body, port, &types).expect("resolve u.port");
+  assert_eq!(resolved_port.api.as_str(), "URL.prototype.port");
+
+  let resolved_search =
+    resolve_member(&lowered, root_body, search, &types).expect("resolve u.search");
+  assert_eq!(resolved_search.api.as_str(), "URL.prototype.search");
+
+  let resolved_hash = resolve_member(&lowered, root_body, hash, &types).expect("resolve u.hash");
+  assert_eq!(resolved_hash.api.as_str(), "URL.prototype.hash");
+
   let resolved_length = resolve_member(&lowered, root_body, length, &types).expect("resolve xs.length");
   assert_eq!(resolved_length.api.as_str(), "Array.prototype.length");
 
@@ -102,6 +158,10 @@ fn resolves_known_member_reads_typed() {
   assert_eq!(
     root_tables.resolved_member[pathname.0 as usize].map(|api| api.as_str()),
     Some("URL.prototype.pathname")
+  );
+  assert_eq!(
+    root_tables.resolved_member[origin.0 as usize].map(|api| api.as_str()),
+    Some("URL.prototype.origin")
   );
   assert_eq!(
     root_tables.resolved_member[length.0 as usize].map(|api| api.as_str()),

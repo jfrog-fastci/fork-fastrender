@@ -875,6 +875,13 @@ pub fn resolve_member(
     }
     "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
     "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
+    "origin" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeOrigin,
+    "protocol" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeProtocol,
+    "host" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHost,
+    "hostname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHostname,
+    "port" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePort,
+    "search" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeSearch,
+    "hash" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHash,
     _ => return None,
   };
 

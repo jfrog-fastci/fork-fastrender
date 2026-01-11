@@ -24,6 +24,13 @@ pub enum ApiId {
   ConsoleLog,
   UrlPrototypeHref,
   UrlPrototypePathname,
+  UrlPrototypeOrigin,
+  UrlPrototypeProtocol,
+  UrlPrototypeHost,
+  UrlPrototypeHostname,
+  UrlPrototypePort,
+  UrlPrototypeSearch,
+  UrlPrototypeHash,
 }
 
 impl ApiId {
@@ -47,6 +54,13 @@ impl ApiId {
       ApiId::ConsoleLog => "console.log",
       ApiId::UrlPrototypeHref => "URL.prototype.href",
       ApiId::UrlPrototypePathname => "URL.prototype.pathname",
+      ApiId::UrlPrototypeOrigin => "URL.prototype.origin",
+      ApiId::UrlPrototypeProtocol => "URL.prototype.protocol",
+      ApiId::UrlPrototypeHost => "URL.prototype.host",
+      ApiId::UrlPrototypeHostname => "URL.prototype.hostname",
+      ApiId::UrlPrototypePort => "URL.prototype.port",
+      ApiId::UrlPrototypeSearch => "URL.prototype.search",
+      ApiId::UrlPrototypeHash => "URL.prototype.hash",
     }
   }
 
@@ -71,6 +85,13 @@ impl ApiId {
       "console.log" => ApiId::ConsoleLog,
       "URL.prototype.href" => ApiId::UrlPrototypeHref,
       "URL.prototype.pathname" => ApiId::UrlPrototypePathname,
+      "URL.prototype.origin" => ApiId::UrlPrototypeOrigin,
+      "URL.prototype.protocol" => ApiId::UrlPrototypeProtocol,
+      "URL.prototype.host" => ApiId::UrlPrototypeHost,
+      "URL.prototype.hostname" => ApiId::UrlPrototypeHostname,
+      "URL.prototype.port" => ApiId::UrlPrototypePort,
+      "URL.prototype.search" => ApiId::UrlPrototypeSearch,
+      "URL.prototype.hash" => ApiId::UrlPrototypeHash,
       _ => return None,
     })
   }
