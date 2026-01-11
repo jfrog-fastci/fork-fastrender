@@ -111,6 +111,13 @@ fn cfg_for_key(program: &Program, key: FunctionKey) -> &Cfg {
   }
 }
 
+fn cfg_for_key_deconstructed(program: &Program, key: FunctionKey) -> &Cfg {
+  match key {
+    FunctionKey::TopLevel => &program.top_level.body,
+    FunctionKey::Fn(id) => &program.functions[id].body,
+  }
+}
+
 fn params_for_key(program: &Program, key: FunctionKey) -> &[u32] {
   match key {
     FunctionKey::TopLevel => &program.top_level.params,
@@ -128,6 +135,20 @@ fn cfg_for_key_mut(program: &mut Program, key: FunctionKey) -> &mut Cfg {
       let func = &mut program.functions[id];
       func.ssa_body.as_mut().unwrap_or(&mut func.body)
     }
+  }
+}
+
+fn cfg_for_key_deconstructed_mut(program: &mut Program, key: FunctionKey) -> &mut Cfg {
+  match key {
+    FunctionKey::TopLevel => &mut program.top_level.body,
+    FunctionKey::Fn(id) => &mut program.functions[id].body,
+  }
+}
+
+fn cfg_for_key_ssa_mut(program: &mut Program, key: FunctionKey) -> Option<&mut Cfg> {
+  match key {
+    FunctionKey::TopLevel => program.top_level.ssa_body.as_mut(),
+    FunctionKey::Fn(id) => program.functions[id].ssa_body.as_mut(),
   }
 }
 
@@ -399,7 +420,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 
   // Clear any stale metadata before annotating.
   for &key in &keys {
-    reset_cfg_meta(cfg_for_key_mut(program, key));
+    reset_cfg_meta(cfg_for_key_deconstructed_mut(program, key));
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      reset_cfg_meta(cfg);
+    }
   }
 
   let mut analyses = ProgramAnalyses::default();
@@ -407,7 +431,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 1) effects
   let effects = effect::compute_program_effects(program);
   for &key in &keys {
-    effect::annotate_cfg_effects(cfg_for_key_mut(program, key), &effects);
+    effect::annotate_cfg_effects(cfg_for_key_deconstructed_mut(program, key), &effects);
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      effect::annotate_cfg_effects(cfg, &effects);
+    }
   }
   analyses
     .effects_summary
@@ -421,7 +448,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 2) purity
   let purities = purity::compute_program_purity(program, &effects);
   for &key in &keys {
-    purity::annotate_cfg_purity(cfg_for_key_mut(program, key), &purities);
+    purity::annotate_cfg_purity(cfg_for_key_deconstructed_mut(program, key), &purities);
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      purity::annotate_cfg_purity(cfg, &purities);
+    }
   }
   analyses
     .purity
@@ -446,7 +476,10 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       Some(&escape_summaries),
       Some(&call_summaries),
     );
-    annotate_cfg_escape_states(cfg_for_key_mut(program, key), &escapes);
+    annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &escapes);
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      annotate_cfg_escape_states(cfg, &escapes);
+    }
     analyses.escape.insert(key, escapes);
   }
 
@@ -466,8 +499,12 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
         Some(&call_summaries),
       )
     };
-    ownership::annotate_cfg_ownership(cfg_for_key_mut(program, key), &ownership_result);
-    consume::annotate_cfg_consumption(cfg_for_key_mut(program, key), &ownership_result);
+    ownership::annotate_cfg_ownership(cfg_for_key_deconstructed_mut(program, key), &ownership_result);
+    consume::annotate_cfg_consumption(cfg_for_key_deconstructed_mut(program, key), &ownership_result);
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      ownership::annotate_cfg_ownership(cfg, &ownership_result);
+      consume::annotate_cfg_consumption(cfg, &ownership_result);
+    }
     analyses.ownership.insert(key, ownership_result);
   }
 
@@ -480,9 +517,16 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
     analyses
       .range
       .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
-    annotate_cfg_nullability_narrowings(cfg_for_key_mut(program, key));
+    annotate_cfg_nullability_narrowings(cfg_for_key_deconstructed_mut(program, key));
+    if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
+      annotate_cfg_nullability_narrowings(cfg);
+    }
     let encoding_result = encoding::analyze_cfg_encoding(cfg_for_key(program, key));
     encoding::annotate_cfg_encoding(cfg_for_key_mut(program, key), &encoding_result);
+    // `encoding_result` is computed against the analyzed CFG (usually SSA-form), so
+    // we need a separate analysis pass to annotate the SSA-deconstructed CFG.
+    let deconstructed_encoding = encoding::analyze_cfg_encoding(cfg_for_key_deconstructed(program, key));
+    encoding::annotate_cfg_encoding(cfg_for_key_deconstructed_mut(program, key), &deconstructed_encoding);
     analyses.encoding.insert(key, encoding_result);
   }
 
