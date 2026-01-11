@@ -108,6 +108,63 @@ fn container_scroll_state_queries_require_container_type_scroll_state_opt_in() {
 }
 
 #[test]
+fn container_scroll_state_queries_match_with_combined_container_types() {
+  let html = r#"
+    <style>
+      .scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+      #size_scroller {
+        container-name: size;
+        container-type: size scroll-state;
+      }
+      #inline_scroller {
+        container-name: inline;
+        container-type: inline-size scroll-state;
+      }
+      .spacer { height: 200px; }
+      .target { color: rgb(0, 0, 255); }
+      @container size scroll-state(scrollable) {
+        #target_size { color: rgb(255, 0, 0); }
+      }
+      @container inline scroll-state(scrollable) {
+        #target_inline { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="size_scroller" class="scroller">
+      <div class="spacer"></div>
+      <div id="target_size" class="target">hello</div>
+    </div>
+    <div id="inline_scroller" class="scroller">
+      <div class="spacer"></div>
+      <div id="target_inline" class="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(200, 200))
+    .expect("prepare");
+
+  let target_size = find_by_id(prepared.styled_tree(), "target_size").expect("target_size element");
+  let target_inline =
+    find_by_id(prepared.styled_tree(), "target_inline").expect("target_inline element");
+  assert_eq!(
+    target_size.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scroll-state queries to match size+scroll-state container types"
+  );
+  assert_eq!(
+    target_inline.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scroll-state queries to match inline-size+scroll-state container types"
+  );
+}
+
+#[test]
 fn container_scroll_state_scrollable_bottom_tracks_element_scroll_offset() {
   let html = r#"
     <style>

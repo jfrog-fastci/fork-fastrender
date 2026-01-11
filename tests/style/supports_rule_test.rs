@@ -60,6 +60,24 @@ fn supports_container_type_scroll_state_matches() {
 }
 
 #[test]
+fn supports_container_type_size_scroll_state_matches() {
+  let css = r"@supports (container-type: size scroll-state) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_container_type_inline_size_scroll_state_matches() {
+  let css = r"@supports (container-type: inline-size scroll-state) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_container_type_invalid_combo_is_unsupported() {
+  let css = r"@supports (container-type: normal scroll-state) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
 fn supports_not_negates() {
   let css = r"@supports not (display: grid) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
