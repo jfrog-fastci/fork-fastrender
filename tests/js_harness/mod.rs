@@ -529,3 +529,4 @@ fn format_vm_error(heap: &mut Heap, err: VmError) -> String {
 mod smoke;
 mod dynamic_scripts;
 mod timers;
+mod script_scheduler;

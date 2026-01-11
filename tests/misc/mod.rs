@@ -53,7 +53,14 @@ mod integration_test;
 mod is_alias_matches_test;
 mod dom2_closest;
 mod dom2_js_events;
+mod js_dom_events;
+mod js_dom_realm_selectors;
+mod js_dom_wrapper_identity;
 mod js_dom_integration_export;
+mod js_execution_budgets;
+mod js_fetch_tests;
+mod js_vm_budget_tests;
+mod js_window_realm;
 #[cfg(feature = "quickjs")]
   mod js_current_script;
   mod js_script_fetch_semantics;

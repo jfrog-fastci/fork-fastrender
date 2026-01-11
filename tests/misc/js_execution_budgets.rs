@@ -10,6 +10,7 @@ use std::time::Duration;
 use vm_js::{PropertyKey, TerminationReason, Value, VmError};
 
 fn with_interrupt_watchdog<R>(timeout: Duration, f: impl FnOnce() -> R) -> (R, bool) {
+  let _lock = super::global_test_lock();
   let interrupt_flag = render_control::interrupt_flag();
   interrupt_flag.store(false, Ordering::Relaxed);
 

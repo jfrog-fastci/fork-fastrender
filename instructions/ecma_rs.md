@@ -114,7 +114,7 @@ FastRender encodes this expectation via:
 - a compile-time API guard in `src/js/vmjs/window_timers.rs` (fails fast if `vm-js` regresses)
 - regression tests:
   - `src/js/vmjs/window_timers.rs`: `vm_js_promise_jobs_root_captured_values_until_run`
-  - `tests/vm_js_promise_job_rooting.rs`
+  - `tests/misc/vm_js_promise_job_rooting.rs`
 
 ## Running `ecma-rs` commands safely (resource limits)
 
