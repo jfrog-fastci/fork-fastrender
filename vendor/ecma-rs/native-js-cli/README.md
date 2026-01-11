@@ -374,7 +374,7 @@ error[NJS0009]: property access is not supported by native-js yet
   for the current list.
 - Even after `validate_strict_subset` passes, the current HIR→LLVM lowering is
   still minimal and may fail later during codegen with `NJS01xx` diagnostics
-  (`NJS0100..NJS0122`; see
+  (`NJS0100..NJS0124`; see
   [`native-js/src/codegen/mod.rs`](../native-js/src/codegen/mod.rs)).
 
 #### HIR codegen subset (current)
@@ -382,13 +382,28 @@ error[NJS0009]: property access is not supported by native-js yet
 The current HIR-based code generator (used by `native-js`) is limited to a small
 smoke-test subset:
 
-- The entry file must export `main()` with a `return` expression.
-- Numeric literals must be **32-bit integers** (decimal/hex/binary/octal; `_`
-  separators allowed). Floats/`1e3`-style literals are rejected.
-- The return expression supports a small set of integer operators:
-  - unary: `+x`, `-x`
-  - binary: `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`
-- The returned `i32` value becomes the executable’s exit code (like C `main`).
+- The entry file must export `main()`:
+  - defined in the entry file (no re-exports)
+  - no parameters
+  - not `async` / not a generator
+- All runtime values are currently represented as `i32` in the backend.
+- Numeric literals must be **32-bit signed integers** (decimal/hex/binary/octal;
+  `_` separators allowed). Floats/`1e3`-style literals are rejected.
+- Supported statements inside `main` include:
+  - blocks (`{ ... }`)
+  - `if` / `else`
+  - `while`, `do { ... } while`, `for`
+  - `break` / `continue` (including labeled loops)
+  - variable declarations (`const`/`let`/`var`) with identifier binding **and an initializer**
+  - `return <expr>` (and `return;` when `main` returns `void`/`undefined`)
+- Supported expressions include:
+  - boolean literals (`true`/`false`)
+  - unary: `+x`, `-x`, `!x`, `~x`
+  - binary arithmetic/bitwise: `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`
+  - comparisons/equality: `<`, `<=`, `>`, `>=`, `==`, `!=`, `===`, `!==`
+  - assignment to identifiers (`=`, `+=`, `-=`, `*=`, `/=`, `%=`)
+  - updates (`++x`, `x++`, `--x`, `x--`)
+- For non-void `main`, the returned `i32` value becomes the executable’s exit code (like C `main`).
 
 ## Tests
 

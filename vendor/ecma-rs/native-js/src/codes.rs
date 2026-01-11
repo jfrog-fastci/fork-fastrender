@@ -30,6 +30,9 @@ pub const UNSUPPORTED_NATIVE_TYPE: Code = Code::new("NJS0011", "unsupported type
 /// NJS0200: HIR expression form not supported by the native backend yet.
 pub const UNSUPPORTED_EXPR: Code = Code::new("NJS0200", "unsupported expression");
 
+/// NJS0201: Failed to access lowered HIR for the entry file.
+pub const MISSING_ENTRY_HIR: Code = Code::new("NJS0201", "missing lowered HIR for entry file");
+
 impl Code {
   pub const fn new(id: &'static str, description: &'static str) -> Self {
     Self { id, description }
@@ -57,4 +60,3 @@ pub fn normalize_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
   }
   sort_diagnostics(diagnostics);
 }
-

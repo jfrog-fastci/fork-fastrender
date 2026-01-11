@@ -22,13 +22,15 @@
 //! - `NJS0113`: unsupported statement / variable declaration kind in `main`
 //! - `NJS0114`: unknown identifier in `main`
 //! - `NJS0115`: not all control-flow paths in `main` return a value
-//! - `NJS0116`: `return` without a value is not supported in `main` yet
+//! - `NJS0116`: `return` without a value is only supported when `main` returns `void`/`undefined`
 //! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
 //! - `NJS0118`: variable declarations must have an initializer
-//! - `NJS0119`: labeled `break` is not supported
+//! - `NJS0119`: unknown loop label for `break`
 //! - `NJS0120`: `break` is only supported inside loops
-//! - `NJS0121`: labeled `continue` is not supported
+//! - `NJS0121`: unknown loop label for `continue`
 //! - `NJS0122`: `continue` is only supported inside loops
+//! - `NJS0123`: failed to resolve call signature for exported `main`
+//! - `NJS0124`: only labeled loops are supported in native-js codegen
 //!
 //! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
 //! (`NJS0108..NJS0111`).

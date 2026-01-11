@@ -6,6 +6,11 @@
 //! - A small `parse-js`-driven path used by early smoke tests and debugging tools, which can emit
 //!   runnable artifacts by turning generated LLVM IR into an object file and linking it with the
 //!   system toolchain.
+//!
+//! ## Diagnostic codes
+//!
+//! This module emits stable `NJS####` diagnostic codes:
+//! - `NJS0201`: failed to access lowered HIR for the entry file
 
 use crate::codes;
 use crate::emit::TargetConfig;
@@ -29,9 +34,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
 use typecheck_ts::{BodyCheckResult, FileId, FileKey, Host, Program};
-
-const CODE_MISSING_HIR: &str = "NJS0201";
-
 /// Parse + typecheck a TypeScript program and then validate that it fits the
 /// strict native-js subset.
 ///
@@ -555,8 +557,7 @@ impl<'a> Compiler<'a> {
       .program
       .hir_lowered(self.entry)
       .ok_or_else(|| NativeJsError::Rejected {
-        diagnostics: vec![Diagnostic::error(
-          CODE_MISSING_HIR,
+        diagnostics: vec![codes::MISSING_ENTRY_HIR.error(
           "failed to access lowered HIR for entry file",
           Span::new(self.entry, TextRange::new(0, 0)),
         )],
