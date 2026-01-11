@@ -173,10 +173,22 @@ See:
 - `Emitter`/`EmitOptions` control whitespace, ASI handling, and statement
   separation. Uses `Loc` to point diagnostics at offending syntax.
 
+### ts-erase
+- Shared TypeScript → JavaScript *erasure* and lowering pass operating on a
+  mutable `parse-js` AST.
+- Removes TypeScript-only syntax (types, interfaces, type-only imports/exports,
+  expression wrappers like `as`, non-null `!`, instantiation type args, etc.).
+- Can also lower some runtime TS constructs (e.g. enums/namespaces) to JS in
+  "full" mode. In "strict native" mode, those constructs are rejected
+  deterministically (intended for oracle tooling and strict-subset enforcement).
+- Used by `minify-js` (for TS inputs) and `native-oracle-harness`.
+
 ### minify-js
 - Single-file minifier built on the parser and JS semantics.
 - `minify(top_level_mode, source, output)` parses, runs `semantic-js` JS mode to
   understand scopes, performs identifier renaming, and rewrites the buffer.
+- For TS/TSX inputs, runs `ts-erase` first so the post-parse pipeline always
+  operates on valid JS AST shapes.
 - Returns `Vec<Diagnostic>` on failure; respects `TopLevelMode` for module vs
   script semantics and disables renaming when semantics would change (e.g.
   `eval`/`with`).
@@ -192,6 +204,14 @@ See:
 - Legacy AST lowering has been removed in favor of the single HIR pipeline.
 - Diagnostics use shared `Span`/`TextRange`; deterministic tests enforce stable
   symbol/CFG ordering.
+
+### native-oracle-harness
+- Small library + tests used to run TypeScript fixtures under the deterministic
+  `vm-js` interpreter, producing an "oracle" result for native bring-up work.
+- Uses `parse-js` (`Dialect::Ts`) + `ts-erase` + `emit-js` to produce runnable
+  JS, then executes it with `vm-js`.
+- Can optionally fall back to `optimize-js` decompilation when built with the
+  `optimize-js-fallback` feature.
 
 ### typecheck-ts-harness
 - CLI + library harness that drives the checker against upstream TypeScript
