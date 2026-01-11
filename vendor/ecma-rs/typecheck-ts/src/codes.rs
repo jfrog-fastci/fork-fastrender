@@ -770,7 +770,10 @@ pub const NATIVE_STRICT_ANY: Code = Code::new(
 ///   forbidden dynamic evaluation (e.g. `eval(...)`, `eval.call(...)`,
 ///   `Function.prototype.call.call(eval, ...)`, `Reflect.apply(eval, ...)`,
 ///   `Reflect.apply(Function.prototype.call, eval, ...)`,
-///   `Reflect.apply.call(Reflect, eval, ...)`, `globalThis.eval`, etc).
+///   `Function.prototype.call.bind(eval)(...)`,
+///   `Reflect.apply.call(Reflect, eval, ...)`,
+///   `Reflect.apply.bind(Reflect, eval, ...)`,
+///   `globalThis.eval`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_EVAL: Code = Code::new(
@@ -786,7 +789,8 @@ pub const NATIVE_STRICT_EVAL: Code = Code::new(
 /// - Primary span: the `Function` identifier (or derived callee) that triggers
 ///   dynamic function construction (e.g. `new Function(...)`, `Function(...)`,
 ///   `Function.call(...)`, `Function.prototype.call.call(Function, ...)`,
-///   `Reflect.construct(Function, ...)`, `Reflect.construct.call(Reflect, Function, ...)`, etc).
+///   `Reflect.construct(Function, ...)`, `Reflect.construct.call(Reflect, Function, ...)`,
+///   `Reflect.construct.bind(Reflect, Function, ...)`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_NEW_FUNCTION: Code = Code::new(
@@ -870,6 +874,7 @@ pub const NATIVE_STRICT_COMPUTED_PROPERTY_KEY: Code = Code::new(
 ///   proxy construction (e.g. `new Proxy(...)`, `Proxy.revocable(...)`,
 ///   `Proxy.revocable.call(...)`, `Function.prototype.call.call(Proxy.revocable, ...)`,
 ///   `Reflect.apply(Function.prototype.call, Proxy.revocable, ...)`,
+///   `Reflect.apply.bind(Reflect, Proxy.revocable, ...)`,
 ///   `Reflect.construct(Proxy, ...)`, `Reflect.construct.call(Reflect, Proxy, ...)`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
