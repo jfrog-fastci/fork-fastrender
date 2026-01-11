@@ -206,8 +206,7 @@ pub fn visit_reloc_pairs_with_bounds(
     })
     .or_else(|| crate::stackwalk::StackBounds::current_thread().ok());
 
-  // Safety: stackmap-driven root enumeration inherently walks raw pointers into
-  // thread stacks.
+  // Safety: stackmap-driven root enumeration inherently walks raw pointers into thread stacks.
   unsafe {
     crate::walk_gc_roots_from_fp(top_callee_fp, bounds, stackmaps, |slot_addr| {
       let slot = slot_addr as *mut *mut u8;

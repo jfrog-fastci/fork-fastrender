@@ -96,6 +96,14 @@ fn call_summary_marks_param_escape_through_phi_arg() {
   .expect("compile");
 
   assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
+  let func = &program.functions[0];
+  let has_phi = func
+    .cfg_ssa()
+    .expect("expected SSA cfg to be preserved")
+    .bblocks
+    .all()
+    .any(|(_, block)| block.iter().any(|inst| inst.t == InstTyp::Phi));
+  assert!(has_phi, "expected SSA cfg to contain at least one Phi inst");
 
   let summaries = summarize_program(&program);
   let summary = &summaries[0];
