@@ -1552,7 +1552,9 @@ error: {err}",
       self.browser_state.push_tab(tab_state, true);
 
       // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
-      self.page_has_focus = false;
+      // Opening a link in a new tab should behave like a regular tab activation: keyboard input
+      // should target the page unless the chrome has explicit focus.
+      self.page_has_focus = true;
       self.viewport_cache_tab = None;
       self.pointer_captured = false;
       self.captured_button = PointerButton::None;
@@ -1951,7 +1953,8 @@ error: {err}",
 
         self.browser_state.push_tab(tab_state, true);
         self.browser_state.chrome.address_bar_text = url.clone();
-        self.page_has_focus = false;
+        // Opening a context-menu link in a new tab should focus the page (similar to clicking it).
+        self.page_has_focus = true;
         self.viewport_cache_tab = None;
         self.pointer_captured = false;
         self.captured_button = fastrender::ui::PointerButton::None;
@@ -3012,9 +3015,12 @@ error: {err}",
           self.window.request_redraw();
         }
         ChromeAction::AddressBarFocusChanged(has_focus) => {
-          if has_focus {
-            self.page_has_focus = false;
-          }
+          // Treat address bar focus as the only "chrome text input" focus surface for now.
+          //
+          // When the address bar has focus, keyboard input should not be forwarded to the page.
+          // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
+          // scrolling shortcuts work without requiring an extra click.
+          self.page_has_focus = !has_focus;
         }
         ChromeAction::NewTab => {
           let tab_id = fastrender::ui::TabId::new();
@@ -3065,7 +3071,6 @@ error: {err}",
           self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = url.clone();
-          self.page_has_focus = false;
           self.viewport_cache_tab = None;
           self.pointer_captured = false;
           self.captured_button = fastrender::ui::PointerButton::None;
@@ -3110,7 +3115,6 @@ error: {err}",
 
           if was_active {
             self.viewport_cache_tab = None;
-            self.page_has_focus = false;
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
@@ -3135,7 +3139,6 @@ error: {err}",
               tab_id: created_tab,
             });
             self.viewport_cache_tab = None;
-            self.page_has_focus = false;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
             self.send_worker_msg(UiToWorker::RequestRepaint {
@@ -3148,7 +3151,6 @@ error: {err}",
           } else if let Some(new_active) = close_result.new_active {
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
-            self.page_has_focus = false;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
             self.send_worker_msg(UiToWorker::RequestRepaint {
@@ -3159,7 +3161,6 @@ error: {err}",
         }
         ChromeAction::ActivateTab(tab_id) => {
           if self.browser_state.set_active_tab(tab_id) {
-            self.page_has_focus = false;
             self.viewport_cache_tab = None;
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
@@ -3194,7 +3195,6 @@ error: {err}",
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
-          self.page_has_focus = false;
           self.send_worker_msg(msg);
         }
         ChromeAction::Reload => {
@@ -3207,8 +3207,6 @@ error: {err}",
             tab.stage = None;
             tab.title = None;
           }
-
-          self.page_has_focus = false;
 
           self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
@@ -3226,7 +3224,6 @@ error: {err}",
           tab.error = None;
           tab.stage = None;
           tab.title = None;
-          self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
@@ -3243,7 +3240,6 @@ error: {err}",
           tab.error = None;
           tab.stage = None;
           tab.title = None;
-          self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }
       }
