@@ -116,6 +116,31 @@ fn runs_module_initializers_in_import_order() {
 }
 
 #[test]
+fn runs_reexports_and_imports_in_declaration_order() {
+  let dir = tempdir().unwrap();
+  let b = dir.path().join("b.ts");
+  let c = dir.path().join("c.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&b, "console.log(\"b\");\n").unwrap();
+  fs::write(&c, "console.log(\"c\");\n").unwrap();
+  fs::write(
+    &main,
+    "export {} from './b';\nimport './c';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("b\nc\nmain\n"));
+}
+
+#[test]
 fn supports_non_number_function_signatures_across_modules() {
   let dir = tempdir().unwrap();
   let util = dir.path().join("util.ts");
