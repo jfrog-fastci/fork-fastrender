@@ -18330,32 +18330,46 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
 pub(crate) fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Size) {
   use crate::style::types::LineHeight;
 
-  if let LineHeight::Length(len) = style.line_height {
-    // Container query units depend on the resolved query container size and are handled later in
-    // `resolve_container_query_lengths`. Avoid prematurely converting them into raw pixel values.
-    if len.unit.is_container_query_relative()
-      || len
-        .calc
-        .is_some_and(|calc| calc.has_container_query_relative())
-    {
-      return;
-    }
+  match style.line_height {
+    LineHeight::Length(len) => {
+      // Container query units depend on the resolved query container size and are handled later in
+      // `resolve_container_query_lengths`. Avoid prematurely converting them into raw pixel values.
+      if len.unit.is_container_query_relative()
+        || len
+          .calc
+          .is_some_and(|calc| calc.has_container_query_relative())
+      {
+        return;
+      }
 
-    let px = len.resolve_with_context(
-      Some(style.font_size),
-      viewport.width,
-      viewport.height,
-      style.font_size,
-      style.root_font_size,
-    );
+      let px = len.resolve_with_context(
+        Some(style.font_size),
+        viewport.width,
+        viewport.height,
+        style.font_size,
+        style.root_font_size,
+      );
 
-    if let Some(px) = px.filter(|v| v.is_finite() && *v >= 0.0) {
-      style.line_height = LineHeight::Length(Length::px(px));
-    } else {
-      // An invalid length (e.g. non-finite or negative after `calc()` evaluation) should behave
-      // like an invalid computed value and fall back to the initial keyword.
-      style.line_height = LineHeight::Normal;
+      if let Some(px) = px.filter(|v| v.is_finite() && *v >= 0.0) {
+        style.line_height = LineHeight::Length(Length::px(px));
+      } else {
+        // An invalid length (e.g. non-finite or negative after `calc()` evaluation) should behave
+        // like an invalid computed value and fall back to the initial keyword.
+        style.line_height = LineHeight::Normal;
+      }
     }
+    // CSS2.1: percentages compute to lengths for inheritance; descendants inherit the computed
+    // length, not the percentage.
+    // https://www.w3.org/TR/CSS2/syndata.html#percentage-units
+    LineHeight::Percentage(pct) => {
+      let px = style.font_size * (pct / 100.0);
+      if px.is_finite() && px >= 0.0 {
+        style.line_height = LineHeight::Length(Length::px(px));
+      } else {
+        style.line_height = LineHeight::Normal;
+      }
+    }
+    LineHeight::Normal | LineHeight::Number(_) => {}
   }
 }
 
@@ -21104,6 +21118,59 @@ mod tests {
       }
       other => panic!("expected LineHeight::Length after resolution, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn line_height_percentage_computes_to_length_for_inheritance() {
+    // CSS2.1: percentages compute to lengths, and descendants inherit the computed length (not the
+    // percentage).
+    // https://www.w3.org/TR/CSS2/syndata.html#percentage-units
+    use crate::style::types::LineHeight;
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "p".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        p { font-size: 10px; line-height: 120%; }
+        span { font-size: 20px; }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let styled = apply_styles(&dom, &stylesheet);
+
+    let line_height_px = match &styled.styles.line_height {
+      LineHeight::Length(len) => len.value,
+      other => panic!("expected computed p line-height to be a length, got {other:?}"),
+    };
+    assert!(
+      (line_height_px - 12.0).abs() < 0.01,
+      "expected 12px, got {line_height_px:?}"
+    );
+
+    let child = styled.children.first().expect("span child");
+    let child_lh_px = match &child.styles.line_height {
+      LineHeight::Length(len) => len.value,
+      other => panic!("expected computed span line-height to be a length, got {other:?}"),
+    };
+    assert!(
+      (child_lh_px - 12.0).abs() < 0.01,
+      "expected inherited 12px, got {child_lh_px:?}"
+    );
   }
 
   #[test]
