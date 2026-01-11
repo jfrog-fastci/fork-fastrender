@@ -16,13 +16,16 @@ fn main() {
   });
 
   let Some(scenario) = std::env::args().nth(1) else {
-    eprintln!("usage: ffi-panic-smoke <microtask|parallel|blocking|thenable|native-async>");
+    eprintln!(
+      "usage: ffi-panic-smoke <microtask|parallel|parallel-promise|blocking|thenable|native-async>"
+    );
     std::process::exit(2);
   };
 
   match scenario.as_str() {
     "microtask" => scenario_microtask(),
     "parallel" => scenario_parallel(),
+    "parallel-promise" => scenario_parallel_promise(),
     "blocking" => scenario_blocking(),
     "thenable" => scenario_thenable(),
     "native-async" => scenario_native_async(),
@@ -63,6 +66,25 @@ fn scenario_parallel() {
   let cb: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(panic_task as extern "C-unwind" fn(*mut u8)) };
   let id = runtime_native::rt_parallel_spawn(cb, std::ptr::null_mut());
   runtime_native::rt_parallel_join(&id as *const _, 1);
+}
+
+fn scenario_parallel_promise() {
+  use runtime_native::async_runtime::PromiseLayout;
+
+  extern "C-unwind" fn panic_task(_data: *mut u8, _promise: runtime_native::PromiseRef) {
+    panic!("intentional panic from parallel spawn_promise callback");
+  }
+
+  let cb: extern "C" fn(*mut u8, runtime_native::PromiseRef) = unsafe {
+    std::mem::transmute(
+      panic_task as extern "C-unwind" fn(*mut u8, runtime_native::PromiseRef),
+    )
+  };
+  let _promise =
+    runtime_native::rt_parallel_spawn_promise(cb, std::ptr::null_mut(), PromiseLayout::of::<u64>());
+
+  // Keep the main thread alive until the worker thread aborts the process.
+  std::thread::park();
 }
 
 fn scenario_blocking() {

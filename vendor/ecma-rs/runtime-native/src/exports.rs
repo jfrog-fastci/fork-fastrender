@@ -1183,7 +1183,9 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
     extern "C" fn run_work_item(data: *mut u8) {
       // Safety: allocated by `Box::into_raw` below.
       let work = unsafe { Box::from_raw(data as *mut WorkItem) };
-      (work.task)(work.data, work.promise);
+      // `work.task` is typed as `extern "C"`. If it panics we must not unwind across the FFI
+      // boundary (UB); abort deterministically instead.
+      crate::ffi::invoke_cb2_promise(work.task, work.data, work.promise);
     }
 
     let work = Box::new(WorkItem { task, data, promise });

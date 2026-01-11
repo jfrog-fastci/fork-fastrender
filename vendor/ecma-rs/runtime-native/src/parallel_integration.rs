@@ -26,7 +26,10 @@ extern "C" fn promise_task_trampoline(ptr: *mut u8) {
     .as_ref()
     .map(|r| r.ptr())
     .unwrap_or(task.data);
-  (task.func)(data_for_cb, task.promise);
+  // `task.func` comes from generated code / the embedder and is typed as `extern "C"`. If it
+  // panics we must not unwind across the `extern "C"` boundary (UB); instead, allow unwinding into
+  // Rust (`extern "C-unwind"`) and abort deterministically.
+  crate::ffi::invoke_cb2_promise(task.func, data_for_cb, task.promise);
   // Box dropped here.
 }
 

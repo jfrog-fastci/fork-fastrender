@@ -39,6 +39,11 @@ fn parallel_callback_panic_aborts() {
 }
 
 #[test]
+fn parallel_promise_callback_panic_aborts() {
+  assert_aborts_with_callback_diagnostic("parallel-promise");
+}
+
+#[test]
 fn blocking_callback_panic_aborts() {
   assert_aborts_with_callback_diagnostic("blocking");
 }
