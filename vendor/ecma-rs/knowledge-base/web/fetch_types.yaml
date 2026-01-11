@@ -1,0 +1,130 @@
+# Fetch-related Web APIs (Request/Response/Headers).
+
+- name: Headers
+  kind: constructor
+  aliases:
+    - Headers
+    - window.Headers
+    - globalThis.Headers
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Headers.prototype.get
+  kind: function
+  aliases:
+    - Headers.prototype.get
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: Headers.prototype.has
+  kind: function
+  aliases:
+    - Headers.prototype.has
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: Headers.prototype.set
+  kind: function
+  aliases:
+    - Headers.prototype.set
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: Headers.prototype.append
+  kind: function
+  aliases:
+    - Headers.prototype.append
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: Headers.prototype.delete
+  kind: function
+  aliases:
+    - Headers.prototype.delete
+  since: "baseline"
+  effects:
+    allocates: false
+    may_throw: true
+  purity: Impure
+
+- name: Headers.prototype.forEach
+  kind: function
+  aliases:
+    - Headers.prototype.forEach
+  since: "baseline"
+  effects:
+    depends_on_args:
+      base: MAY_THROW
+      args: [0]
+  purity: Impure
+
+- name: Request
+  kind: constructor
+  aliases:
+    - Request
+    - window.Request
+    - globalThis.Request
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Request.prototype.clone
+  kind: function
+  aliases:
+    - Request.prototype.clone
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Response
+  kind: constructor
+  aliases:
+    - Response
+    - window.Response
+    - globalThis.Response
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Response.prototype.clone
+  kind: function
+  aliases:
+    - Response.prototype.clone
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Response.prototype.text
+  kind: function
+  aliases:
+    - Response.prototype.text
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
