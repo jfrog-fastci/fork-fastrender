@@ -1,12 +1,17 @@
 # native-js
 
-`native-js` is a Rust library crate that compiles a **strict subset of TypeScript**
-into **LLVM IR** (and, optionally, an object file) as part of the native
+`native-js` is the LLVM-backed code generation crate for `ecma-rs`.
+
+It is intended to compile a **strict subset of TypeScript** into **LLVM IR**
+(and, eventually, object files / binaries) as part of the native
 TypeScript→LLVM pipeline.
 
-This crate is intended to be used by tooling (see `native-js-cli/`) and by
-integration tests. It is not a general-purpose JavaScript engine and it does
-not try to support the full JavaScript/TypeScript language.
+At the moment, the crate is a **skeleton**: it wires up LLVM and defines the
+public API surface that future TS/HIR lowering will target. `Compiler::compile`
+currently returns `NativeJsError::Unimplemented`.
+
+This crate is not a general-purpose JavaScript engine and it does not try to
+support the full JavaScript/TypeScript language.
 
 ## What it does
 
@@ -70,28 +75,43 @@ bash scripts/cargo_llvm.sh build -p native-js
 bash scripts/cargo_llvm.sh test -p native-js --lib
 ```
 
-## Public API overview
+## Public API overview (current)
 
-The API is intentionally small:
+The API is intentionally small and currently consists of:
 
-- `compile(...)`: compile a typechecked TypeScript program into an LLVM module.
-- `CompileOptions`: controls codegen behavior (target, optimization level, emit
-  format, verification, debug info, etc).
-- Emit helpers: convenience functions to write the resulting module out as
-  textual LLVM IR (`.ll`) or as an object file (`.o`).
+- `Compiler`: entry point (configured with `CompileOptions`)
+- `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
+  (currently unimplemented)
+- `CompileOptions`: codegen configuration
+- `OptLevel`: optimization level (`O0`/`O1`/`O2`/`O3`/`Os`/`Oz`)
+- `EmitKind`: artifact kind (`LlvmIr`, `Object`, `Assembly`)
+- `NativeJsError`: error type (includes `Unimplemented` and `Llvm(String)`)
 
-The exact signatures are part of the crate’s Rust docs; the intent is that the
-caller can either:
+Example (API shape):
 
-1. ask `native-js` to return an in-memory LLVM module, then use LLVM APIs to
-   inspect/transform it, or
-2. request an “emit” step which writes to disk (IR or object) for consumption by
-   a linker/toolchain.
+```rust
+use native_js::{CompileOptions, Compiler, EmitKind, OptLevel};
 
-## Supported TypeScript subset
+let compiler = Compiler::new(CompileOptions {
+  opt_level: OptLevel::O2,
+  emit: EmitKind::Object,
+  target: None,
+  debug: false,
+});
 
-We compile a **strict subset** of TypeScript. The compiler will error on
-constructs that TypeScript (`tsc`) would normally accept.
+// Note: currently returns NativeJsError::Unimplemented.
+compiler.compile()?;
+```
+
+> Note: `native_js::emit` and `native_js::codegen` exist, but are currently stubs.
+
+## Supported TypeScript subset (intended)
+
+We compile a **strict subset** of TypeScript. The compiler is intended to error
+on constructs that TypeScript (`tsc`) would normally accept.
+
+> Note: strict-mode validation is planned to live under `native_js::strict` and
+> is not implemented yet.
 
 ### Rejected (hard errors)
 
@@ -124,6 +144,16 @@ constructs that TypeScript (`tsc`) would normally accept.
 - ES modules (`import`/`export`)
 
 ## Debugging tips
+
+### Smoke test LLVM wiring (`llvm_ir_sanity`)
+
+The crate includes a small unit test that constructs and verifies a trivial LLVM
+module. This is a good first step when debugging LLVM environment issues:
+
+```bash
+# From repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
+```
 
 ### Emit IR and run the verifier
 
@@ -159,5 +189,6 @@ llvm-config --version
 ### Always keep a backtrace handy
 
 ```bash
-RUST_BACKTRACE=1 cargo test -p native-js --lib
+# From repo root:
+RUST_BACKTRACE=1 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 ```

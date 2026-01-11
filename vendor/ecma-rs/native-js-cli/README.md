@@ -3,6 +3,10 @@
 `native-js-cli` is a small command-line frontend for the native TypeScript→LLVM
 pipeline (`native-js`).
 
+> Status: this crate/binary is not implemented yet in this repository. This
+> README documents the intended CLI surface so it can be kept stable as the
+> implementation lands.
+
 It is intended as a developer tool:
 
 - compile a TypeScript entrypoint to LLVM IR (`.ll`) or an object file (`.o`)
@@ -20,6 +24,9 @@ It is intended as a developer tool:
 > # Or, from within vendor/ecma-rs/:
 > bash scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 > ```
+>
+> The plain `cargo run -p native-js-cli -- ...` examples below assume your
+> current working directory is `vendor/ecma-rs/` (the ecma-rs workspace root).
 
 ### Build
 
