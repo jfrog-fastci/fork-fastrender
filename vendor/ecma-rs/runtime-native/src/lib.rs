@@ -1611,7 +1611,8 @@ mod tests {
     });
 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let result = unsafe { rt_async_spawn(coro_ptr) };
+    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
+    let result = unsafe { rt_async_spawn(coro_id) };
     assert!(!result.is_null());
 
     // Coroutine should have suspended on the pending awaited promise.
@@ -1671,7 +1672,8 @@ mod tests {
     });
 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let result = unsafe { rt_async_spawn(coro_ptr) };
+    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
+    let result = unsafe { rt_async_spawn(coro_id) };
     assert!(!result.is_null());
 
     // With strict mode disabled by default, awaiting an already-fulfilled promise resumes
@@ -1719,7 +1721,8 @@ mod tests {
     });
 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
-    let result = unsafe { rt_async_spawn(coro_ptr) };
+    let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
+    let result = unsafe { rt_async_spawn(coro_id) };
     assert!(!result.is_null());
 
     // In strict mode, awaiting an already-settled promise schedules the resume as a microtask,
