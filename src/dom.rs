@@ -6182,6 +6182,12 @@ impl<'a> ElementRef<'a> {
       let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
 
       if input_type.eq_ignore_ascii_case("checkbox") {
+        // https://www.w3.org/TR/selectors-4/#indeterminate
+        //
+        // For matching the input value pseudo-classes, indeterminate wins over checked/unchecked.
+        if self.node.get_attribute_ref("indeterminate").is_some() {
+          return false;
+        }
         return self.node.get_attribute_ref("checked").is_some();
       }
 
@@ -6417,6 +6423,29 @@ impl<'a> ElementRef<'a> {
 
       if input_type.eq_ignore_ascii_case("checkbox") {
         return self.node.get_attribute_ref("indeterminate").is_some();
+      }
+      if input_type.eq_ignore_ascii_case("radio") {
+        // https://html.spec.whatwg.org/multipage/semantics-other.html#selector-indeterminate
+        //
+        // Radios are indeterminate when their radio button group contains no checked radios.
+        if let Some(name) = self.radio_group_name() {
+          let (tree_root, ancestors_in_tree) = self.tree_root_info();
+          let forms_by_id = Self::collect_forms_by_id(tree_root);
+          let nearest_form_ancestor = ancestors_in_tree.iter().rev().copied().find(|node| {
+            node
+              .tag_name()
+              .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+          });
+          let form_owner =
+            Self::resolve_form_owner_for_node(self.node, nearest_form_ancestor, &forms_by_id);
+          let group_has_checked =
+            Self::last_checked_radio_in_group(tree_root, name, form_owner, &forms_by_id).is_some();
+          return !group_has_checked;
+        }
+
+        // Name-less radios do not form radio groups. Their group contains only themselves, so they
+        // are indeterminate when unchecked.
+        return self.node.get_attribute_ref("checked").is_none();
       }
       return false;
     }
@@ -14345,6 +14374,25 @@ mod tests {
     };
     assert!(matches(&checkbox, &[], &PseudoClass::Indeterminate));
 
+    let indeterminate_checked = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "checkbox".to_string()),
+          ("checked".to_string(), "checked".to_string()),
+          ("indeterminate".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(matches(
+      &indeterminate_checked,
+      &[],
+      &PseudoClass::Indeterminate
+    ));
+    assert!(!matches(&indeterminate_checked, &[], &PseudoClass::Checked));
+
     let normal_checkbox = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
@@ -14359,14 +14407,41 @@ mod tests {
       node_type: DomNodeType::Element {
         tag_name: "input".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![
-          ("type".to_string(), "radio".to_string()),
-          ("indeterminate".to_string(), "true".to_string()),
-        ],
+        attributes: vec![("type".to_string(), "radio".to_string())],
       },
       children: vec![],
     };
-    assert!(!matches(&radio, &[], &PseudoClass::Indeterminate));
+    assert!(matches(&radio, &[], &PseudoClass::Indeterminate));
+
+    let radio_group = element(
+      "form",
+      vec![
+        element_with_attrs("input", vec![("type", "radio"), ("name", "g")], vec![]),
+        element_with_attrs("input", vec![("type", "radio"), ("name", "g")], vec![]),
+      ],
+    );
+    let ancestors: Vec<&DomNode> = vec![&radio_group];
+    let r1 = &radio_group.children[0];
+    let r2 = &radio_group.children[1];
+    assert!(matches(r1, &ancestors, &PseudoClass::Indeterminate));
+    assert!(matches(r2, &ancestors, &PseudoClass::Indeterminate));
+
+    let radio_group_with_checked = element(
+      "form",
+      vec![
+        element_with_attrs("input", vec![("type", "radio"), ("name", "g")], vec![]),
+        element_with_attrs(
+          "input",
+          vec![("type", "radio"), ("name", "g"), ("checked", "checked")],
+          vec![],
+        ),
+      ],
+    );
+    let ancestors: Vec<&DomNode> = vec![&radio_group_with_checked];
+    let r1 = &radio_group_with_checked.children[0];
+    let r2 = &radio_group_with_checked.children[1];
+    assert!(!matches(r1, &ancestors, &PseudoClass::Indeterminate));
+    assert!(!matches(r2, &ancestors, &PseudoClass::Indeterminate));
 
     let progress_indeterminate = DomNode {
       node_type: DomNodeType::Element {
