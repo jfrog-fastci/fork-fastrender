@@ -6,12 +6,12 @@ pub mod encoding;
 mod recognize;
 mod resolve;
 mod template_eval;
+pub mod types;
 
 pub mod kb;
 pub mod resolver;
 pub mod db;
 pub mod meta;
-pub mod types;
 pub mod signals;
 
 #[cfg(feature = "typed")]
@@ -34,7 +34,10 @@ pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};
 #[cfg(feature = "typed")]
 pub use recognize::recognize_patterns_typed;
 
-pub use resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
+pub use resolve::{
+  resolve_api_call_best_effort_untyped, resolve_api_call_untyped, resolve_call, ResolvedCall,
+};
+pub use types::TypeProvider;
 
 pub use knowledge_base::{Api, KnowledgeBase};
 pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics};

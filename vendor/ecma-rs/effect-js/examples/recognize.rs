@@ -3,7 +3,7 @@ use hir_js::{BodyId, ExprId, ExprKind};
 use std::collections::BTreeSet;
 
 #[cfg(feature = "typed")]
-use effect_js::{recognize_patterns_typed, typed::TypecheckProgram};
+use effect_js::{recognize_patterns_typed, typed::TypedProgram};
 #[cfg(feature = "typed")]
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
@@ -72,24 +72,18 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       "MapFilterReduce(base={}, map_call={}, filter_call={}, reduce_call={})",
       base.0, map_call.0, filter_call.0, reduce_call.0
     ),
+    RecognizedPattern::PromiseAllFetch {
+      all_call,
+      fetch_calls,
+    } => format!(
+      "PromiseAllFetch(all_call={}, fetch_calls={})",
+      all_call.0,
+      fetch_calls.len()
+    ),
     RecognizedPattern::MapGetOrDefault { map, key, default } => format!(
       "MapGetOrDefault(map={}, key={}, default={})",
       map.0, key.0, default.0
     ),
-    RecognizedPattern::PromiseAllFetch {
-      all_call,
-      fetch_calls,
-    } => {
-      let fetch_calls = fetch_calls
-        .iter()
-        .map(|id| id.0.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-      format!(
-        "PromiseAllFetch(all_call={}, fetch_calls=[{}])",
-        all_call.0, fetch_calls
-      )
-    }
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)
     }
@@ -147,8 +141,8 @@ fn run(
         match pat {
           RecognizedPattern::CanonicalCall { .. } => seen.insert("CanonicalCall"),
           RecognizedPattern::MapFilterReduce { .. } => seen.insert("MapFilterReduce"),
-          RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
+          RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
         };
         println!("  - {}", format_pattern(db, pat));
@@ -187,11 +181,13 @@ fn run(
 
 #[cfg(feature = "typed")]
 fn main() {
+  use std::sync::Arc;
+
   let index_key = FileKey::new("index.ts");
   let mut host = MemoryHost::new();
   host.insert(index_key.clone(), INDEX_TS);
 
-  let program = Program::new(host, vec![index_key.clone()]);
+  let program = Arc::new(Program::new(host, vec![index_key.clone()]));
   let diagnostics = program.check();
   if !diagnostics.is_empty() {
     eprintln!("typecheck diagnostics: {diagnostics:#?}");
@@ -200,15 +196,16 @@ fn main() {
 
   let file = program.file_id(&index_key).expect("index.ts is loaded");
   let lowered = program.hir_lowered(file).expect("HIR lowered");
+  let lowered = lowered.as_ref();
 
   let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
   db.validate().expect("knowledge base validates");
 
-  let types = TypecheckProgram::new(&program);
-  run(&lowered, &db, |body_id| {
-    let mut patterns = recognize_patterns_typed(&lowered, body_id, &types);
+  let types = TypedProgram::from_program(program.clone(), file);
+  run(lowered, &db, |body_id| {
+    let mut patterns = recognize_patterns_typed(lowered, body_id, &types);
     patterns.extend(
-      recognize_patterns_best_effort_untyped(&lowered, body_id)
+      recognize_patterns_best_effort_untyped(lowered, body_id)
         .into_iter()
         .filter(|pat| matches!(pat, RecognizedPattern::PromiseAllFetch { .. })),
     );

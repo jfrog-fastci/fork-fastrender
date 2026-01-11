@@ -11,7 +11,7 @@ pub struct EffectDb {
 ///
 /// This is intentionally a small, stable surface that downstream analyses can
 /// consume without needing to understand the full callback body.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CallSiteInfo {
   pub callback_is_pure: Option<bool>,
   pub callback_uses_index: Option<bool>,
