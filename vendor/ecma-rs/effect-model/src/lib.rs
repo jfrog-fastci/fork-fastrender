@@ -677,6 +677,21 @@ mod tests {
       EffectSummary::UNKNOWN_CALL.to_effect_set(),
       EffectSet::UNKNOWN_CALL
     );
+
+    assert_eq!(
+      EffectSet::UNKNOWN_CALL.to_effect_summary(),
+      EffectSummary::UNKNOWN_CALL
+    );
+
+    assert_eq!(
+      EffectSummary::UNKNOWN.to_effect_set(),
+      EffectSet::all()
+    );
+
+    assert_eq!(
+      EffectSet::all().to_effect_summary(),
+      EffectSummary::UNKNOWN
+    );
   }
 
   #[test]
