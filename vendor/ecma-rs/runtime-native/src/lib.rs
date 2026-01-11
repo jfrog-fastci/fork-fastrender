@@ -1551,7 +1551,7 @@ mod tests {
     let mut awaited = Box::new(TestPromiseU64 {
       header: async_abi::PromiseHeader {
         state: core::sync::atomic::AtomicU8::new(123),
-        reactions: core::sync::atomic::AtomicUsize::new(456),
+        waiters: core::sync::atomic::AtomicUsize::new(456),
         flags: core::sync::atomic::AtomicU8::new(7),
       },
       payload: 0,
@@ -1566,7 +1566,7 @@ mod tests {
       unsafe { &*awaited_ptr }.state.load(Ordering::Acquire),
       async_abi::PromiseHeader::PENDING
     );
-    assert_eq!(unsafe { &*awaited_ptr }.reactions.load(Ordering::Acquire), 0);
+    assert_eq!(unsafe { &*awaited_ptr }.waiters.load(Ordering::Acquire), 0);
     assert_eq!(unsafe { &*awaited_ptr }.flags.load(Ordering::Acquire), 0);
 
     let state_ptr = Box::into_raw(Box::new(AtomicUsize::new(0)));
@@ -1622,7 +1622,7 @@ mod tests {
     let mut awaited = Box::new(TestPromiseU64 {
       header: async_abi::PromiseHeader {
         state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
-        reactions: core::sync::atomic::AtomicUsize::new(0),
+        waiters: core::sync::atomic::AtomicUsize::new(0),
         flags: core::sync::atomic::AtomicU8::new(0),
       },
       payload: 0,
@@ -1670,7 +1670,7 @@ mod tests {
     let mut awaited = Box::new(TestPromiseU64 {
       header: async_abi::PromiseHeader {
         state: core::sync::atomic::AtomicU8::new(async_abi::PromiseHeader::FULFILLED),
-        reactions: core::sync::atomic::AtomicUsize::new(0),
+        waiters: core::sync::atomic::AtomicUsize::new(0),
         flags: core::sync::atomic::AtomicU8::new(0),
       },
       payload: 0,
