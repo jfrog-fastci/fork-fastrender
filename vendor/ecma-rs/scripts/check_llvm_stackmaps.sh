@@ -450,6 +450,24 @@ if [[ -n "${LLD_FUSE}" ]]; then
     must_have_faultmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
     must_not_have_rwx_segment "${tmp}/a_policy_lld_pie"
+
+    echo "[stackmaps] link: lld (pie, full RELRO) => EXPECTED OK"
+    # Rust's default Linux hardening flags include full RELRO (`-z relro -z now`).
+    # Keep this in CI so changes to `stackmaps.ld` don't accidentally make lld
+    # reject hardened links (e.g. `relro sections not contiguous`).
+    cp "${tmp}/mod_a.o" "${tmp}/mod_a.pie.relro_now.o"
+    cp "${tmp}/mod_b.o" "${tmp}/mod_b.pie.relro_now.o"
+    "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_a.pie.relro_now.o"
+    "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_b.pie.relro_now.o"
+    "${CLANG}" -fuse-ld="${LLD_FUSE}" -pie -Wl,-z,relro -Wl,-z,now -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
+      -o "${tmp}/a_lld_pie_relro_now" \
+      "${tmp}/main.o" "${tmp}/mod_a.pie.relro_now.o" "${tmp}/mod_b.pie.relro_now.o" "${tmp}/callee.o" "${tmp}/faultmaps.o"
+    must_have_stackmaps "${tmp}/a_lld_pie_relro_now"
+    must_have_stackmaps_symbols "${tmp}/a_lld_pie_relro_now"
+    must_have_faultmaps "${tmp}/a_lld_pie_relro_now"
+    must_have_faultmaps_symbols "${tmp}/a_lld_pie_relro_now"
+    must_not_have_textrel "${tmp}/a_lld_pie_relro_now"
+    must_not_have_rwx_segment "${tmp}/a_lld_pie_relro_now"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
   fi
