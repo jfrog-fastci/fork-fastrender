@@ -1,6 +1,10 @@
 use native_js::{compile_program, CompilerOptions, EmitKind, NativeJsError};
 use std::io::Read;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use typecheck_ts::{FileKey, MemoryHost, Program, Severity};
+
+static REL_OUT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn compile_emits_llvm_ir_file() {
@@ -95,6 +99,92 @@ fn compile_emits_executable_and_runs() {
   assert_eq!(stdout, "");
 
   let _ = std::fs::remove_file(&artifact.path);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn compile_allows_executable_output_path_without_parent_dir() {
+  if !command_works("clang-18") && !command_works("clang") {
+    eprintln!("skipping: clang not found in PATH");
+    return;
+  }
+
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), "export function main(): number { return 7; }");
+
+  let program = Program::new(host, vec![key.clone()]);
+  let entry = program.file_id(&key).unwrap();
+
+  let n = REL_OUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+  let exe_rel = PathBuf::from(format!("native-js-test-out-{}-{n}", std::process::id()));
+
+  // Ensure we don't leak build artifacts into the repo root even if the test panics.
+  struct Cleanup(PathBuf);
+  impl Drop for Cleanup {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+  let _cleanup = Cleanup(exe_rel.clone());
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Executable;
+  // Use a relative path with no parent component to exercise the `Path::parent == Some(\"\")`
+  // behavior in the linker helpers.
+  opts.output = Some(exe_rel.clone());
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+  assert_eq!(artifact.kind, EmitKind::Executable);
+  assert_eq!(artifact.path, exe_rel);
+  assert!(
+    artifact.path.exists(),
+    "missing artifact {}",
+    artifact.path.display()
+  );
+
+  // `Command` searches PATH when the program name contains no path separators, so run via an
+  // absolute path.
+  let abs_path = std::env::current_dir().unwrap().join(&artifact.path);
+
+  use std::process::{Command, Stdio};
+  use std::time::Duration;
+  use wait_timeout::ChildExt;
+
+  let mut child = Command::new(&abs_path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let Some(status) = child.wait_timeout(Duration::from_secs(5)).unwrap() else {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compiled executable timed out");
+  };
+
+  let mut stdout = String::new();
+  child
+    .stdout
+    .take()
+    .unwrap()
+    .read_to_string(&mut stdout)
+    .unwrap();
+  let mut stderr = String::new();
+  child
+    .stderr
+    .take()
+    .unwrap()
+    .read_to_string(&mut stderr)
+    .unwrap();
+
+  assert_eq!(
+    status.code(),
+    Some(7),
+    "unexpected exit status {status:?} stdout={stdout:?} stderr={stderr:?}"
+  );
+  assert_eq!(stdout, "");
 }
 
 #[test]
