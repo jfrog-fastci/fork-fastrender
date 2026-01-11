@@ -184,17 +184,17 @@ where
       continue;
     }
     if density >= target {
-      // HTML's `srcset` selection prefers the last candidate when multiple entries resolve to the
-      // same effective density. Chrome does this, and it matches the spec's behavior of treating
-      // later candidates with the same descriptor as overriding earlier ones.
-      let replace = best_ge.as_ref().map(|(_, d)| density <= *d).unwrap_or(true);
+      // When multiple candidates resolve to the same effective density, Chrome keeps the first
+      // entry (stable behavior). This matters for real-world pages where later candidates might be
+      // missing or invalid placeholders.
+      let replace = best_ge.as_ref().map(|(_, d)| density < *d).unwrap_or(true);
       if replace {
         best_ge = Some((candidate, density));
       }
     } else {
-      // Likewise, for candidates below the target density, prefer the last candidate when densities
-      // tie.
-      let replace = best_lt.as_ref().map(|(_, d)| density >= *d).unwrap_or(true);
+      // Likewise, keep the first entry when multiple candidates share the same density below the
+      // target DPR.
+      let replace = best_lt.as_ref().map(|(_, d)| density > *d).unwrap_or(true);
       if replace {
         best_lt = Some((candidate, density));
       }
@@ -589,7 +589,7 @@ mod tests {
   }
 
   #[test]
-  fn srcset_selection_prefers_last_candidate_for_equal_density_descriptors() {
+  fn srcset_selection_prefers_first_candidate_for_equal_density_descriptors() {
     let srcset = vec![
       SrcsetCandidate {
         url: "first.png".to_string(),
@@ -612,11 +612,11 @@ mod tests {
     };
 
     let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
-    assert_eq!(picked[0].url, "second.png");
+    assert_eq!(picked[0].url, "first.png");
   }
 
   #[test]
-  fn srcset_selection_prefers_last_candidate_for_equal_width_descriptors() {
+  fn srcset_selection_prefers_first_candidate_for_equal_width_descriptors() {
     let srcset = vec![
       SrcsetCandidate {
         url: "first.png".to_string(),
@@ -643,11 +643,11 @@ mod tests {
     };
 
     let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
-    assert_eq!(picked[0].url, "second.png");
+    assert_eq!(picked[0].url, "first.png");
   }
 
   #[test]
-  fn srcset_selection_prefers_last_candidate_when_all_densities_below_target() {
+  fn srcset_selection_prefers_first_candidate_when_all_densities_below_target() {
     let srcset = vec![
       SrcsetCandidate {
         url: "first.png".to_string(),
@@ -670,7 +670,7 @@ mod tests {
     };
 
     let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
-    assert_eq!(picked[0].url, "second.png");
+    assert_eq!(picked[0].url, "first.png");
   }
 
   #[test]

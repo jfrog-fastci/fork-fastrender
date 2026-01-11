@@ -90,6 +90,7 @@ mod image_src_rect_clipping;
 mod intrinsic_srcset;
 mod lazy_image_loading;
 mod srcset_decode_failure_no_fallback;
+mod srcset_tie_breaking;
 mod list_marker_fidelity;
 mod marker_paint_order;
 mod marker_shadow_bidi;
