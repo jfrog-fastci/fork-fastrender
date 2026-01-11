@@ -79,6 +79,7 @@ prefixes for planned crates) and where they come from.
 3. **Define the code close to the diagnostic "registry" for that crate**
    - `parse-js`: `SyntaxErrorType::code()` in `parse-js/src/error.rs`
    - `typecheck-ts`: add a new entry in `typecheck-ts/src/codes.rs`
+   - `native-js`: add a new entry in `native-js/src/codes.rs`
    - Other crates: keep code usage consistent and deterministic.
 
 4. **Run the checker**
