@@ -43,8 +43,10 @@ always inject a linker-script fragment and export:
 - `__fastr_stackmaps_start`
 - `__fastr_stackmaps_end`
 
-For linking arbitrary programs against `runtime-native` (e.g. from C), see
-`runtime-native/stackmaps.ld` and `runtime-native/README.md`.
+For linking arbitrary programs against `runtime-native` (e.g. from C), see:
+
+- `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat), and
+- `runtime-native/README.md`
 
 For the Linux AOT/PIE linking policy used by the native-js toolchain scripts, see:
 

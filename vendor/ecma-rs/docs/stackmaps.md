@@ -78,29 +78,43 @@ The tests:
 
 ## Base/Derived pointer pairs (derived / interior pointers)
 
-LLVM stackmaps record *two* locations per live GC pointer at a safepoint:
+LLVM statepoints encode GC relocation information as *(base, derived)* pairs:
 
 - **base**: the address of the GC-managed object
 - **derived**: the value actually in machine state (may be an interior pointer)
 
 For non-interior pointers, LLVM typically emits **duplicate** base/derived locations (`base == derived`).
 
-If LLVM ever emits a real interior pointer at a safepoint, a moving collector must update both:
+For interior pointers (`base != derived`), a moving collector must update the derived value to preserve the
+interior offset:
 
 ```text
 base_new    = relocate(base_old)
 derived_new = base_new + (derived_old - base_old)
 ```
 
-`runtime-native` encodes this via `StatepointRootPair` and `relocate_pair`.
+Null convention:
 
-### Stackmap location layout for `"gc-live"(...)` (LLVM 18)
+- If `base_old == 0` or `derived_old == 0`, the derived value stays null (`derived_new = 0`).
 
-For rewritten statepoints with a `"gc-live"(...)` operand bundle, LLVM currently emits stackmap *locations* in a predictable structure:
+`runtime-native` implements this during stack walking:
 
-1. **3 header locations** (constant zero)
-2. then **2 locations per live GC pointer**: `(base, derived)`
+- The stack walker visits only the **base** root slots (deduplicated) and lets the GC relocate them in-place.
+- After relocating a base slot, it updates any derived slots that reference it using the formula above.
+
+See `runtime-native/src/stackwalk_fp.rs` and `runtime-native/tests/stackwalk_fp.rs`.
+
+### Stackmap location layout for `gc.statepoint` (LLVM 18)
+
+For LLVM 18 statepoints lowered by `rewrite-statepoints-for-gc`, stackmap record `locations` follow a predictable
+structure:
+
+1. **3 constant header locations**:
+   - `callconv` (expected 0 in this project)
+   - `flags` (expected 0; verifier accepts 0..3)
+   - `deopt_count` (expected 0; deopt operands are not supported)
+2. Then `deopt_count` deopt operand locations (not GC roots).
+3. Then **2 locations per `gc.relocate` call**: `(base, derived)`
 
 `runtime-native::statepoints::StatepointRecord` enforces this layout (`LLVM18_STATEPOINT_HEADER_CONSTANTS = 3`),
-and `runtime-native::stackwalk_fp::walk_gc_root_pairs_from_fp` yields `StatepointRootPair` values for each
-`(base, derived)` pair.
+and provides `gc_pairs()` for iterating the `(base, derived)` pairs.

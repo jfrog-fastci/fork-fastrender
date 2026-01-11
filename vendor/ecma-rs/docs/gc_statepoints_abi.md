@@ -9,8 +9,10 @@ is:
 
 In particular, this document predates changes where:
 
-- `runtime-native` enforces SP/FP-based **Indirect** stackmap slots and currently rejects derived pointers at safepoints,
-- `.llvm_stackmaps` discovery uses `runtime-native/stackmaps.ld` and `__fastr_stackmaps_{start,end}` symbols (with `__llvm_*` aliases).
+- `runtime-native` enforces SP/FP-based **Indirect** stackmap slots for statepoint roots and supports derived pointers via `(base, derived)` relocation pairs,
+- `.llvm_stackmaps` discovery uses `runtime-native/link/stackmaps.ld` (or the compat alias `runtime-native/stackmaps.ld`) and stable boundary symbols:
+  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+  - `__fastr_stackmaps_{start,end}` / `__llvm_stackmaps_{start,end}` / `__stackmaps_{start,end}` (aliases)
 
 ---
 
