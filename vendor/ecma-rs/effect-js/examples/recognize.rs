@@ -73,12 +73,16 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       base.0, map_call.0, filter_call.0, reduce_call.0
     ),
     RecognizedPattern::PromiseAllFetch {
-      all_call,
-      fetch_calls,
+      promise_all_call,
+      fetch_call_count,
+      map_call,
+      urls_expr,
     } => format!(
-      "PromiseAllFetch(all_call={}, fetch_calls={})",
-      all_call.0,
-      fetch_calls.len()
+      "PromiseAllFetch(call={}, urls_expr={} map_call={:?} fetch_calls={})",
+      promise_all_call.0,
+      urls_expr.0,
+      map_call.map(|id| id.0),
+      fetch_call_count
     ),
     RecognizedPattern::MapGetOrDefault { map, key, default } => format!(
       "MapGetOrDefault(map={}, key={}, default={})",
@@ -87,37 +91,26 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)
     }
-    RecognizedPattern::StringTemplate { template } => {
-      format!("StringTemplate(template={})", template.0)
+    RecognizedPattern::AsyncIterator { stmt, iterable } => {
+      format!("AsyncIterator(stmt={}, iterable={})", stmt.0, iterable.0)
     }
-    RecognizedPattern::ObjectSpread {
-      object,
-      spreads,
-      keys,
-    } => format!(
-      "ObjectSpread(object={}, spreads={}, keys={:?})",
-      object.0,
-      spreads.len(),
-      keys
-    ),
+    RecognizedPattern::StringTemplate { expr, span_count } => {
+      format!("StringTemplate(expr={}, spans={})", expr.0, span_count)
+    }
+    RecognizedPattern::ObjectSpread { expr, spread_count } => {
+      format!("ObjectSpread(expr={}, spreads={})", expr.0, spread_count)
+    }
     RecognizedPattern::ArrayDestructure {
+      stmt,
+      pat,
+      arity,
       source,
-      bindings,
-      has_rest,
     } => format!(
-      "ArrayDestructure(source={}, bindings={}, has_rest={})",
-      source.0, bindings, has_rest
+      "ArrayDestructure(stmt={}, pat={}, arity={}, source={})",
+      stmt.0, pat.0, arity, source.0
     ),
-    RecognizedPattern::GuardClause {
-      test,
-      guard_kind,
-      subject,
-    } => format!(
-      "GuardClause(test={}, kind={:?}, subject={})",
-      test.0, guard_kind, subject.0
-    ),
-    RecognizedPattern::AsyncIterator { iterable } => {
-      format!("AsyncIterator(iterable={})", iterable.0)
+    RecognizedPattern::GuardClause { stmt, test, kind } => {
+      format!("GuardClause(stmt={}, test={}, kind={kind:?})", stmt.0, test.0)
     }
   }
 }
@@ -176,11 +169,11 @@ fn run(
           RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
+          RecognizedPattern::AsyncIterator { .. } => seen.insert("AsyncIterator"),
           RecognizedPattern::StringTemplate { .. } => seen.insert("StringTemplate"),
           RecognizedPattern::ObjectSpread { .. } => seen.insert("ObjectSpread"),
           RecognizedPattern::ArrayDestructure { .. } => seen.insert("ArrayDestructure"),
           RecognizedPattern::GuardClause { .. } => seen.insert("GuardClause"),
-          RecognizedPattern::AsyncIterator { .. } => seen.insert("AsyncIterator"),
         };
         println!("  - {}", format_pattern(db, pat));
       }
@@ -239,15 +232,7 @@ fn main() {
   db.validate().expect("knowledge base validates");
 
   let types = TypedProgram::from_program(program.clone(), file);
-  run(lowered, &db, |body_id| {
-    let mut patterns = recognize_patterns_typed(lowered, body_id, &types);
-    patterns.extend(
-      recognize_patterns_best_effort_untyped(lowered, body_id)
-        .into_iter()
-        .filter(|pat| matches!(pat, RecognizedPattern::PromiseAllFetch { .. })),
-    );
-    patterns
-  });
+  run(lowered, &db, |body_id| recognize_patterns_typed(lowered, body_id, &types));
 }
 
 #[cfg(not(feature = "typed"))]

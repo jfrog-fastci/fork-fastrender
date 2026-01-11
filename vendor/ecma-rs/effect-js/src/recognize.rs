@@ -1,15 +1,17 @@
 use hir_js::{
-  ArrayElement, BinaryOp, BodyId, ExprId, ExprKind, Literal, LowerResult, ObjectKey, ObjectProperty,
-  PatKind, UnaryOp, StmtId, StmtKind,
+  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind, StmtId,
+  StmtKind, UnaryOp,
 };
 
+#[cfg(feature = "typed")]
+use hir_js::BinaryOp;
+
 use crate::api::ApiId;
-use crate::resolve::resolve_api_call_untyped;
+use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardKind {
-  ReturnVoid,
-  ReturnValue,
+  Return,
   Throw,
 }
 
@@ -26,10 +28,36 @@ pub enum RecognizedPattern {
     reduce_call: ExprId,
   },
 
-  /// `Promise.all([fetch(...), ...])` (best-effort; untyped).
+  /// `Promise.all(urls.map(url => fetch(url)))` (best-effort; untyped).
   PromiseAllFetch {
-    all_call: ExprId,
-    fetch_calls: Vec<ExprId>,
+    promise_all_call: ExprId,
+    urls_expr: ExprId,
+    map_call: Option<ExprId>,
+    fetch_call_count: usize,
+  },
+
+  /// `for await (const x of asyncIterable) { ... }` (untyped).
+  AsyncIterator { stmt: StmtId, iterable: ExprId },
+
+  /// `` `${a} ${b} ${c}` `` (untyped).
+  StringTemplate { expr: ExprId, span_count: usize },
+
+  /// `{ ...a, ...b, x: 1 }` (untyped).
+  ObjectSpread { expr: ExprId, spread_count: usize },
+
+  /// `const [a, b, c] = arr` (untyped).
+  ArrayDestructure {
+    stmt: StmtId,
+    pat: hir_js::PatId,
+    arity: usize,
+    source: ExprId,
+  },
+
+  /// `if (!x) return;` / `if (!x) throw ...;` (untyped).
+  GuardClause {
+    stmt: StmtId,
+    test: ExprId,
+    kind: GuardKind,
   },
 
   /// `map.get(key) ?? default` / `map.get(key) || default` (typed only).
@@ -41,42 +69,14 @@ pub enum RecognizedPattern {
 
   /// `const x: T = JSON.parse(input)` (untyped; uses declared annotation).
   JsonParseTyped { call: ExprId, target: hir_js::TypeExprId },
-
-  /// Template literal with 2+ spans (e.g. `` `${a} ${b}` ``).
-  StringTemplate { template: ExprId },
-
-  /// Object literal with spreads and static keys (e.g. `{ ...a, x: 1 }`).
-  ObjectSpread {
-    object: ExprId,
-    spreads: Vec<ExprId>,
-    keys: Vec<String>,
-  },
-
-  /// Array destructuring with an initializer (e.g. `const [a, b] = arr`).
-  ArrayDestructure {
-    source: ExprId,
-    bindings: usize,
-    has_rest: bool,
-  },
-
-  /// Guard clause in an `if` statement with an early `return` or `throw`
-  /// (e.g. `if (!x) return;` or `if (x == null) throw ...;`).
-  GuardClause {
-    test: ExprId,
-    guard_kind: GuardKind,
-    subject: ExprId,
-  },
-
-  /// `for await (... of asyncIterable) { ... }`.
-  AsyncIterator { iterable: ExprId },
 }
 
-fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(&StmtKind)) {
-  fn walk(body: &hir_js::Body, stmt_id: StmtId, f: &mut impl FnMut(&StmtKind)) {
+fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(StmtId, &StmtKind)) {
+  fn walk(body: &hir_js::Body, stmt_id: StmtId, f: &mut impl FnMut(StmtId, &StmtKind)) {
     let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
       return;
     };
-    f(&stmt.kind);
+    f(stmt_id, &stmt.kind);
     match &stmt.kind {
       StmtKind::Block(stmts) => {
         for stmt in stmts {
@@ -132,6 +132,70 @@ fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(&StmtKind))
   walk(body, stmt_id, &mut f)
 }
 
+fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPattern>) {
+  fn expr_span(body: &hir_js::Body, expr: ExprId) -> Option<(u32, u32)> {
+    let expr = body.exprs.get(expr.0 as usize)?;
+    Some((expr.span.start, expr.span.end))
+  }
+
+  fn stmt_span(body: &hir_js::Body, stmt: StmtId) -> Option<(u32, u32)> {
+    let stmt = body.stmts.get(stmt.0 as usize)?;
+    Some((stmt.span.start, stmt.span.end))
+  }
+
+  fn pat_span(body: &hir_js::Body, pat: PatId) -> Option<(u32, u32)> {
+    let pat = body.pats.get(pat.0 as usize)?;
+    Some((pat.span.start, pat.span.end))
+  }
+
+  fn key(body: &hir_js::Body, pattern: &RecognizedPattern) -> (u32, u32, u8, u32) {
+    match pattern {
+      RecognizedPattern::CanonicalCall { call, .. } => expr_span(body, *call)
+        .map(|(s, e)| (s, e, 0, call.0))
+        .unwrap_or((u32::MAX, u32::MAX, 0, call.0)),
+      RecognizedPattern::JsonParseTyped { call, .. } => expr_span(body, *call)
+        .map(|(s, e)| (s, e, 1, call.0))
+        .unwrap_or((u32::MAX, u32::MAX, 1, call.0)),
+      RecognizedPattern::MapFilterReduce {
+        base,
+        reduce_call,
+        ..
+      } => {
+        let start = expr_span(body, *base).map(|(s, _)| s).unwrap_or(u32::MAX);
+        let end = expr_span(body, *reduce_call)
+          .map(|(_, e)| e)
+          .unwrap_or(u32::MAX);
+        (start, end, 2, reduce_call.0)
+      }
+      RecognizedPattern::PromiseAllFetch {
+        promise_all_call, ..
+      } => expr_span(body, *promise_all_call)
+        .map(|(s, e)| (s, e, 3, promise_all_call.0))
+        .unwrap_or((u32::MAX, u32::MAX, 3, promise_all_call.0)),
+      RecognizedPattern::AsyncIterator { stmt, .. } => stmt_span(body, *stmt)
+        .map(|(s, e)| (s, e, 4, stmt.0))
+        .unwrap_or((u32::MAX, u32::MAX, 4, stmt.0)),
+      RecognizedPattern::StringTemplate { expr, .. } => expr_span(body, *expr)
+        .map(|(s, e)| (s, e, 5, expr.0))
+        .unwrap_or((u32::MAX, u32::MAX, 5, expr.0)),
+      RecognizedPattern::ObjectSpread { expr, .. } => expr_span(body, *expr)
+        .map(|(s, e)| (s, e, 6, expr.0))
+        .unwrap_or((u32::MAX, u32::MAX, 6, expr.0)),
+      RecognizedPattern::ArrayDestructure { pat, .. } => pat_span(body, *pat)
+        .map(|(s, e)| (s, e, 7, pat.0))
+        .unwrap_or((u32::MAX, u32::MAX, 7, pat.0)),
+      RecognizedPattern::GuardClause { stmt, .. } => stmt_span(body, *stmt)
+        .map(|(s, e)| (s, e, 8, stmt.0))
+        .unwrap_or((u32::MAX, u32::MAX, 8, stmt.0)),
+      RecognizedPattern::MapGetOrDefault { map, .. } => expr_span(body, *map)
+        .map(|(s, e)| (s, e, 9, map.0))
+        .unwrap_or((u32::MAX, u32::MAX, 9, map.0)),
+    }
+  }
+
+  patterns.sort_by(|a, b| key(body, a).cmp(&key(body, b)));
+}
+
 pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<RecognizedPattern> {
   let Some(body_ref) = lowered.body(body) else {
     return Vec::new();
@@ -152,7 +216,7 @@ pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<Re
 
   // 2) Patterns that can be inferred from declared annotations without full typing.
   for stmt_id in &body_ref.root_stmts {
-    walk_stmt(body_ref, *stmt_id, |stmt| {
+    walk_stmt(body_ref, *stmt_id, |_stmt_id, stmt| {
       let StmtKind::Var(var) = stmt else {
         return;
       };
@@ -170,6 +234,7 @@ pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<Re
     });
   }
 
+  sort_patterns_by_span(body_ref, &mut patterns);
   patterns
 }
 
@@ -224,209 +289,174 @@ pub fn recognize_patterns_best_effort_untyped(
 
   let mut patterns = recognize_patterns_untyped(lowered, body);
 
-  for (idx, expr) in body_ref.exprs.iter().enumerate() {
-    let expr_id = ExprId(idx as u32);
-    match &expr.kind {
-      ExprKind::Call(_) => {
-        // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
-        if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
-          if chain.len() == 3
-            && chain[2].1 == "reduce"
-            && chain[0].1 == "map"
-            && chain[1].1 == "filter"
+  for stmt_id in &body_ref.root_stmts {
+    walk_stmt(body_ref, *stmt_id, |stmt_id, stmt| match stmt {
+      StmtKind::ForIn {
+        is_for_of: true,
+        await_: true,
+        right,
+        ..
+      } => patterns.push(RecognizedPattern::AsyncIterator {
+        stmt: stmt_id,
+        iterable: *right,
+      }),
+      StmtKind::Var(var) => {
+        for decl in &var.declarators {
+          let Some(source) = decl.init else {
+            continue;
+          };
+          let pat_id = decl.pat;
+          let Some(pat) = body_ref.pats.get(pat_id.0 as usize) else {
+            continue;
+          };
+          let PatKind::Array(array) = &pat.kind else {
+            continue;
+          };
+          if array.rest.is_some() {
+            continue;
+          }
+          if array.elements.iter().any(|e| e.is_none()) {
+            continue;
+          }
+          if array
+            .elements
+            .iter()
+            .flatten()
+            .any(|e| e.default_value.is_some())
           {
-            patterns.push(RecognizedPattern::MapFilterReduce {
-              base,
-              map_call: chain[0].0,
-              filter_call: chain[1].0,
-              reduce_call: chain[2].0,
-            });
+            continue;
           }
+          patterns.push(RecognizedPattern::ArrayDestructure {
+            stmt: stmt_id,
+            pat: pat_id,
+            arity: array.elements.len(),
+            source,
+          });
         }
+      }
+      StmtKind::If {
+        test,
+        consequent,
+        alternate: None,
+      } => {
+        let if_stmt_id = stmt_id;
+        let Some(test_expr) = body_ref.exprs.get(test.0 as usize) else {
+          return;
+        };
+        let ExprKind::Unary {
+          op: UnaryOp::Not,
+          expr,
+        } = &test_expr.kind
+        else {
+          return;
+        };
 
-        if let Some(fetch_calls) = promise_all_fetch_calls(body_ref, lowered, expr_id) {
-          patterns.push(RecognizedPattern::PromiseAllFetch {
-            all_call: expr_id,
-            fetch_calls,
-          });
-        }
-      }
-      ExprKind::Template(template) => {
-        if template.spans.len() >= 2 {
-          patterns.push(RecognizedPattern::StringTemplate { template: expr_id });
-        }
-      }
-      ExprKind::Object(object) => {
-        let mut spreads = Vec::new();
-        let mut keys = Vec::new();
-        let mut ok = true;
-        for prop in &object.properties {
-          match prop {
-            ObjectProperty::Spread(expr) => spreads.push(*expr),
-            ObjectProperty::Getter { .. } | ObjectProperty::Setter { .. } => {
-              ok = false;
-              break;
+        let mut arm = Some(*consequent);
+        while let Some(consequent_id) = arm.take() {
+          let Some(consequent_stmt) = body_ref.stmts.get(consequent_id.0 as usize) else {
+            break;
+          };
+          match &consequent_stmt.kind {
+            StmtKind::Return(_) => {
+              patterns.push(RecognizedPattern::GuardClause {
+                stmt: if_stmt_id,
+                test: *expr,
+                kind: GuardKind::Return,
+              });
             }
-            ObjectProperty::KeyValue { key, .. } => match key {
-              ObjectKey::Ident(name) => match lowered.names.resolve(*name) {
-                Some(s) => keys.push(s.to_string()),
-                None => {
-                  ok = false;
-                  break;
-                }
-              },
-              ObjectKey::String(s) => keys.push(s.clone()),
-              ObjectKey::Number(n) => keys.push(n.clone()),
-              ObjectKey::Computed(_) => {
-                ok = false;
-                break;
-              }
-            },
+            StmtKind::Throw(_) => {
+              patterns.push(RecognizedPattern::GuardClause {
+                stmt: if_stmt_id,
+                test: *expr,
+                kind: GuardKind::Throw,
+              });
+            }
+            StmtKind::Block(stmts) if stmts.len() == 1 => {
+              arm = stmts.first().copied();
+              continue;
+            }
+            _ => {}
           }
-        }
-        if ok && !spreads.is_empty() {
-          patterns.push(RecognizedPattern::ObjectSpread {
-            object: expr_id,
-            spreads,
-            keys,
-          });
+          break;
         }
       }
       _ => {}
-    }
-  }
-
-  fn peel_guard_subject(body: &hir_js::Body, mut expr_id: ExprId) -> ExprId {
-    loop {
-      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
-        return expr_id;
-      };
-      match &expr.kind {
-        ExprKind::TypeAssertion { expr, .. } => expr_id = *expr,
-        ExprKind::NonNull { expr } => expr_id = *expr,
-        ExprKind::Satisfies { expr, .. } => expr_id = *expr,
-        _ => return expr_id,
-      }
-    }
-  }
-
-  fn is_stable_guard_subject(body: &hir_js::Body, expr_id: ExprId) -> bool {
-    let expr_id = peel_guard_subject(body, expr_id);
-    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
-      return false;
-    };
-    match &expr.kind {
-      ExprKind::Ident(_) | ExprKind::This | ExprKind::Super => true,
-      ExprKind::Member(member) => {
-        if member.optional {
-          return false;
-        }
-        if matches!(member.property, ObjectKey::Computed(_)) {
-          return false;
-        }
-        is_stable_guard_subject(body, member.object)
-      }
-      _ => false,
-    }
-  }
-
-  fn guard_subject(body: &hir_js::Body, test: ExprId) -> Option<ExprId> {
-    let test_expr = body.exprs.get(test.0 as usize)?;
-    match &test_expr.kind {
-      ExprKind::Unary { op: UnaryOp::Not, expr } => {
-        let subj = peel_guard_subject(body, *expr);
-        is_stable_guard_subject(body, subj).then_some(subj)
-      }
-      ExprKind::Binary {
-        op: BinaryOp::Equality | BinaryOp::StrictEquality,
-        left,
-        right,
-      } => {
-        let left_expr = body.exprs.get(left.0 as usize)?;
-        let right_expr = body.exprs.get(right.0 as usize)?;
-        let candidate = match (&left_expr.kind, &right_expr.kind) {
-          (ExprKind::Literal(Literal::Null | Literal::Undefined), _) => *right,
-          (_, ExprKind::Literal(Literal::Null | Literal::Undefined)) => *left,
-          _ => return None,
-        };
-        let subj = peel_guard_subject(body, candidate);
-        is_stable_guard_subject(body, subj).then_some(subj)
-      }
-      _ => None,
-    }
-  }
-
-  // Statement-level patterns (destructuring, guard clauses).
-  for stmt_id in &body_ref.root_stmts {
-    walk_stmt(body_ref, *stmt_id, |stmt| {
-      match stmt {
-        StmtKind::Var(var) => {
-          for decl in &var.declarators {
-            let Some(init) = decl.init else {
-              continue;
-            };
-            let Some(pat) = body_ref.pats.get(decl.pat.0 as usize) else {
-              continue;
-            };
-            let PatKind::Array(array_pat) = &pat.kind else {
-              continue;
-            };
-            let bindings = array_pat.elements.iter().filter(|el| el.is_some()).count();
-            let has_rest = array_pat.rest.is_some();
-            patterns.push(RecognizedPattern::ArrayDestructure {
-              source: init,
-              bindings,
-              has_rest,
-            });
-          }
-        }
-        StmtKind::ForIn {
-          right,
-          is_for_of: true,
-          await_: true,
-          ..
-        } => {
-          patterns.push(RecognizedPattern::AsyncIterator { iterable: *right });
-        }
-        StmtKind::If {
-          test,
-          consequent,
-          alternate: None,
-        } => {
-          let Some(consequent_stmt) = body_ref.stmts.get(consequent.0 as usize) else {
-            return;
-          };
-          let guard_kind = match &consequent_stmt.kind {
-            StmtKind::Return(None) => GuardKind::ReturnVoid,
-            StmtKind::Return(Some(_)) => GuardKind::ReturnValue,
-            StmtKind::Throw(_) => GuardKind::Throw,
-            _ => return,
-          };
-
-          let Some(subject) = guard_subject(body_ref, *test) else {
-            return;
-          };
-
-          patterns.push(RecognizedPattern::GuardClause {
-            test: *test,
-            guard_kind,
-            subject,
-          });
-        }
-        _ => {}
-      };
     });
   }
 
+  for (idx, expr) in body_ref.exprs.iter().enumerate() {
+    let expr_id = ExprId(idx as u32);
+
+    // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+    if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
+      if chain.len() == 3
+        && chain[2].1 == "reduce"
+        && chain[0].1 == "map"
+        && chain[1].1 == "filter"
+      {
+        patterns.push(RecognizedPattern::MapFilterReduce {
+          base,
+          map_call: chain[0].0,
+          filter_call: chain[1].0,
+          reduce_call: chain[2].0,
+        });
+      }
+    }
+
+    if let Some(m) = promise_all_fetch_match_untyped(lowered, body, expr_id) {
+      patterns.push(RecognizedPattern::PromiseAllFetch {
+        promise_all_call: expr_id,
+        urls_expr: m.urls_expr,
+        map_call: m.map_call,
+        fetch_call_count: m.fetch_call_count,
+      });
+    }
+
+    if let ExprKind::Template(template) = &expr.kind {
+      if template.spans.len() >= 2 {
+        patterns.push(RecognizedPattern::StringTemplate {
+          expr: expr_id,
+          span_count: template.spans.len(),
+        });
+      }
+    }
+
+    if let ExprKind::Object(obj) = &expr.kind {
+      let spread_count = obj
+        .properties
+        .iter()
+        .filter(|p| matches!(p, ObjectProperty::Spread(_)))
+        .count();
+      if spread_count > 0 {
+        patterns.push(RecognizedPattern::ObjectSpread {
+          expr: expr_id,
+          spread_count,
+        });
+      }
+    }
+  }
+
+  sort_patterns_by_span(body_ref, &mut patterns);
   patterns
 }
 
-fn promise_all_fetch_calls(
-  body: &hir_js::Body,
+struct PromiseAllFetchMatch {
+  urls_expr: ExprId,
+  map_call: Option<ExprId>,
+  fetch_call_count: usize,
+}
+
+fn promise_all_fetch_match_untyped(
   lowered: &LowerResult,
+  body: BodyId,
   call_expr: ExprId,
-) -> Option<Vec<ExprId>> {
-  let call = body.exprs.get(call_expr.0 as usize)?;
+) -> Option<PromiseAllFetchMatch> {
+  let body_ref = lowered.body(body)?;
+  if resolve_api_call_untyped(lowered, body, call_expr) != Some(ApiId::PromiseAll) {
+    return None;
+  }
+
+  let call = body_ref.exprs.get(call_expr.0 as usize)?;
   let ExprKind::Call(call) = &call.kind else {
     return None;
   };
@@ -434,67 +464,86 @@ fn promise_all_fetch_calls(
     return None;
   }
 
-  // Promise.all(...)
-  let callee_expr = body.exprs.get(call.callee.0 as usize)?;
-  let ExprKind::Member(member) = &callee_expr.kind else {
-    return None;
-  };
-  if member.optional {
-    return None;
-  }
-  let ObjectKey::Ident(prop) = member.property else {
-    return None;
-  };
-  if lowered.names.resolve(prop)? != "all" {
-    return None;
-  }
-  let recv = body.exprs.get(member.object.0 as usize)?;
-  let ExprKind::Ident(recv_name) = recv.kind else {
-    return None;
-  };
-  if lowered.names.resolve(recv_name)? != "Promise" {
-    return None;
-  }
-
-  // Argument must be a non-spread array literal.
   let arg0 = call.args.first()?;
   if arg0.spread {
     return None;
   }
-  let arg_expr = body.exprs.get(arg0.expr.0 as usize)?;
-  let ExprKind::Array(array) = &arg_expr.kind else {
-    return None;
-  };
 
-  let mut fetch_calls = Vec::new();
-  for element in array.elements.iter() {
-    let ArrayElement::Expr(expr_id) = element else {
-      continue;
-    };
-    if is_fetch_call(body, lowered, *expr_id) {
-      fetch_calls.push(*expr_id);
+  let arg_expr_id = arg0.expr;
+  let arg_expr = body_ref.exprs.get(arg_expr_id.0 as usize)?;
+  match &arg_expr.kind {
+    ExprKind::Array(array) => {
+      let mut fetch_call_count = 0usize;
+      for element in &array.elements {
+        match element {
+          ArrayElement::Expr(expr_id) => {
+            if resolve_api_call_untyped(lowered, body, *expr_id) == Some(ApiId::Fetch) {
+              fetch_call_count += 1;
+            }
+          }
+          ArrayElement::Empty => {}
+          ArrayElement::Spread(_) => return None,
+        }
+      }
+      (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
+        urls_expr: arg_expr_id,
+        map_call: None,
+        fetch_call_count,
+      })
     }
-  }
-  (!fetch_calls.is_empty()).then_some(fetch_calls)
-}
+    ExprKind::Call(map_call) => {
+      if map_call.optional || map_call.is_new {
+        return None;
+      }
+      if resolve_api_call_best_effort_untyped(lowered, body, arg_expr_id) != Some(ApiId::ArrayPrototypeMap) {
+        return None;
+      }
 
-fn is_fetch_call(body: &hir_js::Body, lowered: &LowerResult, expr_id: ExprId) -> bool {
-  let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
-    return false;
-  };
-  let ExprKind::Call(call) = &expr.kind else {
-    return false;
-  };
-  if call.optional || call.is_new {
-    return false;
+      let callee = body_ref.exprs.get(map_call.callee.0 as usize)?;
+      let ExprKind::Member(member) = &callee.kind else {
+        return None;
+      };
+      if member.optional {
+        return None;
+      }
+
+      let cb_arg = map_call.args.first()?;
+      if cb_arg.spread {
+        return None;
+      }
+      let cb_expr = body_ref.exprs.get(cb_arg.expr.0 as usize)?;
+      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
+        return None;
+      };
+      let cb_body_id = *cb_body;
+      let cb_body = lowered.body(cb_body_id)?;
+      let func = cb_body.function.as_ref()?;
+      let ret_expr = match &func.body {
+        hir_js::FunctionBody::Expr(expr) => Some(*expr),
+        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+          let StmtKind::Return(Some(expr)) = &stmt.kind else {
+            return None;
+          };
+          Some(*expr)
+        }
+        _ => None,
+      }?;
+
+      let fetch_call_count = if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+        1
+      } else {
+        return None;
+      };
+
+      Some(PromiseAllFetchMatch {
+        urls_expr: member.object,
+        map_call: Some(arg_expr_id),
+        fetch_call_count,
+      })
+    }
+    _ => None,
   }
-  let Some(callee) = body.exprs.get(call.callee.0 as usize) else {
-    return false;
-  };
-  let ExprKind::Ident(name) = callee.kind else {
-    return false;
-  };
-  lowered.names.resolve(name) == Some("fetch")
 }
 
 #[cfg(feature = "typed")]
@@ -510,6 +559,101 @@ pub fn recognize_patterns_typed(
   };
 
   let mut patterns = Vec::new();
+
+  for stmt_id in &body_ref.root_stmts {
+    walk_stmt(body_ref, *stmt_id, |stmt_id, stmt| match stmt {
+      StmtKind::ForIn {
+        is_for_of: true,
+        await_: true,
+        right,
+        ..
+      } => patterns.push(RecognizedPattern::AsyncIterator {
+        stmt: stmt_id,
+        iterable: *right,
+      }),
+      StmtKind::Var(var) => {
+        for decl in &var.declarators {
+          let Some(source) = decl.init else {
+            continue;
+          };
+          let pat_id = decl.pat;
+          let Some(pat) = body_ref.pats.get(pat_id.0 as usize) else {
+            continue;
+          };
+          let PatKind::Array(array) = &pat.kind else {
+            continue;
+          };
+          if array.rest.is_some() {
+            continue;
+          }
+          if array.elements.iter().any(|e| e.is_none()) {
+            continue;
+          }
+          if array
+            .elements
+            .iter()
+            .flatten()
+            .any(|e| e.default_value.is_some())
+          {
+            continue;
+          }
+          patterns.push(RecognizedPattern::ArrayDestructure {
+            stmt: stmt_id,
+            pat: pat_id,
+            arity: array.elements.len(),
+            source,
+          });
+        }
+      }
+      StmtKind::If {
+        test,
+        consequent,
+        alternate: None,
+      } => {
+        let if_stmt_id = stmt_id;
+        let Some(test_expr) = body_ref.exprs.get(test.0 as usize) else {
+          return;
+        };
+        let ExprKind::Unary {
+          op: UnaryOp::Not,
+          expr,
+        } = &test_expr.kind
+        else {
+          return;
+        };
+
+        let mut arm = Some(*consequent);
+        while let Some(consequent_id) = arm.take() {
+          let Some(consequent_stmt) = body_ref.stmts.get(consequent_id.0 as usize) else {
+            break;
+          };
+          match &consequent_stmt.kind {
+            StmtKind::Return(_) => {
+              patterns.push(RecognizedPattern::GuardClause {
+                stmt: if_stmt_id,
+                test: *expr,
+                kind: GuardKind::Return,
+              });
+            }
+            StmtKind::Throw(_) => {
+              patterns.push(RecognizedPattern::GuardClause {
+                stmt: if_stmt_id,
+                test: *expr,
+                kind: GuardKind::Throw,
+              });
+            }
+            StmtKind::Block(stmts) if stmts.len() == 1 => {
+              arm = stmts.first().copied();
+              continue;
+            }
+            _ => {}
+          }
+          break;
+        }
+      }
+      _ => {}
+    });
+  }
 
   // 1) Canonical call sites, using types to gate prototype/instance methods.
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
@@ -553,6 +697,38 @@ pub fn recognize_patterns_typed(
       }
     }
 
+    if let Some(m) = promise_all_fetch_match_typed(lowered, body, expr_id, types) {
+      patterns.push(RecognizedPattern::PromiseAllFetch {
+        promise_all_call: expr_id,
+        urls_expr: m.urls_expr,
+        map_call: m.map_call,
+        fetch_call_count: m.fetch_call_count,
+      });
+    }
+
+    if let ExprKind::Template(template) = &expr.kind {
+      if template.spans.len() >= 2 {
+        patterns.push(RecognizedPattern::StringTemplate {
+          expr: expr_id,
+          span_count: template.spans.len(),
+        });
+      }
+    }
+
+    if let ExprKind::Object(obj) = &expr.kind {
+      let spread_count = obj
+        .properties
+        .iter()
+        .filter(|p| matches!(p, ObjectProperty::Spread(_)))
+        .count();
+      if spread_count > 0 {
+        patterns.push(RecognizedPattern::ObjectSpread {
+          expr: expr_id,
+          spread_count,
+        });
+      }
+    }
+
     // MapGetOrDefault.
     if let ExprKind::Binary { op, left, right } = &expr.kind {
       if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
@@ -592,5 +768,108 @@ pub fn recognize_patterns_typed(
     matches!(pat, RecognizedPattern::JsonParseTyped { .. })
   }));
 
+  sort_patterns_by_span(body_ref, &mut patterns);
   patterns
+}
+
+#[cfg(feature = "typed")]
+fn promise_all_fetch_match_typed(
+  lowered: &LowerResult,
+  body: BodyId,
+  call_expr: ExprId,
+  types: &impl crate::types::TypeProvider,
+) -> Option<PromiseAllFetchMatch> {
+  use crate::resolve::resolve_api_call_typed;
+
+  let body_ref = lowered.body(body)?;
+  if resolve_api_call_typed(lowered, body, call_expr, types) != Some(ApiId::PromiseAll) {
+    return None;
+  }
+
+  let call = body_ref.exprs.get(call_expr.0 as usize)?;
+  let ExprKind::Call(call) = &call.kind else {
+    return None;
+  };
+  if call.optional || call.is_new {
+    return None;
+  }
+
+  let arg0 = call.args.first()?;
+  if arg0.spread {
+    return None;
+  }
+
+  let arg_expr_id = arg0.expr;
+  let arg_expr = body_ref.exprs.get(arg_expr_id.0 as usize)?;
+  match &arg_expr.kind {
+    ExprKind::Array(array) => {
+      let mut fetch_call_count = 0usize;
+      for element in &array.elements {
+        match element {
+          ArrayElement::Expr(expr_id) => {
+            if resolve_api_call_untyped(lowered, body, *expr_id) == Some(ApiId::Fetch) {
+              fetch_call_count += 1;
+            }
+          }
+          ArrayElement::Empty => {}
+          ArrayElement::Spread(_) => return None,
+        }
+      }
+      (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
+        urls_expr: arg_expr_id,
+        map_call: None,
+        fetch_call_count,
+      })
+    }
+    ExprKind::Call(map_call) => {
+      if map_call.optional || map_call.is_new {
+        return None;
+      }
+      if resolve_api_call_typed(lowered, body, arg_expr_id, types) != Some(ApiId::ArrayPrototypeMap) {
+        return None;
+      }
+
+      let callee = body_ref.exprs.get(map_call.callee.0 as usize)?;
+      let ExprKind::Member(member) = &callee.kind else {
+        return None;
+      };
+      if member.optional {
+        return None;
+      }
+
+      let cb_arg = map_call.args.first()?;
+      if cb_arg.spread {
+        return None;
+      }
+      let cb_expr = body_ref.exprs.get(cb_arg.expr.0 as usize)?;
+      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
+        return None;
+      };
+      let cb_body_id = *cb_body;
+      let cb_body = lowered.body(cb_body_id)?;
+      let func = cb_body.function.as_ref()?;
+      let ret_expr = match &func.body {
+        hir_js::FunctionBody::Expr(expr) => Some(*expr),
+        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+          let StmtKind::Return(Some(expr)) = &stmt.kind else {
+            return None;
+          };
+          Some(*expr)
+        }
+        _ => None,
+      }?;
+
+      if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) != Some(ApiId::Fetch) {
+        return None;
+      }
+
+      Some(PromiseAllFetchMatch {
+        urls_expr: member.object,
+        map_call: Some(arg_expr_id),
+        fetch_call_count: 1,
+      })
+    }
+    _ => None,
+  }
 }

@@ -338,15 +338,71 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             ),
           });
         }
-        RecognizedPattern::PromiseAllFetch { all_call, fetch_calls } => {
-          let span = body.exprs[all_call.0 as usize].span;
+        RecognizedPattern::PromiseAllFetch {
+          promise_all_call,
+          fetch_call_count,
+          ..
+        } => {
+          let span = body.exprs[promise_all_call.0 as usize].span;
           out.push(PatternLine {
             span,
             text: format!(
-              "[{}..{}] PromiseAllFetch: Promise.all + fetch (fetch_calls={})",
+              "[{}..{}] PromiseAllFetch: Promise.all + fetch (fetch_calls={fetch_call_count})",
               span.start,
               span.end,
-              fetch_calls.len()
+            ),
+          });
+        }
+        RecognizedPattern::AsyncIterator { stmt, .. } => {
+          let span = body.stmts[stmt.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] AsyncIterator: for await (... of ...)",
+              span.start, span.end,
+            ),
+          });
+        }
+        RecognizedPattern::StringTemplate { expr, span_count } => {
+          let span = body.exprs[expr.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] StringTemplate: spans={span_count}",
+              span.start, span.end,
+            ),
+          });
+        }
+        RecognizedPattern::ObjectSpread {
+          expr,
+          spread_count,
+        } => {
+          let span = body.exprs[expr.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] ObjectSpread: spreads={spread_count}",
+              span.start, span.end,
+            ),
+          });
+        }
+        RecognizedPattern::ArrayDestructure { stmt, arity, .. } => {
+          let span = body.stmts[stmt.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] ArrayDestructure: arity={arity}",
+              span.start, span.end,
+            ),
+          });
+        }
+        RecognizedPattern::GuardClause { stmt, kind, .. } => {
+          let span = body.stmts[stmt.0 as usize].span;
+          out.push(PatternLine {
+            span,
+            text: format!(
+              "[{}..{}] GuardClause: {:?}",
+              span.start, span.end, kind,
             ),
           });
         }
@@ -370,72 +426,6 @@ fn recognize_patterns_best_effort(lowered: &hir_js::LowerResult) -> Vec<PatternL
             text: format!(
               "[{}..{}] JsonParseTyped: call={} target_type={}",
               span.start, span.end, call.0, target.0
-            ),
-          });
-        }
-        RecognizedPattern::StringTemplate { template } => {
-          let span = body.exprs[template.0 as usize].span;
-          out.push(PatternLine {
-            span,
-            text: format!(
-              "[{}..{}] StringTemplate: template={}",
-              span.start, span.end, template.0
-            ),
-          });
-        }
-        RecognizedPattern::ObjectSpread {
-          object,
-          spreads,
-          keys,
-        } => {
-          let span = body.exprs[object.0 as usize].span;
-          out.push(PatternLine {
-            span,
-            text: format!(
-              "[{}..{}] ObjectSpread: object={} spreads={} keys={:?}",
-              span.start,
-              span.end,
-              object.0,
-              spreads.len(),
-              keys
-            ),
-          });
-        }
-        RecognizedPattern::ArrayDestructure {
-          source,
-          bindings,
-          has_rest,
-        } => {
-          let span = body.exprs[source.0 as usize].span;
-          out.push(PatternLine {
-            span,
-            text: format!(
-              "[{}..{}] ArrayDestructure: source={} bindings={} has_rest={}",
-              span.start, span.end, source.0, bindings, has_rest
-            ),
-          });
-        }
-        RecognizedPattern::GuardClause {
-          test,
-          guard_kind,
-          subject,
-        } => {
-          let span = body.exprs[test.0 as usize].span;
-          out.push(PatternLine {
-            span,
-            text: format!(
-              "[{}..{}] GuardClause: test={} kind={:?} subject={}",
-              span.start, span.end, test.0, guard_kind, subject.0
-            ),
-          });
-        }
-        RecognizedPattern::AsyncIterator { iterable } => {
-          let span = body.exprs[iterable.0 as usize].span;
-          out.push(PatternLine {
-            span,
-            text: format!(
-              "[{}..{}] AsyncIterator: iterable={}",
-              span.start, span.end, iterable.0
             ),
           });
         }
