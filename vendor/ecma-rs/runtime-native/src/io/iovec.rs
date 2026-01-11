@@ -182,3 +182,81 @@ impl PinnedIoVec {
 
 /// Alias used by some APIs to emphasize that this is a list of `iovec` entries.
 pub type IoVecList = PinnedIoVec;
+
+/// A pinned, stable-address `msghdr` that owns its `iovec[]` descriptor list.
+///
+/// This is safe to pass to `sendmsg`/`recvmsg` and io_uring `SendMsg`/`RecvMsg` because all
+/// user-provided pointers inside the struct point into:
+/// - heap-owned, stable allocations (`Box<msghdr>`, optional `Vec<u8>` for `msg_control` / `msg_name`)
+/// - pinned backing stores (via the owned [`PinnedIoVec`])
+#[derive(Debug)]
+pub struct PinnedMsgHdr {
+  hdr: Box<libc::msghdr>,
+  iovecs: PinnedIoVec,
+  #[allow(dead_code)]
+  name: Option<Vec<u8>>,
+  #[allow(dead_code)]
+  control: Option<Vec<u8>>,
+}
+
+impl PinnedMsgHdr {
+  pub fn new(iovecs: PinnedIoVec) -> Self {
+    Self::new_inner(iovecs, None, None)
+  }
+
+  pub fn with_control(iovecs: PinnedIoVec, control: Vec<u8>) -> Self {
+    Self::new_inner(iovecs, None, Some(control))
+  }
+
+  pub fn with_name(iovecs: PinnedIoVec, name: Vec<u8>) -> Self {
+    Self::new_inner(iovecs, Some(name), None)
+  }
+
+  pub fn with_name_and_control(iovecs: PinnedIoVec, name: Vec<u8>, control: Vec<u8>) -> Self {
+    Self::new_inner(iovecs, Some(name), Some(control))
+  }
+
+  fn new_inner(iovecs: PinnedIoVec, name: Option<Vec<u8>>, control: Option<Vec<u8>>) -> Self {
+    let (msg_name, msg_namelen) = match &name {
+      None => (core::ptr::null_mut(), 0 as libc::socklen_t),
+      Some(buf) => (
+        buf.as_ptr() as *mut libc::c_void,
+        buf.len() as libc::socklen_t,
+      ),
+    };
+
+    let (msg_control, msg_controllen) = match &control {
+      None => (core::ptr::null_mut(), 0usize),
+      Some(buf) => (buf.as_ptr() as *mut libc::c_void, buf.len()),
+    };
+
+    let hdr = Box::new(libc::msghdr {
+      msg_name,
+      msg_namelen,
+      msg_iov: iovecs.as_iovec_ptr() as *mut libc::iovec,
+      msg_iovlen: iovecs.len(),
+      msg_control,
+      msg_controllen,
+      msg_flags: 0,
+    });
+
+    Self {
+      hdr,
+      iovecs,
+      name,
+      control,
+    }
+  }
+
+  pub fn iovecs(&self) -> &PinnedIoVec {
+    &self.iovecs
+  }
+
+  pub fn as_msghdr_ptr(&self) -> *const libc::msghdr {
+    &*self.hdr as *const libc::msghdr
+  }
+
+  pub fn as_msghdr_mut_ptr(&mut self) -> *mut libc::msghdr {
+    &mut *self.hdr as *mut libc::msghdr
+  }
+}

@@ -1,4 +1,4 @@
-use super::iovec::PinnedIoVec;
+use super::iovec::{PinnedIoVec, PinnedMsgHdr};
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
 use std::ops::Range;
 use std::sync::Arc;
@@ -34,6 +34,8 @@ pub struct IoOp {
   _backings: Vec<Arc<[u8]>>,
   #[allow(dead_code)]
   pinned_iovecs: Option<PinnedIoVec>,
+  #[allow(dead_code)]
+  pinned_msghdr: Option<PinnedMsgHdr>,
   _permit: IoPermit,
 }
 
@@ -90,6 +92,7 @@ impl IoOp {
       bufs: io_bufs,
       _backings: backings,
       pinned_iovecs: None,
+      pinned_msghdr: None,
       _permit: permit,
     })
   }
@@ -106,9 +109,20 @@ impl IoOp {
     self.pinned_iovecs.as_ref()
   }
 
+  /// Attaches a pinned `msghdr` descriptor to this op.
+  ///
+  /// `msghdr`-based syscalls and io_uring operations require the `msghdr` struct (and any pointed-to
+  /// buffers like `iovec[]` and `msg_control`) to remain valid until completion.
+  pub fn set_pinned_msghdr(&mut self, pinned_msghdr: PinnedMsgHdr) {
+    self.pinned_msghdr = Some(pinned_msghdr);
+  }
+
+  pub fn pinned_msghdr(&self) -> Option<&PinnedMsgHdr> {
+    self.pinned_msghdr.as_ref()
+  }
+
   #[inline]
   pub fn bufs(&self) -> &[IoBuf] {
     self.bufs.as_slice()
   }
 }
-

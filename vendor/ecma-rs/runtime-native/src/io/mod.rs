@@ -7,7 +7,7 @@ pub mod op_registry;
 pub mod runtime;
 
 pub use async_fd::{AsyncFd, Readable, Writable};
-pub use iovec::{IoVecList, IoVecRange, PinnedIoVec};
+pub use iovec::{IoVecList, IoVecRange, PinnedIoVec, PinnedMsgHdr};
 pub use limits::{IoCounters, IoLimitError, IoLimits, IoLimiter};
 pub use op::{IoBuf, IoOp};
 pub use op_registry::IoOpDebugHooks;
