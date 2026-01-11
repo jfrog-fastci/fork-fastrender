@@ -326,19 +326,23 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
             continue;
           };
 
-            match normalize_ident(token).as_str() {
-              "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
-              "io" => base_effects |= EffectSet::IO,
-              "network" => base_effects |= EffectSet::NETWORK,
-              "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
-              "reads_global" | "read_global" => base_effects |= EffectSet::READS_GLOBAL,
-              "writes_global" | "write_global" => base_effects |= EffectSet::WRITES_GLOBAL,
-              "may_throw" | "throws" => base_effects |= EffectSet::MAY_THROW,
-              "unknown" => base_effects |= EffectSet::UNKNOWN,
-              // Informational-only tags (no effect flags).
-              "async" | "depends_on_callback" | "depends_on_args" => {}
-              other => errors.push(ValidationError::UnknownEnumString {
-              api: api.name.clone(),
+             match normalize_ident(token).as_str() {
+               "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
+               "io" => base_effects |= EffectSet::IO,
+               "network" => base_effects |= EffectSet::NETWORK,
+               "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
+               "reads_global" | "read_global" | "readglobal" | "readsglobal" => {
+                 base_effects |= EffectSet::READS_GLOBAL
+               }
+               "writes_global" | "write_global" | "writeglobal" | "writesglobal" => {
+                 base_effects |= EffectSet::WRITES_GLOBAL
+               }
+               "may_throw" | "throws" | "maythrow" => base_effects |= EffectSet::MAY_THROW,
+               "unknown" => base_effects |= EffectSet::UNKNOWN,
+               // Informational-only tags (no effect flags).
+               "async" | "depends_on_callback" | "depends_on_args" => {}
+               other => errors.push(ValidationError::UnknownEnumString {
+                 api: api.name.clone(),
               field: "effects.base".to_string(),
               value: other.to_string(),
             }),
@@ -510,6 +514,24 @@ mod tests {
       )],
     )]);
     validate(&db).expect("global effects.base tokens are accepted");
+  }
+
+  #[test]
+  fn effects_base_accepts_camel_case_aliases() {
+    let db = ApiDatabase::from_entries([api(
+      "queue.drain",
+      EffectTemplate::Custom(EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL),
+      PurityTemplate::Impure,
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![
+          JsonValue::String("readsGlobal".to_string()),
+          JsonValue::String("writeGlobal".to_string()),
+          JsonValue::String("mayThrow".to_string()),
+        ]),
+      )],
+    )]);
+    validate(&db).expect("camelCase effects.base tokens are accepted");
   }
 
   #[test]

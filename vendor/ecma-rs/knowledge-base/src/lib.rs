@@ -943,6 +943,7 @@ struct EffectsDetailsRaw {
   template: Option<String>,
 
   #[serde(default)]
+  #[serde(alias = "mayThrow")]
   may_throw: Option<bool>,
 
   #[serde(default)]
@@ -957,14 +958,15 @@ struct EffectsDetailsRaw {
 
   #[serde(default)]
   #[serde(alias = "non_deterministic")]
+  #[serde(alias = "nonDeterministic")]
   nondeterministic: Option<bool>,
 
   #[serde(default)]
-  #[serde(alias = "read_global")]
+  #[serde(alias = "read_global", alias = "readGlobal", alias = "readsGlobal")]
   reads_global: Option<bool>,
 
   #[serde(default)]
-  #[serde(alias = "write_global")]
+  #[serde(alias = "write_global", alias = "writeGlobal", alias = "writesGlobal")]
   writes_global: Option<bool>,
 }
 
@@ -1182,9 +1184,11 @@ fn normalize_effects(
           "io" => base_io = true,
           "network" => base_network = true,
           "nondeterministic" | "non_deterministic" => base_nondeterministic = true,
-          "reads_global" | "read_global" => base_reads_global = true,
-          "writes_global" | "write_global" => base_writes_global = true,
-          "may_throw" | "throws" => base_may_throw = true,
+          "reads_global" | "read_global" | "readglobal" | "readsglobal" => base_reads_global = true,
+          "writes_global" | "write_global" | "writeglobal" | "writesglobal" => {
+            base_writes_global = true
+          }
+          "may_throw" | "throws" | "maythrow" => base_may_throw = true,
           "unknown" => base_unknown = true,
           // `async` is tracked by the top-level `async` API field, not the effect flags.
           _ => {}
@@ -1764,6 +1768,23 @@ purity: Impure
   }
 
   #[test]
+  fn effects_base_tokens_accept_camel_case_aliases() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  base: [readsGlobal, writeGlobal, mayThrow]
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
   fn effects_bool_fields_support_global_effects() {
     let yaml = r#"
 name: x
@@ -1779,6 +1800,27 @@ purity: Impure
     assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
     assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
     assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
+  }
+
+  #[test]
+  fn effects_bool_fields_accept_camel_case_aliases() {
+    let yaml = r#"
+name: x
+effects:
+  template: pure
+  readsGlobal: true
+  writeGlobal: true
+  mayThrow: true
+  nonDeterministic: true
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert!(api.effect_summary.flags.contains(EffectSet::READS_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::WRITES_GLOBAL));
+    assert!(api.effect_summary.flags.contains(EffectSet::NONDETERMINISTIC));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
   }
 
   #[test]
