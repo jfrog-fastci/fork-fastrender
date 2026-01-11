@@ -167,13 +167,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       return StringEncoding::Unknown;
     };
     match &expr.kind {
-      ExprKind::Literal(Literal::String(string_lit)) => {
-        if is_ascii_str(&string_lit.lossy) {
-          StringEncoding::Ascii
-        } else {
-          StringEncoding::Utf8
-        }
-      }
+      ExprKind::Literal(Literal::String(string_lit)) => encoding_of_string_literal(string_lit),
       ExprKind::Template(template) => self.encoding_of_template(template),
 
       // Pure wrappers around the underlying expression value.
@@ -211,12 +205,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
     let left_enc = self.encoding_of(left);
     let right_enc = self.encoding_of(right);
-
-    if left_enc == StringEncoding::Ascii && right_enc == StringEncoding::Ascii {
-      StringEncoding::Ascii
-    } else {
-      StringEncoding::Unknown
-    }
+    join_encodings(left_enc, right_enc)
   }
 
   fn encoding_of_call(&mut self, expr_id: ExprId, call: &hir_js::CallExpr) -> StringEncoding {
@@ -262,15 +251,14 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
         "slice" => recv_enc,
         "toString" => recv_enc,
         "concat" => {
-          if recv_enc != StringEncoding::Ascii {
-            return StringEncoding::Unknown;
-          }
+          let mut encoding = recv_enc;
           for arg in &call.args {
-            if arg.spread || self.encoding_of(arg.expr) != StringEncoding::Ascii {
+            if arg.spread {
               return StringEncoding::Unknown;
             }
+            encoding = join_encodings(encoding, self.encoding_of(arg.expr));
           }
-          StringEncoding::Ascii
+          encoding
         }
         "toLowerCase" | "toUpperCase" => {
           if recv_enc == StringEncoding::Ascii {
@@ -392,16 +380,35 @@ fn object_key_to_str<'a>(
   }
 }
 
-fn is_ascii_str(text: &str) -> bool {
-  text.chars().all(|ch| (ch as u32) < 0x80)
+fn encoding_of_string_literal(lit: &hir_js::StringLiteral) -> StringEncoding {
+  if let Some(code_units) = &lit.code_units {
+    return encoding_of_code_units(code_units);
+  }
+  encoding_of_text(&lit.lossy)
+}
+
+fn encoding_of_code_units(code_units: &[u16]) -> StringEncoding {
+  if code_units.iter().all(|&unit| unit < 0x80) {
+    return StringEncoding::Ascii;
+  }
+  if code_units.iter().all(|&unit| unit < 0x100) {
+    return StringEncoding::Latin1;
+  }
+  StringEncoding::Utf8
+}
+
+fn encoding_of_text(text: &str) -> StringEncoding {
+  if text.chars().all(|ch| (ch as u32) < 0x80) {
+    return StringEncoding::Ascii;
+  }
+  if text.chars().all(|ch| (ch as u32) < 0x100) {
+    return StringEncoding::Latin1;
+  }
+  StringEncoding::Utf8
 }
 
 fn encoding_of_literal_segment(text: &str) -> StringEncoding {
-  if is_ascii_str(text) {
-    StringEncoding::Ascii
-  } else {
-    StringEncoding::Utf8
-  }
+  encoding_of_text(text)
 }
 
 fn join_encodings(a: StringEncoding, b: StringEncoding) -> StringEncoding {
@@ -462,8 +469,25 @@ mod tests {
   }
 
   #[test]
-  fn utf8_string_literal_is_utf8() {
+  fn latin1_string_literal_is_latin1() {
     let lower = hir_js::lower_from_source("\"hé\";").unwrap();
+    let root_body_id = lower.hir.root_body;
+    let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+
+    let expr_id = find_first_expr(root_body, |kind| {
+      matches!(kind, hir_js::ExprKind::Literal(hir_js::Literal::String(_)))
+    });
+
+    let kb = KnowledgeBase::default();
+    let results = analyze_string_encodings(&lower, &kb);
+    let root = results.get(&root_body_id).unwrap();
+
+    assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Latin1);
+  }
+
+  #[test]
+  fn utf8_string_literal_is_utf8() {
+    let lower = hir_js::lower_from_source("\"💩\";").unwrap();
     let root_body_id = lower.hir.root_body;
     let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
 

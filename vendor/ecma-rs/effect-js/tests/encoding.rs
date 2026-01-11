@@ -31,8 +31,25 @@ fn ascii_string_literal_is_ascii() {
 }
 
 #[test]
-fn utf8_string_literal_is_utf8() {
+fn latin1_string_literal_is_latin1() {
   let lower = hir_js::lower_from_source("\"hé\";").unwrap();
+  let root_body_id = lower.hir.root_body;
+  let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+
+  let expr_id = find_first_expr(root_body, |kind| {
+    matches!(kind, hir_js::ExprKind::Literal(hir_js::Literal::String(_)))
+  });
+
+  let kb = KnowledgeBase::default();
+  let results = analyze_string_encodings(&lower, &kb);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Latin1);
+}
+
+#[test]
+fn utf8_string_literal_is_utf8() {
+  let lower = hir_js::lower_from_source("\"💩\";").unwrap();
   let root_body_id = lower.hir.root_body;
   let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
 
