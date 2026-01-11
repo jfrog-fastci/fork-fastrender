@@ -125,6 +125,15 @@ struct PromiseResolveInput {
   PromiseResolveKind kind;
   PromiseResolvePayload payload;
 };
+// Payload layout for promises returned from `rt_parallel_spawn_promise`.
+//
+// The runtime allocates a payload buffer described by this struct. The worker
+// task writes the result into `rt_promise_payload_ptr(promise)` and then calls
+// `rt_promise_fulfill` (or `rt_promise_reject`).
+typedef struct PromiseLayout {
+  size_t size;
+  size_t align;
+} PromiseLayout;
 
 // An FFI-friendly UTF-8 byte string reference.
 typedef struct StringRef {
@@ -356,6 +365,10 @@ void rt_parallel_join(const TaskId* tasks, size_t count);
 // - minimum iterations per task: RT_PAR_FOR_MIN_GRAIN (default: 1024)
 void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);
 
+// Spawn CPU-bound work on the parallel worker pool and return a promise that can
+// be awaited by the async runtime.
+PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);
+
 // -----------------------------------------------------------------------------
 // Blocking thread pool
 // -----------------------------------------------------------------------------
@@ -374,6 +387,8 @@ LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uin
 void rt_promise_init(PromiseRef p);
 void rt_promise_fulfill(PromiseRef p);
 void rt_promise_reject(PromiseRef p);
+// Returns the payload pointer for promises created by `rt_parallel_spawn_promise`.
+uint8_t* rt_promise_payload_ptr(PromiseRef p);
 
 // -----------------------------------------------------------------------------
 // Native coroutine ABI (async/await lowering)

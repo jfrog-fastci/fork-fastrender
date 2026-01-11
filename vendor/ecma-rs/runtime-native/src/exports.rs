@@ -7,6 +7,7 @@ use crate::abi::TimerId;
 use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
+use crate::async_runtime::PromiseLayout;
 use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
@@ -755,6 +756,32 @@ pub extern "C" fn rt_parallel_for(
   }
 }
 
+/// Spawn CPU-bound work on the work-stealing pool, returning a promise that can be awaited by the
+/// async runtime.
+///
+/// The spawned `task` must:
+/// 1. Write its result into `rt_promise_payload_ptr(promise)` (respecting `promise_layout`), then
+/// 2. Settle the promise (usually via `rt_promise_fulfill`).
+///
+/// Note: unlike `rt_parallel_spawn`, this API is *detached* and does not require `rt_parallel_join`;
+/// completion is observed by awaiting the returned promise.
+#[no_mangle]
+pub extern "C" fn rt_parallel_spawn_promise(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+  promise_layout: PromiseLayout,
+) -> PromiseRef {
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::parallel_integration::spawn_promise(task, data, promise_layout)
+  }));
+  match res {
+    Ok(p) => p,
+    Err(_) => std::process::abort(),
+  }
+}
+
 #[no_mangle]
 pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),
@@ -1041,6 +1068,15 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
     ensure_event_loop_thread_registered();
     async_rt::promise::promise_new()
   })
+}
+
+/// Return the payload buffer associated with a promise created by `rt_parallel_spawn_promise`.
+///
+/// For non-payload promises, this may return null.
+#[no_mangle]
+pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
+  ensure_event_loop_thread_registered();
+  async_rt::promise::promise_payload_ptr(p)
 }
 
 #[no_mangle]

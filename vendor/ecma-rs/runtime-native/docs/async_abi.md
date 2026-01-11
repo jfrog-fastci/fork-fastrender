@@ -34,6 +34,11 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 - `rt_async_poll() -> bool`
 - `rt_async_set_strict_await_yields(strict: bool)`
 
+### Parallel → async payload promises
+
+- `rt_parallel_spawn_promise(task: extern "C" fn(*mut u8, PromiseRef), data: *mut u8, layout: PromiseLayout) -> PromiseRef`
+- `rt_promise_payload_ptr(p: PromiseRef) -> *mut u8`
+
 ### Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 
 - `rt_promise_new_legacy() -> LegacyPromiseRef`
@@ -65,6 +70,67 @@ within a microtask), the nested call is treated as a **no-op** and returns `fals
 
 `PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineRef`, `RtCoroutineHeader`, `TimerId`, and
 `IoWatcherId` are ABI-level opaque types; their layout is defined in `include/runtime_native.h`.
+
+## Awaiting parallel work via payload promises
+
+CPU-bound parallel work must never block the async event-loop thread. Instead, parallel tasks return
+results through a runtime promise:
+
+- A coroutine awaits the promise (suspending via the runtime's await registration API).
+- A worker thread writes the payload and settles the promise.
+- Settlement wakes the awaiting coroutine back onto the async event loop.
+
+### Relevant C ABI (parallel → promise)
+
+```c
+// Allocate a new pending promise and execute `task(data, promise)` on the work-stealing pool.
+PromiseRef rt_parallel_spawn_promise(
+  void (*task)(uint8_t* data, PromiseRef promise),
+  uint8_t* data,
+  PromiseLayout layout
+);
+
+// Get a writable pointer to the promise payload storage.
+uint8_t* rt_promise_payload_ptr(PromiseRef promise);
+
+// Settle the promise (exactly once).
+void rt_promise_fulfill(PromiseRef promise);
+void rt_promise_reject(PromiseRef promise);
+```
+
+`PromiseLayout` is:
+
+```c
+typedef struct PromiseLayout {
+  size_t size;
+  size_t align;
+} PromiseLayout;
+```
+
+### Result retrieval
+
+The settled promise does not carry an additional "value" beyond its state (`fulfilled`/`rejected`).
+Instead, the worker publishes its result into the payload buffer described by `PromiseLayout`.
+After awaiting, the coroutine reads the result from `rt_promise_payload_ptr(promise)`.
+
+## Payload publication + state ordering contract
+
+When settling a promise from a worker thread:
+
+1. Write the payload into `rt_promise_payload_ptr(promise)` (respecting the `PromiseLayout`).
+2. Call `rt_promise_fulfill(promise)` (or `rt_promise_reject`).
+
+The runtime enqueues promise continuations onto the async microtask queue via a mutex-protected
+queue, establishing a happens-before edge such that:
+
+- All writes to the payload that occur before `rt_promise_fulfill/reject` are visible to the async
+  event loop after the awaiting coroutine resumes.
+
+## Wake semantics / fairness / determinism
+
+- Promise settlement may occur on any worker thread.
+- Settlement wakes all awaiting coroutines by enqueuing microtasks onto the async event loop.
+- Promise continuations are stored in a FIFO list; continuations are enqueued in registration order.
 
 ## Panic / unwinding policy
 

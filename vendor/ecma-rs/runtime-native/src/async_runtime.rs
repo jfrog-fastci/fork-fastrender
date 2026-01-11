@@ -75,3 +75,25 @@ pub fn rt_async_run_until_idle() -> bool {
   did_work
 }
 
+/// Layout of the payload storage associated with a promise returned by
+/// `rt_parallel_spawn_promise`.
+///
+/// The runtime uses this to allocate a payload buffer; the parallel task writes
+/// its result into the buffer (via `rt_promise_payload_ptr`) and then settles the
+/// promise (via `rt_promise_fulfill` / `rt_promise_reject_payload`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PromiseLayout {
+  pub size: usize,
+  pub align: usize,
+}
+
+impl PromiseLayout {
+  #[inline]
+  pub const fn of<T>() -> Self {
+    Self {
+      size: core::mem::size_of::<T>(),
+      align: core::mem::align_of::<T>(),
+    }
+  }
+}

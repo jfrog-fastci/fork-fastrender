@@ -82,6 +82,18 @@ impl ParallelRuntime {
     }
   }
 
+  /// Spawn a task onto the work-stealing pool without returning a `TaskId`.
+  ///
+  /// This is used by async integrations that surface completion via a promise
+  /// instead of `rt_parallel_join`.
+  pub(crate) fn spawn_detached(&self, task: extern "C" fn(*mut u8), data: *mut u8) {
+    // Ensure the caller thread participates in GC safepoints.
+    threading::register_current_thread(ThreadKind::External);
+
+    let task_state = Arc::new(TaskState::new(task, data));
+    self.scheduler.enqueue(task_state);
+  }
+
   pub(crate) fn spawn(&self, task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
     // Ensure the caller thread participates in GC safepoints.
     threading::register_current_thread(ThreadKind::External);

@@ -111,6 +111,7 @@ mod gc_stats;
 mod blocking_pool;
 mod ffi;
 mod exports;
+mod parallel_integration;
 mod interner;
 mod native_async;
 mod platform;
@@ -127,7 +128,7 @@ pub use runtime_native_abi::{
 
 pub use exports::*;
 pub use async_abi::*;
-pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks};
+pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks, PromiseLayout};
 pub use buffer::{
   global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStore, BackingStoreAllocError,
   BackingStoreAllocator, BackingStoreDetachError, BackingStorePinError, GlobalBackingStoreAllocator,
@@ -249,7 +250,6 @@ pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
 pub unsafe extern "C" fn rt_promise_reject(_p: PromiseRef) {
   crate::ffi::abort_on_panic(|| crate::native_async::promise_reject(_p))
 }
-
 /// Request a stop-the-world GC safepoint.
 ///
 /// Internal runtime hook; not a stable public API.
@@ -567,10 +567,12 @@ mod tests {
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
+      "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
       "void rt_promise_fulfill(PromiseRef p);",
       "void rt_promise_reject(PromiseRef p);",
+      "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "bool rt_async_poll(void);",
       "void rt_async_set_strict_await_yields(bool strict);",
@@ -637,11 +639,14 @@ mod tests {
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
+    let _spawn_promise: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8, PromiseLayout) -> abi::PromiseRef =
+      rt_parallel_spawn_promise;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
     let _promise_init: unsafe extern "C" fn(PromiseRef) = rt_promise_init;
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
+    let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
@@ -696,10 +701,12 @@ mod tests {
       _spawn,
       _join,
       _for,
+      _spawn_promise,
       _spawn_blocking,
       _promise_init,
       _promise_fulfill,
       _promise_reject,
+      _promise_payload_ptr,
       _async_spawn,
       _async_poll,
       _promise_new_legacy,

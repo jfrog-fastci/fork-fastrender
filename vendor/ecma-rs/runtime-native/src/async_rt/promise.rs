@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::PromiseHeader;
+use crate::async_runtime::PromiseLayout;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use std::sync::{Condvar, Mutex};
 
@@ -20,6 +21,13 @@ const STATE_FULFILLING: u8 = 3;
 const STATE_REJECTING: u8 = 4;
 
 const FLAG_HANDLED: u8 = 0x1;
+
+/// Promise header flag indicating the promise has an associated out-of-line payload buffer.
+///
+/// Currently this is used by `rt_parallel_spawn_promise` promises: the worker writes its result into
+/// the payload returned by `rt_promise_payload_ptr` and then settles the promise via
+/// `rt_promise_fulfill` / `rt_promise_reject`.
+const FLAG_HAS_PAYLOAD: u8 = 0x2;
 
 // Minimal unhandled rejection tracking used by tests and await semantics.
 //
@@ -105,6 +113,40 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
 
 pub(crate) fn promise_new() -> PromiseRef {
   PromiseRef(Box::into_raw(Box::new(RtPromise::new_pending())) as *mut core::ffi::c_void)
+}
+
+pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
+  let payload = if layout.size == 0 {
+    core::ptr::null_mut()
+  } else {
+    let align = layout.align.max(1);
+    if !align.is_power_of_two() {
+      crate::trap::rt_trap_invalid_arg("promise payload align must be a power of two");
+    }
+    crate::alloc::alloc_bytes(layout.size, align, "promise payload")
+  };
+
+  let promise = Box::new(RtPromise::new_pending());
+  // Store the payload pointer in `value` even while pending; this allows worker threads to obtain
+  // the buffer without settling the promise.
+  promise.value.store(payload as usize, Ordering::Relaxed);
+  promise
+    .header
+    .flags
+    .store(FLAG_HAS_PAYLOAD, Ordering::Relaxed);
+  PromiseRef(Box::into_raw(promise) as *mut core::ffi::c_void)
+}
+
+pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return core::ptr::null_mut();
+  }
+  let flags = unsafe { &(*ptr).header.flags }.load(Ordering::Acquire);
+  if flags & FLAG_HAS_PAYLOAD == 0 {
+    return core::ptr::null_mut();
+  }
+  unsafe { &(*ptr).value }.load(Ordering::Acquire) as *mut u8
 }
 
 #[repr(C)]
