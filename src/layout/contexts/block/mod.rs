@@ -55,9 +55,9 @@ use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation::{
-  clip_node_with_axes, collect_forced_boundaries_for_pagination_with_axes, forces_break_between,
-  normalize_fragment_margins_with_axes, propagate_fragment_metadata, propagate_fragmentainer_columns,
-  ForcedBoundary, FragmentationAnalyzer, FragmentationContext,
+  clip_node_with_axes, collect_forced_boundaries_for_pagination_with_axes_and_page_progression,
+  forces_break_between, normalize_fragment_margins_with_axes, propagate_fragment_metadata,
+  propagate_fragmentainer_columns, ForcedBoundary, FragmentationAnalyzer, FragmentationContext,
 };
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
@@ -7425,8 +7425,16 @@ impl BlockFormattingContext {
     // `FragmentationContext::Column`) still accounts for `break-before/after: page|left|right|recto|verso`.
     let mut forced_pagination_boundaries: Vec<ForcedBoundary> = Vec::new();
     if fragmented_context {
+      let page_progression_is_ltr = crate::layout::formatting_context::fragmentainer_axes_hint()
+        .unwrap_or(axes)
+        .page_progression_is_ltr();
       forced_pagination_boundaries =
-        collect_forced_boundaries_for_pagination_with_axes(&physical_flow_root, 0.0, axes);
+        collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+          &physical_flow_root,
+          0.0,
+          axes,
+          page_progression_is_ltr,
+        );
 
       // Deduplicate forced boundaries by position and merge side constraints (matching the @page
       // paginator's `dedup_forced_boundaries` logic).

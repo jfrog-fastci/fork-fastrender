@@ -3926,7 +3926,22 @@ pub(crate) fn collect_forced_boundaries_for_pagination_with_axes(
   abs_start: f32,
   axes: FragmentAxes,
 ) -> Vec<ForcedBoundary> {
-  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, true)
+  collect_forced_boundaries_with_axes_internal(
+    node,
+    abs_start,
+    axes,
+    true,
+    axes.page_progression_is_ltr(),
+  )
+}
+
+pub(crate) fn collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
+  node: &FragmentNode,
+  abs_start: f32,
+  axes: FragmentAxes,
+  page_progression_is_ltr: bool,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, true, page_progression_is_ltr)
 }
 
 pub(crate) fn collect_forced_boundaries_with_axes(
@@ -3934,7 +3949,13 @@ pub(crate) fn collect_forced_boundaries_with_axes(
   abs_start: f32,
   axes: FragmentAxes,
 ) -> Vec<ForcedBoundary> {
-  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, false)
+  collect_forced_boundaries_with_axes_internal(
+    node,
+    abs_start,
+    axes,
+    false,
+    axes.page_progression_is_ltr(),
+  )
 }
 
 fn collect_forced_boundaries_with_axes_internal(
@@ -3942,9 +3963,8 @@ fn collect_forced_boundaries_with_axes_internal(
   abs_start: f32,
   axes: FragmentAxes,
   suppress_parallel_flow_descendants: bool,
+  page_progression_is_ltr: bool,
 ) -> Vec<ForcedBoundary> {
-  let page_progression_is_ltr = axes.page_progression_is_ltr();
-
   fn is_forced_page_break(between: BreakBetween) -> bool {
     matches!(
       between,
