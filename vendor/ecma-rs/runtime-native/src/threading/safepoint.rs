@@ -452,7 +452,7 @@ mod tests {
       core::ptr::write_bytes(obj, 0, size);
       let header = &mut *(obj as *mut ObjHeader);
       header.type_desc = &OBJ_DESC as *const TypeDescriptor;
-      header.meta = 0;
+      header.meta = AtomicUsize::new(0);
       (*(obj as *mut Obj)).value = value;
     }
     obj

@@ -12,6 +12,14 @@ const OBJ_SIZE: usize = 64;
 static DESC_NO_PTR: TypeDescriptor = TypeDescriptor::new(OBJ_SIZE, &[]);
 
 #[test]
+fn align_up_basic() {
+  assert_eq!(super::align_up(0, 8), 0);
+  assert_eq!(super::align_up(1, 8), 8);
+  assert_eq!(super::align_up(8, 8), 8);
+  assert_eq!(super::align_up(9, 8), 16);
+}
+
+#[test]
 fn major_gc_reclaims_old_blocks_for_reuse() {
   let mut heap = GcHeap::new();
   let mut roots = RootStack::new();
