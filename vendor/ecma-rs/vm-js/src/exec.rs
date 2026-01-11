@@ -156,6 +156,19 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   Ok(VmError::Throw(value))
 }
 
+fn throw_range_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let value = crate::error_object::new_error(
+    scope,
+    intr.range_error_prototype(),
+    "RangeError",
+    message,
+  )?;
+  Ok(VmError::Throw(value))
+}
+
 fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -5236,10 +5249,51 @@ impl<'a> Evaluator<'a> {
           )?),
         }
       }
-      OperatorName::Subtraction
-      | OperatorName::Division
-      | OperatorName::Remainder
-      | OperatorName::LessThan
+      OperatorName::Subtraction | OperatorName::Division | OperatorName::Remainder => {
+        let left = self.eval_expr(scope, &expr.left)?;
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
+        rhs_scope.push_root(right)?;
+
+        let left_num = self.to_numeric(&mut rhs_scope, left)?;
+        let right_num = self.to_numeric(&mut rhs_scope, right)?;
+
+        match (left_num, right_num) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+            OperatorName::Subtraction => Value::Number(a - b),
+            OperatorName::Division => Value::Number(a / b),
+            OperatorName::Remainder => Value::Number(a % b),
+            _ => unreachable!(),
+          }),
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            if b.is_zero() && matches!(expr.operator, OperatorName::Division | OperatorName::Remainder) {
+              return Err(throw_range_error(self.vm, &mut rhs_scope, "Division by zero")?);
+            }
+
+            let out = match expr.operator {
+              OperatorName::Subtraction => a
+                .checked_sub(b)
+                .ok_or(VmError::Unimplemented("BigInt subtraction overflow"))?,
+              OperatorName::Division => a
+                .checked_div(b)
+                .ok_or(VmError::InvariantViolation("BigInt division returned None"))?,
+              OperatorName::Remainder => a
+                .checked_rem(b)
+                .ok_or(VmError::InvariantViolation("BigInt remainder returned None"))?,
+              _ => unreachable!(),
+            };
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(throw_type_error(
+            self.vm,
+            &mut rhs_scope,
+            "Cannot mix BigInt and other types",
+          )?),
+        }
+      }
+      OperatorName::LessThan
       | OperatorName::LessThanOrEqual
       | OperatorName::GreaterThan
       | OperatorName::GreaterThanOrEqual => {
@@ -5254,21 +5308,18 @@ impl<'a> Evaluator<'a> {
         let left_n = self.to_number_operator(&mut rhs_scope, left)?;
         let right_n = self.to_number_operator(&mut rhs_scope, right)?;
 
-        match expr.operator {
-          OperatorName::Subtraction => Ok(Value::Number(left_n - right_n)),
-          OperatorName::Division => Ok(Value::Number(left_n / right_n)),
-          OperatorName::Remainder => Ok(Value::Number(left_n % right_n)),
-          OperatorName::LessThan => Ok(Value::Bool(left_n < right_n)),
-          OperatorName::LessThanOrEqual => Ok(Value::Bool(left_n <= right_n)),
-          OperatorName::GreaterThan => Ok(Value::Bool(left_n > right_n)),
-          OperatorName::GreaterThanOrEqual => Ok(Value::Bool(left_n >= right_n)),
+        Ok(match expr.operator {
+          OperatorName::LessThan => Value::Bool(left_n < right_n),
+          OperatorName::LessThanOrEqual => Value::Bool(left_n <= right_n),
+          OperatorName::GreaterThan => Value::Bool(left_n > right_n),
+          OperatorName::GreaterThanOrEqual => Value::Bool(left_n >= right_n),
           _ => {
             debug_assert!(false, "unexpected operator in numeric binary op fast path");
-            Err(VmError::InvariantViolation(
+            return Err(VmError::InvariantViolation(
               "internal error: unexpected operator in numeric binary op",
-            ))
+            ));
           }
-        }
+        })
       }
       OperatorName::Comma => {
         let _ = self.eval_expr(scope, &expr.left)?;

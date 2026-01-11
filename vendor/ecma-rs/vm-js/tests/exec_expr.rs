@@ -428,6 +428,18 @@ fn bitwise_and_shift_and_comma_operators_work() {
         ok = ok
           && ((c >> 128n) === 0x123456n)
           && ((c << 64n) === 0x123456789abcdef0fedcba98765432123456780000000000000000n);
+        ok = ok
+          && ((5n - 3n) === 2n)
+          && ((5n / 2n) === 2n)
+          && ((5n % 2n) === 1n)
+          && ((-5n / 2n) === -2n)
+          && ((-5n % 2n) === -1n);
+        var div0 = false;
+        try { 1n / 0n; } catch(e) { div0 = e.name === "RangeError"; }
+        ok = ok && div0;
+        var mod0 = false;
+        try { 1n % 0n; } catch(e) { mod0 = e.name === "RangeError"; }
+        ok = ok && mod0;
         var mix = false;
         try { 1n & 1; } catch(e) { mix = e.name === "TypeError"; }
         ok = ok && mix;

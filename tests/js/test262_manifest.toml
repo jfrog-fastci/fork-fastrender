@@ -297,6 +297,30 @@ id = "language/expressions/division/line-terminator.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/division/bigint-and-number.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/bigint-arithmetic.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/bigint-complex-infinity.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/bigint-errors.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/bigint-toprimitive.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/bigint-wrapped-values.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/division/no-magic-asi.js"
 status = "pass"
 
@@ -649,6 +673,30 @@ id = "language/expressions/modulus/line-terminator.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/modulus/bigint-and-number.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/bigint-arithmetic.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/bigint-errors.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/bigint-modulo-zero.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/bigint-toprimitive.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/bigint-wrapped-values.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/multiplication/S11.5.1_A2.1_T1.js"
 status = "pass"
 
@@ -786,6 +834,26 @@ status = "pass"
 
 [[expectations]]
 id = "language/expressions/subtraction/S11.6.2_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/bigint-and-number.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/bigint-arithmetic.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/bigint-errors.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/bigint-toprimitive.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/bigint-wrapped-values.js"
 status = "pass"
 
 [[expectations]]

@@ -198,6 +198,65 @@ impl U256 {
     Some(Self { limbs: out })
   }
 
+  fn shl1(self) -> (bool, Self) {
+    let mut out = [0u64; 4];
+    let mut carry = 0u64;
+    for i in 0..4 {
+      let new_carry = self.limbs[i] >> 63;
+      out[i] = (self.limbs[i] << 1) | carry;
+      carry = new_carry;
+    }
+    (carry != 0, Self { limbs: out })
+  }
+
+  fn set_bit(&mut self, bit: u32) {
+    debug_assert!(bit < 256);
+    let limb = (bit / 64) as usize;
+    let offset = bit % 64;
+    self.limbs[limb] |= 1u64 << offset;
+  }
+
+  fn div_mod(self, divisor: Self) -> Option<(Self, Self)> {
+    if divisor.is_zero() {
+      return None;
+    }
+    if self.is_zero() {
+      return Some((Self::ZERO, Self::ZERO));
+    }
+    if self < divisor {
+      return Some((Self::ZERO, self));
+    }
+
+    let mut quotient = Self::ZERO;
+    let mut rem = Self::ZERO;
+    let mut rem_high = false;
+
+    for bit in (0u32..256).rev() {
+      // Shift remainder left by 1, tracking the carry out into an extra high bit. The remainder
+      // before each step is always less than the divisor, so it fits within 256 bits.
+      let (carry, shifted) = rem.shl1();
+      rem_high = carry;
+      rem = shifted;
+
+      // Add the next dividend bit into the remainder's low bit.
+      if self.get_bit(bit) {
+        rem.limbs[0] |= 1;
+      }
+
+      if rem_high || rem >= divisor {
+        // Subtract once. When `rem_high` is set, the remainder is in `[2^256, 2^257)`, and the
+        // subtraction always clears the extra bit (see BigInt long division invariants).
+        rem = rem.wrapping_sub(divisor);
+        rem_high = false;
+        quotient.set_bit(bit);
+      }
+    }
+
+    debug_assert!(!rem_high);
+    debug_assert!(rem < divisor);
+    Some((quotient, rem))
+  }
+
   fn shr(self, shift: u32) -> Self {
     if shift == 0 {
       return self;
@@ -447,6 +506,38 @@ impl JsBigInt {
     Some(Self {
       negative: self.is_negative() ^ other.is_negative(),
       magnitude: mag,
+    })
+  }
+
+  pub fn checked_sub(self, other: Self) -> Option<Self> {
+    self.checked_add(other.negate())
+  }
+
+  pub fn checked_div(self, other: Self) -> Option<Self> {
+    if other.is_zero() {
+      return None;
+    }
+    let (q, _) = self.magnitude.div_mod(other.magnitude)?;
+    if q.is_zero() {
+      return Some(Self::zero());
+    }
+    Some(Self {
+      negative: self.is_negative() ^ other.is_negative(),
+      magnitude: q,
+    })
+  }
+
+  pub fn checked_rem(self, other: Self) -> Option<Self> {
+    if other.is_zero() {
+      return None;
+    }
+    let (_, r) = self.magnitude.div_mod(other.magnitude)?;
+    if r.is_zero() {
+      return Some(Self::zero());
+    }
+    Some(Self {
+      negative: self.is_negative(),
+      magnitude: r,
     })
   }
 
