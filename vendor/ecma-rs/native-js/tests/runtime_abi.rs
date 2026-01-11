@@ -31,6 +31,24 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     out.join("\n")
   }
 
+  let rt_alloc_decl = ir
+    .lines()
+    .find(|l| l.starts_with("declare ptr @rt_alloc("))
+    .expect("missing rt_alloc declaration");
+  assert!(
+    rt_alloc_decl.contains("i64") && rt_alloc_decl.contains("i32"),
+    "rt_alloc declaration should take (i64, i32) params, got:\n{rt_alloc_decl}\n\nFull IR:\n{ir}"
+  );
+
+  let rt_alloc_gc_sig = ir
+    .lines()
+    .find(|l| l.starts_with("define internal ptr addrspace(1) @rt_alloc_gc("))
+    .expect("missing rt_alloc_gc definition");
+  assert!(
+    rt_alloc_gc_sig.contains("i64") && rt_alloc_gc_sig.contains("i32"),
+    "rt_alloc_gc wrapper should take (i64, i32) params, got:\n{rt_alloc_gc_sig}\n\nFull IR:\n{ir}"
+  );
+
   assert!(
     ir.contains("define internal ptr addrspace(1) @rt_alloc_gc"),
     "missing rt_alloc_gc wrapper:\n{ir}"
@@ -55,6 +73,24 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
   assert!(
     !alloc.contains("addrspacecast"),
     "rt_alloc_gc must not use addrspacecasts (would hide GC pointers):\n{alloc}"
+  );
+
+  let rt_alloc_pinned_decl = ir
+    .lines()
+    .find(|l| l.starts_with("declare ptr @rt_alloc_pinned("))
+    .expect("missing rt_alloc_pinned declaration");
+  assert!(
+    rt_alloc_pinned_decl.contains("i64") && rt_alloc_pinned_decl.contains("i32"),
+    "rt_alloc_pinned declaration should take (i64, i32) params, got:\n{rt_alloc_pinned_decl}\n\nFull IR:\n{ir}"
+  );
+
+  let rt_alloc_pinned_gc_sig = ir
+    .lines()
+    .find(|l| l.starts_with("define internal ptr addrspace(1) @rt_alloc_pinned_gc("))
+    .expect("missing rt_alloc_pinned_gc definition");
+  assert!(
+    rt_alloc_pinned_gc_sig.contains("i64") && rt_alloc_pinned_gc_sig.contains("i32"),
+    "rt_alloc_pinned_gc wrapper should take (i64, i32) params, got:\n{rt_alloc_pinned_gc_sig}\n\nFull IR:\n{ir}"
   );
 
   assert!(

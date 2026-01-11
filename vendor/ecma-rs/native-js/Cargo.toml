@@ -21,6 +21,7 @@ hir-js = { workspace = true }
 inkwell = { workspace = true }
 llvm-sys = { workspace = true }
 parse-js = { workspace = true }
+runtime-native-abi = { workspace = true }
 tempfile = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }

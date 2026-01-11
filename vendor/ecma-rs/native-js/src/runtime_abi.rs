@@ -5,8 +5,15 @@ use inkwell::types::{FunctionType, PointerType};
 use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
 use inkwell::AddressSpace;
 
+use runtime_native_abi::RtShapeId;
+
 use crate::llvm::gc;
 pub use crate::runtime_fn::{ArgRootingPolicy, RuntimeFn, RuntimeFnSpec};
+
+// Keep `native-js`'s LLVM declarations in sync with the runtime ABI.
+// `RtShapeId` is a `u32` in `runtime-native-abi` / `runtime-native/include/runtime_native.h`.
+// If this ever changes, update the `i32` LLVM types below accordingly.
+const _: [(); 4] = [(); core::mem::size_of::<RtShapeId>()];
 
 /// `native-js` ↔ `runtime-native` ABI boundary helpers.
 ///
