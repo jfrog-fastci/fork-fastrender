@@ -54,17 +54,9 @@ pub type ConsoleSink =
 /// `vm-js`'s `VmHost` trait is `Any`-based and only exists for downcasting; this struct provides a
 /// `Document.currentScript` handle so microtasks can share the same bookkeeping utilities as normal
 /// script execution.
-#[derive(Clone)]
+#[derive(Debug, Default, Clone)]
 struct VmJsHostContext {
   current_script_state: CurrentScriptStateHandle,
-}
-
-impl Default for VmJsHostContext {
-  fn default() -> Self {
-    Self {
-      current_script_state: CurrentScriptStateHandle::default(),
-    }
-  }
 }
 
 impl VmJsHostContext {

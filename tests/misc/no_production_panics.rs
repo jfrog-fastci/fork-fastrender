@@ -2,6 +2,7 @@ use proc_macro2::Span;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -178,32 +179,32 @@ fn attrs_have_cfg_test(attrs: &[Attribute]) -> bool {
     let Ok(meta) = attr.parse_args::<Meta>() else {
       return false;
     };
-    cfg_expr_contains_test(&meta, /* negated */ false)
+    cfg_expr_implies_test(&meta)
   })
 }
 
-fn cfg_expr_contains_test(meta: &Meta, negated: bool) -> bool {
+fn cfg_expr_implies_test(meta: &Meta) -> bool {
   match meta {
-    Meta::Path(path) => !negated && path.is_ident("test"),
+    Meta::Path(path) => path.is_ident("test"),
     Meta::List(list) => {
       let Some(ident) = list.path.get_ident() else {
         return false;
       };
 
-      let nested: Punctuated<Meta, Token![,]> =
-        syn::parse2(list.tokens.clone()).unwrap_or_else(|_| Punctuated::new());
+      let nested: Punctuated<Meta, Token![,]> = Punctuated::parse_terminated
+        .parse2(list.tokens.clone())
+        .unwrap_or_default();
 
-      if ident == "not" {
-        return nested
-          .iter()
-          .any(|nested| cfg_expr_contains_test(nested, !negated));
+      if ident == "all" {
+        return nested.iter().any(cfg_expr_implies_test);
+      }
+      if ident == "any" {
+        // `cfg(any())` is always false and should not be treated as test-only.
+        return !nested.is_empty() && nested.iter().all(cfg_expr_implies_test);
       }
 
-      nested
-        .iter()
-        .any(|nested| cfg_expr_contains_test(nested, negated))
+      false
     }
     Meta::NameValue(_) => false,
   }
 }
-
