@@ -7,7 +7,7 @@ property/animation resolution.
 ## Setup
 
 ```
-cargo install cargo-fuzz
+bash scripts/cargo_agent.sh install cargo-fuzz
 ```
 
 `cargo-fuzz` will automatically use a nightly toolchain for the fuzz build.
@@ -40,12 +40,16 @@ cargo install cargo-fuzz
 Quick smoke runs:
 
 ```
-cargo fuzz run css_parser -- -runs=1000
-cargo fuzz run selectors tests/fuzz_corpus -- -max_total_time=10
-cargo fuzz run render_pipeline tests/fuzz_corpus -- -runs=1000
-cargo fuzz run accessibility_tree tests/fuzz_corpus -- -runs=1000
-cargo fuzz run html_scanners -- -runs=1000
-cargo fuzz run image_decoding -- -runs=1000
+# AddressSanitizer needs a very large virtual address space for its shadow
+# memory mapping, so disable the default RLIMIT_AS cap while fuzzing.
+export FASTR_CARGO_LIMIT_AS=unlimited
+
+bash scripts/cargo_agent.sh fuzz run css_parser -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run selectors fuzz/corpus/selectors tests/fuzz_corpus -- -max_total_time=10
+bash scripts/cargo_agent.sh fuzz run render_pipeline fuzz/corpus/render_pipeline tests/fuzz_corpus -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run accessibility_tree fuzz/corpus/accessibility_tree tests/fuzz_corpus -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run html_scanners -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run image_decoding -- -runs=1000
 ```
 
 You can point any target at additional corpora (e.g. `tests/fuzz_corpus/` which

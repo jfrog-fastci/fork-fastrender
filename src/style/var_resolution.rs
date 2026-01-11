@@ -285,7 +285,9 @@ fn starts_with_css_wide_keyword_with_trailing_tokens(value: &str) -> bool {
       continue;
     }
 
-    let head = &trimmed[..keyword.len()];
+    let Some(head) = trimmed.get(..keyword.len()) else {
+      continue;
+    };
     if !head.eq_ignore_ascii_case(keyword) {
       continue;
     }
@@ -2528,6 +2530,14 @@ mod tests {
     let expected_fallback = format!("{nbsp}fallback");
     let (_, fallback) = parse_simple_var_call(&raw).expect("expected simple var() call");
     assert_eq!(fallback, Some(expected_fallback.as_str()));
+  }
+
+  #[test]
+  fn css_wide_keyword_guard_does_not_panic_on_utf8_boundaries() {
+    // Regression test: avoid panics when slicing `&str` by byte-length inside
+    // `starts_with_css_wide_keyword_with_trailing_tokens`.
+    let value = format!("abcd\u{FFFD}zzz");
+    assert!(!starts_with_css_wide_keyword_with_trailing_tokens(&value));
   }
 
   fn make_props(pairs: &[(&str, &str)]) -> CustomPropertyStore {
