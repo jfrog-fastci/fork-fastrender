@@ -3231,7 +3231,7 @@ fn emit_union_conversion_expr_ir(
   out.push_str(" else if rt.is_object(v) {\n");
   if let Some(seq_expr) = &seq_expr {
     out.push_str(
-      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some()\n    };\n",
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
     );
     out.push_str("    if has_iter {\n      ");
     out.push_str(seq_expr);
@@ -4869,7 +4869,7 @@ fn emit_union_conversion_expr(
   out.push_str(" else if rt.is_object(v) {\n");
   if let Some(seq_expr) = &seq_expr {
     out.push_str(
-      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some()\n    };\n",
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
     );
     out.push_str("    if has_iter {\n      ");
     out.push_str(seq_expr);

@@ -147,6 +147,15 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     key: Self::PropertyKey,
   ) -> Result<Self::JsValue, Self::Error>;
 
+  /// Returns true if `value` is a JavaScript `Array` object.
+  ///
+  /// `vm-js` does not yet expose `%Array.prototype%[@@iterator]`, so bindings use an Array
+  /// fast-path when converting `sequence<T>`. Union conversions need to detect arrays during
+  /// member-type selection so `sequence<T>` unions work with arrays.
+  fn is_array(&mut self, _value: Self::JsValue) -> Result<bool, Self::Error> {
+    Ok(false)
+  }
+
   /// ECMAScript abstract operation `GetMethod ( V, P )`.
   fn get_method(
     &mut self,
@@ -778,7 +787,11 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
         "expected a string value for js_string_to_rust_string",
       ));
     };
-    Ok(self.cx.scope.heap().get_string(s)?.to_utf8_lossy())
+    let js = self.cx.scope.heap().get_string(s)?;
+    if js.len_code_units() > self.limits().max_string_code_units {
+      return Err(self.throw_range_error("string exceeds maximum length"));
+    }
+    Ok(js.to_utf8_lossy())
   }
 
   fn is_undefined(&self, value: Self::JsValue) -> bool {
@@ -1041,6 +1054,16 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       PropertyKey::String(s) => Ok(Value::String(s)),
       PropertyKey::Symbol(_) => Err(self.throw_type_error("Cannot convert a Symbol value to a string")),
     }
+  }
+
+  fn is_array(&mut self, value: Self::JsValue) -> Result<bool, Self::Error> {
+    let Value::Object(obj) = value else {
+      return Ok(false);
+    };
+    let Ok(intr) = self.intrinsics() else {
+      return Ok(false);
+    };
+    Ok(self.cx.scope.heap().object_prototype(obj)? == Some(intr.array_prototype()))
   }
 
   fn get_method(

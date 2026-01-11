@@ -940,7 +940,7 @@ pub mod window {
           } else if rt.is_object(v) {
             let has_iter = {
               let iterator_key = rt.symbol_iterator()?;
-              rt.get_method(v, iterator_key)?.is_some()
+              rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
               {
@@ -2400,7 +2400,7 @@ pub mod worker {
           } else if rt.is_object(v) {
             let has_iter = {
               let iterator_key = rt.symbol_iterator()?;
-              rt.get_method(v, iterator_key)?.is_some()
+              rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
               {

@@ -1025,22 +1025,104 @@ mod tests {
             ));
           };
 
-          let init = match args.get(0) {
-            None => String::new(),
-            Some(BindingValue::String(s)) => s.clone(),
-            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
-            Some(_) => String::new(),
-          };
+          let init = args
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| BindingValue::String(String::new()));
 
-          let params = if init.is_empty() {
-            UrlSearchParams::new(&self.limits)
-          } else {
-            UrlSearchParams::parse(&init, &self.limits)
-              .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?
+          let params = match init {
+            BindingValue::Undefined | BindingValue::Null => UrlSearchParams::new(&self.limits),
+            BindingValue::String(s) => {
+              if s.is_empty() {
+                UrlSearchParams::new(&self.limits)
+              } else {
+                UrlSearchParams::parse(&s, &self.limits)
+                  .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?
+              }
+            }
+            BindingValue::Sequence(values) => {
+              // `sequence<sequence<USVString>>`: interpret as list of [name, value] pairs.
+              let params = UrlSearchParams::new(&self.limits);
+              for item in values {
+                let pair = match item {
+                  BindingValue::Sequence(pair) | BindingValue::FrozenArray(pair) => pair,
+                  _ => {
+                    return Err(rt.throw_type_error(
+                      "URLSearchParams constructor init sequence contains a non-sequence item",
+                    ));
+                  }
+                };
+                if pair.len() != 2 {
+                  return Err(rt.throw_type_error(
+                    "URLSearchParams constructor init sequence items must have length 2",
+                  ));
+                }
+                let BindingValue::String(name) = &pair[0] else {
+                  return Err(rt.throw_type_error(
+                    "URLSearchParams constructor init pair name must be a string",
+                  ));
+                };
+                let BindingValue::String(value) = &pair[1] else {
+                  return Err(rt.throw_type_error(
+                    "URLSearchParams constructor init pair value must be a string",
+                  ));
+                };
+                params
+                  .append(name, value)
+                  .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?;
+              }
+              params
+            }
+            BindingValue::Dictionary(map) => {
+              // `record<USVString, USVString>`: append each key/value pair.
+              let params = UrlSearchParams::new(&self.limits);
+              for (name, value) in map {
+                let BindingValue::String(value) = value else {
+                  return Err(rt.throw_type_error(
+                    "URLSearchParams constructor init record values must be strings",
+                  ));
+                };
+                params
+                  .append(&name, &value)
+                  .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?;
+              }
+              params
+            }
+            BindingValue::Object(v) => {
+              // Fallback: treat as string (legacy behaviour); union conversions should avoid this
+              // branch by converting object inputs to sequence/record when appropriate.
+              let init = Self::value_to_rust_string(rt, v)?;
+              if init.is_empty() {
+                UrlSearchParams::new(&self.limits)
+              } else {
+                UrlSearchParams::parse(&init, &self.limits)
+                  .map_err(|_| rt.throw_type_error("URLSearchParams constructor failed"))?
+              }
+            }
+            other => {
+              return Err(rt.throw_type_error(&format!(
+                "URLSearchParams constructor init has invalid type: {other:?}"
+              )));
+            }
           };
 
           self.params.insert(WeakGcObject::from(obj_handle), params);
           Ok(BindingValue::Undefined)
+        }
+        ("URLSearchParams", "get") => {
+          let params = self.require_params(rt, receiver)?;
+          let name = match args.get(0) {
+            Some(BindingValue::String(s)) => s.clone(),
+            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
+            _ => String::new(),
+          };
+          match params
+            .get(&name)
+            .map_err(|_| rt.throw_type_error("URLSearchParams.get failed"))?
+          {
+            None => Ok(BindingValue::Null),
+            Some(v) => Ok(BindingValue::String(v)),
+          }
         }
         ("URL", "constructor") => {
           let Some(Value::Object(obj_handle)) = receiver else {
@@ -1440,6 +1522,203 @@ mod tests {
       Ok(result) => result,
       Err(panic) => std::panic::resume_unwind(panic),
     }
+  }
+
+  #[test]
+  fn generated_bindings_url_search_params_constructor_accepts_sequence_and_record_init() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let state = Box::new(VmJsWebIdlBindingsState::<AttributeAndConstHost>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    ));
+
+    let result = (|| -> Result<(), VmError> {
+      let mut host = AttributeAndConstHost::default();
+      {
+        let mut rt = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+        install_window_bindings(&mut rt, &mut host)?;
+      }
+
+      let mut hooks = MicrotaskQueue::new();
+      let mut scope = heap.scope();
+      let intr = vm
+        .intrinsics()
+        .expect("vm-js intrinsics should be installed after Realm::new");
+      let array_proto = intr.array_prototype();
+      scope.push_root(Value::Object(array_proto))?;
+
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let params_ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+      let params_ctor = scope
+        .heap()
+        .object_get_own_data_property_value(global, &params_ctor_key)?
+        .expect("globalThis.URLSearchParams should be defined");
+
+      // --- sequence<sequence<USVString>> init ---
+      let idx0 = alloc_key(&mut scope, "0")?;
+      let idx1 = alloc_key(&mut scope, "1")?;
+
+      let outer = scope.alloc_array(2)?;
+      scope.push_root(Value::Object(outer))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(outer, Some(array_proto))?;
+
+      let pair0 = scope.alloc_array(2)?;
+      scope.push_root(Value::Object(pair0))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(pair0, Some(array_proto))?;
+      let a_s = scope.alloc_string("a")?;
+      scope.push_root(Value::String(a_s))?;
+      let b_s = scope.alloc_string("b")?;
+      scope.push_root(Value::String(b_s))?;
+      scope.create_data_property_or_throw(pair0, idx0, Value::String(a_s))?;
+      scope.create_data_property_or_throw(pair0, idx1, Value::String(b_s))?;
+
+      let pair1 = scope.alloc_array(2)?;
+      scope.push_root(Value::Object(pair1))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(pair1, Some(array_proto))?;
+      let c_s = scope.alloc_string("c")?;
+      scope.push_root(Value::String(c_s))?;
+      let d_s = scope.alloc_string("d")?;
+      scope.push_root(Value::String(d_s))?;
+      scope.create_data_property_or_throw(pair1, idx0, Value::String(c_s))?;
+      scope.create_data_property_or_throw(pair1, idx1, Value::String(d_s))?;
+
+      scope.create_data_property_or_throw(outer, idx0, Value::Object(pair0))?;
+      scope.create_data_property_or_throw(outer, idx1, Value::Object(pair1))?;
+
+      let params_val = vm.construct_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        params_ctor,
+        &[Value::Object(outer)],
+        params_ctor,
+      )?;
+      scope.push_root(params_val)?;
+      let Value::Object(params_obj) = params_val else {
+        panic!("URLSearchParams constructor should return an object");
+      };
+
+      let get_key = alloc_key(&mut scope, "get")?;
+      let get = vm.get(&mut scope, params_obj, get_key)?;
+
+      let out = vm.call_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        get,
+        params_val,
+        &[Value::String(a_s)],
+      )?;
+      let Value::String(out_s) = out else {
+        panic!("URLSearchParams.get should return a string for existing key");
+      };
+      assert_eq!(scope.heap().get_string(out_s)?.to_utf8_lossy(), "b");
+
+      let out = vm.call_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        get,
+        params_val,
+        &[Value::String(c_s)],
+      )?;
+      let Value::String(out_s) = out else {
+        panic!("URLSearchParams.get should return a string for existing key");
+      };
+      assert_eq!(scope.heap().get_string(out_s)?.to_utf8_lossy(), "d");
+
+      // --- record<USVString, USVString> init ---
+      let record_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(record_obj))?;
+      let key_a = alloc_key(&mut scope, "a")?;
+      let key_c = alloc_key(&mut scope, "c")?;
+      let b2_s = scope.alloc_string("b")?;
+      scope.push_root(Value::String(b2_s))?;
+      let d2_s = scope.alloc_string("d")?;
+      scope.push_root(Value::String(d2_s))?;
+      scope.create_data_property_or_throw(record_obj, key_a, Value::String(b2_s))?;
+      scope.create_data_property_or_throw(record_obj, key_c, Value::String(d2_s))?;
+
+      let params_val = vm.construct_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        params_ctor,
+        &[Value::Object(record_obj)],
+        params_ctor,
+      )?;
+      scope.push_root(params_val)?;
+      let Value::Object(params_obj) = params_val else {
+        panic!("URLSearchParams constructor should return an object");
+      };
+
+      let get = vm.get(&mut scope, params_obj, get_key)?;
+      let out = vm.call_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        get,
+        params_val,
+        &[Value::String(a_s)],
+      )?;
+      let Value::String(out_s) = out else {
+        panic!("URLSearchParams.get should return a string for existing key");
+      };
+      assert_eq!(scope.heap().get_string(out_s)?.to_utf8_lossy(), "b");
+
+      // Invalid sequence shape: inner item must have length 2.
+      let outer_bad = scope.alloc_array(1)?;
+      scope.push_root(Value::Object(outer_bad))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(outer_bad, Some(array_proto))?;
+      let inner_bad = scope.alloc_array(1)?;
+      scope.push_root(Value::Object(inner_bad))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(inner_bad, Some(array_proto))?;
+      scope.create_data_property_or_throw(inner_bad, idx0, Value::String(a_s))?;
+      scope.create_data_property_or_throw(outer_bad, idx0, Value::Object(inner_bad))?;
+
+      let err = vm
+        .construct_with_host_and_hooks(
+          &mut host,
+          &mut scope,
+          &mut hooks,
+          params_ctor,
+          &[Value::Object(outer_bad)],
+          params_ctor,
+        )
+        .expect_err("expected URLSearchParams constructor to throw on invalid init shape");
+      let thrown = err.thrown_value().expect("expected a thrown error value");
+      let Value::Object(thrown_obj) = thrown else {
+        panic!("expected thrown error to be an object");
+      };
+      scope.push_root(thrown)?;
+      let name_key = alloc_key(&mut scope, "name")?;
+      let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
+      let Value::String(name_s) = name_val else {
+        panic!("expected error.name to be a string");
+      };
+      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+
+      Ok(())
+    })();
+    realm.teardown(&mut heap);
+    result
   }
 
   #[derive(Default)]
