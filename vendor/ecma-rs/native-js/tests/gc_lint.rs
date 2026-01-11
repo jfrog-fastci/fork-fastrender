@@ -193,6 +193,10 @@ fn rejects_call_with_raw_pointer_derived_from_gc_pointer() {
     err.has_rule(LintRule::CallAddrSpace0PointerDerivedFromGcPointer),
     "{err}"
   );
+  assert!(
+    err.has_rule(LintRule::AddrSpace0PointerDerivedFromGcPointer),
+    "{err}"
+  );
 }
 
 #[test]

@@ -51,6 +51,12 @@ pub enum LintRule {
   ReturnAddrSpace0PointerDerivedFromGcPointer,
   /// Rule A: forbid passing `ptr` (addrspace(0)) derived from `ptr addrspace(1)` as call args.
   CallAddrSpace0PointerDerivedFromGcPointer,
+  /// Rule A: forbid producing `ptr` (addrspace(0)) values derived from GC pointers.
+  ///
+  /// `rewrite-statepoints-for-gc` only relocates SSA values of type `ptr addrspace(1)`. Creating
+  /// addrspace(0) aliases of GC pointers is therefore always a footgun, even if you *think* the
+  /// alias won't live across a safepoint.
+  AddrSpace0PointerDerivedFromGcPointer,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +211,20 @@ unsafe fn lint_function(
         lint_call_args(func_name, inst, &tainted_values, violations)
       }
       _ => {}
+    }
+
+    // As a final conservative check, reject any `ptr` (addrspace(0)) SSA value that we can prove is
+    // derived from a GC pointer.
+    let ty = LLVMTypeOf(inst);
+    if is_pointer_type(ty) && LLVMGetPointerAddressSpace(ty) == 0 && tainted_values.contains(&inst) {
+      violations.push(LintViolation {
+        rule: LintRule::AddrSpace0PointerDerivedFromGcPointer,
+        message: format!(
+          "in `{}`: disallowed addrspace(0) pointer derived from GC pointer: {}",
+          func_name,
+          value_to_string(inst)
+        ),
+      });
     }
   }
 }
