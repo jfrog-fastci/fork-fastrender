@@ -66,6 +66,11 @@ impl LlvmToolchain {
   ) -> Result<()> {
     let out = Command::new(&self.clang)
       .arg(opt_level.clang_flag())
+      // Test fixtures sometimes use a slightly different LLVM target triple (e.g.
+      // `x86_64-unknown-linux-gnu`) than the host `clang -dumpmachine` triple
+      // (e.g. `x86_64-pc-linux-gnu`). Clang will override the module triple during
+      // compilation and emit a warning, which is just noise for these tests.
+      .arg("-Wno-override-module")
       // LLVM statepoint stackmaps can legally report gc-live roots as `Register` locations (often
       // callee-saved registers). That is only safe if the GC entry stub captures the full register
       // file before running any code that may clobber those registers.
