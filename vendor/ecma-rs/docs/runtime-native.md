@@ -16,11 +16,15 @@ without having to reverse-engineer assumptions from codegen.
 > PIE is the eventual goal. On Linux, LLVM `.llvm_stackmaps` records contain
 > absolute code addresses, producing dynamic relocations under PIE.
 >
-> - If `.llvm_stackmaps` is kept in a read-only segment, lld will either reject
->   the link or require `DT_TEXTREL` (`-Wl,-z,notext`).
-> - Our preferred approach is to keep PIE **without** `DT_TEXTREL` by rewriting
->   `.llvm_stackmaps` to be writable before linking (so relocations apply to RW
->   memory), and retaining the section via a small linker script.
+> - If stackmaps are kept in a read-only segment but require relocations, the
+>   dynamic loader must apply text relocations (`DT_TEXTREL`), which hardened
+>   toolchains may reject.
+> - Our preferred approach is to keep PIE **without** `DT_TEXTREL` by relocating
+>   stackmaps into a RELRO-friendly data section:
+>   - rewrite input objects to rename `.llvm_stackmaps` →
+>     `.data.rel.ro.llvm_stackmaps` (via `llvm-objcopy --rename-section ...`)
+>   - retain the section + export `__fastr_stackmaps_start/__fastr_stackmaps_end`
+>     via a tiny linker-script fragment.
 >
 > See: `scripts/native_js_link_linux.sh` and `runtime-native/stackmaps.ld`.
 

@@ -522,23 +522,23 @@ ld.lld: error: relocation R_X86_64_64 cannot be used against symbol '...'; recom
 - **Option C (recommended PIE mode): PIE without text relocs**
   - ✅ Keeps PIE/ASLR.
   - ✅ Avoids `-z notext` text relocations.
-  - ✅ Works with lld by making `.llvm_stackmaps` **writable in the object file**, so relocations are
-    applied to RW memory (normal dynamic relocations).
+  - ✅ Works with lld by relocating stackmaps into a RELRO-friendly data section (so relocations are
+    applied to RW memory and do not require `DT_TEXTREL`).
   - ❌ Requires an extra `llvm-objcopy` step in the link driver.
 
 ### Policy (default + PIE mode)
 
 - **Default (today):** link non-PIE (`-no-pie`) to avoid runtime relocations entirely.
-- **If PIE is required:** use Option C (rewrite `.llvm_stackmaps` to be writable) to avoid `DT_TEXTREL`.
+- **If PIE is required:** use Option C (relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps`) to avoid `DT_TEXTREL`.
 
 When producing a PIE, native-js AOT output must:
 
-1. Rewrite any input object containing `.llvm_stackmaps` to make the section writable:
+1. Rewrite any input object containing `.llvm_stackmaps` to relocate it into a RELRO-friendly data section:
 
    ```bash
    llvm-objcopy-18 \
-     --set-section-flags .llvm_stackmaps=alloc,load,contents,data \
-     input.o
+      --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
+      input.o
    ```
 
 2. Link with a linker script fragment that:
@@ -575,7 +575,7 @@ To confirm, inspect the linked binary:
 - `readelf -r <exe>` (look for `R_X86_64_RELATIVE` relocations whose **offsets fall inside**
   the `.llvm_stackmaps` address range)
 
-If you need PIE **without** `DT_TEXTREL`, apply Option C (rewrite `.llvm_stackmaps` to be writable)
+If you need PIE **without** `DT_TEXTREL`, apply Option C (relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps`)
 before linking. The dynamic relocations will still be present (and must be, for correct stackmap
 addresses at runtime), but they will apply to a writable segment instead of requiring text relocs.
 
@@ -603,8 +603,8 @@ clang-18 -fuse-ld=lld -no-pie \
 ### PIE (Option C): debug (no section GC)
 
 ```bash
-# (Optional) make stackmaps writable if present:
-llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o
+# (Optional) relocate stackmaps into a RELRO-friendly section if present:
+llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents codegen.o
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--script=runtime-native/stackmaps.ld \
@@ -615,7 +615,7 @@ clang-18 -fuse-ld=lld -pie \
 ### PIE (Option C): release (`--gc-sections`)
 
 ```bash
-llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o
+llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents codegen.o
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--gc-sections \
@@ -636,7 +636,8 @@ It also defines legacy aliases:
 - `__llvm_stackmaps_start`
 - `__llvm_stackmaps_end`
 
-All of these span the retained `.llvm_stackmaps` contents in the final binary and are intended to be the
+All of these span the retained stackmaps contents in the final binary (usually in
+`.data.rel.ro.llvm_stackmaps`, but legacy `.llvm_stackmaps` is still supported) and are intended to be the
 primary runtime discovery mechanism (instead of parsing ELF section headers at runtime).
 
 Example C usage:
