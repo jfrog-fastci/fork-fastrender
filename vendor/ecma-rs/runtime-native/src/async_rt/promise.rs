@@ -8,7 +8,7 @@ use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use crate::threading;
 
-use super::{global as async_global, Task};
+use super::{gc as async_gc, global as async_global, Task};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -210,12 +210,15 @@ struct CallbackReaction {
   callback: extern "C" fn(*mut u8),
   data: *mut u8,
   drop_data: Option<extern "C" fn(*mut u8)>,
+  /// Optional GC root for `data` when it points at a GC-managed object that may relocate.
+  gc_root: Option<async_gc::Root>,
 }
 
 extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: crate::async_abi::PromiseRef) {
   // Safety: allocated by `alloc_callback_reaction`.
   let node = unsafe { &*(node as *mut CallbackReaction) };
-  (node.callback)(node.data);
+  let data = node.gc_root.as_ref().map(|r| r.ptr()).unwrap_or(node.data);
+  (node.callback)(data);
 }
 
 extern "C" fn callback_reaction_drop(node: *mut PromiseReactionNode) {
@@ -237,6 +240,7 @@ fn alloc_callback_reaction(
   callback: extern "C" fn(*mut u8),
   data: *mut u8,
   drop_data: Option<extern "C" fn(*mut u8)>,
+  gc_root: Option<async_gc::Root>,
 ) -> *mut PromiseReactionNode {
   let node = Box::new(CallbackReaction {
     node: PromiseReactionNode {
@@ -246,6 +250,7 @@ fn alloc_callback_reaction(
     callback,
     data,
     drop_data,
+    gc_root,
   });
   Box::into_raw(node) as *mut PromiseReactionNode
 }
@@ -349,7 +354,27 @@ pub(crate) fn promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), dat
     // Treat null as "never settles": keep it pending.
     return;
   }
-  let node = alloc_callback_reaction(on_settle, data, None);
+  let node = alloc_callback_reaction(on_settle, data, None, None);
+  promise_register_reaction(p, node);
+}
+
+/// Like [`promise_then`], but treats `data` as a pointer to a GC-managed object that must remain
+/// alive (and relocatable) while the callback is queued.
+///
+/// # Safety
+/// `data` must be a valid pointer to a GC-managed object base pointer for the eventual moving GC.
+pub(crate) fn promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+  if p.is_null() {
+    // Treat null as "never settles": keep it pending without retaining `data`.
+    return;
+  }
+  let gc_root = if data.is_null() {
+    None
+  } else {
+    // Safety: caller promises `data` is a GC-managed object pointer.
+    Some(unsafe { async_gc::Root::new_unchecked(data) })
+  };
+  let node = alloc_callback_reaction(on_settle, data, None, gc_root);
   promise_register_reaction(p, node);
 }
 
@@ -364,7 +389,7 @@ pub(crate) fn promise_then_with_drop(
     drop_data(data);
     return;
   }
-  let node = alloc_callback_reaction(on_settle, data, Some(drop_data));
+  let node = alloc_callback_reaction(on_settle, data, Some(drop_data), None);
   promise_register_reaction(p, node);
 }
 

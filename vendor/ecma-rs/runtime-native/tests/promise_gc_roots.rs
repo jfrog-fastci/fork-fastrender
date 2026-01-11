@@ -31,6 +31,16 @@ extern "C" fn on_settle_observe_outcome(data: *mut u8) {
   data.observed.store(value as usize, Ordering::Release);
 }
 
+#[repr(C)]
+struct RootedThenData {
+  observed: AtomicUsize,
+}
+
+extern "C" fn on_settle_store_self_ptr(data: *mut u8) {
+  let ctx = unsafe { &*(data as *const RootedThenData) };
+  ctx.observed.store(data as usize, Ordering::Release);
+}
+
 #[test]
 fn promise_outcome_is_relocatable_via_global_root_handle() {
   let _rt = TestRuntimeGuard::new();
@@ -78,6 +88,48 @@ fn promise_outcome_is_relocatable_via_global_root_handle() {
   unsafe {
     drop(Box::from_raw(old_obj));
     drop(Box::from_raw(new_obj));
+  }
+}
+
+#[test]
+fn promise_then_rooted_passes_relocated_data_ptr() {
+  let _rt = TestRuntimeGuard::new();
+
+  runtime_native::gc::roots::debug_clear_global_roots_for_tests();
+  drain_async_runtime();
+
+  let promise = runtime_native::rt_promise_new_legacy();
+
+  let old_data = Box::into_raw(Box::new(RootedThenData {
+    observed: AtomicUsize::new(0),
+  }));
+  let new_data = Box::into_raw(Box::new(RootedThenData {
+    observed: AtomicUsize::new(0),
+  }));
+
+  runtime_native::rt_promise_then_rooted_legacy(promise, on_settle_store_self_ptr, old_data.cast());
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+
+  // Simulate a moving GC updating the rooted callback data pointer in-place.
+  assert_eq!(replace_global_root_ptr(old_data.cast(), new_data.cast()), 1);
+
+  // Resolve the promise with null so only the callback's data pointer is rooted (not the value).
+  runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
+
+  drain_async_runtime();
+  assert_eq!(
+    unsafe { &*new_data }.observed.load(Ordering::Acquire) as *mut u8,
+    new_data.cast()
+  );
+  assert_eq!(unsafe { &*old_data }.observed.load(Ordering::Acquire), 0);
+
+  runtime_native::rt_promise_drop_legacy(promise);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
+
+  unsafe {
+    drop(Box::from_raw(old_data));
+    drop(Box::from_raw(new_data));
   }
 }
 

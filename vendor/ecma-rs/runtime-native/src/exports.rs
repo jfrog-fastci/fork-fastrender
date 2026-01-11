@@ -2337,6 +2337,11 @@ pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u
 }
 
 #[no_mangle]
+pub extern "C" fn rt_promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+  rt_promise_then_rooted_legacy(p, on_settle, data)
+}
+
+#[no_mangle]
 pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
   rt_coro_await_legacy(coro, awaited, next_state)
 }
@@ -2415,6 +2420,14 @@ pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn
   abort_on_panic(|| {
     ensure_current_thread_registered();
     async_rt::promise::promise_then(p, on_settle, data)
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_then_rooted_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
+  abort_on_panic(|| {
+    ensure_current_thread_registered();
+    async_rt::promise::promise_then_rooted(p, on_settle, data)
   })
 }
 
