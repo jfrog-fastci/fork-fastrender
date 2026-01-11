@@ -32,6 +32,7 @@ use crate::trap;
 use crate::rt_alloc as rt_alloc_mod;
 use crate::Runtime;
 use crate::Thread;
+use crate::rt_alloc as rt_alloc_mod;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::cell::Cell;
