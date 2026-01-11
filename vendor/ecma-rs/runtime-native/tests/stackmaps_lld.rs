@@ -82,12 +82,19 @@ fn main() {
 
   // Force clang+lld for the final link and explicitly pass the linker script
   // fragment that defines `__stackmaps_start` / `__stackmaps_end`.
-  let rustflags = format!(
+  let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+  if !rustflags.is_empty() {
+    rustflags.push(' ');
+  }
+  // `runtime-native` enforces this (see `build.rs`); ensure the nested project
+  // inherits it even though we override `RUSTFLAGS` below.
+  rustflags.push_str("-C force-frame-pointers=yes ");
+  rustflags.push_str(&format!(
     // Speed up the nested build: we only care about the link result (symbols +
     // section retention), not debug info.
     "-C force-frame-pointers=yes -C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
-  );
+  ));
 
   let status = Command::new("cargo")
     .arg("build")
