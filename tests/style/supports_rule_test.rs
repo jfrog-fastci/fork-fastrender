@@ -4,6 +4,7 @@ use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::BackgroundBox;
+use fastrender::style::types::GridTrack;
 
 fn display(node: &StyledNode) -> String {
   node.styles.display.to_string()
@@ -70,6 +71,34 @@ fn supports_not_ms_grid_display_matches() {
   // Real-world sites (e.g. ft.com) use this pattern to gate responsive grid templates.
   let css = r"@supports not (display: -ms-grid) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_not_ms_grid_matches_modern_browser_behavior() {
+  // Many sites gate modern grid syntax behind `@supports not (display: -ms-grid)` to exclude
+  // legacy IE/EdgeHTML. Our cascade should treat `display: -ms-grid` as unsupported in support
+  // queries so the modern branch participates in the cascade (Chrome behavior).
+  let dom = dom::parse_html(r#"<div class="slice"></div>"#).unwrap();
+  let stylesheet = parse_stylesheet(
+    r#"
+      .slice { display: grid; grid-template-columns: 1fr 1260px 1fr; }
+      @supports not (display: -ms-grid) {
+        .slice { grid-template-columns: 1fr minmax(auto, 1260px) 1fr; }
+      }
+    "#,
+  )
+  .unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_first(&styled, "div").expect("div");
+
+  assert_eq!(div.styles.grid_template_columns.len(), 3);
+  match &div.styles.grid_template_columns[1] {
+    GridTrack::MinMax(min, max) => {
+      assert!(matches!(&**min, GridTrack::Auto));
+      assert!(matches!(&**max, GridTrack::Length(len) if len.value == 1260.0));
+    }
+    other => panic!("expected minmax() track, got: {other:?}"),
+  }
 }
 
 #[test]

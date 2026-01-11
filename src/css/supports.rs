@@ -149,6 +149,17 @@ pub fn supports_declaration(property: &str, value: &str) -> bool {
     return true;
   }
 
+  // `@supports not (display: -ms-grid)` is a common pattern used to distinguish legacy IE/EdgeHTML
+  // (which supported `-ms-grid`) from modern browsers. FastRender parses `display: -ms-grid` as an
+  // alias for `grid` for compatibility with autoprefixed stylesheets, but in a support query we
+  // want to behave like modern Chromium (Chrome baselines) so the `not (...)` branch matches.
+  if canonical_property == "display"
+    && (value_without_important.eq_ignore_ascii_case("-ms-grid")
+      || value_without_important.eq_ignore_ascii_case("-ms-inline-grid"))
+  {
+    return false;
+  }
+
   if contains_arbitrary_substitution_function(value_without_important) {
     return true;
   }
@@ -212,8 +223,8 @@ mod tests {
 
   #[test]
   fn supports_vendor_prefixed_grid_display_values() {
-    assert!(supports_declaration("display", "-ms-grid"));
-    assert!(supports_declaration("display", "-ms-inline-grid"));
+    assert!(!supports_declaration("display", "-ms-grid"));
+    assert!(!supports_declaration("display", "-ms-inline-grid"));
   }
 
   #[test]
