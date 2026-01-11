@@ -195,6 +195,15 @@ fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
     "expected move VarAssign to record Consume use mode for its source argument"
   );
   assert_eq!(
+    inst.tgts.get(0),
+    Some(&tgt),
+    "expected in-place move hint to match VarAssign target"
+  );
+  assert!(
+    matches!(inst.args.get(0), Some(Arg::Var(v)) if *v == src),
+    "expected in-place move hint to match VarAssign source"
+  );
+  assert_eq!(
     inst.meta.in_place_hint,
     Some(InPlaceHint::MoveNoClone { src, tgt }),
     "expected move VarAssign to record an in-place move hint"
