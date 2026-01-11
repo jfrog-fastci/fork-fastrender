@@ -22,6 +22,7 @@ pub mod gc;
 pub mod immix;
 pub mod nursery;
 pub mod stackmap;
+pub mod parallel;
 pub mod threading;
 pub mod async_rt;
 pub mod stackmaps;
@@ -32,7 +33,6 @@ pub mod test_util;
 mod alloc;
 mod exports;
 mod interner;
-mod parallel;
 mod platform;
 mod string;
 mod trap;
@@ -147,6 +147,7 @@ mod tests {
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
+      "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
       "PromiseRef rt_async_spawn(RtCoroutineHeader* coro);",
       "bool rt_async_poll(void);",
       "PromiseRef rt_promise_new(void);",
@@ -175,6 +176,7 @@ mod tests {
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
+    let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
     let _async_spawn: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
@@ -194,6 +196,7 @@ mod tests {
       _intern,
       _spawn,
       _join,
+      _for,
       _async_spawn,
       _async_poll,
       _promise_new,
@@ -204,4 +207,3 @@ mod tests {
     );
   }
 }
-

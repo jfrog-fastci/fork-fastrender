@@ -1,0 +1,88 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+use crate::abi::TaskId;
+use crate::threading::{self, ThreadKind};
+
+use super::ParallelRuntime;
+
+pub(crate) type ParForBody = extern "C" fn(usize, *mut u8);
+
+fn min_grain() -> usize {
+  const DEFAULT: usize = 1024;
+
+  match std::env::var("RT_PAR_FOR_MIN_GRAIN") {
+    Ok(v) => match v.parse::<usize>() {
+      Ok(0) | Err(_) => DEFAULT,
+      Ok(n) => n,
+    },
+    Err(_) => DEFAULT,
+  }
+}
+
+fn call_body(body: ParForBody, i: usize, data: *mut u8) {
+  let res = catch_unwind(AssertUnwindSafe(|| body(i, data)));
+  if res.is_err() {
+    // Never unwind across our `extern "C"` boundary.
+    std::process::abort();
+  }
+}
+
+#[repr(C)]
+struct ParForChunk {
+  start: usize,
+  end: usize,
+  body: ParForBody,
+  data: *mut u8,
+}
+
+extern "C" fn par_for_task(data: *mut u8) {
+  let chunk = unsafe { Box::from_raw(data as *mut ParForChunk) };
+  for i in chunk.start..chunk.end {
+    call_body(chunk.body, i, chunk.data);
+  }
+}
+
+pub(crate) fn parallel_for(rt: &ParallelRuntime, start: usize, end: usize, body: ParForBody, data: *mut u8) {
+  // Ensure the caller is registered for safepoint coordination even if we fall
+  // back to sequential execution.
+  threading::register_current_thread(ThreadKind::External);
+
+  if end <= start {
+    return;
+  }
+
+  let len = end - start;
+  let min_grain = min_grain();
+
+  if len <= min_grain || rt.worker_count() <= 1 {
+    for i in start..end {
+      call_body(body, i, data);
+    }
+    return;
+  }
+
+  let target_chunks = rt.worker_count().saturating_mul(4).max(1);
+  let mut chunk_size = len.div_ceil(target_chunks).max(min_grain);
+  if chunk_size == 0 {
+    // `max(min_grain)` should prevent this, but keep it defensive.
+    chunk_size = 1;
+  }
+
+  let mut tasks: Vec<TaskId> = Vec::new();
+  let mut chunk_start = start;
+  while chunk_start < end {
+    let chunk_end = end.min(chunk_start.saturating_add(chunk_size));
+    let chunk = Box::new(ParForChunk {
+      start: chunk_start,
+      end: chunk_end,
+      body,
+      data,
+    });
+    let id = rt.spawn(par_for_task, Box::into_raw(chunk) as *mut u8);
+    tasks.push(id);
+    chunk_start = chunk_end;
+  }
+
+  rt.join(tasks.as_ptr(), tasks.len());
+}
+

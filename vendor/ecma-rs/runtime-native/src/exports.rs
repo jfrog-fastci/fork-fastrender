@@ -122,6 +122,17 @@ pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
 }
 
 #[no_mangle]
+pub extern "C" fn rt_parallel_for(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: *mut u8,
+) {
+  let rt = crate::rt_ensure_init();
+  rt.parallel.parallel_for(start, end, body, data)
+}
+
+#[no_mangle]
 pub extern "C" fn rt_async_spawn(coro: *mut RtCoroutineHeader) -> PromiseRef {
   let _ = crate::rt_ensure_init();
   ensure_event_loop_thread_registered();
