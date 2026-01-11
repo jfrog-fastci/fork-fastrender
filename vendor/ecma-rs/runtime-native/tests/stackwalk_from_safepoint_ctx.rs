@@ -6,16 +6,16 @@ mod x86_64 {
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
   use runtime_native::StackMaps;
-  
+
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
-    let stackmaps =
-      StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin")).expect("parse stackmaps");
+    let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin"))
+      .expect("parse stackmaps");
 
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
- 
+
     // Fake stack memory.
     let mut stack = vec![0u8; 4096];
     let base = stack.as_mut_ptr() as usize;
@@ -26,13 +26,13 @@ mod x86_64 {
       write_u64(caller_fp + 0, 0);
       write_u64(caller_fp + 8, 0);
     }
- 
+
     let ctx = SafepointContext {
       fp: caller_fp,
       ip: callsite_ra as usize,
       ..Default::default()
     };
- 
+
     // Compute caller SP using the same formula as the walker (x86_64):
     //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
     // FP_RECORD_SIZE=8 on x86_64.
@@ -66,20 +66,20 @@ mod x86_64 {
       })
       .expect("walk");
     }
- 
+
     visited.sort_unstable();
     assert_eq!(visited, expected_slots);
     assert_eq!(visited.len(), expected_slots.len());
   }
- 
+
   fn align_up(v: usize, align: usize) -> usize {
     (v + (align - 1)) & !(align - 1)
   }
- 
+
   unsafe fn write_u64(addr: usize, val: u64) {
     (addr as *mut u64).write_unaligned(val);
   }
- 
+
   fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
     if offset >= 0 {
       base.checked_add(offset as u64)
@@ -88,42 +88,42 @@ mod x86_64 {
     }
   }
 }
- 
+
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
   use runtime_native::stackwalk::StackBounds;
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
-  use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
+  use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP};
   use runtime_native::StackMaps;
-  
+
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
-    let stackmaps =
-      StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin")).expect("parse stackmaps");
+    let stackmaps = StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin"))
+      .expect("parse stackmaps");
 
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
- 
+
     // Fake stack memory.
     let mut stack = vec![0u8; 4096];
     let base = stack.as_mut_ptr() as usize;
- 
+
     // Single managed frame (terminal, caller_fp->0).
     let caller_fp = align_up(base + 3072, 16);
     unsafe {
       write_u64(caller_fp + 0, 0);
       write_u64(caller_fp + 8, 0);
     }
- 
+
     let ctx = SafepointContext {
       fp: caller_fp,
       ip: callsite_ra as usize,
       ..Default::default()
     };
- 
+
     // Compute caller SP using the same formula as the walker (AArch64):
     //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
     // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
@@ -133,7 +133,9 @@ mod aarch64 {
     for pair in statepoint.gc_pairs() {
       for loc in [&pair.base, &pair.derived] {
         match loc {
-          Location::Indirect { dwarf_reg, offset, .. } => {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => {
             assert_eq!(
               *dwarf_reg,
               AARCH64_DWARF_REG_SP,
@@ -157,20 +159,20 @@ mod aarch64 {
       })
       .expect("walk");
     }
- 
+
     visited.sort_unstable();
     assert_eq!(visited, expected_slots);
     assert_eq!(visited.len(), expected_slots.len());
   }
- 
+
   fn align_up(v: usize, align: usize) -> usize {
     (v + (align - 1)) & !(align - 1)
   }
- 
+
   unsafe fn write_u64(addr: usize, val: u64) {
     (addr as *mut u64).write_unaligned(val);
   }
- 
+
   fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
     if offset >= 0 {
       base.checked_add(offset as u64)

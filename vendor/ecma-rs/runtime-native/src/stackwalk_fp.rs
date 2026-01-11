@@ -361,12 +361,40 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
   match stackmaps.lookup(caller_ra) {
     Some(callsite) => {
-      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
+      if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+        // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
+        // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
+      } else {
+      // Prefer the captured stackmap-semantics SP for the top frame. This is
+      // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
+      // stackmap base (return address pushed by `call`).
+      let caller_sp = if ctx.sp != 0 {
+        ctx.sp as u64
+      } else {
+        caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
+      };
+      enumerate_roots_for_frame_with_caller_sp(
+        caller_fp,
+        caller_sp,
+        caller_ra,
+        callsite,
+        bounds,
+        &mut visit,
+      )?;
+      }
     }
     None => {
       #[cfg(any(debug_assertions, feature = "conservative_roots"))]
       {
-        conservative_scan_frame_words(ctx.sp_before_call as u64, caller_fp, &mut visit);
+        let scan_start = if ctx.sp != 0 {
+          ctx.sp as u64
+        } else {
+          ctx.sp_entry as u64
+        };
+        if scan_start == 0 {
+          return Err(WalkError::MissingStackMap { return_addr: caller_ra });
+        }
+        conservative_scan_frame_words(scan_start, caller_fp, &mut visit);
       }
 
       #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
@@ -417,20 +445,11 @@ fn is_canonical_pc(_pc: u64) -> bool {
   true
 }
 
-fn enumerate_roots_for_frame(
+fn caller_sp_from_stack_size(
   caller_fp: u64,
   caller_ra: u64,
-  callsite: CallSite<'_>,
-  bounds: Option<StackBounds>,
-  visit: &mut impl FnMut(*mut u8),
-) -> Result<(), WalkError> {
-  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
-  // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
-  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-    return Ok(());
-  }
-
-  let stack_size = callsite.stack_size;
+  stack_size: u64,
+) -> Result<u64, WalkError> {
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {
       return_addr: caller_ra,
@@ -448,9 +467,10 @@ fn enumerate_roots_for_frame(
       fp_record_size: arch::FP_RECORD_SIZE,
     })?;
 
-  // LLVM StackMaps v3 (LLVM 18) frequently use DWARF RSP (R#7) as the base register even when
-  // frame pointers are enabled (`-frame-pointer=all`). In that case, the reported `stack_size`
-  // includes the pushed old RBP but *not* the return address pushed by `call`.
+  // LLVM StackMaps v3 (LLVM 18) frequently use DWARF RSP (R#7) as the base
+  // register even when frame pointers are enabled (`-frame-pointer=all`). In
+  // that case, the reported `stack_size` includes the pushed old RBP but *not*
+  // the return address pushed by `call`.
   //
   // For a canonical prologue:
   //   push rbp
@@ -470,6 +490,38 @@ fn enumerate_roots_for_frame(
   };
   #[cfg(target_arch = "aarch64")]
   let caller_sp = caller_sp_checked;
+
+  Ok(caller_sp)
+}
+
+fn enumerate_roots_for_frame(
+  caller_fp: u64,
+  caller_ra: u64,
+  callsite: CallSite<'_>,
+  bounds: Option<StackBounds>,
+  visit: &mut impl FnMut(*mut u8),
+) -> Result<(), WalkError> {
+  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
+  // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
+  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+    return Ok(());
+  }
+
+  let caller_sp = caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?;
+  enumerate_roots_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds, visit)
+}
+
+fn enumerate_roots_for_frame_with_caller_sp(
+  caller_fp: u64,
+  caller_sp: u64,
+  caller_ra: u64,
+  callsite: CallSite<'_>,
+  bounds: Option<StackBounds>,
+  visit: &mut impl FnMut(*mut u8),
+) -> Result<(), WalkError> {
+  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+    return Ok(());
+  }
 
   if let Some(bounds) = bounds {
     if caller_sp < bounds.lo || caller_sp > bounds.hi {

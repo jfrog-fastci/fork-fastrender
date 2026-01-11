@@ -15,16 +15,26 @@ pub const WORD_SIZE: usize = std::mem::size_of::<usize>();
 /// The values here intentionally represent the state at the *call site* that
 /// entered the runtime safepoint slow path.
 ///
-/// `sp_entry` is the stack pointer as observed by the callee on entry.
+/// # Stack pointer semantics (important!)
 ///
-/// `sp_before_call` is stored as `sp_entry + WORD_SIZE` to hedge against stackmap
-/// base semantics (some unwinders/stackmap formats refer to "SP before pushing
-/// the return address").
+/// LLVM StackMaps encode stack slots as `Indirect [SP + off]`, where `SP` is the
+/// *caller's* stack pointer value at the stackmap record PC (i.e. the
+/// instruction **after** the call returns).
+///
+/// When a thread is stopped *inside* the safepoint callee, the callee-entry SP
+/// differs from the stackmap SP on some architectures:
+///
+/// - **x86_64 SysV**: `call` pushes the 8-byte return address.
+///   - `sp_entry` points at the return address.
+///   - `sp` is the **post-call** SP expected by stackmaps: `sp = sp_entry + 8`.
+/// - **AArch64**: `bl` does not push a return address.
+///   - `sp_entry == sp`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SafepointContext {
   pub sp_entry: usize,
-  pub sp_before_call: usize,
+  /// Stack pointer value used by LLVM stackmaps (`SP` at the safepoint PC).
+  pub sp: usize,
   pub fp: usize,
   pub ip: usize,
 }
@@ -67,9 +77,8 @@ mod tests {
 
     assert_eq!(std::mem::size_of::<SafepointContext>(), 4 * WORD_SIZE);
     assert_eq!(offset_of!(SafepointContext, sp_entry), 0);
-    assert_eq!(offset_of!(SafepointContext, sp_before_call), WORD_SIZE);
+    assert_eq!(offset_of!(SafepointContext, sp), WORD_SIZE);
     assert_eq!(offset_of!(SafepointContext, fp), WORD_SIZE * 2);
     assert_eq!(offset_of!(SafepointContext, ip), WORD_SIZE * 3);
   }
 }
-

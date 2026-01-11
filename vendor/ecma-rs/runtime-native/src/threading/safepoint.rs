@@ -259,7 +259,10 @@ pub fn rt_gc_wait_for_world_stopped_timeout(timeout: Duration) -> bool {
     if cur_epoch & 1 == 0 {
       return true;
     }
-    debug_assert_eq!(cur_epoch, stop_epoch, "nested GC requests are not supported");
+    debug_assert_eq!(
+      cur_epoch, stop_epoch,
+      "nested GC requests are not supported"
+    );
 
     if world_stopped(stop_epoch, coordinator_id) {
       return true;

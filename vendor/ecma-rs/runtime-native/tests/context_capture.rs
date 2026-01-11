@@ -1,6 +1,6 @@
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
-use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -63,20 +63,33 @@ fn captures_mutator_ip_and_stack_pointer() {
     .safepoint_context()
     .expect("worker should have published a safepoint context");
 
-  // sp should be at least word-aligned on all supported targets.
+  // `ctx.sp` is the *stackmap* SP (post-call). It should be at least word-aligned.
   assert_eq!(
-    ctx.sp_entry % runtime_native::arch::WORD_SIZE,
+    ctx.sp % runtime_native::arch::WORD_SIZE,
     0,
-    "sp_entry is not word-aligned"
+    "sp is not word-aligned"
+  );
+
+  // Sanity check the arch-specific SP semantics we depend on for stackmap walking.
+  #[cfg(target_arch = "x86_64")]
+  assert_eq!(
+    ctx.sp,
+    ctx.sp_entry + runtime_native::arch::WORD_SIZE,
+    "x86_64 call pushes return address; expected sp=sp_entry+8"
+  );
+  #[cfg(target_arch = "aarch64")]
+  assert_eq!(
+    ctx.sp, ctx.sp_entry,
+    "AArch64 bl does not push return address; expected sp=sp_entry"
   );
 
   let bounds = worker
     .stack_bounds()
     .expect("worker thread should have stack bounds recorded");
   assert!(
-    ctx.sp_entry >= bounds.lo && ctx.sp_entry < bounds.hi,
-    "sp_entry {:#x} is outside stack bounds [{:#x}, {:#x})",
-    ctx.sp_entry,
+    ctx.sp >= bounds.lo && ctx.sp < bounds.hi,
+    "sp {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.sp,
     bounds.lo,
     bounds.hi
   );

@@ -17,7 +17,7 @@ rt_capture_safepoint_context:
   // out: rdi
   mov rax, rsp                // sp_entry
   mov rcx, qword ptr [rsp]    // return address (ip)
-  lea rdx, [rax + 8]          // sp_before_call = sp_entry + WORD_SIZE
+  lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
 
   mov qword ptr [rdi + 0], rax
   mov qword ptr [rdi + 8], rdx
@@ -30,7 +30,7 @@ rt_gc_safepoint_slow:
   // Capture the entry stack pointer and return address before touching RSP.
   mov rax, rsp                // sp_entry
   mov rcx, qword ptr [rsp]    // ip (return address)
-  lea r8, [rax + 8]           // sp_before_call
+  lea r8, [rax + 8]           // sp (post-call; stackmap SP)
 
   // Reserve space for SafepointContext (32 bytes) and align stack to 16 bytes
   // before calling into Rust.
