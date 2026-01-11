@@ -361,6 +361,7 @@ impl Drop for InFlightToken {
 #[derive(Debug)]
 struct DriverInner {
   cmd_tx: mpsc::Sender<Command>,
+  /// Writer-side eventfd used to wake the driver thread.
   wake_fd: RawFd,
   next_id: AtomicU64,
   limiter: Arc<IoLimiter>,
@@ -424,10 +425,17 @@ impl Drop for DriverInner {
     if in_flight != 0 && cfg!(debug_assertions) && !std::thread::panicking() {
       // Note: we *must* wake/leak before panicking. Panicking in `Drop` does not guarantee fields
       // won't be dropped during unwinding.
+      unsafe {
+        libc::close(self.wake_fd);
+      }
       panic!(
         "runtime-native: dropping UringDriver with {in_flight} in-flight ops; \
          call UringDriver::shutdown_and_drain() before drop"
       );
+    }
+
+    unsafe {
+      libc::close(self.wake_fd);
     }
   }
 }
@@ -467,7 +475,9 @@ impl UringDriver {
 
   pub fn new_with_limiter(entries: u32, limiter: Arc<IoLimiter>) -> Result<Self, std::io::Error> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
-    let wake_fd = loop {
+    // Use two duplicated fds to avoid a race where the driver thread closes the wake fd while other
+    // threads still attempt to signal it (fd numbers can be reused).
+    let wake_fd_write = loop {
       let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
       if wake_fd >= 0 {
         break wake_fd;
@@ -475,6 +485,21 @@ impl UringDriver {
       let err = std::io::Error::last_os_error();
       if err.raw_os_error() == Some(libc::EINTR) {
         continue;
+      }
+      return Err(err);
+    };
+    let wake_fd_poll = loop {
+      // `dup` does not preserve CLOEXEC; use F_DUPFD_CLOEXEC instead.
+      let wake_fd = unsafe { libc::fcntl(wake_fd_write, libc::F_DUPFD_CLOEXEC, 0) };
+      if wake_fd >= 0 {
+        break wake_fd;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      unsafe {
+        libc::close(wake_fd_write);
       }
       return Err(err);
     };
@@ -491,20 +516,22 @@ impl UringDriver {
         Ok(ring) => ring,
         Err(err) => {
           unsafe {
-            libc::close(wake_fd);
+            libc::close(wake_fd_write);
+            libc::close(wake_fd_poll);
           }
           return Err(err);
         }
       };
       let shared = Arc::clone(&shared);
-      thread::spawn(move || run_driver(ring, wake_fd, cmd_rx, shared));
+      thread::spawn(move || run_driver(ring, wake_fd_poll, cmd_rx, shared));
     }
     #[cfg(not(target_os = "linux"))]
     {
       let _ = entries;
       let _ = cmd_rx;
       unsafe {
-        libc::close(wake_fd);
+        libc::close(wake_fd_write);
+        libc::close(wake_fd_poll);
       }
       return Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -515,7 +542,7 @@ impl UringDriver {
     Ok(Self {
       inner: Arc::new(DriverInner {
         cmd_tx,
-        wake_fd,
+        wake_fd: wake_fd_write,
         next_id: AtomicU64::new(1),
         limiter,
         shared,
