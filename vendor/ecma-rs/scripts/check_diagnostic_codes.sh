@@ -92,6 +92,7 @@ RULES = [
     Rule("BIND", r"^BIND\d{4}$", allowed_crates={"semantic-js"}),
     Rule("LOWER", r"^LOWER\d{4}$", allowed_crates={"hir-js"}),
     Rule("TC", r"^TC\d{4}$", allowed_crates={"typecheck-ts"}),
+    Rule("TN", r"^TN\d{4}$", allowed_crates={"typecheck-ts"}),
     Rule("TS", r"^TS\d{4,5}$", shared=True),
     Rule("EFFECT", r"^EFFECT\d{4}$", allowed_crates={"effect-js"}),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),

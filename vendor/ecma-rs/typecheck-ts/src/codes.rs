@@ -91,6 +91,19 @@ pub fn implicit_any_message(name: Option<&str>) -> String {
   }
 }
 
+/// TN0001: `any` is not allowed in strict-native mode.
+///
+/// - Primary span: the `any` keyword in a type position.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_ANY: Code = Code::new(
+  "TN0001",
+  "`any` is not allowed in strict-native mode",
+  "the `any` keyword in a type position",
+  &["primary: `any` type"],
+  &[],
+);
+
 /// TC0001: No libraries were loaded.
 ///
 /// - Primary span: zero-length span at the start of the checked file if known,

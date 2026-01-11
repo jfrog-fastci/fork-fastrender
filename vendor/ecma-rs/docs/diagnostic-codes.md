@@ -44,6 +44,7 @@ prefixes for planned crates) and where they come from.
 | `BIND####` | `semantic-js` | Binder / name-resolution diagnostics (JS + TS binding). |
 | `LOWER####` | `hir-js` | AST→HIR lowering warnings. |
 | `TC####` | `typecheck-ts` | Repo-owned type checker diagnostics (see `typecheck-ts/src/codes.rs`). |
+| `TN####` | `typecheck-ts` | Strict-native diagnostics (see `typecheck-ts/src/codes.rs`). |
 | `TS####` / `TS#####` | TypeScript | Upstream `tsc` diagnostic codes used for parity. |
 | `EFFECT####` | `effect-js` | Effect inference diagnostics (analysis + semantic knowledge). |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |

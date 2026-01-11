@@ -106,6 +106,10 @@ struct TypecheckArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   no_unchecked_indexed_access: bool,
 
+  /// Enable strict-native diagnostics.
+  #[arg(long, action = ArgAction::SetTrue)]
+  strict_native: bool,
+
   /// Use Node/TS style module resolution.
   #[arg(long)]
   node_resolve: bool,
@@ -578,6 +582,9 @@ fn build_compiler_options(
   }
   if args.no_unchecked_indexed_access {
     options.no_unchecked_indexed_access = true;
+  }
+  if args.strict_native {
+    options.strict_native = true;
   }
 
   Ok(options)

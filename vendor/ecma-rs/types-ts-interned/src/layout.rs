@@ -107,7 +107,11 @@ pub enum PtrKind {
 pub enum FieldKey {
   TupleIndex(u32),
   Prop(PropKey),
-  Internal(&'static str),
+  /// Internal field used by the native layout engine.
+  ///
+  /// This is stored as an owned string so it can round-trip through serde
+  /// snapshots (borrowed `&'static str` cannot be deserialized).
+  Internal(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

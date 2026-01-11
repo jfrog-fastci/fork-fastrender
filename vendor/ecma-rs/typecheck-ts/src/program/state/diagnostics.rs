@@ -1,6 +1,56 @@
 use super::*;
 
 impl ProgramState {
+  fn strict_native_diagnostics(&self) -> Vec<Diagnostic> {
+    if !self.compiler_options.strict_native {
+      return Vec::new();
+    }
+
+    use derive_visitor::{Drive, Visitor};
+    use parse_js::ast::node::Node;
+    use parse_js::ast::type_expr::TypeExpr;
+
+    type TypeExprNode = Node<TypeExpr>;
+
+    #[derive(Visitor)]
+    #[visitor(TypeExprNode(enter))]
+    struct Collector<'a> {
+      file: FileId,
+      diags: &'a mut Vec<Diagnostic>,
+    }
+
+    impl<'a> Collector<'a> {
+      fn enter_type_expr_node(&mut self, node: &TypeExprNode) {
+        if !matches!(node.stx.as_ref(), TypeExpr::Any(_)) {
+          return;
+        }
+
+        self.diags.push(codes::STRICT_NATIVE_ANY.error(
+          "explicit `any` type is not allowed in strict-native mode",
+          loc_to_span(self.file, node.loc),
+        ));
+      }
+    }
+
+    let mut diags = Vec::new();
+    let mut files: Vec<_> = self.asts.keys().copied().collect();
+    files.sort_by_key(|file| file.0);
+    for file in files {
+      if self.file_kinds.get(&file) == Some(&FileKind::Dts) {
+        continue;
+      }
+      let Some(ast) = self.asts.get(&file) else {
+        continue;
+      };
+      let mut collector = Collector {
+        file,
+        diags: &mut diags,
+      };
+      ast.as_ref().drive(&mut collector);
+    }
+    diags
+  }
+
   fn filter_skip_lib_check_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {
     if !self.compiler_options.skip_lib_check {
       return;
@@ -124,6 +174,7 @@ impl ProgramState {
     let db = self.typecheck_db.clone();
     let mut diagnostics: Vec<_> = db::program_diagnostics(&db).as_ref().to_vec();
     diagnostics.extend(self.diagnostics.clone());
+    diagnostics.extend(self.strict_native_diagnostics());
     let mut seen = HashSet::new();
     diagnostics.retain(|diag| {
       seen.insert((

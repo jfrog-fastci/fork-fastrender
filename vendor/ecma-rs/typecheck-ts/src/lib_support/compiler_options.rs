@@ -99,6 +99,12 @@ pub struct CompilerOptions {
   pub strict_function_types: bool,
   pub exact_optional_property_types: bool,
   pub no_unchecked_indexed_access: bool,
+  /// Enable "strict-native" mode.
+  ///
+  /// This is a repo-specific option intended for enforcing a stricter subset of
+  /// TypeScript suitable for native tooling. When enabled, additional
+  /// diagnostics with the `TN####` prefix may be produced.
+  pub strict_native: bool,
   /// Whether class fields follow ECMAScript `define` semantics (`Object.defineProperty`)
   /// or legacy assignment semantics.
   ///
@@ -134,6 +140,7 @@ impl Default for CompilerOptions {
       strict_function_types: true,
       exact_optional_property_types: false,
       no_unchecked_indexed_access: false,
+      strict_native: false,
       use_define_for_class_fields: true,
       jsx: None,
       cache: CacheOptions::default(),
