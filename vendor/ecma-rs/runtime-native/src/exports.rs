@@ -916,7 +916,6 @@ pub extern "C" fn rt_spawn_blocking(
   data: *mut u8,
 ) -> PromiseRef {
   abort_on_panic(|| {
-    let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     crate::blocking_pool::spawn(task, data)
   })
@@ -968,7 +967,6 @@ pub extern "C" fn rt_async_cancel_all() {
 #[no_mangle]
 pub extern "C" fn rt_async_poll_legacy() -> bool {
   abort_on_panic(|| {
-    let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     async_rt::poll()
   })

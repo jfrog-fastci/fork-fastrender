@@ -1,11 +1,3 @@
-// We use the unstable `#[thread_local]` attribute so the JIT/native codegen can
-// access the current thread record via a single TLS load.
-//
-// `vendor/ecma-rs/.cargo/config.toml` sets `RUSTC_BOOTSTRAP=1` for the workspace
-// (required by `cargo fuzz`), which also allows this crate to use the feature
-// gate until `#[thread_local]` is stabilized for plain-data statics.
-#![feature(thread_local)]
-
 //! Native runtime library for `native-js` AOT output.
 //!
 //! This crate provides:
@@ -64,6 +56,7 @@ pub mod async_runtime;
 pub mod promise_reactions;
 pub mod reactor;
 pub mod timer_wheel;
+pub mod clock;
 pub mod time;
 pub mod gc;
 pub mod gc_roots;
@@ -174,7 +167,7 @@ pub use safepoint::{visit_reloc_pairs, with_world_stopped};
 pub use stackmap_loader::{build_global_stackmap_index, load_all_llvm_stackmaps, StackMapIndex};
 pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};
 pub use thread::{
-  current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState, RT_THREAD,
+  current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState,
 };
 
 use std::sync::OnceLock;

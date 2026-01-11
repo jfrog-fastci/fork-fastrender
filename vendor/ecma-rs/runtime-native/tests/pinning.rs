@@ -222,6 +222,10 @@ fn pinned_array_buffer_can_drop_on_other_thread_after_finalize() {
 
   handle.join().unwrap();
   assert_eq!(alloc.external_bytes(), 0);
+
+  // Detach is idempotent.
+  buffer.detach().unwrap();
+  assert!(matches!(buffer.pin(), Err(ArrayBufferError::Detached)));
 }
 
 #[test]

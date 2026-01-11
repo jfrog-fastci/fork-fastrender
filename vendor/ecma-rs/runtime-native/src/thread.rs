@@ -1,22 +1,18 @@
 use crate::runtime::Runtime;
+use std::cell::Cell;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-/// TLS pointer to the currently-attached [`Thread`].
-///
-/// This is exported for both the runtime and generated native code.
-#[thread_local]
-#[no_mangle]
-pub static mut RT_THREAD: *mut Thread = std::ptr::null_mut();
+// TLS pointer to the currently-attached [`Thread`].
+thread_local! {
+  static RT_THREAD: Cell<*mut Thread> = Cell::new(std::ptr::null_mut());
+}
 
 /// Get the raw TLS pointer to the current thread record.
 pub fn current_thread_ptr() -> *mut Thread {
-  // Safe: reading a `static mut` is unsafe in Rust because it can be mutated
-  // concurrently. For TLS `static mut`, the variable is thread-local so there is
-  // no cross-thread mutation, and we only ever write it during attach/detach.
-  unsafe { RT_THREAD }
+  RT_THREAD.with(|ptr| ptr.get())
 }
 
 /// Returns the current thread record if the calling OS thread is attached.
@@ -48,7 +44,7 @@ pub fn current_thread_state() -> ThreadState {
 /// # Safety
 /// Must only be called by the runtime during attach/detach.
 pub unsafe fn set_current_thread_ptr(thread: *mut Thread) {
-  RT_THREAD = thread;
+  RT_THREAD.with(|ptr| ptr.set(thread));
 }
 
 /// Per-mutator thread record.
