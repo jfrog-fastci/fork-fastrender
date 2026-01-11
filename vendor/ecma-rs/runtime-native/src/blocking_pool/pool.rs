@@ -161,9 +161,9 @@ fn worker_loop(shared: Arc<Shared>) {
           break None;
         }
         // While idle, mark as parked so stop-the-world GC treats this thread as quiescent.
-        threading::set_parked(true);
+        let parked = threading::ParkedGuard::new();
         shared.cv.wait(&mut q);
-        threading::set_parked(false);
+        drop(parked);
       }
     };
 

@@ -98,22 +98,15 @@ impl IoUringCqeWaiter {
   }
 
   pub fn wait(&mut self) -> io::Result<()> {
-    struct WaitGuard;
-    impl Drop for WaitGuard {
-      fn drop(&mut self) {
-        threading::set_parked(false);
-        IN_URING_WAIT.store(false, Ordering::Release);
-      }
-    }
-
     loop {
       threading::safepoint_poll();
       IN_URING_WAIT.store(true, Ordering::Release);
-      threading::set_parked(true);
-      let guard = WaitGuard;
+      let parked = threading::ParkedGuard::new();
 
       let res = self.ring.submit_and_wait(1);
-      drop(guard);
+      // Clear this debug flag before potentially blocking while un-parking.
+      IN_URING_WAIT.store(false, Ordering::Release);
+      drop(parked);
 
       match res {
         Ok(_) => break,

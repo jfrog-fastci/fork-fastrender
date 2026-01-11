@@ -583,11 +583,11 @@ fn worker_loop(
     }
     spins = 0;
 
-    threading::set_parked(true);
+    let parked = threading::ParkedGuard::new();
     crate::rt_trace::worker_park_inc();
     parker.park_timeout(Duration::from_millis(1));
-    threading::set_parked(false);
     crate::rt_trace::worker_unpark_inc();
+    drop(parked);
 
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
