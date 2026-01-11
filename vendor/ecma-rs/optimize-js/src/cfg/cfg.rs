@@ -447,4 +447,35 @@ mod tests {
       "expected block after Return to be unreachable and prunable, removed={removed:?}"
     );
   }
+
+  #[test]
+  fn from_bblocks_does_not_fallthrough_after_throw() {
+    let insts = vec![
+      Inst::var_assign(0, Arg::Const(Const::Num(JsNumber(1.0)))),
+      Inst::throw(Arg::Var(0)),
+      Inst::var_assign(1, Arg::Const(Const::Num(JsNumber(2.0)))),
+    ];
+    let mut c_label = Counter::new(1);
+    let (bblocks, bblock_order) = convert_insts_to_bblocks(insts, &mut c_label);
+    let mut cfg = Cfg::from_bblocks(bblocks, bblock_order);
+
+    assert!(
+      cfg
+        .bblocks
+        .get(0)
+        .iter()
+        .any(|inst| inst.t == InstTyp::Throw),
+      "expected entry block to contain Throw instruction"
+    );
+    assert!(
+      cfg.graph.children_sorted(0).is_empty(),
+      "Throw block should have no outgoing edges"
+    );
+
+    let removed = cfg.find_and_pop_unreachable();
+    assert!(
+      removed.contains(&1),
+      "expected block after Throw to be unreachable and prunable, removed={removed:?}"
+    );
+  }
 }
