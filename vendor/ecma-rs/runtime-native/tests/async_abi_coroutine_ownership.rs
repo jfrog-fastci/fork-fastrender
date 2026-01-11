@@ -83,9 +83,7 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
-  unsafe {
-    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
-  }
+  let _promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   assert!(runtime_native::rt_handle_load(handle).is_null());
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
@@ -114,9 +112,7 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
 
   let coro_ptr = &mut coro.header as *mut Coroutine;
   let handle = runtime_native::rt_handle_alloc(coro_ptr.cast());
-  unsafe {
-    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
-  }
+  let _promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   assert!(
     runtime_native::rt_handle_load(handle).is_null(),
     "stack-owned coroutines must complete synchronously so the runtime can free the handle"
@@ -148,9 +144,7 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
-  unsafe {
-    let _promise = runtime_native::rt_async_spawn_deferred(CoroutineId(handle));
-  }
+  let _promise = unsafe { runtime_native::rt_async_spawn_deferred(CoroutineId(handle)) };
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
   runtime_native::rt_async_cancel_all();
@@ -187,9 +181,7 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
 
   let coro_ref = Box::into_raw(coro) as CoroutineRef;
   let handle = runtime_native::rt_handle_alloc(coro_ref.cast());
-  unsafe {
-    let _promise = runtime_native::rt_async_spawn(CoroutineId(handle));
-  }
+  let _promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
   runtime_native::rt_async_cancel_all();
