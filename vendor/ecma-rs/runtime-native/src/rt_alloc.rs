@@ -279,7 +279,7 @@ unsafe fn init_object(obj: *mut u8, size: usize, desc: &'static TypeDescriptor, 
   // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.
   ptr::write_bytes(obj, 0, size);
 
-  let header = &mut *(obj as *mut ObjHeader);
+  let header = &mut *crate::gc::header_from_obj(obj);
   header.type_desc = desc as *const TypeDescriptor;
   header.meta.store(0, Ordering::Relaxed);
   header.set_mark_epoch(epoch);

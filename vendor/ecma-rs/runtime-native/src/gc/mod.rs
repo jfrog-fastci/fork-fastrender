@@ -150,14 +150,39 @@ unsafe impl Send for ObjHeader {}
 unsafe impl Sync for ObjHeader {}
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
+pub const OBJ_HEADER_ALIGN: usize = mem::align_of::<ObjHeader>();
+
 /// Minimum alignment (in bytes) guaranteed for all GC-managed object base pointers.
 ///
 /// Codegen may assume `rt_alloc` / `rt_alloc_pinned` return pointers aligned to at least this.
-pub const OBJ_ALIGN: usize = if mem::align_of::<ObjHeader>() > 16 {
-  mem::align_of::<ObjHeader>()
-} else {
-  16
-};
+pub const OBJ_ALIGN: usize = if OBJ_HEADER_ALIGN > 16 { OBJ_HEADER_ALIGN } else { 16 };
+
+/// Alias for [`OBJ_HEADER_SIZE`] (kept for cross-module clarity).
+pub const HEADER_SIZE: usize = OBJ_HEADER_SIZE;
+/// Alias for [`OBJ_ALIGN`] (required alignment of GC object base pointers).
+pub const HEADER_ALIGN: usize = OBJ_ALIGN;
+
+/// Convert an object pointer (`*mut u8`) to its header pointer.
+///
+/// The runtime's **authoritative object pointer convention** is that a GC-managed
+/// object pointer points at the start of [`ObjHeader`].
+#[inline]
+pub(crate) unsafe fn header_from_obj(obj: *mut u8) -> *mut ObjHeader {
+  debug_assert!(!obj.is_null());
+  debug_assert!(
+    (obj as usize) % OBJ_ALIGN == 0,
+    "object pointer must be aligned to OBJ_ALIGN"
+  );
+  let hdr = obj as *mut ObjHeader;
+  debug_assert_eq!(obj_from_header(hdr), obj);
+  hdr
+}
+
+/// Convert a header pointer back to its object base pointer.
+#[inline]
+pub(crate) fn obj_from_header(hdr: *mut ObjHeader) -> *mut u8 {
+  hdr as *mut u8
+}
 // `meta` layout:
 // - bit 0: forwarded bit (nursery only)
 // - bit 1: mark epoch (0/1)
@@ -370,6 +395,13 @@ pub(crate) unsafe fn free_card_table(card_table_ptr: *mut AtomicU64, obj_size: u
   #[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
   CARD_TABLE_BYTES_FREED.fetch_add(bytes as u64, Ordering::Relaxed);
 }
+
+// Ensure `META_FLAGS_MASK` is a contiguous low-bit mask (required for storing tagged pointers).
+const _: () = {
+  // `mask & (mask + 1) == 0` iff `mask` is of the form `0b000..0111..1`.
+  assert!(META_FLAGS_MASK != 0);
+  assert!((META_FLAGS_MASK & (META_FLAGS_MASK + 1)) == 0);
+};
 
 impl ObjHeader {
   pub const fn new(type_desc: &'static TypeDescriptor) -> Self {
@@ -646,12 +678,12 @@ pub(crate) unsafe fn for_each_ptr_slot(mut obj: *mut u8, mut f: impl FnMut(*mut 
 
   // Handle forwarding transparently: tracing should always operate on the
   // actual object body.
-  let header = &*(obj as *const ObjHeader);
+  let header = &*header_from_obj(obj);
   if header.is_forwarded() {
     obj = header.forwarding_ptr();
   }
 
-  let header = &*(obj as *const ObjHeader);
+  let header = &*header_from_obj(obj);
   let desc = header.type_desc();
 
   for &offset in desc.ptr_offsets() {
@@ -679,12 +711,12 @@ pub(crate) unsafe fn obj_size(mut obj: *mut u8) -> usize {
   debug_assert!(!obj.is_null());
 
   // Follow forwarding pointers (nursery evacuation).
-  let header = unsafe { &*(obj as *const ObjHeader) };
+  let header = unsafe { &*header_from_obj(obj) };
   if header.is_forwarded() {
     obj = header.forwarding_ptr();
   }
 
-  let header = unsafe { &*(obj as *const ObjHeader) };
+  let header = unsafe { &*header_from_obj(obj) };
   if header.type_desc == &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
     return array::array_total_size_from_obj(obj);
   }

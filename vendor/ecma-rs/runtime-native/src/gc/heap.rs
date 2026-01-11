@@ -405,7 +405,7 @@ impl GcHeap {
       if nursery.contains(obj) {
         // SAFETY: `obj` is expected to point at the start of a nursery object.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             *slot = header.forwarding_ptr();
           } else {
@@ -432,7 +432,7 @@ impl GcHeap {
         // but handle them defensively.
         // SAFETY: `obj` is expected to point at the start of a nursery object.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
           } else {
@@ -454,7 +454,7 @@ impl GcHeap {
       // SAFETY: `obj` is expected to point at the start of a heap object.
       unsafe {
         loop {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
           } else {
@@ -462,7 +462,7 @@ impl GcHeap {
           }
         }
 
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_marked(epoch) {
           *slot = obj;
         } else {
@@ -658,7 +658,7 @@ impl GcHeap {
     // SAFETY: The nursery allocation is valid for `desc.size` bytes.
     unsafe {
       ptr::write_bytes(obj, 0, desc.size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -696,7 +696,7 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -742,7 +742,7 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -888,7 +888,7 @@ impl GcHeap {
   /// `obj_size` must be the total object size in bytes (including the header).
   pub(crate) unsafe fn maybe_install_card_table_for_array(&mut self, obj: *mut u8, obj_size: usize) {
     debug_assert!(!obj.is_null());
-    let header = &mut *(obj as *mut ObjHeader);
+    let header = &mut *super::header_from_obj(obj);
     if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
       return;
     }
@@ -919,7 +919,7 @@ impl GcHeap {
     // SAFETY: The allocation is valid for `desc.size` bytes.
     unsafe {
       ptr::write_bytes(obj, 0, desc.size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -974,7 +974,7 @@ impl GcHeap {
     // SAFETY: The allocation is valid for `size` bytes.
     unsafe {
       ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -993,7 +993,7 @@ impl GcHeap {
     // SAFETY: The nursery allocation is valid for `size` bytes.
     unsafe {
       ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -1021,7 +1021,7 @@ impl GcHeap {
     // SAFETY: The allocation is valid for `size` bytes.
     unsafe {
       ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.type_desc = desc as *const TypeDescriptor;
       header.meta.store(0, Ordering::Relaxed);
       header.set_mark_epoch(self.mark_epoch);
@@ -1201,7 +1201,7 @@ impl GcHeap {
       if self.nursery.contains(obj) {
         // SAFETY: `obj` is expected to point to the start of a nursery object.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             self.finalizers[i].obj = header.forwarding_ptr();
             i += 1;
@@ -1230,7 +1230,7 @@ impl GcHeap {
       if self.nursery.contains(obj) {
         // SAFETY: `obj` points into nursery memory.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
           } else {
@@ -1253,7 +1253,7 @@ impl GcHeap {
       // GC compaction).
       unsafe {
         loop {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
           } else {
@@ -1265,7 +1265,7 @@ impl GcHeap {
       self.finalizers[i].obj = obj;
 
       // SAFETY: `obj` points to a heap object header.
-      let marked = unsafe { (&*(obj as *const ObjHeader)).is_marked(epoch) };
+      let marked = unsafe { (&*super::header_from_obj(obj)).is_marked(epoch) };
       if marked {
         i += 1;
       } else {

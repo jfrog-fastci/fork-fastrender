@@ -89,7 +89,7 @@ fn write_barrier_range_fast_paths_young_object_and_zero_len() {
   const TOTAL_SIZE: usize = CARD_SIZE * 2;
   const PAYLOAD_BYTES: usize = TOTAL_SIZE - mem::size_of::<ObjHeader>();
 
-  #[repr(C)]
+  #[repr(C, align(16))]
   struct FakeObj {
     header: ObjHeader,
     payload: [u8; PAYLOAD_BYTES],

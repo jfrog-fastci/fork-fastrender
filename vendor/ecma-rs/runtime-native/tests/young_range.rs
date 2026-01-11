@@ -5,7 +5,7 @@ use runtime_native::gc::ObjHeader;
 use runtime_native::mutator::{MutatorThread, ThreadContextGuard};
 use runtime_native::test_util::TestGcGuard;
 
-#[repr(C)]
+#[repr(C, align(16))]
 struct FakeObj {
   header: ObjHeader,
   slot: *mut u8,

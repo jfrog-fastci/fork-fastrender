@@ -1,4 +1,3 @@
-use crate::gc::ObjHeader;
 use std::ptr::NonNull;
 
 #[cfg(unix)]
@@ -81,7 +80,7 @@ impl LargeObjectSpace {
     self.entries.retain(|entry| unsafe {
       // Avoid creating long-lived `&ObjHeader` references here: sweeping may need
       // to mutate the header (to clear the card table pointer) before freeing.
-      let hdr_ptr = entry.obj_base.as_ptr() as *mut ObjHeader;
+      let hdr_ptr = crate::gc::header_from_obj(entry.obj_base.as_ptr());
       if (*hdr_ptr).is_marked(current_epoch) {
         return true;
       }
@@ -104,7 +103,7 @@ impl LargeObjectSpace {
   pub(crate) fn live_bytes(&self, current_epoch: u8) -> usize {
     let mut live = 0usize;
     self.for_each_object(|obj, size| unsafe {
-      let hdr = &*(obj as *const ObjHeader);
+      let hdr = &*crate::gc::header_from_obj(obj);
       if hdr.is_marked(current_epoch) {
         live += size;
       }

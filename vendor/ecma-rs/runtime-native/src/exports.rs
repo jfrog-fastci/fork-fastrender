@@ -303,11 +303,11 @@ pub extern "C" fn rt_array_len(obj: *mut u8) -> usize {
     // SAFETY: The ABI contract requires `obj` be a valid array object.
     unsafe {
       let mut obj = obj;
-      let header = &*(obj as *const ObjHeader);
+      let header = &*crate::gc::header_from_obj(obj);
       if header.is_forwarded() {
         obj = header.forwarding_ptr();
       }
-      let header = &*(obj as *const ObjHeader);
+      let header = &*crate::gc::header_from_obj(obj);
       if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
         trap::rt_trap_invalid_arg("rt_array_len called on non-array object");
       }
@@ -325,11 +325,11 @@ pub extern "C" fn rt_array_data(obj: *mut u8) -> *mut u8 {
     // SAFETY: The ABI contract requires `obj` be a valid array object.
     unsafe {
       let mut obj = obj;
-      let header = &*(obj as *const ObjHeader);
+      let header = &*crate::gc::header_from_obj(obj);
       if header.is_forwarded() {
         obj = header.forwarding_ptr();
       }
-      let header = &*(obj as *const ObjHeader);
+      let header = &*crate::gc::header_from_obj(obj);
       if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
         trap::rt_trap_invalid_arg("rt_array_data called on non-array object");
       }
@@ -539,10 +539,10 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
     return false;
   }
   // Avoid UB: callers must pass an object base pointer.
-  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+  if (obj as usize) % crate::gc::OBJ_ALIGN != 0 {
     std::process::abort();
   }
-  unsafe { (&*(obj as *const ObjHeader)).is_remembered() }
+  unsafe { (&*crate::gc::header_from_obj(obj)).is_remembered() }
 }
 
 /// Debug/test helper: rebuild remembered-set tracking after a simulated minor GC.
@@ -572,7 +572,7 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
     if obj.is_null() {
       continue;
     }
-    if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    if (obj as usize) % crate::gc::OBJ_ALIGN != 0 {
       std::process::abort();
     }
     // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
@@ -615,7 +615,7 @@ pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u
     if (slot as usize) % std::mem::align_of::<*mut u8>() != 0 {
       std::process::abort();
     }
-    if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    if (obj as usize) % crate::gc::OBJ_ALIGN != 0 {
       std::process::abort();
     }
 
@@ -647,7 +647,7 @@ pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u
     remember_old_object(obj);
 
     // If this object has a per-object card table, mark the card for the written slot.
-    let header = &*(obj as *const ObjHeader);
+    let header = &*crate::gc::header_from_obj(obj);
     let card_table = header.card_table_ptr();
     if !card_table.is_null() {
       let slot_offset = (slot as usize).wrapping_sub(obj as usize);
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn rt_write_barrier_range(
     }
 
     // Avoid UB on misaligned pointers: `obj` must be a valid `ObjHeader` base pointer.
-    if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    if (obj as usize) % crate::gc::OBJ_ALIGN != 0 {
       std::process::abort();
     }
 
@@ -693,7 +693,7 @@ pub unsafe extern "C" fn rt_write_barrier_range(
     // minor GC can consult its dirty cards and/or rescan it.
     remember_old_object(obj);
 
-    let header = &*(obj as *const ObjHeader);
+    let header = &*crate::gc::header_from_obj(obj);
     let card_table = header.card_table_ptr();
     if card_table.is_null() {
       return;
@@ -737,6 +737,7 @@ mod write_barrier_tests {
   }
 
   #[repr(C)]
+  #[repr(align(16))]
   struct DummyObject {
     header: ObjHeader,
     field: *mut u8,
@@ -768,7 +769,7 @@ mod write_barrier_tests {
         field: young_ptr,
       });
 
-      let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+      let obj_ptr = crate::gc::obj_from_header((&mut old.header) as *mut ObjHeader);
       let slot_ptr = (&mut old.field) as *mut *mut u8 as *mut u8;
       unsafe {
         rt_write_barrier(obj_ptr, slot_ptr);
@@ -807,7 +808,7 @@ mod write_barrier_tests {
 
       old.slots[2] = young_ptr;
 
-      let obj_ptr = (&mut old.header) as *mut ObjHeader as *mut u8;
+      let obj_ptr = crate::gc::obj_from_header((&mut old.header) as *mut ObjHeader);
       let start_slot = old.slots.as_mut_ptr() as *mut u8;
       let len = old.slots.len() * core::mem::size_of::<*mut u8>();
       unsafe {

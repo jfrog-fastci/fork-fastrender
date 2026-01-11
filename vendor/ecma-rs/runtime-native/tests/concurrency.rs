@@ -12,7 +12,7 @@ const TOTAL_SLOTS: usize = THREADS * SLOTS_PER_THREAD;
 
 const ITERS_PER_THREAD: usize = 50_000;
 
-#[repr(C)]
+#[repr(C, align(16))]
 struct CardArray {
   header: ObjHeader,
   slots: [*mut u8; TOTAL_SLOTS],

@@ -50,6 +50,7 @@
 //! stable.
 //!
 //! See:
+//! - `README.md` for design notes and ABI/GC object layout conventions.
 //! - `docs/gc_handle_abi.md` for the handle-based ABI contract for `may_gc` runtime entrypoints.
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
 //! - `include/runtime_native.h` for the authoritative stable C ABI surface.

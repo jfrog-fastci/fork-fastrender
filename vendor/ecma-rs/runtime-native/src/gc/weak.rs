@@ -2,7 +2,6 @@ use once_cell::sync::Lazy;
 use std::ptr;
 
 use super::GcHeap;
-use super::ObjHeader;
 use crate::threading::GcAwareMutex;
 
 #[repr(transparent)]
@@ -230,7 +229,7 @@ pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
     if heap.is_in_nursery(obj) {
       // SAFETY: `obj` is expected to point at the start of a nursery object.
       unsafe {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           *slot = header.forwarding_ptr();
         } else {
@@ -255,7 +254,7 @@ pub(crate) fn process_global_weak_handles_major(heap: &GcHeap, epoch: u8) {
       // defensively.
       // SAFETY: `obj` is expected to point at the start of a nursery object.
       unsafe {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
         } else {
@@ -277,7 +276,7 @@ pub(crate) fn process_global_weak_handles_major(heap: &GcHeap, epoch: u8) {
     // SAFETY: `obj` is expected to point at the start of a heap object.
     unsafe {
       loop {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
         } else {
@@ -285,7 +284,7 @@ pub(crate) fn process_global_weak_handles_major(heap: &GcHeap, epoch: u8) {
         }
       }
 
-      let header = &*(obj as *const ObjHeader);
+      let header = &*super::header_from_obj(obj);
       if header.is_marked(epoch) {
         *slot = obj;
       } else {

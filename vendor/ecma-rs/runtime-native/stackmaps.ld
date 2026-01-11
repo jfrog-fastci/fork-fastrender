@@ -11,7 +11,17 @@
  */
 
 SECTIONS {
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  /* Keep stackmaps/faultmaps inside the standard `.data.rel.ro` output section.
+   *
+   * lld is sensitive to PT_GNU_RELRO section ordering/contiguity; emitting a
+   * dedicated `.data.rel.ro.llvm_stackmaps` output section can trigger:
+   *   "section: .relro_padding is not contiguous with other relro sections"
+   * when linking small PIE binaries.
+   *
+   * Appending the payloads into `.data.rel.ro` keeps them inside the existing
+   * RELRO block and avoids those lld errors.
+   */
+  .data.rel.ro : ALIGN(8) {
     . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
@@ -27,12 +37,10 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-  }
 
-  /* Faultmaps are emitted by some patchpoint configurations. Keep them for
-   * parity with `.llvm_stackmaps` and to avoid accidental removal under
-   * `--gc-sections`. */
-  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
+    /* Faultmaps are emitted by some patchpoint configurations. Keep them for
+     * parity with `.llvm_stackmaps` and to avoid accidental removal under
+     * `--gc-sections`. */
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))

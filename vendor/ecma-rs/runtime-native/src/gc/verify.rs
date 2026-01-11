@@ -109,7 +109,7 @@ impl GcHeap {
       // Handle forwarding transparently: verification should operate on the actual object body.
       // SAFETY: `obj` is an in-heap pointer validated by `verify_obj_ptr` above.
       unsafe {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
           self.verify_obj_ptr(obj, nursery_base, nursery_alloc_end, min_align, &known_desc);
@@ -154,7 +154,7 @@ impl GcHeap {
       );
 
       // SAFETY: `from` points into nursery memory and was recorded during evacuation.
-      let from_header = unsafe { &*(from as *const ObjHeader) };
+      let from_header = unsafe { &*super::header_from_obj(from) };
       self.verify_obj_header(from_header, &known_desc);
       let from_desc = unsafe { &*from_header.type_desc };
       assert!(
@@ -195,7 +195,7 @@ impl GcHeap {
         to as usize
       );
       // SAFETY: `to` was allocated by the GC.
-      let to_header = unsafe { &*(to as *const ObjHeader) };
+      let to_header = unsafe { &*super::header_from_obj(to) };
       self.verify_obj_header(to_header, &known_desc);
       assert!(
         !to_header.is_forwarded(),
@@ -237,7 +237,7 @@ impl GcHeap {
     }
 
     // SAFETY: `obj` points into one of the heap spaces.
-    let header = unsafe { &*(obj as *const ObjHeader) };
+    let header = unsafe { &*super::header_from_obj(obj) };
     self.verify_obj_header(header, known_desc);
     if header.is_pinned() {
       assert!(

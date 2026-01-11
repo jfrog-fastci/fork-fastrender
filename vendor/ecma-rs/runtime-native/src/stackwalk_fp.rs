@@ -227,7 +227,7 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
   // Conservative scanning is a fallback: be strict about only reporting slots
   // that *look like* real object headers so a moving GC doesn't corrupt memory
   // by evacuating a false-positive "pointer" into the nursery.
-  if (candidate as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+  if (candidate as usize) % crate::gc::OBJ_ALIGN != 0 {
     return false;
   }
 
@@ -242,7 +242,7 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
   // Safety: `candidate` is within the active young-space range, which is a
   // mapped RW region. Reading a header-sized prefix is safe; validation is
   // performed via the type-descriptor registry.
-  let header = unsafe { &*(candidate as *const ObjHeader) };
+  let header = unsafe { &*crate::gc::header_from_obj(candidate.cast_mut()) };
   crate::gc::is_known_type_descriptor(header.type_desc)
 }
 

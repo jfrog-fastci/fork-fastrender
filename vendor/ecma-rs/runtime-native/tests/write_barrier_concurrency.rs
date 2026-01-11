@@ -3,7 +3,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::Arc;
 use std::sync::Barrier;
 
-#[repr(C)]
+#[repr(C, align(16))]
 struct DummyObject {
   header: ObjHeader,
   field: *mut u8,

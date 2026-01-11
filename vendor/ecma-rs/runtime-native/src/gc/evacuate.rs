@@ -7,7 +7,6 @@ use super::roots::RootSet;
 use super::weak::process_global_weak_handles_minor;
 use super::weak::run_weak_cleanups;
 use super::cards::for_each_ptr_slot_in_dirty_cards;
-use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::AllocError;
 use crate::gc::heap::GcHeap;
@@ -125,7 +124,7 @@ impl Evacuator<'_> {
 
     // SAFETY: `obj` is a valid GC object in the nursery.
     unsafe {
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       if header.is_forwarded() {
         return Ok((header.forwarding_ptr(), false));
       }

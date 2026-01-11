@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use proptest::prelude::*;
 
-use runtime_native::gc::{ObjHeader, CARD_SIZE, OBJ_HEADER_SIZE};
+use runtime_native::gc::{ObjHeader, CARD_SIZE, OBJ_ALIGN, OBJ_HEADER_SIZE};
 use runtime_native::mutator::{MutatorThread, ThreadContextGuard};
 use runtime_native::test_util::TestGcGuard;
 
@@ -237,7 +237,8 @@ fn card_any_marked(card_table: *mut AtomicU64, words: usize) -> bool {
 }
 
 struct OldObject {
-  storage: Box<[usize]>,
+  storage: NonNull<u8>,
+  storage_layout: Layout,
   slots_offset: usize,
   num_ptr_slots: usize,
   object_bytes: usize,
@@ -246,14 +247,25 @@ struct OldObject {
   card_table: Option<CardTableAlloc>,
 }
 
+impl Drop for OldObject {
+  fn drop(&mut self) {
+    unsafe {
+      dealloc(self.storage.as_ptr(), self.storage_layout);
+    }
+  }
+}
+
 impl OldObject {
   fn alloc(num_ptr_slots: usize, has_card_table: bool) -> Self {
     let slots_offset = align_up(OBJ_HEADER_SIZE, align_of::<*mut u8>());
     let object_bytes = slots_offset + num_ptr_slots * size_of::<*mut u8>();
-    let words = object_bytes.div_ceil(WORD_BYTES);
+    let alloc_bytes = align_up(object_bytes, OBJ_ALIGN);
+    let storage_layout = Layout::from_size_align(alloc_bytes, OBJ_ALIGN).expect("storage layout");
 
-    let mut storage = vec![0usize; words].into_boxed_slice();
-    let obj_ptr = storage.as_mut_ptr() as *mut u8;
+    let storage = unsafe { alloc_zeroed(storage_layout) };
+    let storage =
+      NonNull::new(storage).unwrap_or_else(|| handle_alloc_error(storage_layout));
+    let obj_ptr = storage.as_ptr();
 
     // The object memory is zero-initialized. That's sufficient for the model:
     // - `ObjHeader`'s `type_desc` is unused (we never call `rt_write_barrier_range`).
@@ -268,6 +280,7 @@ impl OldObject {
 
     Self {
       storage,
+      storage_layout,
       slots_offset,
       num_ptr_slots,
       object_bytes,
@@ -276,7 +289,7 @@ impl OldObject {
   }
 
   fn obj_ptr(&self) -> *mut u8 {
-    self.storage.as_ptr() as *mut u8
+    self.storage.as_ptr()
   }
 
   fn header(&self) -> &ObjHeader {

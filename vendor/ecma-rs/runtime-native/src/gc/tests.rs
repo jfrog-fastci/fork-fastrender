@@ -22,6 +22,59 @@ fn align_up_basic() {
 }
 
 #[test]
+fn obj_header_round_trip_and_meta_tagging_invariants() {
+  use std::alloc::{alloc_zeroed, dealloc, Layout};
+  use std::sync::atomic::AtomicU64;
+
+  assert_eq!(OBJ_HEADER_SIZE, core::mem::size_of::<ObjHeader>());
+  assert_eq!(super::OBJ_HEADER_ALIGN, core::mem::align_of::<ObjHeader>());
+  assert!(super::OBJ_HEADER_ALIGN.is_power_of_two());
+  assert_eq!(OBJ_HEADER_SIZE, 2 * core::mem::size_of::<usize>());
+
+  // `meta` tag bits must form a contiguous low-bit mask so we can pack pointers.
+  assert_ne!(super::META_FLAGS_MASK, 0);
+  assert_eq!(
+    super::META_FLAGS_MASK & (super::META_FLAGS_MASK + 1),
+    0,
+    "META_FLAGS_MASK must be a contiguous low-bit mask"
+  );
+  let meta_ptr_align = super::META_FLAGS_MASK + 1;
+  assert!(meta_ptr_align.is_power_of_two());
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&DESC_NO_PTR);
+  assert_eq!((obj as usize) % super::OBJ_HEADER_ALIGN, 0);
+
+  let hdr = unsafe { super::header_from_obj(obj) };
+  assert_eq!(super::obj_from_header(hdr), obj);
+
+  // Card-table pointers must be aligned so the low meta flag bits are free.
+  let layout =
+    Layout::from_size_align(core::mem::size_of::<AtomicU64>(), meta_ptr_align).expect("Layout");
+  let card = unsafe { alloc_zeroed(layout) as *mut AtomicU64 };
+  assert!(!card.is_null());
+  unsafe {
+    (*hdr).set_card_table_ptr(card);
+    assert_eq!((*hdr).card_table_ptr(), card);
+    // Clear to avoid leaving a dangling pointer in `meta` before we free.
+    (*hdr).set_card_table_ptr(core::ptr::null_mut());
+  }
+  unsafe {
+    dealloc(card.cast::<u8>(), layout);
+  }
+
+  // Forwarding pointers are tagged with META_FORWARDED; object alignment must make that safe.
+  let new_location = heap.alloc_old(&DESC_NO_PTR);
+  assert_eq!((new_location as usize) & super::META_FORWARDED, 0);
+  unsafe {
+    (*hdr).set_forwarding_ptr(new_location);
+    assert!((*hdr).is_forwarded());
+    assert_eq!((*hdr).forwarding_ptr(), new_location);
+    assert!( (*hdr).card_table_ptr().is_null());
+  }
+}
+
+#[test]
 fn major_gc_reclaims_old_blocks_for_reuse() {
   let mut heap = GcHeap::new();
   let mut roots = RootStack::new();
@@ -108,15 +161,15 @@ fn major_compaction_does_not_reclaim_blocks_with_pinned_immix_objects() {
   let mut roots = RootStack::new();
   let mut remembered = EmptyRememberedSet;
 
-  let mut pinned = heap.alloc_old(&DESC_LINE);
-  let pinned_before = pinned;
-  unsafe {
-    // Simulate an Immix object becoming pinned (future-proofing): pinned objects
-    // must remain in place even under compaction.
-    (&mut *(pinned as *mut ObjHeader)).set_pinned(true);
-    // Write a payload word so we can detect accidental reuse/overwrite.
-    *((pinned as *mut u8).add(OBJ_HEADER_SIZE) as *mut u64) = 0xC0FFEE;
-  }
+    let mut pinned = heap.alloc_old(&DESC_LINE);
+    let pinned_before = pinned;
+    unsafe {
+      // Simulate an Immix object becoming pinned (future-proofing): pinned objects
+      // must remain in place even under compaction.
+      (&mut *super::header_from_obj(pinned)).set_pinned(true);
+      // Write a payload word so we can detect accidental reuse/overwrite.
+      *((pinned as *mut u8).add(OBJ_HEADER_SIZE) as *mut u64) = 0xC0FFEE;
+    }
 
   roots.push(&mut pinned as *mut *mut u8);
 
@@ -250,7 +303,7 @@ fn simple_remembered_set_remember_is_idempotent() {
 
   // Clearing resets the per-object header bit so the object can be remembered again.
   remembered.clear();
-  assert!(!unsafe { (&*(obj as *const gc::ObjHeader)).is_remembered() });
+  assert!(!unsafe { (&*super::header_from_obj(obj)).is_remembered() });
 
   remembered.remember(obj);
   let mut count2 = 0usize;
@@ -267,7 +320,7 @@ fn set_remembered_idempotent_does_not_corrupt_forwarded_header() {
   let new_location = heap.alloc_old(&DESC_NO_PTR);
   let obj = heap.alloc_young(&DESC_NO_PTR);
 
-  let header = unsafe { &mut *(obj as *mut gc::ObjHeader) };
+  let header = unsafe { &mut *super::header_from_obj(obj) };
   header.set_forwarding_ptr(new_location);
   assert!(header.is_forwarded());
   let before = header.forwarding_ptr();

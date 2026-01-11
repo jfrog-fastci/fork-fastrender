@@ -9,6 +9,7 @@ needed to execute LLVM-generated coroutine state machines with JS-correct microt
 See also:
 * `include/runtime_native.h` — stable C ABI surface
 * `docs/safepoint_abi.md` — thread registration + parked/unparked safepoint protocol
+* `docs/reactor.md` — cross-platform reactor contract (epoll/kqueue)
 * `docs/write_barrier.md` — generational write barrier contract
 
 ## Frame-pointer ABI contract
@@ -82,6 +83,97 @@ undefined behaviour and can be miscompiled by LLVM.
   callback/task function pointer) is treated as a **fatal runtime bug** and aborts the process.
 - If you need recoverable error handling, do not use panics; plumb errors through explicit return
   values and handles instead.
+---
+
+## GC heap (overview)
+
+The GC is a **precise**, **generational** collector with multiple spaces:
+
+- **Nursery (young generation)**: bump-pointer allocation; collected with a copying *minor GC*
+  (evacuation).
+- **Immix (old generation)**: block/line based allocator designed to reduce fragmentation. Major
+  collections use a mark-region style algorithm over Immix blocks.
+- **LOS (large object space)**: large objects are allocated separately and swept during major GC.
+
+The exact collection policy can evolve, but the **object representation is stable** and is the
+source of truth for all GC subsystems and for native codegen.
+
+## GC object representation (authoritative)
+
+### Object pointer convention
+
+**A GC object reference (`GcPtr` / `*mut u8`) points to the start of the object header (`gc::ObjHeader`).**
+
+This address is the **object base** for:
+
+- `TypeDescriptor` pointer offsets (field locations)
+- nursery/Immix/LOS membership checks
+- forwarding pointer installation during evacuation / compaction
+
+For fixed-size objects, the payload begins immediately after the header (`gc::OBJ_HEADER_SIZE` bytes).
+
+```text
+obj (= ObjHeader ptr)
+  │
+  ▼
+  ┌─────────────────────────────── allocation ───────────────────────────────┐
+  │ ObjHeader (2 words) │                    payload ...                      │
+  │   word0: TypeDescriptor*                                                   │
+  │   word1: meta (flags + card-table ptr OR forwarding ptr)                   │
+  └─────────────────────┴─────────────────────────────────────────────────────┘
+```
+
+### Header layout contract (`ObjHeader`)
+
+The header is exactly two machine words (`usize` on 64-bit):
+
+- **Word 0 (`type_desc`)**: pointer to the object's `TypeDescriptor`.
+- **Word 1 (`meta`)**: an atomic word that stores low-bit GC flags plus either:
+  - an optional per-object card table pointer (non-forwarded objects), or
+  - a tagged forwarding pointer (forwarded objects).
+
+#### Evacuation state machine (`meta` dual-use)
+
+During nursery evacuation (and optional major compaction), the `meta` word is temporarily repurposed as a
+tagged forwarding pointer:
+
+1. Read the header and check the `FORWARDED` bit.
+2. If forwarded, read the new object base pointer from `meta` and return it.
+3. Otherwise compute the object size:
+   - fixed-size objects: `TypeDescriptor.size`
+   - arrays: derived from the `RtArrayHeader` fields
+4. Allocate + copy the object to the new location.
+5. Overwrite `meta` with the new object base pointer and set the `FORWARDED` bit.
+
+After step (5), the `meta` word must only be interpreted as a forwarding pointer.
+
+### Flag semantics
+
+Flags are stored in the low bits of `ObjHeader.meta`.
+
+Current flags:
+
+- `FORWARDED`: `meta` is a tagged forwarding pointer.
+- `MARK_EPOCH`: 1-bit epoch used by major GC marking (toggled each major GC).
+- `REMEMBERED`: object is in the remembered set (old→young edges).
+- `PINNED`: object must not be moved (currently allocated in LOS).
+
+When `FORWARDED` is set, only the forwarding-pointer interpretation is valid; other flags and any
+card-table pointer bits are not meaningful.
+
+### Variable-size objects: `RtArrayHeader`
+
+The runtime has one dynamic-size object kind today: `RtArrayHeader` (see `src/array.rs`).
+
+- The object base pointer points to the start of `RtArrayHeader`, which begins with an `ObjHeader`
+  prefix at offset 0.
+- The header's type descriptor pointer is `array::RT_ARRAY_TYPE_DESC`.
+- The element payload begins at `RT_ARRAY_DATA_OFFSET` and is `len * elem_size` bytes, where `len`,
+  `elem_size`, and `elem_flags` live in the `RtArrayHeader` fields.
+- If `elem_flags` indicates pointer elements (`RT_ARRAY_FLAG_PTR_ELEMS`), the GC traces and updates
+  the element slots. Otherwise the payload is treated as raw bytes (no interior pointers).
+
+Total size is `RT_ARRAY_DATA_OFFSET + len * elem_size` (with overflow checks).
 
 ## Build (static library)
 

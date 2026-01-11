@@ -1313,11 +1313,13 @@ mod tests {
  
   fn alloc_obj(value: usize) -> *mut u8 {
     let size = core::mem::size_of::<Obj>();
-    let align = core::mem::align_of::<Obj>();
+    // `Obj` is a synthetic GC object used by this stress test; allocate it with the same minimum
+    // alignment guarantee as real GC-managed objects.
+    let align = OBJ_DESC.align;
     let obj = alloc::alloc_bytes(size, align, "safepoint test");
     unsafe {
       core::ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *crate::gc::header_from_obj(obj);
       header.type_desc = &OBJ_DESC as *const TypeDescriptor;
       header.meta = AtomicUsize::new(0);
       (*(obj as *mut Obj)).value = value;

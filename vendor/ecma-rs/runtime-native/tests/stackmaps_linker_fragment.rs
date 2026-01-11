@@ -40,8 +40,9 @@ fn lld_flag() -> Option<&'static str> {
 
 fn compile_obj_pie(clang: &str, out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
-  // fragments can't rely on them existing. lld errors if an `INSERT` anchor
-  // output section does not exist.
+  // fragment can't rely on them existing. lld errors if an `INSERT` anchor
+  // output section does not exist; `link/stackmaps.ld` anchors on `.dynamic`,
+  // so this test links as PIE (ensuring `.dynamic` exists).
   let asm = r#"
  .text
  .globl f

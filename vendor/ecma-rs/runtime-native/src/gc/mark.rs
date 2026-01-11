@@ -11,7 +11,6 @@ use super::roots::RememberedSet;
 use super::roots::RootSet;
 use super::weak::process_global_weak_handles_major;
 use super::weak::run_weak_cleanups;
-use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::AllocError;
 use crate::gc::heap::GcHeap;
@@ -220,7 +219,7 @@ impl Marker<'_> {
       if self.heap.is_in_nursery(obj) {
         // SAFETY: `obj` is a valid pointer into this heap's nursery.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
             continue;
@@ -233,7 +232,7 @@ impl Marker<'_> {
       // GC compaction).
       // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
       unsafe {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
           continue;
@@ -244,14 +243,14 @@ impl Marker<'_> {
     }
 
     // SAFETY: `obj` points to an `ObjHeader`.
-    let already_marked = unsafe { (&*(obj as *const ObjHeader)).is_marked(self.epoch) };
+    let already_marked = unsafe { (&*super::header_from_obj(obj)).is_marked(self.epoch) };
     if already_marked {
       return;
     }
 
     // SAFETY: `obj` points to an `ObjHeader`.
     unsafe {
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       header.set_mark_epoch(self.epoch);
 
       let size = super::obj_size(obj);
@@ -330,7 +329,7 @@ impl Compactor<'_> {
 
     // SAFETY: `obj` is expected to be a valid heap object.
     unsafe {
-      let header = &mut *(obj as *mut ObjHeader);
+      let header = &mut *super::header_from_obj(obj);
       if header.is_forwarded() {
         return header.forwarding_ptr();
       }
@@ -367,7 +366,7 @@ impl Tracer for Compactor<'_> {
       if self.heap.is_in_nursery(obj) {
         // SAFETY: `obj` is a valid pointer into this heap's nursery.
         unsafe {
-          let header = &*(obj as *const ObjHeader);
+          let header = &*super::header_from_obj(obj);
           if header.is_forwarded() {
             obj = header.forwarding_ptr();
             // SAFETY: `slot` is valid and writable.
@@ -382,7 +381,7 @@ impl Tracer for Compactor<'_> {
       // slot.
       // SAFETY: `obj` is in this heap (Immix or LOS), so it points at an `ObjHeader`.
       unsafe {
-        let header = &*(obj as *const ObjHeader);
+        let header = &*super::header_from_obj(obj);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
           // SAFETY: `slot` is valid and writable.
@@ -399,7 +398,7 @@ impl Tracer for Compactor<'_> {
       // Pinned objects must remain in place; remember them so we can re-mark
       // their lines after clearing the candidate block.
       // SAFETY: `obj` is expected to be a valid heap object.
-      if unsafe { (&*(obj as *const ObjHeader)).is_pinned() } {
+      if unsafe { (&*super::header_from_obj(obj)).is_pinned() } {
         pinned_block_id = Some(block_id);
       } else {
         let new_obj = self.evacuate(obj);
