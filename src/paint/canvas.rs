@@ -2007,7 +2007,12 @@ impl Canvas {
   /// When the transform is translation-only and there is no complex clip mask, we can rasterize
   /// the rounded-rect coverage into a temporary `Mask` and composite into the destination buffer
   /// using truncating `mul/255` arithmetic to match Chrome's Skia backend.
-  fn try_fill_rounded_rect_source_over_trunc(&mut self, rect: Rect, radii: BorderRadii, color: Rgba) -> bool {
+  fn try_fill_rounded_rect_source_over_trunc(
+    &mut self,
+    rect: Rect,
+    radii: BorderRadii,
+    color: Rgba,
+  ) -> bool {
     if self.current_state.blend_mode != SkiaBlendMode::SourceOver {
       return false;
     }
@@ -2022,7 +2027,7 @@ impl Canvas {
       return false;
     }
 
-    let transform = self.current_state.transform;
+    let mut transform = self.current_state.transform;
     // Only support translation-only transforms (common case for pageset rendering and tiling).
     if (transform.sx - 1.0).abs() > 1e-6
       || (transform.sy - 1.0).abs() > 1e-6

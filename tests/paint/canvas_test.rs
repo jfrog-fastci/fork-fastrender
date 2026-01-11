@@ -416,6 +416,33 @@ fn source_over_trunc_fast_path_rejects_fractional_translation() {
 }
 
 #[test]
+fn opaque_axis_aligned_rounded_rect_fills_are_pixel_snapped() {
+  // Like `opaque_axis_aligned_rect_fills_are_pixel_snapped`, but for rounded rectangles.
+  //
+  // YouTube's JS-off skeleton contains many `border-radius: 8px` placeholder blocks whose edges
+  // land on fractional pixels (e.g. via `padding-top: 56.25%`). Without snapping, the straight
+  // edges anti-alias into the next row/column and show up as blended seams in page-loop diffs.
+  let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
+  let radii = BorderRadii::uniform(2.0);
+  canvas.draw_rounded_rect(Rect::from_xywh(0.0, 0.0, 10.0, 51.6), radii, Rgba::rgb(0, 38, 118));
+  canvas.draw_rect(Rect::from_xywh(0.0, 51.6, 10.0, 8.4), Rgba::WHITE);
+
+  let p51 = canvas.pixmap().pixel(5, 51).unwrap();
+  assert_eq!(
+    (p51.red(), p51.green(), p51.blue(), p51.alpha()),
+    (0, 38, 118, 255),
+    "expected the last covered row to be fully filled (no blended seam)"
+  );
+
+  let p52 = canvas.pixmap().pixel(5, 52).unwrap();
+  assert_eq!(
+    (p52.red(), p52.green(), p52.blue(), p52.alpha()),
+    (255, 255, 255, 255),
+    "expected the fill not to extend past the snapped bounds"
+  );
+}
+
+#[test]
 fn test_draw_multiple_rects() {
   let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
 

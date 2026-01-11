@@ -536,61 +536,73 @@ fn append_rounded_rect_contour(
   let br = radii.bottom_right;
   let bl = radii.bottom_left;
 
-  const KAPPA: f32 = 0.552_284_8;
+  // Approximate quarter-ellipse corners using two cubic segments (45° each) instead of a single
+  // 90° cubic. This is significantly closer to Skia's `RRect` corner curves (which use conics) and
+  // reduces page-loop pixel diffs along `border-radius` edges in UI-heavy fixtures (e.g. YouTube
+  // skeleton placeholders).
+  //
+  // Control point factor for a 45° arc segment: 4/3 * tan(π/16).
+  const KAPPA_45: f32 = 0.265_216_5;
+  const SQRT2_OVER_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+  #[inline]
+  fn arc45(
+    pb: &mut PathBuilder,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    (cos0, sin0): (f32, f32),
+    (cos1, sin1): (f32, f32),
+  ) {
+    let p0x = cx + rx * cos0;
+    let p0y = cy + ry * sin0;
+    let p3x = cx + rx * cos1;
+    let p3y = cy + ry * sin1;
+    let p1x = p0x - KAPPA_45 * rx * sin0;
+    let p1y = p0y + KAPPA_45 * ry * cos0;
+    let p2x = p3x + KAPPA_45 * rx * sin1;
+    let p2y = p3y - KAPPA_45 * ry * cos1;
+    pb.cubic_to(p1x, p1y, p2x, p2y, p3x, p3y);
+  }
 
   pb.move_to(x + tl.x, y);
   pb.line_to(right - tr.x, y);
-  if tr.x > 0.0 || tr.y > 0.0 {
-    pb.cubic_to(
-      right - tr.x + tr.x * KAPPA,
-      y,
-      right,
-      y + tr.y - tr.y * KAPPA,
-      right,
-      y + tr.y,
-    );
+  if tr.x > 0.0 && tr.y > 0.0 {
+    let cx = right - tr.x;
+    let cy = y + tr.y;
+    arc45(pb, cx, cy, tr.x, tr.y, (0.0, -1.0), (SQRT2_OVER_2, -SQRT2_OVER_2));
+    arc45(pb, cx, cy, tr.x, tr.y, (SQRT2_OVER_2, -SQRT2_OVER_2), (1.0, 0.0));
   } else {
     pb.line_to(right, y);
   }
 
   pb.line_to(right, bottom - br.y);
-  if br.x > 0.0 || br.y > 0.0 {
-    pb.cubic_to(
-      right,
-      bottom - br.y + br.y * KAPPA,
-      right - br.x * KAPPA,
-      bottom,
-      right - br.x,
-      bottom,
-    );
+  if br.x > 0.0 && br.y > 0.0 {
+    let cx = right - br.x;
+    let cy = bottom - br.y;
+    arc45(pb, cx, cy, br.x, br.y, (1.0, 0.0), (SQRT2_OVER_2, SQRT2_OVER_2));
+    arc45(pb, cx, cy, br.x, br.y, (SQRT2_OVER_2, SQRT2_OVER_2), (0.0, 1.0));
   } else {
     pb.line_to(right, bottom);
   }
 
   pb.line_to(x + bl.x, bottom);
-  if bl.x > 0.0 || bl.y > 0.0 {
-    pb.cubic_to(
-      x + bl.x * (1.0 - KAPPA),
-      bottom,
-      x,
-      bottom - bl.y + bl.y * KAPPA,
-      x,
-      bottom - bl.y,
-    );
+  if bl.x > 0.0 && bl.y > 0.0 {
+    let cx = x + bl.x;
+    let cy = bottom - bl.y;
+    arc45(pb, cx, cy, bl.x, bl.y, (0.0, 1.0), (-SQRT2_OVER_2, SQRT2_OVER_2));
+    arc45(pb, cx, cy, bl.x, bl.y, (-SQRT2_OVER_2, SQRT2_OVER_2), (-1.0, 0.0));
   } else {
     pb.line_to(x, bottom);
   }
 
   pb.line_to(x, y + tl.y);
-  if tl.x > 0.0 || tl.y > 0.0 {
-    pb.cubic_to(
-      x,
-      y + tl.y * (1.0 - KAPPA),
-      x + tl.x * (1.0 - KAPPA),
-      y,
-      x + tl.x,
-      y,
-    );
+  if tl.x > 0.0 && tl.y > 0.0 {
+    let cx = x + tl.x;
+    let cy = y + tl.y;
+    arc45(pb, cx, cy, tl.x, tl.y, (-1.0, 0.0), (-SQRT2_OVER_2, -SQRT2_OVER_2));
+    arc45(pb, cx, cy, tl.x, tl.y, (-SQRT2_OVER_2, -SQRT2_OVER_2), (0.0, -1.0));
   } else {
     pb.line_to(x, y);
   }
@@ -620,6 +632,45 @@ pub(crate) fn build_rounded_rect_path(
   if radii.is_zero() {
     let rect = tiny_skia::Rect::from_xywh(x, y, width, height)?;
     return Some(PathBuilder::from_rect(rect));
+  }
+
+  // Special-case rounded-rects that have *no* straight edges (i.e. all radii are half the box
+  // size). These are effectively ellipses/circles and should not emit degenerate zero-length line
+  // segments between corners.
+  const ELLIPSE_EPS: f32 = 1e-4;
+  let tl = radii.top_left;
+  if (tl.x * 2.0 - width).abs() <= ELLIPSE_EPS
+    && (tl.y * 2.0 - height).abs() <= ELLIPSE_EPS
+    && (radii.top_right.x - tl.x).abs() <= ELLIPSE_EPS
+    && (radii.top_right.y - tl.y).abs() <= ELLIPSE_EPS
+    && (radii.bottom_right.x - tl.x).abs() <= ELLIPSE_EPS
+    && (radii.bottom_right.y - tl.y).abs() <= ELLIPSE_EPS
+    && (radii.bottom_left.x - tl.x).abs() <= ELLIPSE_EPS
+    && (radii.bottom_left.y - tl.y).abs() <= ELLIPSE_EPS
+  {
+    // Approximate the full ellipse using 90° cubic segments. This avoids the degenerate straight
+    // edges that appear when all radii consume the box (e.g. `border-radius: 50%` circles).
+    let cx = x + width * 0.5;
+    let cy = y + height * 0.5;
+    let rx = tl.x;
+    let ry = tl.y;
+    // Control point factor for a 90° circular arc approximated by a cubic Bézier.
+    //
+    // Use the minimax constant (~0.551915024494) which minimizes maximum radial error. This is a
+    // better approximation than the commonly-cited "kappa" value (4/3*tan(π/8)) when the goal is
+    // to stay close to the true circle everywhere along the curve (not just at 45°).
+    const CIRCLE_CUBIC_90: f32 = 0.551_915_05;
+    let kx = CIRCLE_CUBIC_90 * rx;
+    let ky = CIRCLE_CUBIC_90 * ry;
+
+    let mut pb = PathBuilder::new();
+    pb.move_to(cx, cy - ry);
+    pb.cubic_to(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy);
+    pb.cubic_to(cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry);
+    pb.cubic_to(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy);
+    pb.cubic_to(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry);
+    pb.close();
+    return pb.finish();
   }
 
   let mut pb = PathBuilder::new();
@@ -727,8 +778,20 @@ pub fn fill_rounded_rect(
     x1 = x1.saturating_add(COVERAGE_MARGIN_PX);
     y1 = y1.saturating_add(COVERAGE_MARGIN_PX);
 
-    let scratch_w_i64 = x1 - x0;
-    let scratch_h_i64 = y1 - y0;
+    // Only compute coverage within the destination pixmap bounds. This keeps the scratch mask
+    // bounded even for boxes that extend far outside the viewport.
+    let dest_w = pixmap.width() as i64;
+    let dest_h = pixmap.height() as i64;
+    let inter_x0 = x0.max(0);
+    let inter_y0 = y0.max(0);
+    let inter_x1 = x1.min(dest_w);
+    let inter_y1 = y1.min(dest_h);
+    if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+      return true;
+    }
+
+    let scratch_w_i64 = inter_x1 - inter_x0;
+    let scratch_h_i64 = inter_y1 - inter_y0;
     let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
       // Scratch would overflow; fall back to tiny-skia.
       let paint = make_paint(color);
@@ -741,16 +804,6 @@ pub fn fill_rounded_rect(
       return true;
     };
     if scratch_w == 0 || scratch_h == 0 {
-      return true;
-    }
-
-    let dest_w = pixmap.width() as i64;
-    let dest_h = pixmap.height() as i64;
-    let inter_x0 = x0.max(0);
-    let inter_y0 = y0.max(0);
-    let inter_x1 = x1.min(dest_w);
-    let inter_y1 = y1.min(dest_h);
-    if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
       return true;
     }
 
@@ -775,7 +828,7 @@ pub fn fill_rounded_rect(
       &path,
       FillRule::Winding,
       true,
-      Transform::from_translate(-(x0 as f32), -(y0 as f32)),
+      Transform::from_translate(-(inter_x0 as f32), -(inter_y0 as f32)),
     );
 
     {
@@ -783,10 +836,6 @@ pub fn fill_rounded_rect(
       let src_stride = scratch_w as usize;
       let dst_stride = pixmap.width() as usize * 4;
       let dst = pixmap.data_mut();
-      let copy_w = (inter_x1 - inter_x0) as usize;
-      let copy_h = (inter_y1 - inter_y0) as usize;
-      let src_x = (inter_x0 - x0) as usize;
-      let src_y = (inter_y0 - y0) as usize;
       let dst_x = inter_x0 as usize * 4;
       let dst_y = inter_y0 as usize;
 
@@ -795,10 +844,10 @@ pub fn fill_rounded_rect(
       let cg = color.g as u16;
       let cb = color.b as u16;
 
-      for row in 0..copy_h {
-        let src_off = (src_y + row) * src_stride + src_x;
+      for row in 0..scratch_h as usize {
+        let src_off = row * src_stride;
         let mut dst_off = (dst_y + row) * dst_stride + dst_x;
-        for col in 0..copy_w {
+        for col in 0..scratch_w as usize {
           let coverage = src[src_off + col] as u16;
           if coverage == 0 {
             dst_off += 4;
@@ -2146,6 +2195,84 @@ mod tests {
     assert!(clamped.bottom_left.x + clamped.bottom_right.x <= 50.0);
     assert!(clamped.top_left.y + clamped.bottom_left.y <= 50.0);
     assert!(clamped.top_right.y + clamped.bottom_right.y <= 50.0);
+  }
+
+  #[test]
+  fn rounded_rect_path_uses_multiple_cubics_per_corner() {
+    // Regression test: the rounded-rect path should approximate each quarter-ellipse corner with
+    // multiple cubics. This keeps border-radius edges closer to browser output (Skia uses conics
+    // for `RRect`) and avoids visible rounding artifacts on UI-heavy pages.
+    use tiny_skia::PathSegment;
+
+    let radii = BorderRadii::uniform(20.0);
+    let path = build_rounded_rect_path(0.0, 0.0, 100.0, 80.0, &radii).expect("path");
+    let cubics = path
+      .segments()
+      .filter(|seg| matches!(seg, PathSegment::CubicTo { .. }))
+      .count();
+    assert!(
+      cubics >= 8,
+      "expected at least 2 cubic segments per corner (8 total), got {cubics}"
+    );
+  }
+
+  #[test]
+  fn rounded_rect_path_for_circle_has_no_straight_edges() {
+    // Regression test: boxes with fully-round radii (`border-radius: 50%` circles/ellipses) should
+    // not emit degenerate zero-length edge segments. Those can subtly perturb tiny-skia's
+    // rasterization and show up as thin seams in pageset diffs.
+    use tiny_skia::PathSegment;
+
+    let radii = BorderRadii::uniform(16.0);
+    let path = build_rounded_rect_path(0.0, 0.0, 32.0, 32.0, &radii).expect("path");
+    let line_tos = path
+      .segments()
+      .filter(|seg| matches!(seg, PathSegment::LineTo { .. }))
+      .count();
+    assert_eq!(
+      line_tos, 0,
+      "expected fully rounded rect to contain no straight edges; got {line_tos}"
+    );
+  }
+
+  #[test]
+  fn fill_rounded_rect_clips_mask_to_destination_bounds() {
+    // Regression test: semi-transparent rounded-rect fills build a temporary coverage mask for
+    // Chrome-compatible `mul/255` compositing. That mask must be bounded to the destination pixmap
+    // (viewport/tile) so offscreen boxes don't allocate multi-megabyte masks.
+
+    // Clear any previously cached mask so we can observe the newly created size.
+    ROUNDED_RECT_MASK_SCRATCH.with(|cell| cell.borrow_mut().mask = None);
+
+    let mut pixmap = new_pixmap(100, 100).unwrap();
+    let radii = BorderRadii::uniform(20.0);
+    let color = Rgba::from_rgba8(0, 0, 0, 128);
+
+    // A huge box that would allocate a ~25MB mask (5004x5004) without clipping to the destination.
+    assert!(fill_rounded_rect(
+      &mut pixmap,
+      0.0,
+      0.0,
+      5000.0,
+      5000.0,
+      &radii,
+      color,
+    ));
+
+    let (mask_w, mask_h) = ROUNDED_RECT_MASK_SCRATCH.with(|cell| {
+      let guard = cell.borrow();
+      let mask = guard.mask.as_ref().expect("expected cached mask");
+      (mask.width(), mask.height())
+    });
+
+    assert!(
+      mask_w <= pixmap.width(),
+      "expected mask width to be clipped to destination; got {mask_w}"
+    );
+    assert!(
+      mask_h <= pixmap.height(),
+      "expected mask height to be clipped to destination; got {mask_h}"
+    );
   }
 
   #[test]
