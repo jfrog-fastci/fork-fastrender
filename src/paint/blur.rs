@@ -2864,7 +2864,10 @@ mod tests {
   use super::*;
   use crate::paint::painter::{enable_paint_diagnostics, take_paint_diagnostics};
   use crate::paint::pixmap::new_pixmap;
-  use crate::render_control::{with_deadline, RenderDeadline};
+  use crate::render_control::{
+    StageAllocationBudget, StageAllocationBudgetGuard, StageGuard, StageHeartbeat, StageHeartbeatGuard,
+    with_deadline, RenderDeadline,
+  };
   use rayon::ThreadPoolBuilder;
   use std::cell::RefCell;
   use std::collections::HashMap;
@@ -3754,6 +3757,41 @@ mod tests {
       .install(|| apply_gaussian_blur_cached(&mut tiled, 3.0, 3.0, Some(&mut cache), 1.0).unwrap());
 
     assert_eq!(direct.data(), tiled.data(), "tiled blur output mismatch");
+  }
+
+  #[test]
+  fn tile_blur_parallel_tiles_propagates_allocation_budget_into_rayon_workers() {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 512;
+    let pixmap = new_pixmap(WIDTH, HEIGHT).expect("pixmap");
+    let config = FilterCacheConfig {
+      max_items: 0,
+      max_bytes: 64 * 1024,
+    };
+
+    let output_bytes = u64::from(WIDTH).saturating_mul(u64::from(HEIGHT)).saturating_mul(4);
+    let budget = Arc::new(StageAllocationBudget::new(output_bytes.saturating_add(1)));
+
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .build()
+      .expect("thread pool");
+    let err = pool.install(|| {
+      let _stage_guard = StageGuard::install(Some(RenderStage::Paint));
+      let _heartbeat_guard = StageHeartbeatGuard::install(Some(StageHeartbeat::PaintRasterize));
+      let _budget_guard = StageAllocationBudgetGuard::install(Some(&budget));
+      tile_blur(&pixmap, 3.0, 3.0, &config).unwrap_err()
+    });
+
+    match err {
+      RenderError::StageAllocationBudgetExceeded {
+        stage, heartbeat, ..
+      } => {
+        assert_eq!(stage, RenderStage::Paint);
+        assert_eq!(heartbeat, StageHeartbeat::PaintRasterize);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   #[test]
