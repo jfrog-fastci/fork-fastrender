@@ -169,3 +169,37 @@ fn array_buffer_detach_rejected_while_pinned_by_io_op() {
   buf.detach().unwrap();
   assert!(buf.is_detached());
 }
+
+#[test]
+fn pinning_charges_backing_store_alloc_len_even_when_byte_len_is_smaller() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 1024,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  // Use an adopted Vec with capacity > len so `alloc_len()` differs from `byte_len()`.
+  // This defends against accidental changes that start charging only the visible byteLength.
+  let bytes = {
+    let mut chosen = None;
+    for _ in 0..32 {
+      let mut v = Vec::with_capacity(1024);
+      v.push(0u8);
+      if (v.as_ptr() as usize) % runtime_native::buffer::BACKING_STORE_MIN_ALIGN == 0 {
+        chosen = Some(v);
+        break;
+      }
+    }
+    chosen.expect("failed to allocate a Vec<u8> with min backing store alignment")
+  };
+
+  let buf = ArrayBuffer::from_bytes(bytes).unwrap();
+  assert_eq!(buf.byte_len(), 1);
+  let alloc_len = buf.backing_store_handle().unwrap().alloc_len();
+  assert_eq!(alloc_len, 1024);
+
+  let op = IoOp::pin_array_buffer_range(&limiter, &buf, 0..1).unwrap();
+  assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
+  drop(op);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
