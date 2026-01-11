@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use effect_model::{EffectSet, EffectTemplate, PurityTemplate};
+use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate};
 use knowledge_base::{ApiDatabase, ApiSemantics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum ValidationError {
   InconsistentPurityEffects {
     api: String,
     purity: PurityTemplate,
-    effects: EffectSet,
+    effects: EffectSummary,
   },
   PropertyGetHasArgs {
     api: String,
@@ -77,26 +77,6 @@ fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
     && a.properties == b.properties
 }
 
-fn validate_depends_on_args(api: &ApiSemantics, args: &[usize], errors: &mut Vec<ValidationError>) {
-  const MAX_DEPENDS_ON_ARG_INDEX: usize = 10_000;
-
-  if args.is_empty() {
-    errors.push(ValidationError::EmptyDependsOnArgs {
-      api: api.name.clone(),
-    });
-    return;
-  }
-
-  for &index in args {
-    if index > MAX_DEPENDS_ON_ARG_INDEX {
-      errors.push(ValidationError::InvalidDependsOnArgsIndex {
-        api: api.name.clone(),
-        index,
-      });
-    }
-  }
-}
-
 fn validate_encoding_enum(
   api: &ApiSemantics,
   field: &str,
@@ -116,6 +96,8 @@ fn validate_encoding_enum(
 }
 
 pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
+  const MAX_DEPENDS_ON_ARG_INDEX: usize = 10_000;
+
   let mut errors = Vec::new();
 
   // Detect ambiguous/duplicate name spellings from aliases.
@@ -127,16 +109,20 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
         continue;
       }
 
-      if let Some(prev) = db.get(alias) {
-        if semantics_match(prev, api) {
+      // Only treat the alias spelling as a collision with a canonical entry when that spelling
+      // exists as an actual API name in the DB.
+      if db.canonical_name(alias).is_some_and(|canonical| canonical == alias) {
+        if let Some(prev) = db.get(alias) {
+          if semantics_match(prev, api) {
+            continue;
+          }
+          errors.push(ValidationError::DuplicateApiName {
+            name: alias.to_string(),
+            first: prev.name.clone(),
+            second: api.name.clone(),
+          });
           continue;
         }
-        errors.push(ValidationError::DuplicateApiName {
-          name: alias.to_string(),
-          first: prev.name.clone(),
-          second: api.name.clone(),
-        });
-        continue;
       }
 
       if let Some(prev) = alias_map.insert(alias.to_string(), api.name.clone()) {
@@ -210,17 +196,42 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-    // Validate callback-dependent templates.
+    // Validate argument-dependence templates (e.g. callback-dependent APIs).
+    let mut depends_on_args = BTreeSet::<usize>::new();
+    let mut saw_depends_template = false;
     if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
-      validate_depends_on_args(api, args, &mut errors);
+      saw_depends_template = true;
+      depends_on_args.extend(args.iter().copied());
     }
     if let PurityTemplate::DependsOnArgs { args, .. } = &api.purity {
-      validate_depends_on_args(api, args, &mut errors);
+      saw_depends_template = true;
+      depends_on_args.extend(args.iter().copied());
+    }
+
+    if saw_depends_template {
+      if depends_on_args.is_empty() {
+        errors.push(ValidationError::EmptyDependsOnArgs {
+          api: api.name.clone(),
+        });
+      }
+
+      for index in depends_on_args {
+        if index > MAX_DEPENDS_ON_ARG_INDEX {
+          errors.push(ValidationError::InvalidDependsOnArgsIndex {
+            api: api.name.clone(),
+            index,
+          });
+        }
+      }
     }
 
     // Catch obvious semantic contradictions.
     if matches!(api.purity, PurityTemplate::Pure) {
-      if api.effect_summary.intersects(EffectSet::IO | EffectSet::NETWORK) {
+      if api
+        .effect_summary
+        .flags
+        .intersects(EffectSet::IO | EffectSet::NETWORK)
+      {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
           purity: api.purity.clone(),
@@ -240,18 +251,29 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::Purity;
+  use effect_model::{Purity, ThrowBehavior};
   use knowledge_base::ApiKind;
   use knowledge_base::JsonValue;
 
-  fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
+  fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
+    EffectSummary {
+      flags: effects & !EffectSet::MAY_THROW,
+      throws: if effects.contains(EffectSet::MAY_THROW) {
+        ThrowBehavior::Maybe
+      } else {
+        ThrowBehavior::Never
+      },
+    }
+  }
+
+  fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
     match template {
-      EffectTemplate::Pure => EffectSet::empty(),
-      EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
-      EffectTemplate::Custom(base) => *base,
-      EffectTemplate::DependsOnArgs { base, .. } => *base,
+      EffectTemplate::Pure => EffectSummary::PURE,
+      EffectTemplate::Io => effect_set_to_summary(EffectSet::IO | EffectSet::MAY_THROW),
+      EffectTemplate::Custom(base) => effect_set_to_summary(*base),
+      EffectTemplate::DependsOnArgs { base, .. } => effect_set_to_summary(*base),
       // Unknown means "unknown effects"; treat it as potentially-throwing for validation.
-      EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+      EffectTemplate::Unknown => effect_set_to_summary(EffectSet::UNKNOWN | EffectSet::MAY_THROW),
     }
   }
 
@@ -306,7 +328,7 @@ mod tests {
     let db = ApiDatabase::from_entries([api(
       "String.prototype.slice",
       EffectTemplate::Custom(EffectSet::ALLOCATES),
-      PurityTemplate::Allocating,
+      PurityTemplate::Pure,
       &[("encoding.output", JsonValue::String("bogus".to_string()))],
     )]);
 
@@ -322,13 +344,10 @@ mod tests {
     let db = ApiDatabase::from_entries([api(
       "Array.prototype.map",
       EffectTemplate::DependsOnArgs {
-        base: EffectSet::ALLOCATES,
-        args: vec![0, 10001],
+        base: EffectSet::empty(),
+        args: vec![0, 10_001],
       },
-      PurityTemplate::DependsOnArgs {
-        base: Purity::Allocating,
-        args: vec![0, 10001],
-      },
+      PurityTemplate::Pure,
       &[],
     )]);
 

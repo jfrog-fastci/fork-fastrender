@@ -9,7 +9,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
+use effect_model::{EffectSet, EffectSummary, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 use semver::Version;
 use serde::{de::Error as _, Deserialize, Serialize};
 pub use serde_json::Value as JsonValue;
@@ -60,7 +60,7 @@ pub struct ApiSemantics {
   ///
   /// This preserves author-provided base effect flags (allocates/io/etc) even
   /// when `effects` is a callback-dependent template.
-  pub effect_summary: EffectSet,
+  pub effect_summary: EffectSummary,
 
   #[serde(default)]
   pub purity: PurityTemplate,
@@ -120,7 +120,7 @@ struct ApiSemanticsDeserialize {
   effects: EffectTemplate,
 
   #[serde(default)]
-  effect_summary: Option<EffectSet>,
+  effect_summary: Option<EffectSummary>,
 
   #[serde(default)]
   purity: PurityTemplate,
@@ -188,13 +188,24 @@ impl<'de> Deserialize<'de> for ApiSemantics {
   }
 }
 
-fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
+fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
   match template {
-    EffectTemplate::Pure => EffectSet::empty(),
-    EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
-    EffectTemplate::Custom(base) => *base,
-    EffectTemplate::DependsOnArgs { base, .. } => *base,
-    EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+    EffectTemplate::Pure => EffectSummary::PURE,
+    EffectTemplate::Io => effect_set_to_summary(EffectSet::IO | EffectSet::MAY_THROW),
+    EffectTemplate::Custom(base) => effect_set_to_summary(*base),
+    EffectTemplate::DependsOnArgs { base, .. } => effect_set_to_summary(*base),
+    EffectTemplate::Unknown => effect_set_to_summary(EffectSet::UNKNOWN | EffectSet::MAY_THROW),
+  }
+}
+
+fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
+  EffectSummary {
+    flags: effects & !EffectSet::MAY_THROW,
+    throws: if effects.contains(EffectSet::MAY_THROW) {
+      ThrowBehavior::Maybe
+    } else {
+      ThrowBehavior::Never
+    },
   }
 }
 
@@ -1054,7 +1065,7 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
   }
 }
 
-fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSet) {
+fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSummary) {
   match raw {
     EffectsRaw::Template(t) => {
       let summary = effect_template_to_summary(&t);
@@ -1115,37 +1126,52 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
 
       // Prefer the explicit `throws:` field (used by newer entries) over the
       // legacy `effects.may_throw` boolean.
-      let may_throw = if let Some(throws) = throws.and_then(parse_throw_behavior) {
-        !matches!(throws, ThrowBehavior::Never)
+      let throw_behavior = if let Some(throws) = throws.and_then(parse_throw_behavior) {
+        throws
       } else if let Some(v) = details.may_throw {
-        v
+        if v {
+          ThrowBehavior::Maybe
+        } else {
+          ThrowBehavior::Never
+        }
+      } else if base_may_throw || template != "pure" {
+        ThrowBehavior::Maybe
       } else {
-        base_may_throw || template != "pure"
+        ThrowBehavior::Never
       };
-      if may_throw {
-        flags |= EffectSet::MAY_THROW;
+
+      let mut base = flags;
+      if !matches!(throw_behavior, ThrowBehavior::Never) {
+        base |= EffectSet::MAY_THROW;
       }
 
-      let effect_template = if template == "depends_on_callback" {
+      let effect_template = if !details.depends_on_args.is_empty() {
         EffectTemplate::DependsOnArgs {
-          base: flags,
-          args: if details.depends_on_args.is_empty() {
-            vec![0]
-          } else {
-            details.depends_on_args.clone()
-          },
+          base,
+          args: details.depends_on_args.clone(),
         }
-      } else if flags.is_empty() {
+      } else if template == "depends_on_callback" {
+        EffectTemplate::DependsOnArgs {
+          base,
+          args: vec![0],
+        }
+      } else if base.is_empty() {
         EffectTemplate::Pure
-      } else if flags == (EffectSet::IO | EffectSet::MAY_THROW) {
+      } else if base == (EffectSet::IO | EffectSet::MAY_THROW) {
         EffectTemplate::Io
-      } else if flags == (EffectSet::UNKNOWN | EffectSet::MAY_THROW) {
+      } else if base == (EffectSet::UNKNOWN | EffectSet::MAY_THROW) {
         EffectTemplate::Unknown
       } else {
-        EffectTemplate::Custom(flags)
+        EffectTemplate::Custom(base)
       };
 
-      (effect_template, flags)
+      (
+        effect_template,
+        EffectSummary {
+          flags,
+          throws: throw_behavior,
+        },
+      )
     }
   }
 }
@@ -1494,7 +1520,7 @@ mod tests {
       name: name.to_string(),
       aliases: vec![],
       effects: EffectTemplate::Pure,
-      effect_summary: EffectSet::empty(),
+      effect_summary: EffectSummary::PURE,
       purity: PurityTemplate::Pure,
       async_: None,
       idempotent: None,
@@ -1564,7 +1590,7 @@ purity:
       name: "x".to_string(),
       aliases: vec![],
       effects: EffectTemplate::Pure,
-      effect_summary: EffectSet::empty(),
+      effect_summary: EffectSummary::PURE,
       purity: PurityTemplate::Pure,
       async_: None,
       idempotent: None,
@@ -1909,13 +1935,13 @@ properties:
     let api = kb
       .get("node:fs.existsSync")
       .expect("node:fs.existsSync exists in bundled knowledge base");
-    assert!(api.effect_summary.contains(EffectSet::IO));
-    assert!(!api.effect_summary.contains(EffectSet::MAY_THROW));
+    assert!(api.effect_summary.flags.contains(EffectSet::IO));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Never);
 
     let map = kb
       .get("Array.prototype.map")
       .expect("Array.prototype.map exists in bundled knowledge base");
-    assert!(map.effect_summary.contains(EffectSet::ALLOCATES));
+    assert!(map.effect_summary.flags.contains(EffectSet::ALLOCATES));
   }
 
   #[test]

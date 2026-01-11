@@ -644,7 +644,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::{EffectSet, EffectTemplate, PurityTemplate};
+  use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
   use hir_js::ExprKind;
   use knowledge_base::{ApiDatabase, ApiKind, ApiSemantics};
 
@@ -656,7 +656,7 @@ mod tests {
         kind: ApiKind::Constructor,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -674,7 +674,7 @@ mod tests {
         kind: ApiKind::Getter,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -692,7 +692,7 @@ mod tests {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -710,7 +710,7 @@ mod tests {
         kind: ApiKind::Value,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -728,7 +728,10 @@ mod tests {
         kind: ApiKind::Constructor,
         aliases: vec![],
         effects: EffectTemplate::Unknown,
-        effect_summary: EffectSet::UNKNOWN,
+        effect_summary: EffectSummary {
+          flags: EffectSet::UNKNOWN,
+          throws: ThrowBehavior::Maybe,
+        },
         purity: PurityTemplate::Unknown,
         async_: None,
         idempotent: None,
@@ -746,7 +749,7 @@ mod tests {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -764,7 +767,7 @@ mod tests {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSet::empty(),
+        effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -782,7 +785,10 @@ mod tests {
         kind: ApiKind::Value,
         aliases: vec![],
         effects: EffectTemplate::Unknown,
-        effect_summary: EffectSet::UNKNOWN,
+        effect_summary: EffectSummary {
+          flags: EffectSet::UNKNOWN,
+          throws: ThrowBehavior::Maybe,
+        },
         purity: PurityTemplate::Unknown,
         async_: None,
         idempotent: None,

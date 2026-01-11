@@ -66,6 +66,7 @@ pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics
 #[cfg(test)]
 mod tests {
   use super::*;
+  use effect_model::ThrowBehavior;
 
   #[test]
   fn bundled_kb_contains_core_semantics() {
@@ -95,12 +96,12 @@ mod tests {
     }
 
     let json_parse = db.get("JSON.parse").expect("JSON.parse present");
-    assert!(json_parse.effect_summary.contains(EffectSet::MAY_THROW));
+    assert_ne!(json_parse.effect_summary.throws, ThrowBehavior::Never);
 
     let array_map = db
       .get("Array.prototype.map")
       .expect("Array.prototype.map present");
-    assert!(array_map.effect_summary.contains(EffectSet::ALLOCATES));
+    assert!(array_map.effect_summary.flags.contains(EffectSet::ALLOCATES));
     match &array_map.effects {
       EffectTemplate::DependsOnArgs { base, args } => {
         assert!(base.contains(EffectSet::ALLOCATES));
@@ -119,7 +120,7 @@ mod tests {
     }
 
     let fetch = db.get("fetch").expect("fetch present");
-    assert!(fetch.effect_summary.contains(EffectSet::IO));
+    assert!(fetch.effect_summary.flags.contains(EffectSet::IO));
   }
 }
 

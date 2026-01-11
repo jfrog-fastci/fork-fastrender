@@ -1,4 +1,4 @@
-use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
+use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallSiteInfo {
@@ -30,7 +30,8 @@ pub fn eval_api_call(api: &knowledge_base::Api, site: &CallSiteInfo) -> CallSema
 
   // `effect_summary` preserves author-provided base flags even when `effects`
   // is a runtime-dependent template.
-  let effects = api.effects_for_call(&arg_effects) | api.effect_summary;
+  let effects =
+    api.effects_for_call(&arg_effects) | effect_summary_as_set(api.effect_summary);
   let purity_from_template = api.purity_for_call(&arg_purity);
   let purity_from_effects = effects.inferred_purity();
 
@@ -90,6 +91,14 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
 
 fn unknown_effects() -> EffectSet {
   EffectSet::UNKNOWN | EffectSet::MAY_THROW
+}
+
+fn effect_summary_as_set(summary: effect_model::EffectSummary) -> EffectSet {
+  let mut out = summary.flags;
+  if !matches!(summary.throws, ThrowBehavior::Never) {
+    out |= EffectSet::MAY_THROW;
+  }
+  out
 }
 
 #[cfg(test)]

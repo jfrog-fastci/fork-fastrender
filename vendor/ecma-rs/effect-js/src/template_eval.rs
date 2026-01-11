@@ -1,4 +1,4 @@
-use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
+use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 use knowledge_base::{ApiSemantics, KnowledgeBase};
 
@@ -50,7 +50,7 @@ pub(crate) fn eval_call_expr(
 
     // `effect_summary` preserves author-provided base flags even when `effects`
     // is a runtime-dependent template.
-    let effects = api.effects_for_call(&arg_effects) | api.effect_summary;
+    let effects = api.effects_for_call(&arg_effects) | effect_summary_as_set(api.effect_summary);
     let purity_from_template = api.purity_for_call(&arg_purity);
     let purity_from_effects = effects.inferred_purity();
 
@@ -124,6 +124,14 @@ fn build_arg_models(
   }
 
   (arg_effects, arg_purity)
+}
+
+fn effect_summary_as_set(summary: effect_model::EffectSummary) -> EffectSet {
+  let mut out = summary.flags;
+  if !matches!(summary.throws, ThrowBehavior::Never) {
+    out |= EffectSet::MAY_THROW;
+  }
+  out
 }
 
 fn resolve_api_semantics<'a>(
@@ -217,7 +225,7 @@ fn static_callee_path(lowered: &LowerResult, body: &Body, expr_id: ExprId) -> Op
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::EffectSet;
+  use effect_model::{EffectSet, EffectSummary};
   use hir_js::{FileKind, StmtKind};
   use knowledge_base::{ApiDatabase, ApiId, ApiKind};
   use std::collections::BTreeMap;
@@ -256,7 +264,7 @@ mod tests {
         base: EffectSet::empty(),
         args: vec![1],
       },
-      effect_summary: EffectSet::empty(),
+      effect_summary: EffectSummary::PURE,
       purity: PurityTemplate::DependsOnArgs {
         base: Purity::Pure,
         args: vec![1],
