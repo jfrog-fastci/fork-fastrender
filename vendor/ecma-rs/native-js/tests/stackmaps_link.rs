@@ -19,6 +19,62 @@ const STACKMAP_RELOC_SECTION_CANDIDATES: [&str; 4] = [
   ".rel.data.rel.ro.llvm_stackmaps",
 ];
 
+fn stackmaps_bytes_from_elf(bytes: &[u8]) -> Result<Vec<u8>> {
+  let file = object::File::parse(bytes).context("parse object/elf")?;
+
+  // Preferred: stackmaps live in a dedicated output section.
+  for name in STACKMAP_SECTION_CANDIDATES {
+    if let Some(sec) = file.section_by_name(name) {
+      if sec.size() == 0 {
+        return Err(anyhow!("expected section {name} to be non-empty"));
+      }
+      let data = sec.data().with_context(|| format!("read {name} section bytes"))?;
+      return Ok(data.to_vec());
+    }
+  }
+
+  // lld PIE: stackmaps can be injected into the standard `.data.rel.ro` output section
+  // (see `runtime-native/link/stackmaps.ld`). In that case, locate the stackmaps payload via the
+  // linker-script boundary symbols.
+  let sec = file
+    .section_by_name(".data.rel.ro")
+    .ok_or_else(|| anyhow!("missing .data.rel.ro section (expected stackmaps payload there)"))?;
+  let sec_addr = sec.address();
+  let sec_size = sec.size();
+  let start = find_symbol_addr(&file, LLVM_STACKMAPS_START_SYM)
+    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_START_SYM} symbol"))?;
+  let stop = find_symbol_addr(&file, LLVM_STACKMAPS_STOP_SYM)
+    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_STOP_SYM} symbol"))?;
+  if stop <= start {
+    return Err(anyhow!(
+      "invalid stackmaps symbol range: start=0x{start:x} stop=0x{stop:x}"
+    ));
+  }
+  if start < sec_addr || stop > sec_addr + sec_size {
+    return Err(anyhow!(
+      "stackmaps range (0x{start:x}..0x{stop:x}) must be within .data.rel.ro (addr=0x{sec_addr:x} size=0x{sec_size:x})"
+    ));
+  }
+
+  let data = sec.data().context("read .data.rel.ro section bytes")?;
+  let off = usize::try_from(start - sec_addr).context("stackmaps offset overflow")?;
+  let len = usize::try_from(stop - start).context("stackmaps length overflow")?;
+  if off + len > data.len() {
+    return Err(anyhow!(
+      "stackmaps range out of bounds: off={off} len={len} data_len={}",
+      data.len()
+    ));
+  }
+  Ok(data[off..off + len].to_vec())
+}
+
+fn assert_stackmaps_present_and_parseable(bytes: &[u8]) -> Result<()> {
+  let stackmaps = stackmaps_bytes_from_elf(bytes)?;
+  llvm_stackmaps::StackMaps::parse(&stackmaps)
+    .map(|_| ())
+    .map_err(|e| anyhow!("failed to parse stackmaps bytes: {e}"))
+}
+
 fn elf64_le_has_wx_load_segment(bytes: &[u8]) -> Result<bool> {
   // Minimal ELF64 little-endian program header scan.
   //
@@ -140,7 +196,7 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 2, "expected non-PIE ET_EXEC (e_type={elf_type})");
 
-  assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
+  assert_stackmaps_present_and_parseable(&exe_bytes)?;
   assert_exported_stackmaps_range_non_empty(&exe_bytes)?;
   for name in STACKMAP_RELOC_SECTION_CANDIDATES {
     assert_section_absent(&exe_bytes, name)?;
@@ -150,7 +206,7 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   if command_works("strip") {
     run(Command::new("strip").arg(&exe_path)).context("strip")?;
     let stripped = fs::read(&exe_path).context("read stripped executable")?;
-    assert_any_section_present_non_empty(&stripped, &STACKMAP_SECTION_CANDIDATES)?;
+    assert_stackmaps_present_and_parseable(&stripped)?;
     for name in STACKMAP_RELOC_SECTION_CANDIDATES {
       assert_section_absent(&stripped, name)?;
     }
@@ -202,6 +258,7 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
   assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
 
   assert_exported_stackmaps_range_non_empty(&exe_bytes)?;
+  assert_stackmaps_present_and_parseable(&exe_bytes)?;
   for name in STACKMAP_RELOC_SECTION_CANDIDATES {
     assert_section_absent(&exe_bytes, name)?;
   }
@@ -238,12 +295,12 @@ fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
 
     native_js::link::link_object_to_executable(&obj_path, &exe_path)
         .map_err(|err| anyhow!("link_object_to_executable failed: {err}"))?;
-
+ 
     let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
-    assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
-
-     Ok(())
- }
+    assert_stackmaps_present_and_parseable(&exe_bytes)?;
+ 
+      Ok(())
+  }
 
 fn command_works(cmd: &str) -> bool {
   Command::new(cmd)
