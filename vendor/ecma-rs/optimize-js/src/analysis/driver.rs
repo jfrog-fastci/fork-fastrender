@@ -449,4 +449,42 @@ mod tests {
       "expected non-ASCII string literal to be classified as Utf8"
     );
   }
+
+  #[test]
+  fn annotate_program_writes_string_encoding_metadata() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::var_assign(0, Arg::Const(Const::Str("hello".to_string()))),
+          Inst::var_assign(1, Arg::Const(Const::Str("π".to_string()))),
+        ],
+      )],
+      &[],
+    );
+    let mut program = Program {
+      functions: Vec::new(),
+      top_level: ProgramFunction {
+        debug: None,
+        body: cfg,
+        stats: OptimizationStats::default(),
+      },
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let _analyses = annotate_program(&mut program);
+
+    let insts = program.top_level.body.bblocks.get(0);
+    assert_eq!(
+      insts[0].meta.result_type.string_encoding,
+      Some(StringEncoding::Ascii),
+      "expected ASCII string literal to be annotated as Ascii"
+    );
+    assert_eq!(
+      insts[1].meta.result_type.string_encoding,
+      Some(StringEncoding::Utf8),
+      "expected non-ASCII string literal to be annotated as Utf8"
+    );
+  }
 }

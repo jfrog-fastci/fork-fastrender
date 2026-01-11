@@ -301,6 +301,14 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
     };
     for inst in block.iter() {
       match inst.t {
+        InstTyp::Return | InstTyp::Throw => {
+          let Some(arg) = inst.args.get(0) else {
+            continue;
+          };
+          for alloc in allocs_for_arg(&var_allocs, arg) {
+            join_escape(&mut alloc_states, alloc, EscapeState::ReturnEscape);
+          }
+        }
         InstTyp::ForeignStore | InstTyp::UnknownStore => {
           for alloc in allocs_for_arg(&var_allocs, &inst.args[0]) {
             join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
