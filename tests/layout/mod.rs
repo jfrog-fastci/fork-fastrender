@@ -46,6 +46,7 @@ mod inline_intrinsic_min_content_percent_replaced;
 mod inline_border_padding_line_height;
 mod inline_box_baseline_uses_last_child;
 mod inline_box_fragmentation_remaining_width;
+mod inline_box_fragmentation_nested_inline_boxes;
 mod inline_box_horizontal_margins;
 mod inline_box_baseline_uses_strut;
 mod inline_nowrap_min_content;

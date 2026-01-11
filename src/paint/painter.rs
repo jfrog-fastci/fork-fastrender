@@ -18414,6 +18414,34 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   }
 
   drop(_display_list_span);
+  paint_display_list_with_resources_scaled_with_trace(
+    &display_list,
+    width,
+    height,
+    background,
+    font_ctx,
+    scale,
+    paint_parallelism,
+    &trace,
+  )
+}
+
+/// Optimizes and rasterizes an already-built display list.
+///
+/// This lets callers reuse a display list for both debugging output (e.g. pipeline snapshots) and
+/// the paint stage without rebuilding it twice.
+pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
+  display_list: &crate::paint::display_list::DisplayList,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  scale: f32,
+  paint_parallelism: PaintParallelism,
+  trace: &TraceHandle,
+) -> Result<Pixmap> {
+  let diagnostics_enabled = paint_diagnostics_enabled();
+
   let _optimize_span = trace.span("display_list_optimize", "paint");
   let optimizer = DisplayListOptimizer::new();
   let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
@@ -18426,23 +18454,22 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
     Some(budget) => {
       let cancel = active_deadline().and_then(|deadline| deadline.cancel_callback());
       let deadline = RenderDeadline::new(Some(budget), cancel);
-      with_deadline(Some(&deadline), || {
-        optimizer.optimize_checked(&display_list, viewport_rect)
-      })
+      with_deadline(Some(&deadline), || optimizer.optimize_checked(display_list, viewport_rect))
     }
-    None => optimizer.optimize_checked(&display_list, viewport_rect),
+    None => optimizer.optimize_checked(display_list, viewport_rect),
   };
+
   let (optimized, stats) = match optimize_result {
-    Ok((optimized, stats)) => (optimized, stats),
+    Ok((optimized, stats)) => (Some(optimized), stats),
     Err(err) => {
-      // Optimization is optional; if we hit the optimization budget, rasterize the original
-      // display list (still benefiting from display-list renderer caching + tiling).
+      // Optimization is optional; if we hit the optimization budget, rasterize the original display
+      // list (still benefiting from display-list renderer caching + tiling).
       if optimize_budget.is_some() && matches!(err, Error::Render(RenderError::Timeout { .. })) {
         if let Err(err) = check_active(RenderStage::Paint) {
           return Err(Error::Render(err));
         }
         (
-          display_list,
+          None,
           crate::paint::optimize::OptimizationStats {
             original_count: original_items,
             final_count: original_items,
@@ -18454,6 +18481,9 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
       }
     }
   };
+
+  let list_to_render = optimized.as_ref().unwrap_or(display_list);
+
   if let (true, Some(start)) = (diagnostics_enabled, optimize_start) {
     let optimize_ms = start.elapsed().as_secs_f64() * 1000.0;
     with_paint_diagnostics(|diag| {
@@ -18474,11 +18504,12 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   let mut renderer = DisplayListRenderer::new_scaled(width, height, background, font_ctx, scale)?;
   renderer.set_parallelism(paint_parallelism);
   record_stage(StageHeartbeat::PaintRasterize);
-  let report = renderer.render_with_report(&optimized)?;
+  let report = renderer.render_with_report(list_to_render)?;
+
   if paint_diagnostics_enabled() {
     with_paint_diagnostics(|diag| {
       diag.raster_ms = report.duration.as_secs_f64() * 1000.0;
-      diag.command_count = optimized.len();
+      diag.command_count = list_to_render.len();
       diag.gradient_ms = report.gradient_stats.millis();
       diag.gradient_pixels = report.gradient_stats.pixels;
       diag.gradient_pixmap_cache_hits = diag
@@ -18510,6 +18541,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
       diag.serial_ms += report.serial_duration.as_secs_f64() * 1000.0;
     });
   }
+
   Ok(report.pixmap)
 }
 

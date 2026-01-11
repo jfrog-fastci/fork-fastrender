@@ -138,6 +138,7 @@ use crate::layout::utils::resolve_font_relative_length;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::paint::painter::paint_backend_from_env;
+use crate::paint::painter::paint_display_list_with_resources_scaled_with_trace;
 use crate::paint::painter::paint_tree_display_list_with_resources_scaled_offset_depth_with_trace;
 use crate::paint::painter::paint_tree_with_resources_scaled_offset_backend_with_iframe_depth;
 use crate::paint::painter::paint_tree_with_resources_scaled_offset_with_trace;
@@ -6817,20 +6818,14 @@ impl FastRender {
           rec.stats.cascade.has_evaluated = Some(has_counters.evaluated);
         }
       }
+      let artifact_request = artifacts.as_deref().map(|store| store.request()).unwrap_or_default();
+
       let LayoutArtifacts {
         styled_tree,
         box_tree,
         mut fragment_tree,
         ..
       } = layout_artifacts;
-      if let Some(store) = artifacts.as_deref_mut() {
-        if store.request().styled_tree {
-          store.styled_tree = Some(styled_tree.clone());
-        }
-        if store.request().box_tree {
-          store.box_tree = Some(box_tree.clone());
-        }
-      }
       let layout_viewport = fragment_tree.viewport_size();
       if toggles.truthy("FASTR_LOG_FRAG_BOUNDS") {
         let bbox = fragment_tree.content_size();
@@ -7028,52 +7023,62 @@ impl FastRender {
       scroll_state_for_paint.viewport =
         Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
 
-      if let Some(store) = artifacts.as_deref_mut() {
-        if store.request().fragment_tree {
-          store.fragment_tree = Some(fragment_tree.clone());
-        }
-      }
-
       // The fragment tree stores the layout viewport size, which is used for viewport scrolling and
       // sticky positioning. When reserving viewport scrollbar gutter space (e.g.
       // `scrollbar-gutter: stable`), we still want the *paint* viewport to represent the full
       // canvas so the canvas background fills the output surface.
       fragment_tree.set_viewport_size(paint_viewport);
 
-      if let Some(store) = artifacts.as_deref_mut() {
-        if store.request().display_list {
-          // Capture a paint-accurate display list: use the stacking-context-aware builder and
-          // apply the same scroll offset/canvas bounds as the paint stage. This keeps snapshots
-          // useful for debugging paint order and compositing (e.g. mix-blend-mode).
-          let viewport = fragment_tree.viewport_size();
-          let svg_filter_defs = fragment_tree.svg_filter_defs.clone();
-          let svg_id_defs = fragment_tree.svg_id_defs.clone();
-          let svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
-          let base_url = self.base_url.clone();
-          let build_display_list_for_root =
-            |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
-              let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
-                .with_font_context(self.font_context.clone())
-                .with_svg_filter_defs(svg_filter_defs.clone())
-                .with_svg_id_defs(svg_id_defs.clone())
-                .with_svg_id_defs_raw(svg_id_defs_raw.clone())
-                .with_scroll_state(scroll_state_for_paint.clone())
-                .with_device_pixel_ratio(self.device_pixel_ratio)
-                .with_parallelism(&paint_parallelism)
-                .with_max_iframe_depth(self.max_iframe_depth)
-                .with_viewport_size(viewport.width, viewport.height)
-                .with_culling_viewport_size(target_width as f32, target_height as f32);
-              if let Some(base_url) = base_url.as_ref() {
-                builder.set_base_url(base_url.clone());
-              }
-              builder.build_with_stacking_tree_offset(root, offset)
-            };
+      let paint_backend = paint_backend_from_env();
+      let mut captured_display_list: Option<crate::paint::display_list::DisplayList> = None;
+      let mut paint_from_captured_display_list = false;
+      if artifact_request.display_list {
+        // Capture a paint-accurate display list: use the stacking-context-aware builder and apply
+        // the same scroll offset/canvas bounds as the paint stage. This keeps snapshots useful for
+        // debugging paint order and compositing (e.g. mix-blend-mode).
+        let viewport = fragment_tree.viewport_size();
+        let svg_filter_defs = fragment_tree.svg_filter_defs.clone();
+        let svg_id_defs = fragment_tree.svg_id_defs.clone();
+        let svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
+        let base_url = self.base_url.clone();
+        let build_display_list_for_root =
+          |root: &FragmentNode| -> crate::Result<crate::paint::display_list::DisplayList> {
+            let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
+              .with_font_context(self.font_context.clone())
+              .with_svg_filter_defs(svg_filter_defs.clone())
+              .with_svg_id_defs(svg_id_defs.clone())
+              .with_svg_id_defs_raw(svg_id_defs_raw.clone())
+              .with_scroll_state(scroll_state_for_paint.clone())
+              .with_device_pixel_ratio(self.device_pixel_ratio)
+              .with_parallelism(&paint_parallelism)
+              .with_max_iframe_depth(self.max_iframe_depth)
+              .with_viewport_size(viewport.width, viewport.height)
+              .with_culling_viewport_size(target_width as f32, target_height as f32);
+            if let Some(base_url) = base_url.as_ref() {
+              builder.set_base_url(base_url.clone());
+            }
+            builder.build_with_stacking_tree_offset_checked(root, offset)
+          };
 
-          let mut display_list = build_display_list_for_root(&fragment_tree.root);
+        let build_result = (|| -> crate::Result<crate::paint::display_list::DisplayList> {
+          let mut list = build_display_list_for_root(&fragment_tree.root)?;
           for extra in &fragment_tree.additional_fragments {
-            display_list.append(build_display_list_for_root(extra));
+            list.append(build_display_list_for_root(extra)?);
           }
-          store.display_list = Some(display_list);
+          Ok(list)
+        })();
+
+        match build_result {
+          Ok(list) => {
+            paint_from_captured_display_list = paint_backend == PaintBackend::DisplayList;
+            captured_display_list = Some(list);
+          }
+          Err(_) => {
+            // Keep the pipeline moving (e.g. for `inspect_frag`) even if display-list construction
+            // times out; this matches the non-checked builder helpers which fall back to an empty
+            // list.
+            captured_display_list = Some(crate::paint::display_list::DisplayList::new());
+          }
         }
       }
 
@@ -7088,15 +7093,37 @@ impl FastRender {
           .record_start(RenderStage::Paint, paint_rss_start);
       }
       check_stage_mem_budget(RenderStage::Paint, paint_rss_start, stage_mem_budget_bytes)?;
-      let pixmap = self.paint_with_offset_traced(
-        &fragment_tree,
-        target_width,
-        target_height,
-        offset,
-        paint_parallelism,
-        &scroll_state_for_paint,
-        trace,
-      )?;
+      let pixmap = if paint_from_captured_display_list {
+        // We're bypassing the normal display-list backend's builder stage (already done above), so
+        // manually emit the paint-build heartbeat.
+        record_stage(StageHeartbeat::PaintBuild);
+        crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
+        paint_display_list_with_resources_scaled_with_trace(
+          captured_display_list
+            .as_ref()
+            .expect("display list must be present when painting from it"),
+          target_width,
+          target_height,
+          self.background_color,
+          self.font_context.clone(),
+          self.device_pixel_ratio,
+          paint_parallelism,
+          trace,
+        )?
+      } else {
+        self.paint_with_offset_traced(
+          &fragment_tree,
+          target_width,
+          target_height,
+          offset,
+          paint_parallelism,
+          &scroll_state_for_paint,
+          trace,
+        )?
+      };
+      if artifact_request.fragment_tree {
+        fragment_tree.set_viewport_size(layout_viewport);
+      }
       let paint_rss_end = memory_sampling_enabled
         .then(crate::memory::current_rss_bytes)
         .flatten();
@@ -7240,6 +7267,21 @@ impl FastRender {
       } else {
         None
       };
+
+      if let Some(store) = artifacts.as_deref_mut() {
+        if artifact_request.styled_tree {
+          store.styled_tree = Some(styled_tree);
+        }
+        if artifact_request.box_tree {
+          store.box_tree = Some(box_tree);
+        }
+        if artifact_request.fragment_tree {
+          store.fragment_tree = Some(fragment_tree);
+        }
+        if artifact_request.display_list {
+          store.display_list = captured_display_list;
+        }
+      }
 
       Ok(RenderOutputs {
         pixmap,

@@ -4371,6 +4371,8 @@ impl<'a> LineBuilder<'a> {
                     unicode_bidi,
                   );
                   inline_box.box_id = box_id;
+                  inline_box.margin_left = margin_left;
+                  inline_box.margin_right = margin_right;
                   inline_box.border_left = border_left;
                   inline_box.border_right = border_right;
                   inline_box.border_top = border_top;
@@ -4414,6 +4416,8 @@ impl<'a> LineBuilder<'a> {
                     unicode_bidi,
                   );
                   inline_box.box_id = box_id;
+                  inline_box.margin_left = margin_left;
+                  inline_box.margin_right = margin_right;
                   inline_box.border_left = border_left;
                   inline_box.border_right = border_right;
                   inline_box.border_top = border_top;
