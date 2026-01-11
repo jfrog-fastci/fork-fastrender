@@ -33,6 +33,16 @@ fn find_clang() -> Option<&'static str> {
   None
 }
 
+fn lld_flag() -> Option<&'static str> {
+  if command_works("ld.lld-18") {
+    Some("-fuse-ld=lld-18")
+  } else if command_works("ld.lld") {
+    Some("-fuse-ld=lld")
+  } else {
+    None
+  }
+}
+
 fn run(cmd: &mut Command) {
   let status = cmd.status().unwrap_or_else(|err| panic!("failed to run {cmd:?}: {err}"));
   assert!(status.success(), "command failed: {cmd:?}");
@@ -50,10 +60,10 @@ fn emit_obj(llc: &str, ir_path: &Path, obj_path: &Path) {
 }
 
 fn link_exe(clang: &str, out: &Path, objs: &[PathBuf]) {
-  let mk = |use_lld: bool| {
+  let mk = |lld_flag: Option<&str>| {
     let mut cmd = Command::new(clang);
-    if use_lld {
-      cmd.arg("-fuse-ld=lld");
+    if let Some(flag) = lld_flag {
+      cmd.arg(flag);
     }
     cmd.arg("-no-pie");
     for obj in objs {
@@ -65,13 +75,21 @@ fn link_exe(clang: &str, out: &Path, objs: &[PathBuf]) {
 
   // Prefer lld to match production builds (`clang -fuse-ld=lld`). If lld isn't
   // installed, fall back to the system default linker so the test still runs.
-  let mut cmd = mk(true);
-  let status = cmd
-    .status()
-    .unwrap_or_else(|err| panic!("failed to run {cmd:?}: {err}"));
-  if !status.success() {
-    eprintln!("warning: {cmd:?} failed; retrying without -fuse-ld=lld");
-    let mut cmd = mk(false);
+  //
+  // Prefer version-suffixed lld if present.
+  let lld_flag = lld_flag();
+  if let Some(flag) = lld_flag {
+    let mut cmd = mk(Some(flag));
+    let status = cmd
+      .status()
+      .unwrap_or_else(|err| panic!("failed to run {cmd:?}: {err}"));
+    if !status.success() {
+      eprintln!("warning: {cmd:?} failed; retrying without {flag}");
+      let mut cmd = mk(None);
+      run(&mut cmd);
+    }
+  } else {
+    let mut cmd = mk(None);
     run(&mut cmd);
   }
   assert!(out.exists(), "missing output executable {}", out.display());

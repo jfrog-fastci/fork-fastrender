@@ -24,6 +24,25 @@ fn find_clang() -> &'static str {
   panic!("unable to locate clang (expected `clang-18` or `clang`)");
 }
 
+fn have_cmd(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn lld_flag() -> Option<&'static str> {
+  if have_cmd("ld.lld-18") {
+    Some("-fuse-ld=lld-18")
+  } else if have_cmd("ld.lld") {
+    Some("-fuse-ld=lld")
+  } else {
+    None
+  }
+}
+
 fn compile_obj(out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` so the linker script fragment can't
   // rely on it existing.
@@ -77,6 +96,11 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 
 #[test]
 fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
+  let Some(lld_flag) = lld_flag() else {
+    eprintln!("skipping: lld not found in PATH (need ld.lld-18 or ld.lld)");
+    return;
+  };
+
   const START_SYM: &str = "__start_llvm_stackmaps";
   const STOP_SYM: &str = "__stop_llvm_stackmaps";
   // Generic alias.
@@ -99,7 +123,7 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   // Link a minimal binary (no stdlib/CRT) using our linker script fragment.
   let status = Command::new(find_clang())
     .arg("-nostdlib")
-    .arg("-fuse-ld=lld")
+    .arg(lld_flag)
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.

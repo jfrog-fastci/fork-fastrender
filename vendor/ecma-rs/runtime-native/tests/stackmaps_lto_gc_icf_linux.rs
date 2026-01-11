@@ -50,10 +50,15 @@ fn find_clang() -> Option<&'static str> {
   None
 }
 
-fn have_lld() -> bool {
-  // `clang -fuse-ld=lld` will usually find a versioned `ld.lld-18` too, but check
-  // both for robustness across environments.
-  command_works("ld.lld") || command_works("ld.lld-18")
+fn lld_flag() -> Option<&'static str> {
+  // Prefer version-suffixed lld if installed.
+  if command_works("ld.lld-18") {
+    Some("-fuse-ld=lld-18")
+  } else if command_works("ld.lld") {
+    Some("-fuse-ld=lld")
+  } else {
+    None
+  }
 }
 
 fn run_ok(mut cmd: Command, what: &str) {
@@ -365,7 +370,8 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
     return;
   };
 
-  let lld = have_lld();
+  let lld_flag = lld_flag();
+  let lld = lld_flag.is_some();
 
   let cfgs: &[LinkConfig] = &[
     LinkConfig {
@@ -466,8 +472,10 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
     cmd.arg("-no-pie");
 
     // Match production (clang + lld) when available. LTO/ICF require lld.
-    if lld && (cfg.lto != LtoMode::None || cfg.keep_stackmaps || cfg.gc_sections || cfg.icf_all) {
-      cmd.arg("-fuse-ld=lld");
+    if let Some(flag) = lld_flag {
+      if cfg.lto != LtoMode::None || cfg.keep_stackmaps || cfg.gc_sections || cfg.icf_all {
+        cmd.arg(flag);
+      }
     }
 
     if let Some(flag) = cfg.lto.clang_flag() {
