@@ -3700,11 +3700,14 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
   assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
 
   let scroll_state = find_by_id(&styled, "scroll-state").expect("scroll-state element");
-  assert_eq!(scroll_state.styles.container_type, ContainerType::Normal);
+  assert_eq!(scroll_state.styles.container_type, ContainerType::ScrollState);
 
   let scroll_state_and_size =
     find_by_id(&styled, "scroll-state-and-size").expect("scroll-state-and-size element");
-  assert_eq!(scroll_state_and_size.styles.container_type, ContainerType::Size);
+  assert_eq!(
+    scroll_state_and_size.styles.container_type,
+    ContainerType::SizeScrollState
+  );
 
   let commented_size = find_by_id(&styled, "commented-size").expect("commented-size element");
   assert_eq!(commented_size.styles.container_type, ContainerType::Size);
@@ -3722,7 +3725,10 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
 
   let shorthand_scroll_state =
     find_by_id(&styled, "shorthand-scroll-state").expect("shorthand-scroll-state element");
-  assert_eq!(shorthand_scroll_state.styles.container_type, ContainerType::Normal);
+  assert_eq!(
+    shorthand_scroll_state.styles.container_type,
+    ContainerType::ScrollState
+  );
   assert_eq!(
     shorthand_scroll_state.styles.container_name,
     vec!["demo".to_string()]
@@ -3732,7 +3738,7 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
     .expect("shorthand-scroll-state-and-size element");
   assert_eq!(
     shorthand_scroll_state_and_size.styles.container_type,
-    ContainerType::Size
+    ContainerType::SizeScrollState
   );
   assert_eq!(
     shorthand_scroll_state_and_size.styles.container_name,
