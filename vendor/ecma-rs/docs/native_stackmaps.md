@@ -8,8 +8,9 @@ tools can accidentally remove it, breaking GC root discovery at runtime.
 
 ## Required sections
 
-- `.llvm_stackmaps` (required)
-- `.llvm_faultmaps` (keep if present)
+- `.llvm_stackmaps` (StackMap v3; required for statepoints GC)
+- `.data.rel.ro.llvm_stackmaps` (hardened output location used by some link scripts)
+- `.llvm_faultmaps` / `.data.rel.ro.llvm_faultmaps` (keep if present; patchpoint/faultmap metadata)
 
 ## Linker flags (ELF)
 
@@ -19,8 +20,8 @@ Empirically (GNU ld 2.42 + LLVM/clang 18):
 - Linking **with** `-Wl,--gc-sections` **drops** `.llvm_stackmaps` unless we
   explicitly `KEEP` it.
 
-To keep stackmaps while still using `--gc-sections` with **GNU ld**, pass the
-linker-script shim:
+To keep stackmaps while still using `--gc-sections`, pass a linker-script shim
+that uses `KEEP(*(.llvm_stackmaps ...))`:
 
 ```bash
 -Wl,--gc-sections -Wl,-T,vendor/ecma-rs/scripts/keep_llvm_stackmaps.ld
@@ -32,22 +33,38 @@ The repository’s default wrapper does this for you:
 bash vendor/ecma-rs/scripts/native_link.sh -o myapp <objs...>
 ```
 
+`native-js` users should prefer the Rust API helpers in `native_js::link`, which
+always inject a linker-script fragment and export:
+
+- `__fastr_stackmaps_start`
+- `__fastr_stackmaps_end`
+
+For linking arbitrary programs against `runtime-native` (e.g. from C), see
+`runtime-native/stackmaps.ld` and `runtime-native/README.md`.
+
 ## PIE / textrels (Task 408 interaction)
 
 `.llvm_stackmaps` contains absolute relocations into `.text`.
 
-- **lld** rejects PIE links containing these relocations (you’ll see
-  `relocation R_X86_64_64 cannot be used against symbol ...; recompile with -fPIC`).
-- **GNU ld** can link PIE, but may produce `DT_TEXTREL` warnings.
+Naively linking a PIE with lld can fail (you’ll see `relocation R_X86_64_64 cannot be used ...`)
+because the linker needs to apply relocations to stackmap records.
 
-Current policy: link native AOT binaries as **non-PIE** (`-no-pie`) until the
-section/relocation story is finalized.
+To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
+relocation**. `native-js` (and `scripts/native_link.sh` when `ECMA_RS_NATIVE_PIE=1`) do this by
+rewriting the input objects’ section flags via `llvm-objcopy`:
+
+```bash
+llvm-objcopy --set-section-flags .llvm_stackmaps=alloc,load,contents,data <obj>
+```
+
+Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
+caller opts into PIE explicitly.
 
 ## Stripping
 
-Common stripping modes keep `.llvm_stackmaps`, but some options (notably
-`llvm-strip --strip-sections`) remove the ELF section header table entirely,
-which breaks section-name based discovery.
+Common stripping modes keep allocated sections like `.llvm_stackmaps`, but some options (notably
+`llvm-strip --strip-sections`) remove the ELF section header table entirely, which breaks any
+section-name based discovery.
 
 Use the helper:
 
@@ -60,7 +77,9 @@ Or, with `llvm-strip` directly:
 ```bash
 llvm-strip --strip-all \
   --keep-section=.llvm_stackmaps --keep-section=.llvm_stackmaps.* \
+  --keep-section=.data.rel.ro.llvm_stackmaps --keep-section=.data.rel.ro.llvm_stackmaps.* \
   --keep-section=.llvm_faultmaps --keep-section=.llvm_faultmaps.* \
+  --keep-section=.data.rel.ro.llvm_faultmaps --keep-section=.data.rel.ro.llvm_faultmaps.* \
   ./myapp
 ```
 

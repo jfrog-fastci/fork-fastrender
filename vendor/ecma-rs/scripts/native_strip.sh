@@ -25,8 +25,12 @@ if command -v llvm-strip >/dev/null 2>&1; then
     --strip-all \
     --keep-section=.llvm_stackmaps \
     --keep-section=.llvm_stackmaps.* \
+    --keep-section=.data.rel.ro.llvm_stackmaps \
+    --keep-section=.data.rel.ro.llvm_stackmaps.* \
     --keep-section=.llvm_faultmaps \
     --keep-section=.llvm_faultmaps.* \
+    --keep-section=.data.rel.ro.llvm_faultmaps \
+    --keep-section=.data.rel.ro.llvm_faultmaps.* \
     "${bin}"
 fi
 

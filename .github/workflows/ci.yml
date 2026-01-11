@@ -100,6 +100,14 @@ jobs:
             exit 1
           fi
 
+      - name: Verify LLVM stackmaps are retained in native binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm
+          bash vendor/ecma-rs/scripts/check_llvm_stackmaps.sh
+
       - name: Compile fastrender JS integration (scoped)
         shell: bash
         run: |

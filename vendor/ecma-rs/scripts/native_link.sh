@@ -8,16 +8,16 @@ Usage:
 
 Environment:
   ECMA_RS_NATIVE_CLANG    Override clang binary (default: clang-18/clang)
-  ECMA_RS_NATIVE_LINKER   ld (default) | lld
+  ECMA_RS_NATIVE_LINKER   lld (default if available) | ld
   ECMA_RS_NATIVE_PIE      0 (default) | 1
   ECMA_RS_NATIVE_GC_SECTIONS
                           1 (default) | 0
 
 Notes:
   - `.llvm_stackmaps` has no inbound references; `--gc-sections` will drop it
-    unless using GNU ld with `keep_llvm_stackmaps.ld`.
-  - lld currently cannot link PIE binaries containing `.llvm_stackmaps` because
-    the section uses absolute relocations (see docs/native_stackmaps.md).
+    unless explicitly `KEEP`'d (we inject `keep_llvm_stackmaps.ld`).
+  - PIE + lld requires rewriting input object section flags so stackmaps live in
+    a writable segment for relocation (we do this via `llvm-objcopy`).
 EOF
 }
 
@@ -55,7 +55,12 @@ if [[ -z "${CLANG}" ]]; then
   fi
 fi
 
-LINKER="${ECMA_RS_NATIVE_LINKER:-ld}"
+default_linker="ld"
+if command -v ld.lld-18 >/dev/null 2>&1 || command -v ld.lld >/dev/null 2>&1; then
+  default_linker="lld"
+fi
+
+LINKER="${ECMA_RS_NATIVE_LINKER:-${default_linker}}"
 PIE="${ECMA_RS_NATIVE_PIE:-0}"
 GC_SECTIONS="${ECMA_RS_NATIVE_GC_SECTIONS:-1}"
 
@@ -71,10 +76,12 @@ case "${LINKER}" in
   ld)
     ;;
   lld)
-    # `clang -fuse-ld=lld` looks for `ld.lld` in PATH. Some distros only ship a
-    # version-suffixed binary (`ld.lld-18`), so callers can provide their own
-    # PATH entry if needed.
-    link_args+=("-fuse-ld=lld")
+    # Prefer version-suffixed lld if installed.
+    if command -v ld.lld-18 >/dev/null 2>&1; then
+      link_args+=("-fuse-ld=lld-18")
+    else
+      link_args+=("-fuse-ld=lld")
+    fi
     ;;
   *)
     echo "native_link.sh: unsupported ECMA_RS_NATIVE_LINKER=${LINKER} (expected ld|lld)" >&2
@@ -82,17 +89,51 @@ case "${LINKER}" in
     ;;
 esac
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+stackmaps_script="${script_dir}/keep_llvm_stackmaps.ld"
+
 if [[ "${GC_SECTIONS}" == "1" ]]; then
   link_args+=("-Wl,--gc-sections")
-
-  if [[ "${LINKER}" == "ld" ]]; then
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    link_args+=("-Wl,-T,${script_dir}/keep_llvm_stackmaps.ld")
-  else
-    echo "native_link.sh: refusing to use --gc-sections with lld; it will drop .llvm_stackmaps." >&2
-    echo "Set ECMA_RS_NATIVE_GC_SECTIONS=0 or use ECMA_RS_NATIVE_LINKER=ld." >&2
-    exit 2
-  fi
 fi
 
-exec "${CLANG}" "${link_args[@]}" -o "${out}" "${objs[@]}"
+# Always inject the script so the binary exports stackmap boundary symbols and
+# stackmap sections are never dropped under `--gc-sections`.
+link_args+=("-Wl,-T,${stackmaps_script}")
+
+# PIE + lld: ensure `.llvm_stackmaps` relocations are allowed by making the
+# section writable in the *input* objects (see native-js/src/link.rs for details).
+patched_dir=""
+cleanup() {
+  if [[ -n "${patched_dir}" ]]; then
+    rm -rf "${patched_dir}"
+  fi
+}
+trap cleanup EXIT
+
+if [[ "${PIE}" == "1" && "${LINKER}" == "lld" ]]; then
+  objcopy=""
+  for cand in llvm-objcopy-18 llvm-objcopy; do
+    if command -v "${cand}" >/dev/null 2>&1; then
+      objcopy="${cand}"
+      break
+    fi
+  done
+  if [[ -z "${objcopy}" ]]; then
+    echo "native_link.sh: PIE+lld requires llvm-objcopy (expected llvm-objcopy-18 or llvm-objcopy) to patch .llvm_stackmaps flags" >&2
+    exit 2
+  fi
+
+  patched_dir="$(mktemp -d)"
+  patched_objs=()
+  for i in "${!objs[@]}"; do
+    src="${objs[$i]}"
+    dst="${patched_dir}/obj${i}.o"
+    cp "${src}" "${dst}"
+    "${objcopy}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${dst}"
+    "${objcopy}" --set-section-flags .llvm_faultmaps=alloc,load,contents,data "${dst}"
+    patched_objs+=("${dst}")
+  done
+  objs=("${patched_objs[@]}")
+fi
+
+"${CLANG}" "${link_args[@]}" -o "${out}" "${objs[@]}"

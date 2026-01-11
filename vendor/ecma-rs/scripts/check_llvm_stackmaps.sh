@@ -18,8 +18,15 @@ READELF="$(pick_cmd readelf)"
 OBJCOPY="$(pick_cmd objcopy)"
 STRIP="$(pick_cmd strip)"
 LLVM_STRIP="$(command -v llvm-strip || true)"
+LLVM_READOBJ="$(command -v llvm-readobj-18 || command -v llvm-readobj || true)"
+LLVM_OBJCOPY="$(command -v llvm-objcopy-18 || command -v llvm-objcopy || true)"
 
-LLD_PATH="$(command -v ld.lld || command -v ld.lld-18 || true)"
+LLD_FUSE=""
+if command -v ld.lld-18 >/dev/null 2>&1; then
+  LLD_FUSE="lld-18"
+elif command -v ld.lld >/dev/null 2>&1; then
+  LLD_FUSE="lld"
+fi
 
 tmp="$(mktemp -d)"
 cleanup() { rm -rf "${tmp}"; }
@@ -88,18 +95,18 @@ objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o")
 
 must_have_stackmaps() {
   local bin="$1"
-  if ! "${READELF}" -S "${bin}" | grep -qF ".llvm_stackmaps"; then
+  if ! "${READELF}" -W -S "${bin}" | grep -qF ".llvm_stackmaps"; then
     echo "expected .llvm_stackmaps in: ${bin}" >&2
-    "${READELF}" -S "${bin}" >&2 || true
+    "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
 }
 
 must_not_have_stackmaps() {
   local bin="$1"
-  if "${READELF}" -S "${bin}" | grep -qF ".llvm_stackmaps"; then
+  if "${READELF}" -W -S "${bin}" | grep -qF ".llvm_stackmaps"; then
     echo "expected no .llvm_stackmaps in: ${bin}" >&2
-    "${READELF}" -S "${bin}" >&2 || true
+    "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
 }
@@ -112,19 +119,34 @@ echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 "${CLANG}" -no-pie -Wl,--gc-sections -o "${tmp}/a_ld_gc" "${objs[@]}"
 must_not_have_stackmaps "${tmp}/a_ld_gc"
 
-echo "[stackmaps] link: native_link.sh default (no-pie, --gc-sections + KEEP)"
+echo "[stackmaps] link: native_link.sh (no-pie, --gc-sections + KEEP)"
 "${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy"
 
-if [[ -n "${LLD_PATH}" ]]; then
+echo "[stackmaps] link: native_link.sh (ld explicit)"
+ECMA_RS_NATIVE_LINKER=ld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
+must_have_stackmaps "${tmp}/a_policy_ld"
+
+if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, no gc-sections)"
-  ln -sf "${LLD_PATH}" "${tmp}/ld.lld"
-  PATH="${tmp}:${PATH}" "${CLANG}" -fuse-ld=lld -no-pie -o "${tmp}/a_lld_nogc" "${objs[@]}"
+  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -o "${tmp}/a_lld_nogc" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_nogc"
 
   echo "[stackmaps] link: lld (no-pie, --gc-sections) => EXPECTED DROP"
-  PATH="${tmp}:${PATH}" "${CLANG}" -fuse-ld=lld -no-pie -Wl,--gc-sections -o "${tmp}/a_lld_gc" "${objs[@]}"
+  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -o "${tmp}/a_lld_gc" "${objs[@]}"
   must_not_have_stackmaps "${tmp}/a_lld_gc"
+
+  echo "[stackmaps] link: native_link.sh (lld explicit)"
+  ECMA_RS_NATIVE_LINKER=lld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"
+  must_have_stackmaps "${tmp}/a_policy_lld"
+
+  if [[ -n "${LLVM_OBJCOPY}" ]]; then
+    echo "[stackmaps] link: native_link.sh (lld + PIE; stackmaps patched via llvm-objcopy)"
+    ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
+    must_have_stackmaps "${tmp}/a_policy_lld_pie"
+  else
+    echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
+  fi
 else
   echo "[stackmaps] note: ld.lld not found; skipping lld matrix"
 fi
@@ -139,6 +161,11 @@ cp "${tmp}/a_policy" "${tmp}/a_policy.objcopy_strip_unneeded"
 "${OBJCOPY}" --strip-unneeded "${tmp}/a_policy.objcopy_strip_unneeded"
 must_have_stackmaps "${tmp}/a_policy.objcopy_strip_unneeded"
 
+echo "[stackmaps] strip: native_strip.sh"
+cp "${tmp}/a_policy" "${tmp}/a_policy.native_strip"
+"${script_dir}/native_strip.sh" "${tmp}/a_policy.native_strip"
+must_have_stackmaps "${tmp}/a_policy.native_strip"
+
 if [[ -n "${LLVM_STRIP}" ]]; then
   echo "[stackmaps] strip: llvm-strip"
   cp "${tmp}/a_policy" "${tmp}/a_policy.llvm_strip"
@@ -146,6 +173,13 @@ if [[ -n "${LLVM_STRIP}" ]]; then
   must_have_stackmaps "${tmp}/a_policy.llvm_strip"
 else
   echo "[stackmaps] note: llvm-strip not found; skipping llvm-strip check"
+fi
+
+if [[ -n "${LLVM_READOBJ}" ]]; then
+  echo "[stackmaps] inspect: llvm-readobj --sections"
+  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -qF ".llvm_stackmaps"
+else
+  echo "[stackmaps] note: llvm-readobj not found; skipping llvm-readobj check"
 fi
 
 echo "[stackmaps] ok"
