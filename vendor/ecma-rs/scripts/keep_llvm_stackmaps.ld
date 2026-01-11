@@ -5,12 +5,17 @@
  *   section GC (`--gc-sections`) will drop it unless explicitly `KEEP`'d.
  *
  * Notes:
- * - The output section is writable (to allow PIE/DSO relocations). Inserting it
- *   after `.text` is unsafe: some linkers will merge it into the text PT_LOAD,
- *   forcing that segment to become RWX.
- * - We instead anchor at `.data` (`INSERT BEFORE .data;`). `.data` is a stable
- *   output-section name and keeps `.data.rel.ro.llvm_stackmaps` inside
- *   `PT_GNU_RELRO` rather than the executable segment.
+ * - The output section is writable (to allow PIE/DSO relocations).
+ * - We anchor the fragment at `INSERT AFTER .text;` because `.text` is always
+ *   present (while `.rodata`/`.data` can be absent in minimal links and cause
+ *   lld/ld errors when used as `INSERT` anchors).
+ *
+ *   Note: GNU ld PIE links can merge a writable stackmaps section inserted after
+ *   `.text` into the executable PT_LOAD, producing an RWX segment once
+ *   relocations require the segment to be writable. For GNU ld + PIE, prefer the
+ *   repo's `runtime-native/link/stackmaps_gnuld.ld` fragment anchored in the
+ *   RELRO/data region (used by `scripts/native_link.sh` when
+ *   `ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1`).
  * - We keep both the legacy `.llvm_*` section names and the hardened
  *   `.data.rel.ro.llvm_*` variants.
  */
@@ -47,4 +52,4 @@ SECTIONS
   }
 }
 
-INSERT BEFORE .data;
+INSERT AFTER .text;

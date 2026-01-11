@@ -622,7 +622,7 @@ SECTIONS {
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
   }
-} INSERT BEFORE .data;
+} INSERT AFTER .text;
 ```
 
 When linking from Rust/Cargo:
