@@ -119,6 +119,12 @@ locate it for stack walking, you must also export the boundary symbols:
 - `__start_llvm_stackmaps`
 - `__stop_llvm_stackmaps`
 
+Note: when linking multiple object files that each contain `.llvm_stackmaps`,
+ELF linkers concatenate the section payloads. The resulting output section can
+contain **multiple independent StackMap v3 blobs** back-to-back. The runtime’s
+parser (`runtime_native::stackmaps::StackMaps::parse`) handles this by scanning
+all blobs and building one callsite index.
+
 The `runtime-native/link/stackmaps.ld` linker script fragment defines these symbols and also
 provides aliases:
 
