@@ -47,6 +47,13 @@ void rt_thread_detach(Thread* thread);
 This API exists for embedder compatibility and for creating the per-thread `RT_THREAD` TLS record
 used by older native codegen prototypes.
 
+Note: `RT_THREAD` is primarily intended for **static linking** (e.g. a native executable that links
+`libruntime_native.a`). When building `runtime-native` as a shared library (`libruntime_native.so`),
+Rust's `cdylib` export filtering may omit TLS variables defined outside Rust, so embedders and
+separately-built DSOs should not assume `RT_THREAD` is available via the dynamic symbol table.
+Instead, call `rt_thread_attach` (or `rt_thread_register`) and store the returned `Thread*` in
+embedder-owned TLS/state.
+
 **Canonical mutator contract:** stop-the-world safepoints and GC root enumeration use the **global**
 thread registry described above. As a result:
 
