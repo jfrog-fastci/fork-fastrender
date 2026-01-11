@@ -75,10 +75,14 @@ correctness must not depend on it.
 
 `kqueue` requires the reactor to maintain a small user-space registration table in order to emulate
 mio-style `EEXIST`/`ENOENT` errors. To make this robust to fd-number reuse, each kqueue registration
-stores an `fstat` identity snapshot (`st_dev`, `st_ino`, and the file-type bits of `st_mode`) and
-validates it on every `register`/`reregister`/`deregister`. If the current fd's identity differs (or
-`fstat` fails with `EBADF`), the entry is treated as stale and removed, and the operation proceeds
-as if the fd was never registered.
+stores an identity snapshot:
+
+- `fstat`: `st_dev`, `st_ino`, and the file-type bits of `st_mode`
+- `fcntl(F_GETFL)`: `O_ACCMODE` (so read/write ends of the same pipe are distinguished)
+
+This identity is validated on every `register`/`reregister`/`deregister`. If the current fd's
+identity differs (or `fstat` fails with `EBADF`), the entry is treated as stale and removed, and the
+operation proceeds as if the fd was never registered.
 
 ## Trigger mode: edge-triggered
 

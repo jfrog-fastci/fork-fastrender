@@ -539,6 +539,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     dev: libc::dev_t,
     ino: libc::ino_t,
     file_type: libc::mode_t,
+    access_mode: libc::c_int,
   }
 
   #[derive(Copy, Clone, Debug)]
@@ -789,10 +790,19 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       return Err(io::Error::last_os_error());
     }
     let st = unsafe { st.assume_init() };
+
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+      return Err(io::Error::last_os_error());
+    }
+
     Ok(FdIdentity {
       dev: st.st_dev,
       ino: st.st_ino,
       file_type: st.st_mode & libc::S_IFMT,
+      // Use only the access mode bits because other F_GETFL flags (like O_NONBLOCK/O_APPEND) are
+      // mutable via F_SETFL and would make identity unstable.
+      access_mode: flags & libc::O_ACCMODE,
     })
   }
 

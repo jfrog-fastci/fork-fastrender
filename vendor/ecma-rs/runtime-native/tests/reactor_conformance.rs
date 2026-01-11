@@ -285,6 +285,42 @@ fn fd_reuse_via_dup2_clears_registration() {
 }
 
 #[test]
+fn fd_reuse_via_dup2_same_pipe_clears_registration() {
+  let (read, write) = pipe().unwrap();
+  set_nonblocking(read.as_raw_fd()).unwrap();
+  set_nonblocking(write.as_raw_fd()).unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  reactor
+    .register(read.as_fd(), Token(18), Interest::READABLE)
+    .unwrap();
+
+  // Replace the read end with the write end. This keeps the same pipe inode, but changes the open
+  // file description (and thus the access mode) behind the numeric fd.
+  loop {
+    let rc = unsafe { libc::dup2(write.as_raw_fd(), read.as_raw_fd()) };
+    if rc != -1 {
+      assert_eq!(rc, read.as_raw_fd());
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    panic!("dup2 failed unexpectedly: {err:?}");
+  }
+
+  let err = reactor
+    .deregister(read.as_fd())
+    .expect_err("expected deregister to treat dup2-replaced fd as unregistered");
+  assert_eq!(err.kind(), io::ErrorKind::NotFound, "got {err:?}");
+
+  reactor
+    .register(read.as_fd(), Token(19), Interest::WRITABLE)
+    .unwrap();
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
