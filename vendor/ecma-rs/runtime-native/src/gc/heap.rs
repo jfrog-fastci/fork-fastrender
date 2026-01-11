@@ -1,6 +1,5 @@
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
-use std::mem;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,14 +89,14 @@ impl CardTableSpace {
   fn alloc_words(&mut self, words: usize) -> *mut AtomicU64 {
     debug_assert!(words > 0);
     let bytes = words
-      .checked_mul(mem::size_of::<AtomicU64>())
+      .checked_mul(core::mem::size_of::<AtomicU64>())
       .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"));
 
     // `ObjHeader` stores the card table pointer in the high bits of `meta`, so
     // the pointer must be aligned enough that the low meta flag bits remain
     // free. See `ObjHeader::set_card_table_ptr`.
     const META_ALIGN: usize = (super::META_FLAGS_MASK + 1).next_power_of_two();
-    let align = META_ALIGN.max(mem::align_of::<AtomicU64>());
+    let align = META_ALIGN.max(core::mem::align_of::<AtomicU64>());
     let layout = Layout::from_size_align(bytes, align).expect("invalid card table layout");
 
     // SAFETY: layout is non-zero and well-formed.
