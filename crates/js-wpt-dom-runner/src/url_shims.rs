@@ -282,8 +282,27 @@ const URL_SHIM: &str = r#"
     },
   });
 
+  // https://url.spec.whatwg.org/#dom-url-canparse
+  URL.canParse = function (url, base) {
+    try {
+      // `new URL` throws TypeError on parse failure.
+      new URL(url, base);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  };
+
+  // https://url.spec.whatwg.org/#dom-url-parse
+  URL.parse = function (url, base) {
+    try {
+      return new URL(url, base);
+    } catch (_e) {
+      return null;
+    }
+  };
+
   g.URLSearchParams = URLSearchParams;
   g.URL = URL;
 })();
 "#;
-
