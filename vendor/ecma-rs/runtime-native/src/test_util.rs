@@ -27,6 +27,7 @@ pub fn reset_runtime_state() {
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
   time::debug_clear_state_for_tests();
+  crate::async_runtime::reset_for_tests();
 }
 
 /// A per-test guard that serializes access to the global runtime singleton.
@@ -73,4 +74,8 @@ pub fn enqueue_macrotask(func: async_rt::TaskFn, data: *mut u8) {
 
 pub fn schedule_timer(delay: Duration, func: async_rt::TaskFn, data: *mut u8) -> async_rt::TimerId {
   async_rt::global().schedule_timer_in(delay, async_rt::Task::new(func, data))
+}
+
+pub fn set_microtask_checkpoint_end_hook(hook: Option<Box<dyn FnMut() + Send + 'static>>) {
+  crate::async_runtime::set_microtask_checkpoint_end_hook(hook);
 }

@@ -122,22 +122,55 @@ impl EventLoop {
     !self.microtasks.lock().unwrap().is_empty()
   }
 
-  fn drain_microtasks(&self) {
+  fn drain_microtasks_inner(&self) -> bool {
+    let mut did_work = false;
     let mut batch: VecDeque<Task> = VecDeque::new();
     loop {
       {
         let mut q = self.microtasks.lock().unwrap();
         if q.is_empty() {
-          std::mem::swap(&mut *q, &mut batch);
           break;
         }
         std::mem::swap(&mut *q, &mut batch);
       }
       while let Some(task) = batch.pop_front() {
+        did_work = true;
         threading::safepoint_poll();
         task.run();
       }
     }
+    did_work
+  }
+
+  pub(super) fn drain_microtasks_for_external(&self) -> bool {
+    let _guard = self.poll_lock.lock().unwrap();
+    self.drain_microtasks_inner()
+  }
+
+  pub(super) fn run_until_idle_nonblocking(&self) -> bool {
+    let _guard = self.poll_lock.lock().unwrap();
+
+    let mut did_work = false;
+    loop {
+      threading::safepoint_poll();
+      self.flush_due_timers();
+
+      if let Some(task) = self.pop_macrotask() {
+        did_work = true;
+        threading::safepoint_poll();
+        task.run();
+        did_work |= self.drain_microtasks_inner();
+        continue;
+      }
+
+      if self.has_microtasks() {
+        did_work |= self.drain_microtasks_inner();
+        continue;
+      }
+
+      break;
+    }
+    did_work
   }
 
   fn has_pending_work(&self) -> bool {
@@ -189,13 +222,13 @@ impl EventLoop {
         task.run();
 
         // 3. Microtask checkpoint.
-        self.drain_microtasks();
+        let _ = self.drain_microtasks_inner();
         return self.has_pending_work();
       }
 
       // No macrotasks. If there are microtasks, run them without blocking.
       if self.has_microtasks() {
-        self.drain_microtasks();
+        let _ = self.drain_microtasks_inner();
         return self.has_pending_work();
       }
 

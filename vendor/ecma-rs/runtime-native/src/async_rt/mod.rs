@@ -199,6 +199,16 @@ pub(crate) fn poll() -> bool {
   global().poll()
 }
 
+pub(crate) fn drain_microtasks_nonblocking() -> bool {
+  let _guard = POLL_LOCK.lock();
+  global().loop_.drain_microtasks_for_external()
+}
+
+pub(crate) fn run_until_idle_nonblocking() -> bool {
+  let _guard = POLL_LOCK.lock();
+  global().loop_.run_until_idle_nonblocking()
+}
+
 /// Test helper: reset the process-global async runtime to a clean idle state.
 ///
 /// This clears:

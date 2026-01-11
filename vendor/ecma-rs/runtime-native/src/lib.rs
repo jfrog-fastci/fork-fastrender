@@ -41,6 +41,7 @@ pub mod arch;
 pub mod gc_safe;
 pub mod async_abi;
 pub mod async_rt;
+mod async_runtime;
 pub mod reactor;
 pub mod timer_wheel;
 pub mod time;
@@ -85,6 +86,7 @@ mod trap;
 
 pub use exports::*;
 pub use async_abi::*;
+pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks};
 pub use gc::GcHeap;
 pub use gc::RememberedSet;
 pub use gc::RootHandle;
