@@ -1118,6 +1118,21 @@ mod tests {
   }
 
   #[test]
+  fn infers_associative_reduce_callback_for_number_bitwise_or() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: number, b: number) => a | b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_is_associative, Some(true));
+  }
+
+  #[test]
   fn callback_calling_date_now_is_nondeterministic() {
     let kb = crate::load_default_api_database();
     let lowered =
