@@ -5158,8 +5158,19 @@ fn update_webkit_box_display_for_line_clamp(styles: &mut ComputedStyle) {
   }
 
   let inline = matches!(styles.display, Display::InlineFlex | Display::InlineBlock);
-  let should_force_flow = styles.line_clamp_source == LineClampSource::Webkit
-    && styles.line_clamp.is_some()
+  // `display: -webkit-box` is typically used either as a legacy flexbox fallback or as part of the
+  // classic `line-clamp` recipe:
+  //
+  //   display: -webkit-box;
+  //   -webkit-box-orient: vertical;
+  //   -webkit-line-clamp: N;
+  //   overflow: hidden;
+  //
+  // Many real-world stylesheets also include the standardized `line-clamp` property as a
+  // future-proof fallback (often *after* `-webkit-line-clamp`). We must keep the "force flow"
+  // behavior enabled for both sources so the later `line-clamp` declaration doesn't revert the
+  // element back to a flex container, which would disable our line clamping in inline layout.
+  let should_force_flow = styles.line_clamp.is_some()
     && styles.webkit_box_orient == WebkitBoxOrient::Vertical;
 
   styles.display = if should_force_flow {
@@ -24571,6 +24582,57 @@ mod tests {
     assert_eq!(styles.webkit_box_orient, WebkitBoxOrient::Vertical);
     assert_eq!(styles.flex_direction, FlexDirection::Column);
     assert_eq!(styles.display, Display::Flex);
+  }
+
+  #[test]
+  fn standard_line_clamp_does_not_reset_webkit_box_flow_override() {
+    // Many sites specify both `-webkit-line-clamp` and the unprefixed `line-clamp` (often with the
+    // standard property last). We treat `display: -webkit-box` as a flex container for legacy
+    // compatibility, but when line clamping is active we must keep the element in flow layout so
+    // inline layout can truncate its lines.
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+
+    let decl = Declaration {
+      property: "display".into(),
+      value: PropertyValue::Keyword("-webkit-box".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+
+    let decl = Declaration {
+      property: "-webkit-box-orient".into(),
+      value: PropertyValue::Keyword("vertical".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+
+    let decl = Declaration {
+      property: "-webkit-line-clamp".into(),
+      value: PropertyValue::Number(2.0),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.display, Display::Block);
+
+    // Applying the standard property afterwards should not revert `display` back to flex.
+    let decl = Declaration {
+      property: "line-clamp".into(),
+      value: PropertyValue::Number(2.0),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.line_clamp, Some(2));
+    assert_eq!(styles.line_clamp_source, LineClampSource::Standard);
+    assert_eq!(styles.display, Display::Block);
   }
 
   #[test]
