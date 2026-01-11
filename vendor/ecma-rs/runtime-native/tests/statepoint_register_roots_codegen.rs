@@ -520,9 +520,13 @@ fn fixup_allow_gcptr_in_csr_false_forces_spills() {
     "expected verifier to reject register roots under dangerous flags"
   );
 
-  // Mitigated flags: disallow passing statepoint roots in callee-saved registers entirely.
+  // Mitigated flags: explicitly force CSR root passing off.
+  //
+  // This must win even if some build system accidentally enables the opposite setting earlier on
+  // the command line (LLVM's option parsing applies the last value).
   let mitigated_flags = &[
     "-O3",
+    "--fixup-allow-gcptr-in-csr",
     "--max-registers-for-gc-values=100",
     LCC_FIXUP_ALLOW_GCPTR_IN_CSR_FALSE,
   ];
