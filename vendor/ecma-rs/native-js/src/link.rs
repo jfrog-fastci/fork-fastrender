@@ -248,7 +248,7 @@ pub fn link_elf_executable_with_options(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg("-fuse-ld=lld");
+      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
     }
   }
 
@@ -352,7 +352,7 @@ use object-file linking with `LinkOpts {{ pie: true, .. }}` (objcopy-patched), o
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg("-fuse-ld=lld");
+      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
     }
   }
 
@@ -434,7 +434,7 @@ pub fn link_elf_executable_lto(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg("-fuse-ld=lld");
+      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
     }
   }
 
@@ -510,7 +510,7 @@ pub fn link_object_to_executable(
     .arg(format!("-Wl,-T,{}", script_path.display()))
     .arg("-no-pie");
   if have_lld {
-    cmd.arg("-fuse-ld=lld");
+    cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
   }
   cmd.arg(obj_path).arg("-o").arg(exe_path);
 
@@ -539,4 +539,12 @@ fn find_program(names: &[&str]) -> Option<PathBuf> {
     }
   }
   None
+}
+
+fn lld_fuse_arg() -> &'static str {
+  if find_program(&["ld.lld-18"]).is_some() {
+    "lld-18"
+  } else {
+    "lld"
+  }
 }
