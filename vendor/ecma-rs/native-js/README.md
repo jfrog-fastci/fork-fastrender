@@ -360,8 +360,8 @@ emitter with a small multi-file ES module subset (see
 Note: the current multi-file project emitter is intentionally conservative and
 still incomplete. It:
 
-- runs module initializers in dependency order (runtime imports only), and then
-  optionally calls an exported entry function
+- runs module initializers in dependency order (runtime deps only: value/side-effect imports and runtime re-exports),
+  and then optionally calls an exported entry function
   - if `entry_export` is `None`, it will auto-call an exported `main()` when
     present and it takes zero parameters
 - supports only primitive type annotations on function parameters/returns
