@@ -345,6 +345,12 @@ void rt_gc_unregister_root_slot(uint32_t handle);
 // as a root. The returned handle must later be passed to `rt_gc_unpin`.
 uint32_t rt_gc_pin(GcPtr ptr);
 void rt_gc_unpin(uint32_t handle);
+// Read/write the current pointer value stored in a root handle.
+//
+// This allows host/async code to store only the `uint32_t` handle across async boundaries
+// (instead of a raw `GcPtr`, which may be relocated by the GC).
+GcPtr rt_gc_root_get(uint32_t handle);
+bool rt_gc_root_set(uint32_t handle, GcPtr ptr);
 
 // -----------------------------------------------------------------------------
 // Persistent handles (stable u64 ids)

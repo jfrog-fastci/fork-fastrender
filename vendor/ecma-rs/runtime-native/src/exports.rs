@@ -1068,6 +1068,26 @@ pub extern "C" fn rt_gc_unpin(handle: u32) {
   crate::roots::global_root_registry().unregister(handle);
 }
 
+/// Returns the current pointer value for a root handle created by
+/// [`rt_gc_register_root_slot`] or [`rt_gc_pin`].
+///
+/// Returns null if `handle` is invalid/stale/removed.
+#[no_mangle]
+pub extern "C" fn rt_gc_root_get(handle: u32) -> *mut u8 {
+  crate::roots::global_root_registry()
+    .get(handle)
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Updates the pointer value for a root handle created by [`rt_gc_register_root_slot`] or
+/// [`rt_gc_pin`].
+///
+/// Returns `false` if `handle` is invalid/stale/removed.
+#[no_mangle]
+pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
+  crate::roots::global_root_registry().set(handle, ptr)
+}
+
 // -----------------------------------------------------------------------------
 // Persistent handle IDs (stable u64)
 // -----------------------------------------------------------------------------

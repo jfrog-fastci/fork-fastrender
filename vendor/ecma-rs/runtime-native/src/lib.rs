@@ -731,6 +731,8 @@ mod tests {
       "void rt_gc_unregister_root_slot(uint32_t handle);",
       "uint32_t rt_gc_pin(GcPtr ptr);",
       "void rt_gc_unpin(uint32_t handle);",
+      "GcPtr rt_gc_root_get(uint32_t handle);",
+      "bool rt_gc_root_set(uint32_t handle, GcPtr ptr);",
       "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
       "void rt_gc_get_young_range(GcPtr* out_start, GcPtr* out_end);",
       "uint64_t rt_weak_add(GcPtr value);",
@@ -824,6 +826,8 @@ mod tests {
     let _collect: extern "C" fn() = rt_gc_collect;
     let _set_young_range: extern "C" fn(*mut u8, *mut u8) = rt_gc_set_young_range;
     let _get_young_range: unsafe extern "C" fn(*mut *mut u8, *mut *mut u8) = rt_gc_get_young_range;
+    let _root_get: extern "C" fn(u32) -> *mut u8 = rt_gc_root_get;
+    let _root_set: extern "C" fn(u32, *mut u8) -> bool = rt_gc_root_set;
     let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
     let _weak_get: extern "C" fn(u64) -> *mut u8 = rt_weak_get;
     let _weak_remove: extern "C" fn(u64) = rt_weak_remove;

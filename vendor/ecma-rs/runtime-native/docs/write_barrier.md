@@ -204,9 +204,12 @@ In Rust, this is modeled by the [`RememberedSet`](../src/gc/roots.rs) trait; tes
 
 ### Exported barrier status (important)
 
-The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and records newly remembered objects into a fixed-capacity process-global remembered set without allocating (the barrier remains `NoGC`). When a per-object card table is present, it marks the corresponding card.
+The exported `rt_write_barrier` sets the per-object `REMEMBERED` header bit and records newly
+remembered objects into a fixed-capacity process-global remembered set without allocating (the
+barrier remains `NoGC`). When a per-object card table is present, it marks the corresponding card.
 
-Because the remembered set stores raw object pointers, tests that manually allocate/free mock objects must clear it via `clear_write_barrier_state_for_tests` to avoid dangling pointers.
+Because the remembered set stores raw object pointers, tests that manually allocate/free mock
+objects must clear it via `clear_write_barrier_state_for_tests` to avoid dangling pointers.
 
 Full GC wiring for the exported runtime (allocations + `rt_gc_collect`) is still TODO.
 
