@@ -60,7 +60,9 @@ impl IoRuntimeInner {
       // Don't execute JS-facing completion logic once the runtime is detached (realm/VM teardown or
       // hard termination).
       if rt.state() != RuntimeState::Running {
-        let _ = rt.registry.lock().remove(st.id);
+        // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+        let removed = rt.registry.lock().remove(st.id);
+        drop(removed);
         return;
       }
 
@@ -206,7 +208,9 @@ impl IoRuntime {
       Ok(_) => Ok(promise),
       Err(e) => {
         // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
-        let _ = self.inner.registry.lock().remove(id);
+        // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+        let removed = self.inner.registry.lock().remove(id);
+        drop(removed);
         Err(io::Error::new(io::ErrorKind::Other, e))
       }
     }
@@ -255,7 +259,9 @@ impl IoRuntime {
       Ok(_) => Ok(promise),
       Err(e) => {
         // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
-        let _ = self.inner.registry.lock().remove(id);
+        // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+        let removed = self.inner.registry.lock().remove(id);
+        drop(removed);
         Err(io::Error::new(io::ErrorKind::Other, e))
       }
     }
@@ -303,7 +309,9 @@ fn io_worker(op: Arc<IoOpRecord>, rt: Weak<IoRuntimeInner>) {
     if rt_strong.state() == RuntimeState::Running {
       IoRuntimeInner::enqueue_completion(Arc::downgrade(&rt_strong), op.id());
     } else {
-      let _ = rt_strong.registry.lock().remove(op.id());
+      // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+      let removed = rt_strong.registry.lock().remove(op.id());
+      drop(removed);
     }
   }
 
