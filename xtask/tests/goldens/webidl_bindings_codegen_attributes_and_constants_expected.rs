@@ -64,14 +64,14 @@ pub mod window {
     rt: &mut R,
     host: &mut Host,
     this: R::JsValue,
-    args: &[R::JsValue],
+    _args: &[R::JsValue],
   ) -> Result<R::JsValue, R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
     {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
       let result = host.call_operation(rt, Some(this), "Foo", "doIt", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
     }

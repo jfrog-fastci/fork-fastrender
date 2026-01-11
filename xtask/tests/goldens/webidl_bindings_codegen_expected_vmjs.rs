@@ -295,7 +295,7 @@ pub mod window {
   fn foo_takes_frozen_array(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
@@ -331,7 +331,7 @@ pub mod window {
   fn foo_takes_sequence(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
+    _host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     _callee: GcObject,
     this: Value,
