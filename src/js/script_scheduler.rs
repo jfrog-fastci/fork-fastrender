@@ -3472,16 +3472,11 @@ mod state_machine_tests {
   }
 
   #[test]
-  fn dynamic_importmap_executes_as_task() -> Result<()> {
+  fn dynamic_importmap_executes_synchronously_in_harness() -> Result<()> {
     let mut options = JsExecutionOptions::default();
     options.supports_module_scripts = true;
     let mut h = Harness::new_with_options(options);
     h.discover_dynamic(importmap_inline_dynamic("MAP"))?;
-    assert!(
-      h.host.log.is_empty(),
-      "dynamic import maps must not execute synchronously"
-    );
-    h.run_event_loop()?;
     assert_eq!(
       h.host.log,
       vec!["script:MAP".to_string(), "microtask:MAP".to_string()]
