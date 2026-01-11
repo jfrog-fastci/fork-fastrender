@@ -9,7 +9,7 @@
 use fastrender::cli_utils as common;
 
 use clap::Parser;
-use common::args::{default_jobs, parse_shard, parse_viewport, AnimationTimeArgs, MediaTypeArg};
+use common::args::{default_jobs, parse_shard, parse_viewport, AnimationTimeArgs, CompatArgs, MediaTypeArg};
 use common::prng;
 use common::render_pipeline::{
   apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
@@ -82,6 +82,9 @@ struct Cli {
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaTypeArg::Screen)]
   media: MediaTypeArg,
+
+  #[command(flatten)]
+  compat: CompatArgs,
 
   /// Expand the paint canvas to fit the laid-out content bounds.
   ///
@@ -202,6 +205,8 @@ struct RenderShared {
   hard_timeout: Duration,
   timeout_secs: u64,
   media: MediaTypeArg,
+  compat_profile: fastrender::CompatProfile,
+  dom_compat_mode: fastrender::dom::DomCompatibilityMode,
   font_config: FontConfig,
   write_snapshot: bool,
   patch_html_for_chrome_baseline: bool,
@@ -284,6 +289,8 @@ struct RenderMetadataFile {
   viewport: (u32, u32),
   dpr: f32,
   media: MediaMetadata,
+  compat_profile: fastrender::CompatProfile,
+  dom_compat_mode: fastrender::dom::DomCompatibilityMode,
   fit_canvas_to_content: bool,
   patch_html_for_chrome_baseline: bool,
   timeout_secs: u64,
@@ -429,6 +436,8 @@ fn build_fixture_render_config(
   dpr: f32,
   font_config: FontConfig,
   patch_html_for_chrome_baseline: bool,
+  compat_profile: fastrender::CompatProfile,
+  dom_compat_mode: fastrender::dom::DomCompatibilityMode,
 ) -> fastrender::api::FastRenderConfig {
   let resource_policy = ResourcePolicy::default()
     .allow_http(false)
@@ -441,6 +450,8 @@ fn build_fixture_render_config(
     // effective zoom/DPR and even the output image dimensions, making Chrome-vs-FastRender diffs
     // unusable.
     .with_meta_viewport(false)
+    .compat_profile(compat_profile)
+    .with_dom_compat_mode(dom_compat_mode)
     .with_resource_policy(resource_policy)
     .with_font_sources(font_config)
     .with_runtime_toggles(fixture_runtime_toggles(patch_html_for_chrome_baseline))
@@ -559,6 +570,8 @@ fn run(cli: Cli) -> io::Result<()> {
     cli.dpr,
     font_config.clone(),
     cli.patch_html_for_chrome_baseline,
+    cli.compat.compat_profile(),
+    cli.compat.dom_compat_mode(),
   );
 
   let render_pool = FastRenderPool::with_config(
@@ -590,6 +603,8 @@ fn run(cli: Cli) -> io::Result<()> {
     hard_timeout,
     timeout_secs: cli.timeout,
     media: cli.media,
+    compat_profile: cli.compat.compat_profile(),
+    dom_compat_mode: cli.compat.dom_compat_mode(),
     font_config,
     write_snapshot: cli.write_snapshot,
     patch_html_for_chrome_baseline: cli.patch_html_for_chrome_baseline,
@@ -1930,6 +1945,8 @@ fn write_render_metadata_file(
     viewport,
     dpr,
     media: MediaMetadata::from_arg(shared.media),
+    compat_profile: shared.compat_profile,
+    dom_compat_mode: shared.dom_compat_mode,
     fit_canvas_to_content,
     patch_html_for_chrome_baseline: shared.patch_html_for_chrome_baseline,
     timeout_secs: shared.timeout_secs,
@@ -2055,7 +2072,14 @@ mod tests {
     let font_config = FontConfig::new()
       .with_system_fonts(true)
       .with_bundled_fonts(true);
-    let config = build_fixture_render_config((1040, 1240), 1.0, font_config, true);
+    let config = build_fixture_render_config(
+      (1040, 1240),
+      1.0,
+      font_config,
+      true,
+      fastrender::CompatProfile::Standards,
+      fastrender::dom::DomCompatibilityMode::Standard,
+    );
     assert!(!config.apply_meta_viewport);
   }
 

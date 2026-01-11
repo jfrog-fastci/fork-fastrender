@@ -66,6 +66,52 @@ fn dry_run_prints_expected_plan() {
 }
 
 #[test]
+fn dry_run_forwards_dom_compat_to_renderer_steps() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    // Ensure binary paths resolve deterministically even if the outer environment sets
+    // CARGO_TARGET_DIR.
+    .env("CARGO_TARGET_DIR", "")
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--inspect-dump-json",
+      "--dom-compat",
+      "compat",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run xtask page-loop --dom-compat compat --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dom-compat dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let render_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures"))
+    .expect("render_fixtures command line should be printed");
+  assert!(
+    render_line.contains("--dom-compat compat"),
+    "expected render_fixtures to receive --dom-compat compat; got:\n{render_line}"
+  );
+
+  let inspect_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("inspect_frag"))
+    .expect("inspect_frag command line should be printed");
+  assert!(
+    inspect_line.contains("--dom-compat compat"),
+    "expected inspect_frag to receive --dom-compat compat; got:\n{inspect_line}"
+  );
+}
+
+#[test]
 fn dry_run_with_debug_omits_release_for_fastrender_commands() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())

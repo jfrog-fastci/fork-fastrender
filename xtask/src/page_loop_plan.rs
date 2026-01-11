@@ -88,6 +88,8 @@ pub fn build_render_fixtures_command(
   dpr: f32,
   media: &str,
   timeout: u64,
+  compat_profile: Option<&str>,
+  dom_compat: Option<&str>,
   patch_html_for_chrome_baseline: bool,
   write_snapshot: bool,
 ) -> Command {
@@ -110,6 +112,12 @@ pub fn build_render_fixtures_command(
   cmd.arg("--dpr").arg(dpr.to_string());
   cmd.arg("--media").arg(media);
   cmd.arg("--timeout").arg(timeout.to_string());
+  if let Some(profile) = compat_profile {
+    cmd.arg("--compat-profile").arg(profile);
+  }
+  if let Some(mode) = dom_compat {
+    cmd.arg("--dom-compat").arg(mode);
+  }
   if patch_html_for_chrome_baseline {
     // `chrome-baseline-fixtures` always renders a patched HTML variant (forces light-mode, disables
     // JS/animations via CSP + style injection). When diffing against Chrome, render the same patch
@@ -148,6 +156,8 @@ pub struct InspectFragCommandArgs {
   pub viewport: (u32, u32),
   pub dpr: f32,
   pub media: String,
+  pub compat_profile: Option<&'static str>,
+  pub dom_compat: Option<&'static str>,
   pub timeout: u64,
 }
 
@@ -194,6 +204,12 @@ pub fn build_inspect_frag_command(
   // `page-loop` renders offline fixtures; forbid HTTP(S) so inspect runs don't hang on stray remote
   // URLs that should have been bundled into the fixture directory.
   cmd.arg("--deny-network");
+  if let Some(profile) = args.compat_profile {
+    cmd.arg("--compat-profile").arg(profile);
+  }
+  if let Some(mode) = args.dom_compat {
+    cmd.arg("--dom-compat").arg(mode);
+  }
   if args.patch_html_for_chrome_baseline {
     cmd.arg("--patch-html-for-chrome-baseline");
     // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:

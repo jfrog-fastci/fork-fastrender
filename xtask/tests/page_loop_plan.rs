@@ -102,6 +102,8 @@ fn page_loop_render_fixtures_runs_prebuilt_binary_under_run_limited() {
     1.0,
     "screen",
     60,
+    None,
+    None,
     true,
     true,
   );
@@ -176,6 +178,8 @@ fn page_loop_inspect_frag_runs_prebuilt_binary_under_run_limited() {
       viewport: (1040, 1240),
       dpr: 1.0,
       media: "screen".to_string(),
+      compat_profile: None,
+      dom_compat: None,
       timeout: 60,
     },
   );
@@ -256,6 +260,8 @@ fn page_loop_render_fixtures_uses_debug_executable_when_requested() {
     1.0,
     "screen",
     60,
+    None,
+    None,
     false,
     false,
   );

@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Args, ValueEnum};
+use fastrender::cli_utils::args::CompatArgs;
 use fastrender::pageset::{pageset_entries_with_collisions, PagesetFilter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -115,6 +116,9 @@ pub struct PageLoopArgs {
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaMode::Screen)]
   pub media: MediaMode,
+
+  #[command(flatten)]
+  pub compat: CompatArgs,
 
   /// Root directory to write output artifacts into.
   ///
@@ -299,6 +303,8 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     args.dpr,
     args.media.as_cli_value(),
     timeout,
+    args.compat.compat_profile_arg().map(|value| value.as_str()),
+    args.compat.dom_compat_arg().map(|value| value.as_str()),
     run_chrome,
     args.write_snapshot,
   );
@@ -320,6 +326,8 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
         viewport: args.viewport,
         dpr: args.dpr,
         media: args.media.as_cli_value().to_string(),
+        compat_profile: args.compat.compat_profile_arg().map(|value| value.as_str()),
+        dom_compat: args.compat.dom_compat_arg().map(|value| value.as_str()),
         timeout,
       },
     ))

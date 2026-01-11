@@ -319,6 +319,8 @@ fn page_loop_help_mentions_flags() {
       && stdout.contains("--jobs")
       && stdout.contains("--timeout")
       && stdout.contains("--media")
+      && stdout.contains("--compat-profile")
+      && stdout.contains("--dom-compat")
       && stdout.contains("--out-dir")
       && stdout.contains("--write-snapshot")
       && stdout.contains("--overlay")

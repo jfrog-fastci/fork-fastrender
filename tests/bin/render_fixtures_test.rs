@@ -111,6 +111,8 @@ fn render_fixtures_writes_png_output() {
   assert_eq!(metadata["fixture"], "basic");
   assert_eq!(metadata["viewport"], serde_json::json!([64, 64]));
   assert_eq!(metadata["media"], "screen");
+  assert_eq!(metadata["compat_profile"], "Standards");
+  assert_eq!(metadata["dom_compat_mode"], "Standard");
   assert_eq!(metadata["fit_canvas_to_content"], false);
   assert_eq!(metadata["timeout_secs"], 2);
   assert_eq!(metadata["status"], "ok");
@@ -241,8 +243,102 @@ fn render_fixtures_help_mentions_determinism_flags() {
       && help.contains("--fail-on-nondeterminism")
       && help.contains("--save-variants")
       && help.contains("--reset-paint-scratch")
-      && help.contains("--system-fonts"),
+      && help.contains("--system-fonts")
+      && help.contains("--compat-profile")
+      && help.contains("--dom-compat"),
     "help output should mention determinism flags (and system fonts override); got:\n{help}"
+  );
+}
+
+#[test]
+fn render_fixtures_dom_compat_flag_flips_class_dependent_rendering() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "dom_compat",
+    r#"<!doctype html><html class="no-js"><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+html.no-js body { background: rgb(255, 0, 0); }
+html.js-enabled body { background: rgb(0, 255, 0); }
+</style></head><body></body></html>"#,
+  );
+
+  let out_standard = temp.path().join("out_standard");
+  let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_standard.to_str().unwrap(),
+      "--fixtures",
+      "dom_compat",
+      "--viewport",
+      "16x16",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+    ])
+    .status()
+    .expect("run render_fixtures (standard)");
+  assert!(
+    status.success(),
+    "standard render should exit successfully without compat flag"
+  );
+
+  let standard_image = image::open(out_standard.join("dom_compat.png"))
+    .expect("open standard render")
+    .into_rgba8();
+  let standard_pixel = standard_image.get_pixel(0, 0);
+
+  let out_compat = temp.path().join("out_compat");
+  let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_compat.to_str().unwrap(),
+      "--fixtures",
+      "dom_compat",
+      "--viewport",
+      "16x16",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+      "--dom-compat",
+      "compat",
+    ])
+    .status()
+    .expect("run render_fixtures (dom compat)");
+  assert!(
+    status.success(),
+    "compat render should exit successfully with dom-compat flag"
+  );
+
+  let compat_image = image::open(out_compat.join("dom_compat.png"))
+    .expect("open compat render")
+    .into_rgba8();
+  let compat_pixel = compat_image.get_pixel(0, 0);
+
+  assert!(
+    standard_pixel.0[0] > 200 && standard_pixel.0[1] < 80,
+    "standard run should keep the red background from html.no-js (got {:?})",
+    standard_pixel.0
+  );
+  assert!(
+    compat_pixel.0[1] > 200 && compat_pixel.0[0] < 80,
+    "dom compat run should flip to the green background from html.js-enabled (got {:?})",
+    compat_pixel.0
   );
 }
 
