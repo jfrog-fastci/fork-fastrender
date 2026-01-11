@@ -115,3 +115,47 @@ fn emits_statepoint_without_gc_result_for_void() {
     .count();
   assert_eq!(relocate_calls, 1, "{ir}");
 }
+
+#[test]
+fn gc_pointer_call_args_are_implicitly_in_gc_live() {
+  let context = Context::create();
+  let module = context.create_module("m");
+  let builder = context.create_builder();
+
+  let gc_ptr_ty = context.ptr_type(AddressSpace::from(1));
+
+  let callee_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
+  let callee = module.add_function("callee", callee_ty, None);
+
+  let caller_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
+  let caller = module.add_function("caller", caller_ty, None);
+  set_statepoint_example_gc(caller);
+
+  let entry = context.append_basic_block(caller, "entry");
+  builder.position_at_end(entry);
+
+  let p = caller.get_nth_param(0).unwrap().into_pointer_value();
+  p.set_name("p");
+
+  let mut intrinsics = StatepointIntrinsics::new(&module);
+  let (ret, relocated) = intrinsics.emit_statepoint_call(
+    &builder,
+    StatepointCallee::new(callee.as_global_value().as_pointer_value(), callee_ty),
+    &[p.into()],
+    &[],
+    None,
+  );
+
+  assert!(ret.is_none());
+  assert_eq!(relocated.len(), 1);
+  assert_eq!(relocated[0].get_type(), p.get_type());
+
+  let _ = builder.build_return(None);
+  assert!(module.verify().is_ok(), "module failed LLVM verification");
+
+  let ir = module.print_to_string().to_string();
+  assert!(
+    ir.contains("\"gc-live\"(ptr addrspace(1) %p)"),
+    "{ir}"
+  );
+}

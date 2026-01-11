@@ -28,6 +28,14 @@
 //!
 //! If you can cheaply recompute the interior pointer after the safepoint, it is usually better to
 //! keep only the base pointer live and redo the `gep` from the relocated base.
+//!
+//! ## Important: GC pointer call arguments are roots
+//! LLVM does **not** automatically treat `ptr addrspace(1)` call arguments to a statepoint as GC
+//! roots when emitting stack maps. Any GC pointer passed as a call argument must also appear in the
+//! `"gc-live"` operand bundle or the pointer will be missing from the stack map record.
+//!
+//! This module therefore automatically extends `"gc-live"` with any `ptr addrspace(1)` call
+//! arguments so callers can't accidentally omit them.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -43,11 +51,13 @@ use llvm_sys::core::{
   LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMConstInt,
   LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
   LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetModuleContext,
-  LLVMGlobalGetValueType, LLVMInt32TypeInContext, LLVMInt64TypeInContext, LLVMLookupIntrinsicID,
-  LLVMSetInstructionCallConv,
+  LLVMGlobalGetValueType, LLVMInt32TypeInContext, LLVMInt64TypeInContext,
+  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMLookupIntrinsicID, LLVMSetInstructionCallConv,
+  LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef};
 use llvm_sys::LLVMCallConv;
+use llvm_sys::LLVMTypeKind;
 
 /// A (base, derived) GC pointer pair live across a safepoint.
 ///
@@ -222,6 +232,8 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
   ///
   /// - `call_args` are the arguments for the *callee*.
   /// - `live_gc_ptrs` are GC-managed pointers that must be considered live across the call.
+  ///   Additionally, any `ptr addrspace(1)` values found in `call_args` are treated as live GC
+  ///   pointers as well.
   /// - If `ret_ty` is `Some`, the returned value is produced by `gc.result`.
   /// - Relocated pointers are always produced via `gc.relocate`, even for a non-moving GC.
   pub fn emit_statepoint_call(
@@ -287,11 +299,29 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
     };
 
     let mut ptr_indices: Vec<(u32, u32, PointerType<'ctx>)> =
-      Vec::with_capacity(live_gc_ptrs.len());
+      Vec::with_capacity(live_gc_ptrs.len() + call_args.len());
+    let mut relocated_derived: HashMap<LLVMValueRef, ()> = HashMap::with_capacity(live_gc_ptrs.len());
     for live in live_gc_ptrs {
       let base_idx = intern_gc_live(live.base.as_value_ref());
       let derived_idx = intern_gc_live(live.derived.as_value_ref());
       ptr_indices.push((base_idx, derived_idx, live.derived.get_type()));
+      relocated_derived.insert(live.derived.as_value_ref(), ());
+    }
+
+    for arg in call_args {
+      unsafe {
+        let v = arg.as_value_ref();
+        let ty = LLVMTypeOf(v);
+        if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
+          && LLVMGetPointerAddressSpace(ty) == 1
+        {
+          let idx = intern_gc_live(v);
+          if !relocated_derived.contains_key(&v) {
+            ptr_indices.push((idx, idx, PointerValue::new(v).get_type()));
+            relocated_derived.insert(v, ());
+          }
+        }
+      }
     }
 
     // `LLVMCreateOperandBundle` requires a nul-terminated C string.
