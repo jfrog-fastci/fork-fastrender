@@ -1,6 +1,8 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 
 #[repr(C)]
 struct TestCoroutine {
@@ -227,4 +229,78 @@ fn non_strict_mode_awaiting_settled_promise_resumes_synchronously() {
   runtime_native::rt_async_spawn(&mut coro.header);
   assert!(completed, "non-strict await should resume synchronously inside rt_async_spawn");
   assert!(!runtime_native::rt_async_poll());
+}
+
+// -----------------------------------------------------------------------------
+// spawn_blocking integration
+// -----------------------------------------------------------------------------
+
+extern "C" fn blocking_resolve_value(_data: *mut u8, promise: PromiseRef) {
+  std::thread::sleep(Duration::from_millis(20));
+  runtime_native::rt_promise_resolve(promise, 0xCAFE_BABEusize as ValueRef);
+}
+
+#[repr(C)]
+struct SpawnBlockingCoroutine {
+  header: RtCoroutineHeader,
+  completed: *mut bool,
+  awaited: PromiseRef,
+}
+
+extern "C" fn spawn_blocking_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut SpawnBlockingCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        (*coro).awaited = runtime_native::rt_spawn_blocking(blocking_resolve_value, core::ptr::null_mut());
+        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        RtCoroStatus::Pending
+      }
+      1 => {
+        assert_eq!((*coro).header.await_is_error, 0);
+        assert_eq!((*coro).header.await_value as usize, 0xCAFE_BABE);
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
+
+#[test]
+fn coroutine_can_await_spawn_blocking_promise() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut completed = false;
+  let mut coro = Box::new(SpawnBlockingCoroutine {
+    header: RtCoroutineHeader {
+      resume: spawn_blocking_resume,
+      promise: PromiseRef::null(),
+      state: 0,
+      await_is_error: 0,
+      await_value: core::ptr::null_mut(),
+      await_error: core::ptr::null_mut(),
+    },
+    completed: &mut completed,
+    awaited: PromiseRef::null(),
+  });
+
+  runtime_native::rt_async_spawn(&mut coro.header);
+  assert!(
+    !completed,
+    "spawn_blocking should not resume synchronously inside rt_async_spawn when the promise is pending"
+  );
+
+  let start = Instant::now();
+  while !completed {
+    runtime_native::rt_async_poll();
+    assert!(
+      start.elapsed() < Duration::from_secs(2),
+      "timeout waiting for spawn_blocking promise to resume coroutine"
+    );
+    std::thread::yield_now();
+  }
 }
