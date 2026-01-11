@@ -1,9 +1,10 @@
 use knowledge_base::ApiDatabase;
 use hir_js::{
-  Body, BodyId, ExprId, ExprKind, ImportKind, Literal, LowerResult, NameId, ObjectKey, PatKind,
-  StmtKind, VarDeclKind,
+  Body, BodyId, ExprId, ExprKind, ImportKind, Literal, LowerResult, NameId, ObjectKey, PatId,
+  PatKind, StmtKind,
 };
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
   loop {
@@ -17,6 +18,57 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
       _ => return expr,
     }
   }
+}
+
+fn collect_pat_idents(body: &Body, pat: PatId, out: &mut BTreeSet<NameId>) {
+  let Some(pat) = body.pats.get(pat.0 as usize) else {
+    return;
+  };
+  match &pat.kind {
+    PatKind::Ident(name) => {
+      out.insert(*name);
+    }
+    PatKind::Array(arr) => {
+      for element in arr.elements.iter().flatten() {
+        collect_pat_idents(body, element.pat, out);
+      }
+      if let Some(rest) = arr.rest {
+        collect_pat_idents(body, rest, out);
+      }
+    }
+    PatKind::Object(obj) => {
+      for prop in obj.props.iter() {
+        collect_pat_idents(body, prop.value, out);
+      }
+      if let Some(rest) = obj.rest {
+        collect_pat_idents(body, rest, out);
+      }
+    }
+    PatKind::Rest(inner) => collect_pat_idents(body, **inner, out),
+    PatKind::Assign { target, .. } => collect_pat_idents(body, *target, out),
+    PatKind::AssignTarget(_) => {}
+  }
+}
+
+fn collect_lexical_names(body: &Body) -> BTreeSet<NameId> {
+  let mut names = BTreeSet::new();
+
+  if let Some(func) = &body.function {
+    for param in func.params.iter() {
+      collect_pat_idents(body, param.pat, &mut names);
+    }
+  }
+
+  for stmt_id in body.root_stmts.iter().copied() {
+    let stmt = &body.stmts[stmt_id.0 as usize];
+    if let StmtKind::Var(var_decl) = &stmt.kind {
+      for decl in var_decl.declarators.iter() {
+        collect_pat_idents(body, decl.pat, &mut names);
+      }
+    }
+  }
+
+  names
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +196,10 @@ pub fn collect_require_bindings(lower: &LowerResult, body_id: BodyId) -> Require
     let StmtKind::Var(var_decl) = &stmt.kind else {
       continue;
     };
-    if !matches!(var_decl.kind, VarDeclKind::Const | VarDeclKind::Let) {
+    if !matches!(
+      var_decl.kind,
+      hir_js::VarDeclKind::Const | hir_js::VarDeclKind::Let
+    ) {
       continue;
     }
 
@@ -320,15 +375,17 @@ pub fn resolve_api_call<'a>(
   };
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
+  let local_decls = collect_lexical_names(body);
+  let local_bindings = collect_require_bindings(lower, body_id);
   let require_bindings = if body_id == lower.hir.root_body {
-    collect_require_bindings(lower, body_id)
+    local_bindings.clone()
   } else {
     // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
     // executes after module initialization, so treat the root body bindings as hoisted for the
     // purpose of best-effort resolution.
     let mut bindings = collect_require_bindings(lower, lower.hir.root_body);
     bindings.hoist_all(0);
-    bindings.extend(collect_require_bindings(lower, body_id));
+    bindings.extend(local_bindings.clone());
     bindings
   };
   let import_bindings = collect_import_bindings(lower);
@@ -337,6 +394,19 @@ pub fn resolve_api_call<'a>(
 
   match &body.exprs[base.0 as usize].kind {
     ExprKind::Ident(name) => {
+      // Shadow outer bindings when this body declares the identifier (including parameters).
+      //
+      // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
+      // *before* the declaration should not resolve to an outer `require()` binding.
+      if local_decls.contains(name) {
+        if let Some(target) = local_bindings.resolve(*name, use_start) {
+          let mut path = target.path.clone();
+          path.extend(member_path);
+          return lookup_api(db, &target.module, &path);
+        }
+        return None;
+      }
+
       if let Some(target) = require_bindings
         .resolve(*name, use_start)
         .or_else(|| import_bindings.resolve(*name, use_start))
@@ -506,5 +576,34 @@ mod tests {
       "#,
     );
     assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn does_not_resolve_outer_binding_when_shadowed_by_param() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        const fs = require('node:fs');
+
+        function foo(fs: any) {
+          fs.readFile('x', () => {});
+        }
+      "#,
+    );
+    assert_eq!(calls, Vec::<String>::new());
+  }
+
+  #[test]
+  fn does_not_resolve_outer_binding_when_shadowed_by_local_decl() {
+    let calls = resolved_calls_all_bodies(
+      r#"
+        const fs = require('node:fs');
+
+        function foo() {
+          const fs = 123;
+          fs.readFile('x', () => {});
+        }
+      "#,
+    );
+    assert_eq!(calls, Vec::<String>::new());
   }
 }
