@@ -142,7 +142,7 @@ See `native-js-cli` for the CLI front-ends:
 # Minimal parse-js-driven emitter (default `native-js-cli --pipeline project`):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
 
-# Typechecked pipeline (single entry file; expects `export function main()`; does not load `tsconfig.json`):
+# Typechecked pipeline (single entry file; expects the entry module to export `main()`; does not load `tsconfig.json`):
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked check path/to/entry.ts
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- --pipeline checked run path/to/entry.ts
 
