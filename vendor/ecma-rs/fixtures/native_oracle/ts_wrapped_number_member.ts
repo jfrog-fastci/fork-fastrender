@@ -1,4 +1,3 @@
-(1 as any).toString;
+(1 as number).toString;
 (1!).toString;
-(1 satisfies any).toString;
-
+(1 satisfies number).toString;
