@@ -235,7 +235,8 @@ fn visit_callsite_reloc_pairs(
   });
 
   // LLVM 18 statepoint lowering emits locations in (base, derived) order for each `gc.relocate`
-  // call. This iterator already skips the 3-entry statepoint header and any deopt operands.
+  // call. `gc_pairs()` is already offset past the 3-entry statepoint header and any deopt
+  // operands.
   for pair in statepoint.gc_pairs() {
     let Some(base_slot) = location_to_slot(frame, &pair.base, bounds) else {
       return false;
