@@ -461,12 +461,21 @@ LLVM concepts:
 Statepoints for GC: LLVM has `gc.statepoint` and `gc.relocate` intrinsics for precise stack maps:
 
 ```llvm
-%safepoint_token = call token @llvm.experimental.gc.statepoint.p0(
-    i64 0, i32 0, ptr @some_function, i32 0, i32 0, i32 0) 
-    [ "gc-live"(ptr %obj1, ptr %obj2) ]
-%relocated_obj1 = call ptr @llvm.experimental.gc.relocate.p0(
-    token %safepoint_token, i32 0, i32 0)
+%statepoint_token = call token (i64, i32, ptr, i32, i32, ...)
+    @llvm.experimental.gc.statepoint.p0(
+        i64 0, i32 0,
+        ptr elementtype(void (ptr addrspace(1), ptr addrspace(1))) @some_function,
+        i32 2, i32 0,
+        ptr addrspace(1) %obj1, ptr addrspace(1) %obj2,
+        i32 0, i32 0) ; num_transition_args, num_deopt_args
+    [ "gc-live"(ptr addrspace(1) %obj1, ptr addrspace(1) %obj2) ]
+%obj1.relocated = call ptr addrspace(1) @llvm.experimental.gc.relocate.p1(
+    token %statepoint_token, i32 0, i32 0)
 ```
+
+**LLVM 18 note:** In textual IR, statepoints require `ptr elementtype(<fn sig>) @callee` (opaque pointers),
+and the varargs list must end with two *constant* `i32`s: `num_transition_args` and `num_deopt_args` (usually `0, 0`).
+Inline transition args are deprecated; always use `num_transition_args=0`.
 
 Tells LLVM where GC roots are so it generates stack maps.
 
@@ -953,34 +962,46 @@ For heap objects, you control layout. Hard part: stack and registers.
 
 LLVM provides precise GC infrastructure through statepoints:
 
-```llvm
-declare ptr @allocate(i64 %size)
+**LLVM 18+ syntax:** statepoint callees must be written as `ptr elementtype(<fn sig>) @callee` in textual IR, and the
+statepoint varargs must end with two *constant* `i32` counts: `num_transition_args` and `num_deopt_args` (use `0, 0`;
+inline transition args are deprecated).
 
-define ptr @make_pair(ptr %a, ptr %b) gc "statepoint-example" {
+```llvm
+declare ptr addrspace(1) @allocate(i64)
+
+define ptr addrspace(1) @make_pair(ptr addrspace(1) %a, ptr addrspace(1) %b) gc "statepoint-example" {
 entry:
-    ; About to call allocate(), which might trigger GC
-    ; Tell LLVM %a and %b are GC references
-    
+    ; About to call allocate(), which might trigger GC.
+    ; Tell LLVM %a and %b are live GC references at this safepoint.
     %safepoint = call token (i64, i32, ptr, i32, i32, ...)
         @llvm.experimental.gc.statepoint.p0(
             i64 0, i32 0,
-            ptr @allocate, i32 1, i32 0,
+            ptr elementtype(ptr addrspace(1) (i64)) @allocate,
+            i32 1, i32 0,
             i64 16,          ; call argument
-            ptr %a,          ; GC pointer #0
-            ptr %b           ; GC pointer #1
-        )
-    
-    %pair = call ptr @llvm.experimental.gc.result.p0(token %safepoint)
-    
-    ; GC might have relocated %a and %b
-    %a.relocated = call ptr @llvm.experimental.gc.relocate.p0(
+            i32 0, i32 0     ; num_transition_args, num_deopt_args
+        ) [ "gc-live"(ptr addrspace(1) %a, ptr addrspace(1) %b) ]
+
+    %pair = call ptr addrspace(1) @llvm.experimental.gc.result.p1(token %safepoint)
+
+    ; If allocate() triggers a moving GC, %a/%b might have been relocated.
+    ; Indices in gc.relocate refer to the order in the "gc-live" bundle above.
+    %a.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(
         token %safepoint, i32 0, i32 0)
-    %b.relocated = call ptr @llvm.experimental.gc.relocate.p0(
+    %b.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(
         token %safepoint, i32 1, i32 1)
-    
-    store ptr %a.relocated, ptr %pair
-    ...
+
+    store ptr addrspace(1) %a.relocated, ptr addrspace(1) %pair, align 8
+    %pair.1 = getelementptr ptr, ptr addrspace(1) %pair, i64 1
+    store ptr addrspace(1) %b.relocated, ptr addrspace(1) %pair.1, align 8
+    ret ptr addrspace(1) %pair
 }
+```
+
+Verify this snippet on LLVM 18 (save the IR above as `/tmp/statepoint.ll`):
+
+```bash
+llvm-as /tmp/statepoint.ll -o /dev/null  # prints nothing on success; verifier errors otherwise
 ```
 
 LLVM generates native code + stack maps (metadata describing where GC refs are at each safepoint).
