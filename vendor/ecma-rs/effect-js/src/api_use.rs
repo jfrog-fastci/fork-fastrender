@@ -615,6 +615,12 @@ fn is_allowed_global_member_root(name: &str) -> bool {
       | "global"
       | "console"
       | "crypto"
+      | "document"
+      | "history"
+      | "location"
+      | "navigator"
+      | "localStorage"
+      | "sessionStorage"
       | "performance"
       | "process"
       | "Buffer"
@@ -830,6 +836,60 @@ mod tests {
         name: "crypto.subtle.digest".to_string(),
         kind: ApiKind::Function,
         aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("document.querySelector"),
+        name: "document.querySelector".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("navigator.userAgent"),
+        name: "navigator.userAgent".to_string(),
+        kind: ApiKind::Getter,
+        aliases: vec![],
+        effects: EffectTemplate::Pure,
+        effect_summary: EffectSummary::PURE,
+        purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("Storage.prototype.getItem"),
+        name: "Storage.prototype.getItem".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec!["localStorage.getItem".to_string()],
         effects: EffectTemplate::Pure,
         effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
@@ -1183,6 +1243,66 @@ mod tests {
       resolve_api_use(file, body, call_expr, names, &kb),
       Some(ResolvedApiUse {
         api: ApiId::from_name("crypto.subtle.digest"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_document_query_selector_call() {
+    let source = r#"document.querySelector("a");"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("document.querySelector"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_navigator_user_agent_get() {
+    let source = r#"navigator.userAgent;"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let member_expr = find_expr(body, |kind| matches!(kind, ExprKind::Member(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, member_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("navigator.userAgent"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_local_storage_get_item_call() {
+    let source = r#"localStorage.getItem("k");"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("Storage.prototype.getItem"),
         kind: ApiUseKind::Call,
       })
     );
