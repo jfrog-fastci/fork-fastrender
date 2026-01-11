@@ -1,16 +1,30 @@
 use crate::symbol::semantics::SymbolId;
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::fmt::{self};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum EffectLocation {
+  /// Heap memory reachable via object/array properties.
+  Heap,
+  /// Variables captured from an ancestor scope (including the global scope when in module/script
+  /// mode).
+  Foreign(SymbolId),
+  /// Unknown/global identifier accesses in global mode.
+  Unknown(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct EffectSet {
-  pub reads: bool,
-  pub writes: bool,
+  pub reads: BTreeSet<EffectLocation>,
+  pub writes: BTreeSet<EffectLocation>,
   pub allocates: bool,
   pub unknown: bool,
   pub may_throw: bool,
@@ -18,21 +32,28 @@ pub struct EffectSet {
 
 impl EffectSet {
   pub fn is_default(&self) -> bool {
-    !self.reads && !self.writes && !self.allocates && !self.unknown && !self.may_throw
+    self.reads.is_empty()
+      && self.writes.is_empty()
+      && !self.allocates
+      && !self.unknown
+      && !self.may_throw
   }
 
   pub fn is_pure(&self) -> bool {
     self.is_default()
   }
 
-  pub fn union(self, other: Self) -> Self {
-    Self {
-      reads: self.reads || other.reads,
-      writes: self.writes || other.writes,
-      allocates: self.allocates || other.allocates,
-      unknown: self.unknown || other.unknown,
-      may_throw: self.may_throw || other.may_throw,
-    }
+  pub fn merge(&mut self, other: &Self) {
+    self.reads.extend(other.reads.iter().cloned());
+    self.writes.extend(other.writes.iter().cloned());
+    self.allocates |= other.allocates;
+    self.unknown |= other.unknown;
+    self.may_throw |= other.may_throw;
+  }
+
+  pub fn union(mut self, other: Self) -> Self {
+    self.merge(&other);
+    self
   }
 }
 
