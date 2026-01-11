@@ -2952,8 +2952,6 @@ mod tests {
 
   #[test]
   fn cors_preflight_cache_wildcard_header_entry_does_not_match_authorization() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     if skip_if_curl_backend_missing(
       "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
     ) {
