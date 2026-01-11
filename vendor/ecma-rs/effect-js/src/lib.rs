@@ -11,6 +11,8 @@ mod resolve;
 mod template_eval;
 pub mod types;
 
+#[cfg(feature = "hir-semantic-ops")]
+pub mod hir_rewrite;
 pub mod db;
 pub mod kb;
 pub mod meta;

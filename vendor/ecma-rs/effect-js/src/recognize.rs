@@ -4,7 +4,7 @@ use hir_js::{
 };
 
 #[cfg(feature = "typed")]
-use hir_js::{BinaryOp, ObjectKey};
+use hir_js::BinaryOp;
 
 use crate::api::ApiId;
 use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
@@ -527,11 +527,27 @@ fn promise_all_fetch_match_untyped(
   call_expr: ExprId,
 ) -> Option<PromiseAllFetchMatch> {
   let body_ref = lowered.body(body)?;
+  let call = body_ref.exprs.get(call_expr.0 as usize)?;
+  #[cfg(feature = "hir-semantic-ops")]
+  if let ExprKind::PromiseAll { promises } = &call.kind {
+    let fetch_call_count = promises
+      .iter()
+      .filter(|expr_id| resolve_api_call_untyped(lowered, body, **expr_id) == Some(ApiId::Fetch))
+      .count();
+    return (fetch_call_count > 0).then_some(PromiseAllFetchMatch {
+      // `hir-js` lowers `Promise.all([..])` into a `PromiseAll { promises }` node
+      // and drops the array-literal wrapper. Use the `PromiseAll` expr itself as
+      // the "urls expression" marker.
+      urls_expr: call_expr,
+      map_call: None,
+      fetch_call_count,
+    });
+  }
+
   if resolve_api_call_untyped(lowered, body, call_expr) != Some(ApiId::PromiseAll) {
     return None;
   }
 
-  let call = body_ref.exprs.get(call_expr.0 as usize)?;
   let ExprKind::Call(call) = &call.kind else {
     return None;
   };
@@ -570,7 +586,9 @@ fn promise_all_fetch_match_untyped(
       if map_call.optional || map_call.is_new {
         return None;
       }
-      if resolve_api_call_best_effort_untyped(lowered, body, arg_expr_id) != Some(ApiId::ArrayPrototypeMap) {
+      if resolve_api_call_best_effort_untyped(lowered, body, arg_expr_id)
+        != Some(ApiId::ArrayPrototypeMap)
+      {
         return None;
       }
 
@@ -605,16 +623,48 @@ fn promise_all_fetch_match_untyped(
         _ => None,
       }?;
 
-      let fetch_call_count = if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
-        1
-      } else {
-        return None;
-      };
+      let fetch_call_count =
+        if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+          1
+        } else {
+          return None;
+        };
 
       Some(PromiseAllFetchMatch {
         urls_expr: member.object,
         map_call: Some(arg_expr_id),
         fetch_call_count,
+      })
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback } => {
+      let cb_expr = body_ref.exprs.get(callback.0 as usize)?;
+      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
+        return None;
+      };
+      let cb_body_id = *cb_body;
+      let cb_body = lowered.body(cb_body_id)?;
+      let func = cb_body.function.as_ref()?;
+      let ret_expr = match &func.body {
+        hir_js::FunctionBody::Expr(expr) => Some(*expr),
+        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+          let StmtKind::Return(Some(expr)) = &stmt.kind else {
+            return None;
+          };
+          Some(*expr)
+        }
+        _ => None,
+      }?;
+
+      if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) != Some(ApiId::Fetch) {
+        return None;
+      }
+
+      Some(PromiseAllFetchMatch {
+        urls_expr: *array,
+        map_call: Some(arg_expr_id),
+        fetch_call_count: 1,
       })
     }
     _ => None,

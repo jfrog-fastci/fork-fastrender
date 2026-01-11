@@ -70,6 +70,10 @@ pub fn collect_signals(body: &Body) -> SignalTables {
       ExprKind::Await { .. } => {
         has_await_like = true;
       }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::AwaitExpr { .. } => {
+        has_await_like = true;
+      }
       _ => {}
     }
   }

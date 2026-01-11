@@ -1,4 +1,6 @@
 use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
+#[cfg(feature = "hir-semantic-ops")]
+use hir_js::ArrayElement;
 use knowledge_base::ApiDatabase;
 use smallvec::SmallVec;
 
@@ -218,9 +220,90 @@ pub fn resolve_call(
   db: &ApiDatabase,
   types: Option<&dyn TypeProvider>,
 ) -> Option<ResolvedCall> {
-  let call = match body.exprs.get(call_expr.0 as usize).map(|e| &e.kind) {
-    Some(ExprKind::Call(call)) => call,
-    _ => return None,
+  let expr = body.exprs.get(call_expr.0 as usize)?;
+
+  #[cfg(feature = "hir-semantic-ops")]
+  match &expr.kind {
+    ExprKind::PromiseAll { promises } => {
+      let api = db.get(ApiId::PromiseAll.as_str())?;
+
+      // `hir-js` lowers `Promise.all([..])` into `PromiseAll { promises }`,
+      // discarding the wrapper array-literal expression. Prefer to recover the
+      // original array argument so `ResolvedCall.args` remains consistent with
+      // the `CallExpr` representation (i.e. `Promise.all(<arg0>)`).
+      let span = (expr.span.start, expr.span.end);
+      let arg0 = body
+        .exprs
+        .iter()
+        .enumerate()
+        .find_map(|(idx, candidate)| {
+          if candidate.span.start < span.0 || candidate.span.end > span.1 {
+            return None;
+          }
+          let ExprKind::Array(arr) = &candidate.kind else {
+            return None;
+          };
+          let mut elements = Vec::with_capacity(arr.elements.len());
+          for element in arr.elements.iter() {
+            match element {
+              ArrayElement::Expr(expr) => elements.push(*expr),
+              ArrayElement::Empty | ArrayElement::Spread(_) => return None,
+            }
+          }
+          (elements == promises.as_slice()).then_some(ExprId(idx as u32))
+        });
+
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: Some(ApiId::PromiseAll),
+        receiver: None,
+        args: arg0.into_iter().collect(),
+      });
+    }
+    ExprKind::ArrayMap { array, callback } => {
+      let api = db.get(ApiId::ArrayPrototypeMap.as_str())?;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: Some(ApiId::ArrayPrototypeMap),
+        receiver: Some(*array),
+        args: vec![*callback],
+      });
+    }
+    ExprKind::ArrayFilter { array, callback } => {
+      let api = db.get(ApiId::ArrayPrototypeFilter.as_str())?;
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: Some(ApiId::ArrayPrototypeFilter),
+        receiver: Some(*array),
+        args: vec![*callback],
+      });
+    }
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init,
+    } => {
+      let api = db.get(ApiId::ArrayPrototypeReduce.as_str())?;
+      let mut args = vec![*callback];
+      if let Some(init) = init {
+        args.push(*init);
+      }
+      return Some(ResolvedCall {
+        call: call_expr,
+        api: api.name.clone(),
+        api_id: Some(ApiId::ArrayPrototypeReduce),
+        receiver: Some(*array),
+        args,
+      });
+    }
+    _ => {}
+  }
+
+  let ExprKind::Call(call) = &expr.kind else {
+    return None;
   };
 
   // Be conservative around optional chaining and `new` calls.

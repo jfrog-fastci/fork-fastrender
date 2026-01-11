@@ -12,9 +12,23 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
     .exprs
     .iter()
     .enumerate()
-    .find_map(|(idx, expr)| match &expr.kind {
-      ExprKind::Call(_) if expr.span == span => Some(ExprId(idx as u32)),
-      _ => None,
+    .find_map(|(idx, expr)| {
+      if expr.span != span {
+        return None;
+      }
+      match &expr.kind {
+        ExprKind::Call(_) => Some(ExprId(idx as u32)),
+        #[cfg(feature = "hir-semantic-ops")]
+        ExprKind::PromiseAll { .. }
+        | ExprKind::PromiseRace { .. }
+        | ExprKind::ArrayMap { .. }
+        | ExprKind::ArrayFilter { .. }
+        | ExprKind::ArrayReduce { .. }
+        | ExprKind::ArrayChain { .. }
+        | ExprKind::KnownApiCall { .. }
+        | ExprKind::AwaitExpr { .. } => Some(ExprId(idx as u32)),
+        _ => None,
+      }
     })
     .expect("call expression not found for span")
 }

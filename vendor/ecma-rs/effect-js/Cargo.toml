@@ -8,6 +8,7 @@ repository.workspace = true
 [features]
 default = []
 typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+hir-semantic-ops = ["hir-js/semantic-ops", "typecheck-ts?/semantic-ops"]
 
 [dependencies]
 anyhow = { workspace = true }

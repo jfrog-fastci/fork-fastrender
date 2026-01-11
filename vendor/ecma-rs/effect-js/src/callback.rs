@@ -3,6 +3,8 @@ use hir_js::{
   ArrayElement, Body, BodyId, ExprId, ExprKind, ForHead, ForInit, FunctionBody, NameId, ObjectKey,
   ObjectProperty, PatId, PatKind, StmtId, StmtKind, VarDecl,
 };
+#[cfg(feature = "hir-semantic-ops")]
+use hir_js::ArrayChainOp;
 use knowledge_base::KnowledgeBase;
 
 use crate::template_eval::eval_call_expr;
@@ -27,11 +29,19 @@ pub fn callsite_info_for_args(
   let Some(expr) = body_ref.exprs.get(call_expr.0 as usize) else {
     return crate::db::CallSiteInfo::default();
   };
-  let ExprKind::Call(call) = &expr.kind else {
-    return crate::db::CallSiteInfo::default();
+  let callback_expr = match &expr.kind {
+    ExprKind::Call(call) => call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { callback, .. }
+    | ExprKind::ArrayFilter { callback, .. }
+    | ExprKind::ArrayReduce { callback, .. }
+    | ExprKind::ArrayFind { callback, .. }
+    | ExprKind::ArrayEvery { callback, .. }
+    | ExprKind::ArraySome { callback, .. } => Some(*callback),
+    _ => None,
   };
 
-  let Some(callback_expr) = call.args.first().filter(|arg| !arg.spread).map(|arg| arg.expr) else {
+  let Some(callback_expr) = callback_expr else {
     return crate::db::CallSiteInfo::default();
   };
   let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
@@ -482,6 +492,74 @@ impl CallbackAnalyzer<'_> {
         }
       }
 
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+        if let Some(init) = init {
+          self.visit_expr(body, *init);
+        }
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        self.mark_unknown();
+        self.visit_expr(body, *array);
+        for op in ops {
+          match *op {
+            ArrayChainOp::Map(cb)
+            | ArrayChainOp::Filter(cb)
+            | ArrayChainOp::Find(cb)
+            | ArrayChainOp::Every(cb)
+            | ArrayChainOp::Some(cb) => self.visit_expr(body, cb),
+            ArrayChainOp::Reduce(cb, init) => {
+              self.visit_expr(body, cb);
+              if let Some(init) = init {
+                self.visit_expr(body, init);
+              }
+            }
+          }
+        }
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        self.mark_unknown();
+        for promise in promises {
+          self.visit_expr(body, *promise);
+        }
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::AwaitExpr { value, .. } => {
+        self.mark_unknown();
+        self.visit_expr(body, *value);
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        self.mark_unknown();
+        for arg in args {
+          self.visit_expr(body, *arg);
+        }
+      }
+
       ExprKind::Jsx(_) => {
         self.effects |= EffectSet::ALLOCATES;
       }
@@ -518,22 +596,29 @@ mod tests {
     }
   }
 
+  fn first_callback_arg(body: &hir_js::Body, expr: ExprId) -> ExprId {
+    let expr = body.exprs.get(expr.0 as usize).expect("expr");
+    match &expr.kind {
+      ExprKind::Call(call) => call.args.first().expect("callback arg").expr,
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { callback, .. }
+      | ExprKind::ArrayFilter { callback, .. }
+      | ExprKind::ArrayReduce { callback, .. }
+      | ExprKind::ArrayFind { callback, .. }
+      | ExprKind::ArrayEvery { callback, .. }
+      | ExprKind::ArraySome { callback, .. } => *callback,
+      other => panic!("expected call-like expr, got {other:?}"),
+    }
+  }
+
   #[test]
   fn callback_map_is_pure_and_does_not_use_index() {
     let kb = crate::load_default_api_database();
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => x + 1);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Pure);
@@ -546,16 +631,8 @@ mod tests {
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map((x, i) => i);").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
@@ -570,16 +647,8 @@ mod tests {
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert_eq!(cb.purity, Purity::Impure);
@@ -596,16 +665,8 @@ mod tests {
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.effects.contains(EffectSet::MAY_THROW));
@@ -650,16 +711,8 @@ mod tests {
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(() => Date.now());")
         .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.effects.contains(EffectSet::NONDETERMINISTIC));
@@ -671,16 +724,8 @@ mod tests {
     let lowered =
       hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => foo(x));").unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.effects.contains(EffectSet::UNKNOWN));
@@ -724,16 +769,8 @@ mod tests {
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
-    let call = lowered
-      .body(body)
-      .unwrap()
-      .exprs
-      .get(call_expr.0 as usize)
-      .unwrap();
-    let ExprKind::Call(call) = &call.kind else {
-      panic!("expected call expr");
-    };
-    let cb_expr = call.args[0].expr;
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.effects.contains(EffectSet::NONDETERMINISTIC));
