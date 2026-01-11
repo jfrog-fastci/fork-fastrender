@@ -200,6 +200,13 @@ OFF_B="$(extract_instruction_offset "${STACKMAP_B}")"
 
 PATCH_BYTES_B=16
 FLAGS_B_EXPECTED=2
+FLAGS_A_EXPECTED=0
+FLAGS_A_GOT="$(extract_location2_constant "${STACKMAP_A}")"
+if [[ "${FLAGS_A_GOT}" != "${FLAGS_A_EXPECTED}" ]]; then
+  echo "${STACKMAP_A}" >&2
+  die "stackmap constant #2 (flags) mismatch for fixture A: expected ${FLAGS_A_EXPECTED}, got ${FLAGS_A_GOT}"
+fi
+
 FLAGS_B_GOT="$(extract_location2_constant "${STACKMAP_B}")"
 if [[ "${FLAGS_B_GOT}" != "${FLAGS_B_EXPECTED}" ]]; then
   echo "${STACKMAP_B}" >&2
@@ -304,9 +311,15 @@ if "${LLC}" -O0 -filetype=obj "${INVALID_FLAGS_IR}" -o "${INVALID_OBJ}" 2>"${INV
   "${LLVM_READOBJ}" --stackmap "${INVALID_OBJ}" >&2 || true
   die "flags validation changed (expected flags >= 4 to be rejected on LLVM 18)"
 fi
-if ! grep -Eq 'unknown flag used' "${INVALID_ERR}"; then
+if grep -Eq 'unknown flag used' "${INVALID_ERR}"; then
+  :
+elif grep -Eq 'gc\.statepoint|flag' "${INVALID_ERR}"; then
   echo "note: llc rejected flags=4 (as expected) but the verifier message changed:" >&2
   cat "${INVALID_ERR}" >&2
+else
+  echo "=== llc stderr for invalid flags snippet ===" >&2
+  cat "${INVALID_ERR}" >&2
+  die "llc failed for an unexpected reason while compiling invalid flags snippet"
 fi
 
 echo "ok: gc.statepoint flags/patch_bytes behaviour matches LLVM 18 expectations (A_off=${OFF_A}, B_off=${OFF_B}, delta=${DELTA})"
