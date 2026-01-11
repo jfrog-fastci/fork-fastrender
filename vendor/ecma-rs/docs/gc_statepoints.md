@@ -16,6 +16,7 @@ See also (repo-local, complementary):
 
 - `docs/llvm_statepoints_llvm18.md` — verifier-correct minimal fixture IR
 - `docs/llvm_statepoint_directives.md` — overriding statepoint ID / patch bytes when using `rewrite-statepoints-for-gc`
+- `docs/runtime-native.md` — broader runtime ABI notes (thread anchoring, stackmap parsing, linker script usage)
 - `runtime-native/stackmaps.ld` — linker script fragment that retains `.llvm_stackmaps` and defines start/end symbols
 
 The ABI assumptions documented here are guarded by fast regression scripts:
@@ -41,6 +42,20 @@ This includes:
 - interior pointers (derived pointers like `getelementptr` results)
 
 Non-GC pointers (C pointers, stack pointers, code pointers) remain `ptr` (addrspace(0)) unless explicitly required otherwise.
+
+### GC pointer discipline (do not hide pointers from LLVM)
+
+LLVM's statepoint rewriting/relocation only tracks GC references that remain typed as `ptr addrspace(1)` in SSA form.
+
+Do **not** let GC pointers “escape” into non-tracked representations across safepoints, such as:
+
+- `ptr` (addrspace(0)) values derived from `ptr addrspace(1)` via `addrspacecast`,
+- integers derived from GC pointers via `ptrtoint`,
+- non-pointer-typed slots that happen to contain GC pointer bits.
+
+If a GC pointer is hidden this way, LLVM will not emit (or rewrite uses to) the correct `gc.relocate`, and a moving GC will eventually read stale/unrelocated addresses.
+
+In `native-js`, conversion between `ptr addrspace(1)` (managed pointers) and `ptr` (raw runtime ABI pointers) is restricted to dedicated runtime wrapper functions, and a debug lint enforces this discipline (`native_js::llvm::gc_lint`).
 
 ### Code pointers (call targets)
 
