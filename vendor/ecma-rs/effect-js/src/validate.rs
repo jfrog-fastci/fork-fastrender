@@ -374,7 +374,18 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       // for callback-dependent templates), but some external callers may
       // construct entries with only one of them. Be conservative and check both.
       let combined = api.effects.base_effects() | api.effect_summary.to_effect_set();
-      if combined.intersects(EffectSet::IO | EffectSet::NETWORK) {
+      // Pure APIs may still allocate or throw, but they should not:
+      // - perform I/O
+      // - read/write observable global state
+      // - be non-deterministic
+      // - be "unknown" (a conservative placeholder for unmodeled effects)
+      let forbidden = EffectSet::IO
+        | EffectSet::NETWORK
+        | EffectSet::READS_GLOBAL
+        | EffectSet::WRITES_GLOBAL
+        | EffectSet::NONDETERMINISTIC
+        | EffectSet::UNKNOWN;
+      if combined.intersects(forbidden) {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
           purity: api.purity.clone(),
