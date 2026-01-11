@@ -34,6 +34,17 @@ fn null_base_zeros_both_slots() {
 }
 
 #[test]
+fn null_derived_stays_null() {
+  let mut base = 0x1000usize;
+  let mut derived = 0usize;
+
+  relocate_derived_pair(&mut base as *mut usize, &mut derived as *mut usize, |base| base + 0x1000);
+
+  assert_eq!(base, 0x2000);
+  assert_eq!(derived, 0);
+}
+
+#[test]
 fn works_when_base_and_derived_share_a_slot() {
   let mut slot = 0x1000usize;
 

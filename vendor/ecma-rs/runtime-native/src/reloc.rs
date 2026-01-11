@@ -43,10 +43,17 @@ pub fn relocate_derived_pair(
       return;
     }
 
-    let delta = (derived as isize) - (base as isize);
     let new_base = relocate_base(base);
 
     base_slot.write_unaligned(new_base);
-    derived_slot.write_unaligned((new_base as isize + delta) as usize);
+
+    // Preserve null derived values, and keep the derived slot null if the base becomes null.
+    if derived == 0 || new_base == 0 {
+      derived_slot.write_unaligned(0);
+      return;
+    }
+
+    let delta = derived.wrapping_sub(base);
+    derived_slot.write_unaligned(new_base.wrapping_add(delta));
   }
 }
