@@ -1,6 +1,5 @@
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
-use std::mem;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
