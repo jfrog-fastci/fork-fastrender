@@ -936,6 +936,7 @@ fn dry_run_prints_deterministic_plan_and_forwards_args() {
     .args([
       "fixture-chrome-diff",
       "--dry-run",
+      "--keep-going",
       "--fixtures-dir",
       fixtures_root.to_string_lossy().as_ref(),
       "--fixtures",
@@ -1041,6 +1042,10 @@ fn dry_run_prints_deterministic_plan_and_forwards_args() {
     "render_fixtures should receive fit-canvas-to-content; got:\n{render_line}"
   );
   assert!(
+    render_line.contains("--keep-going"),
+    "render_fixtures should receive keep-going; got:\n{render_line}"
+  );
+  assert!(
     stdout.contains(&format!("--fixtures-dir {}", fixtures_root.display())),
     "render_fixtures should receive fixtures-dir; got:\n{stdout}"
   );
@@ -1127,6 +1132,176 @@ fn dry_run_prints_deterministic_plan_and_forwards_args() {
   assert!(
     stdout.contains("--max-perceptual-distance 0.4") && stdout.contains("--sort-by perceptual"),
     "diff_renders should receive max-perceptual-distance + sort-by; got:\n{stdout}"
+  );
+}
+
+#[test]
+#[cfg(unix)]
+fn keep_going_allows_missing_fastrender_outputs_and_still_writes_report() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+  write_fixture(&fixtures_root, "b");
+
+  let out_dir = temp.path().join("out");
+  let chrome_out = out_dir.join("chrome");
+  fs::create_dir_all(&chrome_out).expect("create chrome out dir");
+  fs::write(chrome_out.join("a.png"), b"PNG").expect("write chrome a.png");
+  fs::write(chrome_out.join("b.png"), b"PNG").expect("write chrome b.png");
+
+  let target_dir = temp.path().join("target");
+
+  let render_fixtures_bin = target_dir
+    .join("release")
+    .join(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(render_fixtures_bin.parent().unwrap()).expect("create target/release dir");
+  // This stub simulates one fixture failing to render:
+  // - it only writes `a.png`,
+  // - exits 1 unless `--keep-going` was forwarded.
+  fs::write(
+    &render_fixtures_bin,
+    r#"#!/usr/bin/env sh
+set -eu
+
+out=""
+fixtures=""
+keep_going=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out-dir) out="$2"; shift 2;;
+    --fixtures) fixtures="$2"; shift 2;;
+    --keep-going) keep_going=1; shift;;
+    *) shift;;
+  esac
+done
+
+mkdir -p "$out"
+IFS=','; for name in $fixtures; do
+  [ -n "$name" ] || continue
+  if [ "$name" = "a" ]; then
+    echo "PNG" > "$out/$name.png"
+  fi
+done
+
+if [ "$keep_going" -eq 1 ]; then
+  echo "stub render_fixtures: simulated fixture failure (keep-going)" >&2
+  exit 0
+fi
+
+echo "stub render_fixtures: expected --keep-going" >&2
+exit 1
+"#,
+  )
+  .expect("write stub render_fixtures");
+  make_executable(&render_fixtures_bin);
+
+  let diff_renders_bin = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(diff_renders_bin.parent().unwrap()).expect("create target/release dir");
+  fs::write(
+    &diff_renders_bin,
+    r#"#!/usr/bin/env sh
+set -eu
+
+before=""
+after=""
+html=""
+json=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --before) before="$2"; shift 2;;
+    --after) after="$2"; shift 2;;
+    --html) html="$2"; shift 2;;
+    --json) json="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+mkdir -p "$(dirname "$html")"
+mkdir -p "$(dirname "$json")"
+echo "<!doctype html><title>stub diff</title>" > "$html"
+
+stems="$( (ls "$before" 2>/dev/null || true; ls "$after" 2>/dev/null || true) | sed -n 's/\.png$//p' | sort -u)"
+
+results=""
+first=1
+for stem in $stems; do
+  before_file="$before/$stem.png"
+  after_file="$after/$stem.png"
+
+  missing_before=0
+  missing_after=0
+  [ -f "$before_file" ] || missing_before=1
+  [ -f "$after_file" ] || missing_after=1
+
+  status="match"
+  if [ "$missing_before" -eq 1 ] && [ "$missing_after" -eq 1 ]; then
+    status="error"
+  elif [ "$missing_before" -eq 1 ]; then
+    status="missing_before"
+  elif [ "$missing_after" -eq 1 ]; then
+    status="missing_after"
+  fi
+
+  entry="{\"name\":\"$stem\",\"status\":\"$status\"}"
+  if [ "$first" -eq 1 ]; then
+    results="$entry"
+    first=0
+  else
+    results="$results,$entry"
+  fi
+done
+
+printf '{"results":[%s]}\n' "$results" > "$json"
+echo "1 differences over threshold" >&2
+exit 1
+"#,
+  )
+  .expect("write stub diff_renders");
+  make_executable(&diff_renders_bin);
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--keep-going",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a,b",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with --keep-going and missing FastRender output");
+
+  assert!(
+    output.status.success(),
+    "expected fixture-chrome-diff to succeed with keep-going even when a FastRender output is missing.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let report_path = out_dir.join("report.json");
+  let raw = fs::read_to_string(&report_path).expect("read report.json");
+  let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report.json");
+  let results = json["results"]
+    .as_array()
+    .expect("expected results array in report.json");
+  let b_entry = results
+    .iter()
+    .find(|entry| entry.get("name").and_then(|v| v.as_str()) == Some("b"))
+    .expect("expected report entry for missing fixture b");
+  assert_eq!(
+    b_entry.get("status").and_then(|v| v.as_str()),
+    Some("missing_after"),
+    "expected report to mark b as missing_after; report={json}"
   );
 }
 

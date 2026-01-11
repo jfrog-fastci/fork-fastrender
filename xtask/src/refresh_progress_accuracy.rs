@@ -69,6 +69,13 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
   pub timeout: u64,
 
+  /// Continue even if some fixtures fail to render during the FastRender step.
+  ///
+  /// This forwards `--keep-going` to `xtask fixture-chrome-diff` so shard refreshes can be run
+  /// unattended and still produce a best-effort `report.json`.
+  #[arg(long)]
+  pub keep_going: bool,
+
   /// Ignore alpha differences forwarded to `diff_renders --ignore-alpha`.
   #[arg(long)]
   pub ignore_alpha: bool,
@@ -227,6 +234,9 @@ fn build_fixture_chrome_diff_args(
 
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
+  if args.keep_going {
+    argv.push("--keep-going".into());
+  }
 
   if let Some(fixtures) = &args.fixtures {
     argv.push("--fixtures".into());

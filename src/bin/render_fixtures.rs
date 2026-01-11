@@ -180,6 +180,13 @@ struct Cli {
   /// which forces a white background + light color scheme by default (unless `--allow-dark-mode` is set).
   #[arg(long)]
   force_light_mode: bool,
+
+  /// Continue rendering fixtures even if some fail, and exit 0.
+  ///
+  /// This is useful for batch workflows (e.g. `xtask fixture-chrome-diff`) where partial outputs are
+  /// still valuable; the summary/metadata will still record per-fixture failures.
+  #[arg(long)]
+  keep_going: bool,
 }
 
 #[derive(Clone)]
@@ -965,14 +972,35 @@ fn run(cli: Cli) -> io::Result<()> {
     }
   }
 
-  if timeout > 0
+  let has_failures = timeout > 0
     || crash > 0
     || error > 0
     || repeat_failure_count > 0
     || !wrote_variants_ok
-    || (cli.fail_on_nondeterminism && nondeterministic_count > 0)
-  {
-    std::process::exit(1);
+    || (cli.fail_on_nondeterminism && nondeterministic_count > 0);
+  if has_failures {
+    if cli.keep_going {
+      let mut details = vec![format!("{timeout} timeout, {crash} crash, {error} error")];
+      if repeat_failure_count > 0 {
+        details.push(format!("{repeat_failure_count} repeat failures"));
+      }
+      if nondeterministic_count > 0 {
+        details.push(format!("{nondeterministic_count} nondeterministic fixtures"));
+      }
+      if !wrote_variants_ok {
+        details.push("failed to save nondeterminism variants".to_string());
+      }
+      if cli.fail_on_nondeterminism && nondeterministic_count > 0 {
+        details.push("--fail-on-nondeterminism requested".to_string());
+      }
+      let details = details.join("; ");
+      eprintln!(
+        "warning: some fixtures failed ({details}); --keep-going enabled so exiting 0. See {} for full per-fixture status.",
+        summary_path.display()
+      );
+    } else {
+      std::process::exit(1);
+    }
   }
 
   Ok(())

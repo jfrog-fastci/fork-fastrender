@@ -208,6 +208,13 @@ pub struct FixtureChromeDiffArgs {
   #[arg(long)]
   pub fail_on_differences: bool,
 
+  /// Continue even if some fixtures fail to render in the FastRender step.
+  ///
+  /// This forwards `--keep-going` to `render_fixtures` so partial outputs still produce a
+  /// best-effort diff report (useful for sharded/CI batch runs).
+  #[arg(long)]
+  pub keep_going: bool,
+
   /// Skip rendering fixtures with FastRender and reuse the existing `<out>/fastrender` output dir.
   #[arg(long)]
   pub no_fastrender: bool,
@@ -1620,6 +1627,9 @@ fn build_render_fixtures_command(
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
   cmd.arg("--timeout").arg(args.timeout.to_string());
+  if args.keep_going {
+    cmd.arg("--keep-going");
+  }
   // Match `chrome-baseline-fixtures` defaults (force light mode + CSP + disable animations) so the
   // diff reflects renderer differences rather than harness/theme variance.
   cmd.arg("--patch-html-for-chrome-baseline");
