@@ -3,7 +3,6 @@
 use runtime_native::test_util::TestRuntimeGuard;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 extern "C" fn noop_cb(_events: u32, _data: *mut u8) {}
 
@@ -47,17 +46,11 @@ fn deregister_runs_io_watcher_drop_hook() {
     .expect("register_io_with_drop failed");
 
   assert!(runtime_native::async_rt::global().deregister_fd(id));
-  // Deregistration defers invoking the drop hook until the event loop can safely
-  // observe it (avoids freeing callback state while a readiness task may still
-  // be executing). Drive the runtime until the drop hook runs.
-  let start = Instant::now();
-  while !unsafe { &*dropped_ptr }.load(Ordering::SeqCst) {
-    runtime_native::rt_async_poll_legacy();
-    assert!(
-      start.elapsed() < Duration::from_secs(2),
-      "timeout waiting for watcher drop hook to run"
-    );
-  }
+  runtime_native::rt_async_run_until_idle();
+  assert!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    "drop hook must run when the watcher is deregistered"
+  );
 
   unsafe {
     drop(Box::from_raw(dropped_ptr));
