@@ -1,6 +1,9 @@
 use core::ffi::c_void;
 use core::ptr::null_mut;
-use runtime_native::async_abi::{Coroutine, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader};
+use runtime_native::async_abi::{
+  Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
+  CORO_FLAG_RUNTIME_OWNS_FRAME,
+};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseRef as AbiPromiseRef;
 use runtime_native::RtShapeId;
@@ -33,19 +36,29 @@ fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
 struct CounterCoro {
   header: Coroutine,
   counter: *const AtomicUsize,
+  promise_ptr: *const AtomicUsize,
 }
 
 unsafe extern "C" fn counter_resume(coro: *mut Coroutine) -> CoroutineStep {
   // Safety: CounterCoro is #[repr(C)] and Coroutine is its first field.
   let coro = coro as *mut CounterCoro;
   assert!(!coro.is_null());
+  if !(*coro).promise_ptr.is_null() {
+    (&*(*coro).promise_ptr).store((*coro).header.promise as usize, Ordering::SeqCst);
+  }
   (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
   runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
   CoroutineStep::complete()
 }
 
+unsafe extern "C" fn counter_destroy(coro: CoroutineRef) {
+  let coro = coro as *mut CounterCoro;
+  drop(Box::from_raw(coro));
+}
+
 static COUNTER_VTABLE: CoroutineVTable = CoroutineVTable {
   resume: counter_resume,
+  destroy: counter_destroy,
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
   promise_shape_id: RtShapeId::INVALID,
@@ -59,6 +72,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
 
   // `rt_async_spawn` resumes the coroutine during the call.
   let counter = AtomicUsize::new(0);
+  let promise_ptr = AtomicUsize::new(0);
   let mut coro = Box::new(CounterCoro {
     header: Coroutine {
       vtable: &COUNTER_VTABLE,
@@ -67,36 +81,43 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
       flags: 0,
     },
     counter: &counter,
+    promise_ptr: &promise_ptr,
   });
 
   let promise = unsafe { runtime_native::rt_async_spawn(&mut coro.header) };
   assert_eq!(counter.load(Ordering::SeqCst), 1);
   assert_eq!(promise.0, coro.header.promise.cast::<c_void>());
+  assert_eq!(promise_ptr.load(Ordering::SeqCst), coro.header.promise as usize);
 
   // `rt_async_spawn_deferred` only enqueues; no resume until `rt_async_poll`.
   let counter = AtomicUsize::new(0);
-  let mut coro = Box::new(CounterCoro {
+  let promise_ptr = AtomicUsize::new(0);
+  let coro = Box::new(CounterCoro {
     header: Coroutine {
       vtable: &COUNTER_VTABLE,
       promise: null_mut(),
       next_waiter: null_mut(),
-      flags: 0,
+      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
     },
     counter: &counter,
+    promise_ptr: &promise_ptr,
   });
 
-  let promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut coro.header) };
+  let coro_ref = Box::into_raw(coro) as *mut Coroutine;
+  let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_ref) };
   assert_eq!(counter.load(Ordering::SeqCst), 0);
-  assert_eq!(promise.0, coro.header.promise.cast::<c_void>());
+  assert_eq!(promise_ptr.load(Ordering::SeqCst), 0);
 
   while runtime_native::rt_async_poll() {}
   assert_eq!(counter.load(Ordering::SeqCst), 1);
+  assert_eq!(promise_ptr.load(Ordering::SeqCst), promise.0 as usize);
 }
 
 #[repr(C)]
 struct YieldOnceCoro {
   header: Coroutine,
   state: u32,
+  promise_ptr: *const AtomicUsize,
   started: *mut bool,
   completed: *mut bool,
   awaited: *mut PromiseHeader,
@@ -105,6 +126,9 @@ struct YieldOnceCoro {
 unsafe extern "C" fn yield_once_resume(coro: *mut Coroutine) -> CoroutineStep {
   let coro = coro as *mut YieldOnceCoro;
   assert!(!coro.is_null());
+  if !(*coro).promise_ptr.is_null() {
+    (&*(*coro).promise_ptr).store((*coro).header.promise as usize, Ordering::SeqCst);
+  }
 
   match (*coro).state {
     0 => {
@@ -124,8 +148,14 @@ unsafe extern "C" fn yield_once_resume(coro: *mut Coroutine) -> CoroutineStep {
   }
 }
 
+unsafe extern "C" fn yield_once_destroy(coro: CoroutineRef) {
+  let coro = coro as *mut YieldOnceCoro;
+  drop(Box::from_raw(coro));
+}
+
 static YIELD_ONCE_VTABLE: CoroutineVTable = CoroutineVTable {
   resume: yield_once_resume,
+  destroy: yield_once_destroy,
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
   promise_shape_id: RtShapeId::INVALID,
@@ -143,23 +173,25 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
     runtime_native::rt_promise_init(abi_promise_from_header(awaited_ptr));
   }
 
+  let promise_ptr = AtomicUsize::new(0);
   let mut started = false;
   let mut completed = false;
-  let mut coro = Box::new(YieldOnceCoro {
+  let coro = Box::new(YieldOnceCoro {
     header: Coroutine {
       vtable: &YIELD_ONCE_VTABLE,
       promise: null_mut(),
       next_waiter: null_mut(),
-      flags: 0,
+      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
     },
     state: 0,
+    promise_ptr: &promise_ptr,
     started: &mut started,
     completed: &mut completed,
     awaited: awaited_ptr,
   });
 
-  let promise = unsafe { runtime_native::rt_async_spawn_deferred(&mut coro.header) };
-  assert_eq!(promise.0, coro.header.promise.cast::<c_void>());
+  let coro_ref = Box::into_raw(coro) as *mut Coroutine;
+  let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_ref) };
   assert!(!started);
   assert!(!completed);
 
@@ -167,6 +199,7 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
   while runtime_native::rt_async_poll() {}
   assert!(started);
   assert!(!completed);
+  assert_eq!(promise_ptr.load(Ordering::SeqCst), promise.0 as usize);
 
   // Settling the awaited promise should enqueue a microtask (not resume immediately).
   unsafe {
