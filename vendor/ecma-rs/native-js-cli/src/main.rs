@@ -46,8 +46,7 @@ struct Cli {
   #[arg(long, value_name = "NAME", global = true)]
   entry_fn: Option<String>,
 
-  /// Disable recognizing builtin calls like `console.log`, `print`, and `assert` (only affects
-  /// `--pipeline project`).
+  /// Disable recognizing builtin calls like `console.log`, `print`, and `assert`.
   #[arg(long, global = true)]
   no_builtins: bool,
 
@@ -164,19 +163,9 @@ fn main() {
       Pipeline::Checked => {
         ensure_checked_pipeline_supported(&cli);
 
-        if let Some(path) = cli.emit_llvm.as_deref() {
-          // Extra output for debugging (compile twice).
-          let _ = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(path.to_path_buf()))
+        let _ =
+          compile_file_checked(&cli, entry, EmitKind::Executable, Some(output.to_path_buf()))
             .map_err(|()| exit(1));
-        }
-
-        let _ = compile_file_checked(
-          &cli,
-          entry,
-          EmitKind::Executable,
-          Some(output.to_path_buf()),
-        )
-        .map_err(|()| exit(1));
       }
     },
     Some(Commands::Run { entry, args }) => match cli.pipeline {
@@ -203,12 +192,6 @@ fn main() {
       }
       Pipeline::Checked => {
         ensure_checked_pipeline_supported(&cli);
-
-        if let Some(path) = cli.emit_llvm.as_deref() {
-          // Extra output for debugging (compile twice).
-          let _ = compile_file_checked(&cli, entry, EmitKind::LlvmIr, Some(path.to_path_buf()))
-            .map_err(|()| exit(1));
-        }
 
         let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
           eprintln!("failed to create tempdir: {err}");
@@ -292,12 +275,6 @@ fn main() {
         }
         Pipeline::Checked => {
           ensure_checked_pipeline_supported(&cli);
-
-          if let Some(path) = cli.emit_llvm.as_deref() {
-            // Extra output for debugging (compile twice).
-            let _ = compile_file_checked(&cli, input, EmitKind::LlvmIr, Some(path.to_path_buf()))
-              .map_err(|()| exit(1));
-          }
 
           let tmpdir = tempfile::tempdir().unwrap_or_else(|err| {
             eprintln!("failed to create tempdir: {err}");
@@ -563,6 +540,11 @@ fn compile_file_checked(
   opts.builtins = !cli.no_builtins;
   opts.emit = emit;
   opts.output = output;
+  // `native-js` supports emitting an extra `.ll` file regardless of the primary `EmitKind`. Use
+  // that for the checked pipeline so `--emit-llvm` does not require compiling twice.
+  if emit != EmitKind::LlvmIr {
+    opts.emit_ir = cli.emit_llvm.clone();
+  }
 
   match compile_program(&program, entry_id, &opts) {
     Ok(artifact) => Ok(artifact),

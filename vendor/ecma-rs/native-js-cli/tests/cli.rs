@@ -549,6 +549,53 @@ fn checked_pipeline_run_prints_stdout() {
 }
 
 #[test]
+fn checked_pipeline_build_with_emit_llvm_writes_executable_and_ir_file() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { print(1 + 2); return 7; }\n",
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  let ll = tmp.path().join("out.ll");
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .arg("--emit-llvm")
+    .arg(&ll)
+    .assert()
+    .success();
+
+  assert!(out.is_file(), "expected executable at {}", out.display());
+  assert!(ll.is_file(), "expected LLVM IR at {}", ll.display());
+
+  let text = fs::read_to_string(&ll).unwrap();
+  assert!(
+    text.contains("define i32 @main"),
+    "expected IR to define a `main` function"
+  );
+  assert!(
+    text.contains("@__nativejs_def_"),
+    "expected IR to contain native-js definition symbols"
+  );
+  assert!(
+    text.contains("gc \"coreclr\""),
+    "expected IR to use native-js GC strategy"
+  );
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(7));
+}
+
+#[test]
 fn checked_pipeline_rejects_entry_fn_flag() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");

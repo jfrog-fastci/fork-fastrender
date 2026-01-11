@@ -579,7 +579,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
   fn build_c_main(
     &mut self,
     ts_main: FunctionValue<'ctx>,
-    main_ret_kind: TsAbiKind,
+    _main_ret_kind: TsAbiKind,
     init_order: &[FileId],
   ) {
     // Define `main` with no parameters (`int main(void)`), since our generated
@@ -612,61 +612,10 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .left()
       .map(|v| v.into_int_value())
       .unwrap_or_else(|| self.i32_ty.const_zero());
-
-    match main_ret_kind {
-      TsAbiKind::Void => {
-        let puts = declare_puts(self.context, &self.module);
-        let undef = builder
-          .build_global_string_ptr("undefined", "native_js_entry_undefined")
-          .expect("failed to build undefined string");
-        let call = builder
-          .build_call(puts, &[undef.as_pointer_value().into()], "puts")
-          .expect("failed to build puts call");
-        crate::stack_walking::mark_call_notail(call);
-      }
-      TsAbiKind::Number => {
-        let printf = declare_printf(self.context, &self.module);
-        let fmt = builder
-          .build_global_string_ptr("%d\n", "native_js_entry_fmt_i32")
-          .expect("failed to create printf format string");
-        let call = builder
-          .build_call(
-            printf,
-            &[fmt.as_pointer_value().into(), ret_val.into()],
-            "native_js_entry_print",
-          )
-          .expect("failed to build printf call");
-        crate::stack_walking::mark_call_notail(call);
-      }
-      TsAbiKind::Boolean => {
-        let puts = declare_puts(self.context, &self.module);
-        let true_ptr = builder
-          .build_global_string_ptr("true", "native_js_entry_true")
-          .expect("failed to build true string");
-        let false_ptr = builder
-          .build_global_string_ptr("false", "native_js_entry_false")
-          .expect("failed to build false string");
-        let is_true = builder
-          .build_int_compare(IntPredicate::NE, ret_val, self.i32_ty.const_zero(), "is_true")
-          .expect("failed to build bool compare");
-        let sel = builder
-          .build_select(
-            is_true,
-            true_ptr.as_pointer_value(),
-            false_ptr.as_pointer_value(),
-            "bool_str",
-          )
-          .expect("failed to build bool select")
-          .into_pointer_value();
-        let call = builder
-          .build_call(puts, &[sel.into()], "puts")
-          .expect("failed to build puts call");
-        crate::stack_walking::mark_call_notail(call);
-      }
-    };
-
+    // Chosen convention: the value returned from `export function main()` becomes the process
+    // exit code (truncated by the OS to 8 bits on Unix).
     builder
-      .build_return(Some(&self.i32_ty.const_zero()))
+      .build_return(Some(&ret_val))
       .expect("failed to build return");
   }
 
@@ -2241,15 +2190,6 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
   let i32_ty = context.i32_type();
   let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
-}
-
-fn declare_puts<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("puts") {
-    return existing;
-  }
-  let i32_ty = context.i32_type();
-  let ptr_ty = context.ptr_type(AddressSpace::default());
-  module.add_function("puts", i32_ty.fn_type(&[ptr_ty.into()], false), None)
 }
 
 fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'ctx>> {
