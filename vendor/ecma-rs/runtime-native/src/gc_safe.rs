@@ -75,7 +75,7 @@ impl Drop for GcSafeGuard {
 ///
 /// If the current thread is not registered with the runtime thread registry, this
 /// is a no-op guard.
-#[inline]
+#[inline(never)]
 pub fn enter_gc_safe_region() -> GcSafeGuard {
   let Some(thread) = registry::current_thread_state() else {
     return GcSafeGuard {

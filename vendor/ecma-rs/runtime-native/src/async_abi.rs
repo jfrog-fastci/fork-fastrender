@@ -257,36 +257,46 @@ const_assert!(
 );
 
 const _: () = {
-  assert!(core::mem::align_of::<PromiseHeader>() >= 8);
+  use core::mem::{align_of, offset_of, size_of};
+
+  assert!(align_of::<PromiseHeader>() == 8);
+  assert!(size_of::<PromiseHeader>() == 24);
+  assert!(offset_of!(PromiseHeader, state) == 0);
+  assert!(offset_of!(PromiseHeader, waiters) == 8);
+  assert!(offset_of!(PromiseHeader, flags) == 16);
 
   // Keep the Rust ABI layout in sync with `include/runtime_native.h`.
-  const PTR: usize = core::mem::size_of::<*const u8>();
-  const U32: usize = core::mem::size_of::<u32>();
+  const PTR: usize = size_of::<*const u8>();
+  const U32: usize = size_of::<u32>();
 
-  let ptr_size = core::mem::size_of::<usize>();
-  let ptr_align = core::mem::align_of::<usize>();
+  let ptr_size = size_of::<usize>();
+  let ptr_align = align_of::<usize>();
 
   // C header layout (`include/runtime_native.h`):
   //   vtable ptr, promise ptr, next_waiter ptr, flags u32
-  assert!(core::mem::align_of::<Coroutine>() == ptr_align);
-  let raw_size = (3 * ptr_size) + core::mem::size_of::<u32>();
+  assert!(align_of::<Coroutine>() == ptr_align);
+  assert!(offset_of!(Coroutine, vtable) == 0);
+  assert!(offset_of!(Coroutine, promise) == ptr_size);
+  assert!(offset_of!(Coroutine, next_waiter) == 2 * ptr_size);
+  assert!(offset_of!(Coroutine, flags) == 3 * ptr_size);
+  let raw_size = (3 * ptr_size) + size_of::<u32>();
   let expected_size = (raw_size + (ptr_align - 1)) & !(ptr_align - 1);
-  assert!(core::mem::size_of::<Coroutine>() == expected_size);
+  assert!(size_of::<Coroutine>() == expected_size);
 
   // `Coroutine` layout (vtable, promise, next_waiter, flags).
-  assert!(core::mem::offset_of!(Coroutine, vtable) == 0);
-  assert!(core::mem::offset_of!(Coroutine, promise) == PTR);
-  assert!(core::mem::offset_of!(Coroutine, next_waiter) == PTR * 2);
-  assert!(core::mem::offset_of!(Coroutine, flags) == PTR * 3);
+  assert!(offset_of!(Coroutine, vtable) == 0);
+  assert!(offset_of!(Coroutine, promise) == PTR);
+  assert!(offset_of!(Coroutine, next_waiter) == PTR * 2);
+  assert!(offset_of!(Coroutine, flags) == PTR * 3);
 
   // `CoroutineVTable` layout (resume, destroy, promise_size/align/shape_id, abi_version, reserved).
-  assert!(core::mem::offset_of!(CoroutineVTable, resume) == 0);
-  assert!(core::mem::offset_of!(CoroutineVTable, destroy) == PTR);
-  assert!(core::mem::offset_of!(CoroutineVTable, promise_size) == PTR * 2);
-  assert!(core::mem::offset_of!(CoroutineVTable, promise_align) == PTR * 2 + U32);
-  assert!(core::mem::offset_of!(CoroutineVTable, promise_shape_id) == PTR * 2 + U32 * 2);
-  assert!(core::mem::offset_of!(CoroutineVTable, abi_version) == PTR * 2 + U32 * 3);
-  assert!(core::mem::offset_of!(CoroutineVTable, reserved) == PTR * 2 + U32 * 4);
+  assert!(offset_of!(CoroutineVTable, resume) == 0);
+  assert!(offset_of!(CoroutineVTable, destroy) == PTR);
+  assert!(offset_of!(CoroutineVTable, promise_size) == PTR * 2);
+  assert!(offset_of!(CoroutineVTable, promise_align) == PTR * 2 + U32);
+  assert!(offset_of!(CoroutineVTable, promise_shape_id) == PTR * 2 + U32 * 2);
+  assert!(offset_of!(CoroutineVTable, abi_version) == PTR * 2 + U32 * 3);
+  assert!(offset_of!(CoroutineVTable, reserved) == PTR * 2 + U32 * 4);
 };
 
 #[allow(dead_code)]
