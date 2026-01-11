@@ -1668,7 +1668,15 @@ fn inline_svg_use_references<'a>(
       let res = match fetcher.fetch_with_request(req) {
         Ok(res) => res,
         // Best-effort: keep the `<use>` element intact if the sprite fetch fails.
-        Err(_) => continue,
+        //
+        // Render-control failures (deadline/cancel/budgets) are not ordinary fetch errors and must
+        // abort the render.
+        Err(err) => {
+          if matches!(&err, Error::Render(_)) {
+            return Err(err);
+          }
+          continue;
+        }
       };
       if let Some(ctx) = ctx {
         if let Err(err) =
@@ -2295,7 +2303,12 @@ fn inline_svg_image_references<'a>(
 
           let res = match fetcher.fetch_with_request(req) {
             Ok(res) => res,
-            Err(_) => continue,
+            Err(err) => {
+              if matches!(&err, Error::Render(_)) {
+                return Err(err);
+              }
+              continue;
+            }
           };
 
           if let Some(ctx) = ctx {
@@ -2452,7 +2465,12 @@ fn inline_svg_image_references<'a>(
 
         let res = match fetcher.fetch_with_request(req) {
           Ok(res) => res,
-          Err(_) => continue,
+          Err(err) => {
+            if matches!(&err, Error::Render(_)) {
+              return Err(err);
+            }
+            continue;
+          }
         };
 
         if let Some(ctx) = ctx {
@@ -14073,6 +14091,34 @@ impl Clone for ImageCache {
   }
 
   #[test]
+  fn inline_svg_use_references_propagates_render_errors_from_fetcher() {
+    struct RenderErrorFetcher;
+
+    impl ResourceFetcher for RenderErrorFetcher {
+      fn fetch(&self, _url: &str) -> crate::error::Result<FetchedResource> {
+        Err(Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          elapsed: Duration::from_millis(0),
+        }))
+      }
+    }
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="https://example.test/sprite.svg#icon"/></svg>"#;
+    let err = inline_svg_use_references(svg, "https://example.test/main.svg", &RenderErrorFetcher, None)
+      .expect_err("expected render error to propagate");
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
+      "expected paint-stage render timeout, got {err:?}"
+    );
+  }
+
+  #[test]
   fn svg_external_use_sprite_blocked_by_policy() {
     let doc_url = "https://example.test/";
     let main_url = "https://example.test/main.svg";
@@ -14468,6 +14514,35 @@ impl Clone for ImageCache {
         .iter()
         .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for feImage href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn inline_svg_image_references_propagates_render_errors_from_fetcher() {
+    struct RenderErrorFetcher;
+
+    impl ResourceFetcher for RenderErrorFetcher {
+      fn fetch(&self, _url: &str) -> crate::error::Result<FetchedResource> {
+        Err(Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          elapsed: Duration::from_millis(0),
+        }))
+      }
+    }
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.test/img.png" width="1" height="1"/></svg>"#;
+    let err =
+      inline_svg_image_references(svg, "https://example.test/main.svg", &RenderErrorFetcher, None)
+        .expect_err("expected render error to propagate");
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
+      "expected paint-stage render timeout, got {err:?}"
     );
   }
 
