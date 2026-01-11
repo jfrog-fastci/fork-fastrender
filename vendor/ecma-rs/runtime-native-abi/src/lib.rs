@@ -781,6 +781,9 @@ extern "C" {
 mod tests {
   use super::*;
   use core::mem::{align_of, size_of};
+  use std::collections::BTreeSet;
+  use std::string::String;
+  use std::vec::Vec;
 
   // Layout invariants (compile-time).
   const _: () = {
@@ -1158,6 +1161,82 @@ mod tests {
     assert!(
       header.contains("rt_thread_register(RtThreadKind"),
       "generated header missing expected signature for `rt_thread_register(RtThreadKind ...)`"
+    );
+  }
+
+  fn extract_rt_function_names(source: &str) -> BTreeSet<String> {
+    fn is_ident_byte(b: u8) -> bool {
+      b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    let bytes = source.as_bytes();
+    let mut names = BTreeSet::new();
+
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+      if bytes[i] != b'r' || bytes[i + 1] != b't' || bytes[i + 2] != b'_' {
+        i += 1;
+        continue;
+      }
+
+      if i > 0 && is_ident_byte(bytes[i - 1]) {
+        // Avoid matching substrings like `__rt_foo`.
+        i += 1;
+        continue;
+      }
+
+      let start = i;
+      i += 3;
+      while i < bytes.len() && is_ident_byte(bytes[i]) {
+        i += 1;
+      }
+
+      let name = &source[start..i];
+
+      // Skip whitespace between the identifier and the call/parens.
+      let mut j = i;
+      while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+      }
+
+      if j < bytes.len() && bytes[j] == b'(' {
+        names.insert(String::from(name));
+      }
+    }
+
+    names
+  }
+
+  #[test]
+  fn rt_function_surface_matches_runtime_native_h() {
+    let runtime_native_h_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("../runtime-native/include/runtime_native.h");
+    let runtime_native_h = std::fs::read_to_string(&runtime_native_h_path)
+      .unwrap_or_else(|err| panic!("failed to read {}: {err}", runtime_native_h_path.display()));
+
+    let generated_header_path = std::path::Path::new(env!("OUT_DIR")).join("runtime_native_abi.h");
+    let generated_header = std::fs::read_to_string(&generated_header_path)
+      .unwrap_or_else(|err| panic!("failed to read {}: {err}", generated_header_path.display()));
+
+    let required = extract_rt_function_names(&runtime_native_h);
+    assert!(
+      required.contains("rt_thread_init"),
+      "failed to extract any rt_* functions from {}",
+      runtime_native_h_path.display()
+    );
+
+    let provided = extract_rt_function_names(&generated_header);
+    assert!(
+      provided.contains("rt_thread_init"),
+      "failed to extract any rt_* functions from generated header {}",
+      generated_header_path.display()
+    );
+
+    let missing: Vec<_> = required.difference(&provided).cloned().collect();
+    assert!(
+      missing.is_empty(),
+      "runtime_native_abi.h is missing rt_* functions declared in runtime_native.h:\n{}",
+      missing.join("\n")
     );
   }
 }
