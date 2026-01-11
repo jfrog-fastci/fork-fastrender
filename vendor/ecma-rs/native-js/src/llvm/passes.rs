@@ -48,6 +48,10 @@ pub enum PassError {
   RunPasses { pipeline: String, message: String },
   #[error("LLVM module verification failed after pipeline `{pipeline}`: {message}")]
   Verify { pipeline: String, message: String },
+  #[error(
+    "GC-managed function `{function}` contains a `callbr` instruction, which LLVM 18's `rewrite-statepoints-for-gc` pass can crash on: {instruction}"
+  )]
+  UnsupportedCallBrInGcFunction { function: String, instruction: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
@@ -109,6 +113,47 @@ pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassErro
   Ok(())
 }
 
+fn reject_callbr_in_gc_functions(module: &Module<'_>) -> Result<(), PassError> {
+  unsafe {
+    let mut func = LLVMGetFirstFunction(module.as_mut_ptr());
+    while !func.is_null() {
+      // Skip declarations.
+      if LLVMCountBasicBlocks(func) == 0 {
+        func = LLVMGetNextFunction(func);
+        continue;
+      }
+
+      // Only enforce on GC-managed functions (i.e. those with a `gc "<strategy>"` attribute).
+      if LLVMGetGC(func).is_null() {
+        func = LLVMGetNextFunction(func);
+        continue;
+      }
+
+      let func_name = value_name(func);
+
+      let mut bb = LLVMGetFirstBasicBlock(func);
+      while !bb.is_null() {
+        let mut inst = LLVMGetFirstInstruction(bb);
+        while !inst.is_null() {
+          if LLVMGetInstructionOpcode(inst) == LLVMOpcode::LLVMCallBr {
+            return Err(PassError::UnsupportedCallBrInGcFunction {
+              function: func_name,
+              instruction: value_to_string(inst),
+            });
+          }
+
+          inst = LLVMGetNextInstruction(inst);
+        }
+        bb = LLVMGetNextBasicBlock(bb);
+      }
+
+      func = LLVMGetNextFunction(func);
+    }
+  }
+
+  Ok(())
+}
+
 /// Runs LLVM's `rewrite-statepoints-for-gc` pass on `module`.
 ///
 /// This rewrites normal calls into `llvm.experimental.gc.statepoint.*` and
@@ -122,6 +167,7 @@ pub fn rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   super::debug_lint_module_gc_pointer_discipline(module)?;
+  reject_callbr_in_gc_functions(module)?;
 
   let pipeline = if cfg!(debug_assertions) {
     "rewrite-statepoints-for-gc,verify<safepoint-ir>"
@@ -166,6 +212,7 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   target_machine: &TargetMachine,
 ) -> Result<(), PassError> {
   super::debug_lint_module_gc_pointer_discipline(module)?;
+  reject_callbr_in_gc_functions(module)?;
 
   ensure_gc_safepoint_poll_decl(module)?;
 

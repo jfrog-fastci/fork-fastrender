@@ -1461,6 +1461,38 @@ fn relocation_is_chained_across_multiple_statepoints() {
 }
 
 #[test]
+fn rewrite_statepoints_rejects_callbr_in_gc_function() {
+  init_llvm();
+
+  let llvm_ir = r#"
+define void @test() gc "coreclr" {
+entry:
+  callbr void asm sideeffect "", "!i"() to label %cont [label %l1]
+cont:
+  ret void
+l1:
+  br label %cont
+}
+"#;
+
+  let context = Context::create();
+  let buffer = MemoryBuffer::create_from_memory_range_copy(llvm_ir.as_bytes(), "test.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{llvm_ir}"));
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_err();
+  assert!(
+    matches!(err, passes::PassError::UnsupportedCallBrInGcFunction { .. }),
+    "expected UnsupportedCallBrInGcFunction, got: {err}"
+  );
+}
+
+#[test]
 fn object_emits_llvm_stackmaps_section() {
   let before = r#"
  declare void @bar()
