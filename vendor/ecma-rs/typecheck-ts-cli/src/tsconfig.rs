@@ -73,6 +73,8 @@ struct RawCompilerOptions {
   #[serde(default)]
   strict_native: Option<bool>,
   #[serde(default)]
+  native_strict: Option<bool>,
+  #[serde(default)]
   no_lib: Option<bool>,
   #[serde(default)]
   no_default_lib: Option<bool>,
@@ -373,6 +375,7 @@ fn merge_raw_compiler_options(
       .no_unchecked_indexed_access
       .or(base.no_unchecked_indexed_access),
     strict_native: overlay.strict_native.or(base.strict_native),
+    native_strict: overlay.native_strict.or(base.native_strict),
     no_lib: overlay.no_lib.or(base.no_lib),
     no_default_lib: overlay.no_default_lib.or(base.no_default_lib),
     use_define_for_class_fields: overlay
@@ -465,6 +468,9 @@ fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions
   }
   if let Some(value) = raw.strict_native {
     options.strict_native = value;
+  }
+  if let Some(value) = raw.native_strict {
+    options.native_strict = value;
   }
 
   if let Some(types) = raw.types.as_ref() {

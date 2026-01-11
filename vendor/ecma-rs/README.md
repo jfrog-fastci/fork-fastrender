@@ -125,7 +125,7 @@ Type-check a file:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts
 
 # Enforce additional strict-native checks (repo-specific; see EXEC.plan):
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck --strict-native fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli --locked -- typecheck --native-strict fixtures/basic.ts
 ```
 
 Query types/symbols by **byte offset** (UTF-8):

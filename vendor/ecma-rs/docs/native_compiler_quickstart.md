@@ -54,16 +54,25 @@ Strict-native rejects (hard error, not warning):
 - `any` (explicit or inferred)
 - Type assertions (`x as T`, `<T>x`)
 - Non-null assertions (`x!`)
-- Dynamic code execution: `eval()`, `new Function()`
+- Dynamic code execution: `eval()`, `Function()`, `new Function()`
 - `with`
 - `arguments`
 - Computed property access with non-constant keys in strict paths (`obj[key]` where `key` is not a constant)
 - Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
 - `Proxy` (disallowed or extremely restricted)
 
-**Enforced today** by `typecheck-ts` when you pass `--strict-native` (diagnostics use the `TN####` prefix):
+**Enforced today** by `typecheck-ts` when you pass `--native-strict` (or legacy `--strict-native`):
 
-- `TN0001`: explicit `any` type annotations (the `any` keyword in a type position)
+- `TC4000`: `any` (explicit or inferred)
+- `TC4001`: `eval(...)` (incl `globalThis.eval(...)`)
+- `TC4002`: `Function(...)` / `new Function(...)`
+- `TC4003`: `with`
+- `TC4004`: `arguments` (in function scopes)
+- `TC4005`: unsafe type assertions
+- `TC4006`: non-null assertions on maybe-nullish values
+- `TC4007`: computed property access with non-constant keys (`obj[key]`)
+- `TC4008`: `Proxy` (incl `Proxy.revocable(...)`)
+- `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, etc.)
 
 > Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
 > proceeds.
@@ -99,7 +108,7 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --native-strict path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -109,11 +118,11 @@ Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs works
 ```bash
 # From the repo root (recommended):
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -125,7 +134,7 @@ Tip: add `--json` to emit structured diagnostics/output for tooling.
 
 ### Native strict-subset validator tests (`native-js`)
 
-In addition to the checker’s `--strict-native` mode, `native-js` has a (currently broader) strict-subset validator
+In addition to the checker’s `--native-strict` / `--strict-native` mode, `native-js` has a (currently broader) strict-subset validator
 with `NJS####` diagnostics. To run its regression tests:
 
 ```bash
@@ -283,8 +292,8 @@ For exact discovery/execution rules, see `native-oracle-harness/src/lib.rs` (the
 
 Strict-native checks can come from multiple layers:
 
-- `TN####` codes: emitted by `typecheck-ts` when `--strict-native` is enabled.
-  - Today this is small (currently `TN0001` for explicit `any`), and is expected to grow.
+- `TC40xx` codes: emitted by `typecheck-ts` when `--native-strict` (or legacy `--strict-native`) is enabled.
+  - Today this is `TC4000`–`TC4009` and is expected to grow.
 - `NJS####` codes: emitted by `native-js` strict subset validation.
   - `native_js::validate::validate_strict_subset` is used by the typechecked `native-js` AOT CLI.
   - `native_js::strict::validate` is a legacy validator that still emits `NJS####` codes for tests/tooling.

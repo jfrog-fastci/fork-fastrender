@@ -13,7 +13,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck 
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
 
 # Enforce the repo's strict-native TypeScript subset (see EXEC.plan):
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --native-strict fixtures/basic.ts
 
 # Load a real project via tsconfig.json (entries are optional in project mode):
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --project path/to/tsconfig.json
@@ -42,7 +42,8 @@ bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.
 - `--native-strict`: enforce the AOT-friendly TypeScript subset described in
   `EXEC.plan`.
 - `--strict-native`: legacy alias for `--native-strict` (also available via
-  `compilerOptions.strictNative` in `tsconfig.json`).
+  `compilerOptions.nativeStrict` or `compilerOptions.strictNative` in
+  `tsconfig.json`).
 - `--trace` / `--profile`: emit tracing spans in JSON (compatible with the
   harness profiling format).
 

@@ -31,8 +31,7 @@ repo-wide policy and registry):
 - `BIND####`: `semantic-js` binder
 - `LOWER####`: `hir-js` lowering
 - `VMJS####`: `vm-js` VM/runtime
-- `TC####`: `typecheck-ts` type checker
-- `TN####`: `typecheck-ts` strict-native diagnostics
+- `TC####`: `typecheck-ts` type checker (including strict-native `TC40xx` diagnostics)
 - `TS####` / `TS#####`: upstream TypeScript compiler codes (used for parity)
 - `OPT####`: `optimize-js`
 - `MINIFYTS####`: `ts-erase` TypeScript erasure/lowering

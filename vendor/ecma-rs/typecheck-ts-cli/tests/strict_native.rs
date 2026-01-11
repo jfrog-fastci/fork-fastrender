@@ -109,7 +109,7 @@ eval("1+1");
     .arg(entry.as_os_str())
     .assert()
     .failure()
-    .stdout(contains(codes::STRICT_NATIVE_FORBIDDEN_EVAL.as_str()));
+    .stdout(contains(codes::NATIVE_STRICT_EVAL.as_str()));
 }
 
 #[test]
@@ -134,6 +134,6 @@ dict[key];
     .assert()
     .failure()
     .stdout(contains(
-      codes::STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT.as_str(),
+      codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str(),
     ));
 }
