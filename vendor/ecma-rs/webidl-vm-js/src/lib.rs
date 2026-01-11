@@ -345,7 +345,7 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
 
     let iterator = self
       .vm
-      .call(&mut self.scope, method, Value::Object(object), &[])?;
+      .call_without_host(&mut self.scope, method, Value::Object(object), &[])?;
     let Value::Object(iterator) = iterator else {
       return Err(self.type_error("Iterator method did not return an object"));
     };
@@ -366,7 +366,7 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
 
     let result = self
       .vm
-      .call(&mut self.scope, next_method, Value::Object(iterator), &[])?;
+      .call_without_host(&mut self.scope, next_method, Value::Object(iterator), &[])?;
     let Value::Object(result_obj) = result else {
       return Err(self.type_error("IteratorNext(iterator): next() did not return an object"));
     };
