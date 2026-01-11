@@ -587,9 +587,9 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 /// - rebuilding it from `objs`, retaining only objects for which `object_has_young_refs` returns
 ///   `true`.
 ///
-/// `objs` is the set of candidate old-generation objects that might be remembered.
-///
-/// For objects that are removed, this clears the per-object `REMEMBERED` bit.
+/// `objs` supplies the set of candidate old-generation objects to consider during the rebuild; the
+/// runtime cannot yet enumerate all heap objects from the exported ABI. Objects not retained will
+/// have their per-object `REMEMBERED` bit cleared.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
   objs: &[*mut u8],

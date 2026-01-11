@@ -118,8 +118,8 @@ pub fn scan_reloc_pairs(
     return Ok(Vec::new());
   };
 
-  // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`:
-  // LLVM allows overriding the statepoint ID (`"statepoint-id"` attribute).
+  // Detect LLVM `gc.statepoint` records by their structural prefix (3 constant header locations).
+  // LLVM allows overriding the statepoint ID (`patchpoint_id`) per callsite.
   let looks_like_statepoint = callsite.record.locations.len()
     >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
     && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
