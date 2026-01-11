@@ -1641,6 +1641,19 @@ impl<'a> ResolvePass<'a> {
           self.expr_resolutions.insert(span, sym);
         }
       }
+      AstExpr::IdPat(id) => {
+        // `IdPat` occurs in expression position (e.g. assignment targets like `x = 1`).
+        // Treat it as a normal identifier reference so `symbol_at` works at the
+        // pattern span.
+        let span = span_for_name(expr.loc, &id.stx.name);
+        let sym = self
+          .builder
+          .resolve(self.current_scope(), &id.stx.name, Namespace::VALUE);
+        expr.assoc.set(ResolvedSymbol(sym));
+        if let Some(sym) = sym {
+          self.expr_resolutions.insert(span, sym);
+        }
+      }
       AstExpr::Binary(bin) => {
         self.walk_expr(&mut bin.stx.left);
         self.walk_expr(&mut bin.stx.right);
@@ -3096,6 +3109,19 @@ impl<'a> ResolveTablesPass<'a> {
   fn walk_expr(&mut self, expr: &Node<AstExpr>) {
     match &*expr.stx {
       AstExpr::Id(id) => {
+        let span = span_for_name(expr.loc, &id.stx.name);
+        let sym = self
+          .builder
+          .resolve(self.current_scope(), &id.stx.name, Namespace::VALUE);
+        if let Some(sym) = sym {
+          self.expr_resolutions.insert(span, sym);
+          self.tables.record_expr_resolution(span, sym);
+        }
+      }
+      AstExpr::IdPat(id) => {
+        // `IdPat` occurs in expression position (e.g. assignment targets like `x = 1`).
+        // Resolve it the same way as `Id` so downstream consumers can use spans
+        // (and `Program::symbol_at`) for identifier patterns.
         let span = span_for_name(expr.loc, &id.stx.name);
         let sym = self
           .builder
