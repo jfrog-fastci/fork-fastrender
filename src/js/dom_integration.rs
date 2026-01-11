@@ -656,7 +656,9 @@ mod tests {
     dom.append_child(script, text).expect("append_child");
 
     let mut host = TestHost::new(dom);
-    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
@@ -674,6 +676,43 @@ mod tests {
       host.events,
       vec![ScriptElementEvent::Error],
       "expected importmap scripts with src to queue an error event task"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_script_with_src_is_ignored_when_module_scripts_disabled() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom.append_child(dom.root(), script).expect("append_child");
+    dom
+      .set_attribute(script, "type", "importmap")
+      .expect("set_attribute");
+    dom
+      .set_attribute(script, "src", "https://example.invalid/map.json")
+      .expect("set_attribute");
+    let text = dom.create_text("{\"imports\":{}}");
+    dom.append_child(script, text).expect("append_child");
+
+    let mut host = TestHost::new(dom);
+    // Default JsExecutionOptions do not support module scripts.
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no fetch to be started for importmap scripts with src"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no execution for importmap scripts"
+    );
+    assert!(
+      host.events.is_empty(),
+      "expected importmap scripts to be ignored when module scripts are disabled"
     );
     Ok(())
   }
