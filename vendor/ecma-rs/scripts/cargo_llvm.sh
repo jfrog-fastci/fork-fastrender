@@ -26,6 +26,12 @@ CALLER_DIR="$(pwd)"
 
 argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
+  # Stop once we reach the argument delimiter. Anything after `--` is forwarded
+  # to rustc / the test harness / the executed binary, and should not be
+  # rewritten.
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
   if [[ "${argv[$i]}" == "--manifest-path" ]]; then
     path="${argv[$((i + 1))]:-}"
     if [[ -n "${path}" && "${path}" != /* ]]; then
