@@ -7,6 +7,9 @@
       flags: ALLOCATES | NONDETERMINISTIC
       throws: Maybe
   purity: Impure
+  parallelizable: true
+  idempotent: false
+  deterministic: false
 
 - name: node:crypto.createHash
   aliases:
@@ -17,6 +20,10 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
 
 - name: node:crypto.randomUUID
   aliases:
@@ -27,5 +34,9 @@
       flags: ALLOCATES | NONDETERMINISTIC
       throws: Maybe
   purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
   properties:
     encoding.output: ascii

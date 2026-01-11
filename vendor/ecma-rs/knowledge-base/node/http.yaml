@@ -7,6 +7,10 @@
       flags: IO | NETWORK
       throws: Maybe
   purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
 
 - name: node:http.get
   aliases:
@@ -17,6 +21,10 @@
       flags: IO | NETWORK
       throws: Maybe
   purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
 
 - name: node:http.createServer
   aliases:
@@ -27,3 +35,7 @@
       flags: IO | NETWORK
       throws: Maybe
   purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false

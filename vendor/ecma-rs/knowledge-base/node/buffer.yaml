@@ -8,6 +8,10 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
 
 - name: node:buffer.Buffer.alloc
   aliases:
@@ -19,6 +23,10 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
 
 - name: node:buffer.Buffer.isBuffer
   aliases:
@@ -27,6 +35,10 @@
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
 
 - name: node:buffer.Buffer.byteLength
   aliases:
@@ -35,3 +47,7 @@
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

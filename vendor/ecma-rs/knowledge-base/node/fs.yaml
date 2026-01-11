@@ -5,6 +5,7 @@
   effects: Io
   purity: ReadOnly
   async: true
+  parallelizable: true
   idempotent: true
   deterministic: false
 
@@ -15,6 +16,7 @@
   effects: Io
   purity: ReadOnly
   async: false
+  parallelizable: true
   idempotent: true
   deterministic: false
 
@@ -25,7 +27,9 @@
   effects: Io
   purity: Impure
   async: true
+  parallelizable: false
   idempotent: false
+  deterministic: false
 
 - name: node:fs.writeFileSync
   aliases:
@@ -34,7 +38,9 @@
   effects: Io
   purity: Impure
   async: false
+  parallelizable: false
   idempotent: false
+  deterministic: false
 
 - name: node:fs.stat
   aliases:
@@ -42,6 +48,10 @@
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.statSync
   aliases:
@@ -49,6 +59,10 @@
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.readdir
   aliases:
@@ -56,6 +70,10 @@
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.readdirSync
   aliases:
@@ -63,6 +81,10 @@
   since: "v0.1.0"
   effects: Io
   purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.existsSync
   aliases:
@@ -73,6 +95,10 @@
       flags: IO
       throws: Never
   purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.promises.readFile
   aliases:
@@ -81,6 +107,7 @@
   effects: Io
   purity: ReadOnly
   async: true
+  parallelizable: true
   idempotent: true
   deterministic: false
 
@@ -91,7 +118,9 @@
   effects: Io
   purity: Impure
   async: true
+  parallelizable: false
   idempotent: false
+  deterministic: false
 
 - name: node:fs.promises.stat
   aliases:
@@ -99,6 +128,10 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.promises.readdir
   aliases:
@@ -106,6 +139,10 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs.mkdir
   aliases:
@@ -113,6 +150,10 @@
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.mkdirSync
   aliases:
@@ -120,6 +161,10 @@
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.promises.mkdir
   aliases:
@@ -127,6 +172,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.rm
   aliases:
@@ -134,6 +183,10 @@
   since: "v14.14.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.rmSync
   aliases:
@@ -141,6 +194,10 @@
   since: "v14.14.0"
   effects: Io
   purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.promises.rm
   aliases:
@@ -148,6 +205,10 @@
   since: "v14.14.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.unlink
   aliases:
@@ -155,6 +216,10 @@
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.unlinkSync
   aliases:
@@ -162,6 +227,10 @@
   since: "v0.1.0"
   effects: Io
   purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.promises.unlink
   aliases:
@@ -169,6 +238,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.copyFile
   aliases:
@@ -176,6 +249,10 @@
   since: "v8.5.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.copyFileSync
   aliases:
@@ -183,6 +260,10 @@
   since: "v8.5.0"
   effects: Io
   purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs.promises.copyFile
   aliases:
@@ -190,6 +271,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs/promises.readFile
   aliases:
@@ -197,6 +282,10 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs/promises.writeFile
   aliases:
@@ -204,6 +293,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs/promises.stat
   aliases:
@@ -211,6 +304,10 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs/promises.readdir
   aliases:
@@ -218,6 +315,10 @@
   since: "v10.0.0"
   effects: Io
   purity: ReadOnly
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
 
 - name: node:fs/promises.mkdir
   aliases:
@@ -225,6 +326,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs/promises.rm
   aliases:
@@ -232,6 +337,10 @@
   since: "v14.14.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs/promises.unlink
   aliases:
@@ -239,6 +348,10 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
 
 - name: node:fs/promises.copyFile
   aliases:
@@ -246,3 +359,7 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
