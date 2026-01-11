@@ -20,6 +20,82 @@ use fastrender::Size;
 use std::sync::Arc;
 
 #[test]
+fn abspos_insets_fill_positioned_parent_padding_box_in_nested_block_layout() {
+  // Regression test: `layout_block_child` translates in-flow fragments from the parent's content
+  // coordinate space (0,0 at the content edge) into border-box coordinates (so padding offsets
+  // children correctly). Out-of-flow positioned children were inserted after that translation
+  // without applying the same shift, which caused abspos descendants that fill the containing
+  // block (`top/right/bottom/left: 0`) to be offset by -padding.
+  let mut root_style = ComputedStyle::default();
+  root_style.position = Position::Relative;
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.position = Position::Relative;
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.height = Some(Length::px(50.0));
+  parent_style.padding_left = Length::px(20.0);
+  parent_style.padding_top = Length::px(10.0);
+  parent_style.padding_right = Length::px(30.0);
+  parent_style.padding_bottom = Length::px(40.0);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.top = InsetValue::Length(Length::px(0.0));
+  child_style.right = InsetValue::Length(Length::px(0.0));
+  child_style.bottom = InsetValue::Length(Length::px(0.0));
+  child_style.left = InsetValue::Length(Length::px(0.0));
+
+  let abs_child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let parent = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Block,
+    vec![abs_child],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![parent],
+  );
+
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("block layout");
+
+  assert_eq!(fragment.children.len(), 1, "parent fragment should be present");
+  let parent_fragment = &fragment.children[0];
+  assert!(
+    (parent_fragment.bounds.width() - 150.0).abs() < 0.1,
+    "parent border-box width should include padding (got {})",
+    parent_fragment.bounds.width()
+  );
+  assert!(
+    (parent_fragment.bounds.height() - 100.0).abs() < 0.1,
+    "parent border-box height should include padding (got {})",
+    parent_fragment.bounds.height()
+  );
+
+  assert_eq!(
+    parent_fragment.children.len(),
+    1,
+    "absolute child fragment should be present"
+  );
+  let abs_fragment = &parent_fragment.children[0];
+  assert!(
+    abs_fragment.bounds.x().abs() < 0.1 && abs_fragment.bounds.y().abs() < 0.1,
+    "abspos child with zero insets should start at the containing block origin (got ({}, {}))",
+    abs_fragment.bounds.x(),
+    abs_fragment.bounds.y()
+  );
+  assert!(
+    (abs_fragment.bounds.width() - 150.0).abs() < 0.1
+      && (abs_fragment.bounds.height() - 100.0).abs() < 0.1,
+    "abspos child with zero insets should fill the padding box (got {}x{})",
+    abs_fragment.bounds.width(),
+    abs_fragment.bounds.height()
+  );
+}
+
+#[test]
 fn nested_absolute_descendant_uses_positioned_parent_padding_block_in_block_layout() {
   let mut root_style = ComputedStyle::default();
   root_style.position = Position::Relative;
