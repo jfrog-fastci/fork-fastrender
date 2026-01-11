@@ -101,13 +101,13 @@ fn push_reaction(promise: *mut PromiseHeader, node: *mut crate::promise_reaction
   }
 
   // PromiseHeader stores the reaction/waiter list head in `waiters`.
-  let reactions = unsafe { &(*promise).waiters };
+  let waiters = unsafe { &(*promise).waiters };
   loop {
-    let head = reactions.load(Ordering::Acquire) as *mut crate::promise_reactions::PromiseReactionNode;
+    let head = waiters.load(Ordering::Acquire) as *mut crate::promise_reactions::PromiseReactionNode;
     unsafe {
       (*node).next = head;
     }
-    if reactions
+    if waiters
       .compare_exchange(head as usize, node as usize, Ordering::AcqRel, Ordering::Acquire)
       .is_ok()
     {
@@ -122,8 +122,9 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   }
 
   // PromiseHeader stores the reaction/waiter list head in `waiters`.
-  let reactions = unsafe { &(*promise).waiters };
-  let mut head = reactions.swap(0, Ordering::AcqRel) as *mut crate::promise_reactions::PromiseReactionNode;
+  let waiters = unsafe { &(*promise).waiters };
+  let mut head =
+    waiters.swap(0, Ordering::AcqRel) as *mut crate::promise_reactions::PromiseReactionNode;
   if head.is_null() {
     return;
   }

@@ -350,7 +350,11 @@ impl<'a> Cursor<'a> {
 
   fn align_to(&mut self, align: usize) -> Result<(), StackMapParseError> {
     debug_assert!(align.is_power_of_two());
-    let new_offset = (self.offset + (align - 1)) & !(align - 1);
+    let add = self
+      .offset
+      .checked_add(align - 1)
+      .ok_or(StackMapParseError::UnexpectedEof(self.offset))?;
+    let new_offset = add & !(align - 1);
     if new_offset > self.data.len() {
       return Err(StackMapParseError::UnexpectedEof(self.offset));
     }
