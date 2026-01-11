@@ -11,8 +11,9 @@ use crate::js::window_realm::{
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
-  install_window_timers_bindings, DomHost, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome,
-  TaskSource, WindowFetchBindings, WindowFetchEnv,
+  install_window_timers_bindings, install_window_xhr_bindings_with_guard, DomHost, EventLoop,
+  JsExecutionOptions, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchBindings, WindowFetchEnv,
+  WindowXhrBindings, WindowXhrEnv,
 };
 use crate::js::{Clock, RealClock};
 use crate::js::vm_error_format;
@@ -249,6 +250,7 @@ pub struct WindowHostState {
   window: WindowRealm,
   fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
+  _xhr_bindings: WindowXhrBindings,
   webidl_bindings_host: VmJsWebIdlBindingsHostDispatch<WindowHostState>,
   js_execution_options: JsExecutionOptions,
 }
@@ -344,7 +346,7 @@ impl WindowHostState {
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
-    let fetch_bindings = {
+    let (fetch_bindings, xhr_bindings) = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       if let Err(err) = install_window_timers_bindings::<WindowHostState>(vm, realm, heap) {
         unregister_dom_source(dom_source_id);
@@ -355,18 +357,33 @@ impl WindowHostState {
         unregister_dom_source(dom_source_id);
         return Err(Error::Other(err.to_string()));
       }
-      match install_window_fetch_bindings_with_guard::<WindowHostState>(
+      let fetch_bindings = match install_window_fetch_bindings_with_guard::<WindowHostState>(
         vm,
         realm,
         heap,
-        WindowFetchEnv::for_document(fetcher, Some(document_url.clone())),
+        WindowFetchEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone())),
       ) {
         Ok(bindings) => bindings,
         Err(err) => {
           unregister_dom_source(dom_source_id);
           return Err(Error::Other(err.to_string()));
         }
-      }
+      };
+
+      let xhr_bindings = match install_window_xhr_bindings_with_guard::<WindowHostState>(
+        vm,
+        realm,
+        heap,
+        WindowXhrEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone())),
+      ) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+          unregister_dom_source(dom_source_id);
+          return Err(Error::Other(err.to_string()));
+        }
+      };
+
+      (fetch_bindings, xhr_bindings)
     };
 
     let webidl_bindings_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
@@ -382,6 +399,7 @@ impl WindowHostState {
       window,
       fetcher: host_fetcher,
       _fetch_bindings: fetch_bindings,
+      _xhr_bindings: xhr_bindings,
       webidl_bindings_host,
       js_execution_options,
     })

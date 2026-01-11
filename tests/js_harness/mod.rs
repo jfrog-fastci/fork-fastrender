@@ -43,6 +43,7 @@ const JS_BOOTSTRAP: &str = r#"
   g.Headers = undefined;
   g.Request = undefined;
   g.Response = undefined;
+  g.XMLHttpRequest = undefined;
 })();
 "#;
 
