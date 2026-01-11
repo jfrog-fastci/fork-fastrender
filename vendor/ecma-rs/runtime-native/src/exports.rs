@@ -6,6 +6,7 @@ use crate::abi::ValueRef;
 use crate::alloc;
 use crate::async_rt;
 use crate::gc::ObjHeader;
+use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::threading;
 use std::sync::atomic::Ordering;
@@ -201,6 +202,31 @@ pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut crate::abi::RtGcStatsSna
 #[no_mangle]
 pub extern "C" fn rt_gc_stats_reset() {
   crate::gc_stats::reset();
+}
+
+// -----------------------------------------------------------------------------
+// Weak handles (non-owning references)
+// -----------------------------------------------------------------------------
+
+/// Create a new weak handle for `value`.
+///
+/// Weak handles do not keep the referent alive. If the referent is collected, `rt_weak_get`
+/// returns null.
+#[no_mangle]
+pub extern "C" fn rt_weak_add(value: *mut u8) -> u64 {
+  crate::gc::weak::global_weak_add(value).as_u64()
+}
+
+/// Resolve a weak handle back to a pointer, or null if the referent is dead/cleared.
+#[no_mangle]
+pub extern "C" fn rt_weak_get(handle: u64) -> *mut u8 {
+  crate::gc::weak::global_weak_get(WeakHandle::from_u64(handle)).unwrap_or(std::ptr::null_mut())
+}
+
+/// Remove a weak handle.
+#[no_mangle]
+pub extern "C" fn rt_weak_remove(handle: u64) {
+  crate::gc::weak::global_weak_remove(WeakHandle::from_u64(handle));
 }
 
 #[no_mangle]

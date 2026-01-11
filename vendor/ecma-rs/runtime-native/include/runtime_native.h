@@ -105,6 +105,13 @@ void rt_gc_stats_reset(void);
 #endif
 
 // -----------------------------------------------------------------------------
+// Weak references (weak handles)
+// -----------------------------------------------------------------------------
+uint64_t rt_weak_add(uint8_t* value);
+uint8_t* rt_weak_get(uint64_t handle);
+void rt_weak_remove(uint64_t handle);
+
+// -----------------------------------------------------------------------------
 // Strings
 // -----------------------------------------------------------------------------
 StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);

@@ -152,6 +152,9 @@ mod tests {
       "void rt_gc_collect(void);",
       "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
       "void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);",
+      "uint64_t rt_weak_add(uint8_t* value);",
+      "uint8_t* rt_weak_get(uint64_t handle);",
+      "void rt_weak_remove(uint64_t handle);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
@@ -194,6 +197,9 @@ mod tests {
     let _collect: extern "C" fn() = rt_gc_collect;
     let _set_young_range: extern "C" fn(*mut u8, *mut u8) = rt_gc_set_young_range;
     let _get_young_range: unsafe extern "C" fn(*mut *mut u8, *mut *mut u8) = rt_gc_get_young_range;
+    let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
+    let _weak_get: extern "C" fn(u64) -> *mut u8 = rt_weak_get;
+    let _weak_remove: extern "C" fn(u64) = rt_weak_remove;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
@@ -226,6 +232,9 @@ mod tests {
       _collect,
       _set_young_range,
       _get_young_range,
+      _weak_add,
+      _weak_get,
+      _weak_remove,
       _concat,
       _intern,
       _spawn,

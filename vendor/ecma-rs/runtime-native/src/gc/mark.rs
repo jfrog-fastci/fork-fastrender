@@ -1,5 +1,6 @@
 use super::roots::RememberedSet;
 use super::roots::RootSet;
+use super::weak::process_global_weak_handles_major;
 use super::weak::run_weak_cleanups;
 use super::ObjHeader;
 use super::Tracer;
@@ -45,6 +46,7 @@ impl GcHeap {
     }
 
     self.process_weak_handles_major(epoch);
+    process_global_weak_handles_major(self, epoch);
     run_weak_cleanups(self);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);

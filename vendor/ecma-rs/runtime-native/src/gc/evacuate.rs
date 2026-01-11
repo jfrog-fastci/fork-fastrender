@@ -4,6 +4,7 @@ use std::ptr;
 
 use super::roots::RememberedSet;
 use super::roots::RootSet;
+use super::weak::process_global_weak_handles_minor;
 use super::weak::run_weak_cleanups;
 use super::ObjHeader;
 use super::Tracer;
@@ -38,6 +39,7 @@ impl GcHeap {
     // All nursery pointers reachable from roots/remembered objects should now be
     // forwarded to old-gen.
     self.process_weak_handles_minor();
+    process_global_weak_handles_minor(self);
     self.nursery_tlab.clear();
     // SAFETY: `collect_minor` is documented as stop-the-world; there must be no
     // concurrent mutators or allocations when resetting the nursery.
