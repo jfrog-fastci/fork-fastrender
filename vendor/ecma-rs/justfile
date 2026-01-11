@@ -41,6 +41,9 @@ fmt-js-fix:
 utf8-apis:
   bash "{{justfile_directory()}}/scripts/check_utf8_apis.sh"
 
+cargo-hygiene:
+  bash "{{justfile_directory()}}/scripts/check_no_raw_cargo.sh"
+
 diagnostic-codes:
   bash "{{justfile_directory()}}/scripts/check_diagnostic_codes.sh"
 
@@ -128,7 +131,7 @@ test-all: test test-typecheck test-minify
 docs:
   bash "{{justfile_directory()}}/scripts/gen_deps_graph.sh"
 
-lint: fmt fmt-js utf8-apis diagnostic-codes clippy
+lint: fmt fmt-js utf8-apis cargo-hygiene diagnostic-codes clippy
 
 ci: lint check test docs
   git -C "{{justfile_directory()}}" diff --exit-code docs/deps.md
