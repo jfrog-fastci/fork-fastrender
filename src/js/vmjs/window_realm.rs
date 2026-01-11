@@ -916,7 +916,7 @@ impl WindowRealm {
         }
       }
 
-      let mut host_ctx = VmJsHostContext::default();
+      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
 
       let mut first_err: Option<VmError> = None;

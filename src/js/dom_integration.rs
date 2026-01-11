@@ -720,7 +720,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -768,7 +768,7 @@ mod tests {
       .set_attribute(script, "crossorigin", "\u{000B}use-credentials\u{000B}")
       .expect("set_attribute should succeed");
 
-    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_dynamic_script_element_spec(&dom, script, None);
     assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
     Ok(())
   }
@@ -784,7 +784,7 @@ mod tests {
       .set_attribute(script, "crossorigin", "\u{00A0}use-credentials\u{00A0}")
       .expect("set_attribute should succeed");
 
-    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_dynamic_script_element_spec(&dom, script, None);
     assert_eq!(spec.crossorigin, Some(crate::resource::CorsMode::Anonymous));
     Ok(())
   }

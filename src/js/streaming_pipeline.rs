@@ -1128,6 +1128,7 @@ mod tests {
       &mut scheduler,
       &mut event_loop,
       script,
+      Some("https://ex/doc.html"),
     )?;
     assert!(
       !dyn_host.dom.node(script).script_already_started,
@@ -1153,6 +1154,7 @@ mod tests {
       &mut scheduler,
       &mut event_loop,
       script,
+      Some("https://ex/doc.html"),
     )?;
     event_loop.run_until_idle(&mut dyn_host, RunLimits::unbounded())?;
  
@@ -1210,6 +1212,7 @@ mod tests {
       &mut scheduler,
       &mut event_loop,
       script,
+      Some("https://ex/doc.html"),
     )?;
     assert!(
       !dyn_host.dom.node(script).script_already_started,
@@ -1223,6 +1226,7 @@ mod tests {
       &mut scheduler,
       &mut event_loop,
       script,
+      Some("https://ex/doc.html"),
     )?;
     event_loop.run_until_idle(&mut dyn_host, RunLimits::unbounded())?;
  

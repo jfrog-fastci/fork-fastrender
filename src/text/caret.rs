@@ -340,7 +340,7 @@ mod tests {
       text,
       0,
       4,
-      Direction::Rtl,
+      Direction::RightToLeft,
       10.0,
       vec![3, 2, 1, 0],
     )];
@@ -353,8 +353,8 @@ mod tests {
   #[test]
   fn mixed_runs_map_non_monotonic_and_hit_test_round_trips() {
     let text = "abCD";
-    let ltr = run(text, 0, 2, Direction::Ltr, 1.0, vec![0, 1]);
-    let rtl = run(text, 2, 4, Direction::Rtl, 1.0, vec![1, 0]);
+    let ltr = run(text, 0, 2, Direction::LeftToRight, 1.0, vec![0, 1]);
+    let rtl = run(text, 2, 4, Direction::RightToLeft, 1.0, vec![1, 0]);
     let runs = vec![ltr, rtl];
 
     // Logical boundaries (0..=4) map to non-monotonic x positions due to the RTL run.
@@ -374,8 +374,8 @@ mod tests {
   fn selection_segments_split_across_runs_in_visual_order() {
     let text = "abCD";
     // Visual order: RTL run first, then LTR run (start indices are non-monotonic).
-    let rtl = run(text, 2, 4, Direction::Rtl, 1.0, vec![1, 0]);
-    let ltr = run(text, 0, 2, Direction::Ltr, 1.0, vec![0, 1]);
+    let rtl = run(text, 2, 4, Direction::RightToLeft, 1.0, vec![1, 0]);
+    let ltr = run(text, 0, 2, Direction::LeftToRight, 1.0, vec![0, 1]);
     let runs = vec![rtl, ltr];
 
     // Select the logical range covering "bC" (char indices 1..3).
@@ -385,4 +385,3 @@ mod tests {
     assert_eq!(segments, vec![(1.0, 2.0), (3.0, 4.0)]);
   }
 }
-
