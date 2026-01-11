@@ -187,4 +187,71 @@ mod tests {
     assert_ne!(sem.purity, Purity::Pure);
     assert!(sem.effects.contains(EffectSet::MAY_THROW));
   }
+
+  #[test]
+  fn array_filter_pure_callback_is_allocating() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Array.prototype.filter").unwrap();
+    let sem = eval_api_call(
+      api,
+      &CallSiteInfo {
+        callback_purity: Some(Purity::Pure),
+        callback_effects: Some(EffectSet::empty()),
+        ..CallSiteInfo::default()
+      },
+    );
+    assert_eq!(sem.purity, Purity::Allocating);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+  }
+
+  #[test]
+  fn array_reduce_pure_callback_is_pure() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Array.prototype.reduce").unwrap();
+    let sem = eval_api_call(
+      api,
+      &CallSiteInfo {
+        callback_purity: Some(Purity::Pure),
+        callback_effects: Some(EffectSet::empty()),
+        ..CallSiteInfo::default()
+      },
+    );
+    assert_eq!(sem.purity, Purity::Pure);
+    assert!(sem.effects.contains(EffectSet::MAY_THROW));
+    assert!(!sem.effects.contains(EffectSet::IO));
+  }
+
+  #[test]
+  fn array_for_each_propagates_callback_io() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Array.prototype.forEach").unwrap();
+    let sem = eval_api_call(
+      api,
+      &CallSiteInfo {
+        callback_purity: Some(Purity::Impure),
+        callback_effects: Some(EffectSet::IO),
+        ..CallSiteInfo::default()
+      },
+    );
+    assert_eq!(sem.purity, Purity::Impure);
+    assert!(sem.effects.contains(EffectSet::IO));
+  }
+
+  #[test]
+  fn callback_purity_without_effects_is_modeled() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Array.prototype.map").unwrap();
+    let sem = eval_api_call(
+      api,
+      &CallSiteInfo {
+        callback_purity: Some(Purity::Allocating),
+        callback_effects: None,
+        ..CallSiteInfo::default()
+      },
+    );
+
+    assert_eq!(sem.purity, Purity::Allocating);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+    assert!(!sem.effects.contains(EffectSet::UNKNOWN));
+  }
 }
