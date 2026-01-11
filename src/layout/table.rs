@@ -6693,16 +6693,17 @@ impl FormattingContext for TableFormattingContext {
           AvailableSpace::Definite(cb.rect.size.height),
         );
         let implicit_anchor_box_id = child.generated_pseudo.is_some().then_some(root_box_id);
+        let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
+          query_parent_box_id: Some(root_box_id),
+          implicit_anchor_box_id,
+        };
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style_with_anchors(
           &child.style,
           &cb,
           self.viewport_size,
           self.factory.font_context(),
           Some(&anchor_index),
-          crate::layout::anchor_positioning::AnchorQueryContext {
-            query_parent_box_id: Some(root_box_id),
-            implicit_anchor_box_id,
-          },
+          anchor_query,
         );
         let is_replaced = child.is_replaced();
         let has_inline_keyword = positioned_style.width_keyword.is_some()
