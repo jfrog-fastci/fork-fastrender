@@ -1056,15 +1056,19 @@ impl<'a> Parser<'a> {
                   }
                 }
 
-                // Optional argument list (`new Foo(...)`).
-                if p.peek().typ == TT::ParenthesisOpen {
-                  p.consume(); // (
+                // Optional argument list (`new Foo(...)` / `new Foo?.(...)`).
+                if matches!(
+                  p.peek().typ,
+                  TT::ParenthesisOpen | TT::QuestionDotParenthesisOpen
+                ) {
+                  let optional_chaining = p.peek().typ == TT::QuestionDotParenthesisOpen;
+                  p.consume(); // ( / ?.(
                   let arguments = p.call_args(ctx)?;
                   let end = p.require(TT::ParenthesisClose)?;
                   callee = Node::new(
                     callee.loc + end.loc,
                     CallExpr {
-                      optional_chaining: false,
+                      optional_chaining,
                       arguments,
                       callee,
                     },

@@ -16,3 +16,8 @@ derive-visitor = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics", "serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+default = []
+# Enable emission support for `hir-js` semantic operation nodes (Array.map/filter/reduce, Promise.all, etc).
+semantic-ops = ["hir-js/semantic-ops"]

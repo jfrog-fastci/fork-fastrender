@@ -7,6 +7,8 @@ use crate::OptimizeResult;
 use hir_js::{
   AssignOp, BinaryOp, CallExpr, ExprId, ExprKind, MemberExpr, NameId, PatId, UnaryOp, UpdateOp,
 };
+#[cfg(feature = "semantic-ops")]
+use hir_js::ArrayChainOp;
 use num_bigint::BigInt;
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
@@ -1197,6 +1199,202 @@ impl<'p> HirSourceToInst<'p> {
           Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
           Arg::Const(Const::Undefined),
           vec![arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => {
+        let arg = self.compile_expr(*expr)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin(Self::INTERNAL_AWAIT_CALLEE.to_string()),
+          Arg::Const(Const::Undefined),
+          vec![arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayMap { array, callback } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.map".to_string()),
+          this_arg,
+          vec![callback_arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayFilter { array, callback } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.filter".to_string()),
+          this_arg,
+          vec![callback_arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let mut args = vec![callback_arg];
+        if let Some(init) = init {
+          args.push(self.compile_expr(*init)?);
+        }
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.reduce".to_string()),
+          this_arg,
+          args,
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayFind { array, callback } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.find".to_string()),
+          this_arg,
+          vec![callback_arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayEvery { array, callback } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.every".to_string()),
+          this_arg,
+          vec![callback_arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArraySome { array, callback } => {
+        let this_arg = self.compile_expr(*array)?;
+        let callback_arg = self.compile_expr(*callback)?;
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin("Array.prototype.some".to_string()),
+          this_arg,
+          vec![callback_arg],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        let mut current = self.compile_expr(*array)?;
+        for op in ops {
+          let (builtin, args) = match op {
+            ArrayChainOp::Map(callback) => (
+              "Array.prototype.map",
+              vec![self.compile_expr(*callback)?],
+            ),
+            ArrayChainOp::Filter(callback) => (
+              "Array.prototype.filter",
+              vec![self.compile_expr(*callback)?],
+            ),
+            ArrayChainOp::Find(callback) => (
+              "Array.prototype.find",
+              vec![self.compile_expr(*callback)?],
+            ),
+            ArrayChainOp::Every(callback) => (
+              "Array.prototype.every",
+              vec![self.compile_expr(*callback)?],
+            ),
+            ArrayChainOp::Some(callback) => (
+              "Array.prototype.some",
+              vec![self.compile_expr(*callback)?],
+            ),
+            ArrayChainOp::Reduce(callback, init) => {
+              let mut args = vec![self.compile_expr(*callback)?];
+              if let Some(init) = init {
+                args.push(self.compile_expr(*init)?);
+              }
+              ("Array.prototype.reduce", args)
+            }
+          };
+          let tmp = self.c_temp.bump();
+          self.out.push(Inst::call(
+            tmp,
+            Arg::Builtin(builtin.to_string()),
+            current,
+            args,
+            Vec::new(),
+          ));
+          current = Arg::Var(tmp);
+        }
+        Ok(current)
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        let mut args = Vec::new();
+        for promise in promises {
+          args.push(self.compile_expr(*promise)?);
+        }
+        let array_tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          array_tmp,
+          Arg::Builtin(Self::INTERNAL_ARRAY_CALLEE.to_string()),
+          Arg::Const(Const::Undefined),
+          args,
+          Vec::new(),
+        ));
+
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin(match &expr.kind {
+            ExprKind::PromiseAll { .. } => "Promise.all",
+            ExprKind::PromiseRace { .. } => "Promise.race",
+            _ => unreachable!(),
+          }
+          .to_string()),
+          Arg::Const(Const::Undefined),
+          vec![Arg::Var(array_tmp)],
+          Vec::new(),
+        ));
+        Ok(Arg::Var(tmp))
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::KnownApiCall { api, args } => {
+        let mut compiled_args = Vec::new();
+        for arg in args {
+          compiled_args.push(self.compile_expr(*arg)?);
+        }
+        let tmp = self.c_temp.bump();
+        self.out.push(Inst::call(
+          tmp,
+          Arg::Builtin(format!("known_api:{}", api.0)),
+          Arg::Const(Const::Undefined),
+          compiled_args,
           Vec::new(),
         ));
         Ok(Arg::Var(tmp))

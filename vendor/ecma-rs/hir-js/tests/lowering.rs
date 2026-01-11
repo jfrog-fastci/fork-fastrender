@@ -5,6 +5,8 @@ use hir_js::lower_file;
 use hir_js::lower_file_with_diagnostics;
 use hir_js::lower_from_source;
 use hir_js::lower_from_source_with_kind;
+#[cfg(feature = "semantic-ops")]
+use hir_js::ArrayChainOp;
 use hir_js::BodyKind;
 use hir_js::DefKind;
 use hir_js::DefTypeInfo;
@@ -2981,7 +2983,126 @@ fn lowers_debugger_statement() {
   let stmt_id = debugger_stmts[0];
   let stmt = &body.stmts[stmt_id.0 as usize];
   assert!(matches!(stmt.kind, StmtKind::Debugger));
-  assert_eq!(stmt.span, TextRange::new(0, source.len() as u32));
+  let expected_end = source.len() as u32;
+  assert_eq!(stmt.span, TextRange::new(0, expected_end));
+}
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn lowers_array_map_as_semantic_expr() {
+  let lowered = lower_from_source_with_kind(FileKind::Ts, "const x = arr.map(f);").expect("lower");
+
+  let mut found = None;
+  for body in lowered.bodies.iter() {
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      if matches!(expr.kind, ExprKind::ArrayMap { .. }) {
+        found = Some((body.as_ref(), ExprId(idx as u32)));
+        break;
+      }
+    }
+  }
+
+  let (body, expr_id) = found.expect("expected ArrayMap expression");
+  let ExprKind::ArrayMap { array, callback } = &body.exprs[expr_id.0 as usize].kind else {
+    unreachable!()
+  };
+  let array = *array;
+  let callback = *callback;
+
+  match &body.exprs[array.0 as usize].kind {
+    ExprKind::Ident(name) => assert_eq!(lowered.names.resolve(*name), Some("arr")),
+    other => panic!("expected array receiver to be ident, got {other:?}"),
+  }
+  match &body.exprs[callback.0 as usize].kind {
+    ExprKind::Ident(name) => assert_eq!(lowered.names.resolve(*name), Some("f")),
+    other => panic!("expected callback to be ident, got {other:?}"),
+  }
+}
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn lowers_array_chain_pipeline() {
+  let lowered = lower_from_source_with_kind(
+    FileKind::Ts,
+    "const x = arr.map(f).filter(g).reduce(h, 0);",
+  )
+  .expect("lower");
+
+  let mut found = None;
+  for body in lowered.bodies.iter() {
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      if let ExprKind::ArrayChain { ops, .. } = &expr.kind {
+        if ops.len() == 3 {
+          found = Some((body.as_ref(), ExprId(idx as u32)));
+          break;
+        }
+      }
+    }
+  }
+
+  let (body, expr_id) = found.expect("expected ArrayChain expression with 3 ops");
+  let ExprKind::ArrayChain { array, ops } = &body.exprs[expr_id.0 as usize].kind else {
+    unreachable!()
+  };
+
+  match &body.exprs[array.0 as usize].kind {
+    ExprKind::Ident(name) => assert_eq!(lowered.names.resolve(*name), Some("arr")),
+    other => panic!("expected base array to be ident, got {other:?}"),
+  }
+
+  match ops.as_slice() {
+    [ArrayChainOp::Map(map_cb), ArrayChainOp::Filter(filter_cb), ArrayChainOp::Reduce(callback, init)] => {
+      assert!(matches!(
+        &body.exprs[map_cb.0 as usize].kind,
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("f")
+      ));
+      assert!(matches!(
+        &body.exprs[filter_cb.0 as usize].kind,
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("g")
+      ));
+      assert!(matches!(
+        &body.exprs[callback.0 as usize].kind,
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("h")
+      ));
+      let init = init.expect("expected reduce init");
+      assert!(matches!(
+        &body.exprs[init.0 as usize].kind,
+        ExprKind::Literal(hir_js::Literal::Number(n)) if n == "0"
+      ));
+    }
+    other => panic!("unexpected ops sequence {other:?}"),
+  }
+}
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn lowers_promise_all_array_literal() {
+  let lowered =
+    lower_from_source_with_kind(FileKind::Ts, "const x = Promise.all([a,b]);").expect("lower");
+
+  let mut found = None;
+  for body in lowered.bodies.iter() {
+    for (idx, expr) in body.exprs.iter().enumerate() {
+      if matches!(expr.kind, ExprKind::PromiseAll { .. }) {
+        found = Some((body.as_ref(), ExprId(idx as u32)));
+        break;
+      }
+    }
+  }
+
+  let (body, expr_id) = found.expect("expected PromiseAll expression");
+  let ExprKind::PromiseAll { promises } = &body.exprs[expr_id.0 as usize].kind else {
+    unreachable!()
+  };
+  assert_eq!(promises.len(), 2);
+  assert!(matches!(
+    &body.exprs[promises[0].0 as usize].kind,
+    ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("a")
+  ));
+  assert!(matches!(
+    &body.exprs[promises[1].0 as usize].kind,
+    ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("b")
+  ));
 }
 
 proptest! {

@@ -1,16 +1,18 @@
 use crate::hir::{
-  ArrayElement, ArrayLiteral, ArrayPat, ArrayPatElement, AssignOp, BinaryOp, Body, BodyKind,
-  CallArg, CallExpr, CatchClause, ClassBody, ClassMember as HirClassMember, ClassMemberKey,
+  ArrayElement, ArrayLiteral, ArrayPat, ArrayPatElement, AssignOp, BinaryOp, Body, BodyKind, CallArg,
+  CallExpr, CatchClause, ClassBody, ClassMember as HirClassMember, ClassMemberKey,
   ClassMemberKind as HirClassMemberKind, ClassMethodKind, Decorator, DefData, DefTypeInfo, Export,
   ExportAlias, ExportAll, ExportAsNamespace, ExportAssignment, ExportDefault, ExportDefaultValue,
-  ExportKind, ExportNamed, ExportSpecifier, Expr, ExprKind, FileKind, ForHead, ForInit,
-  FunctionBody, FunctionData, HirFile, Import, ImportBinding, ImportEquals, ImportEqualsTarget,
-  ImportEs, ImportKind, ImportNamed, JsxAttr, JsxAttrValue, JsxChild, JsxElement, JsxElementName,
+  ExportKind, ExportNamed, ExportSpecifier, Expr, ExprKind, FileKind, ForHead, ForInit, FunctionBody,
+  FunctionData, HirFile, Import, ImportBinding, ImportEquals, ImportEqualsTarget, ImportEs,
+  ImportKind, ImportNamed, JsxAttr, JsxAttrValue, JsxChild, JsxElement, JsxElementName,
   JsxExprContainer, JsxMemberExpr, JsxName, Literal, LowerResult, MemberExpr, ModuleAttributes,
   ModuleSpecifier, ObjectKey, ObjectLiteral, ObjectPat, ObjectPatProp, ObjectProperty, Param, Pat,
   PatKind, Stmt, StmtKind, StringLiteral, SwitchCase, TemplateLiteral, TemplateLiteralSpan, UnaryOp,
   UpdateOp, VarDecl, VarDeclKind, VarDeclarator,
 };
+#[cfg(feature = "semantic-ops")]
+use crate::hir::ArrayChainOp;
 use crate::ids::{
   BodyId, BodyPath, DefId, DefKind, DefPath, ExportId, ExportSpecifierId, ExprId, ImportId,
   ImportSpecifierId, NameId, PatId, StmtId, MISSING_BODY, MISSING_DEF,
@@ -1949,9 +1951,20 @@ fn lower_expr(
       }
     }
     AstExpr::Unary(unary) => match unary.stx.operator {
-      OperatorName::Await => ExprKind::Await {
-        expr: lower_expr(&unary.stx.argument, builder, ctx),
-      },
+      OperatorName::Await => {
+        let value = lower_expr(&unary.stx.argument, builder, ctx);
+        #[cfg(feature = "semantic-ops")]
+        {
+          ExprKind::AwaitExpr {
+            value,
+            known_resolved: false,
+          }
+        }
+        #[cfg(not(feature = "semantic-ops"))]
+        {
+          ExprKind::Await { expr: value }
+        }
+      }
       OperatorName::Yield => ExprKind::Yield {
         expr: Some(lower_expr(&unary.stx.argument, builder, ctx)),
         delegate: false,
@@ -2098,7 +2111,7 @@ fn lower_call_expr(
   is_new: bool,
 ) -> ExprKind {
   let callee = lower_expr(&call.stx.callee, builder, ctx);
-  let args = call
+  let args: Vec<CallArg> = call
     .stx
     .arguments
     .iter()
@@ -2107,6 +2120,141 @@ fn lower_call_expr(
       spread: arg.stx.spread,
     })
     .collect();
+
+  #[cfg(feature = "semantic-ops")]
+  {
+    fn array_chain_extendable(
+      builder: &BodyBuilder<'_>,
+      expr: ExprId,
+    ) -> Option<(ExprId, Vec<ArrayChainOp>)> {
+      match &builder.exprs[expr.0 as usize].kind {
+        ExprKind::ArrayMap { array, callback } => Some((*array, vec![ArrayChainOp::Map(*callback)])),
+        ExprKind::ArrayFilter { array, callback } => {
+          Some((*array, vec![ArrayChainOp::Filter(*callback)]))
+        }
+        ExprKind::ArrayChain { array, ops } => match ops.last() {
+          Some(ArrayChainOp::Map(_) | ArrayChainOp::Filter(_)) => Some((*array, ops.clone())),
+          _ => None,
+        },
+        _ => None,
+      }
+    }
+
+    if !is_new && !call.stx.optional_chaining {
+      // Lower Promise.{all,race}([..]) calls into semantic nodes when the input is an array literal
+      // without holes/spreads.
+      if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
+        if !member.optional {
+          if let ObjectKey::Ident(prop) = member.property {
+            let prop = builder.names.resolve(prop);
+            if let Some(prop) = prop.filter(|p| *p == "all" || *p == "race") {
+              if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
+                if builder.names.resolve(*obj) == Some("Promise") {
+                  if args.len() == 1 && !args[0].spread {
+                    if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
+                      let mut promises = Vec::new();
+                      let mut ok = true;
+                      for element in arr.elements.iter() {
+                        match element {
+                          ArrayElement::Expr(expr) => promises.push(*expr),
+                          ArrayElement::Empty | ArrayElement::Spread(_) => {
+                            ok = false;
+                            break;
+                          }
+                        }
+                      }
+                      if ok {
+                        return match prop {
+                          "all" => ExprKind::PromiseAll { promises },
+                          "race" => ExprKind::PromiseRace { promises },
+                          _ => unreachable!(),
+                        };
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Lower common array pipeline operations (map/filter/reduce/find/every/some). Optional
+      // chaining is intentionally excluded to avoid changing short-circuit behaviour.
+      if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
+        if !member.optional {
+          if let ObjectKey::Ident(prop) = member.property {
+            if let Some(prop) = builder.names.resolve(prop) {
+              let args_ok = args.iter().all(|arg| !arg.spread);
+              if args_ok {
+                let receiver = member.object;
+                let chain_prefix = array_chain_extendable(builder, receiver);
+                match prop {
+                  "map" | "filter" | "find" | "every" | "some" if args.len() == 1 => {
+                    let callback = args[0].expr;
+                    let new_op = match prop {
+                      "map" => ArrayChainOp::Map(callback),
+                      "filter" => ArrayChainOp::Filter(callback),
+                      "find" => ArrayChainOp::Find(callback),
+                      "every" => ArrayChainOp::Every(callback),
+                      "some" => ArrayChainOp::Some(callback),
+                      _ => unreachable!(),
+                    };
+
+                    if let Some((array, mut ops)) = chain_prefix {
+                      ops.push(new_op);
+                      return ExprKind::ArrayChain { array, ops };
+                    }
+
+                    return match prop {
+                      "map" => ExprKind::ArrayMap {
+                        array: receiver,
+                        callback,
+                      },
+                      "filter" => ExprKind::ArrayFilter {
+                        array: receiver,
+                        callback,
+                      },
+                      "find" => ExprKind::ArrayFind {
+                        array: receiver,
+                        callback,
+                      },
+                      "every" => ExprKind::ArrayEvery {
+                        array: receiver,
+                        callback,
+                      },
+                      "some" => ExprKind::ArraySome {
+                        array: receiver,
+                        callback,
+                      },
+                      _ => unreachable!(),
+                    };
+                  }
+                  "reduce" if args.len() == 1 || args.len() == 2 => {
+                    let callback = args[0].expr;
+                    let init = args.get(1).map(|arg| arg.expr);
+                    let new_op = ArrayChainOp::Reduce(callback, init);
+
+                    if let Some((array, mut ops)) = chain_prefix {
+                      ops.push(new_op);
+                      return ExprKind::ArrayChain { array, ops };
+                    }
+
+                    return ExprKind::ArrayReduce {
+                      array: receiver,
+                      callback,
+                      init,
+                    };
+                  }
+                  _ => {}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   ExprKind::Call(CallExpr {
     callee,
     args,

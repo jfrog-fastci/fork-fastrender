@@ -7977,6 +7977,60 @@ impl<'a> BindingCollector<'a> {
         }
       }
       ExprKind::Await { expr } => self.visit_expr(*expr),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => self.visit_expr(*expr),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        self.visit_expr(*array);
+        self.visit_expr(*callback);
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        self.visit_expr(*array);
+        self.visit_expr(*callback);
+        if let Some(init) = init {
+          self.visit_expr(*init);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        self.visit_expr(*array);
+        for op in ops {
+          match op {
+            hir_js::ArrayChainOp::Map(callback)
+            | hir_js::ArrayChainOp::Filter(callback)
+            | hir_js::ArrayChainOp::Find(callback)
+            | hir_js::ArrayChainOp::Every(callback)
+            | hir_js::ArrayChainOp::Some(callback) => self.visit_expr(*callback),
+            hir_js::ArrayChainOp::Reduce(callback, init) => {
+              self.visit_expr(*callback);
+              if let Some(init) = init {
+                self.visit_expr(*init);
+              }
+            }
+          }
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        for promise in promises {
+          self.visit_expr(*promise);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        for arg in args {
+          self.visit_expr(*arg);
+        }
+      }
       ExprKind::Yield { expr, .. } => {
         if let Some(expr) = expr {
           self.visit_expr(*expr);
@@ -8815,6 +8869,150 @@ impl<'a> FlowBodyChecker<'a> {
           ret_ty
         }
       }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayMap { array, callback } => self.eval_known_member_call_on_expr(
+        expr_id,
+        *array,
+        "map",
+        &[*callback],
+        env,
+        &mut facts,
+      ),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayFilter { array, callback } => self.eval_known_member_call_on_expr(
+        expr_id,
+        *array,
+        "filter",
+        &[*callback],
+        env,
+        &mut facts,
+      ),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        let mut args = vec![*callback];
+        if let Some(init) = init {
+          args.push(*init);
+        }
+        self.eval_known_member_call_on_expr(expr_id, *array, "reduce", &args, env, &mut facts)
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayFind { array, callback } => self.eval_known_member_call_on_expr(
+        expr_id,
+        *array,
+        "find",
+        &[*callback],
+        env,
+        &mut facts,
+      ),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayEvery { array, callback } => self.eval_known_member_call_on_expr(
+        expr_id,
+        *array,
+        "every",
+        &[*callback],
+        env,
+        &mut facts,
+      ),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArraySome { array, callback } => self.eval_known_member_call_on_expr(
+        expr_id,
+        *array,
+        "some",
+        &[*callback],
+        env,
+        &mut facts,
+      ),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        let _ = self.eval_expr(*array, env);
+        let mut current = self.expand_ref(self.expr_types[array.0 as usize]);
+        self.expr_types[array.0 as usize] = current;
+        for op in ops {
+          match op {
+            hir_js::ArrayChainOp::Map(callback) => {
+              current = self.resolve_known_member_call(
+                expr_id,
+                None,
+                current,
+                "map",
+                &[*callback],
+                env,
+                &mut facts,
+              );
+            }
+            hir_js::ArrayChainOp::Filter(callback) => {
+              current = self.resolve_known_member_call(
+                expr_id,
+                None,
+                current,
+                "filter",
+                &[*callback],
+                env,
+                &mut facts,
+              );
+            }
+            hir_js::ArrayChainOp::Reduce(callback, init) => {
+              let mut args = vec![*callback];
+              if let Some(init) = init {
+                args.push(*init);
+              }
+              current = self.resolve_known_member_call(expr_id, None, current, "reduce", &args, env, &mut facts);
+            }
+            hir_js::ArrayChainOp::Find(callback) => {
+              current = self.resolve_known_member_call(
+                expr_id,
+                None,
+                current,
+                "find",
+                &[*callback],
+                env,
+                &mut facts,
+              );
+            }
+            hir_js::ArrayChainOp::Every(callback) => {
+              current = self.resolve_known_member_call(
+                expr_id,
+                None,
+                current,
+                "every",
+                &[*callback],
+                env,
+                &mut facts,
+              );
+            }
+            hir_js::ArrayChainOp::Some(callback) => {
+              current = self.resolve_known_member_call(
+                expr_id,
+                None,
+                current,
+                "some",
+                &[*callback],
+                env,
+                &mut facts,
+              );
+            }
+          }
+        }
+        current
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        for promise in promises.iter() {
+          let _ = self.eval_expr(*promise, env);
+        }
+        prim.unknown
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        for arg in args {
+          let _ = self.eval_expr(*arg, env);
+        }
+        prim.unknown
+      }
       ExprKind::Member(mem) => {
         let obj_ty = self.eval_expr(mem.object, env).0;
         let chain_short_circuit = self.optional_chain_short_circuits(expr_id, env);
@@ -8958,6 +9156,11 @@ impl<'a> FlowBodyChecker<'a> {
       ExprKind::Template(_) => prim.string,
       ExprKind::TaggedTemplate { .. } => prim.unknown,
       ExprKind::Await { expr } => {
+        let inner = self.eval_expr(*expr, env).0;
+        awaited_type(self.store.as_ref(), inner, self.ref_expander)
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => {
         let inner = self.eval_expr(*expr, env).0;
         awaited_type(self.store.as_ref(), inner, self.ref_expander)
       }
@@ -9356,6 +9559,129 @@ impl<'a> FlowBodyChecker<'a> {
 
     self.optional_chain_equality_facts(left, right, right_ty, op, env, out);
     self.optional_chain_equality_facts(right, left, left_ty, op, env, out);
+  }
+
+  #[cfg(feature = "semantic-ops")]
+  fn eval_known_member_call_on_expr(
+    &mut self,
+    expr_id: ExprId,
+    receiver_expr: ExprId,
+    method: &str,
+    args: &[ExprId],
+    env: &mut Env,
+    out: &mut Facts,
+  ) -> TypeId {
+    let receiver_ty = self.eval_expr(receiver_expr, env).0;
+    let receiver_base = self.expand_ref(receiver_ty);
+    self.expr_types[receiver_expr.0 as usize] = receiver_base;
+    self.resolve_known_member_call(
+      expr_id,
+      Some(receiver_expr),
+      receiver_base,
+      method,
+      args,
+      env,
+      out,
+    )
+  }
+
+  #[cfg(feature = "semantic-ops")]
+  fn resolve_known_member_call(
+    &mut self,
+    expr_id: ExprId,
+    receiver_expr: Option<ExprId>,
+    receiver_ty: TypeId,
+    method: &str,
+    args: &[ExprId],
+    env: &mut Env,
+    out: &mut Facts,
+  ) -> TypeId {
+    let prim = self.store.primitive_ids();
+    let receiver_ty = self.expand_ref(receiver_ty);
+    let callee_ty = self.member_type_for_known_key(receiver_ty, method);
+
+    let mut arg_bases: Vec<CallArgType> = Vec::new();
+    for arg in args.iter() {
+      let _ = self.eval_expr(*arg, env);
+      let expanded = self.expand_ref(self.expr_types[arg.0 as usize]);
+      self.expr_types[arg.0 as usize] = expanded;
+      arg_bases.push(CallArgType::new(expanded));
+    }
+
+    let span = Span::new(
+      self.file,
+      *self
+        .expr_spans
+        .get(expr_id.0 as usize)
+        .unwrap_or(&TextRange::new(0, 0)),
+    );
+    let resolution = resolve_call(
+      &self.store,
+      &self.relate,
+      &self.instantiation_cache,
+      callee_ty,
+      &arg_bases,
+      None,
+      Some(receiver_ty),
+      None,
+      span,
+      self.ref_expander,
+    );
+
+    let ret_ty = resolution.return_type;
+    if let Some(sig_id) = resolution.signature {
+      let sig = self.store.signature(sig_id);
+      if let TypeKind::Predicate {
+        asserted,
+        asserts,
+        parameter,
+      } = self.store.type_kind(sig.ret)
+      {
+        if let Some(asserted) = asserted {
+          match parameter.unwrap_or(PredicateParam::Param(0)) {
+            PredicateParam::Param(target_idx) => {
+              let target_idx = target_idx as usize;
+              if let Some(arg_expr) = args.get(target_idx).copied() {
+                if let Some(binding) = self.ident_binding(arg_expr) {
+                  let arg_ty = arg_bases
+                    .get(target_idx)
+                    .map(|arg| arg.ty)
+                    .unwrap_or(prim.unknown);
+                  let (yes, no) = narrow_by_assignability(arg_ty, asserted, &self.store, &self.relate);
+                  if asserts {
+                    env.set(binding, yes);
+                    out.assertions.insert(FlowKey::root(binding), yes);
+                  } else {
+                    let key = FlowKey::root(binding);
+                    out.truthy.insert(key.clone(), yes);
+                    out.falsy.insert(key, no);
+                  }
+                }
+              }
+            }
+            PredicateParam::This => {
+              if let Some(this_expr) = receiver_expr {
+                if let Some(binding) = self.ident_binding(this_expr) {
+                  let arg_ty = receiver_ty;
+                  let (yes, no) =
+                    narrow_by_assignability(arg_ty, asserted, &self.store, &self.relate);
+                  if asserts {
+                    env.set(binding, yes);
+                    out.assertions.insert(FlowKey::root(binding), yes);
+                  } else {
+                    let key = FlowKey::root(binding);
+                    out.truthy.insert(key.clone(), yes);
+                    out.falsy.insert(key, no);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    ret_ty
   }
 
   fn eval_call(
@@ -9891,6 +10217,8 @@ impl<'a> FlowBodyChecker<'a> {
       | ExprKind::Yield {
         expr: Some(expr), ..
       } => self.assignment_target_root_expr(*expr),
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => self.assignment_target_root_expr(*expr),
       _ => None,
     }
   }

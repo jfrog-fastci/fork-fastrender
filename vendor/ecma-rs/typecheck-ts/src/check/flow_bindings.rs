@@ -561,8 +561,68 @@ impl<'a> FlowBindingsBuilder<'a> {
           self.process_expr(span.expr, lexical_scopes);
         }
       }
-      ExprKind::Await { expr } | ExprKind::NonNull { expr } | ExprKind::Satisfies { expr, .. } => {
+      ExprKind::Await { expr }
+      | ExprKind::NonNull { expr }
+      | ExprKind::Satisfies { expr, .. } => {
         self.process_expr(*expr, lexical_scopes);
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::AwaitExpr { value: expr, .. } => {
+        self.process_expr(*expr, lexical_scopes);
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        self.process_expr(*array, lexical_scopes);
+        self.process_expr(*callback, lexical_scopes);
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        self.process_expr(*array, lexical_scopes);
+        self.process_expr(*callback, lexical_scopes);
+        if let Some(init) = init {
+          self.process_expr(*init, lexical_scopes);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        self.process_expr(*array, lexical_scopes);
+        for op in ops {
+          match op {
+            hir_js::ArrayChainOp::Map(callback)
+            | hir_js::ArrayChainOp::Filter(callback)
+            | hir_js::ArrayChainOp::Find(callback)
+            | hir_js::ArrayChainOp::Every(callback)
+            | hir_js::ArrayChainOp::Some(callback) => {
+              self.process_expr(*callback, lexical_scopes);
+            }
+            hir_js::ArrayChainOp::Reduce(callback, init) => {
+              self.process_expr(*callback, lexical_scopes);
+              if let Some(init) = init {
+                self.process_expr(*init, lexical_scopes);
+              }
+            }
+          }
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        for promise in promises {
+          self.process_expr(*promise, lexical_scopes);
+        }
+      }
+      #[cfg(feature = "semantic-ops")]
+      ExprKind::KnownApiCall { args, .. } => {
+        for arg in args {
+          self.process_expr(*arg, lexical_scopes);
+        }
       }
       ExprKind::Yield { expr, .. } => {
         if let Some(expr) = expr {

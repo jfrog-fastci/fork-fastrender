@@ -125,6 +125,14 @@ fn roundtrip_matrix() {
   }
 }
 
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn hir_emits_semantic_expr_variants() {
+  roundtrip(FileKind::Js, "const x=arr.map(f);");
+  roundtrip(FileKind::Js, "const x=arr.map(f).filter(g).reduce(h,0);");
+  roundtrip(FileKind::Js, "async function f(){return await Promise.all([a,b]);}");
+}
+
 #[test]
 fn deterministic_emission() {
   roundtrip(
@@ -439,7 +447,13 @@ fn visit_expr(body: &Body, expr_id: hir_js::ExprId, visited: &mut HashSet<hir_js
     body.kind
   );
   match &expr.kind {
-    ExprKind::Unary { expr, .. } | ExprKind::Update { expr, .. } | ExprKind::Await { expr } => {
+    ExprKind::Unary { expr, .. }
+    | ExprKind::Update { expr, .. }
+    | ExprKind::Await { expr } => {
+      visit_expr(body, *expr, visited);
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::AwaitExpr { value: expr, .. } => {
       visit_expr(body, *expr, visited);
     }
     ExprKind::Binary { left, right, .. } => {
@@ -460,6 +474,58 @@ fn visit_expr(body: &Body, expr_id: hir_js::ExprId, visited: &mut HashSet<hir_js
       visit_expr(body, member.object, visited);
       if let hir_js::ObjectKey::Computed(expr) = member.property {
         visit_expr(body, expr, visited);
+      }
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayMap { array, callback }
+    | ExprKind::ArrayFilter { array, callback }
+    | ExprKind::ArrayFind { array, callback }
+    | ExprKind::ArrayEvery { array, callback }
+    | ExprKind::ArraySome { array, callback } => {
+      visit_expr(body, *array, visited);
+      visit_expr(body, *callback, visited);
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init,
+    } => {
+      visit_expr(body, *array, visited);
+      visit_expr(body, *callback, visited);
+      if let Some(init) = init {
+        visit_expr(body, *init, visited);
+      }
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      visit_expr(body, *array, visited);
+      for op in ops {
+        match op {
+          hir_js::ArrayChainOp::Map(callback)
+          | hir_js::ArrayChainOp::Filter(callback)
+          | hir_js::ArrayChainOp::Find(callback)
+          | hir_js::ArrayChainOp::Every(callback)
+          | hir_js::ArrayChainOp::Some(callback) => visit_expr(body, *callback, visited),
+          hir_js::ArrayChainOp::Reduce(callback, init) => {
+            visit_expr(body, *callback, visited);
+            if let Some(init) = init {
+              visit_expr(body, *init, visited);
+            }
+          }
+        }
+      }
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+      for promise in promises {
+        visit_expr(body, *promise, visited);
+      }
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::KnownApiCall { args, .. } => {
+      for arg in args {
+        visit_expr(body, *arg, visited);
       }
     }
     ExprKind::Conditional {

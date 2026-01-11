@@ -18,6 +18,8 @@ use hir_js::{
   ModuleAttributes, NameId, ObjectKey, ObjectLiteral, ObjectProperty, Param, Pat, PatId, PatKind,
   Stmt, StmtId, StmtKind, TemplateLiteral, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
 };
+#[cfg(feature = "semantic-ops")]
+use hir_js::ArrayChainOp;
 use parse_js::operator::{OperatorName, OPERATORS};
 use std::fmt::Write;
 
@@ -1509,14 +1511,25 @@ fn expr_prec(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> Result<Prec,
     ExprKind::Binary { op, .. } => Prec::new(OPERATORS[&binary_operator(*op)].precedence),
     ExprKind::Assignment { op, .. } => Prec::new(OPERATORS[&assign_operator(*op)].precedence),
     ExprKind::Conditional { .. } => Prec::new(OPERATORS[&OperatorName::Conditional].precedence),
-    ExprKind::Call(_) | ExprKind::Member(_) | ExprKind::TaggedTemplate { .. } => {
-      CALL_MEMBER_PRECEDENCE
-    }
+    ExprKind::Call(_) | ExprKind::Member(_) | ExprKind::TaggedTemplate { .. } => CALL_MEMBER_PRECEDENCE,
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayMap { .. }
+    | ExprKind::ArrayFilter { .. }
+    | ExprKind::ArrayReduce { .. }
+    | ExprKind::ArrayFind { .. }
+    | ExprKind::ArrayEvery { .. }
+    | ExprKind::ArraySome { .. }
+    | ExprKind::ArrayChain { .. }
+    | ExprKind::PromiseAll { .. }
+    | ExprKind::PromiseRace { .. }
+    | ExprKind::KnownApiCall { .. } => CALL_MEMBER_PRECEDENCE,
     ExprKind::Update { op, prefix, .. } => {
       Prec::new(OPERATORS[&update_operator(*op, *prefix)].precedence)
     }
     ExprKind::Unary { op, .. } => Prec::new(OPERATORS[&unary_operator(*op)].precedence),
     ExprKind::Await { .. } => Prec::new(OPERATORS[&OperatorName::Await].precedence),
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::AwaitExpr { .. } => Prec::new(OPERATORS[&OperatorName::Await].precedence),
     ExprKind::Yield { delegate, .. } => {
       let op = if *delegate {
         OperatorName::YieldDelegated
@@ -1582,6 +1595,160 @@ fn emit_expr_no_parens(
     }
     ExprKind::Call(call) => emit_call(em, ctx, body, call)?,
     ExprKind::Member(member) => emit_member(em, ctx, body, member)?,
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayMap { array, callback } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("map");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayFilter { array, callback } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("filter");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init,
+    } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("reduce");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      if let Some(init) = init {
+        em.write_punct(",");
+        emit_expr_with_min_prec(em, ctx, body, *init, Prec::LOWEST)?;
+      }
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayFind { array, callback } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("find");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayEvery { array, callback } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("every");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArraySome { array, callback } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      em.write_punct(".");
+      em.write_identifier("some");
+      em.write_punct("(");
+      emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      emit_expr_with_min_prec(em, ctx, body, *array, CALL_MEMBER_PRECEDENCE)?;
+      for op in ops {
+        match op {
+          ArrayChainOp::Map(callback) => {
+            em.write_punct(".");
+            em.write_identifier("map");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            em.write_punct(")");
+          }
+          ArrayChainOp::Filter(callback) => {
+            em.write_punct(".");
+            em.write_identifier("filter");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            em.write_punct(")");
+          }
+          ArrayChainOp::Reduce(callback, init) => {
+            em.write_punct(".");
+            em.write_identifier("reduce");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            if let Some(init) = init {
+              em.write_punct(",");
+              emit_expr_with_min_prec(em, ctx, body, *init, Prec::LOWEST)?;
+            }
+            em.write_punct(")");
+          }
+          ArrayChainOp::Find(callback) => {
+            em.write_punct(".");
+            em.write_identifier("find");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            em.write_punct(")");
+          }
+          ArrayChainOp::Every(callback) => {
+            em.write_punct(".");
+            em.write_identifier("every");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            em.write_punct(")");
+          }
+          ArrayChainOp::Some(callback) => {
+            em.write_punct(".");
+            em.write_identifier("some");
+            em.write_punct("(");
+            emit_expr_with_min_prec(em, ctx, body, *callback, Prec::LOWEST)?;
+            em.write_punct(")");
+          }
+        }
+      }
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::PromiseAll { promises } => {
+      em.write_identifier("Promise");
+      em.write_punct(".");
+      em.write_identifier("all");
+      em.write_punct("(");
+      em.write_punct("[");
+      for (idx, promise) in promises.iter().enumerate() {
+        if idx > 0 {
+          em.write_punct(",");
+        }
+        emit_expr_with_min_prec(em, ctx, body, *promise, Prec::LOWEST)?;
+      }
+      em.write_punct("]");
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::PromiseRace { promises } => {
+      em.write_identifier("Promise");
+      em.write_punct(".");
+      em.write_identifier("race");
+      em.write_punct("(");
+      em.write_punct("[");
+      for (idx, promise) in promises.iter().enumerate() {
+        if idx > 0 {
+          em.write_punct(",");
+        }
+        emit_expr_with_min_prec(em, ctx, body, *promise, Prec::LOWEST)?;
+      }
+      em.write_punct("]");
+      em.write_punct(")");
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::KnownApiCall { .. } => {
+      return Err(EmitError::unsupported(
+        "KnownApiCall emission requires an API database",
+      ));
+    }
     ExprKind::Conditional {
       test,
       consequent,
@@ -1639,6 +1806,17 @@ fn emit_expr_no_parens(
       emit_template_literal(em, ctx, body, template)?;
     }
     ExprKind::Await { expr } => {
+      em.write_keyword("await");
+      emit_expr_with_min_prec(
+        em,
+        ctx,
+        body,
+        *expr,
+        Prec::new(OPERATORS[&OperatorName::Await].precedence),
+      )?;
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::AwaitExpr { value: expr, .. } => {
       em.write_keyword("await");
       emit_expr_with_min_prec(
         em,
@@ -2250,6 +2428,10 @@ fn expr_stmt_tokens(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> StmtS
       StmtStartToken::Keyword(StmtStartKeyword::Import),
       Some(StmtStartToken::Other),
     ),
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::PromiseAll { .. } | ExprKind::PromiseRace { .. } => {
+      prefix(StmtStartToken::Identifier, Some(StmtStartToken::Other))
+    }
     ExprKind::Member(member) => match member.property {
       ObjectKey::Computed(_) => prefix_with_fallback(
         ctx,
@@ -2263,6 +2445,16 @@ fn expr_stmt_tokens(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> StmtS
       ),
       _ => prefix_with_fallback(ctx, body, member.object, StmtStartToken::Other),
     },
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayMap { array, .. }
+    | ExprKind::ArrayFilter { array, .. }
+    | ExprKind::ArrayReduce { array, .. }
+    | ExprKind::ArrayFind { array, .. }
+    | ExprKind::ArrayEvery { array, .. }
+    | ExprKind::ArraySome { array, .. }
+    | ExprKind::ArrayChain { array, .. } => {
+      prefix_with_fallback(ctx, body, *array, StmtStartToken::Other)
+    }
     ExprKind::Call(call) => {
       if call.is_new {
         // `new` expressions start with the `new` keyword; they can safely appear as
@@ -2293,6 +2485,14 @@ fn expr_stmt_tokens(ctx: &HirContext<'_>, body: &Body, expr_id: ExprId) -> StmtS
     }
     ExprKind::Template(_) => prefix(StmtStartToken::TemplateStart, None),
     ExprKind::Await { expr } => {
+      let arg_prefix = expr_stmt_tokens(ctx, body, *expr);
+      prefix(
+        StmtStartToken::Keyword(StmtStartKeyword::Await),
+        Some(arg_prefix.first),
+      )
+    }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::AwaitExpr { value: expr, .. } => {
       let arg_prefix = expr_stmt_tokens(ctx, body, *expr);
       prefix(
         StmtStartToken::Keyword(StmtStartKeyword::Await),
@@ -2462,6 +2662,21 @@ fn contextual_keyword_start_from_expr(
         None
       }
     }
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::AwaitExpr { value: expr, .. } => {
+      if let Some(child_start) = contextual_keyword_start_from_expr(ctx, body, *expr) {
+        if child_start.kind == ContextualKeyword::Using {
+          Some(ContextualKeywordStart {
+            kind: ContextualKeyword::AwaitUsing,
+            next: child_start.next,
+          })
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
     ExprKind::Unary {
       op: UnaryOp::Await,
       expr,
@@ -2488,6 +2703,16 @@ fn contextual_keyword_start_from_expr(
         _ => NextTokenAfterKeyword::Other,
       },
     ),
+    #[cfg(feature = "semantic-ops")]
+    ExprKind::ArrayMap { array, .. }
+    | ExprKind::ArrayFilter { array, .. }
+    | ExprKind::ArrayReduce { array, .. }
+    | ExprKind::ArrayFind { array, .. }
+    | ExprKind::ArrayEvery { array, .. }
+    | ExprKind::ArraySome { array, .. }
+    | ExprKind::ArrayChain { array, .. } => {
+      propagate_keyword_start(ctx, body, *array, NextTokenAfterKeyword::Other)
+    }
     ExprKind::Call(call) => {
       if call.is_new {
         None
