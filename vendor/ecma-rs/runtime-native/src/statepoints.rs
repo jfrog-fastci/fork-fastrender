@@ -4,10 +4,11 @@
 //! statepoints (LLVM 18, empirically), the callsite record's locations are laid
 //! out as:
 //!
-//! - 3 leading non-root constants:
-//!   - `locations[1]` (the second constant) corresponds to the IR `gc.statepoint`
-//!     `flags` immarg on LLVM 18.
-//!   - The runtime currently assumes `flags = 0` (see `statepoint_verify`).
+//! - 3 leading constant header locations:
+//!   - `locations[0]`: `callconv` (call convention ID)
+//!   - `locations[1]`: `flags` (2-bit mask, 0..3)
+//!   - `locations[2]`: `deopt_count` (number of deopt operand locations)
+//! - followed by `deopt_count` deopt operand locations (not GC roots)
 //! - followed by 2 entries per gc-live value: `(base, derived)` pairs
 //!
 //! The tests in `tests/statepoint_layout.rs` intentionally lock this down to
@@ -28,7 +29,7 @@ pub const AARCH64_DWARF_REG_FP: u16 = 29;
 #[derive(Debug, Error)]
 pub enum StatepointError {
   #[error(
-    "invalid statepoint stackmap layout: expected at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} locations and (n-{LLVM18_STATEPOINT_HEADER_CONSTANTS}) even, got {num_locations}"
+    "invalid statepoint stackmap layout: expected at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} header locations; expected deopt_count locations after the header and an even number of remaining (base,derived) locations, got {num_locations}"
   )]
   InvalidLayout { num_locations: usize },
 
@@ -42,57 +43,115 @@ pub enum StatepointError {
   AddressOverflow { base: u64, offset: i32 },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct GcLocationPair<'a> {
-  pub base: &'a Location,
-  pub derived: &'a Location,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatepointHeader {
+  pub callconv: u64,
+  pub flags: u64,
+  pub deopt_count: u64,
 }
 
 /// A view of a [`StackMapRecord`] interpreted as an LLVM `gc.statepoint`
 /// safepoint.
 pub struct StatepointRecord<'a> {
   record: &'a StackMapRecord,
-  gc_pairs: Vec<GcLocationPair<'a>>,
+  header: StatepointHeader,
+  gc_pairs_start: usize,
 }
 
 impl<'a> StatepointRecord<'a> {
   pub fn new(record: &'a StackMapRecord) -> Result<Self, StatepointError> {
-    let num_locations = record.locations.len();
-    if num_locations < LLVM18_STATEPOINT_HEADER_CONSTANTS
-      || (num_locations - LLVM18_STATEPOINT_HEADER_CONSTANTS) % 2 != 0
-    {
-      return Err(StatepointError::InvalidLayout { num_locations });
-    }
+    let header = decode_statepoint_header(&record.locations)?;
+    let gc_pairs_start = statepoint_gc_pairs_start(header.deopt_count, record.locations.len())?;
 
-    // LLVM 18 observed encoding: the first three locations are non-root
-    // constants used by the lowering, not actual GC roots.
-    for idx in 0..LLVM18_STATEPOINT_HEADER_CONSTANTS {
-      match record.locations[idx] {
-        Location::Constant { .. } | Location::ConstIndex { .. } => {}
-        _ => return Err(StatepointError::NonConstantHeader { index: idx }),
-      }
-    }
-
-    let mut gc_pairs = Vec::with_capacity((num_locations - LLVM18_STATEPOINT_HEADER_CONSTANTS) / 2);
-    let mut i = LLVM18_STATEPOINT_HEADER_CONSTANTS;
-    while i < num_locations {
-      gc_pairs.push(GcLocationPair {
-        base: &record.locations[i],
-        derived: &record.locations[i + 1],
+    let remaining = record.locations.len() - gc_pairs_start;
+    if remaining % 2 != 0 {
+      return Err(StatepointError::InvalidLayout {
+        num_locations: record.locations.len(),
       });
-      i += 2;
     }
 
-    Ok(Self { record, gc_pairs })
+    Ok(Self {
+      record,
+      header,
+      gc_pairs_start,
+    })
   }
 
-  pub fn gc_pairs(&self) -> &[GcLocationPair<'a>] {
-    &self.gc_pairs
+  #[inline]
+  pub fn header(&self) -> StatepointHeader {
+    self.header
+  }
+
+  #[inline]
+  pub fn deopt_locations(&self) -> &'a [Location] {
+    &self.record.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..self.gc_pairs_start]
+  }
+
+  #[inline]
+  pub fn gc_pairs_start(&self) -> usize {
+    self.gc_pairs_start
+  }
+
+  #[inline]
+  pub fn gc_pair_count(&self) -> usize {
+    (self.record.locations.len() - self.gc_pairs_start) / 2
+  }
+
+  pub fn gc_pairs(&self) -> impl ExactSizeIterator<Item = (&'a Location, &'a Location)> {
+    let locs = &self.record.locations[self.gc_pairs_start..];
+    debug_assert_eq!(locs.len() % 2, 0);
+    locs
+      .chunks_exact(2)
+      .map(|pair| (&pair[0], &pair[1]))
   }
 
   pub fn record(&self) -> &'a StackMapRecord {
     self.record
   }
+}
+
+fn decode_statepoint_header(locs: &[Location]) -> Result<StatepointHeader, StatepointError> {
+  if locs.len() < LLVM18_STATEPOINT_HEADER_CONSTANTS {
+    return Err(StatepointError::InvalidLayout {
+      num_locations: locs.len(),
+    });
+  }
+
+  let callconv = decode_statepoint_header_constant(&locs[0], 0)?;
+  let flags = decode_statepoint_header_constant(&locs[1], 1)?;
+  let deopt_count = decode_statepoint_header_constant(&locs[2], 2)?;
+
+  Ok(StatepointHeader {
+    callconv,
+    flags,
+    deopt_count,
+  })
+}
+
+fn decode_statepoint_header_constant(loc: &Location, index: usize) -> Result<u64, StatepointError> {
+  match *loc {
+    Location::Constant { value, .. } | Location::ConstIndex { value, .. } => Ok(value),
+    _ => Err(StatepointError::NonConstantHeader { index }),
+  }
+}
+
+fn statepoint_gc_pairs_start(
+  deopt_count: u64,
+  num_locations: usize,
+) -> Result<usize, StatepointError> {
+  let deopt_count = usize::try_from(deopt_count).map_err(|_| StatepointError::InvalidLayout {
+    num_locations,
+  })?;
+
+  let gc_pairs_start = LLVM18_STATEPOINT_HEADER_CONSTANTS
+    .checked_add(deopt_count)
+    .ok_or(StatepointError::InvalidLayout { num_locations })?;
+
+  if gc_pairs_start > num_locations {
+    return Err(StatepointError::InvalidLayout { num_locations });
+  }
+
+  Ok(gc_pairs_start)
 }
 
 /// A minimal register-value provider used for evaluating stackmap locations.

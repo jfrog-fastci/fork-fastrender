@@ -37,43 +37,46 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
       );
     }
 
+    // Decode statepoint header + base/derived pairs.
+    let sp = StatepointRecord::new(rec).unwrap();
+
     // Remaining entries: SP-relative Indirect locations (LLVM 18 observed output).
-    for (i, loc) in rec.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..].iter().enumerate() {
-      match *loc {
-        Location::Indirect {
-          size,
-          dwarf_reg,
-          offset: _,
-        } => {
-          assert_eq!(
-            size, 8,
-            "expected 8-byte pointer slots, got size={size} at remaining index {i} (record #{rec_idx})"
-          );
-          assert_eq!(
-            dwarf_reg, sp_reg,
-            "expected SP dwarf_reg={sp_reg}, got dwarf_reg={dwarf_reg} at remaining index {i} (record #{rec_idx})"
-          );
+    for (pair_idx, (base, derived)) in sp.gc_pairs().enumerate() {
+      for (loc_idx, loc) in [(0, base), (1, derived)] {
+        match loc {
+          Location::Indirect {
+            size,
+            dwarf_reg,
+            offset: _,
+          } => {
+            assert_eq!(
+              *size, 8,
+              "expected 8-byte pointer slots, got size={size} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
+            );
+            assert_eq!(
+              *dwarf_reg, sp_reg,
+              "expected SP dwarf_reg={sp_reg}, got dwarf_reg={dwarf_reg} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
+            );
+          }
+          _ => panic!(
+            "expected gc-live locations to be Indirect (SP-based), got {loc:?} at pair {pair_idx} loc {loc_idx} (record #{rec_idx})"
+          ),
         }
-        _ => panic!(
-          "expected remaining locations to be Indirect (SP-based), got {loc:?} at remaining index {i} (record #{rec_idx})"
-        ),
       }
     }
 
-    // Decode statepoint base/derived pairs.
-    let sp = StatepointRecord::new(rec).unwrap();
     assert_eq!(
-      sp.gc_pairs().len(),
-      (rec.locations.len() - LLVM18_STATEPOINT_HEADER_CONSTANTS) / 2
+      sp.gc_pair_count(),
+      (rec.locations.len() - sp.gc_pairs_start()) / 2
     );
   }
 
   // Evaluate one location with a fake regfile (SP=0x1000).
   let rec = &sm.records[0];
   let sp = StatepointRecord::new(rec).unwrap();
-  let first_base = sp.gc_pairs()[0].base;
-  let offset = match *first_base {
-    Location::Indirect { offset, .. } => offset,
+  let first_base = sp.gc_pairs().next().unwrap().0;
+  let offset = match first_base {
+    Location::Indirect { offset, .. } => *offset,
     _ => unreachable!("fixtures should only use Indirect locations"),
   };
 
@@ -177,6 +180,79 @@ fn statepoint_record_rejects_nonconstant_header() {
     StatepointRecord::new(&rec),
     Err(StatepointError::NonConstantHeader { index: 0 })
   ));
+}
+
+#[test]
+fn statepoint_decoder_accepts_nonzero_flags() {
+  let rec = StackMapRecord {
+    patchpoint_id: 0,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 }, // callconv
+      Location::Constant { size: 8, value: 2 }, // flags (non-zero)
+      Location::Constant { size: 8, value: 0 }, // deopt_count
+      // One GC pair.
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let sp = StatepointRecord::new(&rec).unwrap();
+  assert_eq!(sp.header().flags, 2);
+  assert_eq!(sp.gc_pair_count(), 1);
+  let (base, derived) = sp.gc_pairs().next().unwrap();
+  assert_eq!(base, &rec.locations[3]);
+  assert_eq!(derived, &rec.locations[4]);
+}
+
+#[test]
+fn statepoint_decoder_skips_deopt_operands() {
+  let rec = StackMapRecord {
+    patchpoint_id: 0,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 }, // callconv
+      Location::Constant { size: 8, value: 0 }, // flags
+      Location::Constant { size: 8, value: 1 }, // deopt_count = 1
+      // Deopt operand location (must NOT be treated as a GC root).
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 1234,
+      },
+      // One GC pair.
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let sp = StatepointRecord::new(&rec).unwrap();
+  assert_eq!(sp.header().deopt_count, 1);
+  assert_eq!(sp.deopt_locations().len(), 1);
+  assert_eq!(sp.gc_pairs_start(), 4);
+  assert_eq!(sp.gc_pair_count(), 1);
+
+  let (base, derived) = sp.gc_pairs().next().unwrap();
+  assert_eq!(base, &rec.locations[4]);
+  assert_eq!(derived, &rec.locations[5]);
 }
 
 #[test]

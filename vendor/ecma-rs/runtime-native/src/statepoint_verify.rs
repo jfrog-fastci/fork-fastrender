@@ -6,7 +6,7 @@
 //! if codegen or LLVM changes break that assumption.
 
 use crate::stackmaps::{Location, StackMap, StackMapError, StackMapRecord, StackSizeRecord};
-use crate::statepoints::{AARCH64_DWARF_REG_SP, LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_SP};
+use crate::statepoints::{StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
 use std::error::Error;
 use std::fmt;
 
@@ -271,74 +271,95 @@ fn verify_statepoint_record(
 ) -> Result<(), VerifyError> {
   let callsite = func.address.wrapping_add(rec.instruction_offset as u64);
 
-  if rec.locations.len() < LLVM18_STATEPOINT_HEADER_CONSTANTS {
-    return Err(VerifyError::new_record(
+  let sp = StatepointRecord::new(rec).map_err(|err| match err {
+    StatepointError::NonConstantHeader { index } => VerifyError::new_location(
       callsite,
       rec.patchpoint_id,
+      index,
+      &rec.locations[index],
+      "expected Constant/ConstIndex statepoint header".to_string(),
+    ),
+    other => VerifyError::new_record(callsite, rec.patchpoint_id, other.to_string()),
+  })?;
+
+  // Enforce our current runtime policy for statepoints:
+  // - callconv must be 0
+  // - flags must be a 2-bit mask (0..3) and must be 0 for now
+  // - deopt operands are currently not supported (deopt_count must be 0)
+  let header = sp.header();
+  if header.callconv != 0 {
+    return Err(VerifyError::new_location(
+      callsite,
+      rec.patchpoint_id,
+      0,
+      &rec.locations[0],
       format!(
-        "expected at least {LLVM18_STATEPOINT_HEADER_CONSTANTS} leading constant header locations, but record has {} location(s)",
-        rec.locations.len()
+        "expected gc.statepoint callconv=0 header (locations[0]), got {}",
+        header.callconv
+      ),
+    ));
+  }
+  if header.flags > 3 {
+    return Err(VerifyError::new_location(
+      callsite,
+      rec.patchpoint_id,
+      1,
+      &rec.locations[1],
+      format!(
+        "expected gc.statepoint flags to be a 2-bit mask (0..3) (locations[1]), got {}",
+        header.flags
+      ),
+    ));
+  }
+  if header.flags != 0 {
+    return Err(VerifyError::new_location(
+      callsite,
+      rec.patchpoint_id,
+      1,
+      &rec.locations[1],
+      format!(
+        "expected gc.statepoint flags=0 header (locations[1]), got {}",
+        header.flags
+      ),
+    ));
+  }
+  if header.deopt_count != 0 {
+    return Err(VerifyError::new_location(
+      callsite,
+      rec.patchpoint_id,
+      2,
+      &rec.locations[2],
+      format!(
+        "gc.statepoint deopt operands are not supported (locations[2] deopt_count={})",
+        header.deopt_count
       ),
     ));
   }
 
-  for idx in 0..LLVM18_STATEPOINT_HEADER_CONSTANTS {
-    let loc = &rec.locations[idx];
-    // LLVM 18 observed encoding:
-    // - 3 leading "header constants"
-    // - header constant #2 (`locations[1]`) matches the IR `gc.statepoint` `flags` immarg
-    //   (the verifier only accepts a 2-bit mask 0..3).
-    //
-    // This runtime currently assumes `flags=0` for all statepoints.
-    if idx == 1 {
-      if !is_constant_zero(loc) {
-        return Err(VerifyError::new_location(
-          callsite,
-          rec.patchpoint_id,
-          idx,
-          loc,
-          "expected gc.statepoint flags=0 header (header constant #2)".to_string(),
-        ));
-      }
-      continue;
-    }
-
-    if !is_constant_zero(loc) {
-      return Err(VerifyError::new_location(
-        callsite,
-        rec.patchpoint_id,
-        idx,
-        loc,
-        "expected Constant(0) header".to_string(),
-      ));
-    }
-  }
-
-  let remaining = &rec.locations[LLVM18_STATEPOINT_HEADER_CONSTANTS..];
-  if remaining.len() % 2 != 0 {
-    return Err(VerifyError::new_record(
+  let start = sp.gc_pairs_start();
+  for (pair_idx, (base, derived)) in sp.gc_pairs().enumerate() {
+    let base_idx = start + pair_idx * 2;
+    verify_indirect_sp_slot(
       callsite,
       rec.patchpoint_id,
-      format!(
-        "expected (base, derived) pairs after the first {LLVM18_STATEPOINT_HEADER_CONSTANTS} constants, but remaining location count {} is not even",
-        remaining.len()
-      ),
-    ));
-  }
-
-  for (i, loc) in remaining.iter().enumerate() {
-    let idx = LLVM18_STATEPOINT_HEADER_CONSTANTS + i;
-    verify_indirect_sp_slot(callsite, rec.patchpoint_id, func.stack_size, sp_reg, ptr_size, idx, loc)?;
+      func.stack_size,
+      sp_reg,
+      ptr_size,
+      base_idx,
+      base,
+    )?;
+    verify_indirect_sp_slot(
+      callsite,
+      rec.patchpoint_id,
+      func.stack_size,
+      sp_reg,
+      ptr_size,
+      base_idx + 1,
+      derived,
+    )?;
   }
 
   Ok(())
-}
-
-fn is_constant_zero(loc: &Location) -> bool {
-  match *loc {
-    Location::Constant { value, .. } | Location::ConstIndex { value, .. } => value == 0,
-    _ => false,
-  }
 }
 
 fn verify_indirect_sp_slot(

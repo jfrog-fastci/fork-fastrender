@@ -69,6 +69,9 @@ pub enum StackMapError {
 
   #[error(transparent)]
   StatepointVerify(#[from] crate::statepoint_verify::VerifyError),
+
+  #[error(transparent)]
+  StatepointDecode(#[from] crate::statepoints::StatepointError),
 }
 
 #[derive(Debug, Clone)]
@@ -459,21 +462,31 @@ pub struct CallSite<'a> {
 impl<'a> CallSite<'a> {
   /// Return a deduplicated list of GC root stack slots as offsets from RBP.
   ///
-  /// This is a statepoint-oriented helper: it scans the record's locations and
-  /// treats only `Indirect` stack slots as updatable roots. Constant header
-  /// entries are ignored.
+  /// This is a statepoint-oriented helper: it decodes the LLVM `gc.statepoint`
+  /// record layout and enumerates only the `(base, derived)` GC root pairs (the
+  /// leading header constants and any deopt operands are ignored).
+  ///
+  /// For non-statepoint records (those without the 3-constant prefix), this
+  /// falls back to scanning all locations and treating `Indirect` stack slots as
+  /// GC roots.
   ///
   /// Normalization (assumes x86_64 frame pointers are enabled):
   /// - `Indirect [RSP + off]` becomes `rbp_off = 8 - stack_size + off`
   /// - `Indirect [RBP + off]` becomes `rbp_off = off`
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
-    for loc in &self.record.locations {
-      match *loc {
-        Location::Indirect {
-          dwarf_reg, offset, ..
-        } => {
-          let rbp_off = match dwarf_reg {
+    let looks_like_statepoint = self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+
+    if looks_like_statepoint {
+      let statepoint = crate::statepoints::StatepointRecord::new(self.record)?;
+      for (base, _derived) in statepoint.gc_pairs() {
+        let rbp_off = match *base {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => match dwarf_reg {
             X86_64_DWARF_REG_RBP => offset,
             X86_64_DWARF_REG_RSP => {
               let rbp_off = 8i128 - (self.stack_size as i128) + (offset as i128);
@@ -486,19 +499,47 @@ impl<'a> CallSite<'a> {
               rbp_off as i32
             }
             other => return Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
-          };
+          },
 
-          if !out.contains(&rbp_off) {
-            out.push(rbp_off);
-          }
+          // Strict mode: reject roots in registers / direct expressions / constants.
+          _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
+        };
+
+        if !out.contains(&rbp_off) {
+          out.push(rbp_off);
         }
+      }
+    } else {
+      for loc in &self.record.locations {
+        match *loc {
+          Location::Indirect {
+            dwarf_reg, offset, ..
+          } => {
+            let rbp_off = match dwarf_reg {
+              X86_64_DWARF_REG_RBP => offset,
+              X86_64_DWARF_REG_RSP => {
+                let rbp_off = 8i128 - (self.stack_size as i128) + (offset as i128);
+                if !(i32::MIN as i128..=i32::MAX as i128).contains(&rbp_off) {
+                  return Err(StackMapError::StackSlotOffsetOverflow {
+                    stack_size: self.stack_size,
+                    off: offset,
+                  });
+                }
+                rbp_off as i32
+              }
+              other => return Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
+            };
 
-        // Statepoint header constants.
-        Location::Constant { .. } | Location::ConstIndex { .. } => {}
+            if !out.contains(&rbp_off) {
+              out.push(rbp_off);
+            }
+          }
 
-        // Strict mode: reject roots in registers / direct expressions.
-        _ => {
-          return Err(StackMapError::UnsupportedGcLocation { loc: loc.clone() });
+          // Ignore constants (used by statepoint headers and patchpoints).
+          Location::Constant { .. } | Location::ConstIndex { .. } => {}
+
+          // Strict mode: reject roots in registers / direct expressions.
+          _ => return Err(StackMapError::UnsupportedGcLocation { loc: loc.clone() }),
         }
       }
     }

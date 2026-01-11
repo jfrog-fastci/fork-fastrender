@@ -1,6 +1,6 @@
-use runtime_native::stackmaps::StackMap;
+use runtime_native::stackmaps::{Location, StackMap, StackMapRecord, StackSizeRecord};
 use runtime_native::statepoint_verify::{
-  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
+  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions, LLVM_STATEPOINT_PATCHPOINT_ID,
 };
 
 const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/bin/statepoint_x86_64.bin");
@@ -73,4 +73,96 @@ fn verifier_rejects_register_locations() {
   assert!(msg.contains("kind=Register"));
   assert!(msg.contains("dwarf_reg=7"));
   assert!(msg.contains("offset=0"));
+}
+
+#[test]
+fn verifier_rejects_nonzero_flags_header() {
+  let stackmap = StackMap {
+    version: 3,
+    functions: vec![StackSizeRecord {
+      address: 0x1000,
+      stack_size: 32,
+      record_count: 1,
+    }],
+    constants: vec![],
+    records: vec![StackMapRecord {
+      patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
+      instruction_offset: 0,
+      locations: vec![
+        Location::Constant { size: 8, value: 0 }, // callconv
+        Location::Constant { size: 8, value: 2 }, // flags (non-zero)
+        Location::Constant { size: 8, value: 0 }, // deopt_count
+        // One GC pair.
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+      ],
+      live_outs: vec![],
+    }],
+  };
+
+  let err = verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap_err();
+  assert_eq!(err.location_index, Some(1));
+  assert!(err.message.contains("flags=0"));
+}
+
+#[test]
+fn verifier_rejects_deopt_operands() {
+  let stackmap = StackMap {
+    version: 3,
+    functions: vec![StackSizeRecord {
+      address: 0x1000,
+      stack_size: 32,
+      record_count: 1,
+    }],
+    constants: vec![],
+    records: vec![StackMapRecord {
+      patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
+      instruction_offset: 0,
+      locations: vec![
+        Location::Constant { size: 8, value: 0 }, // callconv
+        Location::Constant { size: 8, value: 0 }, // flags
+        Location::Constant { size: 8, value: 1 }, // deopt_count=1 (unsupported by verifier)
+        // Deopt operand location.
+        Location::Constant { size: 8, value: 123 },
+        // One GC pair.
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+      ],
+      live_outs: vec![],
+    }],
+  };
+
+  let err = verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap_err();
+  assert_eq!(err.location_index, Some(2));
+  assert!(err.message.contains("deopt"));
 }

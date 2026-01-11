@@ -47,9 +47,9 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
     assert_eq!(record.locations.len(), 7);
 
     let sp = StatepointRecord::new(record).unwrap();
-    assert_eq!(sp.gc_pairs().len(), 2);
-    for pair in sp.gc_pairs() {
-      match pair.base {
+    assert_eq!(sp.gc_pair_count(), 2);
+    for (base, derived) in sp.gc_pairs() {
+      match base {
         Location::Indirect {
           size, dwarf_reg, ..
         } => {
@@ -58,7 +58,7 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
         }
         other => panic!("expected base to be Indirect, got {other:?}"),
       }
-      assert_eq!(pair.base, pair.derived);
+      assert_eq!(base, derived);
     }
   }
 }
@@ -75,9 +75,9 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
     assert_eq!(record.locations.len(), 7);
 
     let sp = StatepointRecord::new(record).unwrap();
-    assert_eq!(sp.gc_pairs().len(), 2);
-    for pair in sp.gc_pairs() {
-      match pair.base {
+    assert_eq!(sp.gc_pair_count(), 2);
+    for (base, derived) in sp.gc_pairs() {
+      match base {
         Location::Indirect {
           size, dwarf_reg, ..
         } => {
@@ -86,7 +86,7 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
         }
         other => panic!("expected base to be Indirect, got {other:?}"),
       }
-      assert_eq!(pair.base, pair.derived);
+      assert_eq!(base, derived);
     }
   }
 }
