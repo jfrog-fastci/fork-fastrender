@@ -514,11 +514,13 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
     // Existing narrowing based on null/undefined comparisons.
     //
     // Find the defining instruction for the boolean condition value. We allow a
-    // single `!` indirection so patterns like `if (!(x == null))` still narrow.
+    // small amount of indirection through `!` and `VarAssign` so patterns like
+    // `if (!(x == null))` and `if ((x == null) as any)` (lowered as var assigns)
+    // still narrow.
     let mut negate = false;
     let mut probe_var = *cond_var;
     let mut cmp: Option<(&Arg, BinOp, &Arg)> = None;
-    for _ in 0..2 {
+    for _ in 0..8 {
       let mut found_def = false;
       for inst in pred_block.iter().rev() {
         if inst.t == InstTyp::CondGoto {
@@ -541,6 +543,13 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
                 negate = !negate;
                 continue;
               }
+            }
+          }
+          InstTyp::VarAssign => {
+            let (_tgt, arg) = inst.as_var_assign();
+            if let Arg::Var(v) = arg {
+              probe_var = *v;
+              continue;
             }
           }
           _ => {}
@@ -758,6 +767,34 @@ mod tests {
       result.mask_of_var_at_entry(2, 0),
       NullabilityMask::NULL | NullabilityMask::UNDEF
     );
+  }
+
+  #[test]
+  fn narrows_through_var_assign_of_null_test() {
+    // %0 = unknown; %1 = (%0 == null); %2 = %1; if %2 goto 1 else 2
+    let cfg = build_cfg(
+      &[(0, 1), (0, 2)],
+      &[
+        (
+          0,
+          vec![
+            Inst::unknown_load(0, "x".to_string()),
+            Inst::bin(1, Arg::Var(0), BinOp::LooseEq, Arg::Const(Const::Null)),
+            Inst::var_assign(2, Arg::Var(1)),
+            Inst::cond_goto(Arg::Var(2), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+    );
+
+    let result = calculate_nullability(&cfg);
+    assert_eq!(
+      result.mask_of_var_at_entry(1, 0),
+      NullabilityMask::NULL | NullabilityMask::UNDEF
+    );
+    assert_eq!(result.mask_of_var_at_entry(2, 0), NullabilityMask::OTHER);
   }
 
   #[test]

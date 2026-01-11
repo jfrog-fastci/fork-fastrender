@@ -694,7 +694,7 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
     let mut probe_var = cond_var;
     let mut negate = false;
     let mut resolved: Option<(u32, BinOp, i64)> = None;
-    for _ in 0..4 {
+    for _ in 0..8 {
       if let Some((x, op, c)) = Self::find_cond_compare(from_block, probe_var) {
         resolved = Some((x, op, c));
         break;
@@ -706,18 +706,27 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
       else {
         break;
       };
-      if def.t != InstTyp::Un {
-        break;
+      match def.t {
+        InstTyp::Un => {
+          let (_tgt, op, arg) = def.as_un();
+          if op != UnOp::Not {
+            break;
+          }
+          let Arg::Var(inner) = arg else {
+            break;
+          };
+          probe_var = *inner;
+          negate = !negate;
+        }
+        InstTyp::VarAssign => {
+          let (_tgt, arg) = def.as_var_assign();
+          let Arg::Var(inner) = arg else {
+            break;
+          };
+          probe_var = *inner;
+        }
+        _ => break,
       }
-      let (_tgt, op, arg) = def.as_un();
-      if op != UnOp::Not {
-        break;
-      }
-      let Arg::Var(inner) = arg else {
-        break;
-      };
-      probe_var = *inner;
-      negate = !negate;
     }
 
     let Some((x, op, c)) = resolved else {
@@ -923,6 +932,46 @@ mod tests {
       Some(IntRange::Range {
         lo: Bound::NegInf,
         hi: Bound::Finite(9)
+      })
+    );
+  }
+
+  #[test]
+  fn narrows_on_lt_branch_edges_through_var_assign() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::bin(
+              1,
+              Arg::Var(0),
+              BinOp::Lt,
+              Arg::Const(Const::Num(JsNumber(10.0))),
+            ),
+            Inst::var_assign(2, Arg::Var(1)),
+            Inst::cond_goto(Arg::Var(2), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+      &[(0, 1), (0, 2)],
+    );
+
+    let result = analyze_ranges(&cfg);
+    assert_eq!(
+      result.var_at_entry(1, 0),
+      Some(IntRange::Range {
+        lo: Bound::NegInf,
+        hi: Bound::Finite(9)
+      })
+    );
+    assert_eq!(
+      result.var_at_entry(2, 0),
+      Some(IntRange::Range {
+        lo: Bound::Finite(10),
+        hi: Bound::PosInf
       })
     );
   }
