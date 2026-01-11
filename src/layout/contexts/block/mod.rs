@@ -6224,7 +6224,12 @@ impl BlockFormattingContext {
           float_height_space,
         )
         .with_used_border_box_size(width_auto.then_some(used_border_box), None);
-        let mut fragment = child_bfc.layout(child, &child_constraints)?;
+        let mut fragment = if fc_type == FormattingContextType::Block {
+          child_bfc.layout(child, &child_constraints)?
+        } else {
+          let fc = factory.get(fc_type);
+          fc.layout(child, &child_constraints)?
+        };
 
         let block_sides = block_axis_sides(&child.style);
         let margin_top = resolve_margin_side(
@@ -11665,6 +11670,7 @@ mod tests {
   use crate::style::position::Position;
   use crate::style::types::BorderStyle;
   use crate::style::types::ContentVisibility;
+  use crate::style::types::FlexDirection;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::ListStylePosition;
   use crate::style::types::ListStyleType;
@@ -11678,6 +11684,7 @@ mod tests {
   use crate::tree::box_generation_demo::DOMNode;
   use crate::tree::box_tree::BoxTree;
   use crate::tree::fragment_tree::FragmentContent;
+  use crate::tree::fragment_tree::FragmentNode;
   use std::collections::HashMap;
   use std::sync::Arc;
 
@@ -11838,6 +11845,92 @@ mod tests {
     reset_collapsed_block_margins_call_tracking();
   }
 
+  #[test]
+  fn floats_use_child_formatting_context_for_layout() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.width = Some(Length::px(200.0));
+    parent_style.height = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
+    parent_style.height_keyword = None;
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Flex;
+    float_style.float = Float::Left;
+    float_style.flex_direction = FlexDirection::Column;
+    float_style.width = Some(Length::px(100.0));
+    float_style.height = Some(Length::px(100.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+
+    let mut child_a_style = ComputedStyle::default();
+    child_a_style.width = Some(Length::px(100.0));
+    child_a_style.height = Some(Length::px(20.0));
+    child_a_style.width_keyword = None;
+    child_a_style.height_keyword = None;
+    child_a_style.order = 2;
+
+    let mut child_b_style = ComputedStyle::default();
+    child_b_style.width = Some(Length::px(100.0));
+    child_b_style.height = Some(Length::px(30.0));
+    child_b_style.width_keyword = None;
+    child_b_style.height_keyword = None;
+    child_b_style.order = 0;
+
+    let mut child_a = BoxNode::new_block(
+      Arc::new(child_a_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child_a.id = 3;
+    let mut child_b = BoxNode::new_block(
+      Arc::new(child_b_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child_b.id = 4;
+
+    let mut float_box = BoxNode::new_block(
+      Arc::new(float_style),
+      FormattingContextType::Flex,
+      vec![child_a, child_b],
+    );
+    float_box.id = 2;
+
+    let mut parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![float_box],
+    );
+    parent.id = 1;
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = bfc.layout(&parent, &constraints).expect("layout should succeed");
+
+    let float_fragment = find_block_fragment(&fragment, 2).expect("float fragment");
+    let ordered_children = float_fragment
+      .children
+      .iter()
+      .filter_map(|child| match &child.content {
+        FragmentContent::Block { box_id: Some(id) } => Some(*id),
+        _ => None,
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(
+      ordered_children,
+      vec![4, 3],
+      "expected floated flex container to emit children in `order`-sorted fragment order",
+    );
+
+    let frag_b = find_block_fragment(float_fragment, 4).expect("child B fragment");
+    let frag_a = find_block_fragment(float_fragment, 3).expect("child A fragment");
+    assert!(
+      frag_b.bounds.y() <= frag_a.bounds.y(),
+      "expected lower-order item to appear first along the flex container main axis",
+    );
+  }
   fn content_visibility_test_guard() -> runtime::ThreadRuntimeTogglesGuard {
     // Keep content-visibility:auto tests deterministic even when developers have FASTR_* env vars
     // set locally (e.g. activation margin experiments).

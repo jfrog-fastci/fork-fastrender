@@ -10439,12 +10439,11 @@ impl FlexFormattingContext {
               origin_y = rect.origin.y;
             }
           }
-          if resolved_width <= eps && main_axis_is_horizontal {
-            manual_row_positions = true;
-          }
-          if resolved_height <= eps && !main_axis_is_horizontal {
-            manual_col_positions = true;
-          }
+          // A flex item can legitimately resolve to a 0px main/cross size (e.g. empty clearfix
+          // pseudo-elements). Do not treat that as a signal that Taffy's layout positions are
+          // unreliable: forcing "manual placement" in that case can override correct Taffy
+          // placement for following items (notably `margin: auto` centering), producing global
+          // layout drift.
           if allow_overflow_fallback
             && main_axis_is_horizontal
             && rect_w.is_finite()
@@ -10525,13 +10524,15 @@ impl FlexFormattingContext {
               .unwrap_or(true);
             if same_col {
               if let Some(prev) = last_layout_y {
-                let non_monotonic = if main_grows_positive {
-                  child_loc_y <= prev + 0.1
-                } else {
-                  child_loc_y >= prev - 0.1
-                };
-                if non_monotonic {
-                  manual_col_positions = true;
+                if allow_overflow_fallback {
+                  let non_monotonic = if main_grows_positive {
+                    child_loc_y <= prev + 0.1
+                  } else {
+                    child_loc_y >= prev - 0.1
+                  };
+                  if non_monotonic {
+                    manual_col_positions = true;
+                  }
                 }
               } else {
                 fallback_cursor_y = child_loc_y;
@@ -10949,12 +10950,8 @@ impl FlexFormattingContext {
                 origin_y = rect.origin.y;
               }
             }
-            if resolved_width <= eps && main_axis_is_horizontal {
-              manual_row_positions = true;
-            }
-            if resolved_height <= eps && !main_axis_is_horizontal {
-              manual_col_positions = true;
-            }
+            // Same rationale as the reuse path above: 0px-sized items are valid and should not
+            // automatically enable the manual placement fallback.
             if main_axis_is_horizontal && rect_w.is_finite() && rect_w > wrap_eps {
               // Large negative main-axis offsets are legitimate when `justify-content` is applied
               // to negative free space (e.g. a single oversized flex item centered in a small
@@ -11031,13 +11028,15 @@ impl FlexFormattingContext {
                 .unwrap_or(true);
               if same_col {
                 if let Some(prev) = last_layout_y {
-                  let non_monotonic = if main_grows_positive {
-                    child_loc_y <= prev + 0.1
-                  } else {
-                    child_loc_y >= prev - 0.1
-                  };
-                  if non_monotonic {
-                    manual_col_positions = true;
+                  if allow_overflow_fallback {
+                    let non_monotonic = if main_grows_positive {
+                      child_loc_y <= prev + 0.1
+                    } else {
+                      child_loc_y >= prev - 0.1
+                    };
+                    if non_monotonic {
+                      manual_col_positions = true;
+                    }
                   }
                 } else {
                   fallback_cursor_y = child_loc_y;
@@ -14360,6 +14359,77 @@ mod tests {
   }
 
   #[test]
+  fn flex_order_affects_layout_and_fragment_child_order() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.justify_content = JustifyContent::FlexStart;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(100.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
+
+    let mut child_a_style = ComputedStyle::default();
+    child_a_style.width = Some(Length::px(100.0));
+    child_a_style.height = Some(Length::px(20.0));
+    child_a_style.width_keyword = None;
+    child_a_style.height_keyword = None;
+    child_a_style.order = 2;
+
+    let mut child_b_style = ComputedStyle::default();
+    child_b_style.width = Some(Length::px(100.0));
+    child_b_style.height = Some(Length::px(30.0));
+    child_b_style.width_keyword = None;
+    child_b_style.height_keyword = None;
+    child_b_style.order = 0;
+
+    let mut child_a = BoxNode::new_block(
+      Arc::new(child_a_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child_a.id = 2;
+    let mut child_b = BoxNode::new_block(
+      Arc::new(child_b_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child_b.id = 3;
+
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![child_a, child_b],
+    );
+    container.id = 1;
+
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+    assert_eq!(
+      fragment
+        .children
+        .iter()
+        .filter_map(|child| match &child.content {
+          FragmentContent::Block { box_id: Some(id) } => Some(*id),
+          _ => None,
+        })
+        .collect::<Vec<_>>(),
+      vec![3, 2],
+      "expected flex items to be emitted in order-sorted fragment order",
+    );
+
+    let frag_b = find_block_child(&fragment, 3);
+    let frag_a = find_block_child(&fragment, 2);
+    assert!(
+      frag_b.bounds.y() <= frag_a.bounds.y(),
+      "expected lower-order item to appear first along the flex container main axis",
+    );
+  }
+
+  #[test]
   fn flex_order_sort_checks_deadline_before_sorting() {
     use crate::render_control::{DeadlineGuard, RenderDeadline};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16573,6 +16643,57 @@ mod tests {
     assert_eq!(fragment.children[0].bounds.x(), 0.0);
     assert_eq!(fragment.children[1].bounds.x(), 116.0); // 100 + 16 gap
     assert_eq!(fragment.children[2].bounds.x(), 400.0); // flush-right: 500 - 100
+  }
+
+  #[test]
+  fn flex_wrap_does_not_override_taffy_positions_due_to_zero_sized_items() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::Wrap;
+
+    // Some real sites use clearfix-like pseudo-elements that become 0-sized flex items
+    // (`display: table`, `width: 0`). These must not trigger the manual placement fallback, which
+    // would otherwise ignore Taffy's correct `margin: auto` centering for subsequent items.
+    let mut zero_style = ComputedStyle::default();
+    zero_style.display = Display::Table;
+    zero_style.width = Some(Length::px(0.0));
+    zero_style.height = Some(Length::px(10.0));
+    zero_style.width_keyword = None;
+    zero_style.height_keyword = None;
+    let item0 = BoxNode::new_block(
+      Arc::new(zero_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut centered_style = ComputedStyle::default();
+    centered_style.width = Some(Length::px(1000.0));
+    centered_style.height = Some(Length::px(10.0));
+    centered_style.width_keyword = None;
+    centered_style.height_keyword = None;
+    centered_style.margin_left = None; // auto
+    centered_style.margin_right = None; // auto
+    let item1 = BoxNode::new_block(Arc::new(centered_style), FormattingContextType::Block, vec![]);
+
+    let item2 = BoxNode::new_block(Arc::new(zero_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item0, item1, item2],
+    );
+
+    let constraints = LayoutConstraints::definite(1040.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    assert!(
+      (fragment.children[1].bounds.x() - 20.0).abs() < 0.01,
+      "expected centered item at x=20 (1040 - 1000 / 2); got {:?}",
+      fragment.children[1].bounds
+    );
   }
 
   #[test]
