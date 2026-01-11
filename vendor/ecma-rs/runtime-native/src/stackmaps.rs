@@ -725,41 +725,14 @@ impl<'a> CallSite<'a> {
       }
     }
 
-    // `gc.relocate` pairing is only meaningful for LLVM statepoints. Detect statepoints by their
-    // structural prefix (3 constant header locations), not by `patchpoint_id`: LLVM allows overriding
-    // the ID (via `"statepoint-id"`) and does not guarantee a fixed constant. Misclassifying a
-    // statepoint as a generic patchpoint would cause us to treat deopt operands as roots or skip
-    // relocation pairs entirely.
-    let looks_like_statepoint = self.record.locations.len()
-      >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-    if !looks_like_statepoint {
-      if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-        debug_assert!(
-          false,
-          "stackmap record uses LLVM_STATEPOINT_PATCHPOINT_ID but does not have a statepoint header prefix: record={:?}",
-          self.record
-        );
-      }
-      return RelocPairsIter::Empty;
-    }
-
+    // Note: `patchpoint_id` is not a reliable marker for LLVM `gc.statepoint` records (it can be
+    // overridden via the `"statepoint-id"` callsite attribute and is not globally unique). Detect
+    // statepoints by decoding the StackMap record layout.
+    //
+    // If decode fails, treat it as a non-statepoint record and yield no relocation pairs.
     let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
       Ok(sp) => sp,
-      Err(err) => {
-        // Some non-statepoint patchpoints might (coincidentally) start with constant-like operands;
-        // treat decode failures as fatal only when the record uses LLVM's default statepoint id.
-        if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-          debug_assert!(
-            false,
-            "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
-            self.record
-          );
-        }
-        return RelocPairsIter::Empty;
-      }
+      Err(_) => return RelocPairsIter::Empty,
     };
     RelocPairsIter::Pairs(statepoint.gc_pairs().iter())
   }

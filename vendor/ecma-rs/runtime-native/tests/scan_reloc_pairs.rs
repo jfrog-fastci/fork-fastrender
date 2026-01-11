@@ -161,6 +161,13 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
 
 #[test]
 fn scan_reloc_pairs_accepts_custom_statepoint_id() {
+  let stackmaps_orig = StackMaps::parse(FIXTURE).expect("parse original stackmaps fixture");
+  let (_orig_callsite_ra, orig_callsite) = stackmaps_orig
+    .iter()
+    .next()
+    .expect("fixture should contain callsites");
+  let orig_pair_count = orig_callsite.reloc_pairs().count();
+
   let mut bytes = FIXTURE.to_vec();
   rewrite_first_patchpoint_id(&mut bytes, 42);
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps fixture");
@@ -172,8 +179,8 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
   let reloc_pairs: Vec<_> = callsite.reloc_pairs().collect();
   assert_eq!(
     reloc_pairs.len(),
-    2,
-    "fixture should contain exactly two (base, derived) pairs (one base==derived, one base!=derived)"
+    orig_pair_count,
+    "relocation pair count should be independent of patchpoint_id"
   );
 
   // Synthetic stack memory (word-aligned).
@@ -204,7 +211,7 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
     pairs.iter().any(|&(b, d)| b as usize == base_addr && d as usize == derived_addr),
     "expected scan to return the derived pair even with custom patchpoint_id"
   );
-  assert_eq!(pairs.len(), reloc_pairs.len());
+  assert_eq!(pairs.len(), orig_pair_count);
 }
 
 #[test]

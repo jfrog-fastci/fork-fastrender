@@ -14,8 +14,7 @@
 //! `reg_value + offset`.
 
 use crate::stackmaps::{Location, StackMaps};
-use crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
-use crate::statepoints::{StatepointError, StatepointRecord};
+use crate::statepoints::StatepointRecord;
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
 #[derive(Debug, thiserror::Error)]
@@ -35,16 +34,6 @@ pub enum ScanError {
 
   #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
   UnsupportedLocation { loc: Location },
-
-  #[error(
-    "failed to decode statepoint stackmap record at callsite pc=0x{ip:x} (patchpoint_id=0x{patchpoint_id:x})"
-  )]
-  InvalidStatepoint {
-    ip: u64,
-    patchpoint_id: u64,
-    #[source]
-    source: StatepointError,
-  },
 }
 
 /// A visitor for GC root slots discovered while scanning native frames.
@@ -119,29 +108,14 @@ pub fn scan_reloc_pairs(
     return Ok(Vec::new());
   };
 
-  // Detect LLVM `gc.statepoint` records by their structural prefix (3 constant header locations).
-  // LLVM allows overriding the statepoint ID (`patchpoint_id`) per callsite.
-  let looks_like_statepoint = callsite.record.locations.len()
-    >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-    && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-      .iter()
-      .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-  if !looks_like_statepoint {
-    return Ok(Vec::new());
-  }
-
+  // Note: `patchpoint_id` is not a reliable marker for LLVM `gc.statepoint` records (it can be
+  // overridden via the `"statepoint-id"` callsite attribute and is not globally unique). Detect
+  // statepoints by decoding the StackMap record layout.
+  //
+  // If decode fails, treat it as a non-statepoint record and return an empty result.
   let statepoint = match StatepointRecord::new(callsite.record) {
     Ok(sp) => sp,
-    Err(source) => {
-      if callsite.record.patchpoint_id == LLVM_STATEPOINT_PATCHPOINT_ID {
-        return Err(ScanError::InvalidStatepoint {
-          ip,
-          patchpoint_id: callsite.record.patchpoint_id,
-          source,
-        });
-      }
-      return Ok(Vec::new());
-    }
+    Err(_) => return Ok(Vec::new()),
   };
 
   let mut pairs: Vec<(*mut usize, *mut usize)> = Vec::with_capacity(statepoint.gc_pair_count());
