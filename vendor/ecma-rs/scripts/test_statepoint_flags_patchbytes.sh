@@ -56,9 +56,24 @@ require_llvm18() {
   fi
 }
 
+is_llvm18() {
+  local tool="$1"
+  local out
+  out="$("${tool}" --version 2>/dev/null || true)"
+  grep -Eq 'version 18\.' <<<"${out}"
+}
+
 require_llvm18 "${LLC}"
 if [[ -n "${LLVM_AS}" ]]; then
-  require_llvm18 "${LLVM_AS}"
+  # `llvm-as` is optional for this script (we can fall back to llc verification),
+  # so don't fail the whole test if a non-18 `llvm-as` happens to be in PATH.
+  # Instead, skip the extra `llvm-as`-based checks.
+  if ! is_llvm18 "${LLVM_AS}"; then
+    echo "note: ${LLVM_AS} is not LLVM 18.x; skipping llvm-as-based verifier checks" >&2
+    LLVM_AS=""
+  else
+    require_llvm18 "${LLVM_AS}"
+  fi
 fi
 require_llvm18 "${LLVM_READOBJ}"
 require_llvm18 "${LLVM_OBJDUMP}"
