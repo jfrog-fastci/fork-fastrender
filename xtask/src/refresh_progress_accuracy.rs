@@ -506,4 +506,29 @@ mod tests {
     );
     assert_eq!(formatted, expected);
   }
+
+  #[test]
+  fn build_fixture_chrome_diff_args_does_not_duplicate_timeout_flag() {
+    let args = RefreshProgressAccuracyArgs {
+      progress_dir: PathBuf::from("progress/pages"),
+      out_dir: PathBuf::from("target/refresh_progress_accuracy_test"),
+      fixtures: Some(vec!["gentoo.org".to_string()]),
+      from_progress: None,
+      only_failures: false,
+      top_worst_accuracy: None,
+      min_diff_percent: None,
+      tolerance: 0,
+      max_diff_percent: 0.0,
+      timeout: 123,
+      keep_going: false,
+      ignore_alpha: false,
+      max_perceptual_distance: None,
+      dry_run: false,
+      print_top_worst: 0,
+    };
+
+    let diff_args = build_fixture_chrome_diff_args(&args).expect("fixture-chrome-diff args");
+    assert_eq!(diff_args.viewport, (1200, 800));
+    assert_eq!(diff_args.timeout, 123);
+  }
 }
