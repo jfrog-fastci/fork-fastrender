@@ -1978,6 +1978,39 @@ mod tests {
   }
 
   #[test]
+  fn text_decoder_option_getter_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      globalThis.__err = "";
+      try {
+        const opts = {};
+        Object.defineProperty(opts, "fatal", {
+          get() {
+            globalThis.__host_ok = recordHost();
+            return true;
+          }
+        });
+        new TextDecoder("utf-8", opts);
+      } catch (e) {
+        globalThis.__err = String(e && (e.stack || e.message) || e);
+      }
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn dispatch_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

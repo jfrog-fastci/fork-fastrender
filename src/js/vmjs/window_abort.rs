@@ -175,7 +175,7 @@ fn abort_signal(
 
     let dispatch_fn = {
       let key = alloc_key(scope, "dispatchEvent")?;
-      vm.get(scope, signal_obj, key)?
+      vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, key)?
     };
     if scope.heap().is_callable(dispatch_fn).unwrap_or(false) {
       // Ignore the return value; for AbortSignal it is always used for notification, not for
@@ -543,7 +543,7 @@ fn abort_signal_static_any_native(
   set_own_data_prop(scope, signal, "onabort", Value::Null, /* writable */ true)?;
 
   let length_key = alloc_key(scope, "length")?;
-  let length_val = vm.get(scope, seq_obj, length_key)?;
+  let length_val = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, seq_obj, length_key)?;
   let mut length = scope.heap_mut().to_number(length_val)?;
   if !length.is_finite() || length.is_nan() || length < 0.0 {
     length = 0.0;
@@ -557,16 +557,16 @@ fn abort_signal_static_any_native(
     let key_s = scope.alloc_string(&idx.to_string())?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    let item = vm.get(scope, seq_obj, key)?;
+    let item = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, seq_obj, key)?;
     let source_signal =
       require_abort_signal(scope, item, "AbortSignal.any input is not an AbortSignal")?;
 
     // If already aborted, synchronously create an already-aborted composite signal.
     let aborted_key = alloc_key(scope, "aborted")?;
-    let aborted = vm.get(scope, source_signal, aborted_key)?;
+    let aborted = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, aborted_key)?;
     if scope.heap().to_boolean(aborted)? {
       let reason_key = alloc_key(scope, "reason")?;
-      let reason = vm.get(scope, source_signal, reason_key)?;
+      let reason = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, reason_key)?;
       scope.push_root(reason)?;
       abort_signal(
         vm,
@@ -598,7 +598,7 @@ fn abort_signal_static_any_native(
     scope.push_root(Value::Object(listener))?;
 
     let add_key = alloc_key(scope, "addEventListener")?;
-    let add = vm.get(scope, source_signal, add_key)?;
+    let add = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_signal, add_key)?;
     if scope.heap().is_callable(add).unwrap_or(false) {
       let type_s = scope.alloc_string("abort")?;
       scope.push_root(Value::String(type_s))?;
@@ -635,7 +635,7 @@ fn abort_any_listener_native(
   };
 
   let reason_key = alloc_key(scope, "reason")?;
-  let reason = vm.get(scope, source_obj, reason_key)?;
+  let reason = vm.get_with_host_and_hooks(host_ctx, scope, host_hooks, source_obj, reason_key)?;
   scope.push_root(reason)?;
   abort_signal(
     vm,

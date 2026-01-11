@@ -5802,6 +5802,8 @@ fn mutation_observer_document_from_obj(scope: &mut Scope<'_>, obj: GcObject) -> 
 fn mutation_observer_parse_options(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   options_value: Value,
 ) -> Result<dom2::MutationObserverInit, VmError> {
   let options_obj = match options_value {
@@ -5819,13 +5821,13 @@ fn mutation_observer_parse_options(
   if let Some(obj) = options_obj {
     scope.push_root(Value::Object(obj))?;
 
-    let get_bool_opt = |vm: &mut Vm,
-                        scope: &mut Scope<'_>,
-                        obj: GcObject,
-                        name: &str|
+    let mut get_bool_opt = |vm: &mut Vm,
+                         scope: &mut Scope<'_>,
+                         obj: GcObject,
+                         name: &str|
      -> Result<Option<bool>, VmError> {
       let key = alloc_key(scope, name)?;
-      let v = vm.get(scope, obj, key)?;
+      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?;
       if matches!(v, Value::Undefined) {
         return Ok(None);
       }
@@ -5840,7 +5842,7 @@ fn mutation_observer_parse_options(
     let character_data_old_value = get_bool_opt(vm, scope, obj, "characterDataOldValue")?;
 
     let attr_filter_key = alloc_key(scope, "attributeFilter")?;
-    let filter_value = vm.get(scope, obj, attr_filter_key)?;
+    let filter_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, attr_filter_key)?;
     let mut attribute_filter: Option<Vec<String>> = None;
     if !matches!(filter_value, Value::Undefined) {
       let Value::Object(filter_obj) = filter_value else {
@@ -5851,7 +5853,7 @@ fn mutation_observer_parse_options(
       scope.push_root(Value::Object(filter_obj))?;
 
       let length_key = alloc_key(scope, "length")?;
-      let length_value = vm.get(scope, filter_obj, length_key)?;
+      let length_value = vm.get_with_host_and_hooks(host, scope, hooks, filter_obj, length_key)?;
       let len = match length_value {
         Value::Number(n) if n.is_finite() && n >= 0.0 => (n.trunc() as usize).min(1024),
         _ => 0,
@@ -5860,7 +5862,7 @@ fn mutation_observer_parse_options(
       let mut out: Vec<String> = Vec::with_capacity(len.min(32));
       for idx in 0..len {
         let idx_key = alloc_key(scope, &idx.to_string())?;
-        let v = vm.get(scope, filter_obj, idx_key)?;
+        let v = vm.get_with_host_and_hooks(host, scope, hooks, filter_obj, idx_key)?;
         let s = scope.heap_mut().to_string(v)?;
         let text = scope
           .heap()
@@ -6087,8 +6089,8 @@ fn alloc_mutation_records_array(
 fn mutation_observer_observe_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -6145,7 +6147,7 @@ fn mutation_observer_observe_native(
   };
 
   let options_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let options = mutation_observer_parse_options(vm, scope, options_value)?;
+  let options = mutation_observer_parse_options(vm, scope, host, hooks, options_value)?;
 
   let Some(mut dom_ptr) = dom_for_source(source_id) else {
     return Err(VmError::TypeError(
@@ -7096,7 +7098,13 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
         Ok(())
       } else if let Value::Object(callback_obj) = callback {
         let handle_event_key = alloc_key(&mut scope, "handleEvent")?;
-        let handle_event = vm.get(&mut scope, callback_obj, handle_event_key)?;
+        let handle_event = vm.get_with_host_and_hooks(
+          host_ctx,
+          &mut scope,
+          &mut host_hooks,
+          callback_obj,
+          handle_event_key,
+        )?;
         if !scope.heap().is_callable(handle_event)? {
           return Err(VmError::TypeError(
             "EventTarget listener callback has no callable handleEvent",
@@ -7411,7 +7419,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
         Ok(())
       } else if let Value::Object(callback_obj) = callback {
         let handle_event_key = alloc_key(scope, "handleEvent")?;
-        let handle_event = vm.get(scope, callback_obj, handle_event_key)?;
+        let handle_event = vm.get_with_host_and_hooks(vm_host, scope, hooks, callback_obj, handle_event_key)?;
         if !scope.heap().is_callable(handle_event)? {
           return Err(VmError::TypeError(
             "EventTarget listener callback has no callable handleEvent",
@@ -7456,10 +7464,12 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
 fn rust_event_from_js_event(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   event_obj: GcObject,
 ) -> Result<web_events::Event, VmError> {
   let type_key = alloc_key(scope, "type")?;
-  let type_value = vm.get(scope, event_obj, type_key)?;
+  let type_value = vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, type_key)?;
   let type_string = scope.heap_mut().to_string(type_value)?;
   let type_name = scope
     .heap()
@@ -7920,7 +7930,7 @@ fn event_target_dispatch_event_native(
   };
   scope.push_root(Value::Object(event_obj))?;
 
-  let mut rust_event = rust_event_from_js_event(vm, scope, event_obj)?;
+  let mut rust_event = rust_event_from_js_event(vm, scope, vm_host, hooks, event_obj)?;
 
   // Ensure base Event fields are observable even if there are no listeners.
   {

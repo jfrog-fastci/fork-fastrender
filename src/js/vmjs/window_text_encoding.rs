@@ -281,8 +281,8 @@ fn text_decoder_call(
 fn text_decoder_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   args: &[Value],
   _new_target: Value,
@@ -316,13 +316,14 @@ fn text_decoder_construct(
       scope.push_root(Value::Object(options_obj))?;
 
       let fatal_key = alloc_key(&mut scope, "fatal")?;
-      let fatal_value = vm.get(&mut scope, options_obj, fatal_key)?;
+      let fatal_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, fatal_key)?;
       if scope.heap().to_boolean(fatal_value)? {
         flags |= TEXT_DECODER_FLAG_FATAL;
       }
 
       let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
-      let ignore_bom_value = vm.get(&mut scope, options_obj, ignore_bom_key)?;
+      let ignore_bom_value =
+        vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, ignore_bom_key)?;
       if scope.heap().to_boolean(ignore_bom_value)? {
         flags |= TEXT_DECODER_FLAG_IGNORE_BOM;
       }

@@ -821,7 +821,7 @@ fn fill_headers_from_init(
   if scope.heap().object_prototype(obj)? == Some(array_proto) {
     // Read `.length` as a u32.
     let length_key = alloc_key(scope, "length")?;
-    let len_value = vm.get(scope, obj, length_key)?;
+    let len_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, length_key)?;
     let len_u64 = number_to_u64(len_value)?;
     let len: usize = len_u64
       .try_into()
@@ -838,7 +838,7 @@ fn fill_headers_from_init(
         vm.tick()?;
       }
       let key = alloc_key(scope, &idx.to_string())?;
-      let entry = vm.get(scope, obj, key)?;
+      let entry = vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?;
       let Value::Object(entry_obj) = entry else {
         return Err(throw_type_error(vm, scope, host, hooks, "Invalid Headers init sequence item"));
       };
@@ -846,7 +846,7 @@ fn fill_headers_from_init(
         return Err(throw_type_error(vm, scope, host, hooks, "Invalid Headers init sequence item"));
       }
       let entry_len_key = alloc_key(scope, "length")?;
-      let entry_len = vm.get(scope, entry_obj, entry_len_key)?;
+      let entry_len = vm.get_with_host_and_hooks(host, scope, hooks, entry_obj, entry_len_key)?;
       let entry_len = number_to_u64(entry_len)?;
       if entry_len != 2 {
         return Err(throw_type_error(
@@ -859,8 +859,8 @@ fn fill_headers_from_init(
       }
       let k0 = alloc_key(scope, "0")?;
       let k1 = alloc_key(scope, "1")?;
-      let name_val = vm.get(scope, entry_obj, k0)?;
-      let value_val = vm.get(scope, entry_obj, k1)?;
+      let name_val = vm.get_with_host_and_hooks(host, scope, hooks, entry_obj, k0)?;
+      let value_val = vm.get_with_host_and_hooks(host, scope, hooks, entry_obj, k1)?;
       let max_header_bytes = headers.limits().max_total_header_bytes;
       let name = to_rust_string_limited(
         scope.heap_mut(),
@@ -906,7 +906,7 @@ fn fill_headers_from_init(
       max_header_bytes,
       FETCH_HEADER_NAME_TOO_LONG_ERROR,
     )?;
-    let value_val = vm.get(scope, obj, key)?;
+    let value_val = vm.get_with_host_and_hooks(host, scope, hooks, obj, key)?;
     let value = to_rust_string_limited(
       scope.heap_mut(),
       value_val,
@@ -1811,7 +1811,7 @@ fn apply_request_init(
 
   // `mode` must be applied before headers so the correct guard is enforced when filling.
   let mode_key = alloc_key(scope, "mode")?;
-  let mode_val = vm.get(scope, init_obj, mode_key)?;
+  let mode_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, mode_key)?;
   let mut mode_changed = false;
   if !matches!(mode_val, Value::Undefined | Value::Null) {
     let mode_s = to_rust_string_limited(scope.heap_mut(), mode_val, 64, FETCH_MODE_TOO_LONG_ERROR)?;
@@ -1838,7 +1838,7 @@ fn apply_request_init(
 
   // `headers` replaces the existing header list.
   let headers_key = alloc_key(scope, "headers")?;
-  let headers_val = vm.get(scope, init_obj, headers_key)?;
+  let headers_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, headers_key)?;
   if !matches!(headers_val, Value::Undefined | Value::Null) {
     let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
     fill_headers_from_init(vm, scope, host, host_hooks, env_id, &mut headers, headers_val)?;
@@ -1855,7 +1855,7 @@ fn apply_request_init(
   }
 
   let method_key = alloc_key(scope, "method")?;
-  let method_val = vm.get(scope, init_obj, method_key)?;
+  let method_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, method_key)?;
   if !matches!(method_val, Value::Undefined | Value::Null) {
     let raw = to_rust_string_limited(
       scope.heap_mut(),
@@ -1871,7 +1871,7 @@ fn apply_request_init(
   }
 
   let redirect_key = alloc_key(scope, "redirect")?;
-  let redirect_val = vm.get(scope, init_obj, redirect_key)?;
+  let redirect_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, redirect_key)?;
   if !matches!(redirect_val, Value::Undefined | Value::Null) {
     let redirect_s = to_rust_string_limited(scope.heap_mut(), redirect_val, 64, FETCH_REDIRECT_TOO_LONG_ERROR)?;
     request.redirect = match redirect_s.as_str() {
@@ -1891,7 +1891,7 @@ fn apply_request_init(
   }
 
   let referrer_key = alloc_key(scope, "referrer")?;
-  let referrer_val = vm.get(scope, init_obj, referrer_key)?;
+  let referrer_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, referrer_key)?;
   if !matches!(referrer_val, Value::Undefined | Value::Null) {
     request.referrer = to_rust_string_limited(
       scope.heap_mut(),
@@ -1902,7 +1902,8 @@ fn apply_request_init(
   }
 
   let referrer_policy_key = alloc_key(scope, "referrerPolicy")?;
-  let referrer_policy_val = vm.get(scope, init_obj, referrer_policy_key)?;
+  let referrer_policy_val =
+    vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, referrer_policy_key)?;
   if !matches!(referrer_policy_val, Value::Undefined | Value::Null) {
     let policy_s =
       to_rust_string_limited(scope.heap_mut(), referrer_policy_val, 64, FETCH_REFERRER_POLICY_TOO_LONG_ERROR)?;
@@ -1918,7 +1919,7 @@ fn apply_request_init(
   }
 
   let credentials_key = alloc_key(scope, "credentials")?;
-  let credentials_val = vm.get(scope, init_obj, credentials_key)?;
+  let credentials_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, credentials_key)?;
   if !matches!(credentials_val, Value::Undefined | Value::Null) {
     let credentials = to_rust_string_limited(
       scope.heap_mut(),
@@ -1943,7 +1944,7 @@ fn apply_request_init(
   }
 
   let body_key = alloc_key(scope, "body")?;
-  let body_val = vm.get(scope, init_obj, body_key)?;
+  let body_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, body_key)?;
   if !matches!(body_val, Value::Undefined | Value::Null) {
     let max_body_bytes = request.headers.limits().max_request_body_bytes;
     let mut inferred_content_type: Option<String> = None;
@@ -2191,7 +2192,7 @@ fn request_ctor_construct(
       return Err(VmError::InvariantViolation("Request init must be an object"));
     };
     let signal_key = alloc_key(scope, "signal")?;
-    let signal_val = vm.get(scope, init_obj, signal_key)?;
+    let signal_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, signal_key)?;
     if !matches!(signal_val, Value::Undefined) {
       init_specified_signal = true;
       match signal_val {
@@ -2849,7 +2850,7 @@ fn response_json_static_native(
     call_scope.push_root(Value::Object(json))?;
     call_scope.push_root(data)?;
     let stringify_key = alloc_key(&mut call_scope, "stringify")?;
-    let stringify_fn = vm.get(&mut call_scope, json, stringify_key)?;
+    let stringify_fn = vm.get_with_host_and_hooks(&mut *host, &mut call_scope, host_hooks, json, stringify_key)?;
 
     let result = vm.call_with_host_and_hooks(
       &mut *host,
@@ -2888,13 +2889,13 @@ fn response_json_static_native(
       return Err(VmError::TypeError("Response init must be an object"));
     };
     let status_key = alloc_key(scope, "status")?;
-    let status_val = vm.get(scope, init_obj, status_key)?;
+    let status_val = vm.get_with_host_and_hooks(&mut *host, scope, host_hooks, init_obj, status_key)?;
     if !matches!(status_val, Value::Undefined) {
       let n = scope.heap_mut().to_number(status_val)?;
       status = number_to_u16_wrapping(n);
     }
     let status_text_key = alloc_key(scope, "statusText")?;
-    let st_val = vm.get(scope, init_obj, status_text_key)?;
+    let st_val = vm.get_with_host_and_hooks(&mut *host, scope, host_hooks, init_obj, status_text_key)?;
     if !matches!(st_val, Value::Undefined) {
       status_text = to_rust_string_limited(
         scope.heap_mut(),
@@ -2904,7 +2905,7 @@ fn response_json_static_native(
       )?;
     }
     let headers_key = alloc_key(scope, "headers")?;
-    let headers_val = vm.get(scope, init_obj, headers_key)?;
+    let headers_val = vm.get_with_host_and_hooks(&mut *host, scope, host_hooks, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
       fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut headers, headers_val)?;
     }
@@ -3634,13 +3635,13 @@ fn response_ctor_construct(
       return Err(VmError::TypeError("Response init must be an object"));
     };
     let status_key = alloc_key(scope, "status")?;
-    let status_val = vm.get(scope, init_obj, status_key)?;
+    let status_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, status_key)?;
     if !matches!(status_val, Value::Undefined) {
       let n = scope.heap_mut().to_number(status_val)?;
       status = number_to_u16_wrapping(n);
     }
     let status_text_key = alloc_key(scope, "statusText")?;
-    let st_val = vm.get(scope, init_obj, status_text_key)?;
+    let st_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, status_text_key)?;
     if !matches!(st_val, Value::Undefined) {
       status_text = to_rust_string_limited(
         scope.heap_mut(),
@@ -3650,7 +3651,7 @@ fn response_ctor_construct(
       )?;
     }
     let headers_key = alloc_key(scope, "headers")?;
-    let headers_val = vm.get(scope, init_obj, headers_key)?;
+    let headers_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
       fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut headers, headers_val)?;
     }
@@ -3835,7 +3836,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       return Err(VmError::InvariantViolation("Request init must be an object"));
     };
     let signal_key = alloc_key(scope, "signal")?;
-    let signal_val = vm.get(scope, init_obj, signal_key)?;
+    let signal_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, signal_key)?;
     if !matches!(signal_val, Value::Undefined) {
       init_specified_signal = true;
       match signal_val {
@@ -3884,10 +3885,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       .ok_or_else(|| VmError::invalid_handle())?;
     if let Value::Object(signal_obj) = signal_value {
       let aborted_key = alloc_key(scope, "aborted")?;
-      let aborted = vm.get(scope, signal_obj, aborted_key)?;
+      let aborted = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, aborted_key)?;
       if scope.heap().to_boolean(aborted)? {
         let reason_key = alloc_key(scope, "reason")?;
-        let reason = vm.get(scope, signal_obj, reason_key)?;
+        let reason = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, reason_key)?;
         vm.call_with_host_and_hooks(
           &mut *host,
           scope,
@@ -4047,7 +4048,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               let reason = match signal_value {
                 Value::Object(signal_obj) => {
                   let key = alloc_key(&mut scope, "reason")?;
-                  vm.get(&mut scope, signal_obj, key)?
+                  vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, signal_obj, key)?
                 }
                 _ => Value::Undefined,
               };

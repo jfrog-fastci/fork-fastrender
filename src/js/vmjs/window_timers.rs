@@ -1001,7 +1001,13 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         scope.define_property(init_obj, reason_key, data_desc(reason))?;
 
         let promise_rejection_ctor_key = alloc_key(&mut scope, "PromiseRejectionEvent")?;
-        let promise_rejection_ctor = vm.get(&mut scope, global_obj, promise_rejection_ctor_key)?;
+        let promise_rejection_ctor = vm.get_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          &mut hooks,
+          global_obj,
+          promise_rejection_ctor_key,
+        )?;
         scope.push_root(promise_rejection_ctor)?;
 
         let (event_value, needs_payload_define) =
@@ -1019,7 +1025,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
             )
           } else {
             let event_ctor_key = alloc_key(&mut scope, "Event")?;
-            let event_ctor = vm.get(&mut scope, global_obj, event_ctor_key)?;
+            let event_ctor =
+              vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
             scope.push_root(event_ctor)?;
             (
               vm.call_with_host_and_hooks(
@@ -1055,7 +1062,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         }
 
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
-        let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
+        let dispatch = vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
         let _ = vm.call_with_host_and_hooks(
           vm_host,
           &mut scope,
