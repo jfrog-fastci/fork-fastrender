@@ -11,9 +11,26 @@ pub extern "C" fn rt_register_current_thread() {
   threading::register_current_thread(ThreadKind::Worker);
 }
 
+/// Register the current OS thread as a GC mutator.
+///
+/// Compatibility alias for earlier codegen prototypes that expect a `rt_register_thread` symbol.
+/// Newer code should prefer [`rt_thread_init`](crate::rt_thread_init) or
+/// [`rt_register_current_thread`] so the runtime can track thread kinds.
+#[no_mangle]
+pub extern "C" fn rt_register_thread() {
+  rt_register_current_thread();
+}
+
 /// Unregister the current OS thread from the GC mutator set.
 #[no_mangle]
 pub extern "C" fn rt_unregister_current_thread() {
   threading::unregister_current_thread();
 }
 
+/// Unregister the current OS thread from the GC mutator set.
+///
+/// Compatibility alias for earlier codegen prototypes that expect a `rt_unregister_thread` symbol.
+#[no_mangle]
+pub extern "C" fn rt_unregister_thread() {
+  rt_unregister_current_thread();
+}

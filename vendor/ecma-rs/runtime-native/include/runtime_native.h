@@ -99,6 +99,9 @@ void rt_thread_deinit(void);
 // Convenience registration API: equivalent to `rt_thread_init(1 /* worker */)`.
 void rt_register_current_thread(void);
 void rt_unregister_current_thread(void);
+// Compatibility aliases for earlier codegen prototypes.
+void rt_register_thread(void);
+void rt_unregister_thread(void);
 
 // -----------------------------------------------------------------------------
 // Thread attach/detach (per-runtime thread registry)

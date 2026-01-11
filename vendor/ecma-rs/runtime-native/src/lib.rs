@@ -124,7 +124,9 @@ pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
 pub use async_rt::set_strict_await_yields;
-pub use thread_registry::{rt_register_current_thread, rt_unregister_current_thread};
+pub use thread_registry::{
+  rt_register_current_thread, rt_register_thread, rt_unregister_current_thread, rt_unregister_thread,
+};
 pub use gc_roots::{RelocPair, StackRootEnumerator};
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
