@@ -193,23 +193,6 @@ pub struct WindowRealm {
   js_execution_options: JsExecutionOptions,
 }
 
-/// Minimal `VmHost` context for `WindowRealm` callers that don't have (or don't want to expose) a
-/// full embedder host (e.g. `DocumentHostState` / `BrowserDocumentDom2`).
-///
-/// This exists primarily to carry host-side bookkeeping for `document.currentScript` so that helpers
-/// like dynamic inline script execution can temporarily override and restore `currentScript` even
-/// when the embedder isn't running the full script orchestrator pipeline.
-#[derive(Debug, Default)]
-struct VmJsHostContext {
-  current_script_state: CurrentScriptStateHandle,
-}
-
-impl VmJsHostContext {
-  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
-    Some(&self.current_script_state)
-  }
-}
-
 pub(crate) struct WindowRealmModuleLoaderState {
   /// Realm-wide module graph used for module scripts and dynamic `import()`.
   ///
