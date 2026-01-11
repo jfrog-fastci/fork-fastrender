@@ -50,6 +50,7 @@ impl FilterOutset {
 /// - kernel filters (`feGaussianBlur`, `feMorphology`, `feConvolveMatrix`)
 /// - displacement (`feDisplacementMap`)
 /// - translations (`feOffset`, and `feDropShadow` dx/dy)
+/// - lighting normals (`feDiffuseLighting`, `feSpecularLighting` via `kernelUnitLength`)
 fn svg_filter_kernel_outset_css(
   filter: &crate::paint::svg_filter::SvgFilter,
   bbox: Rect,
@@ -180,6 +181,27 @@ fn svg_filter_kernel_outset_css(
         if margin.is_finite() {
           pad_x += margin;
           pad_y += margin;
+        }
+      }
+      FilterPrimitive::DiffuseLighting {
+        kernel_unit_length,
+        ..
+      }
+      | FilterPrimitive::SpecularLighting {
+        kernel_unit_length,
+        ..
+      } => {
+        // Lighting primitives sample the surface alpha at +/- kernelUnitLength (see
+        // `surface_normal` in `svg_filter.rs`).
+        let kernel = kernel_unit_length.as_ref().copied().unwrap_or((1.0, 1.0));
+        let (kx, ky) = resolve_pair(kernel);
+        let kx = if kx.is_finite() { kx.abs() } else { 0.0 };
+        let ky = if ky.is_finite() { ky.abs() } else { 0.0 };
+        if kx.is_finite() {
+          pad_x += kx;
+        }
+        if ky.is_finite() {
+          pad_y += ky;
         }
       }
       _ => {}
@@ -500,7 +522,7 @@ mod tests {
   use super::*;
   use crate::paint::svg_filter::{
     ChannelSelector, ColorInterpolationFilters, EdgeMode, FilterInput, FilterPrimitive, FilterStep,
-    SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+    LightSource, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
   };
   use std::sync::Arc;
 
@@ -669,6 +691,48 @@ mod tests {
         && t >= 20.0 - 0.01
         && b >= 20.0 - 0.01,
       "expected displacement map to contribute >=20px padding, got {l},{t},{r},{b}"
+    );
+  }
+
+  #[test]
+  fn svg_filter_diffuse_lighting_expands_outset() {
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::DiffuseLighting {
+          input: FilterInput::SourceGraphic,
+          surface_scale: 1.0,
+          diffuse_constant: 1.0,
+          kernel_unit_length: Some((20.0, 0.0)),
+          light: LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 45.0,
+          },
+          lighting_color: crate::Rgba::WHITE,
+        },
+        region: None,
+      }],
+      // Filter region = bbox.
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(1.0),
+        height: SvgLength::Number(1.0),
+        units: SvgFilterUnits::ObjectBoundingBox,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+    let filters = vec![ResolvedFilter::SvgFilter(Arc::new(filter))];
+    let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
+    assert!(
+      l >= 20.0 - 0.01 && r >= 20.0 - 0.01,
+      "expected diffuse lighting to contribute >=20px x padding, got {l},{t},{r},{b}"
     );
   }
 }
