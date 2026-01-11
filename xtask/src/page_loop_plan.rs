@@ -79,6 +79,32 @@ pub fn build_bins_command(repo_root: &Path, debug: bool, bins: &[&str]) -> Comma
   cmd
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::path::PathBuf;
+
+  fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .parent()
+      .expect("xtask crate should live under the repository root")
+      .to_path_buf()
+  }
+
+  #[test]
+  fn build_bins_command_enables_avif_feature() {
+    let cmd = build_bins_command(&repo_root(), true, &["render_fixtures"]);
+    let args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+    assert!(
+      args.windows(2).any(|w| w == ["--features", "avif"]),
+      "expected build command to enable AVIF feature; got {args:?}"
+    );
+  }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_render_fixtures_command(
   repo_root: &Path,

@@ -138,6 +138,10 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
     !build_line.contains("--release"),
     "expected --debug to omit `--release` for render_fixtures build; got:\n{build_line}"
   );
+  assert!(
+    build_line.contains("--features avif"),
+    "expected render_fixtures build to enable AVIF feature; got:\n{build_line}"
+  );
 
   let render_line = stdout
     .lines()
