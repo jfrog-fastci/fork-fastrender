@@ -466,8 +466,16 @@ bool rt_gc_root_set(uint32_t handle, GcPtr ptr);
 // -----------------------------------------------------------------------------
 // Persistent handles (stable u64 ids)
 // -----------------------------------------------------------------------------
-// Persistent handles keep a GC-managed object alive and allow retrieving its (possibly relocated)
-// pointer later. Intended for crossing async/OS/thread boundaries where raw pointers are unsafe.
+// Persistent handles provide stable `HandleId` values for crossing async/OS/thread boundaries
+// (host-owned queues, OS event loop userdata, cross-thread wakeups, ...).
+//
+// - If the stored pointer refers to a GC-managed object, it must be the GC *object base pointer*
+//   (start of ObjHeader). The GC treats all live handles as roots and may update the stored pointer
+//   during relocation/compaction.
+// - If the stored pointer does not point into the GC heap, it is ignored by GC tracing: it will not
+//   keep any GC object alive and will not be relocated.
+//
+// Note: HandleId values are non-zero; `0` is reserved as an "invalid"/"none" sentinel.
 HandleId rt_handle_alloc(GcPtr ptr);
 // Like `rt_handle_alloc`, but takes the pointer as a `GcHandle` (pointer-to-slot).
 HandleId rt_handle_alloc_h(GcHandle ptr);
