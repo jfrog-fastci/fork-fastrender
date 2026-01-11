@@ -1567,6 +1567,17 @@ mod tests {
   }
 
   #[test]
+  fn parses_not_with_escaped_backslash_class() {
+    // Many large sites (e.g. Airbnb) use `:not(.\\)` as a specificity hack: `.\\` is a class selector
+    // for a literal "\" class name, which essentially never exists. The selector is therefore
+    // equivalent to the original selector, but with an extra pseudo-class specificity bump.
+    //
+    // This relies on CSS escape parsing inside selectors, so ensure it stays supported.
+    let list = parse_selector_list(".a:not(.\\\\)");
+    assert_eq!(list.slice().len(), 1);
+  }
+
+  #[test]
   fn nth_last_child_of_specificity_includes_of_selector_list_specificity() {
     let pseudo_class_weight = PseudoClass::Root.specificity();
     let of_list = parse_selector_list("#target, .foo");

@@ -31,3 +31,43 @@ fn class_selector_can_match_brackets_and_parens_via_css_escapes() {
   assert_eq!(styled.styles.padding_left.unit, LengthUnit::Px);
 }
 
+#[test]
+fn not_pseudo_class_can_reference_escaped_backslash_class() {
+  // Airbnb (and some other large sites) use `:not(.\\)` as a specificity hack.
+  //
+  // `.\\` is a class selector for the literal "\" class name. Since elements almost never have
+  // that class, `:not(.\\)` is effectively always true, but it increases selector specificity.
+  //
+  // We need to parse the escaped class name correctly so rules like:
+  //   .atm_mk_stnw88__320uii:not(.\\) { position: absolute; }
+  // are not dropped as invalid.
+  let css = r#"
+    .a:not(.\\) { padding-left: 10px; }
+  "#;
+  let sheet = parse_stylesheet(css).expect("parse stylesheet");
+
+  let dom_without_backslash_class = DomNode {
+    node_type: DomNodeType::Element {
+      tag_name: "div".to_string(),
+      namespace: HTML_NAMESPACE.to_string(),
+      attributes: vec![("class".to_string(), "a".to_string())],
+    },
+    children: vec![],
+  };
+  let styled_without = apply_styles(&dom_without_backslash_class, &sheet);
+  assert_eq!(styled_without.styles.padding_left.value, 10.0);
+  assert_eq!(styled_without.styles.padding_left.unit, LengthUnit::Px);
+
+  let dom_with_backslash_class = DomNode {
+    node_type: DomNodeType::Element {
+      tag_name: "div".to_string(),
+      namespace: HTML_NAMESPACE.to_string(),
+      // Two classes: "a" and "\".
+      attributes: vec![("class".to_string(), r#"a \"#.to_string())],
+    },
+    children: vec![],
+  };
+  let styled_with = apply_styles(&dom_with_backslash_class, &sheet);
+  assert_eq!(styled_with.styles.padding_left.value, 0.0);
+  assert_eq!(styled_with.styles.padding_left.unit, LengthUnit::Px);
+}

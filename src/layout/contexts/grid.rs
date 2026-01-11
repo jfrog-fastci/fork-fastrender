@@ -3356,31 +3356,18 @@ impl GridFormattingContext {
     }
 
     // Size
-    let mut width = self.convert_sizing_property_to_dimension_box_sizing(
+    let width = self.convert_sizing_property_to_dimension_box_sizing(
       &style.width,
       &style.width_keyword,
       style,
       Axis::Horizontal,
     );
-    let mut height = self.convert_sizing_property_to_dimension_box_sizing(
+    let height = self.convert_sizing_property_to_dimension_box_sizing(
       &style.height,
       &style.height_keyword,
       style,
       Axis::Vertical,
     );
-    if containing_grid.is_some() {
-      // CSS percentages on grid items resolve against the grid *area* size, not the grid container.
-      // Taffy currently resolves percentage preferred sizes against the grid container, which can
-      // make items in `fr` tracks as wide as the entire grid and cause huge horizontal overflow on
-      // real-world pages (e.g. howtogeek.com). Treat percentage preferred sizes as `auto` in Taffy
-      // so our measure callback resolves the percentage against the supplied grid area size.
-      if style.width.is_some_and(|len| len.has_percentage()) {
-        width = Dimension::auto();
-      }
-      if style.height.is_some_and(|len| len.has_percentage()) {
-        height = Dimension::auto();
-      }
-    }
     taffy_style.size = taffy::geometry::Size { width, height };
 
     // Min/Max size
