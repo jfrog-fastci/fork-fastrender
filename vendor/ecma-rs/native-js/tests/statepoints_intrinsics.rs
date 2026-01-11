@@ -1,11 +1,14 @@
 use std::ffi::{CStr, CString};
 
 use inkwell::context::Context;
-use inkwell::types::BasicType;
+use inkwell::types::{AsTypeRef, BasicType};
 use inkwell::values::AsValueRef;
 use inkwell::AddressSpace;
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
-use llvm_sys::core::{LLVMDisposeMessage, LLVMPrintModuleToString, LLVMSetDataLayout, LLVMSetGC, LLVMSetTarget};
+use llvm_sys::core::{
+  LLVMDisposeMessage, LLVMGetModuleContext, LLVMPrintModuleToString, LLVMSetDataLayout, LLVMSetGC,
+  LLVMSetTarget,
+};
 use llvm_sys::prelude::LLVMModuleRef;
 use llvm_sys::target::{
   LLVMCopyStringRepOfTargetData, LLVMDisposeTargetData, LLVM_InitializeNativeAsmPrinter,
@@ -17,7 +20,7 @@ use llvm_sys::target_machine::{
   LLVMGetTargetFromTriple, LLVMRelocMode, LLVMTargetMachineEmitToMemoryBuffer,
 };
 
-use native_js::gc::statepoints::{LiveGcPtr, StatepointCallee, StatepointIntrinsics};
+use native_js::gc::statepoint::StatepointEmitter;
 
 #[test]
 fn statepoint_overloaded_intrinsics_are_canonically_mangled() {
@@ -59,80 +62,41 @@ fn statepoint_overloaded_intrinsics_are_canonically_mangled() {
     .expect("missing live ptr param")
     .into_pointer_value();
 
-  let mut sp = StatepointIntrinsics::new(&module);
+  let module_ref = module.as_mut_ptr();
+  let llvm_ctx = unsafe { LLVMGetModuleContext(module_ref) };
+  let mut sp = unsafe { StatepointEmitter::new(llvm_ctx, module_ref, p1_ty.as_type_ref()) };
 
   // void
-  let callee = StatepointCallee::new(
-    callee_void.as_global_value().as_pointer_value(),
-    callee_void.get_type(),
-  );
-  let (_ret, _relocated) = sp.emit_statepoint_call(&builder, callee, &[], &[], None);
+  let _ = unsafe { sp.emit_statepoint_call(builder.as_mut_ptr(), callee_void.as_value_ref(), &[], &[]) };
 
   // i1
-  let callee = StatepointCallee::new(
-    callee_i1.as_global_value().as_pointer_value(),
-    callee_i1.get_type(),
-  );
-  let (_ret, _relocated) = sp.emit_statepoint_call(
-    &builder,
-    callee,
-    &[],
-    &[],
-    Some(i1_ty.as_basic_type_enum()),
-  );
+  let _ = unsafe { sp.emit_statepoint_call(builder.as_mut_ptr(), callee_i1.as_value_ref(), &[], &[]) };
 
   // i64
-  let callee = StatepointCallee::new(
-    callee_i64.as_global_value().as_pointer_value(),
-    callee_i64.get_type(),
-  );
-  let (_ret, _relocated) = sp.emit_statepoint_call(
-    &builder,
-    callee,
-    &[],
-    &[],
-    Some(i64_ty.as_basic_type_enum()),
-  );
+  let _ = unsafe { sp.emit_statepoint_call(builder.as_mut_ptr(), callee_i64.as_value_ref(), &[], &[]) };
 
   // ptr addrspace(1)
-  let callee = StatepointCallee::new(
-    callee_p1.as_global_value().as_pointer_value(),
-    callee_p1.get_type(),
-  );
-  let (_ret, _relocated) = sp.emit_statepoint_call(
-    &builder,
-    callee,
-    &[],
-    &[],
-    Some(p1_ty.as_basic_type_enum()),
-  );
+  let _ = unsafe { sp.emit_statepoint_call(builder.as_mut_ptr(), callee_p1.as_value_ref(), &[], &[]) };
 
   // { i64, i64 }
-  let callee = StatepointCallee::new(
-    callee_struct.as_global_value().as_pointer_value(),
-    callee_struct.get_type(),
-  );
-  let (_ret, _relocated) = sp.emit_statepoint_call(
-    &builder,
-    callee,
-    &[],
-    &[],
-    Some(struct_ty.as_basic_type_enum()),
-  );
+  let _ = unsafe { sp.emit_statepoint_call(builder.as_mut_ptr(), callee_struct.as_value_ref(), &[], &[]) };
 
   // gc.relocate.p1 (uses a gc-live operand bundle).
-  let callee = StatepointCallee::new(
-    callee_void.as_global_value().as_pointer_value(),
-    callee_void.get_type(),
-  );
-  let (_ret, relocated) =
-    sp.emit_statepoint_call(&builder, callee, &[], &[LiveGcPtr::new(live_ptr)], None);
+  let relocated = unsafe {
+    sp
+      .emit_statepoint_call(
+        builder.as_mut_ptr(),
+        callee_void.as_value_ref(),
+        &[],
+        &[live_ptr.as_value_ref()],
+      )
+      .relocated
+  };
   assert_eq!(relocated.len(), 1, "expected one relocated pointer");
 
   builder.build_return(None).expect("build return");
 
   unsafe {
-    let module_ref = module.as_mut_ptr();
     verify(module_ref);
     let ir = module_to_string(module_ref);
 
@@ -246,4 +210,3 @@ unsafe fn emit_object(module: LLVMModuleRef) {
   LLVMDisposeTargetMachine(tm);
   LLVMDisposeMessage(triple);
 }
-

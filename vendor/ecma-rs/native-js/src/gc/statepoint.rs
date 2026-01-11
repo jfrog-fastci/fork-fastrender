@@ -1,15 +1,14 @@
 use llvm_sys::core::{
-  LLVMAddCallSiteAttribute, LLVMAddFunction, LLVMBuildCall2, LLVMBuildCallWithOperandBundles,
-  LLVMConstInt, LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
-  LLVMFunctionType, LLVMGetEnumAttributeKindForName,
-  LLVMGetNamedFunction, LLVMGetPointerAddressSpace, LLVMGetReturnType, LLVMGetTypeKind,
-  LLVMGlobalGetValueType, LLVMIntTypeInContext, LLVMPointerType, LLVMTokenTypeInContext,
-  LLVMVoidTypeInContext,
+  LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMConstInt,
+  LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
+  LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetReturnType, LLVMGetTypeKind,
+  LLVMGlobalGetValueType, LLVMIntTypeInContext, LLVMLookupIntrinsicID, LLVMTypeOf,
 };
 use llvm_sys::prelude::{
   LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMOperandBundleRef, LLVMTypeRef, LLVMValueRef,
 };
 use llvm_sys::{LLVMCallConv, LLVMTypeKind};
+use std::collections::HashMap;
 use std::ffi::CString;
 
 /// Result of emitting a `gc.statepoint` + `gc.relocate` sequence.
@@ -42,61 +41,125 @@ pub struct StatepointCall {
 pub struct StatepointEmitter {
   ctx: LLVMContextRef,
   module: LLVMModuleRef,
-  statepoint_fn: LLVMValueRef,
-  statepoint_fn_ty: LLVMTypeRef,
-  gc_relocate_fn: LLVMValueRef,
-  gc_relocate_fn_ty: LLVMTypeRef,
+  statepoint_intrinsic_id: u32,
+  gc_result_intrinsic_id: u32,
+  gc_relocate_intrinsic_id: u32,
   elementtype_attr_kind: u32,
   i32_ty: LLVMTypeRef,
   i64_ty: LLVMTypeRef,
-  token_ty: LLVMTypeRef,
+  statepoint_decls: HashMap<usize, IntrinsicDecl>,
+  gc_result_decls: HashMap<usize, IntrinsicDecl>,
+  gc_relocate_decls: HashMap<usize, IntrinsicDecl>,
+}
+
+#[derive(Copy, Clone)]
+struct IntrinsicDecl {
+  func: LLVMValueRef,
+  ty: LLVMTypeRef,
 }
 
 impl StatepointEmitter {
   pub unsafe fn new(ctx: LLVMContextRef, module: LLVMModuleRef, gc_ptr_ty: LLVMTypeRef) -> Self {
-    let token_ty = LLVMTokenTypeInContext(ctx);
     let i32_ty = LLVMIntTypeInContext(ctx, 32);
     let i64_ty = LLVMIntTypeInContext(ctx, 64);
-    let callee_ptr_ty = LLVMPointerType(LLVMVoidTypeInContext(ctx), 0);
 
-    let statepoint_fn_ty = LLVMFunctionType(
-      token_ty,
-      [i64_ty, i32_ty, callee_ptr_ty, i32_ty, i32_ty].as_mut_ptr(),
-      5,
-      1,
-    );
-    let statepoint_fn = get_or_declare_fn(
-      module,
-      "llvm.experimental.gc.statepoint.p0",
-      statepoint_fn_ty,
-    );
+    let statepoint_name = b"llvm.experimental.gc.statepoint";
+    let gc_result_name = b"llvm.experimental.gc.result";
+    let gc_relocate_name = b"llvm.experimental.gc.relocate";
 
-    let gc_relocate_fn_ty =
-      LLVMFunctionType(gc_ptr_ty, [token_ty, i32_ty, i32_ty].as_mut_ptr(), 3, 0);
-    let gc_relocate_fn = get_or_declare_fn(
-      module,
-      &format!(
-        "llvm.experimental.gc.relocate.p{}",
-        LLVMGetPointerAddressSpace(gc_ptr_ty)
-      ),
-      gc_relocate_fn_ty,
-    );
+    let statepoint_intrinsic_id =
+      LLVMLookupIntrinsicID(statepoint_name.as_ptr().cast(), statepoint_name.len());
+    let gc_result_intrinsic_id =
+      LLVMLookupIntrinsicID(gc_result_name.as_ptr().cast(), gc_result_name.len());
+    let gc_relocate_intrinsic_id =
+      LLVMLookupIntrinsicID(gc_relocate_name.as_ptr().cast(), gc_relocate_name.len());
+
+    assert!(statepoint_intrinsic_id != 0, "missing LLVM intrinsic: gc.statepoint");
+    assert!(gc_result_intrinsic_id != 0, "missing LLVM intrinsic: gc.result");
+    assert!(gc_relocate_intrinsic_id != 0, "missing LLVM intrinsic: gc.relocate");
 
     let elementtype_attr_kind =
       LLVMGetEnumAttributeKindForName("elementtype\0".as_ptr().cast(), "elementtype".len());
+    assert!(
+      elementtype_attr_kind != 0,
+      "missing LLVM attribute kind: elementtype"
+    );
 
-    Self {
+    let mut out = Self {
       ctx,
       module,
-      statepoint_fn,
-      statepoint_fn_ty,
-      gc_relocate_fn,
-      gc_relocate_fn_ty,
+      statepoint_intrinsic_id,
+      gc_result_intrinsic_id,
+      gc_relocate_intrinsic_id,
       elementtype_attr_kind,
       i32_ty,
       i64_ty,
-      token_ty,
+      statepoint_decls: HashMap::new(),
+      gc_result_decls: HashMap::new(),
+      gc_relocate_decls: HashMap::new(),
+    };
+
+    // Pre-warm the `gc.relocate` cache for the project's canonical GC pointer type so most call
+    // sites avoid a lookup.
+    out.get_gc_relocate_decl(gc_ptr_ty);
+    out
+  }
+
+  unsafe fn get_statepoint_decl(&mut self, callee_ptr_ty: LLVMTypeRef) -> IntrinsicDecl {
+    let key = callee_ptr_ty as usize;
+    if let Some(&decl) = self.statepoint_decls.get(&key) {
+      return decl;
     }
+
+    let mut overloads = [callee_ptr_ty];
+    let func = LLVMGetIntrinsicDeclaration(
+      self.module,
+      self.statepoint_intrinsic_id,
+      overloads.as_mut_ptr(),
+      overloads.len(),
+    );
+    let ty = LLVMGlobalGetValueType(func);
+    let decl = IntrinsicDecl { func, ty };
+    self.statepoint_decls.insert(key, decl);
+    decl
+  }
+
+  unsafe fn get_gc_result_decl(&mut self, ret_ty: LLVMTypeRef) -> IntrinsicDecl {
+    let key = ret_ty as usize;
+    if let Some(&decl) = self.gc_result_decls.get(&key) {
+      return decl;
+    }
+
+    let mut overloads = [ret_ty];
+    let func = LLVMGetIntrinsicDeclaration(
+      self.module,
+      self.gc_result_intrinsic_id,
+      overloads.as_mut_ptr(),
+      overloads.len(),
+    );
+    let ty = LLVMGlobalGetValueType(func);
+    let decl = IntrinsicDecl { func, ty };
+    self.gc_result_decls.insert(key, decl);
+    decl
+  }
+
+  unsafe fn get_gc_relocate_decl(&mut self, ptr_ty: LLVMTypeRef) -> IntrinsicDecl {
+    let key = ptr_ty as usize;
+    if let Some(&decl) = self.gc_relocate_decls.get(&key) {
+      return decl;
+    }
+
+    let mut overloads = [ptr_ty];
+    let func = LLVMGetIntrinsicDeclaration(
+      self.module,
+      self.gc_relocate_intrinsic_id,
+      overloads.as_mut_ptr(),
+      overloads.len(),
+    );
+    let ty = LLVMGlobalGetValueType(func);
+    let decl = IntrinsicDecl { func, ty };
+    self.gc_relocate_decls.insert(key, decl);
+    decl
   }
 
   /// Emit `gc.statepoint` wrapping a call to `callee` with `call_args`.
@@ -184,6 +247,11 @@ impl StatepointEmitter {
     // Attach `elementtype(...)` to the callee operand (required under opaque pointers).
     let elementtype_attr = LLVMCreateTypeAttribute(self.ctx, self.elementtype_attr_kind, callee_fn_ty);
 
+    let statepoint = {
+      let callee_ptr_ty = LLVMTypeOf(callee_ptr);
+      self.get_statepoint_decl(callee_ptr_ty)
+    };
+
     let mut bundles: Vec<LLVMOperandBundleRef> = Vec::new();
     if !gc_live.is_empty() {
       // `gc-live` operand bundle.
@@ -197,13 +265,18 @@ impl StatepointEmitter {
       bundles.push(bundle);
     }
 
+    let bundles_ptr = if bundles.is_empty() {
+      std::ptr::null_mut()
+    } else {
+      bundles.as_mut_ptr()
+    };
     let token = LLVMBuildCallWithOperandBundles(
       builder,
-      self.statepoint_fn_ty,
-      self.statepoint_fn,
+      statepoint.ty,
+      statepoint.func,
       sp_args.as_mut_ptr(),
       sp_args.len() as u32,
-      bundles.as_mut_ptr(),
+      bundles_ptr,
       bundles.len() as u32,
       b"statepoint_token\0".as_ptr().cast(),
     );
@@ -216,16 +289,12 @@ impl StatepointEmitter {
     let result = if callee_ret_kind == LLVMTypeKind::LLVMVoidTypeKind {
       None
     } else {
-      let gc_result_fn = get_or_declare_fn(
-        self.module,
-        &gc_result_intrinsic_name(callee_ret_ty),
-        LLVMFunctionType(callee_ret_ty, [self.token_ty].as_mut_ptr(), 1, 0),
-      );
+      let gc_result = self.get_gc_result_decl(callee_ret_ty);
 
       Some(LLVMBuildCall2(
         builder,
-        LLVMFunctionType(callee_ret_ty, [self.token_ty].as_mut_ptr(), 1, 0),
-        gc_result_fn,
+        gc_result.ty,
+        gc_result.func,
         [token].as_mut_ptr(),
         1,
         b"gc_result\0".as_ptr().cast(),
@@ -241,10 +310,12 @@ impl StatepointEmitter {
       );
       let base_idx_const = LLVMConstInt(self.i32_ty, base_idx as u64, 0);
       let derived_idx_const = LLVMConstInt(self.i32_ty, derived_idx as u64, 0);
+      let derived_ptr_ty = LLVMTypeOf(gc_live[derived_idx]);
+      let gc_relocate = self.get_gc_relocate_decl(derived_ptr_ty);
       let relocate = LLVMBuildCall2(
         builder,
-        self.gc_relocate_fn_ty,
-        self.gc_relocate_fn,
+        gc_relocate.ty,
+        gc_relocate.func,
         [token, base_idx_const, derived_idx_const].as_mut_ptr(),
         3,
         CString::new(format!("gc_relocate{derived_idx}"))
@@ -281,28 +352,5 @@ impl StatepointEmitter {
       "emit_statepoint_call_void used with non-void callee"
     );
     relocated
-  }
-}
-
-unsafe fn get_or_declare_fn(module: LLVMModuleRef, name: &str, ty: LLVMTypeRef) -> LLVMValueRef {
-  let name = CString::new(name).unwrap();
-  let existing = LLVMGetNamedFunction(module, name.as_ptr());
-  if !existing.is_null() {
-    return existing;
-  }
-  LLVMAddFunction(module, name.as_ptr(), ty)
-}
-
-unsafe fn gc_result_intrinsic_name(ret_ty: LLVMTypeRef) -> String {
-  match LLVMGetTypeKind(ret_ty) {
-    LLVMTypeKind::LLVMPointerTypeKind => {
-      let aspace = LLVMGetPointerAddressSpace(ret_ty);
-      format!("llvm.experimental.gc.result.p{aspace}")
-    }
-    LLVMTypeKind::LLVMIntegerTypeKind => {
-      let bits = llvm_sys::core::LLVMGetIntTypeWidth(ret_ty);
-      format!("llvm.experimental.gc.result.i{bits}")
-    }
-    other => panic!("unsupported gc.result return type kind: {other:?}"),
   }
 }
