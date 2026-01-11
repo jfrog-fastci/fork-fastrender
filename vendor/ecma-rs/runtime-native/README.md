@@ -404,6 +404,8 @@ In addition to promise continuations, embedders and stdlib bindings can enqueue 
 queueMicrotask-style jobs directly via:
 
 - `rt_queue_microtask(Microtask task)`
+- `rt_queue_microtask_with_drop(cb, data, drop_data)` (owned callback state)
+- `rt_queue_microtask_rooted(cb, data)` (GC-managed `data` kept alive + relocation-safe)
 - `rt_drain_microtasks() -> bool`
 
 See `docs/async_abi.md` for details.
