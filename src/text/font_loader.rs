@@ -1497,20 +1497,27 @@ impl FontContext {
         continue;
       }
 
-      if !allow_remote
-        && !face
-          .sources
-          .iter()
-          .any(|src| matches!(src, FontFaceSource::Local(_)))
-      {
-        record_font_event(
-          &events,
-          FontLoadEvent::skipped(&family, None, display, "remote font loading disabled"),
-        );
-        if selected {
-          selected_iter.next();
+      if !allow_remote {
+        let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+        let has_non_http_source = face.sources.iter().any(|src| match src {
+          FontFaceSource::Local(_) => true,
+          FontFaceSource::Url(url_src) => {
+            let resolved = resolve_font_url(&url_src.url, face_base_url);
+            !has_prefix_ignore_ascii_case(&resolved, "http://")
+              && !has_prefix_ignore_ascii_case(&resolved, "https://")
+          }
+        });
+
+        if !has_non_http_source {
+          record_font_event(
+            &events,
+            FontLoadEvent::skipped(&family, None, display, "remote font loading disabled"),
+          );
+          if selected {
+            selected_iter.next();
+          }
+          continue;
         }
-        continue;
       }
 
       if !selected {
@@ -1974,29 +1981,28 @@ impl FontContext {
     allow_remote: bool,
   ) -> FontLoadEvent {
     let display = face.display.unwrap_or(FontDisplay::Auto);
-    const OPTIONAL_SKIP_REASON: &str = "font-display: optional skipped url() sources (cold cache)";
+    const OPTIONAL_SKIP_REASON: &str =
+      "font-display: optional skipped http(s) url() sources (cold cache)";
     // `font-display: optional` is intended to avoid FOIT/layout churn on a cold cache. Browsers
-    // (notably Chrome) generally only use optional faces when the font is already available (e.g.
-    // via `local()` or an in-memory cache) and otherwise render with fallback fonts.
+    // (notably Chrome) generally only use optional faces when the font is already available and
+    // otherwise render with fallback fonts.
     //
-    // FastRender renders pages in a fresh, cache-less environment; attempting to load optional
-    // `url(...)` sources makes offline diffs diverge from Chrome baselines (especially for pages
-    // that deliberately mark their headline fonts `optional` to avoid layout shifts).
-    //
-    // Model the cold-cache behavior by only allowing optional faces to resolve from `local()`
-    // sources or inline `data:` URLs. Other `url()` sources are skipped.
+    // We model this by skipping *network* fetches (`http://`/`https://`) for optional faces. However,
+    // many pageset fixtures reference web fonts via `file:` (or relative URLs that resolve to
+    // `file:`) because they're bundled into the fixture directory; those loads behave like an
+    // already-cached font in practice and should be eligible for optional usage.
+    let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
     if matches!(display, FontDisplay::Optional)
       && !face.sources.iter().any(|src| match src {
         FontFaceSource::Local(_) => true,
-        FontFaceSource::Url(url_src) => has_prefix_ignore_ascii_case(&url_src.url, "data:"),
+        FontFaceSource::Url(url_src) => {
+          let resolved = resolve_font_url(&url_src.url, face_base_url);
+          !has_prefix_ignore_ascii_case(&resolved, "http://")
+            && !has_prefix_ignore_ascii_case(&resolved, "https://")
+        }
       })
     {
-      return FontLoadEvent::skipped(
-        family,
-        None,
-        display,
-        OPTIONAL_SKIP_REASON,
-      );
+      return FontLoadEvent::skipped(family, None, display, OPTIONAL_SKIP_REASON);
     }
     if render_control::check_active(RenderStage::Css).is_err() {
       return FontLoadEvent::skipped(family, None, display, "render cancelled");
@@ -2021,27 +2027,25 @@ impl FontContext {
           }
         }
         FontFaceSource::Url(src) => {
-          if matches!(display, FontDisplay::Optional)
-            && !has_prefix_ignore_ascii_case(&src.url, "data:")
-          {
-            let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
-            let resolved = resolve_font_url(&src.url, face_base_url);
-            last_source = Some(resolved);
+          // Per CSS Fonts, relative `url(...)` sources in `@font-face` are resolved against the
+          // stylesheet they were declared in (not the document URL). Inline style blocks inherit the
+          // document base URL instead.
+          let resolved = resolve_font_url(&src.url, face_base_url);
+          last_source = Some(resolved.clone());
+
+          let is_http = has_prefix_ignore_ascii_case(&resolved, "http://")
+            || has_prefix_ignore_ascii_case(&resolved, "https://");
+
+          if matches!(display, FontDisplay::Optional) && is_http {
             if last_error.is_none() {
               last_error = Some(OPTIONAL_SKIP_REASON.to_string());
             }
             continue;
           }
-          if !allow_remote {
+          if !allow_remote && is_http {
             last_error = Some("remote font loading disabled".to_string());
             continue;
           }
-          // Per CSS Fonts, relative `url(...)` sources in `@font-face` are resolved against the
-          // stylesheet they were declared in (not the document URL). Inline style blocks inherit the
-          // document base URL instead.
-          let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
-          let resolved = resolve_font_url(&src.url, face_base_url);
-          last_source = Some(resolved.clone());
           match self.load_remote_face(family, &resolved, face, order, start, face_base_url) {
             Ok(LoadOutcome::Loaded) => {
               return FontLoadEvent::loaded(family, last_source.clone(), display)
@@ -5883,6 +5887,71 @@ mod tests {
     let resolved = ctx.get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal);
     assert!(resolved.is_some(), "fallback font should still resolve");
     assert_ne!(resolved.unwrap().family, "OptFace");
+  }
+
+  #[test]
+  fn font_display_optional_loads_file_url_sources() {
+    // Regression: pageset fixtures commonly bundle fonts on disk and reference them from
+    // `font-display: optional` rules. These should be eligible for loading (they behave like a warm
+    // cache) even though we still skip network fetches for optional fonts.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    let data = fs::read(&font_path).expect("read test font");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stylesheet_url = Url::from_file_path(dir.path().join("style.css"))
+      .expect("stylesheet path is absolute")
+      .to_string();
+    let expected_font_url = Url::parse(&stylesheet_url)
+      .expect("parse stylesheet url")
+      .join("font.ttf")
+      .expect("resolve font url")
+      .to_string();
+
+    let fetcher = Arc::new(RecordingFetcher::new(vec![(
+      expected_font_url.clone(),
+      data,
+      Some("font/ttf".to_string()),
+    )]));
+    let ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher.clone());
+
+    let face = FontFaceRule {
+      family: Some("OptFileFace".to_string()),
+      sources: vec![FontFaceSource::url("font.ttf".to_string())],
+      display: Some(FontDisplay::Optional),
+      source_stylesheet_url: Some(stylesheet_url),
+      ..Default::default()
+    };
+
+    let event = ctx.load_face_sources_with_report(
+      "OptFileFace",
+      &face,
+      None,
+      0,
+      Instant::now(),
+      true,
+    );
+    assert!(
+      matches!(event.status, FontLoadStatus::Loaded),
+      "expected optional file:// font to load, got {:?}",
+      event.status
+    );
+    assert_eq!(fetcher.calls(), vec![expected_font_url]);
+
+    ctx.activate_loaded_web_fonts();
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "OptFileFace",
+          400,
+          FontStyle::Normal,
+          FontStretch::Normal,
+          None
+        )
+        .is_some(),
+      "expected optional file:// face to become active"
+    );
   }
 
   #[test]
