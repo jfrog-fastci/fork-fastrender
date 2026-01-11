@@ -96,6 +96,28 @@ const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
 const SUBPIXEL_AA_PAD_PX: i32 = 1;
+// A small symmetric filter (in subpixel units) to reduce color fringes and better approximate
+// browser LCD text rendering.
+//
+// This matches FreeType's `FT_LCD_FILTER_DEFAULT` weights (0x10,0x40,0x70,0x40,0x10). The sum is
+// intentionally > 256; after the fixed-point divide-by-256 we clamp to 255 to avoid u8 wraparound.
+const SUBPIXEL_AA_LCD_FILTER_WEIGHTS: [u32; 5] = [16, 64, 112, 64, 16];
+
+#[inline]
+fn subpixel_aa_lcd_filtered_alpha(row: &[u8], center_sub_x: i32, width_sub_i32: i32) -> u8 {
+  let mut acc = 0u32;
+  for (i, weight) in SUBPIXEL_AA_LCD_FILTER_WEIGHTS.iter().enumerate() {
+    let offset = i as i32 - 2;
+    let sub_x = center_sub_x + offset;
+    if sub_x < 0 || sub_x >= width_sub_i32 {
+      continue;
+    }
+    let idx = sub_x as usize * 4 + 3;
+    acc += u32::from(row[idx]) * *weight;
+  }
+  let filtered = (acc + 128) >> 8;
+  filtered.min(255) as u8
+}
 
 fn lcd_gamma_lut() -> &'static [u8; 256] {
   // Browsers typically apply a gamma/contrast adjustment to glyph coverages (especially for LCD
@@ -1268,13 +1290,6 @@ impl TextRasterizer {
     let dst_data = dst.data_mut();
     let width_sub_i32 = width_sub as i32;
     let width_sub_usize = width_sub as usize;
-    // A small symmetric filter (in subpixel units) to reduce color fringes and better approximate
-    // browser LCD text rendering.
-    //
-    // Use a simple binomial/Gaussian kernel (sum=256). This is intentionally small and cheap; it
-    // is *not* a perfect replica of Skia's LCD pipeline, but it produces stable, browser-like
-    // results on text-heavy fixtures.
-    const LCD_FILTER_WEIGHTS: [u32; 5] = [16, 64, 96, 64, 16]; // sum=256
 
     let gamma_lut = lcd_gamma_lut();
     let color_r = color.r as f32;
@@ -1290,19 +1305,6 @@ impl TextRasterizer {
       let global_y_usize = global_y as usize;
       let row_start = local_y as usize * width_sub_usize * 4;
       let row = &mask_data[row_start..row_start + width_sub_usize * 4];
-      let filtered_alpha = |center: i32| -> u8 {
-        let mut acc = 0u32;
-        for (i, weight) in LCD_FILTER_WEIGHTS.iter().enumerate() {
-          let offset = i as i32 - 2;
-          let sub_x = center + offset;
-          if sub_x < 0 || sub_x >= width_sub_i32 {
-            continue;
-          }
-          let idx = sub_x as usize * 4 + 3;
-          acc += u32::from(row[idx]) * *weight;
-        }
-        ((acc + 128) >> 8) as u8
-      };
 
       for local_x in 0..width_px_i32 {
         let global_x = origin_x + local_x;
@@ -1320,9 +1322,9 @@ impl TextRasterizer {
         }
 
         let base_sub = local_x * 3;
-        let mut cov_r = filtered_alpha(base_sub);
-        let mut cov_g = filtered_alpha(base_sub + 1);
-        let mut cov_b = filtered_alpha(base_sub + 2);
+        let mut cov_r = subpixel_aa_lcd_filtered_alpha(row, base_sub, width_sub_i32);
+        let mut cov_g = subpixel_aa_lcd_filtered_alpha(row, base_sub + 1, width_sub_i32);
+        let mut cov_b = subpixel_aa_lcd_filtered_alpha(row, base_sub + 2, width_sub_i32);
 
         cov_r = gamma_lut[cov_r as usize];
         cov_g = gamma_lut[cov_g as usize];
@@ -3541,5 +3543,27 @@ mod tests {
         assert_eq!(px[1], px[2]);
       }
     });
+  }
+
+  #[test]
+  fn subpixel_lcd_filter_clamps_above_255() {
+    // FreeType's default LCD kernel sums to 272, so a fully-covered run of subpixels yields a value
+    // > 255 after the fixed-point divide-by-256. Ensure we clamp instead of wrapping a u8.
+    let width_sub_i32 = 9;
+    let mut row = vec![0u8; width_sub_i32 as usize * 4];
+    for i in 0..width_sub_i32 as usize {
+      row[i * 4 + 3] = 255;
+    }
+    assert_eq!(subpixel_aa_lcd_filtered_alpha(&row, 4, width_sub_i32), 255);
+  }
+
+  #[test]
+  fn subpixel_lcd_filter_matches_freetype_default_weights() {
+    // With only the center subpixel fully covered, FreeType's default filter produces:
+    // (255*112 + 128) >> 8 = 112.
+    let width_sub_i32 = 7;
+    let mut row = vec![0u8; width_sub_i32 as usize * 4];
+    row[3 * 4 + 3] = 255;
+    assert_eq!(subpixel_aa_lcd_filtered_alpha(&row, 3, width_sub_i32), 112);
   }
 }
