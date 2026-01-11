@@ -124,7 +124,7 @@ mechanism for:
 
 ### Representation
 
-`PromiseHeader.reactions` is an `AtomicUsize` containing one of:
+`PromiseHeader.waiters` is an `AtomicUsize` containing one of:
 
 - `0` (no reactions yet), or
 - a `PromiseReactionNode*` cast to `usize` (head of an intrusive singly-linked list).
@@ -139,9 +139,9 @@ jobs onto the microtask queue.
 register_reaction(promise, node):
   // Push onto the intrusive list.
   loop:
-    head = promise.reactions.load(Acquire)
+    head = promise.waiters.load(Acquire)
     node.next = head
-    if promise.reactions.compare_exchange_weak(head, node, AcqRel, Acquire):
+    if promise.waiters.compare_exchange_weak(head, node, AcqRel, Acquire):
       break
 
   // Race fix (post-CAS recheck):
@@ -165,7 +165,7 @@ resolve(promise, new_state):
   drain_reactions(promise)
 
 drain_reactions(promise):
-  head = promise.reactions.swap(0, AcqRel)
+  head = promise.waiters.swap(0, AcqRel)
   head = reverse_list(head)   // FIFO order
 
   while head != null:
@@ -705,7 +705,7 @@ must contain:
 
 Do not store tagged pointers (low-bit tagging) or non-null sentinel integers in pointer fields.
 
-**Note:** `PromiseHeader.reactions` stores reaction-node pointers as `usize`. This is intentional: it
+**Note:** `PromiseHeader.waiters` stores reaction-node pointers as `usize`. This is intentional: it
 is not a pointer field, so the GC (or any tracer) must treat it explicitly when walking promise
 metadata.
 
