@@ -1,8 +1,12 @@
-# Runtime-native `io_uring`: buffer lifetime + cancellation semantics (moving GC)
+# Runtime-native `io_uring`: buffer lifetime + cancellation semantics + GC coordination (moving GC)
 
-This doc is a **memory-safety contract** for any runtime-native async I/O
-implementation that submits Linux `io_uring` SQEs while running under a
+This doc is a **memory-safety + GC-correctness contract** for any runtime-native
+async I/O implementation that submits Linux `io_uring` SQEs while running under a
 **compacting/moving GC**.
+
+In addition to pointer lifetime and cancellation rules, it defines the required
+stop-the-world (STW) coordination for threads that may block in
+`io_uring_enter(..., IORING_ENTER_GETEVENTS, ...)` waiting for CQEs.
 
 The goal is to make it *impossible* (by construction) to hand the kernel a pointer
 into GC-managed memory that may move or be freed while the kernel can still
@@ -265,6 +269,102 @@ target completion.
 
 ---
 
+## GC coordination: blocking waits (`io_uring_enter` / `IORING_ENTER_GETEVENTS`)
+
+Under `runtime-native`, STW GC coordination is **cooperative**: mutator threads
+must reach safepoints (via `safepoint_poll`) so the GC can proceed. A mutator
+thread blocked in a syscall cannot poll and can therefore deadlock a GC request.
+
+An `io_uring` backend commonly blocks while waiting for CQEs by calling:
+
+- `io_uring_enter(..., flags = IORING_ENTER_GETEVENTS, ...)` directly, or
+- helper APIs that wrap it (e.g. `io_uring_wait_cqe*`).
+
+**Contract:** any thread that may block in
+`io_uring_enter(..., IORING_ENTER_GETEVENTS, ...)` MUST be treated as quiescent
+for STW **or** MUST be wakeable by the runtime so it can reach a safepoint
+promptly.
+
+### Acceptable patterns for “quiescent while blocked”
+
+Both of these patterns are acceptable for threads that block waiting for CQEs.
+
+#### A) Parked at a known safepoint (mutator is idle)
+
+Before entering a potentially blocking `io_uring_enter(...GETEVENTS...)`:
+
+- Mark the thread parked: `runtime_native::threading::set_parked(true)`.
+- The call site MUST be a known safepoint where the thread has **no untracked GC
+  pointers** in registers/stack.
+
+After the syscall returns:
+
+- Un-park: `runtime_native::threading::set_parked(false)`.
+- Poll a safepoint **before** resuming any mutator work:
+  `runtime_native::threading::safepoint_poll()`.
+
+Connection to the buffer/pin rules in this document:
+
+- While the wait thread is blocked, the in-flight op state (`IoOp` table) may
+  continue to hold **GC roots and pin guards** to satisfy “stable until CQE
+  observed”.
+- However, when using the **parked** mechanism the waiting thread itself must
+  not hold *untracked* GC pointers in locals/registers/stack frames during the
+  block, because the safepoint coordinator is allowed to treat parked threads as
+  already quiescent.
+
+#### B) Enter a GC-safe region (mutator must not touch the heap)
+
+Before entering a potentially blocking `io_uring_enter(...GETEVENTS...)`:
+
+- Enter a GC-safe region: `let _g = runtime_native::threading::enter_gc_safe_region();`.
+
+While in the GC-safe region:
+
+- The thread MUST NOT touch the GC heap (no GC allocations, no dereference of
+  movable GC objects, no write barriers).
+- Any GC state that must outlive the blocking wait must be represented via
+  explicit roots/handles/pins elsewhere (e.g. in the op state), not by keeping a
+  raw pointer live in a stack local.
+
+### GC → reactor wake hook (must exist)
+
+Even if the waiting thread is treated as quiescent, the runtime should be able
+to **wake** the `io_uring` wait primitive promptly when a GC request begins, to
+avoid relying on unbounded syscall latency and to allow the reactor to observe
+and respond to GC state transitions quickly.
+
+`runtime-native` already exposes a hook for this:
+
+- `runtime_native::threading::register_reactor_waker(fn())`
+
+An `io_uring` implementation should register a waker that causes a blocked
+`io_uring_enter(...GETEVENTS...)` to return promptly.
+
+High-level wake strategies (one example):
+
+- **Dedicated `eventfd` + permanently armed `IORING_OP_POLL_ADD`:**
+  - Create an `eventfd` used only for wakes.
+  - Keep one `IORING_OP_POLL_ADD` in flight on that `eventfd` for `POLLIN`.
+  - `wake()` writes to the `eventfd`.
+  - The poll op completes, producing a CQE, which breaks the blocking wait.
+  - The reactor drains the `eventfd` and re-arms the poll op.
+
+Other wake strategies are acceptable if they are race-free, do not require
+touching the GC heap from the waker callback, and ensure bounded wake latency.
+
+### Minimal invariants (should be testable)
+
+- **No GC deadlock:** a stop-the-world GC request must not deadlock while any
+  runtime thread is blocked in `io_uring_enter(..., IORING_ENTER_GETEVENTS, ...)`.
+- **Quiescent or wakeable:** any such blocked wait is either surrounded by
+  `set_parked(true)`/`set_parked(false)` (with a safepoint poll after un-parking)
+  or occurs in a GC-safe region.
+- **Waker registered:** the `io_uring` reactor registers a GC-triggered waker
+  (`register_reactor_waker`) that reliably breaks the blocking wait.
+
+---
+
 ## Sharp edges to avoid in v1
 
 These features require additional lifetime tracking beyond “stable until the op’s
@@ -393,4 +493,10 @@ The details differ per runtime, but the lifetime shape must match.
 - [ ] `IoOp` is kept alive in an in-flight table keyed by a stable `user_data`.
 - [ ] No “early free” paths exist (including cancel completion).
 - [ ] v1 does not expose zerocopy send or multishot operations.
-
+- [ ] Any thread that may block in `io_uring_enter(..., IORING_ENTER_GETEVENTS, ...)` is either:
+  - marked parked at a known safepoint (`runtime_native::threading::set_parked(true)`), then
+    un-parked and safepoint-polled (`runtime_native::threading::safepoint_poll()`) before resuming
+    mutator work, **or**
+  - in a GC-safe region (`runtime_native::threading::enter_gc_safe_region()`).
+- [ ] The `io_uring` backend registers a GC-triggered reactor waker via
+  `runtime_native::threading::register_reactor_waker` (e.g. eventfd + `IORING_OP_POLL_ADD`).
