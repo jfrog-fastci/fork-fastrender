@@ -96,6 +96,28 @@ const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
 const SUBPIXEL_AA_PAD_PX: i32 = 1;
 
+fn lcd_gamma_lut() -> &'static [u8; 256] {
+  // Browsers typically apply a gamma/contrast adjustment to glyph coverages (especially for LCD
+  // text) so strokes retain visual weight. Our subpixel AA path operates directly on tiny-skia's
+  // coverage mask; without a light-weight remapping, glyph edges can appear too thin compared to
+  // Chrome's FreeType/Skia pipeline, producing pervasive diffs on text-heavy fixtures.
+  //
+  // Approximate this by applying a simple gamma curve to the 0-255 coverage values. Tune this to
+  // be conservative (avoid visibly over-darkening text) while still reducing the "washed out"
+  // appearance of unadjusted coverages.
+  const LCD_COVERAGE_GAMMA: f32 = 1.6;
+  static LUT: OnceLock<[u8; 256]> = OnceLock::new();
+  LUT.get_or_init(|| {
+    let mut table = [0u8; 256];
+    for (idx, slot) in table.iter_mut().enumerate() {
+      let cov = idx as f32 / 255.0;
+      let adjusted = (cov.powf(1.0 / LCD_COVERAGE_GAMMA) * 255.0).round();
+      *slot = adjusted.clamp(0.0, 255.0) as u8;
+    }
+    table
+  })
+}
+
 #[derive(Default)]
 struct SubpixelAAScratch {
   pixmap: Option<Pixmap>,
@@ -1181,6 +1203,7 @@ impl TextRasterizer {
     // results on text-heavy fixtures.
     const LCD_FILTER_WEIGHTS: [u32; 5] = [16, 64, 96, 64, 16]; // sum=256
 
+    let gamma_lut = lcd_gamma_lut();
     let color_r = color.r as f32;
     let color_g = color.g as f32;
     let color_b = color.b as f32;
@@ -1227,6 +1250,10 @@ impl TextRasterizer {
         let mut cov_r = filtered_alpha(base_sub);
         let mut cov_g = filtered_alpha(base_sub + 1);
         let mut cov_b = filtered_alpha(base_sub + 2);
+
+        cov_r = gamma_lut[cov_r as usize];
+        cov_g = gamma_lut[cov_g as usize];
+        cov_b = gamma_lut[cov_b as usize];
 
         if clip_alpha != 255 {
           // Multiply coverages by the clip alpha (device pixel resolution).
@@ -2380,6 +2407,28 @@ mod tests {
   fn get_test_font() -> Option<LoadedFont> {
     let ctx = FontContext::new();
     ctx.get_sans_serif()
+  }
+
+  #[test]
+  fn lcd_gamma_lut_is_monotonic_and_lifts_midtones() {
+    let lut = lcd_gamma_lut();
+    assert_eq!(lut[0], 0);
+    assert_eq!(lut[255], 255);
+    assert!(
+      lut[128] > 128,
+      "expected gamma-adjusted coverages to lift midtones (got {})",
+      lut[128]
+    );
+    for i in 1..256 {
+      assert!(
+        lut[i] >= lut[i - 1],
+        "expected gamma LUT to be monotonic: lut[{}]={} < lut[{}]={}",
+        i,
+        lut[i],
+        i - 1,
+        lut[i - 1]
+      );
+    }
   }
 
   #[test]
