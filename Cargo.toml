@@ -15,6 +15,7 @@ members = [
   "crates/js-dom-bindings-quickjs",
   "crates/webidl-js-runtime",
   "crates/webidl-vm-js",
+  "crates/llvm-stackmaps",
 ]
 # Keep legacy QuickJS crates in the workspace for now, but exclude them from the default workspace
 # build so `cargo build/test` stays vm-js-only unless explicitly requested.
@@ -25,6 +26,7 @@ default-members = [
   "crates/js-wpt-dom-runner",
   "crates/webidl-js-runtime",
   "crates/webidl-vm-js",
+  "crates/llvm-stackmaps",
 ]
 # `vendor/ecma-rs` is a nested workspace (vendored). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
