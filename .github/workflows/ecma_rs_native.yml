@@ -49,6 +49,10 @@ jobs:
           if ! command -v rg >/dev/null 2>&1; then
             pkgs+=(ripgrep)
           fi
+          # LLVM 18 tools (llc/llvm-readobj/llvm-objdump) are needed for the stackmap ABI regression scripts.
+          if ! command -v llc-18 >/dev/null 2>&1; then
+            pkgs+=(llvm-18)
+          fi
           if [[ ${#pkgs[@]} -eq 0 ]]; then
             exit 0
           fi
@@ -84,6 +88,12 @@ jobs:
 
       - name: Diagnostic code policy
         run: bash vendor/ecma-rs/scripts/check_diagnostic_codes.sh
+
+      - name: LLVM statepoint stackmap ABI (scripts)
+        run: |
+          set -euo pipefail
+          bash vendor/ecma-rs/scripts/test_stackmap_abi.sh
+          bash vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh
 
       - name: typecheck-ts (strict-native groundwork)
         working-directory: vendor/ecma-rs
