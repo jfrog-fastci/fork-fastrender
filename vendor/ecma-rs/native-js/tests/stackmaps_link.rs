@@ -33,9 +33,9 @@ fn stackmaps_bytes_from_elf(bytes: &[u8]) -> Result<Vec<u8>> {
     }
   }
 
-  // lld PIE: stackmaps can be injected into the standard `.data.rel.ro` output section
-  // (see `runtime-native/link/stackmaps.ld`). In that case, locate the stackmaps payload via the
-  // linker-script boundary symbols.
+  // Legacy fallback: older linker-script layouts may inject stackmaps into the standard
+  // `.data.rel.ro` output section. In that case, locate the stackmaps payload via the
+  // linker-script boundary symbols instead of a dedicated output section.
   let sec = file
     .section_by_name(".data.rel.ro")
     .ok_or_else(|| anyhow!("missing .data.rel.ro section (expected stackmaps payload there)"))?;

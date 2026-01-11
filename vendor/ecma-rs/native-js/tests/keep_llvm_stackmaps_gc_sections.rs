@@ -149,7 +149,8 @@ main:
     }
   }
 
-  // Fixed: native-js link helpers always inject `runtime-native/link/stackmaps.ld`.
+  // Fixed: native-js link helpers always inject a stackmaps retention linker script fragment so
+  // `--gc-sections` does not discard `.llvm_stackmaps` (non-PIE and PIE variants differ).
   if lld_fuse.is_some() {
     let out_with_script = td.path().join("b.out");
     link_elf_executable_with_options(
