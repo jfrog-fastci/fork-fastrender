@@ -17175,6 +17175,69 @@ mod tests {
   }
 
   #[test]
+  fn inflight_signature_includes_cookie_when_vary_cookie_enabled() {
+    #[derive(Clone)]
+    struct SignatureFetcher {
+      cookie: Arc<Mutex<String>>,
+    }
+
+    impl ResourceFetcher for SignatureFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch() should not be called by inflight signature tests");
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        let lower = header_name.to_ascii_lowercase();
+        match lower.as_str() {
+          "accept-encoding" => Some("gzip".to_string()),
+          "accept-language" => Some("en".to_string()),
+          "origin" => Some("https://example.com".to_string()),
+          "referer" => Some("https://example.com/".to_string()),
+          "user-agent" => Some("fastrender-test".to_string()),
+          "cookie" => Some(self.cookie.lock().unwrap().clone()),
+          _ => None,
+        }
+      }
+    }
+
+    let cookie = Arc::new(Mutex::new("a=b".to_string()));
+    let fetcher = SignatureFetcher {
+      cookie: Arc::clone(&cookie),
+    };
+    let req = FetchRequest::new("https://example.com/resource", FetchDestination::Other);
+
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())),
+      || {
+        let sig_a = inflight_signature_for_request(&fetcher, req);
+        *cookie.lock().unwrap() = "c=d".to_string();
+        let sig_b = inflight_signature_for_request(&fetcher, req);
+        assert_eq!(
+          sig_a, sig_b,
+          "cookie should not affect inflight signatures unless FASTR_CACHE_ALLOW_VARY_COOKIE is enabled"
+        );
+      },
+    );
+
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_CACHE_ALLOW_VARY_COOKIE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        *cookie.lock().unwrap() = "a=b".to_string();
+        let sig_a = inflight_signature_for_request(&fetcher, req);
+        *cookie.lock().unwrap() = "c=d".to_string();
+        let sig_b = inflight_signature_for_request(&fetcher, req);
+        assert_ne!(
+          sig_a, sig_b,
+          "cookie should affect inflight signatures when FASTR_CACHE_ALLOW_VARY_COOKIE=1"
+        );
+      },
+    );
+  }
+
+  #[test]
   fn caching_fetcher_does_not_cache_vary_star() {
     #[derive(Clone)]
     struct VaryFetcher {
