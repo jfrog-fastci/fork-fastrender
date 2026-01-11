@@ -797,6 +797,67 @@ mod tests {
   }
 
   #[test]
+  fn arrow_up_clears_selection_in_textarea_without_moving() {
+    let mut dom = crate::dom::parse_html("<html><body><textarea>ab\ncdef</textarea></body></html>")
+      .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    // Selection spanning two lines. ArrowUp should collapse to the start of the selection rather
+    // than moving the caret based on its current row/column.
+    set_text_selection_range(&mut engine, &mut dom, textarea_id, 0, 4);
+    assert!(engine.text_edit.as_ref().unwrap().selection().is_some());
+
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowUp));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 0);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
+  fn arrow_down_clears_selection_in_textarea_without_moving() {
+    let mut dom = crate::dom::parse_html("<html><body><textarea>ab\ncdef</textarea></body></html>")
+      .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    // Selection spanning two lines with the caret at the start edge.
+    set_text_selection_range(&mut engine, &mut dom, textarea_id, 4, 0);
+    assert!(engine.text_edit.as_ref().unwrap().selection().is_some());
+
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
+  fn arrow_down_clears_selection_at_textarea_end() {
+    let value = "ab\ncdef";
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea>ab\ncdef</textarea></body></html>")
+        .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    let len = value.chars().count();
+    set_text_selection_range(&mut engine, &mut dom, textarea_id, 0, len);
+    assert!(engine.text_edit.as_ref().unwrap().selection().is_some());
+
+    // Even when there's no next line to move into, ArrowDown should still collapse the selection.
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, len);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
   fn backspace_deletes_previous_character_and_updates_caret() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
@@ -4266,7 +4327,16 @@ impl InteractionEngine {
           }
         }
         KeyAction::ArrowUp | KeyAction::ArrowDown => {
-          if focused_is_textarea {
+          if let Some((start, end)) = edit.selection() {
+            // Like ArrowLeft/Right, ArrowUp/Down should collapse an active selection to the
+            // boundary in the direction of travel before attempting any further movement.
+            let next = if matches!(key, KeyAction::ArrowUp) {
+              start
+            } else {
+              end
+            };
+            edit.set_caret_and_maybe_extend_selection(next, false);
+          } else if focused_is_textarea {
             // Vertical caret movement between newline-separated lines (no soft-wrap support yet).
             let mut line_starts: Vec<usize> = vec![0];
             let mut idx = 0usize;
