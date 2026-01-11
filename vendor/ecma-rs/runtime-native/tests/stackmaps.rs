@@ -150,7 +150,6 @@ fn assert_callsite_gc_root_rbp_offsets_strict_skips_deopt_operands(patchpoint_id
 #[test]
 fn callsite_reloc_pairs_skip_deopt_operands() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord, StackSize};
-  use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 
   // Record layout:
   //   3 header constants (callconv/flags/deopt_count)
