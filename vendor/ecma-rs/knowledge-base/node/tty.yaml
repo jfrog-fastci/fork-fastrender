@@ -1,0 +1,14 @@
+- name: node:tty.isatty
+  kind: function
+  aliases:
+    - tty.isatty
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
