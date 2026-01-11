@@ -1,5 +1,5 @@
 use effect_js::{analyze_string_encodings, StringEncoding};
-use knowledge_base::KnowledgeBase;
+use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, KnowledgeBase};
 
 fn find_first_expr(
   body: &hir_js::Body,
@@ -56,6 +56,55 @@ fn template_literal_ascii_segments_and_ascii_expr_is_ascii() {
   let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Template(_)));
 
   let kb = KnowledgeBase::default();
+  let results = analyze_string_encodings(&lower, &kb);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
+#[test]
+fn date_to_iso_string_is_ascii_via_kb() {
+  let lower = hir_js::lower_from_source("new Date().toISOString();").unwrap();
+  let root_body_id = lower.hir.root_body;
+  let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+
+  let expr_id = find_first_expr(root_body, |kind| {
+    matches!(kind, hir_js::ExprKind::Call(call) if !call.is_new)
+  });
+
+  let entries = parse_api_semantics_yaml_str(
+    r#"
+- name: Date.prototype.toISOString
+  properties:
+    encoding.output: ascii
+"#,
+  )
+  .unwrap();
+  let kb = ApiDatabase::from_entries(entries);
+  let results = analyze_string_encodings(&lower, &kb);
+  let root = results.get(&root_body_id).unwrap();
+
+  assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+}
+
+#[test]
+fn url_pathname_is_ascii_via_kb_getter() {
+  let lower = hir_js::lower_from_source("new URL(\"https://example.com\").pathname;").unwrap();
+  let root_body_id = lower.hir.root_body;
+  let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+
+  let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Member(_)));
+
+  let entries = parse_api_semantics_yaml_str(
+    r#"
+- name: URL.prototype.pathname
+  kind: getter
+  properties:
+    encoding.output: ascii
+"#,
+  )
+  .unwrap();
+  let kb = ApiDatabase::from_entries(entries);
   let results = analyze_string_encodings(&lower, &kb);
   let root = results.get(&root_body_id).unwrap();
 
