@@ -261,8 +261,9 @@ In practice, a usable ABI usually also needs:
 `runtime-native` implements `rt_handle_*` using the process-global
 [`PersistentHandleTable`](../runtime-native/src/roots/persistent_handle_table.rs):
 
-* The table is backed by `gc::HandleTable` and guarded by `GcAwareRwLock`, so threads blocked on
-  handle operations enter a GC-safe region and do not deadlock stop-the-world (STW) collection.
+* The table is backed by `gc::HandleTable`, which uses a GC-aware internal lock (`GcAwareRwLock`),
+  so threads blocked on handle operations enter a GC-safe region and do not deadlock stop-the-world
+  (STW) collection.
 * Handle IDs are `gc::HandleId`: a `u64` packed `{ index: u32, generation: u32 }` generational ID.
   This is FFI-safe as `uint64_t`.
   * The public C header [`runtime_native.h`](../runtime-native/include/runtime_native.h) exports
