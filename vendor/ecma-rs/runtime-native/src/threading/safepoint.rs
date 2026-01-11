@@ -1,7 +1,6 @@
 use crate::arch::SafepointContext;
 use crate::gc_roots::RelocPair;
 use crate::threading::registry;
-use crate::statepoints::RootSlot;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -964,75 +963,11 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
 /// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
 pub fn for_each_root_reloc_pair_world_stopped(
   stop_epoch: u64,
-  mut f: impl FnMut(RelocPair),
+  f: impl FnMut(RelocPair),
 ) -> Result<(), crate::WalkError> {
-  assert_eq!(
-    stop_epoch & 1,
-    1,
-    "for_each_root_reloc_pair_world_stopped called with non-stop epoch {stop_epoch}"
-  );
-
-  // 1) Thread-local handle stacks.
-  registry::for_each_thread(|thread| {
-    thread.for_each_handle_slot(|slot| {
-      let slot = RootSlot::StackAddr(slot.cast::<u8>());
-      f(RelocPair {
-        base_slot: slot,
-        derived_slot: slot,
-      });
-    })
-  });
-
-  // 2) Global roots.
-  crate::roots::global_root_registry().for_each_root_slot(|slot| {
-    let slot = RootSlot::StackAddr(slot.cast::<u8>());
-    f(RelocPair {
-      base_slot: slot,
-      derived_slot: slot,
-    });
-  });
-
-  // 3) Persistent handle-table roots.
-  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| {
-    let slot = RootSlot::StackAddr(slot.cast::<u8>());
-    f(RelocPair {
-      base_slot: slot,
-      derived_slot: slot,
-    });
-  });
-
-  // 4) Stack roots from stackmaps.
-  let Some(stackmaps) = stackmaps_for_self() else {
-    return Ok(());
-  };
-
-  registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
-    if thread.is_parked() {
-      return Ok(());
-    }
-    if !thread.is_native_safe() && thread.safepoint_epoch_observed() != stop_epoch {
-      return Ok(());
-    }
-
-    let ctx = thread
-      .safepoint_context()
-      .expect("thread eligible for stack root enumeration must have a published safepoint context");
-
-    let stack_bounds = thread
-      .stack_bounds()
-      .and_then(|b| crate::stackwalk::StackBounds::new(b.lo as u64, b.hi as u64).ok());
-
-    // SAFETY: The caller guarantees the world is stopped and the thread's stack
-    // is stable to read.
-    unsafe {
-      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(&ctx, stack_bounds, stackmaps, |pair| {
-        f(pair);
-      })?;
-    }
-    Ok(())
-  })?;
-
-  Ok(())
+  // Backwards-compatible alias: keep the original API name requested by older callers, but delegate
+  // to the canonical reloc-pair enumerator.
+  for_each_reloc_pair_world_stopped(stop_epoch, f)
 }
 
 #[cfg(test)]
