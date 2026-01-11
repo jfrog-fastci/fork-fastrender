@@ -79,6 +79,9 @@ bash scripts/cargo_llvm.sh test -p native-js --lib
 
 The API is intentionally small and currently consists of:
 
+- `CodeGen`: a minimal façade around `inkwell` that applies LLVM function
+  attributes required for deterministic stack walking (used by the planned
+  precise GC integration).
 - `Compiler`: entry point (configured with `CompileOptions`)
 - `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
   (currently unimplemented)
@@ -104,6 +107,19 @@ compiler.compile()?;
 ```
 
 > Note: `native_js::emit` and `native_js::codegen` exist, but are currently stubs.
+
+## GC stack walking (current invariant)
+
+The native runtime is expected to perform **precise GC** using LLVM statepoints.
+Even with LLVM stack maps, the runtime still needs to reliably walk stack frames
+and recover return addresses.
+
+`native-js` currently enforces a conservative invariant on generated functions:
+
+- `frame-pointer="all"` (keep frame pointers so a frame-chain walker can work)
+- `disable-tail-calls="true"` (avoid tail-call elimination collapsing frames)
+
+See [`docs/gc_stack_walking.md`](./docs/gc_stack_walking.md) for details.
 
 ## Supported TypeScript subset (intended)
 
@@ -160,7 +176,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 Once real codegen exists, the fastest debug loop is usually:
 
 1. Emit textual IR (`.ll`) from the compiler.
-   - In-process, you can always use `inkwell` directly:
+   - In-process, you can always use `inkwell` (or `native_js::CodeGen`) directly:
 
      ```rust
      // Given an inkwell::module::Module
