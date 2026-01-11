@@ -7426,64 +7426,86 @@ impl BlockFormattingContext {
     }
 
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let percentage_base0 = Some(Size::new(0.0, 0.0));
-      let width_has_percentage = style
+      // Replaced elements' min- and max-content sizes are typically equal because they do not
+      // wrap. However, when a replaced element's used size is defined in terms of percentages
+      // (`width:100%`, `height:100%`, `max-width:100%`, etc) and the percentage base is unknown
+      // (intrinsic sizing probes), treating those unresolved percentages as `auto` makes the
+      // element appear unshrinkable. This cascades into flexbox's `min-width:auto` algorithm
+      // (content-based automatic minimum size), causing flex items containing percentage-sized
+      // replaced elements to refuse shrinking.
+      //
+      // To avoid that, use a 0px percentage base for the *min-content* probe when any relevant
+      // sizing hint includes percentages. The max-content size continues to treat unresolved
+      // percentages as `auto` so the intrinsic preferred size remains available to algorithms
+      // that need it.
+      let has_percentage_sizing = style
         .width
-        .map(|width| width.has_percentage())
-        .unwrap_or(false);
-      let height_has_percentage = style
-        .height
-        .map(|height| height.has_percentage())
-        .unwrap_or(false);
-      let max_width_has_percentage = style
-        .max_width
-        .map(|max_width| max_width.has_percentage())
-        .unwrap_or(false);
-      let max_height_has_percentage = style
-        .max_height
-        .map(|max_height| max_height.has_percentage())
-        .unwrap_or(false);
+        .as_ref()
+        .is_some_and(|len| len.has_percentage())
+        || style
+          .height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .min_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .min_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .min_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .max_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .min_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .max_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage());
 
-      let min_size = compute_replaced_size(style, replaced_box, percentage_base0, self.viewport_size);
-      let max_size = if !(width_has_percentage
-        || height_has_percentage
-        || max_width_has_percentage
-        || max_height_has_percentage)
-      {
-        min_size
-      } else {
-        let mut max_style = style.as_ref().clone();
-        if width_has_percentage {
-          max_style.width = None;
-          max_style.width_keyword = None;
-        }
-        if height_has_percentage {
-          max_style.height = None;
-          max_style.height_keyword = None;
-        }
-        if max_width_has_percentage {
-          max_style.max_width = None;
-          max_style.max_width_keyword = None;
-        }
-        if max_height_has_percentage {
-          max_style.max_height = None;
-          max_style.max_height_keyword = None;
-        }
-        compute_replaced_size(&max_style, replaced_box, percentage_base0, self.viewport_size)
-      };
-
-      let min_inline = if inline_is_horizontal {
-        min_size.width
-      } else {
-        min_size.height
-      };
+      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
       let max_inline = if inline_is_horizontal {
         max_size.width
       } else {
         max_size.height
       };
-      let min_result = (min_inline + edges).max(0.0);
       let max_result = (max_inline + edges).max(0.0);
+
+      let min_result = if has_percentage_sizing {
+        let min_size = compute_replaced_size(
+          style,
+          replaced_box,
+          Some(Size::new(0.0, 0.0)),
+          self.viewport_size,
+        );
+        let min_inline = if inline_is_horizontal {
+          min_size.width
+        } else {
+          min_size.height
+        };
+        (min_inline + edges).max(0.0).min(max_result)
+      } else {
+        max_result
+      };
+
       if allow_cache {
         intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
         intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
@@ -10085,65 +10107,85 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
-      let percentage_base0 = Some(Size::new(0.0, 0.0));
-      let width_has_percentage = style
+      // Replaced elements' min- and max-content sizes are typically equal because they do not
+      // wrap. However, when a replaced element's used size is defined in terms of percentages
+      // (`width:100%`, `height:100%`, `max-width:100%`, etc) and the percentage base is unknown
+      // (intrinsic sizing probes), treating those unresolved percentages as `auto` makes the
+      // element appear unshrinkable. This cascades into flexbox's `min-width:auto` algorithm
+      // (content-based automatic minimum size), causing flex items containing percentage-sized
+      // replaced elements to refuse shrinking.
+      //
+      // To avoid that, use a 0px percentage base for the *min-content* probe when any relevant
+      // sizing hint includes percentages. The max-content size continues to treat unresolved
+      // percentages as `auto` so the intrinsic preferred size remains available to algorithms
+      // that need it.
+      let has_percentage_sizing = style
         .width
-        .map(|width| width.has_percentage())
-        .unwrap_or(false);
-      let height_has_percentage = style
-        .height
-        .map(|height| height.has_percentage())
-        .unwrap_or(false);
-      let max_width_has_percentage = style
-        .max_width
-        .map(|max_width| max_width.has_percentage())
-        .unwrap_or(false);
-      let max_height_has_percentage = style
-        .max_height
-        .map(|max_height| max_height.has_percentage())
-        .unwrap_or(false);
+        .as_ref()
+        .is_some_and(|len| len.has_percentage())
+        || style
+          .height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .min_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_width
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .min_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .max_height
+          .as_ref()
+          .is_some_and(|len| len.has_percentage())
+        || style
+          .width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .min_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .max_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .min_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+        || style
+          .max_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage());
 
-      let min_size = compute_replaced_size(style, replaced_box, percentage_base0, self.viewport_size);
-      let max_size = if !(width_has_percentage
-        || height_has_percentage
-        || max_width_has_percentage
-        || max_height_has_percentage)
-      {
-        min_size
-      } else {
-        let mut max_style = style.as_ref().clone();
-        if width_has_percentage {
-          max_style.width = None;
-          max_style.width_keyword = None;
-        }
-        if height_has_percentage {
-          max_style.height = None;
-          max_style.height_keyword = None;
-        }
-        if max_width_has_percentage {
-          max_style.max_width = None;
-          max_style.max_width_keyword = None;
-        }
-        if max_height_has_percentage {
-          max_style.max_height = None;
-          max_style.max_height_keyword = None;
-        }
-        compute_replaced_size(&max_style, replaced_box, percentage_base0, self.viewport_size)
-      };
-
-      let min_inline_size = if inline_is_horizontal {
-        min_size.width
-      } else {
-        min_size.height
-      };
+      let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
       let max_inline_size = if inline_is_horizontal {
         max_size.width
       } else {
         max_size.height
       };
-
       let max_result = (max_inline_size + edges).max(0.0);
-      let mut min_result = (min_inline_size + edges).max(0.0).min(max_result);
+
+      let mut min_result = if has_percentage_sizing {
+        let min_size = compute_replaced_size(
+          style,
+          replaced_box,
+          Some(Size::new(0.0, 0.0)),
+          self.viewport_size,
+        );
+        let min_inline_size = if inline_is_horizontal {
+          min_size.width
+        } else {
+          min_size.height
+        };
+        (min_inline_size + edges).max(0.0).min(max_result)
+      } else {
+        max_result
+      };
       if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced_box.replaced_type
       {
         use crate::tree::box_tree::FormControlKind;

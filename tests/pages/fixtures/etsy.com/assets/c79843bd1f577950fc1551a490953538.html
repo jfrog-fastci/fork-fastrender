@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en-US"
+    xmlns:og="http://ogp.me/ns#"
+    xmlns:fb="https://www.facebook.com/2008/fbml"
+
+
+>
+    <head>
+        <script>if (window.performance && performance.mark) performance.mark("TTP")</script>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <meta http-equiv="content-language" content="en-US">
+
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="pinterest" content="nosearch">
+
+        <meta name="csrf_nonce" content="3:1768051570:8CVjOmU61PVw6MPgZsr5CKq16GLe:3bf589ffb98928f9f7fd46b756aa18b8079fb8c4ea3f14da3a288d8eee993772">
+        <meta name="uaid_nonce" content="3:1768051570:hz42Wf_PH7xbvQJ6qcX3leYSgv_Y:0f7997122f4c88370b6130f6a27d966c460c9cd3f67459282627815f2fd80062">
+
+        <meta property="fb:app_id" content="89186614300">
+
+        <meta name="css_dist_path" content="/ac/sasquatch/css/" />
+        <meta name="dist" content="202601101768004261" />
+
+
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">
+    !function(e){var r=e.__etsy_logging={};r.errorQueue=[],e.onerror=function(e,o,t,n,s){r.errorQueue.push([e,o,t,n,s])},r.firedEvents=[];r.perf={e:[],t:!1,MARK_MEASURE_PREFIX:"_etsy_mark_measure_",prefixMarkMeasure:function(e){return"_etsy_mark_measure_"+e}},e.PerformanceObserver&&(r.perf.o=new PerformanceObserver((function(e){r.perf.e=r.perf.e.concat(e.getEntries())})),r.perf.o.observe({entryTypes:["element","navigation","longtask","paint","mark","measure","resource","layout-shift"]}));var o=[];r.eventpipe={q:o,logEvent:function(e){o.push(e)},logEventImmediately:function(e){o.push(e)}};var t=!(Object.assign&&Object.values&&Object.fromEntries&&e.Promise&&Promise.prototype.finally&&e.NodeList&&NodeList.prototype.forEach),n=!!e.CefSharp||!!e.__pw_resume,s=!e.PerformanceObserver||!PerformanceObserver.supportedEntryTypes||0===PerformanceObserver.supportedEntryTypes.length,a=!e.navigator||!e.navigator.sendBeacon,p=t||n,u=[];t&&u.push("fp"),s&&u.push("fo"),a&&u.push("fb"),n&&u.push("fg"),r.bots={isBot:p,botCheck:u}}(window);
+</script>
+
+        <link rel="stylesheet" href="https://www.etsy.com/ac/sasquatch/css/site-chrome/components/components.1758dd585417bc.css" type="text/css" />
+        <link rel="stylesheet" href="https://www.etsy.com/ac/sasquatch/css/error/base.a17c21530e3498.css" type="text/css" />
+
+        <script>
+    //these inline functions are required because transcend, a 3rd party saas company, requires we load airgap.js below
+    //via <script src and not in javascript.  To handle the onerror case, it can't import any files.
+    //
+    //todo: this is from https://stackoverflow.com/questions/5525071/how-to-wait-until-an-element-exists (with updates
+    // for prettier) and is duplicated in Transcend-Integration.ts. Ideally we would find a place both
+    // files could call.
+    function waitForElm(selector) {
+        return new Promise((resolve) => {
+            if (document.querySelector(selector)) {
+                return resolve(document.querySelector(selector));
+            }
+
+            const observer = new MutationObserver(() => {
+                if (document.querySelector(selector)) {
+                    observer.disconnect();
+                    resolve(document.querySelector(selector));
+                }
+            });
+
+            // If you get "parameter 1 is not of type 'Node'" error, see https://stackoverflow.com/a/77855838/492336
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true,
+            });
+        });
+    }
+    function retryLoadingAirgap(loadAsync, attemptNumber) {
+        var element = document.createElement("script");
+        element.type = "text/javascript";
+        element.src = "https://transcend-cdn.com/cm/ac71e058-41b7-4026-b482-3d9b8e31a6d0/airgap.js";
+        if (loadAsync) {
+            element.setAttribute('data-cfasync', true);
+            element.async = true;
+        }
+
+        element.onerror = (error) => {
+            if (attemptNumber < 3) {
+                window.__etsy_logging.eventpipe.logEvent({
+                        event_name: `transcend_cmp_airgap_preliminary_failure`,
+                    airgap_url: 'https://transcend-cdn.com/cm/ac71e058-41b7-4026-b482-3d9b8e31a6d0/airgap.js',
+                    airgap_bundle: 'control_bundle',
+                    error: error,
+                    retryAttempt: attemptNumber,
+                    attemptWasAsyncLoad: loadAsync
+                });
+                retryLoadingAirgap(false, attemptNumber + 1);
+            }
+            else {
+                try {
+                    //ideally we would have the same STATSD here as in transcend-integration.ts
+                    //but we can't import STATSD into mustache files.  This only occurs 0.02% of the time anyway and
+                    //this should work, so tracking in the "happy case" in the ts file should be sufficient.
+                    window.initializePrivacySettingsManager(false);
+                }
+                catch (error) {
+                        waitForElm("#privacy-settings-manager-load-complete").then(()=> {
+                            window.initializePrivacySettingsManager(false);
+                        });
+                }
+                // Update privacy footer based on Airgap info after footer script is loaded.
+                waitForElm("#footer-script-loaded").then(()=> {
+                    window.updatePrivacySettingsFooterTextBasedOnRegime();
+                });
+
+                window.__etsy_logging.eventpipe.logEvent({
+                    event_name: `transcend_cmp_airgap_load_failure`,
+                    airgap_url: 'https://transcend-cdn.com/cm/ac71e058-41b7-4026-b482-3d9b8e31a6d0/airgap.js',
+                    airgap_bundle: 'control_bundle',
+                    error: error,
+                    retryAttempts: attemptNumber
+                });
+            }
+        }
+
+        var head = document.getElementsByTagName('head')[0];
+        head.appendChild(element);
+    }
+
+    function handleErrorLoadingAirgap() {
+        window.__etsy_logging.eventpipe.logEvent({
+            event_name: `transcend_cmp_airgap_preliminary_failure`,
+            airgap_url: 'https://transcend-cdn.com/cm/ac71e058-41b7-4026-b482-3d9b8e31a6d0/airgap.js',
+            airgap_bundle: 'control_bundle',
+            retryAttempt: 1,
+            attemptWasAsyncLoad: true
+        });
+
+        retryLoadingAirgap(true, 2);
+    }
+</script>
+
+<script data-cfasync="true" data-ui="off" src="https://transcend-cdn.com/cm/ac71e058-41b7-4026-b482-3d9b8e31a6d0/airgap.js" onerror="(function() { handleErrorLoadingAirgap(); })()"  async></script>
+
+        
+
+        <title>Etsy - Your place to buy and sell all things handmade, vintage, and supplies</title>
+        <meta name="description" content="Sorry, the page you were looking for was not found.">
+
+
+
+
+        
+
+        <meta property="og:title" content="Etsy - Your place to buy and sell all things handmade, vintage, and supplies" />
+<meta property="og:description" content="Sorry, the page you were looking for was not found." />
+<meta property="og:url" content="http://www.etsy.com/web/20260109214045im_/https://www.etsy.com/images/favicon-16x16.png" />
+
+
+<meta property="og:type" content="website" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:site_name" content="Etsy" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:site" content="@Etsy" />
+
+        
+
+        
+
+        <link rel="preconnect" href="//i.etsystatic.com" crossorigin="anonymous" /><link rel="preconnect" href="//i.etsystatic.com" />
+
+
+
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">__webpack_public_path__ = "https://www.etsy.com/ac/evergreenVendor/js/en-US/";</script>
+
+        <link rel="shortcut icon" href="/favicon.ico?v1" /><link rel="icon" href="/images/favicon-32x32.png" type="image/png" sizes="32x32" /><link rel="icon" href="/images/favicon-16x16.png" type="image/png" sizes="16x16" /><link rel="apple-touch-icon" href="/images/apple-touch-icon.png" sizes="180x180" /><link rel="mask-icon" href="/images/safari-pinned-tab.svg" color="rgb(241, 100, 30)" /><link rel="manifest" href="/site.webmanifest" />
+<meta name="apple-mobile-web-app-title" content="Etsy" /><meta name="application-name" content="Etsy" /><meta name="msapplication-TileColor" content="#F1641E" /><meta name="theme-color" content="rgb(255, 255, 255)" />
+
+        <link type="application/opensearchdescription+xml" rel="search" href="/osdd.php" title="Etsy"/>
+    </head>
+    <body class="ui-toolkit transitional-wide etsy-has-it-design is-responsive no-touch en-US USD US"
+        data-language="en-US"
+        data-currency="USD"
+        data-region="US"
+        
+    >
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">
+    !function(a,b,c,d,e,f){a.ddjskey=e;a.ddoptions=f||null;var m=b.createElement(c),n=b.getElementsByTagName(c)[0];m.async=1,m.defer=1,m.src=d,n.parentNode.insertBefore(m,n)}(window,document,"script","https://www.etsy.com/include/tags.js", "D013AA612AB2224D03B2318D0F5B19", {
+        endpoint:"https://www.etsy.com/include/tags.js",
+        ajaxListenerPath: true,
+        enableTagEvents: true,
+        overrideAbortFetch: true,
+        abortAsyncOnChallengeDisplay: true,
+        disableAutoRefreshOnCaptchaPassed: false,
+        replayAfterChallenge: true
+    });
+
+    var DD_BLOCKED_EVENT_NAME = "dd_blocked";
+    var DD_RESPONSE_DISPLAYED_EVENT_NAME = "dd_response_displayed";
+    var DD_RESPONSE_ERROR_EVENT_NAME = "dd_response_error";
+
+    window.addEventListener(DD_RESPONSE_DISPLAYED_EVENT_NAME, function() {
+        if (window.Sentry && window.Sentry.setTag) {
+            window.Sentry.setTag(DD_RESPONSE_DISPLAYED_EVENT_NAME, true);
+        }
+    });
+
+    window.addEventListener(DD_BLOCKED_EVENT_NAME, function() {
+        if (window.Sentry && window.Sentry.setTag) {
+            window.Sentry.setTag(DD_BLOCKED_EVENT_NAME, true);
+        }
+    });
+
+    window.addEventListener(DD_RESPONSE_ERROR_EVENT_NAME, function() {
+        if (window.Sentry && window.Sentry.setTag) {
+            window.Sentry.setTag(DD_RESPONSE_ERROR_EVENT_NAME, true);
+        }
+    });
+</script>
+
+        
+
+        
+
+        <div data-above-header class="wt-z-index-5 wt-position-relative">
+            
+            
+
+        </div>
+
+        
+        <div data-below-header>
+            
+        </div>
+        
+
+        
+
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">
+    var webVitals=function(e){"use strict";var t,n,i,r,o,a=function(){return window.performance&&performance.getEntriesByType&&performance.getEntriesByType("navigation")[0]},u=function(e){if("loading"===document.readyState)return"loading";var t=a();if(t){if(e<t.domInteractive)return"loading";if(0===t.domContentLoadedEventStart||e<t.domContentLoadedEventStart)return"dom-interactive";if(0===t.domComplete||e<t.domComplete)return"dom-content-loaded"}return"complete"},c=function(e){var t=e.nodeName;return 1===e.nodeType?t.toLowerCase():t.toUpperCase().replace(/^#/,"")},s=function(e,t){var n="";try{for(;e&&9!==e.nodeType;){var i=e,r=i.id?"#"+i.id:c(i)+(i.classList&&i.classList.value&&i.classList.value.trim()&&i.classList.value.trim().length?"."+i.classList.value.trim().replace(/\s+/g,"."):"");if(n.length+r.length>(t||100)-1)return n||r;if(n=n?r+">"+n:r,i.id)break;e=i.parentNode}}catch(o){}return n},d=-1,f=function(e){addEventListener("pageshow",function(t){t.persisted&&(d=t.timeStamp,e(t))},!0)},l=function(){var e=a();return e&&e.activationStart||0},p=function(e,t){var n=a(),i="navigate";return d>=0?i="back-forward-cache":n&&(document.prerendering||l()>0?i="prerender":document.wasDiscarded?i="restore":n.type&&(i=n.type.replace(/_/g,"-"))),{name:e,value:void 0===t?-1:t,rating:"good",delta:0,entries:[],id:"v3-".concat(Date.now(),"-").concat(Math.floor(8999999999999*Math.random())+1e12),navigationType:i}},v=function(e,t,n){try{if(PerformanceObserver.supportedEntryTypes.includes(e)){var i=new PerformanceObserver(function(e){Promise.resolve().then(function(){t(e.getEntries())})});return i.observe(Object.assign({type:e,buffered:!0},n||{})),i}}catch(r){}},$=function(e,t,n,i){var r,o;return function(a){var u,c;t.value>=0&&(a||i)&&((o=t.value-(r||0))||void 0===r)&&(r=t.value,t.delta=o,t.rating=(u=t.value,u>(c=n)[1]?"poor":u>c[0]?"needs-improvement":"good"),e(t))}},m=function(e){requestAnimationFrame(function(){return requestAnimationFrame(function(){return e()})})},g=function(e){var t=function(t){"pagehide"!==t.type&&"hidden"!==document.visibilityState||e(t)};addEventListener("visibilitychange",t,!0),addEventListener("pagehide",t,!0)},y=function(e){var t=!1;return function(n){t||(e(n),t=!0)}},h=-1,T=function(){return"hidden"!==document.visibilityState||document.prerendering?1/0:0},b=function(e){"hidden"===document.visibilityState&&h>-1&&(h="visibilitychange"===e.type?e.timeStamp:0,S())},_=function(){addEventListener("visibilitychange",b,!0),addEventListener("prerenderingchange",b,!0)},S=function(){removeEventListener("visibilitychange",b,!0),removeEventListener("prerenderingchange",b,!0)},E=function(e){document.prerendering?addEventListener("prerenderingchange",function(){return e()},!0):e()},w={passive:!0,capture:!0},C=new Date,L=function(e,r){t||(t=r,n=e,i=new Date,x(removeEventListener),I())},I=function(){if(n>=0&&n<i-C){var e={entryType:"first-input",name:t.type,target:t.target,cancelable:t.cancelable,startTime:t.timeStamp,processingStart:t.timeStamp+n};r.forEach(function(t){t(e)}),r=[]}},k=function(e){if(e.cancelable){var t,n,i,r,o,a=(e.timeStamp>1e12?new Date:performance.now())-e.timeStamp;"pointerdown"==e.type?(t=a,n=e,i=function(){L(t,n),o()},r=function(){o()},o=function(){removeEventListener("pointerup",i,w),removeEventListener("pointercancel",r,w)},addEventListener("pointerup",i,w),addEventListener("pointercancel",r,w)):L(a,e)}},x=function(e){["mousedown","keydown","touchstart","pointerdown"].forEach(function(t){return e(t,k,w)})},P=0,B=1/0,D=0,N=function(e){e.forEach(function(e){e.interactionId&&(B=Math.min(B,e.interactionId),P=(D=Math.max(D,e.interactionId))?(D-B)/7+1:0)})},R=function(){return o?P:performance.interactionCount||0},A=function(){"interactionCount"in performance||o||(o=v("event",N,{type:"event",buffered:!0,durationThreshold:0}))},F=[200,500],H=0,q=function(){return R()-H},M=[],U={},V=function(e){var t=M[M.length-1],n=U[e.interactionId];if(n||M.length<10||e.duration>t.latency){if(n)n.entries.push(e),n.latency=Math.max(n.latency,e.duration);else{var i={id:e.interactionId,latency:e.duration,entries:[e]};U[i.id]=i,M.push(i)}M.sort(function(e,t){return t.latency-e.latency}),M.splice(10).forEach(function(e){delete U[e.id]})}},j=function(e,t){t=t||{},E(function(){A();var n,i,r=p("INP"),o=function(e){e.forEach(function(e){e.interactionId&&V(e),"first-input"!==e.entryType||M.some(function(t){return t.entries.some(function(t){return e.duration===t.duration&&e.startTime===t.startTime})})||V(e)});var t,n=M[t=Math.min(M.length-1,Math.floor(q()/50))];n&&n.latency!==r.value&&(r.value=n.latency,r.entries=n.entries,i())},a=v("event",o,{durationThreshold:null!==(n=t.durationThreshold)&&void 0!==n?n:40});i=$(e,r,F,t.reportAllChanges),a&&("interactionId"in PerformanceEventTiming.prototype&&a.observe({type:"first-input",buffered:!0}),g(function(){o(a.takeRecords()),r.value<0&&q()>0&&(r.value=0,r.entries=[]),i(!0)}),f(function(){M=[],H=R(),r=p("INP"),i=$(e,r,F,t.reportAllChanges)}))})},z=[2500,4e3],G={};return e.onINP=function(e,t){j(function(t){(function(e){if(e.entries.length){var t=e.entries.sort(function(e,t){return t.duration-e.duration||t.processingEnd-t.processingStart-(e.processingEnd-e.processingStart)})[0];e.attribution={eventTarget:s(t.target),eventType:t.name,eventTime:t.startTime,eventEntry:t,loadState:u(t.startTime)}}else e.attribution={}})(t),e(t)},t)},e.onLCP=function(e,t){var n,i;n=function(t){(function(e){if(e.entries.length){var t=a();if(t){var n=t.activationStart||0,i=e.entries[e.entries.length-1],r=i.url&&performance.getEntriesByType("resource").filter(function(e){return e.name===i.url})[0],o=Math.max(0,t.responseStart-n),u=Math.max(o,r?(r.requestStart||r.startTime)-n:0),c=Math.max(u,r?r.responseEnd-n:0),d=Math.max(c,i?i.startTime-n:0),f={element:s(i.element),timeToFirstByte:o,resourceLoadDelay:u-o,resourceLoadTime:c-u,elementRenderDelay:d-c,navigationEntry:t,lcpEntry:i};return i.url&&(f.url=i.url),r&&(f.lcpResourceEntry=r),void(e.attribution=f)}}e.attribution={timeToFirstByte:0,resourceLoadDelay:0,resourceLoadTime:0,elementRenderDelay:e.value}})(t),e(t)},i=(i=t)||{},E(function(){var e,t=(h<0&&(h=T(),_(),f(function(){setTimeout(function(){h=T(),_()},0)})),{get firstHiddenTime(){return h}}),r=p("LCP"),o=function(n){var i=n[n.length-1];i&&i.startTime<t.firstHiddenTime&&(r.value=Math.max(i.startTime-l(),0),r.entries=[i],e())},a=v("largest-contentful-paint",o);if(a){e=$(n,r,z,i.reportAllChanges);var u=y(function(){G[r.id]||(o(a.takeRecords()),a.disconnect(),G[r.id]=!0,e(!0))});["keydown","click"].forEach(function(e){addEventListener(e,function(){return setTimeout(u,0)},!0)}),g(u),f(function(t){r=p("LCP"),e=$(n,r,z,i.reportAllChanges),m(function(){r.value=performance.now()-t.timeStamp,G[r.id]=!0,e(!0)})})}})},Object.defineProperty(e,"__esModule",{value:!0}),e}({});
+</script>
+
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">
+        window.Etsy=window.Etsy||{};
+        Etsy.Context=Etsy.Context||{};
+        (function() {
+            function assign(firstSource, secondSource) {
+                if (!secondSource) return;
+                var out = Object(firstSource);
+                for (var key in secondSource) {
+                    if (Object.prototype.hasOwnProperty.call(secondSource, key)) {
+                        out[key] = secondSource[key];
+                    }
+                }
+                return out;
+            }
+            Etsy.Context.feature=assign(Etsy.Context.feature ? Etsy.Context.feature : {}, []);
+            Etsy.Context.data=assign(Etsy.Context.data ? Etsy.Context.data : {}, {"is_mobile":false,"should_auto_redirect":false,"locale_settings":{"language":{"code":"en-US","id":0,"name":"English (US)","translation":"English (US)","is_detected":false,"is_default":true},"currency":{"currency_id":840,"code":"USD","name":"United States Dollar","number_precision":2,"symbol":"$","listing_enabled":true,"browsing_enabled":true,"buyer_location_restricted":false,"is_synthetic":true,"is_detected":false,"is_default":true,"append_currency_symbol":false},"region":{"code":"US","country_id":209,"name":"United States","translation":"United States","is_detected":false,"is_default":true,"is_EU_region":false},"subdir_code":""},"neu_api_specs_sample_rate":null,"FB_GRAPHQL_VERSION":"v2.10","page_guid":"101490dba853.44c83253070ad218ce66.00","primary_event_name":"Error_page","request_uuid":"EuIkU-czkQUZcrzoFaL7-spAJH79","user_is_test_account":false,"user_id":null,"css_variant":"sasquatch","runtime_analysis":false,"collage_shadow_dom_css_url":"https:\/\/www.etsy.com\/ac\/sasquatch\/css\/collage\/shadow.a65d9513462594.css","vite_public_path":"https:\/\/www.etsy.com\/ac\/alphaVite\/js\/en-US\/","collage_translations":{"ad":"Ad","ad_by_etsy_seller":"Ad by Etsy Seller","dismiss":"Dismiss","loading":"Loading","add_to_favorites":"Add to favorites","remove_from_favorites":"Added to favorites. Remove?","required":"Required","optional_parenthetical":"(optional)","star_seller":"Star Seller"},"guest_uaid":"sRnMAy1pb9EPuv_99D_B2l0ErOKT","is_app_shell":true,"csrf_nonce":"3:1768051570:8CVjOmU61PVw6MPgZsr5CKq16GLe:3bf589ffb98928f9f7fd46b756aa18b8079fb8c4ea3f14da3a288d8eee993772","uaid_nonce":"3:1768051570:hz42Wf_PH7xbvQJ6qcX3leYSgv_Y:0f7997122f4c88370b6130f6a27d966c460c9cd3f67459282627815f2fd80062","clientlogger":{"is_enabled":true,"endpoint":"\/clientlog","logs_per_page":6,"id":"EuIkU-czkQUZcrzoFaL7-spAJH79","digest":"b287018bd8d898d23efae46db9be762279cdf5ba","enabled_features":["info","warn","error","basic","uncaught"]},"01125905a4e5ddf2_appshell_fallback":"recs-impression","3c65557fa67e42dc_appshell_fallback":"bf7057e4e2685e8fb","c5420ec98ed7db34_appshell_fallback":"be02fecad5bf322e3","imp_listener_sources":["ads","search","recs","nonlisting"],"airgap_url":"https:\/\/transcend-cdn.com\/cm\/ac71e058-41b7-4026-b482-3d9b8e31a6d0\/airgap.js","airgap_bundle":"control_bundle","dual_write_enabled":true,"google_tag_manager_async_enabled":false,"dynamic_privacy_settings_ui_enabled":false,"forced_data_regimes":"","has_forced_data_regimes":false,"all_purposes":["Advertising","Functional"],"all_regimes":["us-gpc","consent-prompt"],"default_consent_expiry":518400,"disable_advertising_regimes":[],"is_error_page":true});
+        })();
+    </script>
+
+        <script nonce="keeVcrYGvoZ8fx6y7mse620+">__webpack_public_path__ = "https://www.etsy.com/ac/evergreenVendor/js/en-US/";</script>
+
+<script nonce="keeVcrYGvoZ8fx6y7mse620+">(function() {
+var asyncAvailable = true;
+try {
+    eval("async () => {}");
+} catch(e) {
+    asyncAvailable = false;
+}
+
+var falseUA = true && !asyncAvailable;
+var primarySupportsAsync = !true && asyncAvailable;
+
+var clientloggerIsEnabled = true;
+if (clientloggerIsEnabled) {
+    if (falseUA) {
+        new Image().src = '/clientlog?falseua=1';
+    }
+    if (primarySupportsAsync) {
+        new Image().src = '/clientlog?primarysupportsasync=1';
+    }
+    if (window.__etsy_logging && window.__etsy_logging.bots && (window.__etsy_logging.bots.isBot || window.__etsy_logging.bots.botCheck.length > 0)) {
+        new Image().src = '/clientlog?feisbot=1&bot_check=' + encodeURIComponent(JSON.stringify(window.__etsy_logging.bots.botCheck));
+    }
+}
+
+})();</script>
+
+   <script src="https://www.etsy.com/ac/evergreenVendor/js/en-US/vendor_bundle.1e397356b19ae5cf6c49.js" type="text/javascript" nonce="keeVcrYGvoZ8fx6y7mse620+" crossorigin defer></script>
+   <script src="https://www.etsy.com/ac/evergreenVendor/js/en-US/etsy_libs.afd14c8bc22f7a88f39c.js" type="text/javascript" nonce="keeVcrYGvoZ8fx6y7mse620+" crossorigin defer></script>
+   <script src="https://www.etsy.com/paula/v3/polyfill.min.js?etsy-v=v5&flags=gated&features=AbortController%2CDOMTokenList.prototype.@@iterator%2CDOMTokenList.prototype.forEach%2CIntersectionObserver%2CIntersectionObserverEntry%2CNodeList.prototype.@@iterator%2CNodeList.prototype.forEach%2CObject.preventExtensions%2CString.prototype.anchor%2CString.raw%2Cdefault%2Ces2015%2Ces2016%2Ces2017%2Ces2018%2Ces2019%2Ces2020%2Ces2021%2Ces2022%2Cfetch%2CgetComputedStyle%2CmatchMedia%2Cperformance.now" type="text/javascript" nonce="keeVcrYGvoZ8fx6y7mse620+" crossorigin defer></script>
+   <script src="https://www.etsy.com/ac/evergreenVendor/js/en-US/app-shell/globals/index.81f4b464667c334f1664.js" type="text/javascript" nonce="keeVcrYGvoZ8fx6y7mse620+" crossorigin defer></script>
+   <script src="https://www.etsy.com/ac/evergreenVendor/js/en-US/@etsy-modules/ConsentManagement/Transcend-Integration.f0dba941d0f47eaaa551.js" type="text/javascript" nonce="keeVcrYGvoZ8fx6y7mse620+" crossorigin defer></script>
+
+        <main id="content">
+            <div class="wt-height-full wt-width-full wt-position-relative">
+    <header id="error-page-standalone-header" class="etsy-logo-header wt-sem-bg-elevation-0 wt-p-xs-2 wt-position-relative wt-z-index-1">
+        <a href="/" class="wt-p-xs-2">
+            <span class="etsy-icon etsy-logo-svg"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 24" aria-hidden="true" focusable="false"><path d="M42.973 23.998C45.006 23.998 46.673 23.321 47.768 22.045 48.89 20.716 49.254 19.386 49.254 16.675V7.739C49.254 7.008 49.254 6.2 49.306 5.627 49.332 5.13 48.889 5.027 48.497 5.184 47.377 5.627 46.412 5.861 45.11 6.148 44.797 6.226 44.667 6.435 44.667 6.67S44.826 7.166 45.32 7.14C46.492 7.088 46.804 7.323 46.804 8.18V13.941C46.621 15.504 45.32 16.833 43.678 16.833 42.192 16.833 41.332 15.843 41.332 13.81V7.738C41.332 7.008 41.358 6.2 41.384 5.627 41.41 5.13 40.994 5.027 40.575 5.184 39.48 5.601 38.568 5.861 37.343 6.148 37.004 6.226 36.873 6.435 36.873 6.67S37.03 7.166 37.525 7.14C38.592 7.088 38.879 7.323 38.879 8.18V14.254C38.879 17.094 40.52 18.37 42.969 18.37 44.482 18.37 46.072 17.51 46.802 15.92V18.033C46.801 19.699 46.462 20.768 45.785 21.576 45.082 22.411 44.17 22.88 42.997 22.88 41.615 22.879 40.86 22.383 40.86 21.654 40.86 21.42 40.938 21.158 40.938 20.794 40.938 20.117 40.468 19.517 39.739 19.517 38.827 19.517 38.385 20.22 38.385 21.03 38.385 22.437 39.922 24 42.97 24M31.3 18.474C34.296 18.474 36.146 16.65 36.146 14.435 36.146 10.032 29.293 11.151 29.293 8.311 29.293 7.216 30.075 6.304 31.508 6.304 32.836 6.304 33.853 6.904 34.399 8.154L34.66 8.754C34.921 9.352 35.65 9.223 35.572 8.623L35.312 6.487C35.26 6.122 35.156 5.965 34.842 5.836 33.852 5.393 32.782 5.184 31.637 5.184 28.823 5.184 27.18 6.931 27.18 9.094 27.18 13.576 34.033 12.404 34.033 15.218 34.033 16.337 33.121 17.328 31.375 17.328 29.863 17.329 28.95 16.704 28.274 15.295L27.884 14.487C27.647 13.99 26.918 14.122 27.023 14.774L27.387 17.119C27.439 17.46 27.57 17.563 27.858 17.694 28.977 18.215 29.89 18.475 31.296 18.475M22.464 18.5C24.262 18.5 25.487 17.562 25.955 15.92 26.14 15.348 25.54 15.009 25.175 15.583 24.679 16.442 23.95 16.807 23.115 16.807 22.048 16.807 21.5 16.024 21.5 14.592V6.696L24.94 6.722C25.33 6.722 25.487 6.357 25.487 6.045 25.487 5.706 25.304 5.419 24.887 5.419L21.5 5.445V3.464C21.5 3.125 21.291 2.968 21.03 2.968A.6.6 0 0 0 20.535 3.228C19.597 4.664 18.97 5.158 17.512 5.705 17.199 5.834 17.016 6.017 17.016 6.252 17.016 6.512 17.146 6.694 17.538 6.694H19.049V14.877C19.049 17.25 20.431 18.5 22.462 18.5M11.806 17.014H7.27C5.863 17.014 5.499 16.65 5.499 15.424V9.692H9.147C10.501 9.691 10.919 10.056 11.387 11.384L11.753 12.454C11.962 13.079 12.794 13.104 12.794 12.376 12.69 10.29 12.69 7.84 12.742 5.756 12.794 5.027 11.959 5.053 11.752 5.678L11.388 6.748C10.918 8.102 10.553 8.52 9.147 8.52H5.499V1.745C5.499 1.38 5.654 1.223 6.046 1.223H11.493C13.083 1.223 13.759 1.665 14.255 3.047L14.855 4.742C15.089 5.419 15.896 5.316 15.896 4.664L15.844.468C15.845.13 15.637 0 15.35 0H.599C.13 0 0 .26 0 .522 0 .782.13 1.017.573 1.069 2.398 1.2 2.71 1.565 2.71 2.633V15.715C2.71 16.705 2.398 17.043.677 17.175.261 17.226.13 17.46.13 17.722S.26 18.244.703 18.244H15.61C15.896 18.244 16.105 18.114 16.105 17.776L16.157 13.58C16.157 12.928 15.35 12.85 15.141 13.502L14.594 15.196C14.15 16.604 13.394 17.021 11.806 17.021"/></svg></span>
+            <span class="wt-screen-reader-only">Go back to Etsy.com</span>
+        </a>
+    </header>
+
+    <div class="error-page-panel wt-display-flex-xs wt-flex-direction-column-xs wt-justify-content-center wt-position-relative wt-z-index-1">
+        <div class="wt-grid wt-pl-xs-4 wt-pr-xs-4 wt-p-xs-1">
+            <div class="wt-grid__item-md-6 wt-grid__item-offset-md-1">
+                <h1 class="wt-text-heading wt-pb-xs-2">
+                    Uh oh!
+                </h1>
+
+                <h2 class="wt-text-body-01 wt-pb-xs-4">
+                    Sorry, the page you were looking for was not found.
+                </h2>
+
+                <div class="wt-pb-xs-4 wt-text-body-01">
+                    <form action="/search.php?ref=error" class="wt-input-btn-group">
+                        <input
+                            type="text"
+                            name="search_query"
+                            class="wt-input-btn-group__input"
+                            placeholder="Search for anything"
+                            aria-label="Search for anything"
+                            autocomplete="off">
+                        <button type="submit" class="wt-input-btn-group__btn">
+                            <span class="wt-screen-reader-only">Search</span>
+                            <span class="etsy-icon wt-nudge-b-2"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10,18a8,8,0,1,1,8-8A8.009,8.009,0,0,1,10,18ZM10,4a6,6,0,1,0,6,6A6.007,6.007,0,0,0,10,4Z"/><path d="M21,22a1,1,0,0,1-.707-0.293l-4-4a1,1,0,0,1,1.414-1.414l4,4A1,1,0,0,1,21,22Z"/></svg></span>
+                        </button>
+                    </form>
+                </div>
+
+                <a href="/" class="wt-arrow-link wt-arrow-link--back">
+                    <span class="wt-text-body-01">Go back to Etsy.com</span>
+                </a>
+            </div>
+        </div>
+    </div>
+    <img class="wt-display-none" src="https://system.etsy.com/status/images/beacon.gif?beacon_source=error_18&beacon_id=EuIkU-czkQUZcrzoFaL7-spAJH79&host=www.etsy.com"/>
+</div>
+        </main>
+
+        
+
+        
+
+        
+
+        <div data-dialog-content>
+            
+        </div>
+
+        <div id="wt-portals"></div>
+
+        <div id="etsy-modal-container" aria-hidden="true"></div>
+
+
+        <div id="google-tag-manager-container" aria-hidden="true">
+            <script nonce="keeVcrYGvoZ8fx6y7mse620+">
+        window.dataLayer = [
+    {
+        "tp_consent": "yes",
+        "Language": "en-US",
+        "Region": "US",
+        "Currency": "USD",
+        "UAID": "sRnMAy1pb9EPuv_99D_B2l0ErOKT",
+        "DetectedRegion": "US",
+        "uuid": 1768051570,
+        "request_start_time": 1768051570
+    }
+];
+    </script>
+
+    <noscript><iframe src="//www.googletagmanager.com/ns.html?id=GTM-KWW5SS"
+                    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <script nonce='keeVcrYGvoZ8fx6y7mse620+'>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+        new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+        j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+        '//www.googletagmanager.com/gtm.js?id='+i+dl;var n=d.querySelector('[nonce]');
+        n&&j.setAttribute('nonce',n.nonce||n.getAttribute('nonce'));f.parentNode.insertBefore(j,f);
+        })(window,document,'script','dataLayer','GTM-KWW5SS');</script>
+        </div>
+
+        
+
+        <script type='text/javascript' nonce='keeVcrYGvoZ8fx6y7mse620+'>
+    window.__etsy_logging=window.__etsy_logging||{perf:{}};window.__etsy_logging.url="\/\/www.etsy.com\/bcn\/beacon";window.__etsy_logging.defaults={"ab":{"xplat.runtime_config_service.ramp":["on","x","b4354c"],"orm_latency":["off","x","091448"],"neu_runtime_tracing_always_on":["off","x","106c3b"],"neu_runtime_tracing":["off","w","6631e5"],"builda_scss":["sasquatch","x","96bd82"],"site_chrome\/buyer_to_seller_navbar_signed_out":["ineligible","e","0efe99"],"checkout.gift_card_cta_in_search_dropdown":["on","x","931866"],"local_pe.q3_2024.search.browser.traffic_split":["on","x","33df41"],"ranking\/search.experience.xml_autosuggest_v4":["all_xml","x","2b2623"],"search.android.mu_trending_searches":["ineligible","e","6cc594"],"lingtools\/trending_searches.gcp":["on","x","5cfa03"],"site_chrome\/buyer_to_seller_navbar_signed_in":["ineligible","e","67649b"],"persistent_experiment.q1_2026":["on","w","a9e3c2"],"site_chrome\/buyer_zipcode_in_header_desktop":["off","x","eb55bf"],"site_chrome\/buyer_zipcode_in_header_mweb":["ineligible","e","5d612c"],"iat.mt.de":["ineligible","e","6fe2bd"],"iat.mt.fr":["ineligible","e","781db2"],"site_chrome\/fullstory\/use_track_event":["ineligible","e","ae465c"],"google_tag_manager_async":["off","x","7585d0"],"qualtrics_survey":["on","x","c3c730"],"google_tag_manager":["on","x","43dc13"],"prodperfect\/monthly_data_capture":["off","x","137afb"]},"user_id":null,"page_guid":"101490dba853.44c83253070ad218ce66.00","page_guid_source":"guid-source-generated","version":1,"request_uuid":"EuIkU-czkQUZcrzoFaL7-spAJH79","cdn-provider":"fastly","header_fingerprint":"ulac","header_signature":"504932a36fa52523f5bda87ab1892562","ip_org":"Amazon.com","ref":"","loc":"http:\/\/www.etsy.com\/web\/20260109214045im_\/https:\/\/www.etsy.com\/images\/favicon-16x16.png","locale_currency_code":"USD","pref_language":"en-US","region":"US","detected_currency_code":"USD","detected_language":"en-US","detected_region":"US","accept-languages":"en-US,en","isWhiteListedMobileDevice":false,"isMobileRequestIgnoreCookie":false,"isMobileRequest":false,"isMobileDevice":false,"isMobileSupported":false,"isTabletSupported":false,"isTouch":false,"isEtsyApp":false,"isPreviewRequest":false,"isChromeInstantRequest":false,"isMozPrefetchRequest":false,"isTestAccount":false,"isSupportLogin":false,"isInternal":false,"isInWebView":false,"botCheck":["dc"],"isBot":false,"isSyntheticTest":false,"ebid":"EJbArtLLtL-3ouv3CBi-HQfgLeFhLgTp","event_source":"web","browser_id":"sRnMAy1pb9EPuv_99D_B2l0ErOKT","gdpr_tp":3,"gdpr_p":3,"transcend_strategy_consent_loaded_status":"FetchMiss","transcend_strategy_initial_fetch_time_ms":null,"transcend_strategy_consent_reconciled_time_ms":null,"legacy_p":3,"legacy_tp":3,"cmp_tp":false,"cmp_p":false,"device_identifier":{"source":"existing_uaid_cookie","value":"sRnMAy1pb9EPuv_99D_B2l0ErOKT"},"page_time":84,"load_strategy":"page_navigation"};
+    !function(e,t){var n=e.__etsy_logging,o=n.url,i=n.firedEvents,a=n.defaults,r=a.ab||{},s=n.bots.botCheck,c=n.bots.isBot;n.mergeObject=function(e){for(var t=1;t<arguments.length;t++){var n=arguments[t];for(var o in n)Object.prototype.hasOwnProperty.call(n,o)&&(e[o]=n[o])}return e};!a.ref&&(a.ref=t.referrer),!a.loc&&(a.loc=e.location.href),!a.webkit_page_visibility&&(a.webkit_page_visibility=t.webkitVisibilityState),!a.event_source&&(a.event_source="web"),a.event_logger="frontend",a.isIosApp&&!0===a.isIosApp?a.event_source="ios":a.isAndroidApp&&!0===a.isAndroidApp&&(a.event_source="android"),s.length>0&&(a.botCheck=a.botCheck||[],a.botCheck=a.botCheck.concat(s)),a.isBot=c,t.wasDiscarded&&(a.was_discarded=!0);var v=function(t){if(e.XMLHttpRequest){var n=new XMLHttpRequest;n.open("POST",o,!0),n.send(JSON.stringify(t))}};n.updateLoc=function(e){e!==a.loc&&(a.ref=a.loc,a.loc=e)},n.adminPublishEvent=function(n){"function"==typeof e.CustomEvent&&t.dispatchEvent(new CustomEvent("eventpipeEvent",{detail:n})),i.push(n)},n.preparePEPerfBeaconAbMismatchEventIfNecessary=function(){if(!0===n.shouldLogAbMismatch){var e=n.abVariantsForMismatchEvent;for(var t in r)if(Object.prototype.hasOwnProperty.call(r,t)){var o=r[t];if(void 0!==o){var i=o[0];if(void 0!==i){var a=e[t];void 0===a&&(a={});var s=a[i];void 0===s&&(s=[]),s.push({name:"default",selector:o[1],hash:o[2]}),a[i]=s,e[t]=a}}}n.abVariantsForMismatchEvent=e}},n.sendEvents=function(t,i){var s=a;if("perf"===i){var c={event_logger:i};n.asyncAb&&(n.preparePEPerfBeaconAbMismatchEventIfNecessary(),c.ab=n.mergeObject({},n.asyncAb,r)),s=n.mergeObject({},a,c)}var f={events:t,shared:s};e.navigator&&"function"==typeof e.navigator.sendBeacon?function(t){t.events.forEach((function(e){e.attempted_send_beacon=!0})),e.navigator.sendBeacon(o,JSON.stringify(t))||(t.events.forEach((function(e){e.send_beacon_failed=!0})),v(t))}(f):v(f),n.adminPublishEvent(f)}}(window,document);
+</script>
+<script type='text/javascript' nonce='keeVcrYGvoZ8fx6y7mse620+'>window.__etsy_logging.perf.event={"attributes":{"guid":"101490dba861.2dc3274c3bfa323d7ae6.00","event_name":"perf","event_logger":"perf","page_type":"Error_page","device_type":"Desktop","browser_name":"Chrome","browser_version":"136.0.0.0","ip_city":"Ashburn","ip_region":"VA","ip_country_code":"US","boromir":true}};window.__etsy_logging.shouldLogAbMismatch=false;!function(e,t){if(!t.hidden){var n=e.__etsy_logging||{},r=n.perf||{},i=n.url,a=n.defaults,o=r.event,c=n.sendEvents,s=0===Object.keys(r).length,u=e.webVitals||{},d=n.mergeObject,_=r.isDev||!1,m=r.skipLoggingEvent||!1,l=r.keepPerfObserverActive||!1,f=null,p=0;if(!s&&i&&a&&o&&c){var v=r.MARK_MEASURE_PREFIX||"_etsy_mark_measure_",g=function(e){var t=!1;return function(){t||(t=!0,e.apply(this,arguments))}},y=function(){return void 0!==e.PerformanceObserver},h=function(){return"onpagehide"in e},T=function(e,n){var r=function(e){var n=t.createElement("a");n.href=e;var r=n.pathname.split(".");return r[r.length-1]||""}(e);return/jpe?g|png|svg|gif/i.test(r)?"image":/eot|woff2?|ttf/i.test(r)?"font":"js"===r?"js":"css"===r?"css":"xmlhttprequest"===n?"xhr":"unknown"},E=function(e){return Math.round(e<Math.pow(2,64)-1?e:0)},b=function(e,n){var r=null,i=null;if(n.transferSize>0)for(var a=0;a<n.serverTiming.length;a++){var o=n.serverTiming[a];e.i_etsystatic_cdn||"cdn"!==o.name?"cache_status"===o.name&&(i=o.description):r=o.description}r&&(e.i_etsystatic_cdn=r);var c=null,s=null;i&&(e.cdn_image_caching||(e.cdn_image_caching={miss:0,hit:0}),c=0===i.indexOf("HIT"),s=0===i.indexOf("MISS"),c&&(e.cdn_image_caching.hit+=1),s&&(e.cdn_image_caching.miss+=1)),function(e,n,r,i){f||(f={},t.querySelectorAll("img[data-perf-group]").forEach((function(e){e.currentSrc&&(f[e.currentSrc]=e)})));var a=f[n.name];if(a){var o=a.dataset.perfGroup;e.categorized_images||(e.categorized_images=[]);var c={category:o,duration:E(n.duration),encodedBodySize:E(n.encodedBodySize),transferSize:E(n.transferSize),width:a.width,height:a.height};if(n.transferSize>0){(r||i)&&(c.cdn_hit=r);for(var s=0;s<n.serverTiming.length;s++){var u=n.serverTiming[s];"clientrtt"===u.name?c.clientrtt=E(u.duration):"clienttt"===u.name?c.clienttt=E(u.duration):"cdntime"===u.name?c.cdntime=E(u.duration):"origin"===u.name&&(c.origin=E(u.duration))}}e.categorized_images.push(c)}}(e,n,c,s)},S=function(e){var t=e.match(/^(?:https?:\/\/)?(?:www\.)?([a-z0-9-.]*etsy(?:static)?(?:cloud)?\.com)/i);return t?t[1]:null},k=function(e,t,n){t&&n&&(e.http_protocols=e.http_protocols||{},e.http_protocols[n]=e.http_protocols[n]||[],-1===e.http_protocols[n].indexOf(t)&&e.http_protocols[n].push(t))},w=function(e){var t={nav_start:E(e.navigationStart||e.startTime),activation_start:E(e.activationStart||0),fetch_start:E(e.fetchStart),dns_start:E(e.domainLookupStart),dns_end:E(e.domainLookupEnd),connect_start:E(e.connectStart),connect_end:E(e.connectEnd),interim_response_start:E(e.firstInterimResponseStart||0),request_start:E(e.requestStart),response_start:E(e.responseStart),response_end:E(e.responseEnd),dom_completed:E(e.domComplete),dom_interactive:E(e.domInteractive),secure_connect_start:E(e.secureConnectionStart)||null,loaded_start:E(e.loadEventStart)||null,loaded_end:E(e.loadEventEnd)||null,dom_content_loaded_start:E(e.domContentLoadedEventStart)||null,dom_content_loaded_end:E(e.domContentLoadedEventEnd)||null,html_tx_size:E(e.transferSize),html_enc_size:E(e.encodedBodySize),html_dec_size:E(e.decodedBodySize),type:e.type};return e.redirectStart&&(t.redirect_start=E(e.redirectStart)),e.redirectEnd&&(t.redirect_end=E(e.redirectEnd)),e.redirectCount&&(t.redirect_count=e.redirectCount),t},L=function(e){return e.reduce((function(e,t){if("entryType"in t){if("resource"===t.entryType)return function(e,t){var n=T(t.name,t.initiatorType);if("unknown"===n)return e;var r=S(t.name),i=r?"etsy":"third";"image"===n&&"etsy"===i&&("img0.etsystatic.com"===r?e.img0_count=(e.img0_count||0)+1:"img1.etsystatic.com"===r&&(e.img1_count=(e.img1_count||0)+1)),k(e,t.nextHopProtocol,r),"image"===n&&"etsy"===i&&t.serverTiming&&"i.etsystatic.com"===r&&b(e,t);var a="sum_"+i+"_"+n+"_bytes",o="sum_"+i+"_"+n+"_enc_bytes",c="sum_"+i+"_"+n+"_tx_bytes",s="sum_"+i+"_"+n+"_dur",u="count_"+i+"_"+n+"_req";return e[a]=(e[a]||0)+E(t.decodedBodySize),e[o]=(e[o]||0)+E(t.encodedBodySize),e[c]=(e[c]||0)+E(t.transferSize),e[s]=(e[s]||0)+E(t.duration),e[u]=(e[u]||0)+1,e}(e,t);if("paint"===t.entryType)return function(e,t){return e[t.name.replace(/-/g,"_")]=E(t.startTime),e}(e,t);if("longtask"===t.entryType)return function(e,t){return e.long_tasks_count=(e.long_tasks_count||0)+1,e.long_tasks_dur=(e.long_tasks_dur||0)+E(t.duration),e}(e,t);if("mark"===t.entryType||"measure"===t.entryType)return function(e,t){return 0===t.name.lastIndexOf(v,0)&&(e[0===t.name.lastIndexOf(v+"async_spec_",0)?t.name.substring(v.length):t.name]=E("mark"===t.entryType?t.startTime:t.duration)),e}(e,t);if("layout-shift"===t.entryType&&!t.hadRecentInput)return function(e,t){return e.layout_shift_count=(e.layout_shift_count||0)+1,e.layout_shift=(e.layout_shift||0)+t.value,t.value>.05&&(e.layout_shift_elements=e.layout_shift_elements||[],e.layout_shift_elements.push({value:t.value,elements:(t.sources||[]).filter((function(e){return!!e.node})).map((function(e){return{className:e.node.classList&&Array.prototype.slice.call(e.node.classList).join(" "),tagName:e.node.tagName,id:e.node.id}}))})),e}(e,t);if("navigation"===t.entryType)return r.t=!0,k(e,t.nextHopProtocol,S(t.name)),d(e,w(t));if("element"===t.entryType)return function(e,t){return e.element_timings||(e.element_timings={}),e.element_timings[t.identifier]=t.renderTime,e}(e,t);if("long-animation-frame"===t.entryType)return function(e,t){e.loaf_entries||(e.loaf_entries=[]);var n={start:E(t.startTime),duration:E(t.duration),blockingDuration:E(t.blockingDuration)},r=t.scripts.slice().sort((function(e,t){t.duration,e.duration}))[0];if(r){var i=r.invoker||r.name;n.longestScript={invokerType:r.invokerType||r.type,duration:E(r.duration),invoker:i.substring(0,1024),sourceURL:r.sourceURL||null}}return e.loaf_entries.push(n),e}(e,t)}else if("name"in t){if("INP"===t.name)return function(e,t){return e.interaction_next_paint=t.value,t.attribution&&(e.interaction_next_paint_element=t.attribution.eventTarget,e.interaction_next_paint_time=E(t.attribution.eventTime),e.interaction_next_paint_type=t.attribution.eventType,e.interaction_next_paint_loadstate=t.attribution.loadState),e}(e,t);if("LCP"===t.name)return function(e,t){var n=t.entries[0];return e.largest_contentful_paint=E(n.renderTime||n.loadTime),e.largest_contentful_paint_type=n.renderTime?"renderTime":"loadTime",n.element?(e.largest_contentful_paint_element={className:n.element.classList&&Array.prototype.slice.call(n.element.classList).join(" "),tagName:n.element.tagName,url:n.url},t.attribution.lcpResourceEntry&&(e.largest_contentful_paint_element.resource_size=E(t.attribution.lcpResourceEntry.encodedBodySize))):delete e.largest_contentful_paint_element,e.lcp_element_render_delay=E(t.attribution.elementRenderDelay),e.lcp_resource_load_delay=E(t.attribution.resourceLoadDelay),e.lcp_resource_load_time=E(t.attribution.resourceLoadTime),e}(e,t)}return e}),{})},z=function(){var n,i=!y()&&performance&&performance.getEntries?performance.getEntries():r.e,a=L(i);return r.e=[],r.t||(a.unixTimingNavigation=!0,d(a,w(e.performance.timing))),d(a,function(){if(performance&&performance.getEntriesByName){var e=performance.getEntriesByName("TTP","mark");if(e.length)return{time_to_parsing:E(e[0].startTime)}}return{}}()),d(a,{dom_count_server:p,dom_count_client:t.getElementsByTagName("*").length}),d(a,{dom_max_depth:(n=function(e){if(!e)return 0;for(var t=0,r=0,i=e.children.length;r<i;r++)t=Math.max(t,n(e.children[r]));return t+1})(t.documentElement)}),function(e){var t=navigator;t&&(t.connection&&(t.connection.effectiveType&&(e.effective_connection_type=t.connection.effectiveType),e.save_data="saveData"in t.connection?Number(t.connection.saveData):-1),t.deviceMemory&&(e.device_memory=t.deviceMemory),t.hardwareConcurrency&&(e.hardware_concurrency=t.hardwareConcurrency),t.webdriver&&(e.webdriver=t.webdriver),t.userAgent&&(e.fe_user_agent=t.userAgent))}(a),a.has_sendbeacon=navigator&&"function"==typeof navigator.sendBeacon,a.has_observer=y(),y()&&PerformanceObserver.supportedEntryTypes&&(a.observer_types=PerformanceObserver.supportedEntryTypes),a.has_pagehide=h(),r.vm_hostname&&(a.vm_hostname=r.vm_hostname),a},P=g((function(r){var i=d(r,o.attributes);i.beacon_send_time=0===i.nav_start?E(performance.now()):(new Date).getTime(),i.page_time=a.page_time,"function"==typeof e.CustomEvent&&t.dispatchEvent(new CustomEvent("perfDataSent",{detail:i})),c([i],"perf"),function(){var e={event_name:"perf_beacon_ab_mismatch",mismatched_ab_variants:{}},t=n.abVariantsForMismatchEvent,r=!1;for(var i in t)if(Object.prototype.hasOwnProperty.call(t,i)){var a=t[i],o=0;for(var c in a)Object.prototype.hasOwnProperty.call(a,c)&&(o+=1);o>1&&(e.mismatched_ab_variants[i]=a,r=!0)}n.abVariantsForMismatchEvent=void 0,r&&n.eventpipe.logEvent(e)}()}));!function(){var n=function(e){r.e.length&&(r.e=r.e.concat(e))};if(!!u.onINP&&u.onINP(n,{reportAllChanges:!0}),u.onLCP&&u.onLCP(n),y()&&PerformanceObserver.supportedEntryTypes&&PerformanceObserver.supportedEntryTypes.includes("long-animation-frame")){var i=new PerformanceObserver((function(e){e.getEntries().forEach((function(e){e.duration>150&&e.firstUIEventTimestamp>0&&n(e)}))}));i.observe({type:"long-animation-frame",buffered:!0})}if(!m){var a,o=g((function(e){if(!t.hidden||"on_vischange"===e){clearTimeout(a);var n=z();!l&&y()&&(r.o.disconnect(),i&&i.disconnect()),n[e]=!0,P(n)}})),c=function(){return _&&e.__KEVIN_IS_STILL_BUILDING};_||(a=setTimeout((function(){o("on_fallbacktimeout")}),6e4),"complete"===t.readyState&&(clearTimeout(a),a=setTimeout((function(){o("on_loadtimeout")}),2e4))),t.addEventListener("readystatechange",(function(){"interactive"===t.readyState&&(p=t.getElementsByTagName("*").length)})),e.addEventListener("load",(function(){clearTimeout(a),c()||(a=setTimeout((function(){o("on_loadtimeout")}),2e4))}));var s=function(e){c()?(0===performance.getEntriesByName(`${r.MARK_MEASURE_PREFIX}dev_kevin-overlay-end`).length&&performance.mark(`${r.MARK_MEASURE_PREFIX}dev_kevin-overlay-abandoned-before-done`),setTimeout((function(){o(e)}),0)):o(e)},d=h()?"pagehide":"unload";e.addEventListener(d,(function(){s("on_unload")})),_&&e.addEventListener("beforeunload",(function(){s("on_unload")})),t.addEventListener("visibilitychange",(function(){t.hidden&&s("on_vischange")}))}}(),r.logger={getMetricsFromQueue:L}}else n.eventpipe&&n.eventpipe.logEvent&&n.eventpipe.logEvent({event_name:"perf_beacon_not_fired",missing_global_perf_data:s,missing_post_url:!i,missing_defaults:!a,missing_perf_event:!o,missing_send_events:!c})}}(window,document);;</script>
+<script type='text/javascript' nonce='keeVcrYGvoZ8fx6y7mse620+'>window.__etsy_logging.eventpipe.primary_complement={"attributes":{"guid":"101490dba85e.461630fe5c17e57ad0fc.00","event_name":"Error_page_complementary","event_logger":"frontend","primary_complement":true}};!function(e){var t=e.__etsy_logging,i=t.eventpipe,n=i.primary_complement,o=t.defaults.page_guid,r=t.sendEvents,a=i.q,c=void 0,d=[],h=0,u="frontend",l="perf";function g(){var e,t,i=(h++).toString(16);return o.substr(0,o.length-2)+((t=2-(e=i).length)>0?new Array(t+1).join("0")+e:e)}function v(e){e.guid=g(),c&&(clearTimeout(c),c=void 0),d.push(e),c=setTimeout((function(){r(d,u),d=[]}),50)}!function(t){var i=document.documentElement;i&&(i.clientWidth&&(t.viewport_width=i.clientWidth),i.clientHeight&&(t.viewport_height=i.clientHeight));var n=e.screen;n&&(n.height&&(t.screen_height=n.height),n.width&&(t.screen_width=n.width)),e.devicePixelRatio&&(t.device_pixel_ratio=e.devicePixelRatio),e.orientation&&(t.orientation=e.orientation),e.matchMedia&&(t.dark_mode_enabled=e.matchMedia("(prefers-color-scheme: dark)").matches)}(n.attributes),v(n.attributes),i.logEvent=v,i.logEventImmediately=function(e){var t="perf"===e.event_name?l:u;e.guid=g(),r([e],t)},a.forEach((function(e){v(e)}))}(window);</script>
+
+        <!--BEGIN QUALTRICS SITE INTERCEPT-->
+<script nonce="keeVcrYGvoZ8fx6y7mse620+">
+    (function(){var g=function(e,h,f,g){
+        this.get=function(a){for(var a=a+"=",c=document.cookie.split(";"),b=0,e=c.length;b<e;b++){for(var d=c[b];" "==d.charAt(0);)d=d.substring(1,d.length);if(0==d.indexOf(a))return d.substring(a.length,d.length)}return null};
+        this.set=function(a,c){var b="",b=new Date;b.setTime(b.getTime()+6048E5);b="; expires="+b.toGMTString();document.cookie=a+"="+c+b+"; path=/; "};
+        this.check=function(){var a=this.get(f);if(a)a=a.split(":");else if(100!=e)"v"==h&&(e=Math.random()>=e/100?0:100),a=[h,e,0],this.set(f,a.join(":"));else return!0;var c=a[1];if(100==c)return!0;switch(a[0]){case "v":return!1;case "r":return c=a[2]%Math.floor(100/c),a[2]++,this.set(f,a.join(":")),!c}return!0};
+        this.go=function(){if(this.check()){var a=document.createElement("script");a.type="text/javascript";a.src=g+ "&t=" + (new Date()).getTime();document.body&&document.body.appendChild(a);}};
+        this.start=function(){var a=this;window.addEventListener?window.addEventListener("load",function(){a.go()},!1):window.attachEvent&&window.attachEvent("onload",function(){a.go()})}};
+        try{(new g(100,"r","QSI_S_ZN_9Qqgp5dWQP1x5zv","//zn9qqgp5dwqp1x5zv-etsy.siteintercept.qualtrics.com/WRSiteInterceptEngine/?Q_ZID=ZN_9Qqgp5dWQP1x5zv&Q_LOC="+encodeURIComponent(window.location.href))).start()}catch(i){}})();
+</script><div id='ZN_9Qqgp5dWQP1x5zv'><!--DO NOT REMOVE-CONTENTS PLACED HERE--></div>
+<!--END SITE INTERCEPT-->
+<script nonce="keeVcrYGvoZ8fx6y7mse620+">
+    function runQualtrics() {
+        try {
+            if (typeof QSI !== 'undefined' && QSI.API && QSI.API.run && QSI.reg && !QSI.InterceptsRan) {
+                clearInterval(window._qsiIntervalId);
+                window._qsiIntervalId = null;
+                QSI.API.run();
+            }
+        } catch (e) {
+            clearInterval(window._qsiIntervalId);
+            window._qsiIntervalId = null;
+        }
+    }
+    if (window.addEventListener) {
+        window.addEventListener('load', function() {
+            if (typeof window._qsiIntervalId === 'undefined') {
+                window._qsiIntervalId = setInterval(runQualtrics, 1000);
+            }
+        }, false);
+    } else if (window.attachEvent) {
+        window.attachEvent('onload', function() {
+            if (typeof window._qsiIntervalId === 'undefined') {
+                window._qsiIntervalId = setInterval(runQualtrics, 1000);
+            }
+        });
+    }
+</script>
+
+        
+
+        
+
+            <script nonce="keeVcrYGvoZ8fx6y7mse620+">if(window.console){console.log("Is code your craft? https://careers.etsy.com")}</script>
+    </body>
+</html>

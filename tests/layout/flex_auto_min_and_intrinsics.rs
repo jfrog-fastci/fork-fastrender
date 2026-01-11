@@ -150,3 +150,65 @@ fn flex_auto_min_height_uses_definite_cross_size_when_available() {
     "expected flex auto min-height to be computed at the definite cross size; flex={flex_child_height} block={block_height} (eps={eps})"
   );
 }
+
+#[test]
+fn flex_auto_min_size_allows_shrink_when_replaced_descendant_is_percentage_sized() {
+  // Regression for pages like `etsy.com` where a flex item contains a replaced element with
+  // `width/height:100%` plus a max-height clamp. When intrinsic sizing probes treat unresolved
+  // percentages as `auto`, the replaced element appears unshrinkable (its intrinsic size wins),
+  // causing flexbox `min-width:auto` to prevent shrinking and inflating the flex line's height.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.width = Some(Length::px(200.0));
+
+  let mut wrapper_style = ComputedStyle::default();
+  wrapper_style.display = Display::Block;
+  wrapper_style.overflow_x = Overflow::Visible;
+  wrapper_style.overflow_y = Overflow::Visible;
+  wrapper_style.flex_shrink = 1.0;
+
+  let mut replaced_style = ComputedStyle::default();
+  replaced_style.display = Display::Block;
+  replaced_style.width = Some(Length::percent(100.0));
+  replaced_style.height = Some(Length::percent(100.0));
+  replaced_style.max_height = Some(Length::px(400.0));
+
+  let replaced = BoxNode::new_replaced(
+    Arc::new(replaced_style),
+    ReplacedType::Canvas,
+    Some(Size::new(1260.0, 1000.0)),
+    None,
+  );
+  let wrapper = BoxNode::new_block(
+    Arc::new(wrapper_style),
+    FormattingContextType::Block,
+    vec![replaced],
+  );
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![wrapper],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout should succeed");
+
+  let wrapper = fragment.children.first().expect("wrapper fragment");
+  let width = wrapper.bounds.width();
+  let height = wrapper.bounds.height();
+  let eps = 0.5;
+  assert!(
+    width <= 200.0 + eps,
+    "expected flex item containing percentage-sized replaced content to shrink to the container (got {width})"
+  );
+  assert!(
+    height < 400.0 - eps,
+    "expected flex item height to follow the shrunken replaced content (<400px), got {height}"
+  );
+}

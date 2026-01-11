@@ -731,6 +731,7 @@ fn rewrite_css(
   catalog: &mut AssetCatalog,
   ctx: ReferenceContext,
 ) -> Result<String> {
+  let pruned = prune_css_font_face_sources(input, base_url);
   let url_regex =
     // Some real pages ship malformed url() values (e.g. missing the closing ')'). We still want to
     // rewrite the URL so the imported fixture is fully offline/deterministic.
@@ -740,9 +741,510 @@ fn rewrite_css(
     Regex::new("(?i)(?P<prefix>@import\\s*['\"])(?P<url>[^\"']+)(?P<suffix>['\"])")
       .expect("import regex must compile");
 
-  let mut rewritten = apply_rewrite(&url_regex, input, base_url, ctx, catalog, None)?;
+  let mut rewritten = apply_rewrite(&url_regex, &pruned, base_url, ctx, catalog, None)?;
   rewritten = apply_rewrite(&import_regex, &rewritten, base_url, ctx, catalog, None)?;
   Ok(rewritten)
+}
+
+fn prune_css_font_face_sources(input: &str, base_url: &Url) -> String {
+  use cssparser::{Parser, ParserInput, ToCss, Token};
+
+  fn font_face_url_is_decodable(url: &str) -> bool {
+    let lower_owned = url.to_ascii_lowercase();
+    let lower = lower_owned.as_str();
+    let mut end = lower.len();
+    if let Some(idx) = lower.find('#') {
+      end = end.min(idx);
+    }
+    if let Some(idx) = lower.find('?') {
+      end = end.min(idx);
+    }
+    let lower = &lower[..end];
+    !(lower.ends_with(".eot") || lower.ends_with(".svg") || lower.ends_with(".svgz"))
+  }
+
+  fn push_token_to_css(out: &mut String, token: &Token) {
+    match token {
+      Token::WhiteSpace(ws) => out.push_str(ws.as_ref()),
+      Token::Comment(text) => {
+        out.push_str("/*");
+        out.push_str(text.as_ref());
+        out.push_str("*/");
+      }
+      Token::QuotedString(text) => {
+        let raw = text.as_ref();
+        if !raw.contains('\'') {
+          out.push('\'');
+          out.push_str(raw);
+          out.push('\'');
+        } else if !raw.contains('"') {
+          out.push('"');
+          out.push_str(raw);
+          out.push('"');
+        } else {
+          token
+            .to_css(out)
+            .expect("writing to String should be infallible");
+        }
+      }
+      Token::UnquotedUrl(url) => {
+        out.push_str("url(");
+        out.push_str(url.as_ref());
+        out.push(')');
+      }
+      other => other
+        .to_css(out)
+        .expect("writing to String should be infallible"),
+    }
+  }
+
+  fn skip_tokens<'i, 't>(parser: &mut Parser<'i, 't>) {
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(token) => token,
+        Err(_) => break,
+      };
+      match token {
+        Token::Function(_)
+        | Token::ParenthesisBlock
+        | Token::SquareBracketBlock
+        | Token::CurlyBracketBlock => {
+          let _ = parser.parse_nested_block(|nested| {
+            skip_tokens(nested);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+        }
+        _ => {}
+      }
+    }
+  }
+
+  fn scan_plain<'i, 't>(parser: &mut Parser<'i, 't>, base_url: &Url, out: &mut String) {
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(token) => token,
+        Err(_) => break,
+      };
+      match token {
+        Token::Function(name) => {
+          out.push_str(name.as_ref());
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::ParenthesisBlock => {
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::SquareBracketBlock => {
+          out.push('[');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(']');
+        }
+        Token::CurlyBracketBlock => {
+          out.push('{');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push('}');
+        }
+        other => push_token_to_css(out, other),
+      }
+    }
+  }
+
+  fn consume_font_face_src_declaration<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+    base_url: &Url,
+  ) -> Option<String> {
+    let mut selected: Option<String> = None;
+    let mut current = String::new();
+    let mut current_has_decodable_url = false;
+    let mut skipping = false;
+
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(token) => token,
+        Err(_) => break,
+      };
+
+      match token {
+        Token::Semicolon => break,
+        Token::Comma if !skipping => {
+          if current_has_decodable_url && selected.is_none() {
+            selected = Some(current);
+            skipping = true;
+            current = String::new();
+            current_has_decodable_url = false;
+          } else {
+            current.clear();
+            current_has_decodable_url = false;
+          }
+        }
+        Token::UnquotedUrl(url) => {
+          if skipping {
+            continue;
+          }
+          let url_str = url.as_ref();
+          if !current_has_decodable_url {
+            let decoded = decode_html_entities_if_needed(url_str);
+            let resolved = resolve_href(base_url.as_str(), decoded.as_ref())
+              .unwrap_or_else(|| decoded.as_ref().to_string());
+            if font_face_url_is_decodable(&resolved) {
+              current_has_decodable_url = true;
+            }
+          }
+          current.push_str("url(");
+          current.push_str(url_str);
+          current.push(')');
+        }
+        Token::Function(name) if name.eq_ignore_ascii_case("url") => {
+          if skipping {
+            let _ = parser.parse_nested_block(|nested| {
+              skip_tokens(nested);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            continue;
+          }
+
+          current.push_str("url(");
+          let mut arg: Option<String> = None;
+          let _ = parser.parse_nested_block(|nested| {
+            while !nested.is_exhausted() {
+              let inner = match nested.next_including_whitespace_and_comments() {
+                Ok(token) => token,
+                Err(_) => break,
+              };
+
+              match inner {
+                Token::WhiteSpace(_) | Token::Comment(_) => {}
+                Token::QuotedString(s) | Token::UnquotedUrl(s) => {
+                  if arg.is_none() {
+                    arg = Some(s.as_ref().to_string());
+                  }
+                }
+                Token::Ident(s) => {
+                  if arg.is_none() {
+                    arg = Some(s.as_ref().to_string());
+                  }
+                }
+                _ => {}
+              }
+
+              match inner {
+                Token::Function(inner_name) => {
+                  current.push_str(inner_name.as_ref());
+                  current.push('(');
+                  let _ = nested.parse_nested_block(|nested2| {
+                    scan_plain(nested2, base_url, &mut current);
+                    Ok::<_, cssparser::ParseError<'i, ()>>(())
+                  });
+                  current.push(')');
+                }
+                Token::ParenthesisBlock => {
+                  current.push('(');
+                  let _ = nested.parse_nested_block(|nested2| {
+                    scan_plain(nested2, base_url, &mut current);
+                    Ok::<_, cssparser::ParseError<'i, ()>>(())
+                  });
+                  current.push(')');
+                }
+                Token::SquareBracketBlock => {
+                  current.push('[');
+                  let _ = nested.parse_nested_block(|nested2| {
+                    scan_plain(nested2, base_url, &mut current);
+                    Ok::<_, cssparser::ParseError<'i, ()>>(())
+                  });
+                  current.push(']');
+                }
+                Token::CurlyBracketBlock => {
+                  current.push('{');
+                  let _ = nested.parse_nested_block(|nested2| {
+                    scan_plain(nested2, base_url, &mut current);
+                    Ok::<_, cssparser::ParseError<'i, ()>>(())
+                  });
+                  current.push('}');
+                }
+                other => push_token_to_css(&mut current, other),
+              }
+            }
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          current.push(')');
+
+          if !current_has_decodable_url {
+            if let Some(arg) = arg {
+              let decoded = decode_html_entities_if_needed(arg.trim());
+              let resolved = resolve_href(base_url.as_str(), decoded.as_ref())
+                .unwrap_or_else(|| decoded.as_ref().to_string());
+              if font_face_url_is_decodable(&resolved) {
+                current_has_decodable_url = true;
+              }
+            }
+          }
+        }
+        Token::Function(name) => {
+          if skipping {
+            let _ = parser.parse_nested_block(|nested| {
+              skip_tokens(nested);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            continue;
+          }
+
+          current.push_str(name.as_ref());
+          current.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, &mut current);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          current.push(')');
+        }
+        Token::ParenthesisBlock => {
+          if skipping {
+            let _ = parser.parse_nested_block(|nested| {
+              skip_tokens(nested);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            continue;
+          }
+          current.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, &mut current);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          current.push(')');
+        }
+        Token::SquareBracketBlock => {
+          if skipping {
+            let _ = parser.parse_nested_block(|nested| {
+              skip_tokens(nested);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            continue;
+          }
+          current.push('[');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, &mut current);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          current.push(']');
+        }
+        Token::CurlyBracketBlock => {
+          if skipping {
+            let _ = parser.parse_nested_block(|nested| {
+              skip_tokens(nested);
+              Ok::<_, cssparser::ParseError<'i, ()>>(())
+            });
+            continue;
+          }
+          current.push('{');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, &mut current);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          current.push('}');
+        }
+        other => {
+          if skipping {
+            continue;
+          }
+          push_token_to_css(&mut current, other);
+        }
+      }
+    }
+
+    if selected.is_none() && current_has_decodable_url && !skipping {
+      selected = Some(current);
+    }
+
+    selected
+  }
+
+  fn scan_font_face_block<'i, 't>(parser: &mut Parser<'i, 't>, base_url: &Url, out: &mut String) {
+    let mut at_decl_start = true;
+    let mut src_emitted = false;
+
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(token) => token,
+        Err(_) => break,
+      };
+
+      match token {
+        Token::Semicolon => {
+          push_token_to_css(out, token);
+          at_decl_start = true;
+        }
+        Token::WhiteSpace(_) | Token::Comment(_) => {
+          push_token_to_css(out, token);
+        }
+        Token::Ident(ident) if at_decl_start && ident.eq_ignore_ascii_case("src") => {
+          let mut saw_colon = false;
+          while !parser.is_exhausted() {
+            let token = match parser.next_including_whitespace_and_comments() {
+              Ok(token) => token,
+              Err(_) => break,
+            };
+            match token {
+              Token::Colon => {
+                saw_colon = true;
+                break;
+              }
+              Token::Semicolon => break,
+              Token::Function(_)
+              | Token::ParenthesisBlock
+              | Token::SquareBracketBlock
+              | Token::CurlyBracketBlock => {
+                let _ = parser.parse_nested_block(|nested| {
+                  skip_tokens(nested);
+                  Ok::<_, cssparser::ParseError<'i, ()>>(())
+                });
+              }
+              _ => {}
+            }
+          }
+
+          if !saw_colon {
+            at_decl_start = true;
+            continue;
+          }
+
+          let selected = consume_font_face_src_declaration(parser, base_url);
+          at_decl_start = true;
+
+          if src_emitted {
+            continue;
+          }
+          if let Some(selected) = selected {
+            out.push_str("src:");
+            out.push_str(&selected);
+            out.push(';');
+            src_emitted = true;
+          }
+        }
+        Token::Function(name) => {
+          at_decl_start = false;
+          out.push_str(name.as_ref());
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::ParenthesisBlock => {
+          at_decl_start = false;
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::SquareBracketBlock => {
+          at_decl_start = false;
+          out.push('[');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(']');
+        }
+        Token::CurlyBracketBlock => {
+          at_decl_start = false;
+          out.push('{');
+          let _ = parser.parse_nested_block(|nested| {
+            scan_plain(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push('}');
+        }
+        other => {
+          at_decl_start = false;
+          push_token_to_css(out, other);
+        }
+      }
+    }
+  }
+
+  fn scan<'i, 't>(parser: &mut Parser<'i, 't>, base_url: &Url, out: &mut String) {
+    let mut next_font_face_block = false;
+    while !parser.is_exhausted() {
+      let token = match parser.next_including_whitespace_and_comments() {
+        Ok(token) => token,
+        Err(_) => break,
+      };
+
+      match token {
+        Token::AtKeyword(name) if name.eq_ignore_ascii_case("font-face") => {
+          next_font_face_block = true;
+          push_token_to_css(out, token);
+        }
+        Token::Semicolon => {
+          next_font_face_block = false;
+          push_token_to_css(out, token);
+        }
+        Token::CurlyBracketBlock => {
+          out.push('{');
+          let is_font_face = next_font_face_block;
+          next_font_face_block = false;
+          let _ = parser.parse_nested_block(|nested| {
+            if is_font_face {
+              scan_font_face_block(nested, base_url, out);
+            } else {
+              scan(nested, base_url, out);
+            }
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push('}');
+        }
+        Token::Function(name) => {
+          out.push_str(name.as_ref());
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::ParenthesisBlock => {
+          out.push('(');
+          let _ = parser.parse_nested_block(|nested| {
+            scan(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(')');
+        }
+        Token::SquareBracketBlock => {
+          out.push('[');
+          let _ = parser.parse_nested_block(|nested| {
+            scan(nested, base_url, out);
+            Ok::<_, cssparser::ParseError<'i, ()>>(())
+          });
+          out.push(']');
+        }
+        other => push_token_to_css(out, other),
+      }
+    }
+  }
+
+  let mut out = String::with_capacity(input.len());
+  let mut parser_input = ParserInput::new(input);
+  let mut parser = Parser::new(&mut parser_input);
+  scan(&mut parser, base_url, &mut out);
+  out
 }
 
 fn rewrite_reference(
@@ -915,16 +1417,63 @@ fn is_html_extension(ext: &str) -> bool {
 }
 
 fn is_html_asset(asset: &AssetData) -> bool {
-  if asset
+  let is_html = asset
     .content_type
     .as_deref()
     .map(|ct| ct.to_ascii_lowercase().contains("html"))
     .unwrap_or(false)
-  {
-    return true;
+    || {
+      let lower = asset.filename.to_ascii_lowercase();
+      lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
+    };
+
+  if !is_html {
+    return false;
   }
-  let lower = asset.filename.to_ascii_lowercase();
-  lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
+
+  // Avoid rewriting/validating resources that were fetched for non-document contexts (images, fonts,
+  // etc.) but were served as HTML error pages. The renderer will still treat them as the original
+  // destination (e.g. <img>), so any nested <link>/<script> inside the HTML bytes is not fetchable
+  // subresource content.
+  if let Ok(parsed) = Url::parse(&asset.source_url) {
+    if let Some(ext) = Path::new(parsed.path())
+      .extension()
+      .and_then(|ext| ext.to_str())
+      .map(|ext| ext.to_ascii_lowercase())
+    {
+      if matches!(
+        ext.as_str(),
+        "css"
+          | "js"
+          | "mjs"
+          | "png"
+          | "jpg"
+          | "jpeg"
+          | "gif"
+          | "webp"
+          | "avif"
+          | "svg"
+          | "svgz"
+          | "ico"
+          | "woff"
+          | "woff2"
+          | "ttf"
+          | "otf"
+          | "eot"
+          | "mp4"
+          | "webm"
+          | "mp3"
+          | "wav"
+          | "ogg"
+          | "pdf"
+          | "json"
+      ) {
+        return false;
+      }
+    }
+  }
+
+  true
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -1801,6 +2350,84 @@ mod tests {
     Ok(())
   }
 
+  fn write_synthetic_bundle_with_font_face_fallbacks(dir: &Path) -> Result<()> {
+    let resources_dir = dir.join("resources");
+    fs::create_dir_all(&resources_dir)?;
+
+    let document_html = r#"<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="https://example.test/style.css">
+  </head>
+  <body>test</body>
+</html>
+"#;
+    fs::write(dir.join("document.html"), document_html)?;
+
+    let css = br#"@font-face{
+  font-family:"X";
+  src:url("/font.eot");
+  src:url("/font.eot?#iefix") format("embedded-opentype"),url("/font.woff2") format("woff2"),url("/font.woff") format("woff");
+}
+body{background:url("/bg.png");}
+"#;
+    fs::write(resources_dir.join("00000_style.css"), css)?;
+    fs::write(resources_dir.join("00001_font.woff2"), b"dummy font")?;
+    fs::write(resources_dir.join("00002_bg.png"), b"dummy png")?;
+
+    let manifest = json!({
+      "version": 1,
+      "original_url": "https://example.test/",
+      "document": {
+        "path": "document.html",
+        "content_type": "text/html; charset=utf-8",
+        "final_url": "https://example.test/",
+        "status": 200,
+        "etag": null,
+        "last_modified": null
+      },
+      "render": {
+        "viewport": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "scroll_x": 0.0,
+        "scroll_y": 0.0,
+        "full_page": false
+      },
+      "resources": {
+        "https://example.test/style.css": {
+          "path": "resources/00000_style.css",
+          "content_type": "text/css; charset=utf-8",
+          "status": 200,
+          "final_url": "https://example.test/style.css",
+          "etag": null,
+          "last_modified": null
+        },
+        "https://example.test/font.woff2": {
+          "path": "resources/00001_font.woff2",
+          "content_type": "font/woff2",
+          "status": 200,
+          "final_url": "https://example.test/font.woff2",
+          "etag": null,
+          "last_modified": null
+        },
+        "https://example.test/bg.png": {
+          "path": "resources/00002_bg.png",
+          "content_type": "image/png",
+          "status": 200,
+          "final_url": "https://example.test/bg.png",
+          "etag": null,
+          "last_modified": null
+        }
+      }
+    });
+
+    fs::write(
+      dir.join("bundle.json"),
+      serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )?;
+    Ok(())
+  }
+
   fn assert_no_remote_url_strings(content: &str) {
     let lower = content.to_ascii_lowercase();
     assert!(
@@ -1920,6 +2547,66 @@ mod tests {
     assert!(
       frame_html.contains(&woff2_asset),
       "iframe HTML should reference local font asset {woff2_asset}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn import_prunes_font_face_fallback_sources() -> Result<()> {
+    let bundle_dir = tempdir()?;
+    write_synthetic_bundle_with_font_face_fallbacks(bundle_dir.path())?;
+
+    let output = tempdir()?;
+    let output_root = output.path().join("fixtures");
+    let fixture_name = "font_face_fallbacks";
+
+    run_import_page_fixture(ImportPageFixtureArgs {
+      bundle: bundle_dir.path().to_path_buf(),
+      fixture_name: fixture_name.to_string(),
+      output_root: output_root.clone(),
+      overwrite: true,
+      allow_missing: false,
+      allow_http_references: false,
+      legacy_rewrite: false,
+      rewrite_scripts: false,
+      dry_run: false,
+    })?;
+
+    let fixture_dir = output_root.join(fixture_name);
+    let index_html = fs::read_to_string(fixture_dir.join("index.html"))?;
+    assert_no_remote_url_strings(&index_html);
+
+    let assets_dir = fixture_dir.join(ASSETS_DIR);
+    let css_asset = fs::read_dir(&assets_dir)?
+      .filter_map(|entry| entry.ok())
+      .find_map(|entry| {
+        let filename = entry.file_name().to_string_lossy().to_string();
+        if filename.ends_with(".css") {
+          Some(filename)
+        } else {
+          None
+        }
+      })
+      .expect("missing css asset");
+    let rewritten_css = fs::read_to_string(assets_dir.join(&css_asset))?;
+    assert_no_remote_url_strings(&rewritten_css);
+
+    assert!(
+      rewritten_css.contains(".woff2"),
+      "expected rewritten css to reference bundled woff2 font: {rewritten_css}"
+    );
+    assert!(
+      !rewritten_css.contains(".eot"),
+      "expected rewritten css to drop non-decodable eot sources: {rewritten_css}"
+    );
+    assert!(
+      !rewritten_css.contains(".woff)") && !rewritten_css.contains(".woff\"") && !rewritten_css.contains(".woff'"),
+      "expected rewritten css to drop missing woff fallback sources: {rewritten_css}"
+    );
+    assert!(
+      rewritten_css.contains(".png"),
+      "expected rewritten css to rewrite background url() to local asset: {rewritten_css}"
     );
 
     Ok(())
