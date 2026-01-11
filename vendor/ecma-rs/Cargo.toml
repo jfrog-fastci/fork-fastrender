@@ -51,8 +51,8 @@ knowledge-base = { path = "knowledge-base", version = "0.1.0" }
 emit-js = { path = "emit-js", version = "0.1.0" }
 hir-js = { path = "hir-js", version = "0.1.0" }
 minify-js = { path = "minify-js", version = "0.6.0" }
-optimize-js = { path = "optimize-js", version = "0.1.0" }
 native-js = { path = "native-js", version = "0.1.0" }
+optimize-js = { path = "optimize-js", version = "0.1.0" }
 parse-js = { path = "parse-js", version = "0.24.1" }
 semantic-js = { path = "semantic-js", version = "0.1.0" }
 typecheck-ts = { path = "typecheck-ts", version = "0.1.0" }

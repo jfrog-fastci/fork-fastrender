@@ -2,11 +2,21 @@
 //!
 //! This crate is currently a skeleton: it wires up LLVM and provides the public API surface that
 //! future TS/HIR lowering will target.
+//!
+//! ## GC stack walking
+//! The native runtime performs **precise GC** using LLVM statepoints. In addition to stack maps,
+//! the runtime must be able to walk frames and recover return addresses deterministically.
+//!
+//! We currently enforce a simple, robust invariant: generated functions always keep frame pointers
+//! and never participate in tail-call optimization. See `docs/gc_stack_walking.md`.
 
 pub mod codegen;
 pub mod codes;
 pub mod emit;
 pub mod strict;
+
+mod stack_walking;
+pub use stack_walking::CodeGen;
 
 use llvm_sys as _;
 use target_lexicon::Triple;

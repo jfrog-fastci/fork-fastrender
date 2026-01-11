@@ -2,6 +2,7 @@
 name = "native-js"
 version = "0.1.0"
 edition.workspace = true
+description = "Native (LLVM-backed) code generation for a strict TypeScript subset"
 license.workspace = true
 repository.workspace = true
 
