@@ -412,6 +412,69 @@ mod tests {
   }
 
   #[test]
+  fn allows_same_origin_without_allow_origin_header() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://client.example/image.png";
+    let resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("same-origin requests must not require Access-Control-Allow-Origin");
+  }
+
+  #[test]
+  fn accepts_allow_origin_with_non_default_port() {
+    let doc_origin = origin_from_url("https://client.example:444/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://client.example:444".to_string());
+
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("non-default ports must be included in the serialized request origin");
+  }
+
+  #[test]
+  fn rejects_allow_origin_missing_non_default_port() {
+    let doc_origin = origin_from_url("https://client.example:444/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("ACAO missing a non-default port must be rejected");
+    assert!(
+      err.contains("does not match request origin"),
+      "unexpected error message: {err}"
+    );
+  }
+
+  #[test]
   fn accepts_allow_origin_with_ipv6_brackets() {
     let doc_origin = origin_from_url("https://[::1]/").expect("origin");
     let url = "https://cross.example/image.png";
