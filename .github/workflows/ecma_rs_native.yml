@@ -168,3 +168,62 @@ jobs:
           # Only run the portable reactor conformance suite; `runtime-native` has other tests/benches
           # that may be heavier and are not needed for this workflow's goals.
           bash scripts/cargo_agent.sh test -p runtime-native --test reactor_conformance
+
+  ecma-rs-native-macos:
+    name: ecma-rs native reactor (macOS, Rust 1.92.0)
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Keep CI lightweight: do not fetch heavyweight nested corpora submodules (test262,
+          # TypeScript, ...). This job relies only on the vendored source + fixtures.
+          submodules: false
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Match `vendor/ecma-rs/rust-toolchain.toml`.
+          toolchain: "1.92.0"
+
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Cache cargo registry (ecma-rs native macOS)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-ecma-rs-native-macos-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-macos-cargo-registry-
+
+      - name: Cache cargo git (ecma-rs native macOS)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-ecma-rs-native-macos-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-macos-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs, macOS)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-ecma-rs-native-reactor-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-native-reactor-target-1.92.0-
+
+      - name: Generate Cargo.lock (vendor/ecma-rs)
+        working-directory: vendor/ecma-rs
+        run: cargo generate-lockfile
+
+      - name: runtime-native reactor conformance (kqueue + wake)
+        working-directory: vendor/ecma-rs
+        run: |
+          set -euo pipefail
+          cargo test -p runtime-native --test reactor_conformance --locked
+          # Exercise the force-pipe wake fallback path on platforms that default to kqueue/EVFILT_USER.
+          cargo test -p runtime-native --test reactor_conformance --locked --features force_pipe_wake
