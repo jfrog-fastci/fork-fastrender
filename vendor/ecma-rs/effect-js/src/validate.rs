@@ -104,7 +104,11 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
   let mut alias_map = BTreeMap::<String, String>::new();
   for (_, api) in db.iter() {
     let node_alias = api.name.strip_prefix("node:");
+    let mut seen = BTreeSet::<&str>::new();
     for alias in api.aliases.iter().map(|s| s.as_str()).chain(node_alias) {
+      if !seen.insert(alias) {
+        continue;
+      }
       if alias.is_empty() || alias == api.name.as_str() {
         continue;
       }
