@@ -1614,10 +1614,29 @@ impl FontContext {
       }
 
       let display_block = display_deadlines(display).0;
-      let should_block = display_block > Duration::ZERO && policy_deadline.is_some();
+      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+      let local_swap_sources_only = matches!(display, FontDisplay::Swap)
+        && face.sources.iter().all(|src| match src {
+          FontFaceSource::Local(_) => true,
+          FontFaceSource::Url(url_src) => {
+            let resolved = resolve_font_url(&url_src.url, face_base_url);
+            !has_prefix_ignore_ascii_case(&resolved, "http://")
+              && !has_prefix_ignore_ascii_case(&resolved, "https://")
+          }
+        });
+      let should_block = policy_deadline.is_some()
+        && (display_block > Duration::ZERO || local_swap_sources_only);
       let job_id = started_count;
       let block_deadline = if let Some(policy_deadline) = policy_deadline {
-        should_block.then_some(policy_deadline.min(Instant::now() + display_block))
+        if should_block {
+          if display_block > Duration::ZERO {
+            Some(policy_deadline.min(Instant::now() + display_block))
+          } else {
+            Some(policy_deadline)
+          }
+        } else {
+          None
+        }
       } else {
         None
       };
