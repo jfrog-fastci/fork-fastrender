@@ -9,6 +9,7 @@ pub struct Epoll {
   fd: OwnedFd,
 }
 
+#[allow(dead_code)]
 impl Epoll {
   pub fn new() -> io::Result<Self> {
     // SAFETY: syscall.
@@ -24,7 +25,6 @@ impl Epoll {
     self.ctl(libc::EPOLL_CTL_ADD, fd, events, token)
   }
 
-  #[allow(dead_code)]
   pub fn ctl_mod(&self, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
     self.ctl(libc::EPOLL_CTL_MOD, fd, events, token)
   }
