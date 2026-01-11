@@ -457,9 +457,13 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   // 2) purity
   let purities = purity::compute_program_purity(program, &effects);
   for &key in &keys {
-    purity::annotate_cfg_purity(cfg_for_key_deconstructed_mut(program, key), &purities);
+    purity::annotate_cfg_purity(
+      cfg_for_key_deconstructed_mut(program, key),
+      &purities,
+      effects.constant_foreign_fns(),
+    );
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
-      purity::annotate_cfg_purity(cfg, &purities);
+      purity::annotate_cfg_purity(cfg, &purities, effects.constant_foreign_fns());
     }
   }
   analyses

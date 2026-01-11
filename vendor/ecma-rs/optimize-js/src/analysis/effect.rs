@@ -1,8 +1,9 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp};
+use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 use effect_model::{EffectFlags, ThrowBehavior};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Function-level effect summaries for every function in a [`crate::Program`].
 ///
@@ -11,12 +12,160 @@ use std::collections::BTreeSet;
 pub struct FnEffectMap {
   pub top_level: EffectSet,
   pub functions: Vec<EffectSet>,
+  pub(crate) constant_foreign_fns: BTreeMap<SymbolId, FnId>,
 }
 
 impl FnEffectMap {
   pub fn get(&self, id: FnId) -> Option<&EffectSet> {
     self.functions.get(id)
   }
+
+  pub(crate) fn constant_foreign_fns(&self) -> &BTreeMap<SymbolId, FnId> {
+    &self.constant_foreign_fns
+  }
+}
+
+#[derive(Clone, Debug)]
+enum CalleeVarDef {
+  Alias(u32),
+  Fn(FnId),
+  Phi(Vec<Arg>),
+  Unknown,
+}
+
+fn collect_insts(cfg: &Cfg) -> Vec<&Inst> {
+  // Only consider instructions reachable from the CFG entry. The optimizer may leave behind
+  // unreachable blocks (e.g. implicit `return undefined` after an explicit return), and including
+  // them would pessimistically degrade summaries.
+  cfg
+    .reverse_postorder()
+    .into_iter()
+    .flat_map(|label| cfg.bblocks.maybe_get(label).into_iter().flat_map(|bb| bb.iter()))
+    .collect()
+}
+
+fn collect_constant_foreign_fns(program: &Program) -> BTreeMap<SymbolId, FnId> {
+  // Recover direct calls through captured constant function bindings.
+  //
+  // Inside a nested function, references to captured variables lower to:
+  //   %tmp = ForeignLoad(sym)
+  // and calls go through the loaded temp. If the captured symbol is only ever assigned a single
+  // `Arg::Fn(id)`, treat loads from that symbol as that function ID for effect/purity purposes.
+  let mut candidates = BTreeMap::<SymbolId, FnId>::new();
+  let mut invalid = BTreeSet::<SymbolId>::new();
+
+  let mut scan_cfg = |cfg: &Cfg| {
+    for inst in collect_insts(cfg) {
+      if inst.t != InstTyp::ForeignStore {
+        continue;
+      }
+      let sym = inst.foreign;
+      if invalid.contains(&sym) {
+        continue;
+      }
+      match inst.args.get(0) {
+        Some(Arg::Fn(id)) => match candidates.get(&sym).copied() {
+          None => {
+            candidates.insert(sym, *id);
+          }
+          Some(existing) if existing == *id => {}
+          Some(_) => {
+            candidates.remove(&sym);
+            invalid.insert(sym);
+          }
+        },
+        _ => {
+          candidates.remove(&sym);
+          invalid.insert(sym);
+        }
+      }
+    }
+  };
+
+  scan_cfg(program.top_level.analyzed_cfg());
+  for func in &program.functions {
+    scan_cfg(func.analyzed_cfg());
+  }
+
+  candidates
+}
+
+fn build_callee_var_defs(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> BTreeMap<u32, CalleeVarDef> {
+  let mut defs = BTreeMap::<u32, CalleeVarDef>::new();
+  for inst in collect_insts(cfg) {
+    let Some(&tgt) = inst.tgts.get(0) else {
+      continue;
+    };
+
+    let def = match inst.t {
+      InstTyp::VarAssign => match &inst.args[0] {
+        Arg::Var(src) => CalleeVarDef::Alias(*src),
+        Arg::Fn(id) => CalleeVarDef::Fn(*id),
+        _ => CalleeVarDef::Unknown,
+      },
+      InstTyp::Phi => CalleeVarDef::Phi(inst.args.clone()),
+      InstTyp::ForeignLoad => foreign_fns
+        .get(&inst.foreign)
+        .copied()
+        .map(CalleeVarDef::Fn)
+        .unwrap_or(CalleeVarDef::Unknown),
+      _ => CalleeVarDef::Unknown,
+    };
+
+    defs
+      .entry(tgt)
+      .and_modify(|existing| {
+        // Non-SSA CFGs may assign the same temp multiple times. Only keep definitions when we can
+        // prove the value is constant.
+        if !matches!(existing, CalleeVarDef::Unknown) {
+          *existing = CalleeVarDef::Unknown;
+        }
+      })
+      .or_insert(def);
+  }
+  defs
+}
+
+fn resolve_fn_id(arg: &Arg, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  match arg {
+    Arg::Fn(id) => Some(*id),
+    Arg::Var(v) => resolve_var_fn_id(*v, defs, visiting),
+    _ => None,
+  }
+}
+
+fn resolve_var_fn_id(var: u32, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  if visiting.contains(&var) {
+    return None;
+  }
+  visiting.push(var);
+
+  let out = match defs.get(&var) {
+    Some(CalleeVarDef::Fn(id)) => Some(*id),
+    Some(CalleeVarDef::Alias(src)) => resolve_var_fn_id(*src, defs, visiting),
+    Some(CalleeVarDef::Phi(args)) => {
+      let mut merged: Option<FnId> = None;
+      for arg in args {
+        let Some(id) = resolve_fn_id(arg, defs, visiting) else {
+          visiting.pop();
+          return None;
+        };
+        merged = match merged {
+          None => Some(id),
+          Some(prev) if prev == id => Some(prev),
+          _ => {
+            visiting.pop();
+            return None;
+          }
+        };
+      }
+      merged
+    }
+    _ => None,
+  };
+
+  visiting.pop();
+  out
 }
 
 fn is_pure_consteval_builtin_call(path: &str) -> bool {
@@ -142,19 +291,31 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
   effects
 }
 
-fn inst_total_effect(inst: &Inst, fn_summaries: &FnEffectMap) -> EffectSet {
-  let mut effects = inst_local_effect(inst);
-  if inst.t == InstTyp::Call {
-    let (_, callee, _, _, _) = inst.as_call();
-    if let Arg::Fn(id) = callee {
-      if let Some(summary) = fn_summaries.get(*id) {
-        effects.merge(summary);
-      } else {
-        // An `Arg::Fn` with no corresponding summary should be impossible, but if it happens we
-        // must stay conservative.
-        effects.mark_unknown();
-      }
-    }
+fn inst_total_effect(
+  inst: &Inst,
+  fn_summaries: &FnEffectMap,
+  defs: &BTreeMap<u32, CalleeVarDef>,
+) -> EffectSet {
+  if inst.t != InstTyp::Call {
+    return inst_local_effect(inst);
+  }
+
+  let (_, callee, _, _, _) = inst.as_call();
+  if matches!(callee, Arg::Builtin(_)) {
+    return inst_local_effect(inst);
+  }
+
+  let Some(id) = resolve_fn_id(callee, defs, &mut Vec::new()) else {
+    return inst_local_effect(inst);
+  };
+
+  let mut effects = EffectSet::default();
+  if let Some(summary) = fn_summaries.get(id) {
+    effects.merge(summary);
+  } else {
+    // A resolved callee with no corresponding summary should be impossible, but if it happens we
+    // must stay conservative.
+    effects.mark_unknown();
   }
   effects
 }
@@ -165,26 +326,39 @@ fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
   labels
 }
 
-fn cfg_local_effects(cfg: &Cfg) -> EffectSet {
+fn cfg_local_effects(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> EffectSet {
+  let defs = build_callee_var_defs(cfg, foreign_fns);
   let mut effects = EffectSet::default();
-  for label in cfg_labels_sorted(cfg) {
-    for inst in cfg.bblocks.get(label) {
+  for inst in collect_insts(cfg) {
+    if inst.t != InstTyp::Call {
       effects.merge(&inst_local_effect(inst));
+      continue;
     }
+    let (_, callee, _, _, _) = inst.as_call();
+    // Builtin calls have intrinsic local effects.
+    if matches!(callee, Arg::Builtin(_)) {
+      effects.merge(&inst_local_effect(inst));
+      continue;
+    }
+    // Direct calls to nested functions are accounted for interprocedurally.
+    if resolve_fn_id(callee, &defs, &mut Vec::new()).is_some() {
+      continue;
+    }
+    effects.merge(&inst_local_effect(inst));
   }
   effects
 }
 
-fn cfg_direct_calls(cfg: &Cfg) -> BTreeSet<FnId> {
+fn cfg_direct_calls(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> BTreeSet<FnId> {
+  let defs = build_callee_var_defs(cfg, foreign_fns);
   let mut callees = BTreeSet::new();
-  for label in cfg_labels_sorted(cfg) {
-    for inst in cfg.bblocks.get(label) {
-      if inst.t == InstTyp::Call {
-        let (_, callee, _, _, _) = inst.as_call();
-        if let Arg::Fn(id) = callee {
-          callees.insert(*id);
-        }
-      }
+  for inst in collect_insts(cfg) {
+    if inst.t != InstTyp::Call {
+      continue;
+    }
+    let (_, callee, _, _, _) = inst.as_call();
+    if let Some(id) = resolve_fn_id(callee, &defs, &mut Vec::new()) {
+      callees.insert(id);
     }
   }
   callees
@@ -195,20 +369,22 @@ fn cfg_direct_calls(cfg: &Cfg) -> BTreeSet<FnId> {
 /// This computes a fixpoint of function summaries so that direct `Arg::Fn`
 /// calls incorporate callee summaries (including recursion/cycles).
 pub fn compute_program_effects(program: &Program) -> FnEffectMap {
+  let foreign_fns = collect_constant_foreign_fns(program);
   let locals = FnEffectMap {
-    top_level: cfg_local_effects(program.top_level.analyzed_cfg()),
+    top_level: cfg_local_effects(program.top_level.analyzed_cfg(), &foreign_fns),
     functions: program
       .functions
       .iter()
-      .map(|f| cfg_local_effects(f.analyzed_cfg()))
+      .map(|f| cfg_local_effects(f.analyzed_cfg(), &foreign_fns))
       .collect(),
+    constant_foreign_fns: foreign_fns.clone(),
   };
 
-  let top_level_calls = cfg_direct_calls(program.top_level.analyzed_cfg());
+  let top_level_calls = cfg_direct_calls(program.top_level.analyzed_cfg(), &foreign_fns);
   let function_calls: Vec<_> = program
     .functions
     .iter()
-    .map(|f| cfg_direct_calls(f.analyzed_cfg()))
+    .map(|f| cfg_direct_calls(f.analyzed_cfg(), &foreign_fns))
     .collect();
 
   // Start with purely local effects; iteratively fold in callee summaries until a fixpoint.
@@ -258,9 +434,10 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
 /// This is intended to run on the finalized CFG (after `build_program_function`)
 /// and does not attempt to preserve metadata through subsequent opt passes.
 pub fn annotate_cfg_effects(cfg: &mut Cfg, fn_summaries: &FnEffectMap) {
+  let defs = build_callee_var_defs(cfg, fn_summaries.constant_foreign_fns());
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label) {
-      inst.meta.effects = inst_total_effect(inst, fn_summaries);
+      inst.meta.effects = inst_total_effect(inst, fn_summaries, &defs);
     }
   }
 }
@@ -517,5 +694,53 @@ mod tests {
     annotate_cfg_effects(&mut program.functions[1].body, &summaries);
     let call_effects = &program.functions[1].body.bblocks.get(0)[0].meta.effects;
     assert_eq!(call_effects.summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn interprocedural_propagation_includes_captured_constant_callee_effects() {
+    let callee_sym = SymbolId(11);
+    let effect_sym = SymbolId(12);
+
+    // Fn0 writes a foreign symbol.
+    let callee = func(cfg_single_block(vec![Inst::foreign_store(
+      effect_sym,
+      Arg::Const(Const::Undefined),
+    )]));
+
+    // Top-level initializes the captured callee binding.
+    let top_level = func(cfg_single_block(vec![Inst::foreign_store(callee_sym, Arg::Fn(0))]));
+
+    // Fn1 loads the captured binding then calls it indirectly.
+    let call_inst = Inst::call(
+      None::<u32>,
+      Arg::Var(0),
+      Arg::Const(Const::Undefined),
+      Vec::new(),
+      Vec::new(),
+    );
+    let caller = func(cfg_single_block(vec![
+      Inst::foreign_load(0, callee_sym),
+      call_inst,
+    ]));
+
+    let mut program = Program {
+      functions: vec![callee, caller],
+      top_level,
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let summaries = compute_program_effects(&program);
+    assert!(summaries.functions[1]
+      .writes
+      .contains(&EffectLocation::Foreign(effect_sym)));
+    assert!(!summaries.functions[1].unknown);
+
+    annotate_cfg_effects(&mut program.functions[1].body, &summaries);
+    let call_effects = &program.functions[1].body.bblocks.get(0)[1].meta.effects;
+    assert!(call_effects
+      .writes
+      .contains(&EffectLocation::Foreign(effect_sym)));
+    assert!(!call_effects.unknown);
   }
 }

@@ -2,8 +2,10 @@ use crate::analysis::effect::FnEffectMap;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::EffectSet;
 use crate::il::inst::{Arg, InstTyp};
+use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 pub use crate::il::meta::Purity;
+use std::collections::BTreeMap;
 
 pub fn purity_of_effects(effects: &EffectSet) -> Purity {
   purity_from_effects(effects)
@@ -97,7 +99,117 @@ fn callee_purity(callee: &Arg, purities: &FnPurityMap) -> Purity {
   }
 }
 
-pub fn annotate_cfg_purity(cfg: &mut Cfg, purities: &FnPurityMap) {
+#[derive(Clone, Debug)]
+enum CalleeVarDef {
+  Alias(u32),
+  Fn(FnId),
+  Phi(Vec<Arg>),
+  Unknown,
+}
+
+fn build_callee_var_defs(
+  cfg: &Cfg,
+  foreign_fns: &BTreeMap<SymbolId, FnId>,
+) -> BTreeMap<u32, CalleeVarDef> {
+  let mut defs = BTreeMap::<u32, CalleeVarDef>::new();
+  for label in cfg.reverse_postorder() {
+    let Some(bb) = cfg.bblocks.maybe_get(label) else {
+      continue;
+    };
+    for inst in bb.iter() {
+      let Some(&tgt) = inst.tgts.get(0) else {
+        continue;
+      };
+
+      let def = match inst.t {
+        InstTyp::VarAssign => match &inst.args[0] {
+          Arg::Var(src) => CalleeVarDef::Alias(*src),
+          Arg::Fn(id) => CalleeVarDef::Fn(*id),
+          _ => CalleeVarDef::Unknown,
+        },
+        InstTyp::Phi => CalleeVarDef::Phi(inst.args.clone()),
+        InstTyp::ForeignLoad => foreign_fns
+          .get(&inst.foreign)
+          .copied()
+          .map(CalleeVarDef::Fn)
+          .unwrap_or(CalleeVarDef::Unknown),
+        _ => CalleeVarDef::Unknown,
+      };
+
+      defs
+        .entry(tgt)
+        .and_modify(|existing| {
+          if !matches!(existing, CalleeVarDef::Unknown) {
+            *existing = CalleeVarDef::Unknown;
+          }
+        })
+        .or_insert(def);
+    }
+  }
+  defs
+}
+
+fn resolve_fn_id(arg: &Arg, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  match arg {
+    Arg::Fn(id) => Some(*id),
+    Arg::Var(v) => resolve_var_fn_id(*v, defs, visiting),
+    _ => None,
+  }
+}
+
+fn resolve_var_fn_id(var: u32, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mut Vec<u32>) -> Option<FnId> {
+  if visiting.contains(&var) {
+    return None;
+  }
+  visiting.push(var);
+
+  let out = match defs.get(&var) {
+    Some(CalleeVarDef::Fn(id)) => Some(*id),
+    Some(CalleeVarDef::Alias(src)) => resolve_var_fn_id(*src, defs, visiting),
+    Some(CalleeVarDef::Phi(args)) => {
+      let mut merged: Option<FnId> = None;
+      for arg in args {
+        let Some(id) = resolve_fn_id(arg, defs, visiting) else {
+          visiting.pop();
+          return None;
+        };
+        merged = match merged {
+          None => Some(id),
+          Some(prev) if prev == id => Some(prev),
+          _ => {
+            visiting.pop();
+            return None;
+          }
+        };
+      }
+      merged
+    }
+    _ => None,
+  };
+
+  visiting.pop();
+  out
+}
+
+fn callee_purity_resolved(
+  callee: &Arg,
+  purities: &FnPurityMap,
+  defs: &BTreeMap<u32, CalleeVarDef>,
+) -> Purity {
+  match callee {
+    Arg::Var(_) => resolve_fn_id(callee, defs, &mut Vec::new())
+      .map(|id| purities.for_fn(id))
+      .unwrap_or(Purity::Impure),
+    _ => callee_purity(callee, purities),
+  }
+}
+
+pub fn annotate_cfg_purity(
+  cfg: &mut Cfg,
+  purities: &FnPurityMap,
+  foreign_fns: &BTreeMap<SymbolId, FnId>,
+) {
+  let defs = build_callee_var_defs(cfg, foreign_fns);
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
       if inst.t != InstTyp::Call {
@@ -105,7 +217,7 @@ pub fn annotate_cfg_purity(cfg: &mut Cfg, purities: &FnPurityMap) {
       }
 
       let (_, callee, _, _, _) = inst.as_call();
-      inst.meta.callee_purity = callee_purity(callee, purities);
+      inst.meta.callee_purity = callee_purity_resolved(callee, purities, &defs);
     }
   }
 }
@@ -115,6 +227,7 @@ mod tests {
   use super::*;
   use crate::cfg::cfg::{CfgBBlocks, CfgGraph};
   use crate::il::inst::{Const, EffectLocation, EffectSet, Inst};
+  use crate::symbol::semantics::SymbolId;
   use crate::OptimizationStats;
   use crate::ProgramFunction;
   use crate::TopLevelMode;
@@ -160,17 +273,39 @@ mod tests {
     }
   }
 
+  fn cfg_single_block(insts: Vec<Inst>) -> Cfg {
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, insts);
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  fn func(cfg: Cfg) -> ProgramFunction {
+    ProgramFunction {
+      debug: None,
+      body: cfg,
+      params: Vec::new(),
+      ssa_body: None,
+      stats: OptimizationStats::default(),
+    }
+  }
+
   #[test]
   fn pure_builtin_call_is_pure() {
     let mut cfg = cfg_with_single_call(Arg::Builtin("Math.abs".to_string()));
-    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
   }
 
   #[test]
   fn internal_array_literal_call_is_allocating() {
     let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_array".to_string()));
-    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(
       cfg.bblocks.get(0)[0].meta.callee_purity,
       Purity::Allocating
@@ -180,14 +315,14 @@ mod tests {
   #[test]
   fn tagged_template_call_is_impure() {
     let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_tagged_template".to_string()));
-    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
   }
 
   #[test]
   fn unknown_call_is_impure() {
     let mut cfg = cfg_with_single_call(Arg::Var(0));
-    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default(), &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
   }
 
@@ -231,12 +366,49 @@ mod tests {
     let effects = FnEffectMap {
       top_level: EffectSet::default(),
       functions: vec![EffectSet::default()],
+      constant_foreign_fns: Default::default(),
     };
 
     let purities = compute_program_purity(&program, &effects);
 
     let mut cfg = cfg_with_single_call(Arg::Fn(0));
-    annotate_cfg_purity(&mut cfg, &purities);
+    annotate_cfg_purity(&mut cfg, &purities, &std::collections::BTreeMap::new());
     assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
+  }
+
+  #[test]
+  fn captured_constant_callee_call_uses_computed_purity() {
+    let callee_sym = SymbolId(123);
+
+    let callee = empty_program_function();
+    let caller = func(cfg_single_block(vec![
+      Inst::foreign_load(0, callee_sym),
+      Inst::call(
+        None::<u32>,
+        Arg::Var(0),
+        Arg::Const(Const::Undefined),
+        Vec::new(),
+        Vec::new(),
+      ),
+    ]));
+
+    let mut program = Program {
+      functions: vec![callee, caller],
+      top_level: func(cfg_single_block(vec![Inst::foreign_store(callee_sym, Arg::Fn(0))])),
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let effects = crate::analysis::effect::compute_program_effects(&program);
+    let purities = compute_program_purity(&program, &effects);
+    annotate_cfg_purity(
+      &mut program.functions[1].body,
+      &purities,
+      effects.constant_foreign_fns(),
+    );
+    assert_eq!(
+      program.functions[1].body.bblocks.get(0)[1].meta.callee_purity,
+      Purity::Pure
+    );
   }
 }
