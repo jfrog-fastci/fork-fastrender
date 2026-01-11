@@ -7945,9 +7945,7 @@ impl InlineFormattingContext {
     )
     .unwrap_or(0.0);
 
-    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
-      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
-
+    let allow_soft_wrap = allow_soft_wrap_for_style(style);
     let width = match mode {
       IntrinsicSizingMode::MinContent => self.min_content_width(&items, allow_soft_wrap),
       IntrinsicSizingMode::MaxContent => self.max_content_width(&items),
@@ -8025,8 +8023,7 @@ impl InlineFormattingContext {
       Err(_) => return Ok((0.0, 0.0)),
     };
 
-    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
-      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+    let allow_soft_wrap = allow_soft_wrap_for_style(style);
     let min_width = self.min_content_width(&min_items, allow_soft_wrap);
     let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
@@ -8112,9 +8109,7 @@ impl InlineFormattingContext {
     )
     .unwrap_or(0.0);
 
-    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
-      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
-
+    let allow_soft_wrap = allow_soft_wrap_for_style(style);
     Ok(match mode {
       IntrinsicSizingMode::MinContent => self.min_content_width(&items, allow_soft_wrap),
       IntrinsicSizingMode::MaxContent => self.max_content_width(&items),
@@ -8193,8 +8188,7 @@ impl InlineFormattingContext {
       Err(_) => return Ok((0.0, 0.0)),
     };
 
-    let allow_soft_wrap = !matches!(style.text_wrap, TextWrap::NoWrap)
-      && !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+    let allow_soft_wrap = allow_soft_wrap_for_style(style);
     let min_width = self.min_content_width(&min_items, allow_soft_wrap);
     let max_width = self.max_content_width(&max_items);
     Ok((min_width, max_width))
@@ -8419,8 +8413,7 @@ impl InlineFormattingContext {
             inline_box.end_edge,
             inline_box.margin_right,
           );
-          let child_allow_soft_wrap = !matches!(inline_box.style.text_wrap, TextWrap::NoWrap)
-            && !matches!(inline_box.style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre);
+          let child_allow_soft_wrap = allow_soft_wrap_for_style(inline_box.style.as_ref());
           self.accumulate_min_segments(&inline_box.children, child_allow_soft_wrap, &mut boxed);
           boxed.finish();
         }
@@ -8443,15 +8436,15 @@ impl InlineFormattingContext {
           }
         }
         InlineItem::Replaced(replaced) => {
-          let width = self
+          let replaced_width = self
             .min_content_width_for_replaced(replaced)
             .unwrap_or_else(|| replaced.total_width());
           if allow_soft_wrap {
             tracker.break_segment();
-            tracker.add_width(width);
+            tracker.add_width(replaced_width);
             tracker.break_segment();
           } else {
-            tracker.add_width(width);
+            tracker.add_width(replaced_width);
           }
         }
         InlineItem::Floating(_) => {
@@ -8949,6 +8942,18 @@ impl CollapsibleWhitespaceState {
     }
     self.pending = Some(PendingSpace::new(style, allow_soft_wrap));
   }
+}
+
+#[inline]
+fn allow_soft_wrap_for_style(style: &ComputedStyle) -> bool {
+  // `white-space` and `text-wrap` jointly determine whether the inline formatting context
+  // is allowed to wrap at soft wrap opportunities.
+  //
+  // We use this in intrinsic sizing paths where atomic inline items (inline-block/replaced/ruby)
+  // need to behave as unbreakable when wrapping is disabled (e.g. `white-space: nowrap`), otherwise
+  // their min-content contribution incorrectly assumes each atomic item can sit on its own line.
+  !matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre)
+    && !matches!(style.text_wrap, TextWrap::NoWrap)
 }
 
 fn normalize_text_for_white_space(

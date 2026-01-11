@@ -236,6 +236,7 @@ mod inline_float_in_inline_box;
 mod inline_float_only_does_not_advance_block_height;
 mod inline_intrinsic_max_content_text_items;
 mod inline_intrinsic_max_content;
+mod inline_min_content_nowrap_atomic_items;
 mod inline_replaced_in_block;
 mod inline_shaping_fallback;
 mod inline_padding_does_not_affect_line_height;
