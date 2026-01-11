@@ -5332,16 +5332,7 @@ impl<'a> LineBuilder<'a> {
   fn finish_line(&mut self) -> Result<(), LayoutError> {
     check_layout_deadline(&mut self.deadline_counter)?;
     self.trim_soft_wrap_trailing_spaces();
-    let push_empty_after_hard_break = self.current_line.is_empty()
-      && !self.current_line.ends_with_hard_break
-      && self
-        .lines
-        .last()
-        .is_some_and(|line| line.ends_with_hard_break);
-    if !self.current_line.is_empty()
-      || self.current_line.ends_with_hard_break
-      || push_empty_after_hard_break
-    {
+    if !self.current_line.is_empty() || self.current_line.ends_with_hard_break {
       let bookkeeping_only_line = !self.current_line.items.is_empty()
         && !self.current_line.ends_with_hard_break
         && self.current_line.items.iter().all(|item| match &item.item {
@@ -7985,6 +7976,22 @@ mod tests {
   fn hard_break_only_produces_single_empty_line() {
     let mut builder = make_builder(200.0);
     builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].ends_with_hard_break);
+    assert!(lines[0].items.is_empty());
+  }
+
+  #[test]
+  fn hard_break_followed_by_collapsible_whitespace_does_not_create_trailing_empty_line() {
+    let mut builder = make_builder(200.0);
+    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    // This whitespace becomes the leading content of the next line and is therefore suppressed by
+    // whitespace collapsing. The trailing line box must not be materialized.
+    builder
+      .add_item(InlineItem::Text(make_text_item(" ", 5.0)))
+      .unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
