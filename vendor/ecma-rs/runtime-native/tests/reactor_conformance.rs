@@ -80,7 +80,7 @@ fn drain_read_nonblocking(fd: RawFd) -> io::Result<usize> {
 
 #[test]
 fn timeout_no_events() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let mut events = Vec::new();
 
   let start = Instant::now();
@@ -101,7 +101,7 @@ fn edge_trigger_requires_drain() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(10), Interest::READABLE)
     .unwrap();
@@ -148,7 +148,7 @@ fn edge_trigger_requires_drain() {
 fn register_requires_nonblocking() {
   let (read, _write) = pipe().unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let err = reactor
     .register(read.as_fd(), Token(11), Interest::READABLE)
     .expect_err("expected registering a blocking fd to fail");
@@ -161,7 +161,7 @@ fn token_wake_is_reserved() {
   let (read, _write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let err = reactor
     .register(read.as_fd(), Token::WAKE, Interest::READABLE)
     .expect_err("expected Token::WAKE registration to fail");
@@ -174,7 +174,7 @@ fn empty_interest_behavior() {
   let (read, _write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
 
   let err = reactor
     .register(read.as_fd(), Token(12), Interest::empty())
@@ -196,7 +196,7 @@ fn double_register_behavior() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(13), Interest::READABLE)
     .unwrap();
@@ -229,7 +229,7 @@ fn reregister_without_register_behavior() {
   let (read, _write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let err = reactor
     .reregister(read.as_fd(), Token(15), Interest::READABLE)
     .expect_err("expected reregistering an unregistered fd to fail");
@@ -240,7 +240,7 @@ fn reregister_without_register_behavior() {
 fn deregister_without_register_behavior() {
   let (read, _write) = pipe().unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let err = reactor
     .deregister(read.as_fd())
     .expect_err("expected deregistering an unregistered fd to fail");
@@ -252,7 +252,7 @@ fn fd_reuse_via_dup2_clears_registration() {
   let (a_read, _a_write) = pipe().unwrap();
   set_nonblocking(a_read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(a_read.as_fd(), Token(16), Interest::READABLE)
     .unwrap();
@@ -290,7 +290,7 @@ fn fd_reuse_via_dup2_same_pipe_clears_registration() {
   set_nonblocking(read.as_raw_fd()).unwrap();
   set_nonblocking(write.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(18), Interest::READABLE)
     .unwrap();
@@ -325,7 +325,7 @@ fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(1), Interest::READABLE)
     .unwrap();
@@ -367,7 +367,7 @@ fn modify_interests() {
     }
   }
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(a.as_fd(), Token(2), Interest::READABLE)
     .unwrap();
@@ -409,7 +409,7 @@ fn event_merge_by_token() {
     }
   }
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(
       a.as_fd(),
@@ -447,7 +447,7 @@ fn hup_eof_semantics() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(4), Interest::READABLE)
     .unwrap();
@@ -472,7 +472,7 @@ fn hup_eof_implies_ready_invariants_socketpair() {
   let (a, b) = socketpair().unwrap();
   set_nonblocking(a.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(a.as_fd(), Token(5), Interest::WRITABLE)
     .unwrap();
@@ -499,7 +499,7 @@ fn hup_eof_implies_ready_invariants_socketpair() {
 
 #[test]
 fn waker_interrupts_poll() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -524,7 +524,7 @@ fn waker_interrupts_poll() {
 
 #[test]
 fn waker_interrupts_poll_none_timeout() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -549,7 +549,7 @@ fn waker_interrupts_poll_none_timeout() {
 
 #[test]
 fn poll_large_timeout_does_not_panic_and_wake_works() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -576,7 +576,7 @@ fn poll_large_timeout_does_not_panic_and_wake_works() {
 
 #[test]
 fn waker_no_loss_stress() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   let (req_tx, req_rx) = std::sync::mpsc::channel::<()>();
