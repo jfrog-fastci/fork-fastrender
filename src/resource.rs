@@ -3925,6 +3925,22 @@ fn cors_preflight_expiry(now: Instant, max_age_secs: u64) -> Instant {
   now.checked_add(duration).unwrap_or(now)
 }
 
+fn cors_preflight_cache_url_key(url: &str) -> String {
+  // The Fetch preflight cache keys off a URL record. Canonicalize the input so semantically
+  // equivalent URLs (e.g. "https://example.com" vs "https://example.com/") reuse the same cache
+  // entry.
+  if let Ok(parsed) = Url::parse(url) {
+    return parsed.as_str().to_string();
+  }
+  if let Some(normalized) = normalize_http_url_for_fetch(url) {
+    if let Ok(parsed) = Url::parse(&normalized) {
+      return parsed.as_str().to_string();
+    }
+    return normalized;
+  }
+  url.to_string()
+}
+
 fn cors_preflight_cache_entry_match(
   entry: &CorsPreflightCacheEntry,
   partition_key: Option<&str>,
@@ -3951,21 +3967,49 @@ fn cors_preflight_cache_entry_match(
   !(credentialed && !entry.credentials)
 }
 
-fn cors_preflight_method_cache_entry_match(entry_method: Option<&str>, method: &str) -> bool {
+fn cors_preflight_method_cache_entry_token_match(entry_method: Option<&str>, method: &str) -> bool {
   let Some(entry_method) = entry_method else {
     return false;
   };
-  entry_method == "*" || entry_method.eq_ignore_ascii_case(method)
+  entry_method.eq_ignore_ascii_case(method)
 }
 
-fn cors_preflight_header_name_cache_entry_match(entry_header: Option<&str>, header_name: &str) -> bool {
+fn cors_preflight_method_cache_entry_match(
+  entry_method: Option<&str>,
+  method: &str,
+  credentialed: bool,
+) -> bool {
+  let Some(entry_method) = entry_method else {
+    return false;
+  };
+  if entry_method == "*" {
+    return !credentialed;
+  }
+  entry_method.eq_ignore_ascii_case(method)
+}
+
+fn cors_preflight_header_name_cache_entry_token_match(
+  entry_header: Option<&str>,
+  header_name: &str,
+) -> bool {
+  let Some(entry_header) = entry_header else {
+    return false;
+  };
+  entry_header.eq_ignore_ascii_case(header_name)
+}
+
+fn cors_preflight_header_name_cache_entry_match(
+  entry_header: Option<&str>,
+  header_name: &str,
+  credentialed: bool,
+) -> bool {
   let Some(entry_header) = entry_header else {
     return false;
   };
   if entry_header.eq_ignore_ascii_case(header_name) {
     return true;
   }
-  entry_header == "*" && !is_cors_non_wildcard_request_header_name(header_name)
+  entry_header == "*" && !credentialed && !is_cors_non_wildcard_request_header_name(header_name)
 }
 
 impl CorsPreflightCache {
@@ -3983,7 +4027,7 @@ impl CorsPreflightCache {
   ) -> bool {
     self.entries.iter().any(|entry| {
       cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method)
+        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method, credentialed)
     })
   }
 
@@ -3997,7 +4041,11 @@ impl CorsPreflightCache {
   ) -> bool {
     self.entries.iter().any(|entry| {
       cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), header_name)
+        && cors_preflight_header_name_cache_entry_match(
+          entry.header_name.as_deref(),
+          header_name,
+          credentialed,
+        )
     })
   }
 
@@ -4022,7 +4070,7 @@ impl CorsPreflightCache {
     let mut updated_any = false;
     for entry in &mut self.entries {
       if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), &method)
+        && cors_preflight_method_cache_entry_token_match(entry.method.as_deref(), &method)
       {
         entry.expires_at = expiry;
         updated_any = true;
@@ -4064,7 +4112,10 @@ impl CorsPreflightCache {
     let mut updated_any = false;
     for entry in &mut self.entries {
       if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), &header_name)
+        && cors_preflight_header_name_cache_entry_token_match(
+          entry.header_name.as_deref(),
+          &header_name,
+        )
       {
         entry.expires_at = expiry;
         updated_any = true;
@@ -5237,6 +5288,9 @@ impl HttpFetcher {
     if !needs_preflight {
       return Ok(());
     }
+
+    let cache_url = cors_preflight_cache_url_key(url);
+    let url = cache_url.as_str();
 
     let origin_header_value = build_http_header_pairs(
       url,

@@ -2621,116 +2621,183 @@ mod tests {
       return;
     };
     let addr = listener.local_addr().unwrap();
-    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
-    let captured_req = Arc::clone(&captured);
+    let options_count = Arc::new(AtomicUsize::new(0));
+    let options_count_req = Arc::clone(&options_count);
     let handle = thread::spawn(move || {
-      for idx in 0..3 {
-        let mut stream = accept_http_stream(
-          &listener,
-          "cors_preflight_cache_credentialed_entry_matches_non_credentialed_request",
-        );
-        stream
-          .set_read_timeout(Some(Duration::from_millis(500)))
-          .unwrap();
-        let (headers, _body) = read_http_request(&mut stream);
-        captured_req.lock().unwrap().push(headers.clone());
-        let req_lower = headers.to_ascii_lowercase();
-        match idx {
-          0 => {
-            assert!(
-              req_lower.starts_with("options /cache"),
-              "expected OPTIONS request, got:\n{headers}"
-            );
-            let response = concat!(
-              "HTTP/1.1 204 No Content\r\n",
-              "Access-Control-Allow-Origin: https://client.example\r\n",
-              "Access-Control-Allow-Credentials: true\r\n",
-              "Access-Control-Allow-Methods: PUT\r\n",
-              "Access-Control-Allow-Headers: X-Test\r\n",
-              "Access-Control-Max-Age: 60\r\n",
-              "Content-Length: 0\r\n",
-              "Connection: close\r\n",
-              "\r\n"
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-          }
-          1 | 2 => {
-            assert!(
-              req_lower.starts_with("put /cache"),
-              "expected PUT request, got:\n{headers}"
-            );
-            let body = b"ok";
-            let response = format!(
-              concat!(
-                "HTTP/1.1 200 OK\r\n",
-                "Content-Type: text/plain\r\n",
-                "Access-Control-Allow-Origin: https://client.example\r\n",
-                "Access-Control-Allow-Credentials: true\r\n",
-                "Content-Length: {}\r\n",
-                "Connection: close\r\n",
-                "\r\n"
-              ),
-              body.len()
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.write_all(body).unwrap();
-          }
-          _ => unreachable!(),
-        }
-      }
-
-      // Ensure no extra preflight is attempted.
       listener.set_nonblocking(true).unwrap();
       let start = Instant::now();
-      while start.elapsed() < Duration::from_millis(200) {
+      let mut last_connection: Option<Instant> = None;
+      while start.elapsed() < Duration::from_secs(2) {
         match listener.accept() {
-          Ok(_) => panic!("unexpected extra request (expected preflight to be cached)"),
+          Ok((mut stream, _)) => {
+            last_connection = Some(Instant::now());
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let (headers, _body) = read_http_request(&mut stream);
+            let line = headers.lines().next().unwrap_or_default();
+            let method = line.split_whitespace().next().unwrap_or_default();
+            if method.eq_ignore_ascii_case("OPTIONS") {
+              options_count_req.fetch_add(1, Ordering::SeqCst);
+              let response = concat!(
+                "HTTP/1.1 204 No Content\r\n",
+                "Access-Control-Allow-Origin: https://client.example\r\n",
+                "Access-Control-Allow-Credentials: true\r\n",
+                "Access-Control-Allow-Methods: PUT\r\n",
+                "Access-Control-Allow-Headers: x-test\r\n",
+                "Access-Control-Max-Age: 60\r\n",
+                "Content-Length: 0\r\n",
+                "Connection: close\r\n",
+                "\r\n"
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+            } else {
+              let body = b"ok";
+              let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+              stream.write_all(body).unwrap();
+            }
+          }
           Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
+              break;
+            }
             thread::sleep(Duration::from_millis(5));
           }
-          Err(err) => panic!("accept after requests: {err}"),
+          Err(err) => panic!("accept: {err}"),
         }
       }
     });
 
     let fetcher = test_http_fetcher();
-    let url = format!("http://{addr}/cache");
+    let url = format!("http://{addr}/cors");
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
 
-    // First request is credentialed (`credentials: include`) and should populate the cache.
     let mut request = Request::new("PUT", &url);
     request.credentials = RequestCredentials::Include;
     request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
     let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
     assert_eq!(response.status, 200);
     assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
 
-    // Second request is non-credentialed and should match the credentialed cache entry (Fetch
-    // allows credentialed entries to match non-credentialed requests).
     let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Omit;
     request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
     let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
     assert_eq!(response.status, 200);
     assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
 
     handle.join().unwrap();
-    let captured = captured.lock().unwrap();
     assert_eq!(
-      captured.len(),
-      3,
-      "expected OPTIONS + PUT + PUT requests, got:\n{captured:#?}"
+      options_count.load(Ordering::SeqCst),
+      1,
+      "expected credentialed preflight cache entry to match non-credentialed request"
     );
-    let lines: Vec<String> = captured
-      .iter()
-      .map(|headers| headers.lines().next().unwrap_or("").to_ascii_lowercase())
-      .collect();
-    assert!(lines[0].starts_with("options /cache"), "request[0]: {}", lines[0]);
-    assert!(lines[1].starts_with("put /cache"), "request[1]: {}", lines[1]);
-    assert!(lines[2].starts_with("put /cache"), "request[2]: {}", lines[2]);
+  }
+
+  #[test]
+  fn cors_preflight_cache_non_credentialed_entry_does_not_match_credentialed_request() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_cache_non_credentialed_entry_does_not_match_credentialed_request",
+    ) {
+      return;
+    }
+    let Some(listener) = try_bind_localhost(
+      "cors_preflight_cache_non_credentialed_entry_does_not_match_credentialed_request",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let options_count = Arc::new(AtomicUsize::new(0));
+    let options_count_req = Arc::clone(&options_count);
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      let mut last_connection: Option<Instant> = None;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            last_connection = Some(Instant::now());
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let (headers, _body) = read_http_request(&mut stream);
+            let line = headers.lines().next().unwrap_or_default();
+            let method = line.split_whitespace().next().unwrap_or_default();
+            if method.eq_ignore_ascii_case("OPTIONS") {
+              options_count_req.fetch_add(1, Ordering::SeqCst);
+              let response = concat!(
+                "HTTP/1.1 204 No Content\r\n",
+                "Access-Control-Allow-Origin: https://client.example\r\n",
+                "Access-Control-Allow-Credentials: true\r\n",
+                "Access-Control-Allow-Methods: PUT\r\n",
+                "Access-Control-Allow-Headers: x-test\r\n",
+                "Access-Control-Max-Age: 60\r\n",
+                "Content-Length: 0\r\n",
+                "Connection: close\r\n",
+                "\r\n"
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+            } else {
+              let body = b"ok";
+              let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+              stream.write_all(body).unwrap();
+            }
+          }
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
+              break;
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/cors");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Omit;
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Include;
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+    assert_eq!(
+      options_count.load(Ordering::SeqCst),
+      2,
+      "expected non-credentialed preflight cache entry to not match credentialed request"
+    );
   }
 
   #[test]
