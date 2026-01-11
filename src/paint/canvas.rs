@@ -697,6 +697,35 @@ impl Canvas {
       height,
       is_backdrop_root,
       false,
+      true,
+    )
+  }
+
+  /// Pushes a new offscreen layer with explicit bounds, without inheriting the current clip.
+  ///
+  /// This is primarily used for filter effects: ancestor clips should apply when the filtered
+  /// result is composited back into the parent surface, not while rasterizing the filter input.
+  pub(crate) fn push_layer_bounded_unclipped_with_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    let (origin_x, origin_y, width, height) = match self.layer_bounds_unclamped(bounds) {
+      Some(b) => b,
+      None => (0, 0, self.pixmap.width(), self.pixmap.height()),
+    };
+    self.push_layer_internal(
+      opacity,
+      blend,
+      origin_x,
+      origin_y,
+      width,
+      height,
+      is_backdrop_root,
+      false,
+      false,
     )
   }
 
@@ -724,6 +753,7 @@ impl Canvas {
       self.pixmap.height(),
       is_backdrop_root,
       false,
+      true,
     )
   }
 
@@ -741,6 +771,7 @@ impl Canvas {
       self.pixmap.width(),
       self.pixmap.height(),
       is_backdrop_root,
+      true,
       true,
     )
   }
@@ -765,6 +796,31 @@ impl Canvas {
       height,
       is_backdrop_root,
       true,
+      true,
+    )
+  }
+
+  pub(crate) fn push_layer_bounded_unclipped_initialized_from_backdrop_and_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    let (origin_x, origin_y, width, height) = match self.layer_bounds_unclamped(bounds) {
+      Some(b) => b,
+      None => (0, 0, self.pixmap.width(), self.pixmap.height()),
+    };
+    self.push_layer_internal(
+      opacity,
+      blend,
+      origin_x,
+      origin_y,
+      width,
+      height,
+      is_backdrop_root,
+      true,
+      false,
     )
   }
 
@@ -801,6 +857,7 @@ impl Canvas {
     height: u32,
     is_backdrop_root: bool,
     init_from_backdrop: bool,
+    inherit_clip: bool,
   ) -> Result<()> {
     let parent_width = self.pixmap.width();
     let parent_height = self.pixmap.height();
@@ -841,6 +898,11 @@ impl Canvas {
     self.current_state.opacity = 1.0;
     self.current_state.blend_mode = SkiaBlendMode::SourceOver;
 
+    if !inherit_clip {
+      self.current_state.clip_rect = None;
+      self.current_state.clip_mask = None;
+    }
+
     if origin_x != 0 || origin_y != 0 || width != parent_width || height != parent_height {
       let layer_rect = Rect::from_xywh(
         origin_x as f32,
@@ -852,29 +914,31 @@ impl Canvas {
         .current_state
         .transform
         .pre_translate(-(origin_x as f32), -(origin_y as f32));
-      if let Some(clip_rect) = self.current_state.clip_rect.take() {
-        let intersected = clip_rect.intersection(layer_rect).unwrap_or(Rect::ZERO);
-        self.current_state.clip_rect = if intersected.width() <= 0.0 || intersected.height() <= 0.0
-        {
-          Some(Rect::ZERO)
-        } else {
-          Some(Rect::from_xywh(
-            intersected.x() - origin_x as f32,
-            intersected.y() - origin_y as f32,
-            intersected.width(),
-            intersected.height(),
-          ))
-        };
-      }
-      if let Some(mask) = self.current_state.clip_mask.take() {
-        self.current_state.clip_mask = crop_mask(
-          mask.as_ref(),
-          origin_x as u32,
-          origin_y as u32,
-          width,
-          height,
-        )?
-        .map(Rc::new);
+      if inherit_clip {
+        if let Some(clip_rect) = self.current_state.clip_rect.take() {
+          let intersected = clip_rect.intersection(layer_rect).unwrap_or(Rect::ZERO);
+          self.current_state.clip_rect = if intersected.width() <= 0.0 || intersected.height() <= 0.0
+          {
+            Some(Rect::ZERO)
+          } else {
+            Some(Rect::from_xywh(
+              intersected.x() - origin_x as f32,
+              intersected.y() - origin_y as f32,
+              intersected.width(),
+              intersected.height(),
+            ))
+          };
+        }
+        if let Some(mask) = self.current_state.clip_mask.take() {
+          self.current_state.clip_mask = crop_mask(
+            mask.as_ref(),
+            origin_x as u32,
+            origin_y as u32,
+            width,
+            height,
+          )?
+          .map(Rc::new);
+        }
       }
     }
 
@@ -955,6 +1019,47 @@ impl Canvas {
       return None;
     }
     Some((clamped_x0, clamped_y0, width, height))
+  }
+
+  fn layer_bounds_unclamped(&self, bounds: Rect) -> Option<(i32, i32, u32, u32)> {
+    if !bounds.x().is_finite()
+      || !bounds.y().is_finite()
+      || !bounds.width().is_finite()
+      || !bounds.height().is_finite()
+    {
+      return None;
+    }
+
+    let x0 = bounds.min_x().floor();
+    let y0 = bounds.min_y().floor();
+    let x1 = bounds.max_x().ceil();
+    let y1 = bounds.max_y().ceil();
+
+    // Avoid saturating float→int casts; treat out-of-range bounds as invalid so callers can fall
+    // back to a safe (clamped) allocation strategy.
+    let i32_min = i32::MIN as f32;
+    let i32_max = i32::MAX as f32;
+    if x0 < i32_min || x0 > i32_max || y0 < i32_min || y0 > i32_max || x1 < i32_min || x1 > i32_max
+      || y1 < i32_min
+      || y1 > i32_max
+    {
+      return None;
+    }
+
+    let origin_x = x0 as i32;
+    let origin_y = y0 as i32;
+    let x1 = x1 as i32;
+    let y1 = y1 as i32;
+
+    let width_i64 = i64::from(x1) - i64::from(origin_x);
+    let height_i64 = i64::from(y1) - i64::from(origin_y);
+    let width = u32::try_from(width_i64).ok()?;
+    let height = u32::try_from(height_i64).ok()?;
+    if width == 0 || height == 0 {
+      return None;
+    }
+
+    Some((origin_x, origin_y, width, height))
   }
 
   /// Pops the most recent offscreen layer without compositing it.

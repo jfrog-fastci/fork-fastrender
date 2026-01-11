@@ -100,6 +100,7 @@ use crate::paint::display_list::TextShadowItem;
 use crate::paint::display_list::Transform3D;
 use crate::paint::display_list::TransformItem;
 use crate::paint::display_list_renderer::{PaintParallelism, PaintParallelismMode};
+use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
 use crate::paint::object_fit::compute_object_fit;
@@ -3079,6 +3080,36 @@ impl DisplayListBuilder {
       }
     }
     context_visibility = context_visibility.intersect(Some(local_bounds), false);
+
+    if !filters.is_empty() || !backdrop_filters.is_empty() {
+      // When only part of a filtered stacking context is visible (e.g. it sits on the viewport
+      // edge), pixels just outside the visible rect can still influence the visible result through
+      // kernel-based effects like `blur()`. Culling descendants strictly to the visible output
+      // region would drop those offscreen source pixels and truncate the filter halo.
+      //
+      // Expand the visibility/culling rect by a conservative filter halo so offscreen contributors
+      // are still emitted into the display list (see
+      // `tests/paint/filter_blur_bleeds_from_offscreen_source.rs`).
+      if let Some(visible) = context_visibility.rect {
+        let filters_halo = filter_halo_outset_with_bounds(&filters, 1.0, Some(context.bounds));
+        let backdrop_halo =
+          filter_halo_outset_with_bounds(&backdrop_filters, 1.0, Some(context.bounds));
+        let halo_left = filters_halo.left.max(backdrop_halo.left);
+        let halo_top = filters_halo.top.max(backdrop_halo.top);
+        let halo_right = filters_halo.right.max(backdrop_halo.right);
+        let halo_bottom = filters_halo.bottom.max(backdrop_halo.bottom);
+
+        if halo_left > 0.0 || halo_top > 0.0 || halo_right > 0.0 || halo_bottom > 0.0 {
+          let expanded = Rect::from_xywh(
+            visible.min_x() - halo_left,
+            visible.min_y() - halo_top,
+            visible.width() + halo_left + halo_right,
+            visible.height() + halo_top + halo_bottom,
+          );
+          context_visibility.rect = expanded.intersection(local_bounds).or(Some(expanded));
+        }
+      }
+    }
 
     let style_has_clip_path = root_style
       .is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));

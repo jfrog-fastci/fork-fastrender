@@ -4737,6 +4737,8 @@ impl DisplayListRenderer {
     filters: &[ResolvedFilter],
     backdrop_filters: &[ResolvedFilter],
   ) -> Option<Rect> {
+    let has_filters = !(filters.is_empty() && backdrop_filters.is_empty());
+
     let mut layer_bounds = transform_rect(bounds, &transform);
     let filters_for_outset = transform_filters_for_pixmap_space(filters, transform);
     let (f_l, f_t, f_r, f_b) =
@@ -4754,30 +4756,59 @@ impl DisplayListRenderer {
       layer_bounds.height() + expand_top + expand_bottom,
     );
 
-    if let Some(clip) = self.canvas.clip_bounds() {
-      // Filter kernels sample neighboring pixels. If the current canvas clip is tighter than the
-      // filter's halo region (e.g. an `overflow:hidden` ancestor clips the filtered element), we
-      // still need to allocate enough transparent padding around the clip to avoid edge clamping
-      // artifacts during filtering.
+    if has_filters {
+      // For filter effects, the input to the filter must not be clipped to the current clip/canvas
+      // bounds. Otherwise, pixels just outside the viewport/clip are treated as transparent when
+      // evaluating kernels like `blur()`, which darkens or truncates the halo near the edge.
       //
-      // Intersect against a clip expanded by the maximum filter/backdrop-filter outset so we keep
-      // that halo while still avoiding unbounded layer allocations.
-      let clip = Rect::from_xywh(
-        clip.x() - expand_left,
-        clip.y() - expand_top,
-        clip.width() + expand_left + expand_right,
-        clip.height() + expand_top + expand_bottom,
+      // Filter kernels also sample neighboring pixels. If the current canvas clip is tighter than
+      // the filter's halo region (e.g. an `overflow:hidden` ancestor clips the filtered element),
+      // we still need to allocate enough transparent padding around the visible region to avoid
+      // edge clamping artifacts during filtering.
+      //
+      // Instead, compute the *visible* portion (what will be composited into the parent surface),
+      // then expand it by a conservative halo so the filter can see the neighboring pixels it
+      // depends on.
+      let mut visible = layer_bounds;
+      if let Some(clip) = self.canvas.clip_bounds() {
+        visible = visible.intersection(clip)?;
+      }
+      visible = visible.intersection(self.canvas.bounds())?;
+
+      if visible.width() <= 0.0 || visible.height() <= 0.0 {
+        return None;
+      }
+
+      let halo_filters =
+        filter_halo_outset_with_bounds(&filters_for_outset, self.scale, Some(css_bounds));
+      let halo_backdrop =
+        filter_halo_outset_with_bounds(backdrop_filters, self.scale, Some(css_bounds));
+      let halo_left = halo_filters.left.max(halo_backdrop.left);
+      let halo_top = halo_filters.top.max(halo_backdrop.top);
+      let halo_right = halo_filters.right.max(halo_backdrop.right);
+      let halo_bottom = halo_filters.bottom.max(halo_backdrop.bottom);
+
+      let expanded_visible = Rect::from_xywh(
+        visible.x() - halo_left,
+        visible.y() - halo_top,
+        visible.width() + halo_left + halo_right,
+        visible.height() + halo_top + halo_bottom,
       );
-      layer_bounds = match layer_bounds.intersection(clip) {
+
+      layer_bounds = expanded_visible.intersection(layer_bounds)?;
+    } else {
+      if let Some(clip) = self.canvas.clip_bounds() {
+        layer_bounds = match layer_bounds.intersection(clip) {
+          Some(r) => r,
+          None => return None,
+        };
+      }
+
+      layer_bounds = match layer_bounds.intersection(self.canvas.bounds()) {
         Some(r) => r,
         None => return None,
       };
     }
-
-    layer_bounds = match layer_bounds.intersection(self.canvas.bounds()) {
-      Some(r) => r,
-      None => return None,
-    };
 
     if layer_bounds.width() <= 0.0
       || layer_bounds.height() <= 0.0
@@ -5282,6 +5313,21 @@ impl DisplayListRenderer {
     self
       .canvas
       .push_layer_bounded_with_backdrop_root(opacity, blend, bounds, is_backdrop_root)?;
+    self.push_layer_mutation_state();
+    Ok(())
+  }
+
+  #[inline]
+  fn push_layer_bounded_unclipped_tracked(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    self
+      .canvas
+      .push_layer_bounded_unclipped_with_backdrop_root(opacity, blend, bounds, is_backdrop_root)?;
     self.push_layer_mutation_state();
     Ok(())
   }
@@ -14116,21 +14162,38 @@ impl DisplayListRenderer {
         let init_from_backdrop = !is_isolated
           && !matches!(item.mix_blend_mode, BlendMode::Normal)
           && item.has_backdrop_sensitive_descendants;
+        let needs_unclipped_layer = !scaled_filters.is_empty() || has_backdrop;
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
               if init_from_backdrop {
-                self
-                  .canvas
-                  .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
-                    opacity,
-                    None,
-                    layer_rect,
-                    is_backdrop_root,
-                  )?;
-                self.push_layer_mutation_state();
+                if needs_unclipped_layer {
+                  self
+                    .canvas
+                    .push_layer_bounded_unclipped_initialized_from_backdrop_and_backdrop_root(
+                      opacity,
+                      None,
+                      layer_rect,
+                      is_backdrop_root,
+                    )?;
+                  self.push_layer_mutation_state();
+                } else {
+                  self
+                    .canvas
+                    .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                      opacity,
+                      None,
+                      layer_rect,
+                      is_backdrop_root,
+                    )?;
+                  self.push_layer_mutation_state();
+                }
               } else {
-                self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
+                if needs_unclipped_layer {
+                  self.push_layer_bounded_unclipped_tracked(opacity, None, layer_rect, is_backdrop_root)?;
+                } else {
+                  self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
+                }
               }
             } else if init_from_backdrop {
               self
@@ -14148,22 +14211,43 @@ impl DisplayListRenderer {
             let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
               if init_from_backdrop {
-                self
-                  .canvas
-                  .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                if needs_unclipped_layer {
+                  self
+                    .canvas
+                    .push_layer_bounded_unclipped_initialized_from_backdrop_and_backdrop_root(
+                      opacity,
+                      Some(blend),
+                      layer_rect,
+                      is_backdrop_root,
+                    )?;
+                  self.push_layer_mutation_state();
+                } else {
+                  self
+                    .canvas
+                    .push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                      opacity,
+                      Some(blend),
+                      layer_rect,
+                      is_backdrop_root,
+                    )?;
+                  self.push_layer_mutation_state();
+                }
+              } else {
+                if needs_unclipped_layer {
+                  self.push_layer_bounded_unclipped_tracked(
                     opacity,
                     Some(blend),
                     layer_rect,
                     is_backdrop_root,
                   )?;
-                self.push_layer_mutation_state();
-              } else {
-                self.push_layer_bounded_tracked(
-                  opacity,
-                  Some(blend),
-                  layer_rect,
-                  is_backdrop_root,
-                )?;
+                } else {
+                  self.push_layer_bounded_tracked(
+                    opacity,
+                    Some(blend),
+                    layer_rect,
+                    is_backdrop_root,
+                  )?;
+                }
               }
             } else if init_from_backdrop {
               self
@@ -14281,13 +14365,13 @@ impl DisplayListRenderer {
             init_from_backdrop: false,
             filters: Vec::new(),
             radii: BorderRadii::ZERO,
-             bounds: Rect::ZERO,
-             mask_bounds: Rect::ZERO,
-             mask: None,
-             mask_border: None,
-             css_bounds: Rect::ZERO,
-             manual_blend: None,
-             layer_bounds: None,
+            bounds: Rect::ZERO,
+            mask_bounds: Rect::ZERO,
+            mask: None,
+            mask_border: None,
+            css_bounds: Rect::ZERO,
+            manual_blend: None,
+            layer_bounds: None,
             layer_origin: (0, 0),
             global_transform_3d: Transform3D::identity(),
             projective_transform: None,
@@ -14366,49 +14450,49 @@ impl DisplayListRenderer {
           let layer_region =
             effect_bounds.and_then(|rect| self.layer_space_bounds(rect, origin, &layer));
 
-           if let Some(mask_style) = record.mask.as_ref() {
-             if let Some(mask) = self.render_mask(mask_style)? {
-               let OffsetMask {
-                 mask,
-                 origin: mask_origin,
-               } = mask;
-               let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
-               // Don't overwrite the reusable scratch with the 1x1 all-transparent sentinel mask;
-               // that case is common for fully clipped masks and would otherwise destroy the
-               // allocation we want to reuse for subsequent (larger) masks.
-               if mask.width() > 1 || mask.height() > 1 {
-                 MASK_RENDER_SCRATCH.with(|cell| {
-                   *cell.borrow_mut() = Some(mask);
-                 });
-               }
-               if !applied {
-                 return Ok(());
-               }
-             }
-           }
+          if let Some(mask_style) = record.mask.as_ref() {
+            if let Some(mask) = self.render_mask(mask_style)? {
+              let OffsetMask {
+                mask,
+                origin: mask_origin,
+              } = mask;
+              let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
+              // Don't overwrite the reusable scratch with the 1x1 all-transparent sentinel mask;
+              // that case is common for fully clipped masks and would otherwise destroy the
+              // allocation we want to reuse for subsequent (larger) masks.
+              if mask.width() > 1 || mask.height() > 1 {
+                MASK_RENDER_SCRATCH.with(|cell| {
+                  *cell.borrow_mut() = Some(mask);
+                });
+              }
+              if !applied {
+                return Ok(());
+              }
+            }
+          }
 
-            if let Some(mask_border) = record.mask_border.as_ref() {
-              if let Some(mask) = self.render_mask_border(mask_border, record.warp_source_transform)? {
-                let OffsetMask {
-                  mask,
-                  origin: mask_origin,
-                } = mask;
-               let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
-               if mask.width() > 1 || mask.height() > 1 {
-                 MASK_RENDER_SCRATCH.with(|cell| {
-                   *cell.borrow_mut() = Some(mask);
-                 });
-               }
-               if !applied {
-                 return Ok(());
-               }
-             }
-           }
+          if let Some(mask_border) = record.mask_border.as_ref() {
+            if let Some(mask) = self.render_mask_border(mask_border, record.warp_source_transform)? {
+              let OffsetMask {
+                mask,
+                origin: mask_origin,
+              } = mask;
+              let applied = apply_mask_with_offset(&mut layer, origin, &mask, mask_origin)?;
+              if mask.width() > 1 || mask.height() > 1 {
+                MASK_RENDER_SCRATCH.with(|cell| {
+                  *cell.borrow_mut() = Some(mask);
+                });
+              }
+              if !applied {
+                return Ok(());
+              }
+            }
+          }
 
-           // When an affine transform makes the border-radius clip non-axis-aligned, apply the
-           // transformed rounded-rect mask *before* filters run. This ensures filters that generate
-           // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
-           // clipped source graphic, while still allowing the filter outsets to remain visible.
+          // When an affine transform makes the border-radius clip non-axis-aligned, apply the
+          // transformed rounded-rect mask *before* filters run. This ensures filters that generate
+          // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
+          // clipped source graphic, while still allowing the filter outsets to remain visible.
           if !record.filters.is_empty() && !record.radii.is_zero() {
             if let Some(clip) = record.clip {
               if let Some(local_shape_bounds) =
@@ -14593,31 +14677,9 @@ impl DisplayListRenderer {
               }
             } else if let Some(mode) = record.manual_blend {
               if let Some(mask) = self.canvas.clip_mask_rc() {
-                let Some(cropped) = crop_mask(
-                  mask.as_ref(),
-                  origin.0 as u32,
-                  origin.1 as u32,
-                  layer.width(),
-                  layer.height(),
-                )?
-                else {
+                let applied = apply_mask_with_offset(&mut layer, origin, mask.as_ref(), (0, 0))?;
+                if !applied {
                   return Ok(());
-                };
-                if active_deadline().as_ref().map_or(false, |d| d.is_enabled()) {
-                  let layer_width = layer.width();
-                  let layer_height = layer.height();
-                  apply_mask_rect_rgba(
-                    &mut layer,
-                    &cropped,
-                    ClipMaskDirtyRect {
-                      x0: 0,
-                      y0: 0,
-                      x1: layer_width,
-                      y1: layer_height,
-                    },
-                  )?;
-                } else {
-                  layer.apply_mask(&cropped);
                 }
               }
               self.composite_manual_layer(&layer, opacity, mode, origin, effect_bounds.as_ref())?;
@@ -14626,31 +14688,9 @@ impl DisplayListRenderer {
             }
           } else if let Some(mode) = record.manual_blend {
             if let Some(mask) = self.canvas.clip_mask_rc() {
-              let Some(cropped) = crop_mask(
-                mask.as_ref(),
-                origin.0 as u32,
-                origin.1 as u32,
-                layer.width(),
-                layer.height(),
-              )?
-              else {
+              let applied = apply_mask_with_offset(&mut layer, origin, mask.as_ref(), (0, 0))?;
+              if !applied {
                 return Ok(());
-              };
-              if active_deadline().as_ref().map_or(false, |d| d.is_enabled()) {
-                let layer_width = layer.width();
-                let layer_height = layer.height();
-                apply_mask_rect_rgba(
-                  &mut layer,
-                  &cropped,
-                  ClipMaskDirtyRect {
-                    x0: 0,
-                    y0: 0,
-                    x1: layer_width,
-                    y1: layer_height,
-                  },
-                )?;
-              } else {
-                layer.apply_mask(&cropped);
               }
             }
             self.composite_manual_layer(&layer, opacity, mode, origin, effect_bounds.as_ref())?;

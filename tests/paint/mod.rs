@@ -51,6 +51,7 @@ mod display_list_skip_ink_test;
 mod display_list_svg_filter_defs_backend;
 mod display_list_test;
 mod filter_before_clip;
+mod filter_blur_bleeds_from_offscreen_source;
 mod filter_calc_length;
 mod filter_clip_halo;
 mod filter_cache_regressions;
