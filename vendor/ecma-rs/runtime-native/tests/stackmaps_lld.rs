@@ -85,7 +85,7 @@ fn main() {
   let rustflags = format!(
     // Speed up the nested build: we only care about the link result (symbols +
     // section retention), not debug info.
-    "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+    "-C force-frame-pointers=yes -C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
   );
 
