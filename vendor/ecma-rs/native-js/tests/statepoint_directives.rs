@@ -1,69 +1,94 @@
-use llvm_sys::core::{
-  LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildRetVoid, LLVMContextCreate, LLVMContextDispose,
-  LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType,
-  LLVMModuleCreateWithNameInContext, LLVMPositionBuilderAtEnd, LLVMPrintModuleToString, LLVMSetGC, LLVMVoidTypeInContext,
-};
-use llvm_sys::transforms::pass_builder::{LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses};
-use std::ffi::{CStr, CString};
-use std::ptr;
+use inkwell::context::Context;
+use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::values::AsValueRef;
+use inkwell::OptimizationLevel;
+use native_js::llvm::{gc, passes, statepoint_directives};
+use object::{Object, ObjectSection};
+use runtime_native::stackmap::StackMap;
+use std::sync::Once;
+use tempfile::tempdir;
 
-use native_js::llvm::statepoint_directives::{
-  set_callsite_statepoint_id, set_callsite_statepoint_num_patch_bytes,
-};
+static LLVM_INIT: Once = Once::new();
+
+fn host_target_machine() -> TargetMachine {
+  LLVM_INIT.call_once(|| {
+    Target::initialize_native(&InitializationConfig::default()).expect("failed to init native target");
+  });
+
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("host target");
+  let cpu = TargetMachine::get_host_cpu_name().to_string();
+  let features = TargetMachine::get_host_cpu_features().to_string();
+
+  target
+    .create_target_machine(
+      &triple,
+      &cpu,
+      &features,
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("create target machine")
+}
 
 #[test]
 fn rewrite_statepoints_honors_callsite_directives() {
-  unsafe {
-    let ctx = LLVMContextCreate();
+  let context = Context::create();
+  let module = context.create_module("statepoint_directives");
+  let builder = context.create_builder();
 
-    let module_name = CString::new("statepoint_directives").unwrap();
-    let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), ctx);
+  let void_ty = context.void_type();
+  let bar_ty = void_ty.fn_type(&[], false);
+  let bar = module.add_function("bar", bar_ty, None);
 
-    let void_ty = LLVMVoidTypeInContext(ctx);
-    let bar_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+  let foo_ty = void_ty.fn_type(&[], false);
+  let foo = module.add_function("foo", foo_ty, None);
+  gc::set_statepoint_example_gc(&foo).expect("GC strategy contains NUL byte");
 
-    let bar_name = CString::new("bar").unwrap();
-    let bar = LLVMAddFunction(module, bar_name.as_ptr(), bar_ty);
+  let entry = context.append_basic_block(foo, "entry");
+  builder.position_at_end(entry);
 
-    let foo_name = CString::new("foo").unwrap();
-    let foo = LLVMAddFunction(module, foo_name.as_ptr(), LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0));
+  let call = builder.build_call(bar, &[], "call_bar").expect("build call");
+  statepoint_directives::set_callsite_statepoint_id(call.as_value_ref(), 42);
+  statepoint_directives::set_callsite_statepoint_num_patch_bytes(call.as_value_ref(), 16);
+  builder.build_return(None).expect("build return");
 
-    let gc_name = CString::new("statepoint-example").unwrap();
-    LLVMSetGC(foo, gc_name.as_ptr());
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
 
-    let entry_name = CString::new("entry").unwrap();
-    let entry = LLVMAppendBasicBlockInContext(ctx, foo, entry_name.as_ptr());
+  passes::rewrite_statepoints_for_gc(&module, &tm).expect("rewrite-statepoints-for-gc failed");
 
-    let builder = LLVMCreateBuilderInContext(ctx);
-    LLVMPositionBuilderAtEnd(builder, entry);
+  let ir = module.print_to_string().to_string();
+  assert!(
+    ir.contains("@llvm.experimental.gc.statepoint.p0(i64 42, i32 16"),
+    "expected statepoint id/patch-bytes in rewritten IR, got:\n{ir}"
+  );
 
-    let call_name = CString::new("").unwrap();
-    let call = LLVMBuildCall2(builder, bar_ty, bar, ptr::null_mut(), 0, call_name.as_ptr());
-    set_callsite_statepoint_id(call, 42);
-    set_callsite_statepoint_num_patch_bytes(call, 16);
+  // Stronger check: the statepoint ID is the StackMap patchpoint ID (encoded as a u64 in
+  // `.llvm_stackmaps`).
+  let tmp = tempdir().expect("failed to create tempdir");
+  let obj = tmp.path().join("statepoints.o");
+  tm.write_to_file(&module, FileType::Object, &obj)
+    .expect("failed to emit object file");
 
-    LLVMBuildRetVoid(builder);
-    LLVMDisposeBuilder(builder);
+  let data = std::fs::read(&obj).expect("read emitted object");
+  let file = object::File::parse(&*data).expect("parse emitted object");
+  let section = file
+    .section_by_name(".llvm_stackmaps")
+    .expect("missing .llvm_stackmaps section");
+  let stackmaps = StackMap::parse(section.data().expect("read .llvm_stackmaps section bytes"))
+    .expect("parse .llvm_stackmaps");
 
-    let passes = CString::new("rewrite-statepoints-for-gc").unwrap();
-    let opts = LLVMCreatePassBuilderOptions();
-    let err = LLVMRunPasses(module, passes.as_ptr(), ptr::null_mut(), opts);
-    LLVMDisposePassBuilderOptions(opts);
-
-    if !err.is_null() {
-      panic!("LLVMRunPasses failed (non-null LLVMErrorRef)");
-    }
-
-    let ir_ptr = LLVMPrintModuleToString(module);
-    let ir = CStr::from_ptr(ir_ptr).to_string_lossy().into_owned();
-    LLVMDisposeMessage(ir_ptr);
-
-    assert!(
-      ir.contains("@llvm.experimental.gc.statepoint.p0(i64 42, i32 16"),
-      "expected statepoint id/patch-bytes in rewritten IR, got:\n{ir}"
-    );
-
-    LLVMDisposeModule(module);
-    LLVMContextDispose(ctx);
-  }
+  assert_eq!(
+    stackmaps.records.len(),
+    1,
+    "expected exactly 1 stackmap record, got {}\nIR:\n{ir}",
+    stackmaps.records.len()
+  );
+  assert_eq!(
+    stackmaps.records[0].patchpoint_id, 42,
+    "expected stackmap patchpoint_id to match statepoint-id=42\nIR:\n{ir}"
+  );
 }

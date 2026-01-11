@@ -11,7 +11,9 @@ LLVM also supports **overriding the emitted statepoint ID and patch-byte directi
 attributes* to the original `call`/`invoke` instruction (before running `rewrite-statepoints-for-gc`):
 
 ```llvm
-call void @bar() ["statepoint-id"="42" "statepoint-num-patch-bytes"="16"]
+call void @bar() #0
+
+attributes #0 = { "statepoint-id"="42" "statepoint-num-patch-bytes"="16" }
 ```
 
 ## Directive attributes
