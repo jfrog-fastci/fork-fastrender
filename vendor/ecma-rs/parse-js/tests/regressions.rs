@@ -70,6 +70,8 @@ mod private_index_signature;
 mod strict_ecma_rejections;
 #[path = "regressions/ts_declare_modifiers.rs"]
 mod ts_declare_modifiers;
+#[path = "regressions/ts_await_identifier_recovery.rs"]
+mod ts_await_identifier_recovery;
 #[path = "regressions/ts_instantiation_expr.rs"]
 mod ts_instantiation_expr;
 #[path = "regressions/ts_module_blocks.rs"]

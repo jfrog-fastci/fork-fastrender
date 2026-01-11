@@ -1268,7 +1268,12 @@ impl<'a> Parser<'a> {
               operator.name,
               OperatorName::PrefixIncrement | OperatorName::PrefixDecrement
             ) {
-              p.validate_update_target_expr(&operand)?;
+              // TypeScript-style recovery: allow invalid update targets (e.g. `++~x`) to parse so
+              // downstream tooling can produce better diagnostics. Strict ECMAScript parsing must
+              // reject these early errors.
+              if p.is_strict_ecmascript() {
+                p.validate_update_target_expr(&operand)?;
+              }
               p.validate_strict_assignment_target_expr(&operand)?;
             }
 
@@ -1508,7 +1513,11 @@ impl<'a> Parser<'a> {
             self.restore_checkpoint(cp);
             break;
           };
-          self.validate_update_target_expr(&left)?;
+          // TypeScript-style recovery: allow invalid update targets (e.g. `x()++`) to parse in
+          // non-strict modes. Strict ECMAScript parsing must reject these early errors.
+          if self.is_strict_ecmascript() {
+            self.validate_update_target_expr(&left)?;
+          }
           self.validate_strict_assignment_target_expr(&left)?;
           left = Node::new(
             left.loc + t.loc,
