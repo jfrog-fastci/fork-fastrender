@@ -677,7 +677,258 @@ impl WindowRealm {
   }
 
   pub fn perform_microtask_checkpoint(&mut self) -> Result<(), VmError> {
-    self.with_vm_budget(|rt| rt.vm.perform_microtask_checkpoint(&mut rt.heap))
+    self.with_vm_budget(|rt| {
+      // `vm-js`'s built-in `Vm::perform_microtask_checkpoint` runs queued jobs using a lightweight
+      // internal `VmHostHooks` implementation that only supports Promise job chaining. FastRender's
+      // DOM shims (notably `Element.dataset`) rely on `VmHostHooks::{host_exotic_get,host_exotic_set,host_exotic_delete}`.
+      //
+      // When embedders use `WindowRealm` directly (without the higher-level `EventLoop`/`WindowHost`
+      // pipeline), we still want Promise callbacks to behave like script execution and see the same
+      // DOM shim host hooks.
+
+      if !rt.vm.microtask_queue_mut().begin_checkpoint() {
+        return Ok(());
+      }
+
+      struct DomShimMicrotaskHooks {
+        any: VmJsHostHooksPayload,
+        pending: Vec<(Option<RealmId>, vm_js::Job)>,
+      }
+
+      impl DomShimMicrotaskHooks {
+        fn new(host_ctx: &mut dyn VmHost) -> Self {
+          let mut any = VmJsHostHooksPayload::default();
+          any.set_vm_host(host_ctx);
+          Self {
+            any,
+            pending: Vec::new(),
+          }
+        }
+
+        fn drain_into(&mut self, queue: &mut vm_js::MicrotaskQueue) {
+          for (realm, job) in self.pending.drain(..) {
+            queue.enqueue_promise_job(job, realm);
+          }
+        }
+      }
+
+      impl VmHostHooks for DomShimMicrotaskHooks {
+        fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<RealmId>) {
+          self.pending.push((realm, job));
+        }
+
+        fn host_exotic_get(
+          &mut self,
+          scope: &mut Scope<'_>,
+          obj: GcObject,
+          key: PropertyKey,
+          receiver: Value,
+        ) -> Result<Option<Value>, VmError> {
+          let _ = receiver;
+          dataset_exotic_get(scope, obj, key)
+        }
+
+        fn host_exotic_set(
+          &mut self,
+          scope: &mut Scope<'_>,
+          obj: GcObject,
+          key: PropertyKey,
+          value: Value,
+          receiver: Value,
+        ) -> Result<Option<bool>, VmError> {
+          let _ = receiver;
+          dataset_exotic_set(scope, obj, key, value)
+        }
+
+        fn host_exotic_delete(
+          &mut self,
+          scope: &mut Scope<'_>,
+          obj: GcObject,
+          key: PropertyKey,
+        ) -> Result<Option<bool>, VmError> {
+          dataset_exotic_delete(scope, obj, key)
+        }
+
+        fn host_call_job_callback(
+          &mut self,
+          ctx: &mut dyn vm_js::VmJobContext,
+          callback: &vm_js::JobCallback,
+          this_argument: Value,
+          arguments: &[Value],
+        ) -> Result<Value, VmError> {
+          ctx.call(
+            self,
+            Value::Object(callback.callback_object()),
+            this_argument,
+            arguments,
+          )
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+          Some(&mut self.any)
+        }
+      }
+
+      struct Ctx<'a> {
+        vm: &'a mut Vm,
+        heap: &'a mut Heap,
+        host: &'a mut dyn VmHost,
+        realm: Option<RealmId>,
+      }
+
+      impl vm_js::VmJobContext for Ctx<'_> {
+        fn call(
+          &mut self,
+          hooks: &mut dyn VmHostHooks,
+          callee: Value,
+          this: Value,
+          args: &[Value],
+        ) -> Result<Value, VmError> {
+          let mut scope = self.heap.scope();
+          if let Some(realm) = self.realm {
+            let mut vm = self.vm.execution_context_guard(vm_js::ExecutionContext {
+              realm,
+              script_or_module: None,
+            });
+            vm.call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
+          } else {
+            self
+              .vm
+              .call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
+          }
+        }
+
+        fn construct(
+          &mut self,
+          hooks: &mut dyn VmHostHooks,
+          callee: Value,
+          args: &[Value],
+          new_target: Value,
+        ) -> Result<Value, VmError> {
+          let mut scope = self.heap.scope();
+          if let Some(realm) = self.realm {
+            let mut vm = self.vm.execution_context_guard(vm_js::ExecutionContext {
+              realm,
+              script_or_module: None,
+            });
+            vm.construct_with_host_and_hooks(
+              &mut *self.host,
+              &mut scope,
+              hooks,
+              callee,
+              args,
+              new_target,
+            )
+          } else {
+            self.vm.construct_with_host_and_hooks(
+              &mut *self.host,
+              &mut scope,
+              hooks,
+              callee,
+              args,
+              new_target,
+            )
+          }
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: vm_js::RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      struct TeardownCtx<'a> {
+        heap: &'a mut Heap,
+      }
+
+      impl vm_js::VmJobContext for TeardownCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("TeardownCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("TeardownCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: vm_js::RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut host_ctx = VmJsHostContext::default();
+      let mut hooks = DomShimMicrotaskHooks::new(&mut host_ctx);
+
+      let mut first_err: Option<VmError> = None;
+      let mut termination_err: Option<VmError> = None;
+
+      loop {
+        let Some((realm, job)) = rt.vm.microtask_queue_mut().pop_front() else {
+          break;
+        };
+
+        let job_result = {
+          let mut ctx = Ctx {
+            vm: &mut rt.vm,
+            heap: &mut rt.heap,
+            host: &mut host_ctx,
+            realm,
+          };
+          job.run(&mut ctx, &mut hooks)
+        };
+
+        // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
+        // microtask queue before proceeding (or before discarding the remaining queue on
+        // termination).
+        hooks.drain_into(rt.vm.microtask_queue_mut());
+
+        match job_result {
+          Ok(()) => {}
+          Err(e @ VmError::Termination(_)) => {
+            termination_err = Some(e);
+            break;
+          }
+          Err(e) => {
+            if first_err.is_none() {
+              first_err = Some(e);
+            }
+          }
+        }
+      }
+
+      if let Some(err) = termination_err {
+        // Termination is a hard stop: discard any remaining queued jobs (and any jobs enqueued by
+        // the failing job) so we don't leak persistent roots.
+        let mut ctx = TeardownCtx { heap: &mut rt.heap };
+        rt.vm.microtask_queue_mut().teardown(&mut ctx);
+        rt.vm.microtask_queue_mut().end_checkpoint();
+        return Err(err);
+      }
+
+      rt.vm.microtask_queue_mut().end_checkpoint();
+      match first_err {
+        Some(err) => Err(err),
+        None => Ok(()),
+      }
+    })
   }
 }
 

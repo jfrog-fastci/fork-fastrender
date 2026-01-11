@@ -747,6 +747,38 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 }
 
 #[test]
+fn window_realm_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body><div id=t></div></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let window = host.window_mut();
+
+  window
+    .exec_script(
+      r#"
+const el = document.getElementById('t');
+Promise.resolve().then(() => { el.dataset.fooBar = 'baz'; });
+"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let before = window
+    .exec_script("document.getElementById('t').getAttribute('data-foo-bar') === null")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(before, Value::Bool(true));
+
+  window
+    .perform_microtask_checkpoint()
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let after = window
+    .exec_script("document.getElementById('t').getAttribute('data-foo-bar') === 'baz'")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(after, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
