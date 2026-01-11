@@ -1,6 +1,6 @@
 # knowledge-base
 
-Semantic knowledge base for `ecma-rs` analysis passes, expressed as YAML.
+Semantic knowledge base for `ecma-rs` analysis passes, expressed as YAML/TOML.
 
 ## Naming conventions
 
@@ -13,6 +13,14 @@ Canonical names use `node:<module>.<export>`:
 - `node:crypto.randomBytes`
 
 Common alias spellings (e.g. `fs.readFile`, `path.join`) can be listed under `aliases`.
+
+When loading the bundled knowledge base, lookups are alias-aware via:
+
+- `ApiDatabase::get(name_or_alias)`
+- `ApiDatabase::canonical_name(name_or_alias)`
+
+Additionally, Node.js canonical names automatically treat the `node:` prefixless form as an alias
+(e.g. `fs.readFile` resolves to `node:fs.readFile`).
 
 ### Web platform globals
 
@@ -116,4 +124,20 @@ In YAML, `properties` is typically a map of string keys; encoding keys use a dot
     encoding.output: same_as_input
     encoding.preserves_input_if: ascii
     encoding.length_preserving_if: ascii
+```
+
+## Arbitrary properties (typed)
+
+`properties` preserves structured values (via `serde_json::Value`) so downstream analyses can use
+typed metadata without string parsing. For example:
+
+```yaml
+- name: lodash.debounce
+  properties:
+    timer_based: true
+    mutates_argument: 0
+    tags: ["timing", "callback"]
+    meta:
+      category: timing
+      notes: "may schedule work"
 ```
