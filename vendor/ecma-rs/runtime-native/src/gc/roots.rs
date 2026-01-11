@@ -80,12 +80,14 @@ impl SimpleRememberedSet {
 
   fn add(&mut self, obj: *mut u8) {
     debug_assert!(!obj.is_null());
+    // Set the per-object REMEMBERED bit idempotently and only enqueue into the
+    // remembered set the first time it transitions from 0 -> 1.
+    //
     // SAFETY: `obj` must point to the start of a valid GC-managed object.
-    let header = unsafe { &mut *(obj as *mut super::ObjHeader) };
-    if header.is_remembered() {
+    let header = unsafe { &*(obj as *const super::ObjHeader) };
+    if !header.set_remembered_idempotent() {
       return;
     }
-    header.set_remembered(true);
     self.objs.push(obj);
   }
 
