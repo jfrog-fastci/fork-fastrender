@@ -45,7 +45,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep clang lld llvm
 
       # Cargo.lock is intentionally untracked for this library workspace.
       # Generate it on the fly so we can use --locked for reproducible
@@ -88,6 +88,9 @@ jobs:
           cargo test --workspace
           --exclude native-js --exclude native-js-cli
           --locked
+
+      - name: Verify `.llvm_stackmaps` is retained in native binaries
+        run: ./scripts/check_llvm_stackmaps.sh
 
       - name: Smoke fuzz (bounded)
         run: |

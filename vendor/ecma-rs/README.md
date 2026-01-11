@@ -24,6 +24,7 @@ Today the repo contains:
 - **Runnable examples**: [`docs/examples.md`](./docs/examples.md) — copy/paste `bash scripts/cargo_agent.sh run` examples for the core crate APIs.
 - **Native TS→LLVM docs**: [`native-js/README.md`](./native-js/README.md) (crate API + LLVM setup) and [`native-js-cli/README.md`](./native-js-cli/README.md) (CLI usage + current supported subset).
 - **Native runtime ABI**: [`docs/runtime-native.md`](./docs/runtime-native.md) and [`runtime-native/README.md`](./runtime-native/README.md).
+- **Native codegen notes**: [`docs/native_stackmaps.md`](./docs/native_stackmaps.md) — preserving LLVM GC stackmaps in release binaries.
 
 The workspace dependency graph in [`docs/deps.md`](./docs/deps.md) is generated; run `just docs` to refresh it.
 
