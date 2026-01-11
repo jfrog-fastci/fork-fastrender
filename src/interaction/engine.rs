@@ -2031,7 +2031,6 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
-
 fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option<Arc<ComputedStyle>> {
   // Multiple box nodes can map back to the same styled node id (e.g. anonymous wrappers,
   // fragmentation, etc). For interaction purposes we only need a representative computed style
@@ -2056,6 +2055,7 @@ fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option
   }
   fallback
 }
+
 fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;
