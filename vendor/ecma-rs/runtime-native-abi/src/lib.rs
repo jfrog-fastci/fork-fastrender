@@ -1282,7 +1282,6 @@ mod tests {
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
     let c_path = tmp_dir.join("header_smoke.c");
-    let obj_path = tmp_dir.join("header_smoke.o");
 
     std::fs::write(
       &c_path,
@@ -1298,26 +1297,40 @@ int main(void) { return 0; }
     let cc = std::env::var("CC").unwrap_or_else(|_| std::string::String::from("cc"));
     let mut cc_parts = cc.split_whitespace();
     let program = cc_parts.next().unwrap_or("cc");
-    let mut cmd = Command::new(program);
-    cmd.args(cc_parts);
-    cmd
-      .arg("-std=c11")
-      .arg("-Wall")
-      .arg("-Wextra")
-      .arg("-Werror")
-      .arg("-c")
-      .arg(&c_path)
-      .arg(std::format!("-I{}", out_dir.display()))
-      .arg("-o")
-      .arg(&obj_path);
+    let cc_args: Vec<&str> = cc_parts.collect();
 
-    let output = cmd.output().unwrap_or_else(|e| panic!("failed to spawn C compiler: {e}"));
-    if !output.status.success() {
-      panic!(
-        "runtime_native_abi.h smoke compile failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-      );
+    let variants: &[(&str, &[&str])] = &[
+      ("", &[]),
+      ("_stats", &["RUNTIME_NATIVE_GC_STATS"]),
+      ("_debug", &["RUNTIME_NATIVE_GC_DEBUG"]),
+      ("_stats_debug", &["RUNTIME_NATIVE_GC_STATS", "RUNTIME_NATIVE_GC_DEBUG"]),
+    ];
+
+    for (suffix, defines) in variants {
+      let obj_path = tmp_dir.join(std::format!("header_smoke{suffix}.o"));
+      let mut cmd = Command::new(program);
+      cmd.args(&cc_args);
+      cmd.arg("-std=c11")
+        .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Werror");
+      for define in *defines {
+        cmd.arg(std::format!("-D{define}"));
+      }
+      cmd.arg("-c")
+        .arg(&c_path)
+        .arg(std::format!("-I{}", out_dir.display()))
+        .arg("-o")
+        .arg(&obj_path);
+
+      let output = cmd.output().unwrap_or_else(|e| panic!("failed to spawn C compiler: {e}"));
+      if !output.status.success() {
+        panic!(
+          "runtime_native_abi.h smoke compile failed ({suffix}):\nstdout:\n{}\nstderr:\n{}",
+          String::from_utf8_lossy(&output.stdout),
+          String::from_utf8_lossy(&output.stderr),
+        );
+      }
     }
   }
 }
