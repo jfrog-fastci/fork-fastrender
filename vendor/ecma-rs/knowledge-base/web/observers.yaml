@@ -9,9 +9,9 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES | WRITES_GLOBAL
+      flags: ALLOCATES
       throws: Maybe
-  purity: Impure
+  purity: Allocating
 
 - name: MutationObserver.prototype.observe
   kind: function
@@ -23,6 +23,7 @@
       flags: WRITES_GLOBAL
       throws: Maybe
   purity: Impure
+  async: true
 
 - name: MutationObserver.prototype.disconnect
   kind: function
@@ -42,9 +43,9 @@
   since: "baseline"
   effects:
     Custom:
-      flags: READS_GLOBAL | ALLOCATES
+      flags: READS_GLOBAL | WRITES_GLOBAL | ALLOCATES
       throws: Never
-  purity: ReadOnly
+  purity: Impure
 
 - name: IntersectionObserver
   kind: constructor
@@ -55,9 +56,9 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES | WRITES_GLOBAL
+      flags: ALLOCATES
       throws: Maybe
-  purity: Impure
+  purity: Allocating
 
 - name: IntersectionObserver.prototype.observe
   kind: function
@@ -69,6 +70,7 @@
       flags: WRITES_GLOBAL
       throws: Maybe
   purity: Impure
+  async: true
 
 - name: IntersectionObserver.prototype.unobserve
   kind: function
@@ -78,7 +80,7 @@
   effects:
     Custom:
       flags: WRITES_GLOBAL
-      throws: Never
+      throws: Maybe
   purity: Impure
 
 - name: IntersectionObserver.prototype.disconnect
@@ -92,6 +94,17 @@
       throws: Never
   purity: Impure
 
+- name: IntersectionObserver.prototype.takeRecords
+  kind: function
+  aliases:
+    - IntersectionObserver.prototype.takeRecords
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | WRITES_GLOBAL | ALLOCATES
+      throws: Never
+  purity: Impure
+
 - name: ResizeObserver
   kind: constructor
   aliases:
@@ -101,9 +114,9 @@
   since: "baseline"
   effects:
     Custom:
-      flags: ALLOCATES | WRITES_GLOBAL
+      flags: ALLOCATES
       throws: Maybe
-  purity: Impure
+  purity: Allocating
 
 - name: ResizeObserver.prototype.observe
   kind: function
@@ -115,6 +128,7 @@
       flags: WRITES_GLOBAL
       throws: Maybe
   purity: Impure
+  async: true
 
 - name: ResizeObserver.prototype.unobserve
   kind: function
@@ -124,7 +138,7 @@
   effects:
     Custom:
       flags: WRITES_GLOBAL
-      throws: Never
+      throws: Maybe
   purity: Impure
 
 - name: ResizeObserver.prototype.disconnect
