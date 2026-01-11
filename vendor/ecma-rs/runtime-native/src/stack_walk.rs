@@ -21,6 +21,37 @@ pub struct FrameView {
   pub return_address: usize,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum FpWalkError {
+  #[error("frame-pointer walk exceeded max depth ({max_depth}), possible cycle or corruption")]
+  MaxDepthExceeded { max_depth: usize },
+
+  #[error("frame pointer {fp:#x} is misaligned (expected {alignment}-byte alignment)")]
+  FramePointerMisaligned { fp: usize, alignment: usize },
+
+  #[error(
+    "frame pointer {fp:#x} is outside stack bounds [{lo:#x}, {hi:#x}) (need {record_size} bytes)"
+  )]
+  FramePointerOutOfBounds {
+    fp: usize,
+    lo: u64,
+    hi: u64,
+    record_size: u64,
+  },
+
+  #[error("frame pointer chain is not monotonically increasing: fp={fp:#x} prev_fp={prev_fp:#x}")]
+  NonMonotonicFramePointer { fp: usize, prev_fp: usize },
+
+  #[error("return address {return_address:#x} at fp={fp:#x} is not canonical")]
+  ReturnAddressNonCanonical { fp: usize, return_address: usize },
+
+  #[error("caller SP computation overflowed for fp={fp:#x}")]
+  CallerSpOverflow { fp: usize },
+
+  #[error("caller SP {caller_sp:#x} is outside stack bounds (hi={hi:#x})")]
+  CallerSpOutOfBounds { caller_sp: usize, hi: u64 },
+}
+
 /// Frame-pointer stack walker for x86_64 SysV.
 ///
 /// Assumes the program is compiled with frame pointers enabled for all code we want to walk.
@@ -60,31 +91,47 @@ impl StackWalker {
   }
 
   /// Produces the next caller frame view. Returns `None` when reaching the end of the FP chain
-  /// or when sanity checks fail.
+  /// and returns an error when sanity checks fail.
   ///
   /// # Safety
   /// Walks raw stack memory.
-  pub unsafe fn next_frame(&mut self) -> Option<FrameView> {
-    if self.next_callee_fp == 0 || self.depth >= self.max_depth {
-      return None;
+  pub unsafe fn next_frame(&mut self) -> Result<Option<FrameView>, FpWalkError> {
+    if self.next_callee_fp == 0 {
+      return Ok(None);
+    }
+    if self.depth >= self.max_depth {
+      return Err(FpWalkError::MaxDepthExceeded {
+        max_depth: self.max_depth,
+      });
     }
 
     let callee_fp = self.next_callee_fp;
 
     // Basic alignment sanity check.
     if callee_fp % Self::FP_ALIGN != 0 || callee_fp % align_of::<usize>() != 0 {
-      return None;
+      return Err(FpWalkError::FramePointerMisaligned {
+        fp: callee_fp,
+        alignment: Self::FP_ALIGN,
+      });
     }
 
     if let Some(bounds) = self.bounds {
       if !bounds.contains_range(callee_fp as u64, Self::FP_RECORD_SIZE) {
-        return None;
+        return Err(FpWalkError::FramePointerOutOfBounds {
+          fp: callee_fp,
+          lo: bounds.lo,
+          hi: bounds.hi,
+          record_size: Self::FP_RECORD_SIZE,
+        });
       }
     }
 
     // Ensure the FP chain is monotonic (stack grows down; walking "up" should increase addresses).
     if self.prev_fp != 0 && callee_fp <= self.prev_fp {
-      return None;
+      return Err(FpWalkError::NonMonotonicFramePointer {
+        fp: callee_fp,
+        prev_fp: self.prev_fp,
+      });
     }
 
     let callee_fp_ptr = callee_fp as *const usize;
@@ -92,32 +139,51 @@ impl StackWalker {
     let caller_fp = callee_fp_ptr.read();
     let return_address = callee_fp_ptr.add(1).read();
 
-    if caller_fp == 0 || return_address == 0 {
-      return None;
+    if caller_fp == 0 {
+      return Ok(None);
     }
 
     if caller_fp <= callee_fp {
-      return None;
+      return Err(FpWalkError::NonMonotonicFramePointer {
+        fp: caller_fp,
+        prev_fp: callee_fp,
+      });
     }
 
     if caller_fp % Self::FP_ALIGN != 0 || caller_fp % align_of::<usize>() != 0 {
-      return None;
+      return Err(FpWalkError::FramePointerMisaligned {
+        fp: caller_fp,
+        alignment: Self::FP_ALIGN,
+      });
     }
 
     if let Some(bounds) = self.bounds {
       if !bounds.contains_range(caller_fp as u64, Self::FP_RECORD_SIZE) {
-        return None;
+        return Err(FpWalkError::FramePointerOutOfBounds {
+          fp: caller_fp,
+          lo: bounds.lo,
+          hi: bounds.hi,
+          record_size: Self::FP_RECORD_SIZE,
+        });
       }
     }
 
     if !is_canonical_pc(return_address) {
-      return None;
+      return Err(FpWalkError::ReturnAddressNonCanonical {
+        fp: callee_fp,
+        return_address,
+      });
     }
 
-    let caller_cfa = callee_fp.checked_add(Self::CALLER_CFA_OFFSET)?;
+    let caller_cfa = callee_fp
+      .checked_add(Self::CALLER_CFA_OFFSET)
+      .ok_or(FpWalkError::CallerSpOverflow { fp: callee_fp })?;
     if let Some(bounds) = self.bounds {
       if caller_cfa as u64 > bounds.hi {
-        return None;
+        return Err(FpWalkError::CallerSpOutOfBounds {
+          caller_sp: caller_cfa,
+          hi: bounds.hi,
+        });
       }
     }
 
@@ -125,11 +191,11 @@ impl StackWalker {
     self.next_callee_fp = caller_fp;
     self.depth += 1;
 
-    Some(FrameView {
+    Ok(Some(FrameView {
       caller_fp,
       caller_cfa,
       return_address,
-    })
+    }))
   }
 }
 

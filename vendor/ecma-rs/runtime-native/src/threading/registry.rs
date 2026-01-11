@@ -454,49 +454,9 @@ fn current_os_thread_id() -> u64 {
 }
 
 fn current_stack_bounds() -> Option<StackBounds> {
-  #[cfg(any(target_os = "linux", target_os = "android"))]
-  unsafe {
-    let mut attr: libc::pthread_attr_t = std::mem::zeroed();
-    if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
-      return None;
-    }
-
-    let mut stack_addr: *mut libc::c_void = std::ptr::null_mut();
-    let mut stack_size: libc::size_t = 0;
-    let res = libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size);
-    libc::pthread_attr_destroy(&mut attr);
-    if res != 0 {
-      return None;
-    }
-
-    let lo = stack_addr as usize;
-    let hi = lo.checked_add(stack_size as usize)?;
-    Some(StackBounds { lo, hi })
-  }
-
-  #[cfg(target_os = "macos")]
-  unsafe {
-    let thread = libc::pthread_self();
-    let stack_addr = libc::pthread_get_stackaddr_np(thread);
-    if stack_addr.is_null() {
-      return None;
-    }
-
-    let hi = stack_addr as usize;
-    let stack_size = libc::pthread_get_stacksize_np(thread) as usize;
-    if stack_size == 0 {
-      return None;
-    }
-    let lo = hi.checked_sub(stack_size)?;
-    if lo >= hi {
-      return None;
-    }
-
-    Some(StackBounds { lo, hi })
-  }
-
-  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
-  {
-    None
-  }
+  let bounds = crate::thread_stack::current_thread_stack_bounds().ok()?;
+  Some(StackBounds {
+    lo: bounds.low,
+    hi: bounds.high,
+  })
 }

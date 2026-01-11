@@ -501,7 +501,8 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
         if scan_start == 0 {
           return Err(WalkError::MissingStackMap { return_addr: caller_ra });
         }
-        conservative_scan_frame_words(scan_start, caller_fp, bounds, &mut visit);
+        let scan_end = bounds.map(|b| b.hi).unwrap_or(caller_fp);
+        conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
       }
 
       #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]

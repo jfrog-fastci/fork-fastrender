@@ -137,9 +137,8 @@ pub(crate) fn current_os_tid() -> u64 {
 }
 
 pub(crate) fn current_stack_bounds() -> (usize, usize) {
-  #[cfg(target_os = "linux")]
-  if let Some(bounds) = stack_bounds_pthread() {
-    return bounds;
+  if let Ok(bounds) = crate::thread_stack::current_thread_stack_bounds() {
+    return (bounds.low, bounds.high);
   }
 
   // Fallback: estimate bounds around the current stack pointer. This is only

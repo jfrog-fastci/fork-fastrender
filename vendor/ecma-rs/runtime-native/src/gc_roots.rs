@@ -24,7 +24,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use crate::stack_walk::{FrameView, StackWalker};
+use crate::stack_walk::{FpWalkError, FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::{compute_sp, StackBounds, DWARF_FP_REG, DWARF_SP_REG};
 use crate::statepoints::{eval_location, RegFile, RootSlot};
@@ -293,7 +293,11 @@ impl<'a> StackRootEnumerator<'a> {
   /// base/derived relocation slot pair.
   ///
   /// This is a convenience helper when stack bounds are not available.
-  pub fn visit_reloc_pairs_unbounded(&self, top_callee_fp: usize, f: impl FnMut(RelocPair)) {
+  pub fn visit_reloc_pairs_unbounded(
+    &self,
+    top_callee_fp: usize,
+    f: impl FnMut(RelocPair),
+  ) -> Result<(), FpWalkError> {
     self.visit_reloc_pairs(top_callee_fp, None, f)
   }
 
@@ -312,10 +316,13 @@ impl<'a> StackRootEnumerator<'a> {
     top_callee_fp: usize,
     bounds: Option<StackBounds>,
     mut f: impl FnMut(RelocPair),
-  ) {
+  ) -> Result<(), FpWalkError> {
     unsafe {
       let mut walker = StackWalker::new(top_callee_fp, bounds);
-      while let Some(frame) = walker.next_frame() {
+      loop {
+        let Some(frame) = walker.next_frame()? else {
+          break;
+        };
         let Some(callsite) = self.stackmaps.lookup(frame.return_address as u64) else {
           // We likely reached an unmanaged/native frame (no stackmap entry). Stop.
           break;
@@ -329,6 +336,7 @@ impl<'a> StackRootEnumerator<'a> {
         }
       }
     }
+    Ok(())
   }
 }
 

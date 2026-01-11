@@ -73,6 +73,7 @@ pub mod threading;
 pub mod runtime;
 pub mod thread;
 pub mod thread_registry;
+pub mod thread_stack;
 pub mod stackmaps;
 pub mod stackmaps_validate;
 pub mod stackmaps_loader;
