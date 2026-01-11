@@ -7,11 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 diagnostics = { workspace = true }
 hir-js = { workspace = true }
 inkwell = { workspace = true }
 llvm-sys = { workspace = true }
+parse-js = { workspace = true }
 target-lexicon = { workspace = true }
 thiserror = { workspace = true }
 typecheck-ts = { workspace = true }
-parse-js = { workspace = true }
+
+[dev-dependencies]
+object = { workspace = true }
+tempfile = { workspace = true }

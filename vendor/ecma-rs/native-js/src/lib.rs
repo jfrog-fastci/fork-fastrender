@@ -12,10 +12,36 @@
 //!
 //! We currently enforce a simple, robust invariant: generated functions always keep frame pointers
 //! and never participate in tail-call optimization. See `docs/gc_stack_walking.md`.
+//!
+//! ## `.llvm_stackmaps` discovery
+//!
+//! LLVM's statepoint/stackmap infrastructure emits a `.llvm_stackmaps` section in the final ELF.
+//! That section is needed by the native runtime's GC to locate safepoints, but LLVM's own
+//! `__LLVM_StackMaps` symbol is `STB_LOCAL` (not linkable from other objects).
+//!
+//! The native-js link pipeline therefore exports two **global** symbols that delimit the in-memory
+//! stackmap blob:
+//!
+//! - [`link::FASTR_STACKMAPS_START_SYM`]
+//! - [`link::FASTR_STACKMAPS_END_SYM`]
+//!
+//! Runtime usage (Rust):
+//!
+//! ```ignore
+//! extern "C" {
+//!   static __fastr_stackmaps_start: u8;
+//!   static __fastr_stackmaps_end: u8;
+//! }
+//!
+//! let ptr = unsafe { &__fastr_stackmaps_start as *const u8 };
+//! let len = unsafe { (&__fastr_stackmaps_end as *const u8).offset_from(ptr) as usize };
+//! let stackmaps = unsafe { std::slice::from_raw_parts(ptr, len) };
+//! ```
 
 pub mod codegen;
 pub mod codes;
 pub mod emit;
+pub mod link;
 pub mod strict;
 
 mod stack_walking;
@@ -156,9 +182,7 @@ mod tests {
       .expect("param 1")
       .into_int_value();
 
-    let sum = builder
-      .build_int_add(a, b, "sum")
-      .expect("build add");
+    let sum = builder.build_int_add(a, b, "sum").expect("build add");
     builder.build_return(Some(&sum)).expect("build ret");
 
     if let Err(err) = module.verify() {
@@ -169,3 +193,4 @@ mod tests {
     }
   }
 }
+

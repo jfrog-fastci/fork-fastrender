@@ -92,6 +92,7 @@ neon = { version = "1", default-features = false }
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
 once_cell = "1.20.2"
+object = "0.37.3"
 ordered-float = "3"
 parking_lot = "0.12"
 predicates = { version = "3.1", default-features = false }
