@@ -114,15 +114,11 @@ impl ProgramState {
       .map(|hir_def| hir_def.path.kind == HirDefKind::Param)
       .unwrap_or(false);
 
-    let synthetic_value_def = matches!(def_data.kind, DefKind::Var(_))
-      && self.value_defs.values().any(|value_def| *value_def == def);
-
     if matches!(def_data.kind, DefKind::Interface(_)) {
       self.merge_interface_symbol_types(def)?;
     }
 
     if let Some(existing) = self.interned_def_types.get(&def).copied() {
-      let skip_cache = matches!(def_data.kind, DefKind::Var(_)) && !synthetic_value_def;
       let mut ty = if store.contains_type_id(existing) {
         store.canon(existing)
       } else {
@@ -134,10 +130,7 @@ impl ProgramState {
           if args.is_empty() && ref_def.0 == def.0
       );
 
-      if matches!(store.type_kind(ty), tti::TypeKind::Unknown)
-        || skip_cache
-        || (is_param_def && is_self_ref)
-      {
+      if matches!(store.type_kind(ty), tti::TypeKind::Unknown) || (is_param_def && is_self_ref) {
         self.interned_def_types.remove(&def);
       } else {
         if let DefKind::Function(func) = &def_data.kind {
@@ -327,19 +320,16 @@ impl ProgramState {
           let mut skip_implicit_any = false;
           let mut inferred = if let Some(t) = annotated {
             t
-          } else if let Some(init) = init {
-            if self.checking_bodies.contains(&init.body) {
-              skip_implicit_any = true;
-              prim.unknown
-            } else {
-              if !self.snapshot_loaded {
-                self.body_results.remove(&init.body);
-              }
-              let res = self.check_body(init.body)?;
-              init_span_for_const = res.expr_span(init.expr);
+           } else if let Some(init) = init {
+             if self.checking_bodies.contains(&init.body) {
+               skip_implicit_any = true;
+               prim.unknown
+             } else {
+               let res = self.check_body(init.body)?;
+               init_span_for_const = res.expr_span(init.expr);
 
-              init_pat_is_root = init
-                .pat
+               init_pat_is_root = init
+                 .pat
                 .map(|pat| {
                   let meta = match self.body_map.get(&init.body) {
                     Some(meta) => meta,
