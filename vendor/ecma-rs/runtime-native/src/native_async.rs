@@ -164,7 +164,10 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
       if vtable.is_null() {
         std::process::abort();
       }
-      ((unsafe { &*vtable }).drop)(node);
+      crate::ffi::abort_on_callback_panic(|| unsafe {
+        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+        drop_fn(node);
+      });
     }
     return;
   }
@@ -334,7 +337,11 @@ fn run_coroutine(coro_id: CoroutineId) {
     // coroutine frame may move, so we must not dereference `coro` afterwards.
     let flags = unsafe { (*coro).flags };
 
-    let step = unsafe { (vtable.resume)(coro) };
+    let step = crate::ffi::abort_on_callback_panic(|| unsafe {
+      let resume: unsafe extern "C-unwind" fn(CoroutineRef) -> crate::async_abi::CoroutineStep =
+        std::mem::transmute(vtable.resume);
+      resume(coro)
+    });
     match step.tag {
       CoroutineStepTag::Complete => {
         // The runtime owns the coroutine handle after spawn. On completion we:

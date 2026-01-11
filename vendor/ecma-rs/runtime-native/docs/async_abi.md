@@ -581,6 +581,11 @@ All exported async runtime C ABI functions are **abort-on-panic**: if a Rust pan
 executing an exported `extern "C"` runtime function, the runtime will abort the process rather than
 attempting to unwind across the FFI boundary.
 
+Likewise, **callbacks invoked by the runtime** (microtasks/macrotasks, timer callbacks, I/O watcher
+callbacks, blocking-pool work items, parallel work items, thenable vtable calls, etc.) are treated as
+**must-not-panic**. If a callback panics, the runtime prints a short diagnostic (including the stable
+substring `runtime-native: panic in callback`) and aborts the process deterministically.
+
 Generated code must treat runtime panics as fatal and must not assume it can recover from panics or
 observe them as structured errors.
 

@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::Range;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -291,13 +290,9 @@ impl TaskState {
       None => self.data,
     };
 
-    let res = catch_unwind(AssertUnwindSafe(|| (self.func)(data)));
+    crate::ffi::invoke_cb1(self.func, data);
     if let Some(h) = gc_root {
       let _ = crate::roots::global_persistent_handle_table().free(h);
-    }
-    if res.is_err() {
-      // Never unwind across our `extern "C"` boundary.
-      std::process::abort();
     }
 
     // Update `done` while holding the mutex to avoid lost wake-ups between the

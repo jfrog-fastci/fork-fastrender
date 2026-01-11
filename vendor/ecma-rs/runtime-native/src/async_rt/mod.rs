@@ -264,7 +264,7 @@ impl Drop for Task {
     let Some(drop) = self.drop else {
       return;
     };
-    drop(self.data);
+    crate::ffi::invoke_cb1(drop, self.data);
   }
 }
 
@@ -303,8 +303,12 @@ impl Task {
   }
 
   fn run(self) {
-    let data = self.gc_root.as_ref().map(|r| r.ptr()).unwrap_or(self.data);
-    (self.callback)(data);
+    let data = self
+      .gc_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(self.data);
+    crate::ffi::invoke_cb1(self.callback, data);
   }
 }
 
@@ -475,7 +479,14 @@ pub(crate) fn poll() -> bool {
     // Serialize at the ABI boundary: the event loop itself is single-consumer.
     let _guard = POLL_LOCK.lock();
     debug_maybe_hold_poll_lock();
-    global().poll()
+    let pending = global().poll();
+    // If the runtime is fully idle, yield the OS thread. Many embeddings drive the
+    // runtime in a tight polling loop; yielding here avoids starving background
+    // worker threads (blocking pool, parallel runtime) that may enqueue new work.
+    if !pending {
+      std::thread::yield_now();
+    }
+    pending
   })
   .unwrap_or(false)
 }

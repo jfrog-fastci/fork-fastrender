@@ -29,5 +29,8 @@ pub fn keep_alive_gc_ref(gc_ref: crate::roots::GcPtr) {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_keep_alive_gc_ref(gc_ref: crate::roots::GcPtr) {
+  // Panic-safety: this function is intentionally panic-free (it only executes
+  // inline asm) and is left unwrapped to keep the generated keep-alive point
+  // minimal.
   keep_alive_gc_ref(gc_ref);
 }

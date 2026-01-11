@@ -108,6 +108,10 @@ loom = "0.7"
 name = "stackmap-dump"
 path = "src/bin/stackmap_dump.rs"
 
+[[bin]]
+name = "ffi-panic-smoke"
+path = "src/bin/ffi_panic_smoke.rs"
+
 [[bench]]
 name = "card_table"
 harness = false

@@ -142,10 +142,10 @@ pub extern "C" fn rt_debug_shape_descriptor(id: RtShapeId) -> *const RtShapeDesc
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_validate_heap() {
+  // The runtime does not yet have a global heap instance wired to the exported ABI. The most
+  // helpful invariant we can validate today is that the shape table is present and internally
+  // consistent (which registration already checks).
   abort_on_panic(|| {
-    // The runtime does not yet have a global heap instance wired to the exported ABI. The most
-    // helpful invariant we can validate today is that the shape table is present and internally
-    // consistent (which registration already checks).
     if SHAPE_TABLE.get().is_none() {
       panic!("rt_debug_validate_heap: shape table not registered");
     }

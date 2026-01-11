@@ -1,4 +1,3 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 
 use crate::abi::TaskId;
@@ -30,12 +29,7 @@ fn call_body(body: ParForBody, i: usize, data: *mut u8) {
   // here so stop-the-world requests don't have to wait for the user callback to
   // hit a compiler-inserted safepoint.
   threading::safepoint_poll();
-
-  let res = catch_unwind(AssertUnwindSafe(|| body(i, data)));
-  if res.is_err() {
-    // Never unwind across our `extern "C"` boundary.
-    std::process::abort();
-  }
+  crate::ffi::invoke_cb2_usize(body, i, data);
 }
 
 #[repr(C)]

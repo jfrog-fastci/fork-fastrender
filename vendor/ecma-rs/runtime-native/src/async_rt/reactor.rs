@@ -171,7 +171,7 @@ impl IoWatcherShared {
     }
 
     if let Some(drop) = self.drop {
-      drop(self.data);
+      crate::ffi::invoke_cb1(drop, self.data);
     }
   }
 }
@@ -187,7 +187,7 @@ extern "C" fn run_io_task(data: *mut u8) {
   let task = unsafe { &*(data as *const IoTask) };
   task.shared.in_flight.fetch_add(1, Ordering::AcqRel);
   if task.shared.active.load(Ordering::Acquire) {
-    (task.shared.cb)(task.events, task.shared.data);
+    crate::ffi::invoke_cb2_u32(task.shared.cb, task.events, task.shared.data);
   }
   let prev = task.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
   if prev == 1 {

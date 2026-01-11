@@ -55,7 +55,11 @@ extern "C" fn run_promise_reaction_job(data: *mut u8) {
     std::process::abort();
   }
   let promise = job.promise.ptr() as PromiseRef;
-  ((unsafe { &*vtable }).run)(node, promise);
+  crate::ffi::abort_on_callback_panic(|| unsafe {
+    let run: extern "C-unwind" fn(*mut PromiseReactionNode, PromiseRef) =
+      std::mem::transmute((&*vtable).run);
+    run(node, promise);
+  });
 }
 
 extern "C" fn drop_promise_reaction_job(data: *mut u8) {
@@ -70,7 +74,10 @@ extern "C" fn drop_promise_reaction_job(data: *mut u8) {
   if vtable.is_null() {
     std::process::abort();
   }
-  ((unsafe { &*vtable }).drop)(node);
+  crate::ffi::abort_on_callback_panic(|| unsafe {
+    let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+    drop_fn(node);
+  });
 }
 
 fn make_reaction_task(node: *mut PromiseReactionNode, promise: gc::Root) -> Task {
@@ -96,7 +103,10 @@ pub(crate) fn enqueue_reaction_job(promise: PromiseRef, node: *mut PromiseReacti
     if vtable.is_null() {
       std::process::abort();
     }
-    ((unsafe { &*vtable }).drop)(node);
+    crate::ffi::abort_on_callback_panic(|| unsafe {
+      let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+      drop_fn(node);
+    });
     return;
   }
 

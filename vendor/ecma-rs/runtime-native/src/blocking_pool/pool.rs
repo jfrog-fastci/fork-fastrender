@@ -6,7 +6,6 @@ use crate::threading::ThreadKind;
 use once_cell::sync::OnceCell;
 use parking_lot::Condvar;
 use std::collections::VecDeque;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -179,12 +178,9 @@ fn worker_loop(shared: Arc<Shared>) {
       WorkData::Unrooted(ptr) => {
         let gc_safe = threading::enter_gc_safe_region();
 
-        // The task is responsible for settling the promise. It must not unwind across the FFI
-        // boundary; in practice Rust will abort if it panics.
-        let res = catch_unwind(AssertUnwindSafe(|| (work.task)(*ptr, work.promise)));
-        if res.is_err() {
-          std::process::abort();
-        }
+        // The task is responsible for settling the promise. If it panics we abort the process
+        // deterministically instead of unwinding into the runtime.
+        crate::ffi::invoke_cb2_promise(work.task, *ptr, work.promise);
 
         drop(gc_safe);
       }
@@ -193,10 +189,7 @@ fn worker_loop(shared: Arc<Shared>) {
         // executing them; the GC-safe contract forbids touching the GC heap while the world may be
         // stopped/moving.
         let data = root.ptr();
-        let res = catch_unwind(AssertUnwindSafe(|| (work.task)(data, work.promise)));
-        if res.is_err() {
-          std::process::abort();
-        }
+        crate::ffi::invoke_cb2_promise(work.task, data, work.promise);
       }
     }
   }

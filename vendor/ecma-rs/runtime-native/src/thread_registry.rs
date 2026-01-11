@@ -20,7 +20,9 @@ pub extern "C" fn rt_register_current_thread() {
 /// [`rt_register_current_thread`] so the runtime can track thread kinds.
 #[no_mangle]
 pub extern "C" fn rt_register_thread() {
-  rt_register_current_thread();
+  crate::ffi::abort_on_panic(|| {
+    rt_register_current_thread();
+  });
 }
 
 /// Unregister the current OS thread from the GC mutator set.
@@ -36,5 +38,7 @@ pub extern "C" fn rt_unregister_current_thread() {
 /// Compatibility alias for earlier codegen prototypes that expect a `rt_unregister_thread` symbol.
 #[no_mangle]
 pub extern "C" fn rt_unregister_thread() {
-  rt_unregister_current_thread();
+  crate::ffi::abort_on_panic(|| {
+    rt_unregister_current_thread();
+  });
 }

@@ -304,6 +304,11 @@ pub fn rt_gc_poll() -> bool {
 #[no_mangle]
 #[cold]
 extern "C" fn runtime_native_gc_safepoint_slow_impl(requested_epoch: u64, ctx: *const SafepointContext) {
+  crate::ffi::abort_on_panic(|| runtime_native_gc_safepoint_slow_impl_inner(requested_epoch, ctx));
+}
+
+#[cold]
+fn runtime_native_gc_safepoint_slow_impl_inner(requested_epoch: u64, ctx: *const SafepointContext) {
   // Safety: the assembly wrapper passes a valid pointer to an initialized
   // `SafepointContext` on its stack.
   let mut ctx = unsafe { *ctx };

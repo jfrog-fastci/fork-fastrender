@@ -78,7 +78,8 @@ fn run_coroutine(coro: *mut RtCoroutineHeader) {
 
   // Drive the coroutine until it yields, awaits, or completes.
   loop {
-    let status = unsafe { ((*coro).resume)(coro) };
+    let resume = unsafe { (*coro).resume };
+    let status = crate::ffi::invoke_coro_resume(resume, coro);
     match status {
       RtCoroStatus::Done | RtCoroStatus::Pending => break,
       RtCoroStatus::Yield => {

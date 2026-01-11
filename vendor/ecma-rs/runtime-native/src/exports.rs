@@ -37,7 +37,6 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
 use std::os::raw::c_char;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -191,8 +190,11 @@ fn thread_kind_from_abi(kind: u32) -> threading::ThreadKind {
 
 #[inline(always)]
 fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usize) {
-  debug_assert!(!card_table.is_null());
-  debug_assert!(start_card <= end_card);
+  // This helper is used by the write barrier, which must be panic-free and
+  // should never rely on debug assertions for correctness.
+  if card_table.is_null() || start_card > end_card {
+    std::process::abort();
+  }
 
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_card_marks((end_card - start_card + 1) as u64);
@@ -245,15 +247,11 @@ fn ensure_current_thread_registered() {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_alloc(size);
-  // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc(size, shape)));
-
-  match res {
-    Ok(ptr) => ptr,
-    Err(_) => std::process::abort(),
-  }
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_alloc(size);
+    crate::rt_alloc::alloc(size, shape)
+  })
 }
 
 /// Allocate a pinned (non-moving) GC object.
@@ -262,31 +260,23 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
-  // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc_pinned(size, shape)));
-
-  match res {
-    Ok(ptr) => ptr,
-    Err(_) => std::process::abort(),
-  }
+  abort_on_panic(|| {
+    crate::rt_alloc::alloc_pinned(size, shape)
+  })
 }
 
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::GcPtr {
-  let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
-    crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
-  };
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_alloc_array(len, spec.elem_size);
-  let _ = spec;
-
-  // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc_array(len, elem_size)));
-  match res {
-    Ok(ptr) => ptr,
-    Err(_) => std::process::abort(),
-  }
+  abort_on_panic(|| {
+    let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
+      crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
+    };
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_alloc_array(len, spec.elem_size);
+    let _ = spec;
+    crate::rt_alloc::alloc_array(len, elem_size)
+  })
 }
 
 #[no_mangle]
@@ -337,18 +327,22 @@ pub extern "C" fn rt_array_data(obj: *mut u8) -> *mut u8 {
 /// Register the current OS thread with the runtime.
 #[no_mangle]
 pub extern "C" fn rt_thread_init(kind: u32) {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_thread_init();
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_thread_init();
 
-  threading::register_current_thread(thread_kind_from_abi(kind));
+    threading::register_current_thread(thread_kind_from_abi(kind));
+  })
 }
 
 /// Unregister the current OS thread from the runtime.
 #[no_mangle]
 pub extern "C" fn rt_thread_deinit() {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_thread_deinit();
-  threading::unregister_current_thread();
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_thread_deinit();
+    threading::unregister_current_thread();
+  })
 }
 
 /// Register the current OS thread with the runtime thread registry.
@@ -358,25 +352,29 @@ pub extern "C" fn rt_thread_deinit() {
 /// the registration).
 #[no_mangle]
 pub extern "C" fn rt_thread_register(kind: RtThreadKind) -> u64 {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_thread_init();
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_thread_init();
 
-  let kind = match kind {
-    RtThreadKind::RT_THREAD_MAIN => threading::ThreadKind::Main,
-    RtThreadKind::RT_THREAD_WORKER => threading::ThreadKind::Worker,
-    RtThreadKind::RT_THREAD_IO => threading::ThreadKind::Io,
-    RtThreadKind::RT_THREAD_EXTERNAL => threading::ThreadKind::External,
-  };
-  threading::register_current_thread(kind).get()
+    let kind = match kind {
+      RtThreadKind::RT_THREAD_MAIN => threading::ThreadKind::Main,
+      RtThreadKind::RT_THREAD_WORKER => threading::ThreadKind::Worker,
+      RtThreadKind::RT_THREAD_IO => threading::ThreadKind::Io,
+      RtThreadKind::RT_THREAD_EXTERNAL => threading::ThreadKind::External,
+    };
+    threading::register_current_thread(kind).get()
+  })
 }
 
 /// Unregister the current OS thread from the runtime thread registry.
 #[no_mangle]
 pub extern "C" fn rt_thread_unregister() {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_thread_deinit();
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_thread_deinit();
 
-  threading::unregister_current_thread();
+    threading::unregister_current_thread();
+  })
 }
 
 /// Mark/unmark the current thread as parked (idle) inside the runtime.
@@ -385,7 +383,9 @@ pub extern "C" fn rt_thread_unregister() {
 /// safepoint poll before returning.
 #[no_mangle]
 pub extern "C" fn rt_thread_set_parked(parked: bool) {
-  threading::set_parked(parked);
+  abort_on_panic(|| {
+    threading::set_parked(parked);
+  })
 }
 
 /// Enter a GC safepoint and return the (possibly relocated) pointer stored in `slot`.
@@ -401,11 +401,13 @@ pub extern "C" fn rt_thread_set_parked(parked: bool) {
 pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
   slot: crate::roots::GcHandle,
 ) -> crate::roots::GcPtr {
-  if slot.is_null() {
-    crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
-  }
-  crate::safepoint::rt_gc_safepoint();
-  crate::roots::load_handle(slot)
+  abort_on_panic(|| unsafe {
+    if slot.is_null() {
+      crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
+    }
+    crate::safepoint::rt_gc_safepoint();
+    crate::roots::load_handle(slot)
+  })
 }
 
 /// Cheap GC poll used by compiler-inserted fast paths (e.g. loop backedge safepoints).
@@ -421,6 +423,8 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
 /// `rewrite-statepoints-for-gc` does not wrap the poll itself in a statepoint.
 #[no_mangle]
 pub extern "C" fn rt_gc_poll() -> bool {
+  // Panic-safety: this must remain a leaf (see doc comment above) and is
+  // intentionally panic-free.
   (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0
 }
 // LLVM `place-safepoints` poll function.
@@ -444,10 +448,12 @@ pub extern "C" fn rt_gc_poll() -> bool {
 /// flip/resize that changes the current young generation region.
 #[no_mangle]
 pub extern "C" fn rt_gc_set_young_range(start: *mut u8, end: *mut u8) {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_set_young_range();
-  YOUNG_SPACE.start.store(start as usize, Ordering::Release);
-  YOUNG_SPACE.end.store(end as usize, Ordering::Release);
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_set_young_range();
+    YOUNG_SPACE.start.store(start as usize, Ordering::Release);
+    YOUNG_SPACE.end.store(end as usize, Ordering::Release);
+  })
 }
 
 /// Debug/test helper: return the current young-space range.
@@ -459,12 +465,14 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
   out_start: *mut crate::roots::GcPtr,
   out_end: *mut crate::roots::GcPtr,
 ) {
-  if !out_start.is_null() {
-    *out_start = YOUNG_SPACE.start.load(Ordering::Acquire) as *mut u8;
-  }
-  if !out_end.is_null() {
-    *out_end = YOUNG_SPACE.end.load(Ordering::Acquire) as *mut u8;
-  }
+  abort_on_panic(|| unsafe {
+    if !out_start.is_null() {
+      *out_start = YOUNG_SPACE.start.load(Ordering::Acquire) as *mut u8;
+    }
+    if !out_end.is_null() {
+      *out_end = YOUNG_SPACE.end.load(Ordering::Acquire) as *mut u8;
+    }
+  })
 }
 
 // --- Process-global remembered set ---------------------------------------------------------------
@@ -491,7 +499,9 @@ impl FixedRememberedSet {
 
   #[inline]
   fn insert(&self, obj: *mut u8) {
-    debug_assert!(!obj.is_null());
+    if obj.is_null() {
+      std::process::abort();
+    }
     let idx = self.len.fetch_add(1, Ordering::AcqRel);
     if idx >= REMEMBERED_SET_CAPACITY {
       // The write barrier must not allocate, so we cannot grow. Overflow would allow missing an
@@ -598,7 +608,9 @@ pub fn remembered_set_len_for_tests() -> usize {
 
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
-  debug_assert!(!obj.is_null());
+  if obj.is_null() {
+    std::process::abort();
+  }
   // `rt_write_barrier` is classified as `NoGC` by the ABI contract (must not allocate or safepoint).
   // Record remembered objects into a fixed-capacity global set so tests (and future minor GC wiring)
   // can iterate remembered objects without scanning the entire heap.
@@ -612,6 +624,8 @@ unsafe fn remember_old_object(obj: *mut u8) {
 /// Write barrier for GC.
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u8) {
+  // Panic-safety: this is on a very hot path in generated code. Keep it
+  // panic-free and avoid `abort_on_panic` overhead here.
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_write_barrier();
 
@@ -679,6 +693,8 @@ pub unsafe extern "C" fn rt_write_barrier_range(
   start_slot: *mut u8,
   len: usize,
 ) {
+  // Panic-safety: this is on a hot path in generated code. Keep it panic-free
+  // and avoid `abort_on_panic` overhead here.
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_write_barrier_range();
 
@@ -837,10 +853,8 @@ mod write_barrier_tests {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_gc_collect() {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_gc_collect();
-
-  // Capture the current frame pointer *before* entering `catch_unwind`.
+  // Capture the current frame pointer *before* entering `abort_on_panic` (which
+  // uses `std::panic::catch_unwind` in `panic=unwind` builds).
   //
   // `std::panic::catch_unwind` lives in the prebuilt sysroot and may not preserve a
   // reliable frame-pointer chain (e.g. it can repurpose RBP as a general register).
@@ -851,11 +865,14 @@ pub extern "C" fn rt_gc_collect() {
   //
   // By grabbing the FP of this outer `rt_gc_collect` frame here and walking from it
   // later, we avoid depending on the sysroot's FP behavior while still keeping the
-  // entire body under `catch_unwind` to prevent unwinding across the C ABI.
+  // extern "C" boundary abort-on-panic.
   let entry_fp = crate::stackwalk::current_frame_pointer();
   let fallback_ctx = crate::arch::capture_safepoint_context();
 
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_gc_collect();
+
     // If a stop-the-world is already active, join it as a mutator safepoint at
     // this callsite (so we still publish a safepoint context for stack walking).
     let epoch = crate::threading::safepoint::current_epoch();
@@ -915,11 +932,7 @@ pub extern "C" fn rt_gc_collect() {
     }
 
     crate::safepoint::with_world_stopped_requested(stop_epoch, || {});
-  }));
-
-  if res.is_err() {
-    std::process::abort();
-  }
+  })
 }
 
 /// Returns the total number of bytes currently held in non-moving backing stores (e.g. `ArrayBuffer`
@@ -929,7 +942,7 @@ pub extern "C" fn rt_gc_collect() {
 /// to GC trigger decisions even though they are not part of the moving heap.
 #[no_mangle]
 pub extern "C" fn rt_backing_store_external_bytes() -> usize {
-  crate::buffer::backing_store::global_backing_store_allocator().external_bytes()
+  abort_on_panic(|| crate::buffer::backing_store::global_backing_store_allocator().external_bytes())
 }
 
 // -----------------------------------------------------------------------------
@@ -1000,13 +1013,15 @@ pub extern "C" fn rt_global_root_unregister(slot: *mut usize) {
 /// returned handle is passed to [`rt_gc_unregister_root_slot`].
 #[no_mangle]
 pub extern "C" fn rt_gc_register_root_slot(slot: crate::roots::GcHandle) -> u32 {
-  crate::roots::global_root_registry().register_root_slot(slot)
+  abort_on_panic(|| crate::roots::global_root_registry().register_root_slot(slot))
 }
 
 /// Unregister a previously registered root slot handle.
 #[no_mangle]
 pub extern "C" fn rt_gc_unregister_root_slot(handle: u32) {
-  crate::roots::global_root_registry().unregister(handle);
+  abort_on_panic(|| {
+    crate::roots::global_root_registry().unregister(handle);
+  })
 }
 
 /// Convenience API: create an internal root slot initialized to `ptr`.
@@ -1015,13 +1030,15 @@ pub extern "C" fn rt_gc_unregister_root_slot(handle: u32) {
 /// handle without managing slot storage themselves.
 #[no_mangle]
 pub extern "C" fn rt_gc_pin(ptr: crate::roots::GcPtr) -> u32 {
-  crate::roots::global_root_registry().pin(ptr)
+  abort_on_panic(|| crate::roots::global_root_registry().pin(ptr))
 }
 
 /// Destroy a handle created by [`rt_gc_pin`].
 #[no_mangle]
 pub extern "C" fn rt_gc_unpin(handle: u32) {
-  crate::roots::global_root_registry().unregister(handle);
+  abort_on_panic(|| {
+    crate::roots::global_root_registry().unregister(handle);
+  })
 }
 
 /// Returns the current pointer value for a root handle created by
@@ -1087,16 +1104,20 @@ pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
 pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut RtGcStatsSnapshot) {
-  if out.is_null() {
-    return;
-  }
-  *out = crate::gc_stats::snapshot();
+  abort_on_panic(|| unsafe {
+    if out.is_null() {
+      return;
+    }
+    *out = crate::gc_stats::snapshot();
+  })
 }
 
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
 pub extern "C" fn rt_gc_stats_reset() {
-  crate::gc_stats::reset();
+  abort_on_panic(|| {
+    crate::gc_stats::reset();
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -1109,43 +1130,39 @@ pub extern "C" fn rt_gc_stats_reset() {
 /// returns null.
 #[no_mangle]
 pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
-  crate::gc::weak::global_weak_add(value).as_u64()
+  abort_on_panic(|| crate::gc::weak::global_weak_add(value).as_u64())
 }
 
 /// Resolve a weak handle back to a pointer, or null if the referent is dead/cleared.
 #[no_mangle]
 pub extern "C" fn rt_weak_get(handle: u64) -> crate::roots::GcPtr {
-  crate::gc::weak::global_weak_get(WeakHandle::from_u64(handle)).unwrap_or(std::ptr::null_mut())
+  abort_on_panic(|| {
+    crate::gc::weak::global_weak_get(WeakHandle::from_u64(handle)).unwrap_or(std::ptr::null_mut())
+  })
 }
 
 /// Remove a weak handle.
 #[no_mangle]
 pub extern "C" fn rt_weak_remove(handle: u64) {
-  crate::gc::weak::global_weak_remove(WeakHandle::from_u64(handle));
+  abort_on_panic(|| {
+    crate::gc::weak::global_weak_remove(WeakHandle::from_u64(handle));
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     crate::rt_parallel().spawn(task, data)
-  }));
-  match res {
-    Ok(id) => id,
-    Err(_) => std::process::abort(),
-  }
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn_rooted(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     crate::rt_parallel().spawn_rooted(task, data)
-  }));
-  match res {
-    Ok(id) => id,
-    Err(_) => std::process::abort(),
-  }
+  })
 }
 
 #[no_mangle]
@@ -1196,13 +1213,10 @@ pub extern "C" fn rt_parallel_spawn_promise_legacy(
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     crate::rt_parallel().join(tasks, count)
-  }));
-  if res.is_err() {
-    std::process::abort();
-  }
+  })
 }
 
 #[no_mangle]
@@ -1212,13 +1226,10 @@ pub extern "C" fn rt_parallel_for(
   body: extern "C" fn(usize, *mut u8),
   data: *mut u8,
 ) {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     crate::rt_parallel().parallel_for(start, end, body, data)
-  }));
-  if res.is_err() {
-    std::process::abort();
-  }
+  })
 }
 
 /// Spawn CPU-bound work on the work-stealing pool, returning a promise that can be awaited by the
@@ -1236,15 +1247,11 @@ pub extern "C" fn rt_parallel_spawn_promise(
   data: *mut u8,
   promise_layout: PromiseLayout,
 ) -> PromiseRef {
-  let res = catch_unwind(AssertUnwindSafe(|| {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     crate::parallel_integration::spawn_promise(task, data, promise_layout)
-  }));
-  match res {
-    Ok(p) => p,
-    Err(_) => std::process::abort(),
-  }
+  })
 }
 
 #[no_mangle]
@@ -2005,7 +2012,7 @@ extern "C" fn web_timer_fire(data: *mut u8) {
     }
   };
 
-  (cb)(cb_data);
+  crate::ffi::invoke_cb1(cb, cb_data);
 
   if kind == WebTimerKind::Timeout {
     if let Some(drop_data) = drop_data {
@@ -2405,14 +2412,18 @@ pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve_into_legacy(p: PromiseRef, value: PromiseResolveInput) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_resolve_into(p, value)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_resolve_into(p, value)
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: PromiseRef) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_resolve_promise(p, other)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_resolve_promise(p, other)
+  })
 }
 
 #[no_mangle]
@@ -2435,8 +2446,10 @@ pub fn rt_debug_promise_outcome(p: PromiseRef) -> (u8, ValueRef) {
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve_thenable_legacy(p: PromiseRef, thenable: ThenableRef) {
-  ensure_event_loop_thread_registered();
-  async_rt::promise::promise_resolve_thenable(p, thenable)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::promise::promise_resolve_thenable(p, thenable)
+  })
 }
 
 #[no_mangle]
@@ -2478,8 +2491,10 @@ pub extern "C" fn rt_coro_await_legacy(coro: *mut RtCoroutineHeader, awaited: Pr
 
 #[no_mangle]
 pub extern "C" fn rt_coro_await_value_legacy(coro: *mut RtCoroutineHeader, awaited: PromiseResolveInput, next_state: u32) {
-  ensure_event_loop_thread_registered();
-  async_rt::coroutine::coro_await_value(coro, awaited, next_state)
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    async_rt::coroutine::coro_await_value(coro, awaited, next_state)
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -2494,14 +2509,16 @@ pub extern "C" fn rt_coro_await_value_legacy(coro: *mut RtCoroutineHeader, await
 /// `runtime` must be a valid pointer to a [`Runtime`] created by the embedder.
 #[no_mangle]
 pub unsafe extern "C" fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread {
-  let Some(runtime) = runtime.as_ref() else {
-    return std::ptr::null_mut();
-  };
+  abort_on_panic(|| unsafe {
+    let Some(runtime) = runtime.as_ref() else {
+      return std::ptr::null_mut();
+    };
 
-  match runtime.attach_current_thread_raw() {
-    Ok(thread) => thread,
-    Err(_) => std::ptr::null_mut(),
-  }
+    match runtime.attach_current_thread_raw() {
+      Ok(thread) => thread,
+      Err(_) => std::ptr::null_mut(),
+    }
+  })
 }
 
 /// Detach the calling OS thread from its runtime.
@@ -2516,28 +2533,30 @@ pub unsafe extern "C" fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread 
 /// `thread` must be a pointer previously returned by [`rt_thread_attach`].
 #[no_mangle]
 pub unsafe extern "C" fn rt_thread_detach(thread: *mut Thread) {
-  let Some(thread_ref) = thread.as_ref() else {
-    return;
-  };
+  abort_on_panic(|| unsafe {
+    let Some(thread_ref) = thread.as_ref() else {
+      return;
+    };
 
-  let runtime = thread_ref.runtime;
-  let Some(runtime) = runtime.as_ref() else {
-    return;
-  };
+    let runtime = thread_ref.runtime;
+    let Some(runtime) = runtime.as_ref() else {
+      return;
+    };
 
-  // Detach must not allow a thread to "disappear" from any runtime-visible
-  // registries while a stop-the-world safepoint epoch is active.
-  //
-  // If the current thread participates in the safepoint registry, join the
-  // safepoint first so the coordinator can make progress.
-  if crate::threading::safepoint::current_epoch() & 1 == 1 {
-    if registry::current_thread_id().is_some() {
-      crate::threading::safepoint::rt_gc_safepoint();
-    } else {
-      crate::threading::safepoint::wait_while_stop_the_world();
+    // Detach must not allow a thread to "disappear" from any runtime-visible
+    // registries while a stop-the-world safepoint epoch is active.
+    //
+    // If the current thread participates in the safepoint registry, join the
+    // safepoint first so the coordinator can make progress.
+    if crate::threading::safepoint::current_epoch() & 1 == 1 {
+      if registry::current_thread_id().is_some() {
+        crate::threading::safepoint::rt_gc_safepoint();
+      } else {
+        crate::threading::safepoint::wait_while_stop_the_world();
+      }
     }
-  }
 
-  // Best-effort: we cannot report errors over this C ABI.
-  let _ = runtime.detach_thread_ptr(thread);
+    // Best-effort: we cannot report errors over this C ABI.
+    let _ = runtime.detach_thread_ptr(thread);
+  })
 }

@@ -10,8 +10,6 @@ use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 /// Internal promise state used while a promise is being settled.
 ///
 /// These values are not part of the public ABI; external code should only observe
@@ -217,7 +215,7 @@ extern "C" fn callback_reaction_run(node: *mut PromiseReactionNode, _promise: cr
   // Safety: allocated by `alloc_callback_reaction`.
   let node = unsafe { &*(node as *mut CallbackReaction) };
   let data = node.gc_root.as_ref().map(|r| r.ptr()).unwrap_or(node.data);
-  (node.callback)(data);
+  crate::ffi::invoke_cb1(node.callback, data);
 }
 
 extern "C" fn callback_reaction_drop(node: *mut PromiseReactionNode) {
@@ -335,7 +333,10 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
       if vtable.is_null() {
         std::process::abort();
       }
-      ((unsafe { &*vtable }).drop)(node);
+      crate::ffi::abort_on_callback_panic(|| unsafe {
+        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+        drop_fn(node);
+      });
     }
     return;
   }
@@ -626,16 +627,10 @@ pub(crate) fn debug_waiters_is_empty(p: PromiseRef) -> bool {
 // -----------------------------------------------------------------------------
 
 static SELF_RESOLUTION_TYPE_ERROR: u8 = 0;
-static THENABLE_CALL_PANICKED: u8 = 0;
 
 #[inline]
 fn self_resolution_error() -> ValueRef {
   (&SELF_RESOLUTION_TYPE_ERROR as *const u8).cast_mut().cast()
-}
-
-#[inline]
-fn thenable_panic_error() -> ValueRef {
-  (&THENABLE_CALL_PANICKED as *const u8).cast_mut().cast()
 }
 
 fn promise_is_pending(p: PromiseRef) -> bool {
@@ -801,10 +796,9 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       .map(|r| r.ptr())
       .unwrap_or(job.thenable.ptr);
 
-    let thrown = catch_unwind(AssertUnwindSafe(|| unsafe {
-      (call_then)(thenable_ptr, thenable_resolve, thenable_reject, resolver_ptr)
-    }))
-    .unwrap_or_else(|_| thenable_panic_error());
+    let thrown = unsafe {
+      crate::ffi::invoke_thenable_call(call_then, thenable_ptr, thenable_resolve, thenable_reject, resolver_ptr)
+    };
 
     if !thrown.is_null() {
       thenable_reject(resolver_ptr, thrown);
