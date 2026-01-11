@@ -74,7 +74,6 @@ clap = { workspace = true, features = ["derive"] }
 crossbeam-deque = { workspace = true }
 crossbeam-utils = { workspace = true }
 libc = { workspace = true }
-io-uring = { workspace = true }
 object = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
@@ -85,6 +84,9 @@ thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
 runtime-io-uring = { workspace = true }
 loom = { version = "0.7", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
 
 [build-dependencies]
 object = { workspace = true }

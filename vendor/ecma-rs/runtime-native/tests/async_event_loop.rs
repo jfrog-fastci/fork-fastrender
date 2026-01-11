@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use runtime_native::async_rt::Interest;
 use runtime_native::async_rt::Task;
 use runtime_native::threading;

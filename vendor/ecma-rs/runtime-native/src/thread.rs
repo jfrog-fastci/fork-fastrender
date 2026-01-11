@@ -131,8 +131,12 @@ pub(crate) fn current_os_tid() -> u64 {
 
   #[cfg(not(target_os = "linux"))]
   {
-    // Best-effort fallback; only used on non-Linux targets.
-    std::thread::current().id().as_u64()
+    // Best-effort fallback for platforms where `gettid` is unavailable.
+    //
+    // We intentionally avoid `std::thread::ThreadId::as_u64()` here because it is
+    // unstable; `pthread_self()` is portable across Unix-like platforms and is
+    // sufficient as a unique identifier while the thread is alive.
+    unsafe { libc::pthread_self() as usize as u64 }
   }
 }
 
