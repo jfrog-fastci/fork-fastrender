@@ -1299,3 +1299,53 @@
   parallelizable: false
   idempotent: false
   deterministic: false
+
+- name: node:fs.watch
+  kind: function
+  aliases:
+    - fs.watch
+  since: "v0.1.0"
+  effects:
+    base: [io, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.watchFile
+  kind: function
+  aliases:
+    - fs.watchFile
+  since: "v0.1.0"
+  effects:
+    base: [io, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.unwatchFile
+  kind: function
+  aliases:
+    - fs.unwatchFile
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
