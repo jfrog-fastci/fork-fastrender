@@ -50,8 +50,6 @@ prefixes for planned crates) and where they come from.
 | `NATIVE####` | `native-js` | Native codegen diagnostics (LLVM IR generation + lowering). |
 | `RTNATIVE####` | `runtime-native` | Native runtime library diagnostics (GC/runtime integration). |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
-| `VMJS####` | `vm-js` | Virtual machine / runtime diagnostics. |
-| `NJS####` | `native-js` | Native compilation / LLVM backend diagnostics. |
 | `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
 | `MINIFY####` | `minify-js` tooling | Currently used by the benchmark harness (`bench/minify-js`). |
 | `KB####` | `knowledge-base` tooling | Knowledge base schema/consistency validation diagnostics. |
