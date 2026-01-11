@@ -106,7 +106,7 @@ fn main() {
   rustflags.push_str(&format!(
     // Speed up the nested build: we only care about the link result (symbols +
     // section retention), not debug info.
-    "-C debuginfo=0 -C force-frame-pointers=yes -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+    "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
   ));
 
@@ -114,6 +114,7 @@ fn main() {
   let status = Command::new("bash")
     .arg(cargo_agent)
     .arg("build")
+    .arg("--offline")
     .arg("--quiet")
     .arg("--manifest-path")
     .arg(project_dir.join("Cargo.toml"))

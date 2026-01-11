@@ -167,6 +167,7 @@ runtime-native = {{ path = "{}", features = ["fp_regression"] }}
     .env("CARGO_PROFILE_RELEASE_STRIP", "none")
     .env("RUSTFLAGS", rustflags)
     .arg("build")
+    .arg("--offline")
     .arg("--manifest-path")
     .arg(&manifest_path)
     .arg("--release")
