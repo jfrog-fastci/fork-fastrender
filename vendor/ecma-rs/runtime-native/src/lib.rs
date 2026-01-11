@@ -13,6 +13,8 @@ pub mod gc;
 pub mod nursery;
 pub mod threading;
 pub mod async_rt;
+pub mod stackmaps;
+pub mod statepoints;
 
 mod alloc;
 mod exports;
