@@ -694,6 +694,16 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
   #[rustfmt::skip]
   let v = match args.len() {
     1 => match (func, &args[0]) {
+      ("BigInt", BigInt(v)) => BigInt(v.clone()),
+      ("BigInt", Bool(v)) => BigInt(BigInt::from(*v as u8)),
+      ("BigInt", Num(v)) => {
+        let value = v.0;
+        if !value.is_finite() || value.trunc() != value {
+          return None;
+        }
+        BigInt(bigint_from_integral_f64(value))
+      }
+      ("BigInt", Str(v)) => BigInt(parse_bigint(v)?),
       ("Math.abs", Num(a)) => Num(JN(a.0.abs())),
       ("Math.acos", Num(a)) => Num(JN(a.0.acos())),
       ("Math.asin", Num(a)) => Num(JN(a.0.asin())),

@@ -286,6 +286,57 @@ fn bigint_arithmetic_and_bitops_are_constant_folded() {
 }
 
 #[test]
+fn bigint_builtin_matches_to_bigint_semantics() {
+  let eval_bigint = |arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call("BigInt", &[arg]) {
+    Some(ConstBigInt(v)) => v,
+    other => panic!("unexpected eval result: {other:?}"),
+  };
+
+  assert_eq!(eval_bigint(ConstStr("".into())), BigInt::from(0));
+  assert_eq!(eval_bigint(ConstStr("   ".into())), BigInt::from(0));
+  assert_eq!(eval_bigint(ConstStr("0xF".into())), BigInt::from(15));
+  assert_eq!(eval_bigint(optimize_js::il::inst::Const::Bool(true)), BigInt::from(1));
+  assert_eq!(eval_bigint(optimize_js::il::inst::Const::Bool(false)), BigInt::from(0));
+  assert_eq!(eval_bigint(ConstNum(JN(1.0))), BigInt::from(1));
+
+  // 9007199254740993 is not exactly representable as f64 (it rounds to 2^53).
+  assert_eq!(
+    eval_bigint(ConstNum(JN(9007199254740993.0))),
+    BigInt::from(9007199254740992i64)
+  );
+
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[ConstNum(JN(1.1))]),
+    None,
+    "BigInt(1.1) throws RangeError"
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[ConstNum(JN(f64::INFINITY))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[optimize_js::il::inst::Const::Null]),
+    None,
+    "BigInt(null) throws TypeError"
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[optimize_js::il::inst::Const::Undefined]),
+    None,
+    "BigInt(undefined) throws TypeError"
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[ConstStr("not a number".into())]),
+    None,
+    "invalid BigInt string literal throws SyntaxError"
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt", &[ConstStr("-0xF".into())]),
+    None,
+    "signed prefixed forms are rejected"
+  );
+}
+
+#[test]
 fn string_concatenation_uses_js_to_string_for_numbers() {
   let empty = ConstStr(String::new());
 
