@@ -42,6 +42,9 @@ u.port;
 u.search;
 u.hash;
 
+const s: string = "hi";
+s.length;
+
 const xs: number[] = [1];
 xs.length;
 "#;
@@ -111,6 +114,7 @@ fn resolves_known_member_reads_typed() {
   let port = find_member_expr(&lowered, body, "u", "port");
   let search = find_member_expr(&lowered, body, "u", "search");
   let hash = find_member_expr(&lowered, body, "u", "hash");
+  let str_length = find_member_expr(&lowered, body, "s", "length");
   let length = find_member_expr(&lowered, body, "xs", "length");
 
   let resolved_pathname = resolve_member(&lowered, root_body, pathname, &types).expect("resolve u.pathname");
@@ -149,6 +153,10 @@ fn resolves_known_member_reads_typed() {
   let resolved_hash = resolve_member(&lowered, root_body, hash, &types).expect("resolve u.hash");
   assert_eq!(resolved_hash.api.as_str(), "URL.prototype.hash");
 
+  let resolved_str_length =
+    resolve_member(&lowered, root_body, str_length, &types).expect("resolve s.length");
+  assert_eq!(resolved_str_length.api.as_str(), "String.prototype.length");
+
   let resolved_length = resolve_member(&lowered, root_body, length, &types).expect("resolve xs.length");
   assert_eq!(resolved_length.api.as_str(), "Array.prototype.length");
 
@@ -166,5 +174,9 @@ fn resolves_known_member_reads_typed() {
   assert_eq!(
     root_tables.resolved_member[length.0 as usize].map(|api| api.as_str()),
     Some("Array.prototype.length")
+  );
+  assert_eq!(
+    root_tables.resolved_member[str_length.0 as usize].map(|api| api.as_str()),
+    Some("String.prototype.length")
   );
 }

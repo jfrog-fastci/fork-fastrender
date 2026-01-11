@@ -99,3 +99,10 @@
   properties:
     # Returns an array of strings; element encoding depends on inputs.
     encoding.output: unknown
+
+- name: String.prototype.length
+  kind: property_get
+  effects: Pure
+  purity: Pure
+  properties:
+    returns: number

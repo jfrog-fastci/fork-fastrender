@@ -878,6 +878,7 @@ pub fn resolve_member(
     "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
       ApiId::ArrayPrototypeLength
     }
+    "length" if receiver_is_string(types, body, member.object) => ApiId::StringPrototypeLength,
     "href" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeHref,
     "pathname" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypePathname,
     "origin" if receiver_is_named_ref(types, body, member.object, "URL") => ApiId::UrlPrototypeOrigin,
