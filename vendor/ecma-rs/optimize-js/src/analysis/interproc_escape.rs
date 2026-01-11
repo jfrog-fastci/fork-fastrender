@@ -333,10 +333,25 @@ fn compute_cfg_escape_summary(
                   .copied()
                   .unwrap_or(EscapeState::Unknown);
 
-                // `ReturnEscape` means "returned to the caller"; it does not by itself cause the
-                // passed value to escape *from this function*.
+                // `ReturnEscape` in a callee summary means the argument may be returned *or thrown*
+                // to the callee's caller.
+                //
+                // - Return-by-alias: does not by itself cause the value to escape *from this
+                //   wrapper* (the wrapper would also have to return it, which is handled by the
+                //   return-alias var-assign edges built above).
+                // - Throw-by-alias: does escape from this wrapper, because we don't model
+                //   `try`/`catch` explicitly and treat throws as escaping to the caller.
+                let thrown_by_call = callee_state == EscapeState::ReturnEscape
+                  && callee_summary.throws_param.contains(&k);
                 let mapped = match callee_state {
-                  EscapeState::NoEscape | EscapeState::ReturnEscape => EscapeState::NoEscape,
+                  EscapeState::NoEscape => EscapeState::NoEscape,
+                  EscapeState::ReturnEscape => {
+                    if thrown_by_call {
+                      EscapeState::ReturnEscape
+                    } else {
+                      EscapeState::NoEscape
+                    }
+                  }
                   EscapeState::GlobalEscape | EscapeState::Unknown => callee_state,
                   EscapeState::ArgEscape(j) => {
                     // Map into this function's parameter index space when possible.
@@ -359,6 +374,9 @@ fn compute_cfg_escape_summary(
                 }
                 for idx in passed_params {
                   summary.param_escape[idx] = summary.param_escape[idx].join(mapped);
+                  if thrown_by_call {
+                    summary.throws_param.insert(idx);
+                  }
                 }
               }
             }
