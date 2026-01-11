@@ -94,11 +94,14 @@ for body_id in lowered.hir.bodies.iter().copied() {
 Enable `effect-js`'s `typed` feature and pass a `TypeProvider`:
 
 ```rust
-use effect_js::typed::TypecheckProgram;
+use std::sync::Arc;
+use effect_js::typed::TypedProgram;
 use effect_js::recognize_patterns_typed;
+use typecheck_ts::Program;
 
-# // ...after creating `program` and `lowered` as above...
-let types = TypecheckProgram::new(&program);
+// `TypedProgram` snapshots per-body typing tables out of `typecheck-ts`.
+let program = Arc::new(program);
+let types = TypedProgram::from_program(program.clone(), file_id);
 let patterns = recognize_patterns_typed(&lowered, lowered.root_body(), &types);
 ```
 

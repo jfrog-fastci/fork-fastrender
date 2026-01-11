@@ -177,11 +177,9 @@ pub fn resolve_api_call_typed(
     "forEach" if receiver_is_array(types, body, member.object) => Some(ApiId::ArrayPrototypeForEach),
     "toLowerCase" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeToLowerCase),
     "split" if receiver_is_string(types, body, member.object) => Some(ApiId::StringPrototypeSplit),
-    "get" if types.expr_is_named_ref(body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
-    "has" if types.expr_is_named_ref(body, member.object, "Map") => Some(ApiId::MapPrototypeHas),
-    "then" if types.expr_is_named_ref(body, member.object, "Promise") => {
-      Some(ApiId::PromisePrototypeThen)
-    }
+    "get" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeGet),
+    "has" if receiver_is_named_ref(types, body, member.object, "Map") => Some(ApiId::MapPrototypeHas),
+    "then" if receiver_is_named_ref(types, body, member.object, "Promise") => Some(ApiId::PromisePrototypeThen),
     _ => None,
   }
 }

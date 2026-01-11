@@ -1,9 +1,6 @@
-use effect_js::{ApiDatabase, RecognizedPattern};
+use effect_js::{ApiDatabase, ArrayChainOp, ArrayTerminal, RecognizedPattern};
 use hir_js::{BodyId, ExprId, ExprKind};
 use std::collections::BTreeSet;
-
-#[cfg(not(feature = "typed"))]
-use effect_js::recognize_patterns_best_effort_untyped;
 
 #[cfg(feature = "typed")]
 use effect_js::{recognize_patterns_typed, typed::TypedProgram};
@@ -27,6 +24,32 @@ const total = arr
   .map(x => x + 1)
   .filter(x => x > 1)
   .reduce((a, b) => a + b, 0);
+
+// Array destructuring pattern.
+const [firstNum, secondNum] = arr;
+
+// String template literal pattern (2+ spans).
+const firstName = "Alice";
+const lastName = "Bob";
+const greeting = `${firstName} ${lastName}`;
+
+// Object spread pattern.
+const baseObj = { a: 1 };
+const merged = { ...baseObj, x: 1, y: 2 };
+
+// Guard clause pattern.
+function guardDemo(x?: string) {
+  if (!x) return;
+  return x.toLowerCase();
+}
+
+// Async iterator pattern.
+declare const asyncIterable: AsyncIterable<number>;
+async function asyncIterDemo() {
+  for await (const item of asyncIterable) {
+    break;
+  }
+}
 
 // Typed Map.get-or-default pattern.
 const m: Map<string, number> = new Map();
@@ -77,11 +100,25 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       "MapFilterReduce(base={}, map_call={}, filter_call={}, reduce_call={})",
       base.0, map_call.0, filter_call.0, reduce_call.0
     ),
-    RecognizedPattern::ArrayChain { base, ops, terminal } => format!(
-      "ArrayChain(base={}, ops={}, terminal={terminal:?})",
-      base.0,
-      ops.len()
-    ),
+    RecognizedPattern::ArrayChain { base, ops, terminal } => {
+      let ops: Vec<&'static str> = ops
+        .iter()
+        .map(|op| match op {
+          ArrayChainOp::Map { .. } => "map",
+          ArrayChainOp::Filter { .. } => "filter",
+          ArrayChainOp::FlatMap { .. } => "flatMap",
+        })
+        .collect();
+      let terminal_kind = match terminal {
+        Some(ArrayTerminal::Reduce { .. }) => "reduce",
+        Some(ArrayTerminal::Find { .. }) => "find",
+        Some(ArrayTerminal::Every { .. }) => "every",
+        Some(ArrayTerminal::Some { .. }) => "some",
+        Some(ArrayTerminal::ForEach { .. }) => "forEach",
+        None => "none",
+      };
+      format!("ArrayChain(base={}, ops={ops:?}, terminal={terminal_kind})", base.0)
+    }
     RecognizedPattern::PromiseAllFetch {
       promise_all_call,
       fetch_call_count,
@@ -206,6 +243,26 @@ fn run(
     seen.contains("PromiseAllFetch"),
     "expected example to produce `PromiseAllFetch` pattern"
   );
+  assert!(
+    seen.contains("StringTemplate"),
+    "expected example to produce `StringTemplate` pattern"
+  );
+  assert!(
+    seen.contains("ObjectSpread"),
+    "expected example to produce `ObjectSpread` pattern"
+  );
+  assert!(
+    seen.contains("ArrayDestructure"),
+    "expected example to produce `ArrayDestructure` pattern"
+  );
+  assert!(
+    seen.contains("GuardClause"),
+    "expected example to produce `GuardClause` pattern"
+  );
+  assert!(
+    seen.contains("AsyncIterator"),
+    "expected example to produce `AsyncIterator` pattern"
+  );
 
   #[cfg(feature = "typed")]
   {
@@ -223,9 +280,14 @@ fn run(
 #[cfg(feature = "typed")]
 fn main() {
   use std::sync::Arc;
+  use typecheck_ts::lib_support::{CompilerOptions, ScriptTarget};
 
   let index_key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
+  let mut options = CompilerOptions::default();
+  // `for await ... of` requires ES2018 lib definitions (AsyncIterable, etc).
+  options.target = ScriptTarget::Es2018;
+
+  let mut host = MemoryHost::with_options(options);
   host.insert(index_key.clone(), INDEX_TS);
 
   let program = Arc::new(Program::new(host, vec![index_key.clone()]));
