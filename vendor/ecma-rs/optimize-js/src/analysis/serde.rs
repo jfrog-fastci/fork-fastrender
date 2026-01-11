@@ -6,8 +6,6 @@
 //!
 //! This module is only compiled when the crate is built with `feature = "serde"`.
 
-#![cfg(feature = "serde")]
-
 use ahash::HashMap;
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
@@ -29,4 +27,3 @@ where
   }
   out.end()
 }
-
