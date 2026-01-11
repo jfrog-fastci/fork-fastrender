@@ -266,12 +266,27 @@ mod tests {
       let s = scope.heap_mut().to_string(value)?;
       Ok(scope.heap().get_string(s)?.to_utf8_lossy())
     }
+
+    fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, array: vm_js::GcObject) -> Result<usize, VmError> {
+      let length_key = alloc_key(scope, "length")?;
+      let len = vm.get(scope, array, length_key)?;
+      match len {
+        Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
+        _ => Err(VmError::TypeError("URLSearchParams init array length is not a number")),
+      }
+    }
+
+    fn array_get(vm: &mut Vm, scope: &mut Scope<'_>, array: vm_js::GcObject, idx: usize) -> Result<Value, VmError> {
+      let idx_s = idx.to_string();
+      let key = alloc_key(scope, &idx_s)?;
+      vm.get(scope, array, key)
+    }
   }
 
   impl WebIdlBindingsHost for UrlSearchParamsHost {
     fn call_operation(
       &mut self,
-      _vm: &mut Vm,
+      vm: &mut Vm,
       scope: &mut Scope<'_>,
       receiver: Option<Value>,
       interface: &'static str,
@@ -286,16 +301,78 @@ mod tests {
               "URLSearchParams constructor called without wrapper object receiver",
             ));
           };
-          let init = match args.first().copied().unwrap_or(Value::Undefined) {
-            Value::Undefined => String::new(),
-            value => Self::value_to_rust_string(scope, value)?,
+
+          let init = args.first().copied().unwrap_or(Value::Undefined);
+          let params = match init {
+            Value::Undefined => UrlSearchParams::new(&self.limits),
+            Value::Object(init_obj) => {
+              if scope.heap().object_is_array(init_obj)? {
+                // Treat arrays as the URLSearchParams "sequence of pairs" initializer.
+                let params = UrlSearchParams::new(&self.limits);
+                let len = Self::array_length(vm, scope, init_obj)?;
+                for idx in 0..len {
+                  let pair = Self::array_get(vm, scope, init_obj, idx)?;
+                  let Value::Object(pair_obj) = pair else {
+                    return Err(VmError::TypeError(
+                      "URLSearchParams init sequence contains a non-object element",
+                    ));
+                  };
+                  if !scope.heap().object_is_array(pair_obj)? {
+                    return Err(VmError::TypeError(
+                      "URLSearchParams init sequence contains a non-array pair",
+                    ));
+                  }
+                  let pair_len = Self::array_length(vm, scope, pair_obj)?;
+                  if pair_len < 2 {
+                    return Err(VmError::TypeError(
+                      "URLSearchParams init pair does not contain two elements",
+                    ));
+                  }
+                  let name = Self::array_get(vm, scope, pair_obj, 0)?;
+                  let value = Self::array_get(vm, scope, pair_obj, 1)?;
+                  let name = Self::value_to_rust_string(scope, name)?;
+                  let value = Self::value_to_rust_string(scope, value)?;
+                  params
+                    .append(&name, &value)
+                    .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
+                }
+                params
+              } else {
+                // Treat non-array objects as the URLSearchParams "record" initializer.
+                let params = UrlSearchParams::new(&self.limits);
+                let keys = scope.ordinary_own_property_keys(init_obj)?;
+                for key in keys {
+                  let vm_js::PropertyKey::String(key_s) = key else {
+                    continue;
+                  };
+                  let Some(desc) = scope.heap().object_get_own_property(init_obj, &key)? else {
+                    continue;
+                  };
+                  if !desc.enumerable {
+                    continue;
+                  }
+
+                  let name = scope.heap().get_string(key_s)?.to_utf8_lossy();
+                  let value = vm.get(scope, init_obj, key)?;
+                  let value = Self::value_to_rust_string(scope, value)?;
+                  params
+                    .append(&name, &value)
+                    .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?;
+                }
+                params
+              }
+            }
+            other => {
+              let init = Self::value_to_rust_string(scope, other)?;
+              if init.is_empty() {
+                UrlSearchParams::new(&self.limits)
+              } else {
+                UrlSearchParams::parse(&init, &self.limits)
+                  .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?
+              }
+            }
           };
-          let params = if init.is_empty() {
-            UrlSearchParams::new(&self.limits)
-          } else {
-            UrlSearchParams::parse(&init, &self.limits)
-              .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?
-          };
+
           self.params.insert(WeakGcObject::from(obj), params);
           Ok(Value::Undefined)
         }
@@ -430,6 +507,89 @@ mod tests {
 
         let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
         assert_eq!(out_s, "a");
+
+        // new URLSearchParams([["x", "1"], ["y", "2"]])
+        let seq_outer = scope.alloc_array(0)?;
+        scope.push_root(Value::Object(seq_outer))?;
+
+        let pair0 = scope.alloc_array(0)?;
+        scope.push_root(Value::Object(pair0))?;
+        let x_str = scope.alloc_string("x")?;
+        scope.push_root(Value::String(x_str))?;
+        let one_str = scope.alloc_string("1")?;
+        scope.push_root(Value::String(one_str))?;
+        let idx0 = alloc_key(&mut scope, "0")?;
+        let idx1 = alloc_key(&mut scope, "1")?;
+        scope.create_data_property_or_throw(pair0, idx0, Value::String(x_str))?;
+        scope.create_data_property_or_throw(pair0, idx1, Value::String(one_str))?;
+
+        let pair1 = scope.alloc_array(0)?;
+        scope.push_root(Value::Object(pair1))?;
+        let y_str = scope.alloc_string("y")?;
+        scope.push_root(Value::String(y_str))?;
+        let two_str = scope.alloc_string("2")?;
+        scope.push_root(Value::String(two_str))?;
+        let idx0 = alloc_key(&mut scope, "0")?;
+        let idx1 = alloc_key(&mut scope, "1")?;
+        scope.create_data_property_or_throw(pair1, idx0, Value::String(y_str))?;
+        scope.create_data_property_or_throw(pair1, idx1, Value::String(two_str))?;
+
+        let outer0 = alloc_key(&mut scope, "0")?;
+        let outer1 = alloc_key(&mut scope, "1")?;
+        scope.create_data_property_or_throw(seq_outer, outer0, Value::Object(pair0))?;
+        scope.create_data_property_or_throw(seq_outer, outer1, Value::Object(pair1))?;
+
+        let seq_params_val =
+          vm.construct_with_host(&mut scope, &mut hooks, ctor, &[Value::Object(seq_outer)], ctor)?;
+        scope.push_root(seq_params_val)?;
+        let Value::Object(seq_params_obj) = seq_params_val else {
+          panic!("URLSearchParams constructor (sequence init) should return an object");
+        };
+
+        let get = vm.get(&mut scope, seq_params_obj, get_key)?;
+        let out = vm.call_with_host(&mut scope, &mut hooks, get, seq_params_val, &[Value::String(x_str)])?;
+        let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
+        assert_eq!(out_s, "1");
+
+        let get = vm.get(&mut scope, seq_params_obj, get_key)?;
+        let out = vm.call_with_host(&mut scope, &mut hooks, get, seq_params_val, &[Value::String(y_str)])?;
+        let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
+        assert_eq!(out_s, "2");
+
+        // new URLSearchParams({ m: "3", n: "4" })
+        let rec_init_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(rec_init_obj))?;
+        let m_key = alloc_key(&mut scope, "m")?;
+        let three_str = scope.alloc_string("3")?;
+        scope.push_root(Value::String(three_str))?;
+        scope.create_data_property_or_throw(rec_init_obj, m_key, Value::String(three_str))?;
+        let n_key = alloc_key(&mut scope, "n")?;
+        let four_str = scope.alloc_string("4")?;
+        scope.push_root(Value::String(four_str))?;
+        scope.create_data_property_or_throw(rec_init_obj, n_key, Value::String(four_str))?;
+
+        let rec_params_val =
+          vm.construct_with_host(&mut scope, &mut hooks, ctor, &[Value::Object(rec_init_obj)], ctor)?;
+        scope.push_root(rec_params_val)?;
+        let Value::Object(rec_params_obj) = rec_params_val else {
+          panic!("URLSearchParams constructor (record init) should return an object");
+        };
+
+        let m_name_str = scope.alloc_string("m")?;
+        scope.push_root(Value::String(m_name_str))?;
+        let m_name = Value::String(m_name_str);
+        let get = vm.get(&mut scope, rec_params_obj, get_key)?;
+        let out = vm.call_with_host(&mut scope, &mut hooks, get, rec_params_val, &[m_name])?;
+        let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
+        assert_eq!(out_s, "3");
+
+        let n_name_str = scope.alloc_string("n")?;
+        scope.push_root(Value::String(n_name_str))?;
+        let n_name = Value::String(n_name_str);
+        let get = vm.get(&mut scope, rec_params_obj, get_key)?;
+        let out = vm.call_with_host(&mut scope, &mut hooks, get, rec_params_val, &[n_name])?;
+        let out_s = UrlSearchParamsHost::value_to_rust_string(&mut scope, out)?;
+        assert_eq!(out_s, "4");
         Ok(())
       },
     ));

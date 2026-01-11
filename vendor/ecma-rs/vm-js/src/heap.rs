@@ -1304,7 +1304,7 @@ impl Heap {
     js.as_code_units() == LENGTH_UNITS
   }
 
-  pub(crate) fn object_is_array(&self, obj: GcObject) -> Result<bool, VmError> {
+  pub fn object_is_array(&self, obj: GcObject) -> Result<bool, VmError> {
     Ok(self.get_object_base(obj)?.array_length().is_some())
   }
 

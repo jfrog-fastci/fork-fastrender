@@ -126,6 +126,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -143,7 +144,7 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = if matches!(v1, Value::Null) {
+      let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
         v1
@@ -161,7 +162,20 @@ pub mod window {
           Value::Object(obj)
         }
       } else {
-        v2
+        {
+          let v = v2;
+          if false {
+            Value::Undefined
+          } else if matches!(v, Value::Null | Value::Undefined) {
+            js_to_dict_add_event_listener_options(rt, host, hooks, v)?
+          } else if let Value::Object(obj) = v {
+            js_to_dict_add_event_listener_options(rt, host, hooks, v)?
+          } else if matches!(v, Value::Bool(_)) {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          } else {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -189,6 +203,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -225,6 +240,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -242,7 +258,7 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = if matches!(v1, Value::Null) {
+      let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
         v1
@@ -260,7 +276,20 @@ pub mod window {
           Value::Object(obj)
         }
       } else {
-        v2
+        {
+          let v = v2;
+          if false {
+            Value::Undefined
+          } else if matches!(v, Value::Null | Value::Undefined) {
+            js_to_dict_event_listener_options(rt, host, hooks, v)?
+          } else if let Value::Object(obj) = v {
+            js_to_dict_event_listener_options(rt, host, hooks, v)?
+          } else if matches!(v, Value::Bool(_)) {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          } else {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -288,6 +317,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -302,6 +332,7 @@ pub mod window {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -363,6 +394,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -377,6 +409,7 @@ pub mod window {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let _ = (host, hooks, callee, args, new_target);
     Err(rt.throw_type_error("Illegal constructor"))
   }
@@ -392,6 +425,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -420,6 +454,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -467,6 +502,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -514,6 +550,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -531,6 +568,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -568,6 +606,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -593,6 +632,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -607,6 +647,7 @@ pub mod window {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -688,6 +729,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -732,6 +774,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -780,6 +823,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -826,6 +870,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -881,6 +926,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -917,6 +963,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -953,6 +1000,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -1001,6 +1049,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -1047,6 +1096,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -1091,6 +1141,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -1137,6 +1188,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -1162,6 +1214,7 @@ pub mod window {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -1176,6 +1229,7 @@ pub mod window {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -1220,7 +1274,156 @@ pub mod window {
       let converted = if matches!(v0, Value::Undefined) {
         Value::String(rt.alloc_string("")?)
       } else {
-        v0
+        {
+          let v = v0;
+          if false {
+            Value::Undefined
+          } else if let Value::Object(obj) = v {
+            let has_iter = if rt.scope.heap().object_is_array(obj)? {
+              true
+            } else {
+              let intr = rt
+                .vm
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+              let sym = intr.well_known_symbols().iterator;
+              rt.scope.push_root(Value::Symbol(sym))?;
+              let key = vm_js::PropertyKey::from_symbol(sym);
+              let method = rt.scope.ordinary_get_with_host_and_hooks(
+                &mut *rt.vm,
+                host,
+                hooks,
+                obj,
+                key,
+                Value::Object(obj),
+              )?;
+              if matches!(method, Value::Undefined | Value::Null) {
+                false
+              } else {
+                if !rt.scope.heap().is_callable(method)? {
+                  return Err(rt.throw_type_error("GetMethod: target is not callable"));
+                }
+                true
+              }
+            };
+            if has_iter {
+              {
+                let v = v;
+                let Value::Object(_obj) = v else {
+                  return Err(rt.throw_type_error("expected object for sequence"));
+                };
+                rt.scope.push_root(v)?;
+                let mut iterator_record =
+                  vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+                rt.scope.push_root(iterator_record.iterator)?;
+                rt.scope.push_root(iterator_record.next_method)?;
+
+                let out = rt.alloc_array(0)?;
+                rt.scope.push_root(Value::Object(out))?;
+
+                let mut idx: usize = 0;
+                while let Some(next) = vm_js::iterator::iterator_step_value(
+                  &mut *rt.vm,
+                  host,
+                  hooks,
+                  &mut rt.scope,
+                  &mut iterator_record,
+                )? {
+                  rt.scope.push_root(next)?;
+                  let converted = {
+                    let v = next;
+                    let Value::Object(_obj) = v else {
+                      return Err(rt.throw_type_error("expected object for sequence"));
+                    };
+                    rt.scope.push_root(v)?;
+                    let mut iterator_record =
+                      vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+                    rt.scope.push_root(iterator_record.iterator)?;
+                    rt.scope.push_root(iterator_record.next_method)?;
+
+                    let out = rt.alloc_array(0)?;
+                    rt.scope.push_root(Value::Object(out))?;
+
+                    let mut idx: usize = 0;
+                    while let Some(next) = vm_js::iterator::iterator_step_value(
+                      &mut *rt.vm,
+                      host,
+                      hooks,
+                      &mut rt.scope,
+                      &mut iterator_record,
+                    )? {
+                      rt.scope.push_root(next)?;
+                      let converted =
+                        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, next)?);
+                      let converted = rt.scope.push_root(converted)?;
+                      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+                      rt.scope.push_root(Value::String(key_s))?;
+                      let key = vm_js::PropertyKey::from_string(key_s);
+                      rt.scope
+                        .create_data_property_or_throw(out, key, converted)?;
+                      idx += 1;
+                    }
+                    Value::Object(out)
+                  };
+                  let converted = rt.scope.push_root(converted)?;
+                  let key_s = rt.scope.alloc_string(&idx.to_string())?;
+                  rt.scope.push_root(Value::String(key_s))?;
+                  let key = vm_js::PropertyKey::from_string(key_s);
+                  rt.scope
+                    .create_data_property_or_throw(out, key, converted)?;
+                  idx += 1;
+                }
+                Value::Object(out)
+              }
+            } else {
+              {
+                let v = v;
+                let Value::Object(input) = v else {
+                  return Err(rt.throw_type_error("expected object for record"));
+                };
+                rt.scope.push_root(Value::Object(input))?;
+                let out_obj = rt.alloc_object()?;
+
+                let keys = rt.scope.ordinary_own_property_keys(input)?;
+                for key in keys {
+                  let vm_js::PropertyKey::String(_s) = key else {
+                    continue;
+                  };
+                  let Some(desc) = rt.scope.heap().object_get_own_property(input, &key)? else {
+                    continue;
+                  };
+                  if !desc.enumerable {
+                    continue;
+                  }
+
+                  let prop_value = rt.scope.ordinary_get_with_host_and_hooks(
+                    &mut *rt.vm,
+                    host,
+                    hooks,
+                    input,
+                    key,
+                    Value::Object(input),
+                  )?;
+                  rt.scope.push_root(prop_value)?;
+
+                  let converted =
+                    Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, prop_value)?);
+                  rt.define_data_property(
+                    out_obj,
+                    key,
+                    converted,
+                    DataPropertyAttributes::new(true, true, true),
+                  )?;
+                }
+                Value::Object(out_obj)
+              }
+            }
+          } else if matches!(v, Value::String(_)) {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -1249,6 +1452,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     let args = if args.len() > 1 { &args[..1] } else { args };
     if args.len() == 0 {
@@ -1303,6 +1507,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -1342,6 +1547,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -1381,6 +1587,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -1416,6 +1623,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -1424,7 +1632,18 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = v0;
+      let converted = {
+        let v = v0;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(obj) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        } else {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        }
+      };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
       let v1 = if args.len() > 1 {
@@ -1468,6 +1687,7 @@ pub mod window {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -1476,7 +1696,18 @@ pub mod window {
       } else {
         Value::Undefined
       };
-      let converted = v0;
+      let converted = {
+        let v = v0;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(obj) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        } else {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        }
+      };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
       let v1 = if args.len() > 1 {
@@ -2146,6 +2377,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2163,7 +2395,7 @@ pub mod worker {
       } else {
         Value::Undefined
       };
-      let converted = if matches!(v1, Value::Null) {
+      let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
         v1
@@ -2181,7 +2413,20 @@ pub mod worker {
           Value::Object(obj)
         }
       } else {
-        v2
+        {
+          let v = v2;
+          if false {
+            Value::Undefined
+          } else if matches!(v, Value::Null | Value::Undefined) {
+            js_to_dict_add_event_listener_options(rt, host, hooks, v)?
+          } else if let Value::Object(obj) = v {
+            js_to_dict_add_event_listener_options(rt, host, hooks, v)?
+          } else if matches!(v, Value::Bool(_)) {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          } else {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -2209,6 +2454,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2245,6 +2491,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2262,7 +2509,7 @@ pub mod worker {
       } else {
         Value::Undefined
       };
-      let converted = if matches!(v1, Value::Null) {
+      let converted = if matches!(v1, Value::Null | Value::Undefined) {
         Value::Null
       } else {
         v1
@@ -2280,7 +2527,20 @@ pub mod worker {
           Value::Object(obj)
         }
       } else {
-        v2
+        {
+          let v = v2;
+          if false {
+            Value::Undefined
+          } else if matches!(v, Value::Null | Value::Undefined) {
+            js_to_dict_event_listener_options(rt, host, hooks, v)?
+          } else if let Value::Object(obj) = v {
+            js_to_dict_event_listener_options(rt, host, hooks, v)?
+          } else if matches!(v, Value::Bool(_)) {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          } else {
+            Value::Bool(rt.scope.heap().to_boolean(v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);
@@ -2308,6 +2568,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -2322,6 +2583,7 @@ pub mod worker {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -2383,6 +2645,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2411,6 +2674,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -2458,6 +2722,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let receiver = None;
     {
       let mut converted_args: Vec<Value> = Vec::new();
@@ -2505,6 +2770,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -2522,6 +2788,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2559,6 +2826,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -2584,6 +2852,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -2598,6 +2867,7 @@ pub mod worker {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -2679,6 +2949,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2723,6 +2994,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2771,6 +3043,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -2817,6 +3090,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -2872,6 +3146,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2908,6 +3183,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2944,6 +3220,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -2992,6 +3269,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -3038,6 +3316,7 @@ pub mod worker {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     {
@@ -3082,6 +3361,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let _ = _args;
@@ -3128,6 +3408,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     rt.scope.push_root(this)?;
     let receiver = Some(this);
     let bindings_host = host_from_hooks(hooks)?;
@@ -3153,6 +3434,7 @@ pub mod worker {
     _args: &[Value],
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     Err(rt.throw_type_error("Illegal constructor"))
   }
 
@@ -3167,6 +3449,7 @@ pub mod worker {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
     let slots = rt.scope.heap().get_function_native_slots(callee)?;
     let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
     let Value::Object(default_proto) = proto_slot else {
@@ -3211,7 +3494,156 @@ pub mod worker {
       let converted = if matches!(v0, Value::Undefined) {
         Value::String(rt.alloc_string("")?)
       } else {
-        v0
+        {
+          let v = v0;
+          if false {
+            Value::Undefined
+          } else if let Value::Object(obj) = v {
+            let has_iter = if rt.scope.heap().object_is_array(obj)? {
+              true
+            } else {
+              let intr = rt
+                .vm
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+              let sym = intr.well_known_symbols().iterator;
+              rt.scope.push_root(Value::Symbol(sym))?;
+              let key = vm_js::PropertyKey::from_symbol(sym);
+              let method = rt.scope.ordinary_get_with_host_and_hooks(
+                &mut *rt.vm,
+                host,
+                hooks,
+                obj,
+                key,
+                Value::Object(obj),
+              )?;
+              if matches!(method, Value::Undefined | Value::Null) {
+                false
+              } else {
+                if !rt.scope.heap().is_callable(method)? {
+                  return Err(rt.throw_type_error("GetMethod: target is not callable"));
+                }
+                true
+              }
+            };
+            if has_iter {
+              {
+                let v = v;
+                let Value::Object(_obj) = v else {
+                  return Err(rt.throw_type_error("expected object for sequence"));
+                };
+                rt.scope.push_root(v)?;
+                let mut iterator_record =
+                  vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+                rt.scope.push_root(iterator_record.iterator)?;
+                rt.scope.push_root(iterator_record.next_method)?;
+
+                let out = rt.alloc_array(0)?;
+                rt.scope.push_root(Value::Object(out))?;
+
+                let mut idx: usize = 0;
+                while let Some(next) = vm_js::iterator::iterator_step_value(
+                  &mut *rt.vm,
+                  host,
+                  hooks,
+                  &mut rt.scope,
+                  &mut iterator_record,
+                )? {
+                  rt.scope.push_root(next)?;
+                  let converted = {
+                    let v = next;
+                    let Value::Object(_obj) = v else {
+                      return Err(rt.throw_type_error("expected object for sequence"));
+                    };
+                    rt.scope.push_root(v)?;
+                    let mut iterator_record =
+                      vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+                    rt.scope.push_root(iterator_record.iterator)?;
+                    rt.scope.push_root(iterator_record.next_method)?;
+
+                    let out = rt.alloc_array(0)?;
+                    rt.scope.push_root(Value::Object(out))?;
+
+                    let mut idx: usize = 0;
+                    while let Some(next) = vm_js::iterator::iterator_step_value(
+                      &mut *rt.vm,
+                      host,
+                      hooks,
+                      &mut rt.scope,
+                      &mut iterator_record,
+                    )? {
+                      rt.scope.push_root(next)?;
+                      let converted =
+                        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, next)?);
+                      let converted = rt.scope.push_root(converted)?;
+                      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+                      rt.scope.push_root(Value::String(key_s))?;
+                      let key = vm_js::PropertyKey::from_string(key_s);
+                      rt.scope
+                        .create_data_property_or_throw(out, key, converted)?;
+                      idx += 1;
+                    }
+                    Value::Object(out)
+                  };
+                  let converted = rt.scope.push_root(converted)?;
+                  let key_s = rt.scope.alloc_string(&idx.to_string())?;
+                  rt.scope.push_root(Value::String(key_s))?;
+                  let key = vm_js::PropertyKey::from_string(key_s);
+                  rt.scope
+                    .create_data_property_or_throw(out, key, converted)?;
+                  idx += 1;
+                }
+                Value::Object(out)
+              }
+            } else {
+              {
+                let v = v;
+                let Value::Object(input) = v else {
+                  return Err(rt.throw_type_error("expected object for record"));
+                };
+                rt.scope.push_root(Value::Object(input))?;
+                let out_obj = rt.alloc_object()?;
+
+                let keys = rt.scope.ordinary_own_property_keys(input)?;
+                for key in keys {
+                  let vm_js::PropertyKey::String(_s) = key else {
+                    continue;
+                  };
+                  let Some(desc) = rt.scope.heap().object_get_own_property(input, &key)? else {
+                    continue;
+                  };
+                  if !desc.enumerable {
+                    continue;
+                  }
+
+                  let prop_value = rt.scope.ordinary_get_with_host_and_hooks(
+                    &mut *rt.vm,
+                    host,
+                    hooks,
+                    input,
+                    key,
+                    Value::Object(input),
+                  )?;
+                  rt.scope.push_root(prop_value)?;
+
+                  let converted =
+                    Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, prop_value)?);
+                  rt.define_data_property(
+                    out_obj,
+                    key,
+                    converted,
+                    DataPropertyAttributes::new(true, true, true),
+                  )?;
+                }
+                Value::Object(out_obj)
+              }
+            }
+          } else if matches!(v, Value::String(_)) {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        }
       };
       let converted = rt.scope.push_root(converted)?;
       converted_args.push(converted);

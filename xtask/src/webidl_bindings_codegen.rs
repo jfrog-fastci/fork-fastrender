@@ -5526,6 +5526,7 @@ fn write_operation_wrapper_vmjs(
     "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  {this_ident}: Value,\n  {args_ident}: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  out.push_str("  let rt = &mut rt;\n");
 
   let receiver_expr = if is_global || is_static {
     "None"
@@ -5719,6 +5720,7 @@ fn write_attribute_getter_wrapper_vmjs(
     "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  _host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  _args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  out.push_str("  let rt = &mut rt;\n");
 
   let receiver_expr = if is_global || is_static {
     "None"
@@ -5752,6 +5754,7 @@ fn write_attribute_setter_wrapper_vmjs(
     "#[allow(dead_code)]\nfn {fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  this: Value,\n  args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  out.push_str("  let rt = &mut rt;\n");
 
   let receiver_expr = if is_global || is_static {
     "None"
@@ -5767,7 +5770,7 @@ fn write_attribute_setter_wrapper_vmjs(
   out.push_str("    let v0 = if args.len() > 0 { args[0] } else { Value::Undefined };\n");
   out.push_str(&format!(
     "    let converted = {};\n",
-    emit_conversion_expr_vmjs(resolved, &attr.type_, "v0", false),
+    emit_conversion_expr_vmjs(resolved, &attr.type_, "v0", true),
   ));
   out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
   out.push_str("    converted_args.push(converted);\n");
@@ -5846,7 +5849,7 @@ fn emit_overload_call_vmjs(
     if arg.variadic {
       out.push_str(&format!(
         "    for v in args.iter().copied().skip({idx}) {{\n      let converted = {};\n      let converted = rt.scope.push_root(converted)?;\n      converted_args.push(converted);\n    }}\n",
-        emit_conversion_expr_vmjs(resolved, &arg.type_, "v", false)
+        emit_conversion_expr_vmjs(resolved, &arg.type_, "v", true)
       ));
       break;
     }
@@ -5855,7 +5858,7 @@ fn emit_overload_call_vmjs(
       "    let v{idx} = if args.len() > {idx} {{ args[{idx}] }} else {{ Value::Undefined }};\n",
       idx = idx
     ));
-    let expr = emit_conversion_expr_for_optional_vmjs(resolved, arg, &format!("v{idx}"), false);
+    let expr = emit_conversion_expr_for_optional_vmjs(resolved, arg, &format!("v{idx}"), true);
     out.push_str(&format!("    let converted = {expr};\n"));
     out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
     out.push_str("    converted_args.push(converted);\n");
@@ -5891,13 +5894,25 @@ fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
       | BuiltinType::UnrestrictedDouble => true,
       BuiltinType::Undefined | BuiltinType::Any | BuiltinType::Object | BuiltinType::Boolean => false,
     },
-    IdlType::Named(name) => resolved.dictionaries.contains_key(name),
+    IdlType::Named(name) => {
+      if resolved.dictionaries.contains_key(name) {
+        true
+      } else if resolved.enums.contains_key(name) {
+        true
+      } else if resolved.typedefs.contains_key(name) {
+        resolved
+          .resolve_typedef(name)
+          .ok()
+          .is_some_and(|ty| type_needs_host_vmjs(resolved, &ty))
+      } else {
+        false
+      }
+    }
     IdlType::Nullable(inner) => type_needs_host_vmjs(resolved, inner),
-    IdlType::Union(_)
-    | IdlType::Sequence(_)
-    | IdlType::FrozenArray(_)
-    | IdlType::Promise(_)
-    | IdlType::Record { .. } => false,
+    IdlType::Union(members) => members.iter().any(|m| type_needs_host_vmjs(resolved, m)),
+    IdlType::Sequence(_) | IdlType::FrozenArray(_) => true,
+    IdlType::Promise(_) => false,
+    IdlType::Record { .. } => true,
   }
 }
 
@@ -5919,6 +5934,7 @@ fn write_constructor_wrapper_vmjs(
     "#[allow(dead_code)]\nfn {call_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  _host: &mut dyn VmHost,\n  _hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  _this: Value,\n  _args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  out.push_str("  let rt = &mut rt;\n");
   out.push_str(&format!(
     "  Err(rt.throw_type_error({msg_lit}))\n",
     msg_lit = rust_string_literal("Illegal constructor")
@@ -5936,6 +5952,7 @@ fn write_constructor_wrapper_vmjs(
     "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  {host_ident}: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  {args_ident}: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  out.push_str("  let rt = &mut rt;\n");
   if overloads.is_empty() {
     out.push_str("  let _ = (host, hooks, callee, args, new_target);\n");
     out.push_str("  Err(rt.throw_type_error(\"Illegal constructor\"))\n");
@@ -6048,7 +6065,7 @@ fn emit_ctor_overload_call_vmjs(
     if arg.variadic {
       out.push_str(&format!(
         "    for v in args.iter().copied().skip({idx}) {{\n      let converted = {};\n      let converted = rt.scope.push_root(converted)?;\n      converted_args.push(converted);\n    }}\n",
-        emit_conversion_expr_vmjs(resolved, &arg.type_, "v", false)
+        emit_conversion_expr_vmjs(resolved, &arg.type_, "v", true)
       ));
       break;
     }
@@ -6057,7 +6074,7 @@ fn emit_ctor_overload_call_vmjs(
       "    let v{idx} = if args.len() > {idx} {{ args[{idx}] }} else {{ Value::Undefined }};\n",
       idx = idx
     ));
-    let expr = emit_conversion_expr_for_optional_vmjs(resolved, arg, &format!("v{idx}"), false);
+    let expr = emit_conversion_expr_for_optional_vmjs(resolved, arg, &format!("v{idx}"), true);
     out.push_str(&format!("    let converted = {expr};\n"));
     out.push_str("    let converted = rt.scope.push_root(converted)?;\n");
     out.push_str("    converted_args.push(converted);\n");
@@ -6083,6 +6100,24 @@ fn emit_conversion_expr_for_optional_vmjs(
   let is_optional = arg.optional || arg.default.is_some();
   if !is_optional {
     return emit_conversion_expr_vmjs(resolved, &arg.type_, value_ident, rt_is_ref);
+  }
+
+  // Dictionary arguments with defaults (e.g. `options = {}`): WebIDL still runs dictionary
+  // conversion on the default value so member defaults / required-member checks are applied.
+  //
+  // Our generic optional/default handling returns the default literal directly (skipping conversion),
+  // so defaulted dictionaries need a special-case.
+  if let IdlType::Named(name) = &arg.type_ {
+    if resolved.dictionaries.contains_key(name) {
+      if let Some(default) = arg.default.as_ref() {
+        let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+        let default_expr = emit_default_literal_vmjs(default);
+        let dict_fn = to_snake_ident(name);
+        return format!(
+          "if matches!({value_ident}, Value::Undefined) {{ js_to_dict_{dict_fn}({rt_expr}, host, hooks, {default_expr})? }} else {{ js_to_dict_{dict_fn}({rt_expr}, host, hooks, {value_ident})? }}"
+        );
+      }
+    }
   }
 
   let default_expr = arg
@@ -6229,20 +6264,347 @@ fn emit_conversion_expr_vmjs(
           "js_to_dict_{}({rt_expr}, host, hooks, {value_ident})?",
           to_snake_ident(name)
         )
+      } else if let Some(en) = resolved.enums.get(name) {
+        let allowed = en
+          .values
+          .iter()
+          .map(|v| rust_string_literal(v))
+          .collect::<Vec<_>>()
+          .join(" | ");
+        let err_msg = rust_string_literal(&format!(
+          "Value is not a valid member of the `{name}` enum"
+        ));
+        format!(
+          "{{\n  let s = rt.scope.to_string(&mut *rt.vm, host, hooks, {value_ident})?;\n  let text = rt.scope.heap().get_string(s)?.to_utf8_lossy();\n  if matches!(text.as_str(), {allowed}) {{\n    Value::String(s)\n  }} else {{\n    return Err(rt.throw_type_error({err_msg}));\n  }}\n}}",
+          value_ident = value_ident,
+          allowed = allowed,
+          err_msg = err_msg,
+        )
+      } else if resolved.typedefs.contains_key(name) {
+        match resolved.resolve_typedef(name) {
+          Ok(expanded) => emit_conversion_expr_vmjs(resolved, &expanded, value_ident, rt_is_ref),
+          Err(_) => value_ident.to_string(),
+        }
       } else {
         value_ident.to_string()
       }
     }
     IdlType::Nullable(inner) => format!(
-      "if matches!({value_ident}, Value::Null) {{ Value::Null }} else {{ {} }}",
+      "if matches!({value_ident}, Value::Null | Value::Undefined) {{ Value::Null }} else {{ {} }}",
       emit_conversion_expr_vmjs(resolved, inner, value_ident, rt_is_ref)
     ),
-    IdlType::Union(_)
-    | IdlType::Sequence(_)
-    | IdlType::FrozenArray(_)
-    | IdlType::Promise(_)
-    | IdlType::Record { .. } => value_ident.to_string(),
+    IdlType::Union(members) => emit_union_conversion_expr_vmjs(resolved, members, value_ident, rt_is_ref),
+    IdlType::Sequence(elem) => {
+      emit_iterable_list_conversion_expr_vmjs(resolved, elem, value_ident, "sequence", rt_is_ref)
+    }
+    IdlType::FrozenArray(elem) => {
+      emit_iterable_list_conversion_expr_vmjs(resolved, elem, value_ident, "FrozenArray", rt_is_ref)
+    }
+    IdlType::Promise(_) => value_ident.to_string(),
+    IdlType::Record { key, value } => {
+      emit_record_conversion_expr_vmjs(resolved, key, value, value_ident, rt_is_ref)
+    }
   }
+}
+
+fn emit_union_conversion_expr_vmjs(
+  resolved: &ResolvedWebIdlWorld,
+  members: &[IdlType],
+  value_ident: &str,
+  rt_is_ref: bool,
+) -> String {
+  let mut has_undefined = false;
+  let mut has_nullable = false;
+  let mut has_any = false;
+  let mut has_object = false;
+
+  let mut sequence_member: Option<&IdlType> = None;
+  let mut dict_member: Option<&String> = None;
+  let mut record_member: Option<&IdlType> = None;
+  let mut boolean_member: Option<&IdlType> = None;
+  let mut numeric_member: Option<&IdlType> = None;
+  let mut string_member: Option<&IdlType> = None;
+
+  for member in members {
+    let mut inner = member;
+    if let IdlType::Nullable(t) = member {
+      has_nullable = true;
+      inner = t;
+    }
+
+    match inner {
+      IdlType::Builtin(BuiltinType::Undefined) => has_undefined = true,
+      IdlType::Builtin(BuiltinType::Any) => has_any = true,
+      IdlType::Builtin(BuiltinType::Object) => has_object = true,
+      IdlType::Builtin(BuiltinType::Boolean) => {
+        let _ = boolean_member.get_or_insert(member);
+      }
+      IdlType::Builtin(
+        BuiltinType::Byte
+        | BuiltinType::Octet
+        | BuiltinType::Short
+        | BuiltinType::UnsignedShort
+        | BuiltinType::Long
+        | BuiltinType::UnsignedLong
+        | BuiltinType::LongLong
+        | BuiltinType::UnsignedLongLong
+        | BuiltinType::Float
+        | BuiltinType::UnrestrictedFloat
+        | BuiltinType::Double
+        | BuiltinType::UnrestrictedDouble,
+      ) => {
+        let _ = numeric_member.get_or_insert(member);
+      }
+      IdlType::Builtin(BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString) => {
+        let _ = string_member.get_or_insert(member);
+      }
+      IdlType::Named(name) => {
+        if resolved.dictionaries.contains_key(name) {
+          let _ = dict_member.get_or_insert(name);
+        } else if resolved.enums.contains_key(name) {
+          let _ = string_member.get_or_insert(member);
+        } else {
+          // For now treat unknown/unsupported named types as opaque objects so unions like
+          // `TimerHandler = (DOMString or Function)` can still accept callable objects.
+          has_object = true;
+        }
+      }
+      IdlType::Sequence(_) | IdlType::FrozenArray(_) => {
+        let _ = sequence_member.get_or_insert(member);
+      }
+      IdlType::Record { .. } => {
+        let _ = record_member.get_or_insert(member);
+      }
+      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) => {}
+    }
+  }
+
+  let dict_expr = dict_member.map(|dict| {
+    let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+    format!("js_to_dict_{}({rt_expr}, host, hooks, v)?", to_snake_ident(dict))
+  });
+  let seq_expr = sequence_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let record_expr = record_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let boolean_expr = boolean_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let numeric_expr = numeric_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  let string_expr = string_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+
+  let mut out = String::new();
+  out.push_str("{\n");
+  out.push_str(&format!("  let v = {value_ident};\n", value_ident = value_ident));
+
+  // Undefined member special-case.
+  if has_undefined {
+    out.push_str("  if matches!(v, Value::Undefined) {\n    Value::Undefined\n  }");
+  } else {
+    out.push_str("  if false {\n    Value::Undefined\n  }");
+  }
+
+  // `null`/`undefined` dictionary special-case (dictionary converters treat them as "missing").
+  if let Some(dict_expr) = &dict_expr {
+    out.push_str(" else if matches!(v, Value::Null | Value::Undefined) {\n    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  }
+
+  // Nullable special-case.
+  if has_nullable {
+    out.push_str(" else if matches!(v, Value::Null | Value::Undefined) {\n    Value::Null\n  }");
+  }
+
+  // Object branch: sequence/record/dictionary/object.
+  out.push_str(" else if let Value::Object(obj) = v {\n");
+
+  if let Some(seq_expr) = &seq_expr {
+    out.push_str("    let has_iter = if rt.scope.heap().object_is_array(obj)? {\n");
+    out.push_str("      true\n");
+    out.push_str("    } else {\n");
+    out.push_str(
+      "      let intr = rt\n        .vm\n        .intrinsics()\n        .ok_or(VmError::Unimplemented(\"intrinsics not initialized\"))?;\n",
+    );
+    out.push_str("      let sym = intr.well_known_symbols().iterator;\n");
+    out.push_str("      rt.scope.push_root(Value::Symbol(sym))?;\n");
+    out.push_str("      let key = vm_js::PropertyKey::from_symbol(sym);\n");
+    out.push_str(
+      "      let method = rt.scope.ordinary_get_with_host_and_hooks(\n        &mut *rt.vm,\n        host,\n        hooks,\n        obj,\n        key,\n        Value::Object(obj),\n      )?;\n",
+    );
+    out.push_str("      if matches!(method, Value::Undefined | Value::Null) {\n");
+    out.push_str("        false\n");
+    out.push_str("      } else {\n");
+    out.push_str("        if !rt.scope.heap().is_callable(method)? {\n");
+    out.push_str("          return Err(rt.throw_type_error(\"GetMethod: target is not callable\"));\n");
+    out.push_str("        }\n");
+    out.push_str("        true\n");
+    out.push_str("      }\n");
+    out.push_str("    };\n");
+
+    out.push_str("    if has_iter {\n      ");
+    out.push_str(seq_expr);
+    out.push_str("\n    }");
+
+    // Dictionary/record should only be considered when the object is not iterable.
+    if let Some(dict_expr) = &dict_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(dict_expr);
+      out.push_str("\n    }");
+    } else if let Some(record_expr) = &record_expr {
+      out.push_str(" else {\n      ");
+      out.push_str(record_expr);
+      out.push_str("\n    }");
+    } else if has_object || has_any {
+      out.push_str(" else {\n      v\n    }");
+    } else {
+      out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
+    }
+    out.push_str("\n  }");
+  } else if let Some(dict_expr) = &dict_expr {
+    out.push_str("    ");
+    out.push_str(dict_expr);
+    out.push_str("\n  }");
+  } else if let Some(record_expr) = &record_expr {
+    out.push_str("    ");
+    out.push_str(record_expr);
+    out.push_str("\n  }");
+  } else if has_object || has_any {
+    out.push_str("    v\n  }");
+  } else {
+    out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
+  }
+
+  // Primitive fast paths and fallthrough conversions.
+  if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(" else if matches!(v, Value::Bool(_)) {\n    ");
+    out.push_str(boolean_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(" else if matches!(v, Value::Number(_)) {\n    ");
+    out.push_str(numeric_expr);
+    out.push_str("\n  }");
+  }
+  if let Some(string_expr) = &string_expr {
+    out.push_str(" else if matches!(v, Value::String(_)) {\n    ");
+    out.push_str(string_expr);
+    out.push_str("\n  }");
+  }
+
+  out.push_str(" else {\n    ");
+  if let Some(string_expr) = &string_expr {
+    out.push_str(string_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(numeric_expr) = &numeric_expr {
+    out.push_str(numeric_expr);
+    out.push_str("\n  }\n");
+  } else if let Some(boolean_expr) = &boolean_expr {
+    out.push_str(boolean_expr);
+    out.push_str("\n  }\n");
+  } else if has_any {
+    out.push_str("v\n  }\n");
+  } else {
+    out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }\n");
+  }
+
+  out.push_str("}\n");
+  out
+}
+
+fn emit_iterable_list_conversion_expr_vmjs(
+  resolved: &ResolvedWebIdlWorld,
+  elem_ty: &IdlType,
+  value_ident: &str,
+  kind_label: &str,
+  rt_is_ref: bool,
+) -> String {
+  let elem_expr = emit_conversion_expr_vmjs(resolved, elem_ty, "next", rt_is_ref);
+  format!(
+    r#"{{
+  let v = {value_ident};
+  let Value::Object(_obj) = v else {{
+    return Err(rt.throw_type_error("expected object for {kind_label}"));
+  }};
+  rt.scope.push_root(v)?;
+  let mut iterator_record =
+    vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+  rt.scope.push_root(iterator_record.iterator)?;
+  rt.scope.push_root(iterator_record.next_method)?;
+
+  let out = rt.alloc_array(0)?;
+  rt.scope.push_root(Value::Object(out))?;
+
+  let mut idx: usize = 0;
+  while let Some(next) =
+    vm_js::iterator::iterator_step_value(&mut *rt.vm, host, hooks, &mut rt.scope, &mut iterator_record)?
+  {{
+    rt.scope.push_root(next)?;
+    let converted = {elem_expr};
+    let converted = rt.scope.push_root(converted)?;
+    let key_s = rt.scope.alloc_string(&idx.to_string())?;
+    rt.scope.push_root(Value::String(key_s))?;
+    let key = vm_js::PropertyKey::from_string(key_s);
+    rt.scope.create_data_property_or_throw(out, key, converted)?;
+    idx += 1;
+  }}
+  Value::Object(out)
+}}"#,
+    value_ident = value_ident,
+    kind_label = kind_label,
+    elem_expr = elem_expr
+  )
+}
+
+fn emit_record_conversion_expr_vmjs(
+  resolved: &ResolvedWebIdlWorld,
+  key_ty: &IdlType,
+  value_ty: &IdlType,
+  value_ident: &str,
+  rt_is_ref: bool,
+) -> String {
+  let _ = key_ty;
+  let value_expr = emit_conversion_expr_vmjs(resolved, value_ty, "prop_value", rt_is_ref);
+  format!(
+    r#"{{
+  let v = {value_ident};
+  let Value::Object(input) = v else {{
+    return Err(rt.throw_type_error("expected object for record"));
+  }};
+  rt.scope.push_root(Value::Object(input))?;
+  let out_obj = rt.alloc_object()?;
+
+  let keys = rt.scope.ordinary_own_property_keys(input)?;
+  for key in keys {{
+    let vm_js::PropertyKey::String(_s) = key else {{
+      continue;
+    }};
+    let Some(desc) = rt.scope.heap().object_get_own_property(input, &key)? else {{
+      continue;
+    }};
+    if !desc.enumerable {{
+      continue;
+    }}
+
+    let prop_value = rt.scope.ordinary_get_with_host_and_hooks(
+      &mut *rt.vm,
+      host,
+      hooks,
+      input,
+      key,
+      Value::Object(input),
+    )?;
+    rt.scope.push_root(prop_value)?;
+
+    let converted = {value_expr};
+    rt.define_data_property(
+      out_obj,
+      key,
+      converted,
+      DataPropertyAttributes::new(true, true, true),
+    )?;
+  }}
+  Value::Object(out_obj)
+}}"#,
+    value_ident = value_ident,
+    value_expr = value_expr
+  )
 }
 
 fn emit_type_predicate_vmjs(ty: &IdlType, value_expr: &str) -> String {
