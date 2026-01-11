@@ -1,0 +1,31 @@
+/* User Agent Stylesheet - Quirks-mode overrides
+ *
+ * This file contains UA defaults that differ in HTML quirks mode.
+ *
+ * Observed in Chrome: many block-level elements have their default vertical margins
+ * removed in quirks mode, while horizontal indentation (e.g. blockquote) remains.
+ */
+
+/* Block vertical margin resets */
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+ul,
+ol,
+menu,
+dir,
+dl,
+pre {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+blockquote,
+figure {
+  margin-top: 0;
+  margin-bottom: 0;
+}

@@ -146,7 +146,10 @@ use std::time::Instant;
 
 /// User-agent stylesheet containing default browser styles
 const USER_AGENT_STYLESHEET: &str = include_str!("../user_agent.css");
+const USER_AGENT_STYLESHEET_QUIRKS: &str =
+  concat!(include_str!("../user_agent.css"), "\n", include_str!("../user_agent_quirks.css"));
 static UA_STYLESHEET: OnceLock<StyleSheet> = OnceLock::new();
+static UA_STYLESHEET_QUIRKS: OnceLock<StyleSheet> = OnceLock::new();
 static DEFAULT_COMPUTED_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
 static EMPTY_VAR_DEPENDENT_DECLS: OnceLock<
   Arc<HashMap<&'static str, crate::style::VarDependentDeclaration>>,
@@ -4828,6 +4831,15 @@ pub fn capture_cascade_profile() -> CascadeProfileStats {
 pub(crate) fn user_agent_stylesheet() -> &'static StyleSheet {
   UA_STYLESHEET
     .get_or_init(|| parse_stylesheet(USER_AGENT_STYLESHEET).unwrap_or_else(|_| StyleSheet::new()))
+}
+
+pub(crate) fn user_agent_stylesheet_for_quirks_mode(quirks_mode: QuirksMode) -> &'static StyleSheet {
+  match quirks_mode {
+    QuirksMode::Quirks => UA_STYLESHEET_QUIRKS.get_or_init(|| {
+      parse_stylesheet(USER_AGENT_STYLESHEET_QUIRKS).unwrap_or_else(|_| StyleSheet::new())
+    }),
+    _ => user_agent_stylesheet(),
+  }
 }
 
 pub fn reset_cascade_profile() {
@@ -12178,8 +12190,10 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   let log_reuse = runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_REUSE");
   let mut reuse_counter: usize = 0;
 
+  let quirks_mode = quirks_mode_for_dom(dom);
+
   // Parse user-agent stylesheet once
-  let ua_stylesheet = user_agent_stylesheet();
+  let ua_stylesheet = user_agent_stylesheet_for_quirks_mode(quirks_mode);
 
   // Resolve imports if a loader is provided
   let author_sheet = if let Some(loader) = import_loader {
@@ -12272,7 +12286,6 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   let document_order_base = max_author_rules.saturating_add(1);
   let shadow_order_base = document_order_base.saturating_mul(2);
 
-  let quirks_mode = quirks_mode_for_dom(dom);
   let mut layer_order_interner = LayerOrderInterner::default();
   let ua_index = RuleIndex::new(
     ua_rules
@@ -12868,7 +12881,8 @@ impl<'a> PreparedCascade<'a> {
     include_starting_style: bool,
     cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
-    let ua_stylesheet = user_agent_stylesheet();
+    let quirks_mode = quirks_mode_for_dom(dom);
+    let ua_stylesheet = user_agent_stylesheet_for_quirks_mode(quirks_mode);
     // Safety: `document_sheet` is kept alive inside `PreparedCascade`. References derived from the
     // raw pointer remain valid for the lifetime `'a` of this context.
     let document_ref: &'a StyleSheet = unsafe { &*(&*document_sheet as *const StyleSheet) };
@@ -12932,7 +12946,6 @@ impl<'a> PreparedCascade<'a> {
     let document_order_base = max_author_rules.saturating_add(1);
     let shadow_order_base = document_order_base.saturating_mul(2);
 
-    let quirks_mode = quirks_mode_for_dom(dom);
     let mut layer_order_interner = LayerOrderInterner::default();
     let ua_index = RuleIndex::new(
       ua_rules
@@ -30390,6 +30403,91 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let styled = apply_styles(&dom, &StyleSheet::new());
     assert_eq!(styled.styles.margin_top, Some(Length::em(1.0)));
     assert_eq!(styled.styles.margin_bottom, Some(Length::em(1.0)));
+  }
+
+  #[test]
+  fn quirks_mode_removes_default_block_vertical_margins() {
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "p".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "h1".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "ul".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "pre".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          },
+          DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "blockquote".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          },
+        ],
+      }],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    let root = &styled.children[0];
+
+    let p = &root.children[0];
+    assert_eq!(p.styles.margin_top, Some(Length::px(0.0)));
+    assert_eq!(p.styles.margin_bottom, Some(Length::px(0.0)));
+
+    let h1 = &root.children[1];
+    assert_eq!(h1.styles.margin_top, Some(Length::px(0.0)));
+    assert_eq!(h1.styles.margin_bottom, Some(Length::px(0.0)));
+
+    let ul = &root.children[2];
+    assert_eq!(ul.styles.margin_top, Some(Length::px(0.0)));
+    assert_eq!(ul.styles.margin_bottom, Some(Length::px(0.0)));
+    assert_eq!(ul.styles.padding_left, Length::px(40.0));
+
+    let pre = &root.children[3];
+    assert_eq!(pre.styles.margin_top, Some(Length::px(0.0)));
+    assert_eq!(pre.styles.margin_bottom, Some(Length::px(0.0)));
+
+    let blockquote = &root.children[4];
+    assert_eq!(blockquote.styles.margin_top, Some(Length::px(0.0)));
+    assert_eq!(blockquote.styles.margin_bottom, Some(Length::px(0.0)));
+    assert_eq!(blockquote.styles.margin_left, Some(Length::px(40.0)));
+    assert_eq!(blockquote.styles.margin_right, Some(Length::px(40.0)));
   }
 
   #[test]
