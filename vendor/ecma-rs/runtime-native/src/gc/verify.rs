@@ -162,6 +162,12 @@ impl GcHeap {
     // SAFETY: `obj` points into one of the heap spaces.
     let header = unsafe { &*(obj as *const ObjHeader) };
     self.verify_obj_header(header, known_desc);
+    if header.is_pinned() {
+      assert!(
+        self.is_in_los(obj),
+        "pinned object is not in LOS (policy: pinned objects must always be allocated in LOS)"
+      );
+    }
 
     let desc = unsafe { &*header.type_desc };
     assert!(desc.size >= mem::size_of::<ObjHeader>(), "object size too small");

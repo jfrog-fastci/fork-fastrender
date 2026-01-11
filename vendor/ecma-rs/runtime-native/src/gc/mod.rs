@@ -67,7 +67,7 @@ impl ObjHeader {
   #[inline]
   pub(crate) fn set_forwarding_ptr(&mut self, new_location: *mut u8) {
     debug_assert!((new_location as usize & META_FORWARDED) == 0);
-    debug_assert!(
+    assert!(
       !self.is_pinned(),
       "attempted to evacuate/forward a pinned object"
     );

@@ -227,6 +227,9 @@ impl GcHeap {
   /// Pinned objects have a stable address across minor GC, major GC, and (future) compaction.
   /// They are still traced and reclaimed when unreachable.
   pub fn alloc_pinned(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    super::verify::register_type_descriptor(desc);
+
     let obj = self.los.alloc(desc.size, OBJ_ALIGN);
     self.stats.bytes_allocated_old += desc.size;
 

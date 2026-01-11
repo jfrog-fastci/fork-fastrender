@@ -41,9 +41,13 @@ fn pinned_object_address_is_stable_across_minor_and_major_gc() {
 
   heap.collect_minor(&mut roots, &mut NullRememberedSet::default());
   assert_eq!(root_pinned, pinned_addr);
+  #[cfg(any(debug_assertions, feature = "gc_debug"))]
+  heap.verify_from_roots(&mut roots);
 
   heap.collect_major(&mut roots, &mut NullRememberedSet::default());
   assert_eq!(root_pinned, pinned_addr);
+  #[cfg(any(debug_assertions, feature = "gc_debug"))]
+  heap.verify_from_roots(&mut roots);
 }
 
 #[test]
@@ -82,6 +86,8 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
   // Major GC should keep both pinned + its child alive.
   heap.collect_major(&mut roots, &mut NullRememberedSet::default());
   assert_eq!(unsafe { (*(pinned as *mut Node)).next }, updated);
+  #[cfg(any(debug_assertions, feature = "gc_debug"))]
+  heap.verify_from_roots(&mut roots);
 }
 
 #[test]
