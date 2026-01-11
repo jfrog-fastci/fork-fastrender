@@ -47,7 +47,7 @@ extern "C" fn record_magic(data: *mut u8) {
 fn collect_major(heap: &mut GcHeap) {
   let mut roots = GlobalRootSet::new();
   let mut remembered = SimpleRememberedSet::new();
-  heap.collect_major(&mut roots, &mut remembered);
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
 }
 
 struct WeakHandleGuard(u64);
@@ -102,6 +102,52 @@ fn microtask_rooted_keeps_gc_object_alive_across_gc() {
     assert!(
       Instant::now() < deadline,
       "object stayed alive after microtask executed (root not released?)"
+    );
+  }
+}
+
+#[test]
+fn timeout_rooted_keeps_gc_object_alive_across_gc() {
+  let mut heap = GcHeap::new();
+  let _rt = TestRuntimeGuard::new();
+  let obj = unsafe { init_test_obj(&mut heap) };
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  // Schedule with 0 delay so the timer is due immediately once the event loop is polled.
+  runtime_native::rt_set_timeout_rooted(record_magic, obj, 0);
+
+  // Move/collect while the timer is still pending.
+  collect_major(&mut heap);
+
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert!(!heap.is_in_nursery(after_gc));
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    runtime_native::rt_async_poll_legacy();
+    let ptr = runtime_native::rt_weak_get(weak);
+    assert!(!ptr.is_null());
+    let seen = unsafe { seen_magic_slot(ptr) }.load(Ordering::Acquire);
+    if seen != 0 {
+      assert_eq!(seen, MAGIC);
+      break;
+    }
+    assert!(Instant::now() < deadline, "timeout did not fire in time");
+    std::thread::yield_now();
+  }
+
+  // After the timeout fires, the root is released and the object can be collected.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after timeout fired (root not released?)"
     );
   }
 }
@@ -248,4 +294,106 @@ fn parallel_spawn_rooted_roots_and_relocates_task_context() {
 
   // Join tasks and release weak handle in Drop.
   drop(join_guard);
+}
+
+#[cfg(unix)]
+#[test]
+fn io_register_rooted_keeps_gc_object_alive_until_unregistered() {
+  use std::os::unix::io::RawFd;
+
+  let _rt = TestRuntimeGuard::new();
+
+  struct FdGuard(RawFd);
+  impl Drop for FdGuard {
+    fn drop(&mut self) {
+      unsafe {
+        libc::close(self.0);
+      }
+    }
+  }
+
+  fn set_nonblocking(fd: RawFd) {
+    unsafe {
+      let flags = libc::fcntl(fd, libc::F_GETFL);
+      assert!(flags != -1);
+      let res = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+      assert!(res != -1);
+    }
+  }
+
+  extern "C" fn io_record_magic(events: u32, data: *mut u8) {
+    assert_ne!(events & runtime_native::abi::RT_IO_READABLE, 0);
+    record_magic(data);
+  }
+
+  let mut heap = GcHeap::new();
+  let obj = unsafe { init_test_obj(&mut heap) };
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let mut fds = [0i32; 2];
+  unsafe {
+    assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+  }
+  let read_fd = FdGuard(fds[0]);
+  let write_fd = FdGuard(fds[1]);
+  set_nonblocking(read_fd.0);
+
+  let watcher = runtime_native::rt_io_register_rooted(
+    read_fd.0,
+    runtime_native::abi::RT_IO_READABLE,
+    io_record_magic,
+    obj,
+  );
+  assert_ne!(watcher, 0);
+
+  // Move/collect while the watcher is still registered (before any readiness event).
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert!(!heap.is_in_nursery(after_gc));
+
+  // Trigger readability.
+  unsafe {
+    let byte: u8 = 1;
+    let n = libc::write(write_fd.0, (&byte as *const u8).cast(), 1);
+    assert_eq!(n, 1);
+  }
+
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    runtime_native::rt_async_poll_legacy();
+    let ptr = runtime_native::rt_weak_get(weak);
+    assert!(!ptr.is_null());
+    let seen = unsafe { seen_magic_slot(ptr) }.load(Ordering::Acquire);
+    if seen != 0 {
+      assert_eq!(seen, MAGIC);
+      break;
+    }
+    assert!(Instant::now() < deadline, "I/O callback did not run in time");
+    std::thread::yield_now();
+  }
+
+  // The watcher is still registered, so the object should remain alive.
+  collect_major(&mut heap);
+  assert!(!runtime_native::rt_weak_get(weak).is_null());
+
+  runtime_native::rt_io_unregister(watcher);
+
+  // `rt_io_unregister` defers running drop hooks to a microtask checkpoint so callbacks can safely
+  // unregister themselves without freeing their `data` while still executing. Drain microtasks so
+  // the rooted wrapper is dropped before we expect GC to reclaim the object.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    runtime_native::rt_async_poll();
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted I/O watcher was unregistered (root not released?)"
+    );
+    std::thread::yield_now();
+  }
 }

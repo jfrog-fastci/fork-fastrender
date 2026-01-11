@@ -1484,6 +1484,23 @@ fn maybe_log_rt_io_failure(op: &str, msg: impl core::fmt::Display) {
   }
 }
 
+#[repr(C)]
+struct RootedIoWatcherData {
+  cb: extern "C" fn(u32, *mut u8),
+  root: async_rt::gc::Root,
+}
+
+extern "C" fn rooted_io_watcher_cb(events: u32, data: *mut u8) {
+  let ctx = unsafe { &*(data as *const RootedIoWatcherData) };
+  (ctx.cb)(events, ctx.root.ptr());
+}
+
+extern "C" fn drop_rooted_io_watcher_data(data: *mut u8) {
+  unsafe {
+    drop(Box::from_raw(data as *mut RootedIoWatcherData));
+  }
+}
+
 /// Register an fd with the runtime's readiness reactor.
 ///
 /// ## Nonblocking / edge-triggered contract
@@ -1555,6 +1572,16 @@ pub extern "C" fn rt_io_register_with_drop(
   drop_data: extern "C" fn(*mut u8),
 ) -> IoWatcherId {
   abort_on_panic(|| {
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      maybe_log_rt_io_failure(
+        "rt_io_register_with_drop",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      drop_data(data);
+      return 0;
+    }
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
     match async_rt::global().register_io_with_drop(fd, interests, cb, data, drop_data) {
@@ -1571,6 +1598,68 @@ pub extern "C" fn rt_io_register_with_drop(
         } else {
           maybe_log_rt_io_failure(
             "rt_io_register_with_drop",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
+  })
+}
+
+/// Like [`rt_io_register`], but keeps `data` alive as a GC root until the watcher is unregistered.
+///
+/// Contract:
+/// - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until `rt_io_unregister(id)` is called.
+#[no_mangle]
+pub extern "C" fn rt_io_register_rooted(
+  fd: i32,
+  interests: u32,
+  cb: extern "C" fn(u32, *mut u8),
+  data: *mut u8,
+) -> IoWatcherId {
+  abort_on_panic(|| {
+    if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      maybe_log_rt_io_failure(
+        "rt_io_register_rooted",
+        format_args!(
+          "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
+        ),
+      );
+      return 0;
+    }
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+
+    let ctx = Box::new(RootedIoWatcherData {
+      cb,
+      // Safety: rooted entrypoints require `data` be a GC-managed object base pointer.
+      root: unsafe { async_rt::gc::Root::new_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    match async_rt::global().register_io_with_drop(
+      fd,
+      interests,
+      rooted_io_watcher_cb,
+      ctx_ptr,
+      drop_rooted_io_watcher_data,
+    ) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        // Registration failed; drop the rooted wrapper to avoid leaking the persistent handle.
+        drop_rooted_io_watcher_data(ctx_ptr);
+        if err.kind() == io::ErrorKind::InvalidInput {
+          maybe_log_rt_io_failure(
+            "rt_io_register_rooted",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register_rooted",
             format_args!("fd={fd} interests=0x{interests:x}: {err}"),
           );
         }
@@ -1789,6 +1878,23 @@ pub extern "C" fn rt_queue_microtask_with_drop(
   })
 }
 
+#[repr(C)]
+struct RootedWebTimerData {
+  cb: extern "C" fn(*mut u8),
+  root: async_rt::gc::Root,
+}
+
+extern "C" fn rooted_web_timer_cb(data: *mut u8) {
+  let ctx = unsafe { &*(data as *const RootedWebTimerData) };
+  (ctx.cb)(ctx.root.ptr());
+}
+
+extern "C" fn drop_rooted_web_timer_data(data: *mut u8) {
+  unsafe {
+    drop(Box::from_raw(data as *mut RootedWebTimerData));
+  }
+}
+
 #[no_mangle]
 pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId {
   abort_on_panic(|| {
@@ -1806,6 +1912,50 @@ pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, dela
         cb,
         data,
         drop_data: None,
+        interval: Duration::ZERO,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+/// Like [`rt_set_timeout`], but keeps `data` alive as a GC root until the timer fires or is cleared.
+///
+/// Contract:
+/// - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until the timeout fires or is cleared via
+///   [`rt_clear_timer`].
+#[no_mangle]
+pub extern "C" fn rt_set_timeout_rooted(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  delay_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let delay = Duration::from_millis(delay_ms);
+    let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(RootedWebTimerData {
+      cb,
+      // Safety: rooted entrypoints require `data` be a GC-managed object base pointer.
+      root: unsafe { async_rt::gc::Root::new_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Timeout,
+        cb: rooted_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_rooted_web_timer_data),
         interval: Duration::ZERO,
         internal_id,
         firing: false,
@@ -1869,6 +2019,50 @@ pub extern "C" fn rt_set_interval(
         cb,
         data,
         drop_data: None,
+        interval,
+        internal_id,
+        firing: false,
+        cancelled: false,
+      },
+    );
+    id
+  })
+}
+
+/// Like [`rt_set_interval`], but keeps `data` alive as a GC root until the interval is cleared.
+///
+/// Contract:
+/// - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until the interval is cleared via
+///   [`rt_clear_timer`].
+#[no_mangle]
+pub extern "C" fn rt_set_interval_rooted(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  interval_ms: u64,
+) -> TimerId {
+  abort_on_panic(|| {
+    ensure_event_loop_thread_registered();
+    let id = alloc_web_timer_id();
+    let interval = Duration::from_millis(interval_ms);
+    let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+    let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+    let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+    let ctx = Box::new(RootedWebTimerData {
+      cb,
+      // Safety: rooted entrypoints require `data` be a GC-managed object base pointer.
+      root: unsafe { async_rt::gc::Root::new_unchecked(data) },
+    });
+    let ctx_ptr = Box::into_raw(ctx) as *mut u8;
+
+    WEB_TIMERS.lock().insert(
+      id,
+      WebTimerState {
+        kind: WebTimerKind::Interval,
+        cb: rooted_web_timer_cb,
+        data: ctx_ptr,
+        drop_data: Some(drop_rooted_web_timer_data),
         interval,
         internal_id,
         firing: false,

@@ -872,6 +872,12 @@ GC object pointer and keep it alive while queued:
 - `rt_queue_microtask_rooted(cb, data)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the microtask runs.
+- `rt_set_timeout_rooted(cb, data, delay_ms)` / `rt_set_interval_rooted(cb, data, interval_ms)`
+  - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+  - The runtime registers a strong GC root for `data` until the timer fires or is cleared.
+- `rt_io_register_rooted(fd, interests, cb, data)`
+  - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
+  - The runtime registers a strong GC root for `data` until the watcher is unregistered.
 
 These APIs are additive: the existing unrooted scheduling entrypoints keep their
 original contract (“`data` is opaque; the caller owns the lifetime”).

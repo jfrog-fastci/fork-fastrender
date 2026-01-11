@@ -39,6 +39,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_queue_microtask_rooted(",
     "rt_queue_microtask(",
     "rt_drain_microtasks(",
+    "rt_set_timeout_rooted(",
+    "rt_set_interval_rooted(",
+    "rt_io_register_rooted(",
+    "rt_io_register_with_drop(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -161,6 +165,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _parallel_spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> runtime_native::abi::TaskId =
     runtime_native::rt_parallel_spawn_rooted;
   let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = runtime_native::rt_queue_microtask_rooted;
+  let _set_timeout_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_timeout_rooted;
+  let _set_interval_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> runtime_native::abi::TimerId =
+    runtime_native::rt_set_interval_rooted;
+  let _io_register_rooted: extern "C" fn(i32, u32, extern "C" fn(u32, *mut u8), *mut u8) -> runtime_native::abi::IoWatcherId =
+    runtime_native::rt_io_register_rooted;
 
   #[cfg(feature = "gc_stats")]
   {
@@ -205,5 +215,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _root_pop,
     _parallel_spawn_rooted,
     _queue_microtask_rooted,
+    _set_timeout_rooted,
+    _set_interval_rooted,
+    _io_register_rooted,
   );
 }
