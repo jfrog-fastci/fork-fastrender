@@ -457,10 +457,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
               0
             } else {
               // Round up to avoid spuriously timing out before the requested duration.
-              let mut ms = remaining.as_millis();
-              if ms == 0 {
-                ms = 1;
-              }
+              let ms = (remaining.as_nanos() + 999_999) / 1_000_000;
               (ms.min(i32::MAX as u128)) as i32
             }
           }

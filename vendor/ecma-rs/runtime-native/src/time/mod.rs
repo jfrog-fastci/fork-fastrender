@@ -258,3 +258,12 @@ pub fn debug_registration_count() -> usize {
 pub fn debug_clear_state_for_tests() {
   REGISTRY.lock().clear();
 }
+
+// -------------------------------------------------------------------------------------------------
+// Async driver integration
+// -------------------------------------------------------------------------------------------------
+
+pub mod driver;
+
+pub use crate::timer_wheel::TimerKey;
+pub use driver::TimerDriver;

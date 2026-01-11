@@ -92,7 +92,7 @@ impl Drop for GcSafeGuard {
     // Outermost guard: do not allow resuming mutator execution while a stop-the-world
     // request is active.
     let mut epoch = safepoint::current_epoch();
-    if epoch & 1 == 1 {
+    if epoch & 1 == 1 && !safepoint::in_stop_the_world() {
       safepoint::wait_while_stop_the_world();
       epoch = safepoint::current_epoch();
     }

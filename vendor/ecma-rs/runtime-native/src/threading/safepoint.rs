@@ -233,6 +233,9 @@ pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
+        // Mark this thread as the active STW coordinator so GC-safe transitions and GC-aware locks
+        // can distinguish it from mutators.
+        IN_STOP_THE_WORLD.with(|flag| flag.set(true));
         coord.notify_all_locked(&guard);
         drop(guard);
         wake_all_gc_wakers();
@@ -747,12 +750,14 @@ pub fn rt_gc_resume_world() -> u64 {
   loop {
     if cur & 1 == 0 {
       // Already resumed.
+      IN_STOP_THE_WORLD.with(|flag| flag.set(false));
       return cur;
     }
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
         coord.notify_all_locked(&guard);
+        IN_STOP_THE_WORLD.with(|flag| flag.set(false));
         return next;
       }
       Err(actual) => cur = actual,

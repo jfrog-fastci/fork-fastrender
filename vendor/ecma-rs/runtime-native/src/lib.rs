@@ -66,6 +66,7 @@ pub mod promise_api;
 pub mod reactor;
 pub mod timer_wheel;
 pub mod clock;
+pub mod reactor_driver;
 pub mod time;
 pub mod gc;
 pub mod gc_roots;
@@ -185,6 +186,7 @@ pub use rt_trace::RtDebugCountersSnapshot;
 pub use stack_walk::{FrameView, StackWalker};
 pub use string::*;
 pub use timer_wheel::{TimerKey, TimerWheel};
+pub use reactor_driver::{PollOutcome, ReactorDriver};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section, try_load_via_linker_symbols};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};
 pub use stackmap_loader::{
