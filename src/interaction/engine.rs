@@ -341,6 +341,33 @@ mod tests {
   }
 
   #[test]
+  fn style_for_styled_node_id_falls_back_to_pseudo_style() {
+    let styled_node_id = 42;
+
+    let mut pseudo_style = ComputedStyle::default();
+    pseudo_style.direction = crate::style::types::Direction::Rtl;
+
+    let mut pseudo_box = BoxNode::new_block(
+      Arc::new(pseudo_style),
+      crate::style::display::FormattingContextType::Block,
+      vec![],
+    );
+    pseudo_box.styled_node_id = Some(styled_node_id);
+    pseudo_box.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Before);
+
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![pseudo_box],
+    );
+    let box_tree = BoxTree::new(root);
+
+    let style =
+      style_for_styled_node_id(&box_tree, styled_node_id).expect("expected styled node style");
+    assert_eq!(style.direction, crate::style::types::Direction::Rtl);
+  }
+
+  #[test]
   fn ime_preedit_sets_composition_without_mutating_value() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
