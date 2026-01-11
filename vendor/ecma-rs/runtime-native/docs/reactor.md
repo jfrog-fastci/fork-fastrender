@@ -21,7 +21,7 @@ The backend implementation **must provide the same observable behavior** on all 
 ### Threading model
 
 `Reactor` is a stateful, single-consumer object: `register`/`reregister`/`deregister`/`poll` all take
-`&mut self` and are expected to be driven by a single reactor thread/event loop.
+`&self`, but are still expected to be driven by a single reactor thread/event loop.
 
 To interrupt a thread blocked in `poll()` from other threads, clone [`Waker`] and call
 [`Waker::wake`].
