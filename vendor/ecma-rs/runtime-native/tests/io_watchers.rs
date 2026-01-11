@@ -14,6 +14,7 @@ mod linux {
   use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
   use std::mem;
   use std::os::fd::RawFd;
+  use std::time::Instant;
 
   extern "C" fn set_timeout_flag(data: *mut u8) {
     let flag = unsafe { &*(data as *const AtomicBool) };
@@ -229,8 +230,22 @@ mod linux {
       let _ = tx.send(res);
     });
 
-    // Give the poll thread a moment to enter epoll_wait.
-    std::thread::sleep(Duration::from_millis(10));
+    // Wait until the poll thread is actually blocked in the reactor wait syscall.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+      if runtime_native::async_rt::debug_in_epoll_wait() {
+        // Ensure it's not just a transient enter/exit.
+        std::thread::sleep(Duration::from_millis(10));
+        if runtime_native::async_rt::debug_in_epoll_wait() {
+          break;
+        }
+      }
+      assert!(
+        Instant::now() < deadline,
+        "poll thread did not enter reactor wait syscall"
+      );
+      std::thread::yield_now();
+    }
 
     let worker = std::thread::spawn(move || {
       // Register and unregister from a non-event-loop thread. This must be thread-safe and must
