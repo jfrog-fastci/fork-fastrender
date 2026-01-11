@@ -57,6 +57,14 @@ impl AcceptAddr {
         }
     }
 
+    pub fn addr_ptr_const(&self) -> *const libc::sockaddr {
+        (&self.meta.addr as *const libc::sockaddr_storage).cast()
+    }
+
+    pub fn addr_len_ptr_const(&self) -> *const libc::socklen_t {
+        &self.meta.addr_len
+    }
+
     pub fn addr_ptr(&mut self) -> *mut libc::sockaddr {
         (&mut self.meta.addr as *mut libc::sockaddr_storage).cast()
     }

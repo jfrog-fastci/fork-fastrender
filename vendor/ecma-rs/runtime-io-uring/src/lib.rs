@@ -8,12 +8,14 @@
 //! - A provided-buffer pool (`ProvidedBufPool`) for pointer-free `recv`/`read` submissions via
 //!   `IORING_OP_PROVIDE_BUFFERS` + `IOSQE_BUFFER_SELECT` (useful to avoid passing pointers into
 //!   movable/GC-managed memory).
+//! - Explicit multi-shot ops (currently `recvmsg`) that keep kernel-referenced metadata alive until
+//!   the final CQE.
 //!
 //! Optional feature flags:
 //! - `debug_stability`: records kernel pointer graphs at submission time and asserts they are
 //!   unchanged when processing CQEs. This is intended as a development-time safety net for moving
 //!   GC integrations (missing pinning/roots).
- 
+
 mod debug_stability;
 
 pub mod buf;
@@ -21,6 +23,7 @@ pub mod driver;
 pub mod gc;
 pub mod mock_gc;
 pub mod pool;
+pub mod multishot;
 
 #[cfg(target_os = "linux")]
 mod op_connect_accept;
@@ -45,6 +48,10 @@ pub use gc::{GcHooks, GcPinGuard, GcRoot};
 pub use legacy::{
     is_accept_supported, is_async_cancel_supported, is_connect_supported, is_link_timeout_supported,
     is_provide_buffers_supported, Completion, Driver, OpWithTimeout, PreparedOp, WeakDriver,
+};
+pub use multishot::{
+    MultiShotEnd, MultiShotHandle, MultiShotId, MultiShotRecvMsgErr, MultiShotRecvMsgEvent,
+    MultiShotRecvMsgShot,
 };
 pub use pool::{LeasedBuf, PoolStats, ProvidedBufPool};
 

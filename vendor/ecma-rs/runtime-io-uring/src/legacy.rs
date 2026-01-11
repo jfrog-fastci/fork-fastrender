@@ -15,6 +15,9 @@ mod linux {
 
     use crate::debug_stability;
     use crate::driver::OpId;
+    use crate::multishot::{
+        MultiShotHandle, MultiShotId, MultiShotRecvMsgEvent, MultiShotRecvMsgState,
+    };
     use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
     use crate::pool::{LeasedBuf, ProvidedBufPool};
     use crate::timeout::duration_to_timespec;
@@ -22,6 +25,7 @@ mod linux {
     const INTERNAL_USER_DATA: u64 = 0;
     const IORING_CQE_F_BUFFER: u32 = 1 << 0;
     const IORING_CQE_BUFFER_SHIFT: u32 = 16;
+    const IORING_RECV_MULTISHOT: u32 = 1 << 0;
 
     fn cstring_from_path(path: &Path) -> io::Result<CString> {
         use std::os::unix::ffi::OsStrExt;
@@ -317,6 +321,22 @@ mod linux {
                         buf.as_ptr(),
                     );
                 }
+                PreparedOp::Connect { addr, .. } => {
+                    rec.ptr(
+                        debug_stability::PtrKind::SockAddr,
+                        addr.addr_ptr() as *const u8,
+                    );
+                }
+                PreparedOp::Accept { addr, .. } => {
+                    rec.ptr(
+                        debug_stability::PtrKind::SockAddr,
+                        addr.addr_ptr_const() as *const u8,
+                    );
+                    rec.ptr(
+                        debug_stability::PtrKind::OutParam,
+                        addr.addr_len_ptr_const() as *const u8,
+                    );
+                }
                 PreparedOp::RecvWithBufSelect { pool, .. }
                 | PreparedOp::ReadWithBufSelect { pool, .. } => {
                     rec.ptr(
@@ -344,6 +364,7 @@ mod linux {
     pub enum Completion {
         Op { id: OpId, res: i32, op: PreparedOp },
         ProvidedBuf { id: OpId, buf: LeasedBuf },
+        MultiShotRecvMsg { id: MultiShotId, event: MultiShotRecvMsgEvent },
         Timeout { id: OpId, target: OpId, res: i32 },
         Cancel { id: OpId, target: OpId, res: i32 },
     }
@@ -365,6 +386,7 @@ mod linux {
         ring: IoUring,
         next_id: u64,
         ops: HashMap<OpId, OpState>,
+        multishots: HashMap<OpId, MultiShotRecvMsgState>,
         ready: VecDeque<Completion>,
     }
 
@@ -402,6 +424,7 @@ mod linux {
                     ring: IoUring::new(entries)?,
                     next_id: 1,
                     ops: HashMap::new(),
+                    multishots: HashMap::new(),
                     ready: VecDeque::new(),
                 })),
             })
@@ -448,6 +471,33 @@ mod linux {
                 .lock()
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
             let inner = &mut *inner_guard;
+            {
+                let mut sq = inner.ring.submission();
+                let available = sq.capacity() - sq.len();
+                if available < 1 {
+                    return Err(Self::submission_queue_full());
+                }
+
+                unsafe {
+                    sq.push(&entry).unwrap();
+                }
+            }
+
+            inner.ring.submit()?;
+            Ok(())
+        }
+
+        pub(crate) fn submit_async_cancel_internal(&self, target: OpId) -> io::Result<()> {
+            let entry = opcode::AsyncCancel::new(target.as_u64())
+                .build()
+                .user_data(INTERNAL_USER_DATA);
+
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+
             {
                 let mut sq = inner.ring.submission();
                 let available = sq.capacity() - sq.len();
@@ -521,6 +571,66 @@ mod linux {
 
         pub fn submit_accept(&mut self, listener_fd: RawFd, flags: i32) -> io::Result<OpId> {
             self.submit(PreparedOp::accept(listener_fd, flags))
+        }
+
+        pub fn submit_recvmsg_multishot(
+            &mut self,
+            fd: RawFd,
+            pool: &ProvidedBufPool,
+            recv_flags: u32,
+        ) -> io::Result<MultiShotHandle> {
+            let mut inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            let inner = &mut *inner_guard;
+
+            let id = Self::alloc_id(inner);
+            let keepalive = Arc::new(());
+            let state = MultiShotRecvMsgState::new(pool.clone(), keepalive.clone())?;
+            let msg_ptr = state.msghdr_ptr();
+
+            let entry = opcode::RecvMsg::new(types::Fd(fd), msg_ptr)
+                .buf_group(pool.buf_group())
+                .flags(recv_flags | IORING_RECV_MULTISHOT)
+                .build()
+                .flags(squeue::Flags::BUFFER_SELECT)
+                .user_data(id.as_u64());
+
+            {
+                let ring = &mut inner.ring;
+                let multishots = &mut inner.multishots;
+
+                let mut sq = ring.submission();
+                let available = sq.capacity() - sq.len();
+                if available < 1 {
+                    return Err(Self::submission_queue_full());
+                }
+
+                multishots.insert(id, state);
+                unsafe {
+                    sq.push(&entry).unwrap();
+                }
+            }
+
+            if let Err(e) = inner.ring.submit() {
+                inner.multishots.remove(&id);
+                return Err(e);
+            }
+
+            Ok(MultiShotHandle::new(self.clone(), id, keepalive))
+        }
+
+        pub fn stop_multishot(&self, handle: &MultiShotHandle) -> io::Result<()> {
+            handle.stop()
+        }
+
+        pub fn is_multishot_active(&self, id: MultiShotId) -> io::Result<bool> {
+            let inner_guard = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+            Ok(inner_guard.multishots.contains_key(&id.op_id()))
         }
 
         /// Submit `op` with a per-operation timeout.
@@ -659,6 +769,23 @@ mod linux {
                     let id = OpId::from_u64(cqe.user_data());
                     let res = cqe.result();
                     let flags = cqe.flags();
+
+                    if inner.multishots.contains_key(&id) {
+                        let event = inner
+                            .multishots
+                            .get(&id)
+                            .expect("checked contains_key")
+                            .handle_cqe(res, flags);
+                        let more = event.more();
+                        inner.ready.push_back(Completion::MultiShotRecvMsg {
+                            id: MultiShotId::from_op_id(id),
+                            event,
+                        });
+                        if !more {
+                            inner.multishots.remove(&id);
+                        }
+                        continue;
+                    }
 
                     let state = match inner.ops.remove(&id) {
                         Some(state) => state,
