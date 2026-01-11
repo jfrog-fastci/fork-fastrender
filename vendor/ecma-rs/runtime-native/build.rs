@@ -46,9 +46,80 @@ fn build_rt_thread_tls() {
   //
   // Rust's `#[thread_local]` static is still unstable, so we rely on a tiny C
   // translation unit compiled by the build script.
+  let target = env::var("TARGET").unwrap_or_default();
+  let host = env::var("HOST").unwrap_or_default();
+
+  // `cc` uses Darwin-specific `-arch ...` flags for Apple targets. Those flags are rejected by
+  // non-Darwin toolchains (e.g. GNU `cc` on Linux), which breaks `cargo check` when targeting
+  // `*-apple-darwin` from Linux.
+  //
+  // We only need to build a tiny translation unit that defines a `__thread` TLS slot, and it does
+  // not depend on any Apple SDK headers. When cross-compiling to macOS from a non-macOS host, use
+  // `clang --target=...` directly.
+  if target.contains("apple-darwin") && !host.contains("apple-darwin") {
+    build_rt_thread_tls_cross_darwin(&target);
+    return;
+  }
+
   cc::Build::new()
     .file("src/rt_thread_tls.c")
     .compile("runtime_native_tls");
+}
+
+fn build_rt_thread_tls_cross_darwin(target: &str) {
+  // Keep rerun behavior in sync with `cc`'s Apple deployment target env var.
+  println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+
+  let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+  let src = Path::new("src").join("rt_thread_tls.c");
+  let obj_path = out_dir.join("rt_thread_tls.o");
+  let lib_path = out_dir.join("libruntime_native_tls.a");
+
+  // Prefer the pinned clang version installed by `scripts/check_system.sh`, but fall back to
+  // whatever `clang` is available in PATH.
+  let clang = find_tool(&["clang-18", "clang"]).unwrap_or_else(|| {
+    panic!(
+      "runtime-native: cross-compiling rt_thread_tls.c for {target} requires clang (expected `clang-18` or `clang` in PATH)"
+    )
+  });
+
+  // Match `cc`'s semantics: `MACOSX_DEPLOYMENT_TARGET` can override the minimum OS version baked
+  // into produced objects. Provide a reasonable default when unset:
+  // - arm64 macOS begins at 11.0 (and TLS is rejected without a compatible min version).
+  // - x86_64 can default lower.
+  let deployment_target = env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| {
+    if target.starts_with("aarch64-") || target.starts_with("arm64-") {
+      "11.0".to_string()
+    } else {
+      "10.7".to_string()
+    }
+  });
+
+  let status = Command::new(&clang)
+    .arg(format!("--target={target}"))
+    .arg(format!("-mmacosx-version-min={deployment_target}"))
+    .args(["-fPIC", "-c"])
+    .arg(&src)
+    .arg("-o")
+    .arg(&obj_path)
+    .status()
+    .unwrap_or_else(|err| panic!("runtime-native: failed to invoke {clang}: {err}"));
+  assert!(
+    status.success(),
+    "runtime-native: clang failed compiling {} for {target}",
+    src.display()
+  );
+
+  let status = Command::new("ar")
+    .args(["crs"])
+    .arg(&lib_path)
+    .arg(&obj_path)
+    .status()
+    .unwrap_or_else(|err| panic!("runtime-native: failed to invoke ar: {err}"));
+  assert!(status.success(), "runtime-native: ar failed creating {lib_path:?}");
+
+  println!("cargo:rustc-link-search=native={}", out_dir.display());
+  println!("cargo:rustc-link-lib=static=runtime_native_tls");
 }
 
 fn enforce_force_frame_pointers() {
