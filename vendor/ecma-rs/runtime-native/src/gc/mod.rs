@@ -225,6 +225,10 @@ impl ObjHeader {
 /// The offsets in `ptr_offsets` are byte offsets from the start of the object
 /// (i.e. the address of [`ObjHeader`]) to each `*mut u8` pointer slot inside the
 /// object.
+///
+/// IMPORTANT: `ptr_offsets` must list only **GC-managed** pointer fields (object references that
+/// must be traced/updated by the collector). Pointers to non-GC memory (e.g. `ArrayBuffer` backing
+/// stores allocated with malloc/mmap, kernel iovec buffers, etc.) must never appear here.
 #[repr(C)]
 pub struct TypeDescriptor {
   /// Total object size in bytes (including the [`ObjHeader`]).

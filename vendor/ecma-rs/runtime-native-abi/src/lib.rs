@@ -92,6 +92,10 @@ pub struct RtShapeDescriptor {
   /// Pointer-field byte offsets from the object base.
   ///
   /// Each entry is the offset of a `*mut u8` field containing a GC-traceable pointer.
+  ///
+  /// IMPORTANT: these offsets must list only **GC-managed** pointers (object references). Do not
+  /// include pointers to external/non-GC memory (e.g. `ArrayBuffer` backing stores, OS buffers,
+  /// iovec pointers). Misclassifying an external pointer as a GC pointer is a memory safety bug.
   pub ptr_offsets: *const u32,
   pub ptr_offsets_len: u32,
   /// Reserved for future expansion; must be `0`.
