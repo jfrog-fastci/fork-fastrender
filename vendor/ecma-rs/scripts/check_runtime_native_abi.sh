@@ -7,6 +7,90 @@ SUPER_ROOT="$(cd "${ECMA_RS_ROOT}/../.." && pwd)"
 
 cd "${ECMA_RS_ROOT}"
 
+if ! command -v clang-18 >/dev/null 2>&1; then
+  echo "clang-18 not found in PATH" >&2
+  exit 1
+fi
+
+runtime_native_include_dir="${ECMA_RS_ROOT}/runtime-native/include"
+runtime_native_header="${runtime_native_include_dir}/runtime_native.h"
+
+derive_required_symbols() {
+  local out_file="$1"
+  shift
+
+  # Derive the required export set from the (preprocessed) stable ABI header.
+  #
+  # This intentionally avoids a hand-maintained symbol list (which tends to
+  # drift). To simulate a failure locally, temporarily rename one `rt_*`
+  # declaration in `runtime_native.h` or remove `#[no_mangle]` from the
+  # corresponding Rust export, then re-run this script: it should print the
+  # missing symbol name and exit non-zero.
+  #
+  # Notes:
+  # - We preprocess the header so `#ifdef RUNTIME_NATIVE_GC_STATS` /
+  #   `RUNTIME_NATIVE_GC_DEBUG` blocks are included/excluded based on the passed
+  #   `-D...` args (default: off).
+  # - We operate on preprocessed output (comments stripped) to avoid matching
+  #   symbols in comments.
+  local preprocessed_header
+  preprocessed_header="$(mktemp)"
+  tmp_files+=("${preprocessed_header}")
+
+  clang-18 \
+    -E -P \
+    -x c -std=c11 \
+    -I "${runtime_native_include_dir}" \
+    "$@" \
+    "${runtime_native_header}" \
+    >"${preprocessed_header}"
+
+  {
+    grep -oE '(^|[^A-Za-z0-9_])rt_[A-Za-z0-9_]+[[:space:]]*\(' "${preprocessed_header}" \
+      | sed -E 's/^[^A-Za-z0-9_]*//; s/[[:space:]]*\($//' \
+      || true
+
+    # Variable export (not matched by the function regex).
+    echo "RT_GC_EPOCH"
+  } | sort -u >"${out_file}"
+
+  if [[ ! -s "${out_file}" ]]; then
+    echo "failed to derive required runtime-native exports from ${runtime_native_header}" >&2
+    exit 1
+  fi
+  if ! grep -q '^rt_' "${out_file}"; then
+    echo "failed to extract any rt_* exports from ${runtime_native_header}" >&2
+    exit 1
+  fi
+}
+
+nm_defined_exports() {
+  local staticlib="$1"
+  local out_file="$2"
+
+  "${nm_tool}" -g --defined-only "${staticlib}" \
+    | awk 'NF >= 3 { print $3 }' \
+    | sort -u \
+    >"${out_file}"
+}
+
+check_missing_exports() {
+  local label="$1"
+  local required_file="$2"
+  local exported_file="$3"
+
+  local missing_file
+  missing_file="$(mktemp)"
+  tmp_files+=("${missing_file}")
+
+  comm -23 "${required_file}" "${exported_file}" >"${missing_file}"
+  if [[ -s "${missing_file}" ]]; then
+    echo "[runtime-native] Missing exports (${label}):" >&2
+    cat "${missing_file}" >&2
+    exit 1
+  fi
+}
+
 echo "[runtime-native] Building staticlib..."
 bash scripts/cargo_llvm.sh build -p runtime-native
 
@@ -37,123 +121,25 @@ else
 fi
 
 echo "[runtime-native] Verifying exported symbols via ${nm_tool}..."
+tmp_files=()
+cleanup() {
+  if [[ "${#tmp_files[@]}" -gt 0 ]]; then
+    rm -f "${tmp_files[@]}"
+  fi
+}
+trap cleanup EXIT
+
 nm_syms_file="$(mktemp)"
-trap 'rm -f "${nm_syms_file}"' EXIT
+tmp_files+=("${nm_syms_file}")
 #
 # `grep -q` can exit early, which can SIGPIPE the upstream producer and (with `pipefail`) turn a
 # successful match into a failure. Write the nm output to a file once and query it.
-"${nm_tool}" -g --defined-only "${staticlib}" | awk '{print $3}' | sort -u >"${nm_syms_file}"
+nm_defined_exports "${staticlib}" "${nm_syms_file}"
 
-required_symbols=(
-  # Thread registration / shape table.
-  rt_thread_init
-  rt_thread_deinit
-  rt_register_current_thread
-  rt_unregister_current_thread
-  rt_register_thread
-  rt_unregister_thread
-  rt_thread_register
-  rt_thread_unregister
-  rt_thread_set_parked
-  rt_thread_attach
-  rt_thread_detach
-  rt_alloc
-  rt_alloc_pinned
-  rt_alloc_array
-  rt_register_shape_table
-  RT_GC_EPOCH
-  rt_gc_poll
-  rt_gc_safepoint
-  rt_gc_safepoint_relocate_h
-  rt_gc_safepoint_slow
-  rt_keep_alive_gc_ref
-  rt_write_barrier
-  rt_write_barrier_range
-  rt_gc_collect
-  rt_backing_store_external_bytes
-  rt_root_push
-  rt_root_pop
-  rt_global_root_register
-  rt_global_root_unregister
-  rt_gc_register_root_slot
-  rt_gc_unregister_root_slot
-  rt_gc_pin
-  rt_gc_unpin
-  rt_handle_alloc
-  rt_handle_free
-  rt_handle_load
-  rt_handle_store
-  rt_gc_set_young_range
-  rt_gc_get_young_range
-  rt_weak_add
-  rt_weak_get
-  rt_weak_remove
-  rt_string_concat
-  rt_string_intern
-  rt_string_pin_interned
-  rt_parallel_spawn
-  rt_parallel_spawn_rooted
-  rt_parallel_join
-  rt_parallel_for
-  rt_spawn_blocking
-
-  # Native async ABI (PromiseHeader-based).
-  rt_promise_init
-  rt_promise_fulfill
-  rt_promise_reject
-
-  rt_async_spawn
-  rt_async_spawn_deferred
-  rt_async_poll
-  rt_async_set_strict_await_yields
-
-  # Legacy async ABI (temporary; will be removed once codegen migrates).
-  rt_promise_new_legacy
-  rt_promise_resolve_legacy
-  rt_promise_resolve_into_legacy
-  rt_promise_resolve_promise_legacy
-  rt_promise_resolve_thenable_legacy
-  rt_promise_reject_legacy
-  rt_promise_then_legacy
-  rt_async_spawn_legacy
-  rt_async_spawn_deferred_legacy
-  rt_async_poll_legacy
-  rt_async_sleep_legacy
-  rt_coro_await_legacy
-  rt_coro_await_value_legacy
-  rt_queue_microtask
-  rt_queue_microtask_with_drop
-  rt_queue_microtask_rooted
-  rt_drain_microtasks
-  rt_set_timeout
-  rt_set_timeout_rooted
-  rt_set_timeout_with_drop
-  rt_set_interval
-  rt_set_interval_rooted
-  rt_set_interval_with_drop
-  rt_clear_timer
-  rt_io_register
-  rt_io_register_rooted
-  rt_io_register_with_drop
-  rt_io_update
-  rt_io_unregister
-)
-
-missing=0
-for sym in "${required_symbols[@]}"; do
-  if ! grep -qx "${sym}" "${nm_syms_file}"; then
-    echo "missing runtime-native export: ${sym}" >&2
-    missing=1
-  fi
-done
-if [[ "${missing}" -ne 0 ]]; then
-  exit 1
-fi
-
-if ! command -v clang-18 >/dev/null 2>&1; then
-  echo "clang-18 not found in PATH" >&2
-  exit 1
-fi
+required_syms_file="$(mktemp)"
+tmp_files+=("${required_syms_file}")
+derive_required_symbols "${required_syms_file}" -U RUNTIME_NATIVE_GC_STATS -U RUNTIME_NATIVE_GC_DEBUG
+check_missing_exports "default build" "${required_syms_file}" "${nm_syms_file}"
 
 out_dir="${ECMA_RS_ROOT}/target/runtime-native-abi-check"
 mkdir -p "${out_dir}"
@@ -168,13 +154,34 @@ echo "[runtime-native] Compiling C smoke test..."
 clang-18 \
   -std=c11 \
   -Wall -Wextra -Werror \
-  -I "${ECMA_RS_ROOT}/runtime-native/include" \
+  -I "${runtime_native_include_dir}" \
   -Wl,-T,"${stackmaps_ld}" \
   "${ECMA_RS_ROOT}/runtime-native/examples/ffi_smoke.c" \
   "${staticlib}" \
   -o "${out_bin}" \
   -no-pie \
   -ldl -lpthread -lm
+
+# Optional (bonus): also verify feature-gated GC exports.
+#
+# Run with:
+#   RUNTIME_NATIVE_ABI_CHECK_GC_FEATURES=1 bash scripts/check_runtime_native_abi.sh
+if [[ "${RUNTIME_NATIVE_ABI_CHECK_GC_FEATURES:-0}" == "1" ]]; then
+  echo "[runtime-native] Building staticlib with --features gc_stats,gc_debug..."
+  bash scripts/cargo_llvm.sh build -p runtime-native --features gc_stats,gc_debug
+
+  # Re-scan exports for the feature build (same output path, different Cargo feature set).
+  nm_syms_gc_file="$(mktemp)"
+  tmp_files+=("${nm_syms_gc_file}")
+  nm_defined_exports "${staticlib}" "${nm_syms_gc_file}"
+
+  required_syms_gc_file="$(mktemp)"
+  tmp_files+=("${required_syms_gc_file}")
+  derive_required_symbols "${required_syms_gc_file}" \
+    -DRUNTIME_NATIVE_GC_STATS \
+    -DRUNTIME_NATIVE_GC_DEBUG
+  check_missing_exports "gc_stats+gc_debug build" "${required_syms_gc_file}" "${nm_syms_gc_file}"
+fi
 
 echo "[runtime-native] Running C smoke test..."
 # The runtime-native bump allocator reserves a large virtual-address arena by
