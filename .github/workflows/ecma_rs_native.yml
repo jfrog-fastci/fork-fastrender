@@ -244,7 +244,9 @@ jobs:
           # Exercise the async runtime's integration with the kqueue reactor as well (timers + fd
           # readiness + cross-thread wakeups).
           cargo test -p runtime-native --test async_event_loop --locked
+          cargo test -p runtime-native --test async_fd --locked
           # Exercise the force-pipe wake fallback path on platforms that default to kqueue/EVFILT_USER.
           cargo test -p runtime-native --test reactor_conformance --locked --features force_pipe_wake
           cargo test -p runtime-native --test reactor_kqueue_pipe_wake --locked --features force_pipe_wake
           cargo test -p runtime-native --test async_event_loop --locked --features force_pipe_wake
+          cargo test -p runtime-native --test async_fd --locked --features force_pipe_wake
