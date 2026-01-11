@@ -158,6 +158,7 @@ mod root_relative_font_units;
 mod float_blockification;
 mod float_line_box_intrusion;
 mod float_line_boxes_do_not_spurious_clear;
+mod float_grid_container_uses_own_formatting_context;
 mod float_inline_floats_do_not_expand_non_bfc_height;
 mod float_logical_sides;
 mod float_external_context_width;
