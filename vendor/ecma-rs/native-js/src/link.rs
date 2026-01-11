@@ -444,8 +444,9 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
 
 /// Minimal system linker wrapper used by the early AOT pipeline.
 ///
-/// This intentionally does *not* depend on the stackmap linker script fragment above; it is meant
-/// for small libc-only executables (e.g. `puts`-based smoke tests).
+/// This is used by the "emit executable" helper for quick smoke tests / debugging. It still wires
+/// in the stackmaps linker fragment so `--gc-sections` doesn't discard `.llvm_stackmaps` if the
+/// generated object happens to include them.
 pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(), crate::NativeJsError> {
   if !cfg!(target_os = "linux") {
     return Err(crate::NativeJsError::UnsupportedPlatform {
@@ -459,8 +460,22 @@ pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(),
 
   let have_lld = find_program(&["ld.lld", "ld.lld-18", "lld-18", "lld"]).is_some();
 
+  // Always inject the stackmaps linker script fragment:
+  // - defines `__fastr_stackmaps_start/end` (and `__llvm_*` aliases)
+  // - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can't discard it.
+  let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
+  let script_path = td.path().join("fastr_stackmaps.ld");
+  fs::write(&script_path, LLVM_STACKMAPS_LD_FRAGMENT).map_err(|source| crate::NativeJsError::Io {
+    path: script_path.clone(),
+    source,
+  })?;
+
   let mut cmd = Command::new(&clang);
-  cmd.arg("-O2").arg("-Wl,--gc-sections").arg("-no-pie");
+  cmd
+    .arg("-O2")
+    .arg("-Wl,--gc-sections")
+    .arg(format!("-Wl,-T,{}", script_path.display()))
+    .arg("-no-pie");
   if have_lld {
     cmd.arg("-fuse-ld=lld");
   }

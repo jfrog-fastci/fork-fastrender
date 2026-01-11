@@ -107,6 +107,30 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
+    if !command_works("clang-18") {
+        eprintln!("skipping: clang-18 not found in PATH");
+        return Ok(());
+    }
+
+    let obj_bytes = build_statepoint_object().context("build statepoint object")?;
+    assert_section_present_non_empty(&obj_bytes, ".llvm_stackmaps")?;
+
+    let tmp = tempfile::tempdir().context("create tempdir")?;
+    let obj_path = tmp.path().join("poc.o");
+    let exe_path = tmp.path().join("poc_exe");
+    fs::write(&obj_path, &obj_bytes).context("write object file")?;
+
+    native_js::link::link_object_to_executable(&obj_path, &exe_path)
+        .map_err(|err| anyhow!("link_object_to_executable failed: {err}"))?;
+
+    let exe_bytes = fs::read(&exe_path).context("read linked executable")?;
+    assert_section_present_non_empty(&exe_bytes, ".llvm_stackmaps")?;
+
+    Ok(())
+}
+
 fn command_works(cmd: &str) -> bool {
     Command::new(cmd)
         .arg("--version")
