@@ -11,10 +11,12 @@ pub mod window {
 
   use super::{binding_value_to_js, BindingValue, WebHostBindings};
   use crate::js::webidl::DataPropertyAttributes;
+  #[allow(unused_imports)]
   use webidl_ir::{
     DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
     NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
   };
+  #[allow(unused_imports)]
   use webidl_js_runtime::{
     convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
     OverloadSig, WebIdlJsRuntime,
