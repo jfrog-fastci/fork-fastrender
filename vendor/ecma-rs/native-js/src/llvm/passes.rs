@@ -28,6 +28,8 @@ pub enum PassError {
   GcCallsiteInvariant(#[from] CallsiteInvariantError),
   #[error("LLVMRunPasses failed for pipeline `{pipeline}`: {message}")]
   RunPasses { pipeline: String, message: String },
+  #[error("LLVM module verification failed after pipeline `{pipeline}`: {message}")]
+  Verify { pipeline: String, message: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
   IncompatibleSafepointPollSignature { name: String },
 }
@@ -100,6 +102,12 @@ pub fn rewrite_statepoints_for_gc(
   };
 
   run_pass_pipeline(module, target_machine, pipeline)?;
+  if let Err(message) = module.verify() {
+    return Err(PassError::Verify {
+      pipeline: pipeline.to_owned(),
+      message: message.to_string(),
+    });
+  }
 
   super::debug_lint_module_gc_pointer_discipline(module)?;
   verify_no_stray_calls_in_ts_generated_functions(module)?;
@@ -135,6 +143,12 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   };
 
   run_pass_pipeline(module, target_machine, pipeline)?;
+  if let Err(message) = module.verify() {
+    return Err(PassError::Verify {
+      pipeline: pipeline.to_owned(),
+      message: message.to_string(),
+    });
+  }
   debug_define_weak_safepoint_poll_stub(module);
   super::debug_lint_module_gc_pointer_discipline(module)?;
   verify_no_stray_calls_in_ts_generated_functions(module)?;

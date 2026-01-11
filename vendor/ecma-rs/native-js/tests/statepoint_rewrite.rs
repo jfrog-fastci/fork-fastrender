@@ -715,6 +715,60 @@ fn invoke_scalar_return_uses_gc_result() {
 }
 
 #[test]
+fn invoke_with_live_gc_pointer_is_rejected_by_verifier() {
+  // LLVM 18 `rewrite-statepoints-for-gc` currently produces invalid IR when an `invoke` statepoint
+  // has a live GC pointer across it under landingpad-based EH: it attempts to emit `gc.relocate`
+  // on the exceptional edge without a statepoint token.
+  //
+  // We *don't* rely on this pattern today, but we do want `native-js` to fail fast instead of
+  // feeding invalid IR into later codegen stages. Our pass runner therefore validates the module
+  // via `Module::verify()` after rewriting.
+
+  let before = r#"
+  declare void @callee()
+
+  define i32 @dummy_personality(...) { ret i32 0 }
+
+  define void @test(ptr addrspace(1) %obj) gc "coreclr" personality ptr @dummy_personality {
+  entry:
+    invoke void @callee()
+            to label %cont unwind label %lpad
+
+  cont:
+    %isnull = icmp eq ptr addrspace(1) %obj, null
+    ret void
+
+  lpad:
+    %lp = landingpad { ptr, i32 } cleanup
+    resume { ptr, i32 } %lp
+  }
+  "#;
+
+  init_llvm();
+  let context = Context::create();
+  let buffer = MemoryBuffer::create_from_memory_range_copy(before.as_bytes(), "test.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{before}"));
+
+  let tm = host_target_machine();
+  module.set_triple(&tm.get_triple());
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  if let Err(err) = module.verify() {
+    panic!("input module verification failed: {err}\n\nIR:\n{}", module.print_to_string());
+  }
+
+  let err = passes::rewrite_statepoints_for_gc(&module, &tm)
+    .expect_err("expected rewrite-statepoints-for-gc to be rejected by the verifier");
+  let msg = err.to_string();
+  assert!(
+    msg.contains("verify") || msg.contains("Verifier") || msg.contains("verification"),
+    "expected verifier-related error, got: {msg}"
+  );
+}
+
+#[test]
 fn invoke_gc_pointer_return_uses_gc_result_p1() {
   // Same as `invoke_scalar_return_uses_gc_result`, but for a GC pointer return
   // type (`gc.result.p1`).
