@@ -164,8 +164,12 @@ pub fn try_load_via_linker_symbols() -> Option<&'static [u8]> {
 
       let len = end_addr - start_addr;
 
-      // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
-      if start_addr % 8 != 0 || len % 8 != 0 {
+      // StackMap v3 payload contains 64-bit fields and records are 8-byte aligned, so the section
+      // start should be 8-byte aligned.
+      //
+      // However, some toolchains/linkers have been observed to leave short trailing padding/noise
+      // bytes at the end of the output section, so don't require `len % 8 == 0`.
+      if start_addr % 8 != 0 {
         return None;
       }
 
@@ -490,9 +494,6 @@ mod macho {
         ".llvm_stackmaps pointer misaligned on macOS: ptr={:#x}",
         ptr as usize
       );
-    }
-    if len % 8 != 0 {
-      panic!(".llvm_stackmaps length misaligned on macOS: len={len}");
     }
 
     slice::from_raw_parts(ptr, len)

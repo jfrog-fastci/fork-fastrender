@@ -51,14 +51,13 @@ pub fn stackmaps_bytes() -> &'static [u8] {
             "invalid .llvm_stackmaps length: {len} bytes (max {MAX_LEN}); linker script probably not applied"
         );
 
-        // StackMap v3 payload contains 64-bit fields and records are 8-byte aligned.
+        // StackMap v3 records are 8-byte aligned, so the section start should be aligned.
+        //
+        // However, some toolchains/linkers have been observed to leave short trailing padding/noise
+        // bytes at the end of the output section, so don't require `len % 8 == 0`.
         assert!(
             start_addr % 8 == 0,
             ".llvm_stackmaps pointer misaligned: start={start_addr:#x}"
-        );
-        assert!(
-            len % 8 == 0,
-            ".llvm_stackmaps length misaligned: len={len} (expected multiple of 8)"
         );
 
         slice::from_raw_parts(start, len)
@@ -118,10 +117,6 @@ pub fn stackmaps_bytes() -> &'static [u8] {
             ".llvm_stackmaps pointer misaligned: ptr={:#x}",
             ptr as usize
         );
-        assert!(
-            len % 8 == 0,
-            ".llvm_stackmaps length misaligned: len={len} (expected multiple of 8)"
-        );
 
         slice::from_raw_parts(ptr, len)
     }
@@ -148,7 +143,7 @@ mod tests {
         .p2align 3
         .globl __start_llvm_stackmaps
         __start_llvm_stackmaps:
-        .byte 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE
+        .byte 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0xAA
         .globl __stop_llvm_stackmaps
         __stop_llvm_stackmaps:
         .text
@@ -159,7 +154,7 @@ mod tests {
     fn stackmaps_bytes_reads_section_range() {
         assert_eq!(
             stackmaps_bytes(),
-            &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]
+            &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0xAA]
         );
     }
 }
