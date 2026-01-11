@@ -6,7 +6,7 @@
 
 use crate::geometry::Rect;
 use crate::paint::display_list::ResolvedFilter;
-use crate::paint::svg_filter::{FilterPrimitive, SvgFilterUnits};
+use crate::paint::svg_filter::{FilterPrimitive, SvgFilterUnits, SvgLength};
 
 /// Outset distances on each side of a rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,8 +34,8 @@ impl FilterOutset {
   }
 }
 
-/// Computes a conservative outset (in CSS pixels) required to evaluate kernel-based SVG filter
-/// primitives.
+/// Computes a conservative *dependency* outset (in CSS pixels) required to evaluate SVG filter
+/// primitives when rendering in tiles.
 ///
 /// Even if an SVG filter's declared filter region matches the element bbox (meaning the *visible*
 /// output cannot extend beyond the bbox), primitives like `feGaussianBlur` still sample neighboring
@@ -43,10 +43,13 @@ impl FilterOutset {
 /// without enough "halo" pixels around tile boundaries, the kernel will see transparent pixels
 /// outside the tile and produce seams that do not appear in serial rendering.
 ///
-/// This function intentionally overestimates and is used to size that halo. Today we approximate
-/// Gaussian blur support with `stdDeviation * 3` (matching the same conservative bound used for CSS
-/// `blur()` and `drop-shadow()` filters). Multiple kernel primitives are accumulated to safely
-/// cover worst-case chaining within the filter graph.
+/// This function intentionally overestimates and is used to size that halo. Multiple primitives are
+/// accumulated to safely cover worst-case chaining within the filter graph.
+///
+/// It covers primitives that can read beyond the "current" pixel location, including:
+/// - kernel filters (`feGaussianBlur`, `feMorphology`, `feConvolveMatrix`)
+/// - displacement (`feDisplacementMap`)
+/// - translations (`feOffset`, and `feDropShadow` dx/dy)
 fn svg_filter_kernel_outset_css(
   filter: &crate::paint::svg_filter::SvgFilter,
   bbox: Rect,
@@ -55,11 +58,22 @@ fn svg_filter_kernel_outset_css(
   let mut pad_y = 0.0f32;
   let bbox_w = bbox.width().abs();
   let bbox_h = bbox.height().abs();
+  let bbox_w = if bbox_w.is_finite() { bbox_w } else { 0.0 };
+  let bbox_h = if bbox_h.is_finite() { bbox_h } else { 0.0 };
 
   let resolve_pair = |values: (f32, f32)| -> (f32, f32) {
     match filter.primitive_units {
       SvgFilterUnits::UserSpaceOnUse => values,
       SvgFilterUnits::ObjectBoundingBox => (values.0 * bbox_w, values.1 * bbox_h),
+    }
+  };
+
+  let resolve_length = |len: SvgLength, basis: f32| -> f32 {
+    match (filter.primitive_units, len) {
+      (SvgFilterUnits::UserSpaceOnUse, SvgLength::Number(v)) => v,
+      (SvgFilterUnits::UserSpaceOnUse, SvgLength::Percent(frac)) => frac * basis,
+      (SvgFilterUnits::ObjectBoundingBox, SvgLength::Number(v)) => v * basis,
+      (SvgFilterUnits::ObjectBoundingBox, SvgLength::Percent(frac)) => frac * basis,
     }
   };
 
@@ -78,18 +92,46 @@ fn svg_filter_kernel_outset_css(
           pad_y += dy;
         }
       }
-      FilterPrimitive::DropShadow { std_dev, .. } => {
+      FilterPrimitive::DropShadow {
+        dx,
+        dy,
+        std_dev,
+        ..
+      } => {
         let (sx, sy) = resolve_pair(*std_dev);
         let sx = if sx.is_finite() { sx.abs() } else { 0.0 };
         let sy = if sy.is_finite() { sy.abs() } else { 0.0 };
-        let dx = sx * 3.0;
-        let dy = sy * 3.0;
-        if dx.is_finite() {
-          pad_x += dx;
+        let blur_x = sx * 3.0;
+        let blur_y = sy * 3.0;
+        if blur_x.is_finite() {
+          pad_x += blur_x;
         }
-        if dy.is_finite() {
-          pad_y += dy;
+        if blur_y.is_finite() {
+          pad_y += blur_y;
         }
+
+        let offset_x = resolve_length(*dx, bbox_w);
+        let offset_y = resolve_length(*dy, bbox_h);
+        let offset_x = if offset_x.is_finite() {
+          offset_x.abs()
+        } else {
+          0.0
+        };
+        let offset_y = if offset_y.is_finite() {
+          offset_y.abs()
+        } else {
+          0.0
+        };
+        pad_x += offset_x;
+        pad_y += offset_y;
+      }
+      FilterPrimitive::Offset { dx, dy, .. } => {
+        let dx = resolve_length(*dx, bbox_w);
+        let dy = resolve_length(*dy, bbox_h);
+        let dx = if dx.is_finite() { dx.abs() } else { 0.0 };
+        let dy = if dy.is_finite() { dy.abs() } else { 0.0 };
+        pad_x += dx;
+        pad_y += dy;
       }
       FilterPrimitive::Morphology { radius, .. } => {
         let (rx, ry) = resolve_pair(*radius);
@@ -100,6 +142,44 @@ fn svg_filter_kernel_outset_css(
         }
         if ry.is_finite() {
           pad_y += ry;
+        }
+      }
+      FilterPrimitive::ConvolveMatrix {
+        order_x,
+        order_y,
+        target_x,
+        target_y,
+        ..
+      } => {
+        let order_x = i64::try_from(*order_x).unwrap_or(i64::MAX);
+        let order_y = i64::try_from(*order_y).unwrap_or(i64::MAX);
+        let max_x = order_x.saturating_sub(1);
+        let max_y = order_y.saturating_sub(1);
+        let tx = i64::from(*target_x);
+        let ty = i64::from(*target_y);
+        let reach_x = tx.max(max_x.saturating_sub(tx)).max(0);
+        let reach_y = ty.max(max_y.saturating_sub(ty)).max(0);
+        let reach_x = reach_x as f32;
+        let reach_y = reach_y as f32;
+        if reach_x.is_finite() {
+          pad_x += reach_x;
+        }
+        if reach_y.is_finite() {
+          pad_y += reach_y;
+        }
+      }
+      FilterPrimitive::DisplacementMap { scale, .. } => {
+        let resolved = match filter.primitive_units {
+          SvgFilterUnits::UserSpaceOnUse => *scale,
+          // NOTE: This intentionally resolves against bbox width for *both* axes to match
+          // `SvgFilter::resolve_primitive_x` usage in `svg_filter.rs`.
+          SvgFilterUnits::ObjectBoundingBox => *scale * bbox_w,
+        };
+        let resolved = if resolved.is_finite() { resolved } else { 0.0 };
+        let margin = 0.5 * resolved.abs();
+        if margin.is_finite() {
+          pad_x += margin;
+          pad_y += margin;
         }
       }
       _ => {}
@@ -419,8 +499,8 @@ impl FilterOutsetExt for ResolvedFilter {
 mod tests {
   use super::*;
   use crate::paint::svg_filter::{
-    ColorInterpolationFilters, EdgeMode, FilterInput, FilterPrimitive, FilterStep, SvgFilter,
-    SvgFilterRegion, SvgFilterUnits, SvgLength,
+    ChannelSelector, ColorInterpolationFilters, EdgeMode, FilterInput, FilterPrimitive, FilterStep,
+    SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
   };
   use std::sync::Arc;
 
@@ -503,6 +583,92 @@ mod tests {
         && (t - 9.0).abs() < 0.01
         && (b - 9.0).abs() < 0.01,
       "expected gaussian blur to contribute 9px padding, got {l},{t},{r},{b}"
+    );
+  }
+
+  #[test]
+  fn svg_filter_convolve_matrix_expands_outset() {
+    let mut kernel = vec![0.0f32; 25];
+    kernel[24] = 1.0;
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::ConvolveMatrix {
+          input: FilterInput::SourceGraphic,
+          order_x: 25,
+          order_y: 1,
+          kernel,
+          divisor: None,
+          bias: 0.0,
+          target_x: 12,
+          target_y: 0,
+          edge_mode: EdgeMode::None,
+          preserve_alpha: false,
+        },
+        region: None,
+      }],
+      // Filter region = bbox.
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(1.0),
+        height: SvgLength::Number(1.0),
+        units: SvgFilterUnits::ObjectBoundingBox,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+    let filters = vec![ResolvedFilter::SvgFilter(Arc::new(filter))];
+    let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
+    assert!(
+      l >= 12.0 - 0.01 && r >= 12.0 - 0.01 && t >= 0.0 && b >= 0.0,
+      "expected convolve matrix to contribute >=12px x padding, got {l},{t},{r},{b}"
+    );
+  }
+
+  #[test]
+  fn svg_filter_displacement_map_expands_outset() {
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::DisplacementMap {
+          in1: FilterInput::SourceGraphic,
+          in2: FilterInput::SourceGraphic,
+          scale: 40.0,
+          x_channel: ChannelSelector::A,
+          y_channel: ChannelSelector::A,
+        },
+        region: None,
+      }],
+      // Filter region = bbox.
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(1.0),
+        height: SvgLength::Number(1.0),
+        units: SvgFilterUnits::ObjectBoundingBox,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+    let filters = vec![ResolvedFilter::SvgFilter(Arc::new(filter))];
+    let bbox = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+    let (l, t, r, b) = compute_filter_outset(&filters, bbox, 1.0);
+    assert!(
+      l >= 20.0 - 0.01
+        && r >= 20.0 - 0.01
+        && t >= 20.0 - 0.01
+        && b >= 20.0 - 0.01,
+      "expected displacement map to contribute >=20px padding, got {l},{t},{r},{b}"
     );
   }
 }
