@@ -346,7 +346,7 @@ impl ApiDatabase {
 
     for (path, contents) in files {
       let parsed = parse_source_file(path, contents)?;
-      let env = env_for_path(path);
+      let (env, platform) = env_and_platform_for_path(path);
       let path_string = (*path).to_string();
       for api in parsed {
         // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
@@ -357,7 +357,7 @@ impl ApiDatabase {
         apis.entry(api.name.clone()).or_default().push(ApiEntry {
           api,
           env,
-          platform: WebPlatform::Generic,
+          platform,
           source: Some(path_string.clone()),
         });
       }
@@ -397,7 +397,7 @@ impl ApiDatabase {
         source: err,
       })?;
       let parsed = parse_source_file(&file.rel_path, &contents)?;
-      let env = env_for_path(&file.rel_path);
+      let (env, platform) = env_and_platform_for_path(&file.rel_path);
       for api in parsed {
         // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
         // first source path for stable diagnostics (individual entries retain their own sources).
@@ -407,7 +407,7 @@ impl ApiDatabase {
         apis.entry(api.name.clone()).or_default().push(ApiEntry {
           api,
           env,
-          platform: WebPlatform::Generic,
+          platform,
           source: Some(file.rel_path.clone()),
         });
       }
@@ -461,14 +461,28 @@ impl ApiDatabase {
   }
 }
 
-fn env_for_path(path: &str) -> ApiEnv {
-  if path.starts_with("node/") {
-    ApiEnv::Node
-  } else if path.starts_with("web/") {
-    ApiEnv::Web
-  } else {
-    ApiEnv::Unknown
+fn env_and_platform_for_path(path: &str) -> (ApiEnv, WebPlatform) {
+  let path = path.trim_start_matches("./");
+
+  if let Some(rest) = path.strip_prefix("node/") {
+    let _ = rest; // reserved for future per-module Node metadata
+    return (ApiEnv::Node, WebPlatform::Generic);
   }
+
+  if let Some(rest) = path.strip_prefix("web/") {
+    let platform = if rest.starts_with("chrome/") {
+      WebPlatform::Chrome
+    } else if rest.starts_with("firefox/") {
+      WebPlatform::Firefox
+    } else if rest.starts_with("safari/") {
+      WebPlatform::Safari
+    } else {
+      WebPlatform::Generic
+    };
+    return (ApiEnv::Web, platform);
+  }
+
+  (ApiEnv::Unknown, WebPlatform::Generic)
 }
 
 fn entry_version_range(entry: &ApiEntry) -> VersionRangeSpec {
@@ -1618,12 +1632,12 @@ purity:
       });
       let rel = path.strip_prefix(&root).unwrap_or(&path);
       let rel = rel.to_string_lossy().replace('\\', "/");
-      let env = env_for_path(&rel);
+      let (env, platform) = env_and_platform_for_path(&rel);
       for api in entries {
         apis.entry(api.name.clone()).or_default().push(ApiEntry {
           api,
           env,
-          platform: WebPlatform::Generic,
+          platform,
           source: Some(rel.clone()),
         });
       }
@@ -2043,5 +2057,29 @@ properties:
       )
       .expect("fetch should resolve for web targets");
     assert_eq!(fetch.name, "fetch");
+  }
+
+  #[test]
+  fn env_and_platform_parses_web_subdirectories() {
+    assert_eq!(
+      env_and_platform_for_path("web/chrome/foo.yaml"),
+      (ApiEnv::Web, WebPlatform::Chrome)
+    );
+    assert_eq!(
+      env_and_platform_for_path("web/firefox/foo.yaml"),
+      (ApiEnv::Web, WebPlatform::Firefox)
+    );
+    assert_eq!(
+      env_and_platform_for_path("web/safari/foo.yaml"),
+      (ApiEnv::Web, WebPlatform::Safari)
+    );
+    assert_eq!(
+      env_and_platform_for_path("web/foo.yaml"),
+      (ApiEnv::Web, WebPlatform::Generic)
+    );
+    assert_eq!(
+      env_and_platform_for_path("node/foo.yaml"),
+      (ApiEnv::Node, WebPlatform::Generic)
+    );
   }
 }
