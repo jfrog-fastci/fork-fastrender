@@ -8,6 +8,16 @@
       throws: Maybe
   purity: ReadOnly
 
+- name: document.querySelectorAll
+  aliases:
+    - document.querySelectorAll
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+
 - name: document.getElementById
   aliases:
     - document.getElementById
