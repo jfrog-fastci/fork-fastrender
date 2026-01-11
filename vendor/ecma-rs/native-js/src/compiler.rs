@@ -79,6 +79,10 @@ pub fn compile_llvm_ir_to_artifact(
 
   let (out_path, out_tempdir) = resolve_output_path(opts.emit, opts.debug, output_path)?;
 
+  if let Some(path) = opts.emit_ir.as_deref() {
+    ensure_parent_dir(path)?;
+    write_file(path, llvm_ir.as_bytes())?;
+  }
   match opts.emit {
     EmitKind::LlvmIr => {
       write_file(&out_path, llvm_ir.as_bytes())?;
@@ -537,6 +541,8 @@ impl<'a> Compiler<'a> {
     let context = Context::create();
     let module = self.build_llvm_module(&context, &loaded)?;
 
+    self.emit_extra_llvm_ir(&module)?;
+
     module
       .verify()
       .map_err(|e| NativeJsError::Llvm(format!("LLVM module verification failed: {e}")))?;
@@ -669,7 +675,7 @@ impl<'a> Compiler<'a> {
           })?;
 
         let mut tmp_obj: Option<TempDir> = None;
-        let keep_obj = self.opts.debug || self.opts.output.is_some();
+        let keep_obj = self.opts.debug;
         let obj_path = if keep_obj {
           path_with_suffix(&exe_path, ".o")
         } else {
@@ -687,7 +693,15 @@ impl<'a> Compiler<'a> {
           write_file(&ir_path, ir.as_bytes())?;
         }
 
-        link::link_object_to_executable(&obj_path, &exe_path)?;
+        link::link_elf_executable_with_options(
+          &exe_path,
+          &[obj_path.clone()],
+          link::LinkOpts {
+            debug: self.opts.debug,
+            ..Default::default()
+          },
+        )
+        .map_err(|err| NativeJsError::Internal(err.to_string()))?;
         drop(tmp_obj);
 
         #[cfg(unix)]
@@ -712,6 +726,16 @@ impl<'a> Compiler<'a> {
         })
       }
     }
+  }
+
+  fn emit_extra_llvm_ir<'ctx>(&self, module: &Module<'ctx>) -> Result<(), NativeJsError> {
+    let Some(path) = self.opts.emit_ir.as_deref() else {
+      return Ok(());
+    };
+    ensure_parent_dir(path)?;
+    let ir = emit::emit_llvm_ir(module);
+    write_file(path, ir.as_bytes())?;
+    Ok(())
   }
 
   fn output_path(&self, suffix: &str) -> Result<PathBuf, NativeJsError> {
@@ -742,6 +766,18 @@ impl<'a> Compiler<'a> {
 
     Ok(path)
   }
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<(), NativeJsError> {
+  if let Some(parent) = path.parent() {
+    if !parent.as_os_str().is_empty() {
+      std::fs::create_dir_all(parent).map_err(|source| NativeJsError::Io {
+        path: parent.to_path_buf(),
+        source,
+      })?;
+    }
+  }
+  Ok(())
 }
 
 struct LoadedProgram {

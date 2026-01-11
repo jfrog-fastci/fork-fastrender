@@ -180,7 +180,12 @@ pub fn link_elf_executable_with_options(
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 
-  let script_path = out_dir.join("llvm_stackmaps.ld");
+  // Use a per-invocation temp file for the linker script fragment to avoid:
+  // - polluting the output directory with build artifacts
+  // - collisions when multiple linkers run concurrently and happen to share an output directory
+  //   (e.g. temp file outputs in `/tmp`).
+  let script_dir = tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
+  let script_path = script_dir.path().join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
   // If producing a PIE, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` in the input

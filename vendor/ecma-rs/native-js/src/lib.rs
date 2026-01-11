@@ -124,6 +124,9 @@ pub struct CompilerOptions {
   pub builtins: bool,
   /// Explicit output path. When `None`, a temp file is created for the chosen [`EmitKind`].
   pub output: Option<PathBuf>,
+  /// If set, also write the generated textual LLVM IR (`.ll`) to this path in addition to the
+  /// primary artifact specified by [`CompilerOptions::emit`].
+  pub emit_ir: Option<PathBuf>,
 }
 
 /// Backwards-compatible alias used by the parse-js based emitter.
@@ -138,6 +141,7 @@ impl Default for CompilerOptions {
       debug: false,
       builtins: true,
       output: None,
+      emit_ir: None,
     }
   }
 }

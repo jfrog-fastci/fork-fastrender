@@ -1,8 +1,5 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diagnostics::{host_error, Diagnostic, FileId, Severity, Span, TextRange};
-use inkwell::context::Context;
-use inkwell::OptimizationLevel;
-use native_js::link::LinkOpts;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -193,29 +190,6 @@ fn cmd_build(
     return exit_code;
   }
 
-  let entrypoint = match native_js::strict::entrypoint(&program, entry_file) {
-    Ok(ep) => ep,
-    Err(diags) => {
-      let _ = output::emit_diagnostics(&program, diags, cli.json, render);
-      return ExitCode::from(1);
-    }
-  };
-
-  let context = Context::create();
-  let module = match native_js::codegen::codegen(
-    &context,
-    &program,
-    entry_file,
-    entrypoint,
-    native_js::codegen::CodegenOptions::default(),
-  ) {
-    Ok(module) => module,
-    Err(diags) => {
-      let _ = output::emit_diagnostics(&program, diags, cli.json, render);
-      return ExitCode::from(1);
-    }
-  };
-
   if let Some(path) = emit_ir {
     if let Some(parent) = path.parent() {
       if !parent.as_os_str().is_empty() {
@@ -229,29 +203,24 @@ fn cmd_build(
         }
       }
     }
-    let ir = native_js::emit::emit_llvm_ir(&module);
-    if let Err(err) = fs::write(path, ir) {
-      return exit_internal(
-        &program,
-        cli.json,
-        render,
-        format!("failed to write {}: {err}", path.display()),
-      );
-    }
   }
 
-  let mut target = native_js::emit::TargetConfig::default();
-  target.opt_level = match opt_level(cli.opt) {
+  let mut opts = native_js::CompilerOptions::default();
+  opts.emit = native_js::EmitKind::Executable;
+  opts.output = Some(output_exe.to_path_buf());
+  opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
+  opts.debug = cli.debug;
+  opts.opt_level = match opt_level(cli.opt) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),
   };
-  let obj = match native_js::emit::emit_object_with_statepoints(&module, target) {
-    Ok(obj) => obj,
-    Err(err) => return exit_internal(&program, cli.json, render, err.to_string()),
-  };
 
-  if let Err(err) = link_object(cli.debug, &obj, output_exe) {
-    return exit_internal(&program, cli.json, render, err);
+  if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
+    if let Some(diags) = err.diagnostics() {
+      let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
+      return exit_code_for_diagnostics(diags);
+    }
+    return exit_internal(&program, cli.json, render, err.to_string());
   }
 
   // Emit JSON even on success so callers can depend on a stable output shape.
@@ -291,37 +260,21 @@ fn cmd_emit_ir(
     return exit_code;
   }
 
-  let entrypoint = match native_js::strict::entrypoint(&program, entry_file) {
-    Ok(ep) => ep,
-    Err(diags) => {
-      let _ = output::emit_diagnostics(&program, diags, cli.json, render);
-      return ExitCode::from(1);
-    }
+  let mut opts = native_js::CompilerOptions::default();
+  opts.emit = native_js::EmitKind::LlvmIr;
+  opts.output = Some(output_ll.to_path_buf());
+  opts.debug = cli.debug;
+  opts.opt_level = match opt_level(cli.opt) {
+    Ok(level) => level,
+    Err(err) => return exit_internal(&program, cli.json, render, err),
   };
 
-  let context = Context::create();
-  let module = match native_js::codegen::codegen(
-    &context,
-    &program,
-    entry_file,
-    entrypoint,
-    native_js::codegen::CodegenOptions::default(),
-  ) {
-    Ok(module) => module,
-    Err(diags) => {
-      let _ = output::emit_diagnostics(&program, diags, cli.json, render);
-      return ExitCode::from(1);
+  if let Err(err) = native_js::compile_program(&program, entry_file, &opts) {
+    if let Some(diags) = err.diagnostics() {
+      let _ = output::emit_diagnostics(&program, diags.to_vec(), cli.json, render);
+      return exit_code_for_diagnostics(diags);
     }
-  };
-
-  let ir = native_js::emit::emit_llvm_ir(&module);
-  if let Err(err) = fs::write(output_ll, ir) {
-    return exit_internal(
-      &program,
-      cli.json,
-      render,
-      format!("failed to write {}: {err}", output_ll.display()),
-    );
+    return exit_internal(&program, cli.json, render, err.to_string());
   }
 
   if cli.json {
@@ -456,26 +409,14 @@ fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, FileId), String> {
   Ok((program, entry_file))
 }
 
-fn opt_level(raw: u8) -> Result<OptimizationLevel, String> {
+fn opt_level(raw: u8) -> Result<native_js::OptLevel, String> {
   match raw {
-    0 => Ok(OptimizationLevel::None),
-    1 => Ok(OptimizationLevel::Less),
-    2 => Ok(OptimizationLevel::Default),
-    3 => Ok(OptimizationLevel::Aggressive),
+    0 => Ok(native_js::OptLevel::O0),
+    1 => Ok(native_js::OptLevel::O1),
+    2 => Ok(native_js::OptLevel::O2),
+    3 => Ok(native_js::OptLevel::O3),
     other => Err(format!("invalid --opt={other} (expected 0,1,2,3)")),
   }
-}
-
-fn link_object(debug: bool, obj: &[u8], output: &Path) -> Result<(), String> {
-  native_js::link::link_object_buffers_to_elf_executable(
-    output,
-    &[obj],
-    LinkOpts {
-      debug,
-      ..Default::default()
-    },
-  )
-  .map_err(|err| err.to_string())
 }
 
 fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> ExitCode {

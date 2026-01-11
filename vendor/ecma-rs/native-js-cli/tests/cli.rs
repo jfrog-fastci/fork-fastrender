@@ -199,6 +199,36 @@ fn build_and_run_returns_exit_code() {
 }
 
 #[test]
+fn build_with_emit_ir_writes_executable_and_ir_file() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "export function main(): number { return 7; }\n").unwrap();
+
+  let out = tmp.path().join("out-bin");
+  let ll = tmp.path().join("out.ll");
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .arg("--emit-ir")
+    .arg(&ll)
+    .assert()
+    .success();
+
+  assert!(out.is_file(), "expected executable at {}", out.display());
+  assert!(ll.is_file(), "expected LLVM IR at {}", ll.display());
+
+  let text = fs::read_to_string(&ll).unwrap();
+  assert!(text.contains("@ts_main"), "expected IR to mention ts_main");
+  assert!(text.contains("define"), "expected IR to contain function definitions");
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(7));
+}
+
+#[test]
 fn emit_llvm_ir_contains_symbols() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
