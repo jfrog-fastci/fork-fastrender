@@ -77,6 +77,11 @@ fi
 clang="${NATIVE_JS_CLANG:-clang-18}"
 objcopy="${NATIVE_JS_OBJCOPY:-llvm-objcopy-18}"
 
+lld_fuse="lld"
+if command -v ld.lld-18 >/dev/null 2>&1; then
+  lld_fuse="lld-18"
+fi
+
 if ! command -v "${clang}" >/dev/null 2>&1; then
   echo "error: missing ${clang} (install clang-18)" >&2
   exit 2
@@ -142,7 +147,7 @@ done
 
 link_args=(
   "${clang}"
-  -fuse-ld=lld
+  -fuse-ld="${lld_fuse}"
   -pie
   -o "${out}"
   "-Wl,--script=${stackmaps_ld}"

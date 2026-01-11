@@ -84,10 +84,21 @@ bash scripts/cargo_llvm.sh test -p runtime-native
 ### Retaining `.llvm_stackmaps` in the final binary (Linux)
 
 On Linux, linkers may discard `.llvm_stackmaps` under `--gc-sections` unless it is explicitly kept.
-The recommended setup is to enable the `runtime-native` feature `llvm_stackmaps_linker`, which injects
-`runtime-native/link/stackmaps.ld` to:
+
+The final link step should apply `runtime-native/link/stackmaps.ld` (or the compatibility alias
+`runtime-native/stackmaps.ld`) to:
 
 * `KEEP` the stackmap section
 * and define stable in-memory boundary symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
 
 This allows the runtime to load stackmaps without scanning memory or parsing `/proc/self/exe`.
+
+Notes:
+
+* Enabling the `runtime-native` crate feature `llvm_stackmaps_linker` causes `runtime-native/build.rs`
+  to pass the linker script when linking artifacts produced by the `runtime-native` package itself
+  (tests / cdylib on Linux).
+* Cargo does **not** automatically propagate linker-script args from dependencies into downstream Rust
+  binaries. For executables that *depend on* `runtime-native`, you must still pass the linker script
+  at the final link step (e.g. via `RUSTFLAGS`), or use helpers like `native_js::link` /
+  `scripts/native_link.sh` which always inject it.
