@@ -125,6 +125,41 @@ impl<'ctx> CodeGen<'ctx> {
 mod tests {
   use super::*;
 
+  fn find_line<'a>(ir: &'a str, needle: &str) -> &'a str {
+    ir.lines()
+      .find(|l| l.contains(needle))
+      .unwrap_or_else(|| panic!("missing `{needle}` in IR:\n{ir}"))
+  }
+
+  fn attr_group_on_line(line: &str) -> Option<u32> {
+    let idx = line.find('#')?;
+    let digits: String = line[idx + 1..]
+      .chars()
+      .take_while(|c| c.is_ascii_digit())
+      .collect();
+    digits.parse().ok()
+  }
+
+  fn assert_decl_not_gc_managed(ir: &str, needle: &str) {
+    let line = find_line(ir, needle);
+    assert!(
+      !line.contains("gc \"coreclr\""),
+      "expected `{needle}` to be a plain declaration (no gc strategy), got:\n{line}\n\nIR:\n{ir}"
+    );
+
+    if let Some(group) = attr_group_on_line(line) {
+      let attr_line = find_line(ir, &format!("attributes #{group} ="));
+      assert!(
+        !attr_line.contains("\"frame-pointer\"=\"all\""),
+        "did not expect stack-walking attrs on `{needle}` declaration; attr group was:\n{attr_line}\n\nIR:\n{ir}"
+      );
+      assert!(
+        !(attr_line.contains("\"disable-tail-calls\"=\"true\"") || attr_line.contains("disable-tail-calls")),
+        "did not expect stack-walking attrs on `{needle}` declaration; attr group was:\n{attr_line}\n\nIR:\n{ir}"
+      );
+    }
+  }
+
   #[test]
   fn module_ir_enforces_stack_walking_attrs_for_all_functions() {
     let context = Context::create();
@@ -145,5 +180,30 @@ mod tests {
       ir.contains("\"disable-tail-calls\"=\"true\"") || ir.contains("disable-tail-calls"),
       "IR:\n{ir}"
     );
+  }
+
+  #[test]
+  fn module_ir_does_not_mark_runtime_declarations_as_gc_managed() {
+    let context = Context::create();
+    let cg = CodeGen::new(&context, "test");
+    cg.runtime_abi().declare_all();
+
+    let ir = cg.module_ir();
+
+    // Runtime ABI declarations are imported into the module but should not be treated as
+    // compiler-generated GC-managed code (no `gc "coreclr"` and no stack-walking attrs).
+    assert_decl_not_gc_managed(&ir, "declare ptr @rt_alloc");
+    assert_decl_not_gc_managed(&ir, "declare ptr @rt_alloc_pinned");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_gc_safepoint");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_gc_safepoint_slow");
+    assert_decl_not_gc_managed(&ir, "declare ptr @rt_gc_safepoint_relocate_h");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_gc_collect");
+
+    // NoGC runtime declarations may carry `gc-leaf-function`, but still must not be
+    // marked as GC-managed functions.
+    assert_decl_not_gc_managed(&ir, "declare i1 @rt_gc_poll");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_write_barrier");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_write_barrier_range");
+    assert_decl_not_gc_managed(&ir, "declare void @rt_keep_alive_gc_ref");
   }
 }
