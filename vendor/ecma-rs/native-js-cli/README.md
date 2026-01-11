@@ -440,6 +440,10 @@ It emits a single LLVM module for the entry file and all transitively imported
 in dependency order (matching source import order for sibling imports) before
 calling the entry file’s exported `main()`.
 
+Note: re-export syntax (`export { foo } from "./mod"`, `export * from "./mod"`)
+is not yet supported by the checked/HIR backend (importing through re-export-only
+modules may fail during codegen).
+
 - The entry file must export `main()`:
   - defined in the entry file (no re-exports)
   - no parameters
