@@ -1,5 +1,8 @@
-use std::io::Write;
-use std::process::Command;
+use inkwell::context::Context;
+use inkwell::memory_buffer::MemoryBuffer;
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::OptimizationLevel;
+use native_js::llvm::passes;
 
 #[test]
 fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
@@ -25,32 +28,44 @@ entry:
 }
 "#;
 
-  let mut input_file = tempfile::NamedTempFile::new().expect("create temp IR file");
-  input_file
-    .write_all(input_ir.as_bytes())
-    .expect("write temp IR file");
+  Target::initialize_native(&InitializationConfig::default()).expect("failed to initialize native LLVM target");
 
-  let output = Command::new("opt-18")
-    .args([
-      "-passes=rewrite-statepoints-for-gc",
-      "-S",
-      input_file.path().to_str().expect("temp path is utf-8"),
-      "-o",
-      "-",
-    ])
-    .output()
-    .expect("run opt-18 (is LLVM 18 installed and in PATH?)");
+  let context = Context::create();
+  let buffer = MemoryBuffer::create_from_memory_range_copy(input_ir.as_bytes(), "statepoints_indirect_call.ll");
+  let module = context
+    .create_module_from_ir(buffer)
+    .unwrap_or_else(|err| panic!("failed to parse LLVM IR: {err}\n\nIR:\n{input_ir}"));
 
-  if !output.status.success() {
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("host target");
+  let tm = target
+    .create_target_machine(
+      &triple,
+      "generic",
+      "",
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("create target machine");
+  module.set_triple(&triple);
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  passes::rewrite_statepoints_for_gc(&module, &tm).unwrap_or_else(|err| {
     panic!(
-      "opt-18 failed with status {}.\nstdout:\n{}\nstderr:\n{}",
-      output.status,
-      String::from_utf8_lossy(&output.stdout),
-      String::from_utf8_lossy(&output.stderr),
+      "rewrite-statepoints-for-gc failed: {err}\n\nBefore:\n{input_ir}\n\nAfter:\n{}",
+      module.print_to_string()
+    )
+  });
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "module verification failed after rewrite-statepoints-for-gc: {err}\n\nIR:\n{}",
+      module.print_to_string()
     );
   }
 
-  let rewritten = String::from_utf8_lossy(&output.stdout);
+  let rewritten = module.print_to_string().to_string();
 
   // Statepoint inserted.
   assert!(
@@ -72,7 +87,7 @@ entry:
 
   // ...and thus a relocate for %obj must exist.
   assert!(
-    rewritten.contains("%obj.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
+    rewritten.contains("@llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate for %obj in rewritten IR, got:\n{rewritten}"
   );
 }

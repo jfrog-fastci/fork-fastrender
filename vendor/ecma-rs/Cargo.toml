@@ -5,7 +5,6 @@ members = [
   "diagnostics",
   "bench/minify-js",
   "bench/typecheck-ts",
-  "native-js",
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
