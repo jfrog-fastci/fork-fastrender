@@ -1,0 +1,28 @@
+# Console APIs exposed as globals in Node.js.
+#
+# Duplicated from `web/console.yaml` so `TargetEnv::Node` can resolve these
+# entries without matching all web-only APIs.
+
+- name: console.log
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+
+- name: console.error
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+
+- name: console.warn
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure

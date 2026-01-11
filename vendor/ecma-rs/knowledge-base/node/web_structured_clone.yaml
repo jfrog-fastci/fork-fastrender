@@ -1,0 +1,20 @@
+# Web structured cloning available in Node.js.
+#
+# Duplicated from `web/structured_clone.yaml` so `TargetEnv::Node` can resolve
+# `structuredClone(...)`.
+
+- name: structuredClone
+  kind: function
+  since: "v17.0.0"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

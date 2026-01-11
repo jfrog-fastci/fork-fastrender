@@ -1,0 +1,30 @@
+# Web Performance API globals available in Node.js.
+#
+# Duplicated from `web/performance.yaml` so `TargetEnv::Node` can resolve these
+# entries without matching all web-only APIs.
+
+- name: performance.now
+  kind: function
+  since: "v8.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: performance.timeOrigin
+  kind: getter
+  since: "v8.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false

@@ -1,0 +1,54 @@
+# Web-style timers and task scheduling globals available in Node.js.
+#
+# These entries mirror `web/timers.yaml` but live under `node/` so `TargetEnv::Node`
+# can resolve them without matching browser-only APIs such as `requestAnimationFrame`.
+
+- name: setTimeout
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: clearTimeout
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: setInterval
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: clearInterval
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: queueMicrotask
+  kind: function
+  since: "v11.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false

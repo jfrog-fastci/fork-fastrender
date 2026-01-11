@@ -2445,6 +2445,58 @@ properties:
   }
 
   #[test]
+  fn api_for_target_selects_more_node_globals() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let node_20 = TargetEnv::Node {
+      version: Version::parse("20.0.0").unwrap(),
+    };
+ 
+    let log = kb
+      .api_for_target("console.log", &node_20)
+      .expect("console.log should resolve for Node targets");
+    assert_eq!(log.name, "console.log");
+    assert_eq!(
+      kb.source_for_target("console.log", &node_20),
+      Some("node/web_console.yaml")
+    );
+ 
+    let timeout = kb
+      .api_for_target("setTimeout", &node_20)
+      .expect("setTimeout should resolve for Node targets");
+    assert_eq!(timeout.name, "setTimeout");
+    assert_eq!(
+      kb.source_for_target("setTimeout", &node_20),
+      Some("node/web_timers.yaml")
+    );
+ 
+    let perf_now = kb
+      .api_for_target("performance.now", &node_20)
+      .expect("performance.now should resolve for Node targets");
+    assert_eq!(perf_now.name, "performance.now");
+    assert_eq!(
+      kb.source_for_target("performance.now", &node_20),
+      Some("node/web_performance.yaml")
+    );
+ 
+    let clone = kb
+      .api_for_target("structuredClone", &node_20)
+      .expect("structuredClone should resolve for Node targets");
+    assert_eq!(clone.name, "structuredClone");
+    assert_eq!(
+      kb.source_for_target("structuredClone", &node_20),
+      Some("node/web_structured_clone.yaml")
+    );
+ 
+    let node_16 = TargetEnv::Node {
+      version: Version::parse("16.0.0").unwrap(),
+    };
+    assert!(
+      kb.api_for_target("structuredClone", &node_16).is_none(),
+      "structuredClone should not resolve for Node < 17"
+    );
+  }
+
+  #[test]
   fn env_and_platform_parses_web_subdirectories() {
     assert_eq!(
       env_and_platform_for_path("web/chrome/foo.yaml"),
