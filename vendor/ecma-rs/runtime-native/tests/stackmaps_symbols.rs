@@ -37,7 +37,16 @@ const FIXTURE: &[u8] = &[
 #[test]
 fn stackmaps_discovered_via_exported_symbols() {
   let bytes = runtime_native::stackmaps_symbols::stackmaps_bytes_from_exe();
-  assert_eq!(bytes, FIXTURE);
+  // `runtime-native`'s test build links an additional `.llvm_stackmaps` object (see `build.rs`) so
+  // the symbol range may contain multiple concatenated StackMap v3 blobs.
+  //
+  // Assert that our tiny fixture is present somewhere in that byte range (and therefore that the
+  // exported start/end symbols really delimit the `.llvm_stackmaps` output section).
+  assert!(
+    bytes.windows(FIXTURE.len()).any(|w| w == FIXTURE),
+    "expected .llvm_stackmaps bytes to contain the test fixture (len={})",
+    bytes.len()
+  );
 
   let sm = runtime_native::stackmaps_symbols::stackmaps_from_exe().expect("parse stackmaps");
   assert_eq!(sm.raw().version, runtime_native::stackmaps::STACKMAP_VERSION);
