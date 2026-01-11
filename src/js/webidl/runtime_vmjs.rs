@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use crate::js::bindings::DomExceptionClassVmJs;
 use vm_js::{
   GcObject, HostSlots, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm,
   VmError, VmHost, VmHostHooks,
@@ -1912,7 +1911,7 @@ mod tests {
     install_window_bindings, BindingValue, DomExceptionClassVmJs, WebHostBindings,
   };
   use vm_js::{Heap, HeapLimits, JsRuntime as VmJsRuntime, VmOptions};
-  use webidl::{InterfaceId, JsRuntime as _, WebIdlHooks, WebIdlLimits};
+  use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
 
   struct NoHooks;
 
