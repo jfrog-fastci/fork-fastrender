@@ -1808,6 +1808,18 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     if es.is_type_only {
       continue;
     }
+    // `import { type Foo } from "./dep"` is erased from JS output and therefore
+    // must not cause module evaluation.
+    //
+    // (Side-effect imports like `import "./dep"` or `import {} from "./dep"`
+    // *do* evaluate the module.)
+    let has_value_bindings = es.default.is_some()
+      || es.namespace.is_some()
+      || es.named.iter().any(|n| !n.is_type_only);
+    let is_side_effect_import = es.default.is_none() && es.namespace.is_none() && es.named.is_empty();
+    if !has_value_bindings && !is_side_effect_import {
+      continue;
+    }
     let Some(dep) = program.resolve_module(from, es.specifier.value.as_str()) else {
       continue;
     };

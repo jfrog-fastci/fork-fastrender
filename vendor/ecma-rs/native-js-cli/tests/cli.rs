@@ -678,7 +678,7 @@ export function main(): number { return x; }
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&entry)
     .arg("-o")
@@ -707,7 +707,7 @@ export function main(): number { return 0; }
   .unwrap();
 
   native_js()
-    .timeout(Duration::from_secs(60))
+    .timeout(CLI_TIMEOUT)
     .arg("run")
     .arg(&entry)
     .assert()
@@ -748,7 +748,7 @@ export function main(): number { return x; }
 
   let out = tmp.path().join("out-bin");
   native_js()
-    .timeout(Duration::from_secs(120))
+    .timeout(CLI_TIMEOUT)
     .arg("build")
     .arg(&a)
     .arg("-o")
@@ -758,4 +758,35 @@ export function main(): number { return x; }
 
   let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(2));
+}
+
+#[test]
+fn type_only_import_does_not_execute_module() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export type T = number;
+print(42);
+"#,
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { type T } from "./dep";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
 }
