@@ -1453,6 +1453,11 @@ NEW: knowledge-base/
   Core JS semantics
 ```
 
+Developer docs for the native TS→LLVM pipeline:
+
+- [`native-js/README.md`](./native-js/README.md)
+- [`native-js-cli/README.md`](./native-js-cli/README.md)
+
 ---
 
 ## Phase 1: Foundation

@@ -14,7 +14,11 @@ It is intended as a developer tool:
 > LLVM builds are memory-hungry. In this repo, prefer the LLVM wrapper:
 >
 > ```bash
+> # From the repo root:
 > bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
+>
+> # Or, from within vendor/ecma-rs/:
+> bash scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 > ```
 
 ### Build
@@ -70,4 +74,3 @@ Diagnostics include:
 - parse errors (`parse-js`)
 - type errors (`typecheck-ts`)
 - native codegen errors (`native-js`)
-

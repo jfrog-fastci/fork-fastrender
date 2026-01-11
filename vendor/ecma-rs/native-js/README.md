@@ -48,7 +48,11 @@ export PATH="/usr/lib/llvm-18/bin:$PATH"
 You can also run the dependency checker:
 
 ```bash
+# From the repo root:
 bash vendor/ecma-rs/scripts/check_system.sh
+#
+# Or, from within vendor/ecma-rs/:
+bash scripts/check_system.sh
 ```
 
 ### Wrapper scripts (recommended in agent environments)
@@ -57,8 +61,13 @@ LLVM builds are memory-hungry. In this repo, prefer the wrapper which increases
 the process memory limit and auto-detects LLVM 18:
 
 ```bash
+# From the repo root:
 bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
 bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+#
+# Or, from within vendor/ecma-rs/:
+bash scripts/cargo_llvm.sh build -p native-js
+bash scripts/cargo_llvm.sh test -p native-js --lib
 ```
 
 ## Public API overview
@@ -152,4 +161,3 @@ llvm-config --version
 ```bash
 RUST_BACKTRACE=1 cargo test -p native-js --lib
 ```
-
