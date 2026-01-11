@@ -48,10 +48,19 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+  /// Typecheck + validate an entry file (no executable is produced).
+  Check(CheckArgs),
   /// Compile an entry file to a native executable.
   Build(BuildArgs),
   /// Compile an entry file and run it immediately.
   Run(RunArgs),
+}
+
+#[derive(Args, Debug)]
+struct CheckArgs {
+  /// Entry TypeScript file (must export `main()`).
+  #[arg(value_name = "PATH")]
+  entry: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -92,6 +101,12 @@ fn main() {
   }
 
   match &cli.command {
+    Commands::Check(args) => {
+      if let Err(err) = check(&cli, &args.entry) {
+        eprintln!("{err}");
+        exit(1);
+      }
+    }
     Commands::Build(args) => {
       if let Err(err) = build(&cli, &args.entry, &args.output) {
         eprintln!("{err}");
@@ -121,6 +136,54 @@ fn main() {
       exit(status.code().unwrap_or(1));
     }
   }
+}
+
+fn check(cli: &Cli, entry: &Path) -> Result<(), String> {
+  let (program, host, entry_file) = load_program(cli, entry)?;
+
+  let mut diagnostics = program.check();
+  if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    render_and_print(&program, &host, &diagnostics);
+    return Err("TypeScript type checking failed".into());
+  }
+
+  diagnostics = native_js::strict::validate(&program, &program.reachable_files());
+  if !diagnostics.is_empty() {
+    render_and_print(&program, &host, &diagnostics);
+    return Err("native-js strict validation failed".into());
+  }
+
+  let entrypoint = native_js::strict::entrypoint(&program, entry_file).map_err(|diags| {
+    render_and_print(&program, &host, &diags);
+    "invalid entrypoint".to_string()
+  })?;
+
+  let context = Context::create();
+  let module = native_js::codegen::codegen(
+    &context,
+    &program,
+    entry_file,
+    entrypoint,
+    native_js::codegen::CodegenOptions::default(),
+  )
+  .map_err(|diags| {
+    render_and_print(&program, &host, &diags);
+    "native-js code generation failed".to_string()
+  })?;
+
+  if let Some(kind) = cli.emit {
+    let Some(path) = cli.emit_path.as_deref() else {
+      unreachable!("validated --emit-path earlier");
+    };
+    emit_artifact(&module, kind, path, opt_level(cli.opt)?)?;
+  }
+
+  // Ensure the LLVM target machine path works (without linking an executable).
+  let mut target = native_js::emit::TargetConfig::default();
+  target.opt_level = opt_level(cli.opt)?;
+  let _obj = native_js::emit::emit_object(&module, target);
+
+  Ok(())
 }
 
 fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {

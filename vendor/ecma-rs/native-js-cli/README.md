@@ -226,6 +226,22 @@ It expects the entry file to export a `main()` function.
 
 ### Usage
 
+Validate the entry file (typecheck + strict subset validation + codegen), without producing an
+executable:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  check path/to/entry.ts
+```
+
+If you have the binary installed on your `PATH`, the equivalent invocation is:
+
+```bash
+native-js check path/to/entry.ts
+native-js run path/to/entry.ts
+```
+
 Build a TypeScript file into a native executable:
 
 ```bash

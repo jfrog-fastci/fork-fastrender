@@ -92,6 +92,33 @@ bash scripts/cargo_llvm.sh build -p native-js
 bash scripts/cargo_llvm.sh test -p native-js --lib
 ```
 
+## Quickstart
+
+### Runnable example (in-memory source → native executable)
+
+This crate ships a small runnable example that compiles an in-memory TypeScript snippet to LLVM IR,
+invokes `clang` to produce a temporary native executable, runs it, and prints stdout:
+
+```bash
+# From repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js --example compile_and_run
+
+# Or from within vendor/ecma-rs/:
+bash scripts/cargo_llvm.sh run -p native-js --example compile_and_run
+```
+
+### CLI (file input)
+
+See `native-js-cli` for the CLI front-ends:
+
+```bash
+# Minimal parse-js-driven emitter (single file, no typecheck):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
+
+# Typechecked AOT pipeline (expects entry file to export `main()`):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
+```
+
 ## Public API overview (current)
 
 The API is intentionally small and currently consists of:
