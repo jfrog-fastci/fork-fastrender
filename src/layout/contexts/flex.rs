@@ -3795,6 +3795,12 @@ impl FormattingContext for FlexFormattingContext {
                         && physical_min_width_is_auto(measure_style)
                         && physical_max_width_is_auto(measure_style)
                     {
+                        let should_zero_intrinsic_width = !measure_box.is_replaced()
+                          && matches!(
+                            measure_style.content_visibility,
+                            crate::style::types::ContentVisibility::Visible
+                          )
+                          && !measure_style.containment.isolates_inline_size();
                         if let Some(span) = descendant_span() {
                             if span.width > eps
                                 && content_size.width > span.width + 0.5
@@ -3805,6 +3811,17 @@ impl FormattingContext for FlexFormattingContext {
                             if span.height > eps && content_size.height > span.height + 0.5 {
                                 content_size.height = span.height;
                             }
+                        }
+                        if should_zero_intrinsic_width {
+                          match Self::fragment_has_in_flow_box_descendant(
+                            &fragment,
+                            &mut subtree_deadline_counter,
+                          ) {
+                            Ok(false) => content_size.width = 0.0,
+                            Ok(true) => {}
+                            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                            Err(_) => {}
+                          }
                         }
                     }
 
@@ -12312,6 +12329,44 @@ impl FlexFormattingContext {
       ))
     };
     Ok(span)
+  }
+
+  fn fragment_has_in_flow_box_descendant(
+    fragment: &FragmentNode,
+    deadline_counter: &mut usize,
+  ) -> Result<bool, LayoutError> {
+    #[inline]
+    fn is_out_of_flow_positioned(fragment: &FragmentNode) -> bool {
+      fragment.style.as_deref().is_some_and(|style| {
+        style.running_position.is_some()
+          || matches!(style.position, Position::Absolute | Position::Fixed)
+      })
+    }
+
+    fn walk(node: &FragmentNode, deadline_counter: &mut usize) -> Result<bool, LayoutError> {
+      check_layout_deadline(deadline_counter)?;
+      for child in node.children.iter() {
+        check_layout_deadline(deadline_counter)?;
+        if is_out_of_flow_positioned(child) {
+          continue;
+        }
+        if matches!(
+          child.content,
+          FragmentContent::Block { box_id: Some(_) }
+            | FragmentContent::Inline { box_id: Some(_), .. }
+            | FragmentContent::Text { box_id: Some(_), .. }
+            | FragmentContent::Replaced { box_id: Some(_), .. }
+        ) {
+          return Ok(true);
+        }
+        if walk(child, deadline_counter)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+
+    walk(fragment, deadline_counter)
   }
 
   /// Returns the content-box size for a laid-out fragment, stripping padding and borders.

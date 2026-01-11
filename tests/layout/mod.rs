@@ -117,6 +117,7 @@ mod flex_intrinsic_gap_vertical_writing_mode;
 mod flex_intrinsic_margins_vertical_writing_mode;
 mod flex_intrinsic_mixed_writing_mode_axis_selection;
 mod flex_intrinsic_width_probe_preserves_block_size;
+mod flex_intrinsic_probe_empty_item_does_not_expand;
 mod flex_intrinsic_sizing_keywords;
 mod flex_intrinsic_gap_wrap;
 mod flex_cross_axis_fit_content_clamp;
