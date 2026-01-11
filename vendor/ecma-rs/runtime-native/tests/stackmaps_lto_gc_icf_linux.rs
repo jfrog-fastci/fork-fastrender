@@ -87,6 +87,40 @@ fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
 }
 
+fn rename_stackmap_sections_to_data_rel_ro(objcopy: &str, obj_path: &Path, what: &str) {
+  let bytes = fs::read(obj_path).unwrap_or_default();
+  if bytes.get(..4) != Some(b"\x7fELF") {
+    return;
+  }
+  let Ok(obj) = object::File::parse(&*bytes) else {
+    return;
+  };
+
+  let has_new_stackmaps = obj.section_by_name(".data.rel.ro.llvm_stackmaps").is_some();
+  let has_old_stackmaps = obj.section_by_name(".llvm_stackmaps").is_some();
+  if !has_new_stackmaps && has_old_stackmaps {
+    let mut cmd = Command::new(objcopy);
+    cmd.args([
+      "--rename-section",
+      ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents",
+    ])
+    .arg(obj_path);
+    run_ok(cmd, &format!("rename {what} (.llvm_stackmaps)"));
+  }
+
+  let has_new_faultmaps = obj.section_by_name(".data.rel.ro.llvm_faultmaps").is_some();
+  let has_old_faultmaps = obj.section_by_name(".llvm_faultmaps").is_some();
+  if !has_new_faultmaps && has_old_faultmaps {
+    let mut cmd = Command::new(objcopy);
+    cmd.args([
+      "--rename-section",
+      ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents",
+    ])
+    .arg(obj_path);
+    run_ok(cmd, &format!("rename {what} (.llvm_faultmaps)"));
+  }
+}
+
 fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
   // LTO inputs may be raw LLVM bitcode files (not ELF). lld can link them, but
   // objcopy cannot patch their section flags. Those stackmaps are generated
@@ -98,6 +132,11 @@ fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
   if f.read_exact(&mut magic).is_err() || magic != *b"\x7fELF" {
     return;
   }
+
+  let bytes = fs::read(obj_path).unwrap_or_default();
+  let Ok(obj) = object::File::parse(&*bytes) else {
+    return;
+  };
 
   // lld's RELRO layout checks assume that sections placed into `.data.rel.ro` are
   // writable during relocation. LLVM's `.llvm_stackmaps` section is typically
@@ -112,6 +151,9 @@ fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
     ".data.rel.ro.llvm_stackmaps",
     ".data.rel.ro.llvm_faultmaps",
   ] {
+    if obj.section_by_name(sec).is_none() {
+      continue;
+    }
     let mut cmd = Command::new(objcopy);
     if objcopy.contains("llvm-objcopy") {
       cmd.arg(format!(
@@ -487,7 +529,7 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
 
   let lld_flag = lld_flag();
   let lld = lld_flag.is_some();
-  let objcopy = if lld { find_objcopy() } else { None };
+  let objcopy = find_objcopy();
 
   let cfgs: &[LinkConfig] = &[
     LinkConfig {
@@ -661,20 +703,29 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
       }
     };
 
-    // If we injected the stackmaps linker fragment and are using lld, patch the
-    // input objects so `.llvm_stackmaps` participates in RELRO.
-    if cfg.keep_stackmaps && cmd.get_args().any(|a| a.to_string_lossy().contains("fuse-ld=lld")) {
+    // If we injected the stackmaps linker fragment, rename `.llvm_stackmaps` to
+    // `.data.rel.ro.llvm_stackmaps` so the fragment's `KEEP()` patterns match.
+    //
+    // Additionally, when using lld, patch the section flags so stackmaps behave
+    // like normal writable data during relocation.
+    if cfg.keep_stackmaps {
       let Some(objcopy) = objcopy else {
         eprintln!("skipping {}: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy for lld+stackmaps.ld)", cfg.name);
         continue;
       };
+      let using_lld = cmd
+        .get_args()
+        .any(|a| a.to_string_lossy().contains("fuse-ld=lld"));
 
       let mut patched: Vec<PathBuf> = Vec::new();
       for (i, src) in inputs.iter().enumerate() {
         let file_name = src.file_name().expect("obj filename");
         let dst = out_dir.join(format!("{}.patched.{i}.{}", cfg.name, file_name.to_string_lossy()));
         fs::copy(src, &dst).expect("copy input object for patching");
+        rename_stackmap_sections_to_data_rel_ro(objcopy, &dst, cfg.name);
+        if using_lld {
         patch_stackmap_section_flags(objcopy, &dst, cfg.name);
+        }
         patched.push(dst);
       }
       inputs = patched;

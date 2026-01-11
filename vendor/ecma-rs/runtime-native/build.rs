@@ -28,8 +28,9 @@ fn main() {
     println!("cargo:rustc-link-arg-tests=-Wl,--export-dynamic");
   }
 
-  // Linker script (optional): expose `.llvm_stackmaps` as a loaded in-memory byte slice via
-  // linker-defined start/stop symbols (see `link/stackmaps.ld`).
+  // Linker script (optional): expose the stackmaps section (typically
+  // `.data.rel.ro.llvm_stackmaps` renamed from LLVM's `.llvm_stackmaps`) as a loaded in-memory byte
+  // slice via linker-defined start/stop symbols (see `link/stackmaps.ld`).
   println!("cargo:rerun-if-changed=link/stackmaps.ld");
   println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LLVM_STACKMAPS_LINKER");
   maybe_enable_stackmaps_linker_symbols();

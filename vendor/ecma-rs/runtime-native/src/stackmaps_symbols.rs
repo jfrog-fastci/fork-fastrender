@@ -1,7 +1,8 @@
 //! Stackmap discovery via linker-exported `__fastr_stackmaps_start/end` symbols.
 //!
 //! `native-js`'s final link step injects a linker script fragment that:
-//! - keeps `.llvm_stackmaps` from `--gc-sections`, and
+//! - keeps `.data.rel.ro.llvm_stackmaps` (renamed from LLVM's `.llvm_stackmaps`)
+//!   from `--gc-sections`, and
 //! - exports `__fastr_stackmaps_start` / `__fastr_stackmaps_end` as *globally linkable* symbols.
 //!
 //! This allows `runtime-native` to read the in-memory, relocated stackmap bytes without any ELF
@@ -16,7 +17,7 @@ extern "C" {
   static __fastr_stackmaps_end: u8;
 }
 
-/// Return the in-memory bytes of the executable's `.llvm_stackmaps` section.
+/// Return the in-memory bytes of the executable's stackmaps section.
 ///
 /// These bytes are taken directly from memory (not from `/proc/self/exe`) so they reflect any
 /// relocations applied by the dynamic loader.
@@ -33,20 +34,16 @@ pub fn stackmaps_bytes_from_exe() -> &'static [u8] {
   let start_usize = start as usize;
   let end_usize = end as usize;
   if end_usize < start_usize {
-    crate::trap::rt_trap_invalid_arg(
-      "__fastr_stackmaps_end is before __fastr_stackmaps_start (invalid .llvm_stackmaps range)",
-    );
+    crate::trap::rt_trap_invalid_arg("__fastr_stackmaps_end is before __fastr_stackmaps_start");
   }
 
   let len = end_usize - start_usize;
   if len == 0 {
-    crate::trap::rt_trap_invalid_arg(
-      "__fastr_stackmaps_start == __fastr_stackmaps_end (empty .llvm_stackmaps section)",
-    );
+    crate::trap::rt_trap_invalid_arg("__fastr_stackmaps_start == __fastr_stackmaps_end");
   }
 
   // Safety:
-  // - `start..end` is expected to cover the `.llvm_stackmaps` section, which is mapped for the
+  // - `start..end` is expected to cover the stackmaps section, which is mapped for the
   //   lifetime of the process.
   // - `native-js` guarantees these symbols delimit the section (see native-js linker script
   //   fragment and tests).

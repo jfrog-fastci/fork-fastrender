@@ -18,8 +18,12 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 # chain. Enabling this feature may lead to hard crashes or silent memory corruption.
 allow_omit_frame_pointers = []
 
-# Enables parsing the in-memory `.llvm_stackmaps` section via linker-defined
-# boundary symbols.
+# Enables parsing the in-memory stackmaps section via linker-defined boundary
+# symbols.
+#
+# Note: LLVM emits stackmaps into `.llvm_stackmaps`, but PIE/DSO builds typically
+# rename that input section to `.data.rel.ro.llvm_stackmaps` before the final
+# link so relocations can be applied without `DT_TEXTREL`.
 #
 # Preferred names (shared with `native-js`):
 # - `__start_llvm_stackmaps`

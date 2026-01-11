@@ -52,7 +52,7 @@ fn compile_obj_pie(clang: &str, out_dir: &Path) -> PathBuf {
    .byte 1,2,3,4
 
  .section .note.GNU-stack,"",@progbits
- "#;
+  "#;
 
   let asm_path = out_dir.join("stackmaps.S");
   write_file(&asm_path, asm);
@@ -69,9 +69,9 @@ fn compile_obj_pie(clang: &str, out_dir: &Path) -> PathBuf {
 }
 
 fn compile_obj_nopie(clang: &str, out_dir: &Path) -> PathBuf {
-  // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
-  // fragments can't rely on them existing. lld errors if an `INSERT` anchor
-  // output section does not exist.
+  // Intentionally avoid emitting any `.rodata` or `.data` so the non-PIE linker
+  // script fragment can't rely on them existing and so stackmaps don't end up
+  // sharing a writable load segment with `.data` in tiny test binaries.
   let asm = r#"
  .text
  .globl f
@@ -82,7 +82,7 @@ fn compile_obj_nopie(clang: &str, out_dir: &Path) -> PathBuf {
    .byte 1,2,3,4
 
  .section .note.GNU-stack,"",@progbits
- "#;
+  "#;
 
   let asm_path = out_dir.join("stackmaps.S");
   write_file(&asm_path, asm);
@@ -167,9 +167,9 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     .arg("-pie")
     // We never run the binary; we only inspect its sections/symbols.
     .arg("-Wl,-e,f")
-    // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
-    // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
-    // GC from discarding the section even if it's otherwise unreferenced.
+    // Ensure stackmaps are still retained under dead-section elimination. The
+    // linker script fragment uses `KEEP(*(.data.rel.ro.llvm_stackmaps ...))` to
+    // prevent GC from discarding the section even if it's otherwise unreferenced.
     .arg("-Wl,--gc-sections")
     .arg(format!("-Wl,-T,{}", script.display()))
     .arg("-o")
@@ -182,10 +182,9 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let bytes = fs::read(&exe).unwrap();
   let file = object::File::parse(&*bytes).unwrap();
 
-  // The lld-oriented fragment (`link/stackmaps.ld`) places stackmaps into the
-  // standard `.data.rel.ro` output section (RELRO-friendly) instead of creating
-  // a dedicated `.data.rel.ro.llvm_stackmaps` output section. GNU ld variants
-  // can still use the dedicated name, so accept either.
+  // The stackmaps linker fragment should place stackmaps into a dedicated
+  // `.data.rel.ro.llvm_stackmaps` output section. Some historical variants placed
+  // stackmaps inside `.data.rel.ro`, so accept either.
   let section = file
     .section_by_name(".data.rel.ro.llvm_stackmaps")
     .or_else(|| file.section_by_name(".data.rel.ro"))

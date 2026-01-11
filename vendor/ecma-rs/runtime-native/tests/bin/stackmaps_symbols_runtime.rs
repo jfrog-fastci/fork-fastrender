@@ -26,7 +26,7 @@ fn loads_stackmaps_via_linker_symbols() {
     .expect("linker-defined __stackmaps_start/__stackmaps_end should be present");
   assert!(
     !bytes.is_empty(),
-    "expected non-empty .llvm_stackmaps section when using the linker script"
+    "expected non-empty stackmaps section when using the linker script"
   );
 
   // A final linked binary may contain multiple StackMap v3 blobs concatenated by the linker
