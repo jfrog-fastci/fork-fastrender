@@ -102,6 +102,7 @@ graph TD
     runtime_js --> parse_js
     runtime_js --> vm_js
     runtime_native --> runtime_native_abi
+    runtime_native --> stackmap_context
     semantic_js --> diagnostics
     semantic_js --> hir_js
     semantic_js --> parse_js
