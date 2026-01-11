@@ -1497,13 +1497,24 @@ fn inferred_text_direction_from_dom(
     let Some(node) = index.node(node_id) else {
       break;
     };
-    if let Some(dir) = node.get_attribute_ref("dir") {
+    if let Some(dir) = node
+      .get_attribute_ref("dir")
+      .or_else(|| node.get_attribute_ref("xml:dir"))
+    {
       let dir = trim_ascii_whitespace(dir);
       if dir.eq_ignore_ascii_case("rtl") {
         return crate::style::types::Direction::Rtl;
       }
       if dir.eq_ignore_ascii_case("ltr") {
         return crate::style::types::Direction::Ltr;
+      }
+      if dir.eq_ignore_ascii_case("auto") {
+        if let Some(resolved) = crate::dom::resolve_first_strong_direction(node) {
+          return match resolved {
+            crate::css::selectors::TextDirection::Ltr => crate::style::types::Direction::Ltr,
+            crate::css::selectors::TextDirection::Rtl => crate::style::types::Direction::Rtl,
+          };
+        }
       }
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);

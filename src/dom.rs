@@ -1721,18 +1721,41 @@ fn build_parent_sibling_list(
 
 /// Resolve the first-strong direction within this subtree, skipping script/style contents.
 pub fn resolve_first_strong_direction(node: &DomNode) -> Option<TextDirection> {
+  fn first_strong_in_str(s: &str) -> Option<TextDirection> {
+    for ch in s.chars() {
+      match bidi_class(ch) {
+        unicode_bidi::BidiClass::L => return Some(TextDirection::Ltr),
+        unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => return Some(TextDirection::Rtl),
+        _ => {}
+      }
+    }
+    None
+  }
+
+  // HTML directionality has special rules for certain form controls when `dir="auto"`: they derive
+  // their base direction from the current value, not from descendant text nodes.
+  //
+  // NOTE: We only apply this value-based directionality when resolving the direction for the
+  // element itself. When `dir="auto"` is set on a container, it should not derive direction from
+  // descendant input values.
+  if let DomNodeType::Element { tag_name, .. } = &node.node_type {
+    if tag_name.eq_ignore_ascii_case("input") {
+      if let Some(value) = input_text_like_value_string(node) {
+        return first_strong_in_str(&value);
+      }
+      return None;
+    }
+    if tag_name.eq_ignore_ascii_case("textarea") {
+      return first_strong_in_str(&textarea_current_value(node));
+    }
+  }
+
   let mut stack = vec![node];
   while let Some(current) = stack.pop() {
     match &current.node_type {
       DomNodeType::Text { content } => {
-        for ch in content.chars() {
-          match bidi_class(ch) {
-            unicode_bidi::BidiClass::L => return Some(TextDirection::Ltr),
-            unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => {
-              return Some(TextDirection::Rtl)
-            }
-            _ => {}
-          }
+        if let Some(dir) = first_strong_in_str(content) {
+          return Some(dir);
         }
       }
       DomNodeType::Element { tag_name, .. } => {
@@ -12841,6 +12864,40 @@ mod tests {
     };
     assert!(matches(&root, &[], &PseudoClass::Dir(TextDirection::Rtl)));
     assert!(!matches(&root, &[], &PseudoClass::Dir(TextDirection::Ltr)));
+  }
+
+  #[test]
+  fn dir_auto_on_input_uses_current_value() {
+    let input = element_with_attrs(
+      "input",
+      vec![("dir", "auto"), ("value", "שלום")],
+      vec![],
+    );
+
+    assert_eq!(
+      resolve_first_strong_direction(&input),
+      Some(TextDirection::Rtl),
+      "input dir=auto should resolve direction from its value"
+    );
+    assert!(matches(&input, &[], &PseudoClass::Dir(TextDirection::Rtl)));
+    assert!(!matches(&input, &[], &PseudoClass::Dir(TextDirection::Ltr)));
+  }
+
+  #[test]
+  fn dir_auto_on_textarea_prefers_data_fastr_value() {
+    let textarea = element_with_attrs(
+      "textarea",
+      vec![("dir", "auto"), ("data-fastr-value", "שלום")],
+      vec![text("hello")],
+    );
+
+    assert_eq!(
+      resolve_first_strong_direction(&textarea),
+      Some(TextDirection::Rtl),
+      "textarea dir=auto should resolve direction from data-fastr-value when present"
+    );
+    assert!(matches(&textarea, &[], &PseudoClass::Dir(TextDirection::Rtl)));
+    assert!(!matches(&textarea, &[], &PseudoClass::Dir(TextDirection::Ltr)));
   }
 
   #[test]

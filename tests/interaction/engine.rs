@@ -1771,6 +1771,81 @@ fn arrow_left_uses_box_tree_direction_for_text_controls() {
 }
 
 #[test]
+fn dir_auto_input_value_infers_rtl_direction_for_caret_movement() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "txt"), ("dir", "auto"), ("value", "אב")],
+        vec![],
+      )],
+    )],
+  )]);
+  let input_dom_id = node_id(&dom, "txt");
+
+  let mut input_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  input_box.styled_node_id = Some(input_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![input_box],
+  ));
+
+  let input_box_id = find_box_id_for_styled_node(&box_tree, input_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      input_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (_changed, _action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://x/",
+    "https://x/",
+  );
+  assert_eq!(engine.interaction_state().focused, Some(input_dom_id));
+
+  engine.key_action(&mut dom, KeyAction::Home);
+  let caret = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .expect("expected caret state")
+    .caret;
+  assert_eq!(caret, 0);
+
+  // With `dir=auto`, input directionality should be derived from its value. "אב" begins with a
+  // strong RTL character, so moving left should advance the caret.
+  engine.key_action(&mut dom, KeyAction::ArrowLeft);
+  let caret = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .expect("expected caret state")
+    .caret;
+  assert_eq!(caret, 1);
+}
+
+#[test]
 fn submit_click_navigates_and_marks_user_validity() {
   let mut dom = doc(vec![el(
     "html",
