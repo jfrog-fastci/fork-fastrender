@@ -4,6 +4,7 @@ mod unix {
   use runtime_native::io::{IoVecRange, PinnedIoVec, PinnedMsgHdr};
   use std::os::unix::io::RawFd;
   use std::io;
+  use std::thread;
 
   #[derive(Debug)]
   struct Fd(RawFd);
@@ -137,6 +138,35 @@ mod unix {
   }
 
   #[test]
+  fn iovec_array_buffer_range_writes_subslice() -> Result<(), Box<dyn std::error::Error>> {
+    let (read_fd, write_fd) = pipe()?;
+
+    let buf = ArrayBuffer::from_bytes((0u8..8).collect::<Vec<u8>>()).unwrap();
+    let write_ranges = vec![IoVecRange::array_buffer(&buf, 2, 4).unwrap()];
+    let write_iov = PinnedIoVec::try_from_ranges(&write_ranges).unwrap();
+    assert_eq!(write_iov.as_iovecs()[0].iov_len, 4);
+
+    let nw = unsafe { libc::writev(write_fd.0, write_iov.as_iovec_ptr(), 1) };
+    if nw < 0 {
+      return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(nw as usize, 4);
+
+    let out = ArrayBuffer::new_zeroed(4).unwrap();
+    let read_ranges = vec![IoVecRange::whole_array_buffer(&out)];
+    let read_iov = PinnedIoVec::try_from_ranges(&read_ranges).unwrap();
+    let nr = unsafe { libc::readv(read_fd.0, read_iov.as_iovec_ptr(), 1) };
+    if nr < 0 {
+      return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(nr as usize, 4);
+
+    let got = unsafe { out.pin().unwrap().as_slice().to_vec() };
+    assert_eq!(&got, &[2, 3, 4, 5]);
+    Ok(())
+  }
+
+  #[test]
   fn drop_releases_pins() {
     let buf = ArrayBuffer::new_zeroed(16).unwrap();
     assert_eq!(buf.pin_count(), 0);
@@ -146,6 +176,19 @@ mod unix {
     assert_eq!(buf.pin_count(), 1);
 
     drop(pinned);
+    assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
+  fn drop_releases_pins_on_other_thread() {
+    let buf = ArrayBuffer::new_zeroed(16).unwrap();
+    assert_eq!(buf.pin_count(), 0);
+
+    let ranges = vec![IoVecRange::whole_array_buffer(&buf)];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+    assert_eq!(buf.pin_count(), 1);
+
+    thread::spawn(move || drop(pinned)).join().unwrap();
     assert_eq!(buf.pin_count(), 0);
   }
 
@@ -162,6 +205,22 @@ mod unix {
     assert_eq!(buf.pin_count(), 1);
 
     drop(hdr);
+    assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
+  fn drop_releases_pins_via_msghdr_on_other_thread() {
+    let buf = ArrayBuffer::new_zeroed(16).unwrap();
+    assert_eq!(buf.pin_count(), 0);
+
+    let ranges = vec![IoVecRange::whole_array_buffer(&buf)];
+    let pinned = PinnedIoVec::try_from_ranges(&ranges).unwrap();
+    assert_eq!(buf.pin_count(), 1);
+
+    let hdr = PinnedMsgHdr::new(pinned);
+    assert_eq!(buf.pin_count(), 1);
+
+    thread::spawn(move || drop(hdr)).join().unwrap();
     assert_eq!(buf.pin_count(), 0);
   }
 

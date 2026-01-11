@@ -104,6 +104,11 @@ pub struct PinnedIoVec {
   pins: Box<[PinGuard]>,
 }
 
+// Safety: `PinnedIoVec` is an owned syscall descriptor array containing raw pointers into pinned
+// backing stores. It is valid to move it across threads for async I/O submission/completion; the
+// backing stores remain alive and stable for as long as this value is alive.
+unsafe impl Send for PinnedIoVec {}
+
 impl PinnedIoVec {
   pub fn try_from_ranges(ranges: &[IoVecRange<'_>]) -> Result<Self, IoVecError> {
     if ranges.len() > (libc::c_int::MAX as usize) {
@@ -221,6 +226,12 @@ pub struct PinnedMsgHdr {
   #[allow(dead_code)]
   control: Option<Vec<u8>>,
 }
+
+// Safety: `PinnedMsgHdr` is an owned syscall descriptor containing raw pointers into pinned backing
+// stores and other owned buffers (`msg_name`, `msg_control`). It is valid to move this struct
+// across threads for async I/O submission/completion.
+#[cfg(unix)]
+unsafe impl Send for PinnedMsgHdr {}
 
 #[cfg(unix)]
 impl PinnedMsgHdr {
