@@ -161,7 +161,7 @@ Disable recognition of small builtin APIs. By default, the IR emitter recognizes
 and lowers a handful of builtins:
 
 - `console.log(...)` and `print(...)` (prints values to stdout)
-- `assert(cond, msg?)` (aborts on failure, optionally printing `msg`)
+- `assert(cond, msg?)` (aborts on failure, optionally printing `msg`; uses JS truthiness for supported types)
 - `panic(msg?)` (prints message and aborts)
 - `trap()` (emits `llvm.trap`)
 
@@ -212,7 +212,7 @@ future typechecked/HIR-based backend yet). Supported today:
   - assignment:
     - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
     - `x += expr` (number variables only)
-  - `===` (numbers / booleans / strings / `null` / `undefined`; both sides must be the same type)
+  - `===` (numbers / booleans / strings / `null` / `undefined`; different types return `false` like JS)
   - `!==` (same types as `===`; additionally, different types return `true` like JS)
   - calls:
     - builtin calls listed above (unless `--no-builtins`)

@@ -430,6 +430,37 @@ impl Codegen {
     Ok(())
   }
 
+  fn emit_truthy_to_bool(&mut self, value: Value) -> Result<String, CodegenError> {
+    match value.ty {
+      Ty::Bool => Ok(value.ir),
+      Ty::Number => {
+        // JS truthiness: `0`, `-0`, and `NaN` are falsy; other numbers are truthy.
+        let out = self.tmp();
+        self.emit(format!(
+          "  {out} = fcmp one double {}, {}",
+          value.ir,
+          f64_to_llvm_const(0.0)
+        ));
+        Ok(out)
+      }
+      Ty::String => {
+        // JS truthiness: the empty string is falsy; all other strings are truthy.
+        let first = self.tmp();
+        self.emit(format!(
+          "  {first} = load i8, ptr {}, align 1",
+          value.ir
+        ));
+        let out = self.tmp();
+        self.emit(format!("  {out} = icmp ne i8 {first}, 0"));
+        Ok(out)
+      }
+      Ty::Null | Ty::Undefined => Ok("0".to_string()),
+      Ty::Void => Err(CodegenError::TypeError(
+        "cannot use a void expression as a condition".to_string(),
+      )),
+    }
+  }
+
   fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
     // Never emit instructions after a terminator. If we do, LLVM will reject the IR.
     // Instead, start a fresh (unreachable) basic block.
@@ -1049,15 +1080,13 @@ impl Codegen {
             }
             BuiltinCall::Assert { cond, msg } => {
               let cond_v = self.compile_expr(cond)?;
-              if cond_v.ty != Ty::Bool {
-                return Err(CodegenError::TypeError(
-                  "`assert` condition must be a boolean".to_string(),
-                ));
-              }
+              let cond_bool = self.emit_truthy_to_bool(cond_v)?;
 
               let ok = self.fresh_block("assert.ok");
               let fail = self.fresh_block("assert.fail");
-              self.emit(format!("  br i1 {}, label %{ok}, label %{fail}", cond_v.ir));
+              self.emit(format!(
+                "  br i1 {cond_bool}, label %{ok}, label %{fail}"
+              ));
 
               self.emit(format!("{fail}:"));
               if let Some(msg) = msg {

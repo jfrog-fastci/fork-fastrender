@@ -385,7 +385,7 @@ fields are reserved for the eventual LLVM-backed backend.
   - assignment:
     - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
     - `x += expr` (number variables only)
-  - `===` (numbers / booleans / strings / `null` / `undefined`; both sides must be the same type)
+  - `===` (numbers / booleans / strings / `null` / `undefined`; different types return `false` like JS)
   - `!==` (same types as `===`; additionally, different types return `true` like JS)
   - calls:
     - builtin calls (when `CompileOptions { builtins: true, .. }`):
@@ -413,7 +413,7 @@ Type annotations in function declarations (current):
 - Numbers use libc formatting for finite values (currently `printf("%.15g")`), but
   `NaN`/`Infinity`/`-Infinity` are printed in a JS-friendly form (instead of libc `nan`/`inf`
   strings).
-- `assert(cond, msg?)` aborts when `cond` is false:
+- `assert(cond, msg?)` aborts when `cond` is false (using JS truthiness for supported types):
   - prints `msg` if provided (any printable value)
   - otherwise prints a default `assertion failed` message
 

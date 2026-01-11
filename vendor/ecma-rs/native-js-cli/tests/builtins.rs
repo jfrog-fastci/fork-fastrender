@@ -171,6 +171,34 @@ fn assert_passes() {
 }
 
 #[test]
+fn assert_accepts_truthy_numbers_and_strings() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(1);\nassert(\"x\");\nconsole.log(\"ok\");\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("ok\n"));
+}
+
+#[test]
+fn assert_rejects_falsy_numbers_and_strings() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(0, \"zero\");\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure()
+    .stdout(predicate::str::contains("zero"));
+}
+
+#[test]
 fn assert_supports_numeric_comparisons_and_logical_ops() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
@@ -190,7 +218,7 @@ fn logical_and_short_circuits_rhs() {
   let path = dir.path().join("main.ts");
   std::fs::write(
     &path,
-    "function bump(): boolean { console.log(\"bump\"); return true; }\nassert((false && bump()) === false);\nconsole.log(\"ok\");\n",
+    "function bump(): number { console.log(\"bump\"); return 1; }\nassert((false && (bump() === 1)) === false);\nconsole.log(\"ok\");\n",
   )
   .unwrap();
 
@@ -208,7 +236,7 @@ fn logical_or_short_circuits_rhs() {
   let path = dir.path().join("main.ts");
   std::fs::write(
     &path,
-    "function bump(): boolean { console.log(\"bump\"); return false; }\nassert((true || bump()) === true);\nconsole.log(\"ok\");\n",
+    "function bump(): number { console.log(\"bump\"); return 1; }\nassert((true || (bump() === 1)) === true);\nconsole.log(\"ok\");\n",
   )
   .unwrap();
 
