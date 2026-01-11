@@ -25,6 +25,20 @@ pub struct StatepointCall {
 /// This is intentionally narrow for the PoC: it supports statepoints with no
 /// deopt args, and represents GC live pointers via the `"gc-live"` operand
 /// bundle (preferred for opaque pointers).
+///
+/// ## LLVM 18 opaque pointers: indirect callees need `elementtype(<fn-ty>)`
+///
+/// LLVM 18 runs in opaque-pointer mode by default, so a callee value of type
+/// `ptr` does not carry its function signature. LLVM therefore requires the
+/// callee operand passed to `gc.statepoint` to be annotated with
+/// `elementtype(<callee function type>)`.
+///
+/// For direct calls this signature can be recovered from a `@function` global
+/// via `LLVMGlobalGetValueType`.
+///
+/// For *indirect* calls (a runtime function pointer value like `%fp`), callers
+/// must provide the callee function type explicitly via
+/// [`StatepointEmitter::emit_statepoint_call_indirect`].
 pub struct StatepointEmitter {
   ctx: LLVMContextRef,
   module: LLVMModuleRef,
@@ -119,6 +133,31 @@ impl StatepointEmitter {
       "base_indices must match gc_live length"
     );
     let callee_fn_ty = LLVMGlobalGetValueType(callee);
+    self.emit_statepoint_call_indirect(builder, callee, callee_fn_ty, call_args, gc_live, base_indices)
+  }
+
+  /// Emit `gc.statepoint` for an *indirect* callee (`ptr %fp`).
+  ///
+  /// `callee_fn_ty` must be the callee's *function type* (not a pointer type).
+  pub unsafe fn emit_statepoint_call_indirect(
+    &mut self,
+    builder: LLVMBuilderRef,
+    callee_ptr: LLVMValueRef,
+    callee_fn_ty: LLVMTypeRef,
+    call_args: &[LLVMValueRef],
+    gc_live: &[LLVMValueRef],
+    base_indices: &[u32],
+  ) -> StatepointCall {
+    debug_assert_eq!(
+      gc_live.len(),
+      base_indices.len(),
+      "base_indices must match gc_live length"
+    );
+    debug_assert_eq!(
+      LLVMGetTypeKind(callee_fn_ty),
+      LLVMTypeKind::LLVMFunctionTypeKind,
+      "callee_fn_ty must be a function type"
+    );
     let callee_ret_ty = LLVMGetReturnType(callee_fn_ty);
     let callee_ret_kind = LLVMGetTypeKind(callee_ret_ty);
 
@@ -134,7 +173,7 @@ impl StatepointEmitter {
     sp_args.push(LLVMConstInt(self.i64_ty, 0, 0));
     // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
-    sp_args.push(callee);
+    sp_args.push(callee_ptr);
     sp_args.push(LLVMConstInt(self.i32_ty, call_args.len() as u64, 0));
     // flags (LLVM 18 verifier currently accepts only 0..=3; project default is 0).
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));

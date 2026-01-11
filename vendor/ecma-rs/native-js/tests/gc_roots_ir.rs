@@ -1,5 +1,6 @@
 use native_js::poc::{
-  demo_gc_root_derived_ptr_ir, demo_gc_root_multi_derived_ptr_ir, demo_gc_root_slots_ir,
+  demo_gc_root_derived_ptr_ir, demo_gc_root_multi_derived_ptr_ir, demo_gc_root_slots_indirect_call_ir,
+  demo_gc_root_slots_ir,
 };
 
 #[test]
@@ -20,6 +21,27 @@ fn gc_root_slots_writeback_relocates() {
   assert!(ir.contains("@llvm.experimental.gc.relocate.p1"));
   assert!(ir.contains("store ptr addrspace(1) %gc_relocate0, ptr %gc_root0"));
   assert!(ir.contains("store ptr addrspace(1) %gc_relocate1, ptr %gc_root1"));
+}
+
+#[test]
+fn gc_statepoint_indirect_call_has_elementtype() {
+  let ir = demo_gc_root_slots_indirect_call_ir();
+
+  assert!(
+    ir.contains("llvm.experimental.gc.statepoint.p0"),
+    "expected statepoint intrinsic in IR:\n{ir}"
+  );
+
+  // Indirect callees must be annotated with `elementtype(<fn-ty>)` under opaque pointers.
+  assert!(
+    ir.contains("ptr elementtype(void ()) %"),
+    "expected statepoint callee operand to include elementtype(void ()) for indirect call:\n{ir}"
+  );
+
+  assert!(
+    ir.contains("\"gc-live\""),
+    "expected gc-live bundle in statepoint call:\n{ir}"
+  );
 }
 
 #[test]

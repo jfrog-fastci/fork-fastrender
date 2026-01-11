@@ -236,6 +236,75 @@ impl GcFrame {
 
     sp.result
   }
+
+  /// Like [`GcFrame::safepoint_call`], but supports an **indirect** callee (`ptr %fp`).
+  ///
+  /// `callee_fn_ty` must be the callee's function type (not a pointer type); it is used to attach
+  /// the required `elementtype(<fn-ty>)` attribute to the statepoint callee operand under LLVM 18
+  /// opaque pointers.
+  pub unsafe fn safepoint_call_indirect(
+    &self,
+    builder: LLVMBuilderRef,
+    statepoints: &mut StatepointEmitter,
+    callee_ptr: LLVMValueRef,
+    callee_fn_ty: LLVMTypeRef,
+    call_args: &[LLVMValueRef],
+  ) -> Option<LLVMValueRef> {
+    let roots: Vec<GcRoot> = self.rooted.borrow().iter().copied().collect();
+
+    // Deterministic ordering: all bases first (in insertion order), then derived
+    // pointers (in insertion order).
+    let mut base_slots = Vec::new();
+    let mut derived_roots: Vec<(GcSlot, GcSlot)> = Vec::new();
+    for root in roots {
+      match root {
+        GcRoot::Base(slot) => base_slots.push(slot),
+        GcRoot::Derived { base, derived } => derived_roots.push((base, derived)),
+      }
+    }
+
+    let mut base_slot_index: HashMap<GcSlot, u32> = HashMap::with_capacity(base_slots.len());
+    for (idx, slot) in base_slots.iter().copied().enumerate() {
+      base_slot_index.insert(slot, idx as u32);
+    }
+
+    let mut gc_live_slots = Vec::with_capacity(base_slots.len() + derived_roots.len());
+    gc_live_slots.extend_from_slice(&base_slots);
+    for &(_, derived) in &derived_roots {
+      gc_live_slots.push(derived);
+    }
+
+    let mut base_indices = Vec::with_capacity(gc_live_slots.len());
+    for (idx, _) in base_slots.iter().enumerate() {
+      base_indices.push(idx as u32);
+    }
+    for &(base, _) in &derived_roots {
+      let base_idx = *base_slot_index.get(&base).expect(
+        "derived root references base slot that is not rooted as a base (root_base must be called first)",
+      );
+      base_indices.push(base_idx);
+    }
+
+    let mut live_vals = Vec::with_capacity(gc_live_slots.len());
+    for (idx, slot) in gc_live_slots.iter().copied().enumerate() {
+      live_vals.push(self.load(builder, slot, &format!("gc_live{idx}")));
+    }
+
+    let sp = statepoints.emit_statepoint_call_indirect(
+      builder,
+      callee_ptr,
+      callee_fn_ty,
+      call_args,
+      &live_vals,
+      &base_indices,
+    );
+
+    for (slot, relocated) in gc_live_slots.into_iter().zip(sp.relocated.iter().copied()) {
+      self.store(builder, slot, relocated);
+    }
+
+    sp.result
+  }
 }
 
 impl Drop for GcFrame {
