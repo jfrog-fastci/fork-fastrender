@@ -1,7 +1,8 @@
 use core::ffi::c_void;
 
 pub use runtime_native_abi::{
-  Coroutine, InternedId, PromiseRef, RtShapeDescriptor, RtShapeId, RtTaskFn, StringRef, TaskId,
+  Coroutine, InternedId, PromiseRef, RtParallelForBodyFn, RtShapeDescriptor, RtShapeId, RtTaskFn,
+  StringRef, TaskId,
 };
 
 /// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.

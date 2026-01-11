@@ -144,14 +144,27 @@ pub struct Coroutine {
 /// Function pointer type for parallel task entrypoints.
 pub type RtTaskFn = extern "C" fn(*mut u8);
 
+/// Function pointer type for `rt_parallel_for` loop bodies.
+pub type RtParallelForBodyFn = extern "C" fn(usize, *mut u8);
+
 extern "C" {
   // Memory
   pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
+  pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
   pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
+  pub fn rt_register_shape_table(table: *const RtShapeDescriptor, len: usize);
+
   // GC
+  ///
+  /// This is an atomic `u64` in the runtime; treat it as `_Atomic uint64_t` from C.
+  pub static RT_GC_EPOCH: u64;
+
   pub fn rt_gc_safepoint();
+  pub fn rt_gc_safepoint_slow(requested_epoch: u64);
+  pub fn rt_gc_poll() -> bool;
   pub fn rt_write_barrier(obj: *mut u8, slot: *mut u8);
+  pub fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
 
   // Strings
@@ -161,6 +174,7 @@ extern "C" {
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
+  pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
 
   // Async
   pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
@@ -191,6 +205,9 @@ mod tests {
 
     assert!(size_of::<StringRef>() == 16);
     assert!(align_of::<StringRef>() == 8);
+
+    assert!(size_of::<RtShapeDescriptor>() == 24);
+    assert!(align_of::<RtShapeDescriptor>() == 8);
   };
 
   #[test]
@@ -215,14 +232,21 @@ mod tests {
     // Functions (key entrypoints).
     for func in [
       "rt_alloc(",
+      "rt_alloc_pinned(",
       "rt_alloc_array(",
+      "rt_register_shape_table(",
+      "RT_GC_EPOCH",
       "rt_gc_safepoint(",
+      "rt_gc_safepoint_slow(",
+      "rt_gc_poll(",
       "rt_write_barrier(",
+      "rt_write_barrier_range(",
       "rt_gc_collect(",
       "rt_string_concat(",
       "rt_string_intern(",
       "rt_parallel_spawn(",
       "rt_parallel_join(",
+      "rt_parallel_for(",
       "rt_async_spawn(",
       "rt_async_poll(",
     ] {
@@ -233,4 +257,3 @@ mod tests {
     }
   }
 }
-
