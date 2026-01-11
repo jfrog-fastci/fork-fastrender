@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use typecheck_ts_harness::{build_filter, discover_conformance_tests, Filter, Shard};
@@ -59,6 +60,31 @@ fn strict_native_fixture_set_has_baselines() {
       case.id,
       baseline_path.display()
     );
+
+    let raw = fs::read_to_string(&baseline_path).expect("read strict-native baseline");
+    let baseline: Value = serde_json::from_str(&raw).expect("parse strict-native baseline json");
+    assert_eq!(
+      baseline.get("schema_version").and_then(|v| v.as_u64()),
+      Some(1),
+      "strict-native baselines should use schema_version 1 (file: {})",
+      baseline_path.display()
+    );
+    let diags = baseline
+      .get("diagnostics")
+      .and_then(|v| v.as_array())
+      .expect("strict-native baselines must contain a diagnostics array");
+    for diag in diags {
+      let code = diag
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<missing>");
+      assert!(
+        code.starts_with("TC400"),
+        "strict-native baselines should only contain native_strict diagnostics (TC400x); got {} in {}",
+        code,
+        baseline_path.display()
+      );
+    }
   }
 }
 
