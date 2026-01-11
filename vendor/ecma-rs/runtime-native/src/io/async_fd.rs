@@ -13,12 +13,26 @@ use std::task::{Context, Poll, Waker};
 /// This is a minimal `AsyncFd`-style API intended for internal use by `runtime-native`.
 /// It registers interest with the process-global reactor and wakes the awaiting task
 /// once readiness events arrive.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// The wrapped file descriptor **must already be `O_NONBLOCK`**. `AsyncFd` does not
+/// modify fd flags.
+///
+/// This is required because runtime-native's reactor uses **edge-triggered**
+/// readiness notifications. If a blocking fd is registered, readiness wakeups may
+/// stall (no new edges will be delivered while the consumer is blocked).
 pub struct AsyncFd {
   fd: OwnedFd,
   state: Arc<State>,
 }
 
 impl AsyncFd {
+  /// Create a new `AsyncFd` wrapper.
+  ///
+  /// The provided fd must already be set to `O_NONBLOCK`. If it isn't, the first
+  /// attempt to await readability/writability will fail with
+  /// [`io::ErrorKind::InvalidInput`].
   pub fn new(fd: OwnedFd) -> Self {
     let raw = fd.as_raw_fd();
     Self {

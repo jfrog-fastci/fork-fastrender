@@ -50,6 +50,18 @@ fn socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
   Ok((a, b))
 }
 
+fn pipe_blocking() -> io::Result<(OwnedFd, OwnedFd)> {
+  let mut fds = [0; 2];
+  let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+  if rc != 0 {
+    return Err(io::Error::last_os_error());
+  }
+  // Safety: `pipe` returns new, owned file descriptors.
+  let rfd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+  let wfd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+  Ok((rfd, wfd))
+}
+
 extern "C" fn set_timeout_flag(data: *mut u8) {
   let flag = unsafe { &*(data as *const AtomicBool) };
   flag.store(true, Ordering::SeqCst);
@@ -117,6 +129,41 @@ fn write_byte(fd: RawFd) {
   let byte: u8 = 1;
   let rc = unsafe { libc::write(fd, &byte as *const u8 as *const libc::c_void, 1) };
   assert_eq!(rc, 1, "write failed: {}", io::Error::last_os_error());
+}
+
+#[test]
+fn blocking_fd_is_rejected_and_does_not_leak_registration() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, wfd) = pipe_blocking().unwrap();
+  let afd = AsyncFd::new(rfd);
+
+  // Poll once to force a registration attempt (which must fail for blocking fds).
+  let woke = Arc::new(AtomicBool::new(false));
+  let waker = flag_waker(woke);
+  let mut cx = Context::from_waker(&waker);
+  let mut fut = Box::pin(afd.readable());
+  match fut.as_mut().poll(&mut cx) {
+    Poll::Ready(Err(err)) => {
+      assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "got {err:?}");
+      assert!(
+        err.to_string().contains("O_NONBLOCK"),
+        "error message should mention nonblocking contract, got {err:?}"
+      );
+    }
+    other => panic!("expected Poll::Ready(Err(_)), got {other:?}"),
+  }
+  drop(fut);
+
+  // Ensure the failure did not leave a stale registration by setting O_NONBLOCK and re-awaiting.
+  set_nonblocking(afd.as_raw_fd()).unwrap();
+
+  let writer = std::thread::spawn(move || {
+    std::thread::sleep(Duration::from_millis(10));
+    write_byte(wfd.as_raw_fd());
+  });
+
+  block_on_rt(async { afd.readable().await.unwrap() }, Duration::from_secs(1));
+  writer.join().unwrap();
 }
 
 #[test]

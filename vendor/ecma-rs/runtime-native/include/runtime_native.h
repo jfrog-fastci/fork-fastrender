@@ -513,6 +513,12 @@ void rt_clear_timer(TimerId id);
 // -----------------------------------------------------------------------------
 // I/O watchers (epoll-backed readiness notifications)
 // -----------------------------------------------------------------------------
+//
+// Contract:
+// - `fd` must be set to `O_NONBLOCK` before registration.
+// - Readiness notifications are edge-triggered; consumers must drain reads/writes
+//   until they return `EAGAIN`/`WouldBlock`.
+// - `rt_io_register` returns 0 on failure.
 IoWatcherId rt_io_register(
   int32_t fd,
   uint32_t interests,

@@ -2,14 +2,16 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use runtime_native::test_util::TestRuntimeGuard;
+
 extern "C" fn noop_task(_data: *mut u8) {}
 
 fn make_pipe() -> (OwnedFd, OwnedFd) {
   let mut fds = [0; 2];
   // Safety: libc call; `fds` is valid for writes.
-  let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+  let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
   if rc != 0 {
-    panic!("pipe() failed: {}", std::io::Error::last_os_error());
+    panic!("pipe2() failed: {}", std::io::Error::last_os_error());
   }
 
   // Safety: `pipe` returns owned fds on success.
@@ -20,6 +22,7 @@ fn make_pipe() -> (OwnedFd, OwnedFd) {
 
 #[test]
 fn safepoint_request_wakes_epoll_wait() {
+  let _rt = TestRuntimeGuard::new();
   // Ensure the async runtime is initialized (and registers its wake callback
   // with the GC safepoint coordinator).
   let _ = runtime_native::async_rt::global();

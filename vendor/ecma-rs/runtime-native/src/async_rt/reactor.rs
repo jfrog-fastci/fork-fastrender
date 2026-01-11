@@ -9,6 +9,20 @@ use std::sync::{Arc, Mutex};
 
 static IN_REACTOR_WAIT: AtomicBool = AtomicBool::new(false);
 
+fn ensure_nonblocking(fd: RawFd) -> io::Result<()> {
+  let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+  if flags == -1 {
+    return Err(io::Error::last_os_error());
+  }
+  if flags & libc::O_NONBLOCK == 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "reactor requires all registered file descriptors to be O_NONBLOCK (edge-triggered contract)",
+    ));
+  }
+  Ok(())
+}
+
 /// Test-only signal indicating whether some thread is currently blocked in the reactor syscall
 /// (`epoll_wait` / `kevent`).
 ///
@@ -108,6 +122,7 @@ impl Reactor {
   }
 
   pub fn register(&self, fd: RawFd, interest: Interest, task: Task) -> io::Result<WatcherId> {
+    ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     self.sys.ctl_add(fd, interest, id.as_raw())?;
     self.watchers.lock().unwrap().insert(
@@ -130,6 +145,7 @@ impl Reactor {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> io::Result<WatcherId> {
+    ensure_nonblocking(fd)?;
     let id = WatcherId(self.next_id.fetch_add(1, Ordering::Relaxed));
     let interest = rt_interests_to_interest(interests);
     self.sys.ctl_add(fd, interest, id.as_raw())?;
@@ -157,6 +173,11 @@ impl Reactor {
     let Some(watcher) = watchers.get_mut(&id) else {
       return false;
     };
+
+    // Ensure the fd still satisfies the nonblocking/edge-triggered contract.
+    if ensure_nonblocking(watcher.fd).is_err() {
+      return false;
+    }
 
     if self.sys.ctl_mod(watcher.fd, interest, id.as_raw()).is_err() {
       return false;

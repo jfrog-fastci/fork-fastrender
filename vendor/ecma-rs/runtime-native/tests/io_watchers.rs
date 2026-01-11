@@ -1,6 +1,7 @@
 use runtime_native::rt_async_poll_legacy as rt_async_poll;
 use runtime_native::rt_io_register;
 use runtime_native::rt_io_unregister;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -14,8 +15,6 @@ mod linux {
   use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
   use std::mem;
   use std::os::fd::RawFd;
-
-  static TEST_LOCK: Mutex<()> = Mutex::new(());
 
   struct CallbackState {
     fired: AtomicBool,
@@ -32,7 +31,7 @@ mod linux {
 
   fn pipe() -> (RawFd, RawFd) {
     let mut fds = [0; 2];
-    let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    let res = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
     assert_eq!(res, 0);
     (fds[0], fds[1])
   }
@@ -55,9 +54,42 @@ mod linux {
     assert_eq!(res, 1);
   }
 
+  fn set_nonblocking(fd: RawFd) {
+    unsafe {
+      let flags = libc::fcntl(fd, libc::F_GETFL);
+      assert!(flags >= 0, "fcntl(F_GETFL) failed: {}", std::io::Error::last_os_error());
+      let rc = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+      assert!(rc >= 0, "fcntl(F_SETFL) failed: {}", std::io::Error::last_os_error());
+    }
+  }
+
+  #[test]
+  fn register_rejects_blocking_fd_without_leaking_registration() {
+    let _rt = TestRuntimeGuard::new();
+
+    // Use a blocking pipe to ensure the reactor enforces the edge-triggered/nonblocking contract.
+    let mut fds = [0i32; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0, "pipe failed: {}", std::io::Error::last_os_error());
+    let rfd = fds[0];
+    let wfd = fds[1];
+
+    let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+    assert_eq!(id, 0, "expected blocking fd registration to fail");
+
+    // Ensure the failure didn't leak a registration by setting O_NONBLOCK and re-registering.
+    set_nonblocking(rfd);
+    let id2 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+    assert_ne!(id2, 0, "expected registration to succeed after setting O_NONBLOCK");
+    rt_io_unregister(id2);
+
+    close(rfd);
+    close(wfd);
+  }
+
   #[test]
   fn read_readiness() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
 
     let state = Box::new(CallbackState {
@@ -93,7 +125,7 @@ mod linux {
 
   #[test]
   fn write_readiness() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
 
     let state = Box::new(CallbackState {
@@ -124,7 +156,7 @@ mod linux {
 
   #[test]
   fn unregister_stops_callbacks() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _rt = TestRuntimeGuard::new();
     let (rfd, wfd) = pipe();
 
     let state = Box::new(CallbackState {
@@ -149,7 +181,7 @@ mod linux {
 
   #[test]
   fn thread_safe_register_unregister_wakes_poll() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _rt = TestRuntimeGuard::new();
     // Block the event loop thread in `rt_async_poll` by registering a pipe read end that isn't
     // ready.
     let (block_rfd, block_wfd) = pipe();
@@ -204,10 +236,29 @@ mod kqueue {
 
   extern "C" fn noop_cb(_events: u32, _data: *mut u8) {}
 
+  fn set_nonblocking(fd: RawFd) {
+    unsafe {
+      let flags = libc::fcntl(fd, libc::F_GETFL);
+      assert!(
+        flags >= 0,
+        "fcntl(F_GETFL) failed: {}",
+        std::io::Error::last_os_error()
+      );
+      let rc = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+      assert!(
+        rc >= 0,
+        "fcntl(F_SETFL) failed: {}",
+        std::io::Error::last_os_error()
+      );
+    }
+  }
+
   fn pipe() -> (RawFd, RawFd) {
     let mut fds = [0; 2];
     let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(res, 0);
+    set_nonblocking(fds[0]);
+    set_nonblocking(fds[1]);
     (fds[0], fds[1])
   }
 
@@ -215,6 +266,30 @@ mod kqueue {
     unsafe {
       libc::close(fd);
     }
+  }
+
+  #[test]
+  fn register_rejects_blocking_fd_without_leaking_registration() {
+    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+
+    // Use a blocking pipe to ensure the reactor enforces the edge-triggered/nonblocking contract.
+    let mut fds = [0i32; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0, "pipe failed: {}", std::io::Error::last_os_error());
+    let rfd = fds[0];
+    let wfd = fds[1];
+
+    let id = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+    assert_eq!(id, 0, "expected blocking fd registration to fail");
+
+    // Ensure the failure didn't leak a registration by setting O_NONBLOCK and re-registering.
+    set_nonblocking(rfd);
+    let id2 = rt_io_register(rfd, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+    assert_ne!(id2, 0, "expected registration to succeed after setting O_NONBLOCK");
+    rt_io_unregister(id2);
+
+    close(rfd);
+    close(wfd);
   }
 
   #[test]

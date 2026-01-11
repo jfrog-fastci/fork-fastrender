@@ -30,6 +30,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::collections::HashMap;
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -927,6 +928,26 @@ pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
 // I/O readiness watchers (reactor-backed)
 // -----------------------------------------------------------------------------
 
+fn maybe_log_rt_io_failure(op: &str, msg: impl core::fmt::Display) {
+  // These functions are part of the stable C ABI surface, but they cannot return
+  // a rich error (e.g. `rt_io_register` returns 0 on failure). Emit a best-effort
+  // diagnostic to stderr in debug builds so failures (like registering a blocking
+  // fd) are diagnosable.
+  if cfg!(debug_assertions) {
+    eprintln!("runtime-native: {op} failed: {msg}");
+  }
+}
+
+/// Register an fd with the runtime's readiness reactor.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// The runtime-native reactor uses **edge-triggered** readiness notifications. The
+/// provided `fd` **must already be set to `O_NONBLOCK`** before calling this
+/// function.
+///
+/// On failure, this function returns `0`. In debug builds, failures are logged to
+/// stderr to aid diagnosis.
 #[no_mangle]
 pub extern "C" fn rt_io_register(
   fd: i32,
@@ -936,26 +957,62 @@ pub extern "C" fn rt_io_register(
 ) -> IoWatcherId {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
-    let Ok(id) = async_rt::global().register_io(fd, interests, cb, data) else {
-      return 0;
-    };
-    id.as_raw()
+    match async_rt::global().register_io(fd, interests, cb, data) {
+      Ok(id) => id.as_raw(),
+      Err(err) => {
+        if err.kind() == io::ErrorKind::InvalidInput {
+          maybe_log_rt_io_failure(
+            "rt_io_register",
+            format_args!(
+              "fd={fd} interests=0x{interests:x}: {err} (did you forget to set O_NONBLOCK?)"
+            ),
+          );
+        } else {
+          maybe_log_rt_io_failure(
+            "rt_io_register",
+            format_args!("fd={fd} interests=0x{interests:x}: {err}"),
+          );
+        }
+        0
+      }
+    }
   })
 }
 
+/// Update the interest mask for an I/O watcher created by [`rt_io_register`].
+///
+/// If the watcher is invalid or the underlying fd no longer satisfies the
+/// nonblocking contract, the update is ignored. In debug builds, failures are
+/// logged to stderr.
 #[no_mangle]
 pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
-    let _ = async_rt::global().update_io(WatcherId::from_raw(id), interests);
+    if !async_rt::global().update_io(WatcherId::from_raw(id), interests) {
+      maybe_log_rt_io_failure(
+        "rt_io_update",
+        format_args!(
+          "id={id} interests=0x{interests:x}: update failed (invalid id or fd no longer nonblocking)"
+        ),
+      );
+    }
   })
 }
 
+/// Unregister an I/O watcher created by [`rt_io_register`].
+///
+/// If the watcher is invalid, this is a no-op. In debug builds, failures are
+/// logged to stderr.
 #[no_mangle]
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
-    let _ = async_rt::global().deregister_fd(WatcherId::from_raw(id));
+    if !async_rt::global().deregister_fd(WatcherId::from_raw(id)) {
+      maybe_log_rt_io_failure(
+        "rt_io_unregister",
+        format_args!("id={id}: unregister failed (invalid id)"),
+      );
+    }
   })
 }
 
