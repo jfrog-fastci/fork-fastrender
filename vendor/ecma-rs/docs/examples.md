@@ -99,6 +99,15 @@ bash scripts/cargo_agent.sh run -p emit-js --example emit_js_basic
 This example parses a small TypeScript snippet with `parse-js` and prints the
 minified emitted output.
 
+## `ts-erase`
+
+```bash
+bash scripts/cargo_agent.sh run -p ts-erase --example ts_erase_basic
+```
+
+This example parses a small TypeScript module, erases TypeScript-only syntax via
+`ts-erase`, and prints the minified JavaScript output using `emit-js`.
+
 ## `optimize-js`
 
 ```bash
