@@ -153,7 +153,7 @@ fn make_one_function_ir(name: &str, n_roots: usize, add_pressure: bool) -> Strin
   for i in 0..n_roots {
     out.push_str(&format!(", ptr addrspace(1) %p{i}"));
   }
-  out.push_str(") gc \"statepoint-example\" {\n");
+  out.push_str(") gc \"coreclr\" {\n");
   out.push_str("entry:\n");
 
   if add_pressure {
