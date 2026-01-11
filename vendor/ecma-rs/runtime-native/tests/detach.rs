@@ -91,3 +91,16 @@ fn view_creation_on_detached_buffer_is_a_detached_error() {
     Err(TypedArrayError::Buffer(ArrayBufferError::Detached))
   ));
 }
+
+#[test]
+fn detach_while_typed_array_is_pinned_is_rejected() {
+  let mut buf = ArrayBuffer::new_zeroed(8).expect("alloc");
+  let view = Uint8Array::view(&buf, 2, 4).expect("view should be in-bounds");
+
+  let pinned_view = view.pin().expect("pin view should succeed");
+  assert_eq!(buf.detach(), Err(ArrayBufferError::Pinned));
+
+  drop(pinned_view);
+  buf.detach().expect("detach after unpin should succeed");
+  assert!(buf.is_detached());
+}
