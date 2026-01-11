@@ -1,11 +1,11 @@
 use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::StackBounds;
 
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use crate::roots::{conservative_scan_words, HeapRange};
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use crate::gc::YOUNG_SPACE;
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use std::sync::atomic::Ordering;
 
 #[cfg(target_arch = "x86_64")]
@@ -143,17 +143,17 @@ pub enum WalkError {
 }
 
 const MAX_FRAMES: usize = 100_000;
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 const MAX_CONSERVATIVE_SCAN_WORDS: usize = 4096;
 
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 fn heap_range_for_conservative_roots() -> HeapRange {
   let start = YOUNG_SPACE.start.load(Ordering::Acquire) as *const u8;
   let end = YOUNG_SPACE.end.load(Ordering::Acquire) as *const u8;
   HeapRange::with_object_start_check(start, end, is_probably_young_object_start)
 }
 
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 fn is_probably_young_object_start(candidate: *const u8) -> bool {
   use crate::gc::ObjHeader;
 
@@ -171,7 +171,7 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
   crate::gc::is_known_type_descriptor(header.type_desc)
 }
 
-#[cfg(feature = "conservative_roots")]
+#[cfg(any(debug_assertions, feature = "conservative_roots"))]
 fn conservative_scan_frame_words(
   start_addr: u64,
   end_addr: u64,
@@ -280,12 +280,12 @@ pub unsafe fn walk_gc_roots_from_fp(
         enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
       }
       None => {
-        #[cfg(feature = "conservative_roots")]
+        #[cfg(any(debug_assertions, feature = "conservative_roots"))]
         {
           conservative_scan_frame_words(cur_fp, caller_fp, &mut visit);
         }
 
-        #[cfg(not(feature = "conservative_roots"))]
+        #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
         {
           return Err(WalkError::MissingStackMap { return_addr: caller_ra });
         }
@@ -364,12 +364,12 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
       enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
     }
     None => {
-      #[cfg(feature = "conservative_roots")]
+      #[cfg(any(debug_assertions, feature = "conservative_roots"))]
       {
         conservative_scan_frame_words(ctx.sp_before_call as u64, caller_fp, &mut visit);
       }
 
-      #[cfg(not(feature = "conservative_roots"))]
+      #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
       {
         return Err(WalkError::MissingStackMap { return_addr: caller_ra });
       }
