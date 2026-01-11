@@ -125,3 +125,44 @@ fn image_src_rect_is_clipped_to_dest_rect_with_offset_crop() {
   }
 }
 
+#[test]
+fn image_src_rect_is_clipped_to_dest_rect_with_fractional_crop() {
+  // Cover a fractional src size that results in scaling. This can happen when the src_rect is
+  // derived from CSS object-fit/object-position calculations.
+  let mut pixels = Vec::with_capacity(4 * 4 * 4);
+  for _ in 0..(4 * 4) {
+    pixels.extend_from_slice(&[255, 0, 0, 255]);
+  }
+  let image = Arc::new(ImageData::new_pixels(4, 4, pixels));
+
+  let dest_rect = Rect::from_xywh(2.0, 1.0, 4.0, 1.0);
+  let src_rect = Rect::from_xywh(0.0, 1.0, 3.5, 1.0);
+
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Image(ImageItem {
+    dest_rect,
+    image,
+    filter_quality: ImageFilterQuality::Nearest,
+    src_rect: Some(src_rect),
+  }));
+
+  let pixmap = DisplayListRenderer::new(8, 4, Rgba::TRANSPARENT, FontContext::new())
+    .unwrap()
+    .render(&list)
+    .unwrap();
+
+  let inside = pixmap.pixel(2, 1).expect("pixel inside viewport");
+  assert_eq!(
+    (inside.red(), inside.green(), inside.blue(), inside.alpha()),
+    (255, 0, 0, 255)
+  );
+
+  for (x, y) in [(1, 1), (6, 1), (2, 0), (2, 2)] {
+    let px = pixmap.pixel(x, y).expect("pixel inside viewport");
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (0, 0, 0, 0),
+      "pixel outside dest_rect should remain unmodified at ({x},{y})"
+    );
+  }
+}
