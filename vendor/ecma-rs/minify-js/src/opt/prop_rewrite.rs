@@ -14,6 +14,7 @@ use parse_js::num::JsNumber;
 use parse_js::parse::expr::pat::{is_valid_pattern_identifier, ParsePatternRules};
 use parse_js::token::TT;
 use parse_js::Dialect;
+use parse_js::SourceType;
 
 pub(super) struct PropRewritePass;
 
@@ -385,7 +386,7 @@ fn is_identifier_name_token(name: &str) -> bool {
 
 fn identifier_name_token_tt(name: &str) -> Option<TT> {
   let mut lexer = Lexer::new(name);
-  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts);
+  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Script);
 
   if token.loc.0 != 0 || token.loc.1 != name.len() {
     return None;

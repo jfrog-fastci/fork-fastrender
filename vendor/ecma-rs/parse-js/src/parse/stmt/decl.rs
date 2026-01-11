@@ -1,6 +1,9 @@
 use super::ParseCtx;
 use super::Parser;
+use crate::ast::expr::pat::Pat;
+use crate::ast::expr::Expr;
 use crate::ast::func::Func;
+use crate::ast::node::ParenthesizedExpr;
 use crate::ast::node::Node;
 use crate::ast::stmt::decl::ClassDecl;
 use crate::ast::stmt::decl::FuncDecl;
@@ -10,6 +13,7 @@ use crate::ast::stmt::decl::VarDeclMode;
 use crate::ast::stmt::decl::VarDeclarator;
 use crate::error::SyntaxErrorType;
 use crate::error::SyntaxResult;
+use crate::operator::OperatorName;
 use crate::parse::expr::pat::ParsePatternRules;
 use crate::parse::expr::Asi;
 use crate::parse::AsiContext;
@@ -107,6 +111,30 @@ impl<'a> Parser<'a> {
           p.consume_if(TT::Equals)
             .and_then(|| p.expr_with_asi(ctx, [TT::Semicolon, TT::Comma], &mut asi))?
         };
+
+        if p.is_strict_ecmascript() {
+          // Destructuring declarations require an initializer, except in `for (... in/of ...)`
+          // headers where the binding is initialised by the loop.
+          let in_for_in_of_header = parse_mode == VarDeclParseMode::Leftmost
+            && matches!(ctx.asi, AsiContext::StatementHeader)
+            && matches!(p.peek().typ, TT::KeywordIn | TT::KeywordOf);
+          if initializer.is_none() && !in_for_in_of_header {
+            match mode {
+              VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+                return Err(pattern.loc.error(SyntaxErrorType::ExpectedSyntax("initializer"), None));
+              }
+              VarDeclMode::Let | VarDeclMode::Var => {
+                if !matches!(pattern.stx.pat.stx.as_ref(), Pat::Id(_)) {
+                  return Err(
+                    pattern
+                      .loc
+                      .error(SyntaxErrorType::ExpectedSyntax("initializer"), None),
+                  );
+                }
+              }
+            }
+          }
+        }
         declarators.push(VarDeclarator {
           pattern,
           definite_assignment,
@@ -172,7 +200,17 @@ impl<'a> Parser<'a> {
           await_expr_allowed: is_async,
           yield_expr_allowed: generator,
         });
-        let parameters = p.func_params(fn_ctx)?;
+        // Regular functions do not have a `super` binding. Ensure we don't inherit
+        // `super` allowances from an enclosing method/constructor when parsing
+        // parameter initializers.
+        let prev_super_prop_allowed = p.super_prop_allowed;
+        let prev_super_call_allowed = p.super_call_allowed;
+        p.super_prop_allowed = 0;
+        p.super_call_allowed = 0;
+        let parameters = p.func_params(fn_ctx);
+        p.super_prop_allowed = prev_super_prop_allowed;
+        p.super_call_allowed = prev_super_call_allowed;
+        let parameters = parameters?;
         // TypeScript: return type annotation (may be type predicate)
         let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
           Some(p.type_expr_or_predicate(ctx)?)
@@ -201,6 +239,12 @@ impl<'a> Parser<'a> {
           p.strict_mode = prev_strict_mode;
           Some(res?.into())
         } else {
+          if p.is_strict_ecmascript() {
+            return Err(
+              p.peek()
+                .error(SyntaxErrorType::RequiredTokenNotFound(TT::BraceOpen)),
+            );
+          }
           // Overload signature - consume semicolon or allow ASI
           let _ = p.consume_if(TT::Semicolon);
           None
@@ -267,7 +311,44 @@ impl<'a> Parser<'a> {
         let extends = if p.consume_if(TT::KeywordExtends).is_match() {
           // TypeScript: extends clause can have type arguments: class C<T> extends Base<T>
           // Parse expression, which will handle type arguments via expr_with_ts_type_args
-          Some(p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements])?)
+          let expr = p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements])?;
+          if p.is_strict_ecmascript() {
+            let is_valid = if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+              true
+            } else {
+              match expr.stx.as_ref() {
+                Expr::Id(_)
+                | Expr::This(_)
+                | Expr::Import(_)
+                | Expr::ImportMeta(_)
+                | Expr::Func(_)
+                | Expr::Class(_)
+                | Expr::Member(_)
+                | Expr::ComputedMember(_)
+                | Expr::Call(_)
+                | Expr::TaggedTemplate(_)
+                | Expr::LitArr(_)
+                | Expr::LitObj(_)
+                | Expr::LitNum(_)
+                | Expr::LitStr(_)
+                | Expr::LitBool(_)
+                | Expr::LitNull(_)
+                | Expr::LitBigInt(_)
+                | Expr::LitRegex(_)
+                | Expr::LitTemplate(_)
+                | Expr::Instantiation(_) => true,
+                Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
+                _ => false,
+              }
+            };
+            if !is_valid {
+              return Err(expr.loc.error(
+                SyntaxErrorType::ExpectedSyntax("class heritage expression"),
+                None,
+              ));
+            }
+          }
+          Some(expr)
         } else {
           None
         };

@@ -4,14 +4,15 @@ use crate::lex::Lexer;
 use crate::token::TT;
 use crate::token::TT::*;
 use crate::Dialect;
+use crate::SourceType;
 
 fn check<const N: usize>(code: &str, expecteds: [TT; N], dialect: Dialect) {
   let mut lexer = Lexer::new(code);
   for expected in expecteds {
-    let t = lex_next(&mut lexer, LexMode::Standard, dialect);
+    let t = lex_next(&mut lexer, LexMode::Standard, dialect, SourceType::Script);
     assert_eq!(t.typ, expected);
   }
-  let t = lex_next(&mut lexer, LexMode::Standard, dialect);
+  let t = lex_next(&mut lexer, LexMode::Standard, dialect, SourceType::Script);
   assert_eq!(EOF, t.typ);
 }
 

@@ -457,7 +457,7 @@ fn contains_import_export(content: &str, cancel: &Arc<AtomicBool>) -> Option<boo
       return None;
     }
 
-    let token = lex_next(lexer, *mode, Dialect::Tsx);
+    let token = lex_next(lexer, *mode, Dialect::Tsx, SourceType::Script);
     *mode = LexMode::Standard;
 
     match token.typ {

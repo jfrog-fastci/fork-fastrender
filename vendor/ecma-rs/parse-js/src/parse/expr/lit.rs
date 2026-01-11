@@ -21,6 +21,8 @@ use crate::ast::expr::lit::LitTemplatePart;
 use crate::ast::expr::BinaryExpr;
 use crate::ast::expr::IdExpr;
 use crate::ast::node::InvalidTemplateEscapeSequence;
+use crate::ast::node::CoverInitializedName;
+use crate::ast::node::TrailingCommaAfterRestElement;
 use crate::ast::node::LeadingZeroDecimalLiteral;
 use crate::ast::node::LegacyOctalEscapeSequence;
 use crate::ast::node::LegacyOctalNumberLiteral;
@@ -567,6 +569,26 @@ fn find_legacy_escape_sequence(raw: &str) -> Option<(usize, usize)> {
   None
 }
 
+fn find_non_octal_decimal_escape_sequence(raw: &str) -> Option<(usize, usize)> {
+  let bytes = raw.as_bytes();
+  let mut i = 0;
+  while i + 1 < bytes.len() {
+    if bytes[i] != b'\\' {
+      i += 1;
+      continue;
+    }
+    match bytes[i + 1] {
+      b'8' | b'9' => return Some((i, 2)),
+      _ => {
+        // Skip the escaped character so we don't treat it as the start of a new escape sequence
+        // (e.g. `\\9`).
+        i += 2;
+      }
+    }
+  }
+  None
+}
+
 fn literal_error_to_syntax(
   err: LiteralError,
   base: usize,
@@ -612,6 +634,7 @@ enum RegexErrorKind {
   Unterminated,
   InvalidFlag,
   DuplicateFlag,
+  InvalidPattern,
 }
 
 #[derive(Debug)]
@@ -653,6 +676,469 @@ fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
   Ok(())
 }
 
+fn count_regex_capturing_groups(pattern: &str) -> usize {
+  let bytes = pattern.as_bytes();
+  let mut i = 0usize;
+  let mut in_charset = false;
+  let mut count = 0usize;
+  while i < pattern.len() {
+    let ch = pattern[i..].chars().next().unwrap();
+    if ch == '\\' {
+      // Skip the escaped code point.
+      i += '\\'.len_utf8();
+      if i >= pattern.len() {
+        break;
+      }
+      i += pattern[i..].chars().next().unwrap().len_utf8();
+      continue;
+    }
+    if in_charset {
+      if ch == ']' {
+        in_charset = false;
+      }
+      i += ch.len_utf8();
+      continue;
+    }
+    if ch == '[' {
+      in_charset = true;
+      i += '['.len_utf8();
+      continue;
+    }
+    if ch == '(' {
+      // Capture groups are:
+      // - plain `(...)`
+      // - named groups `(?<name>...)`
+      if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
+        if i + 2 < bytes.len() && bytes[i + 2] == b'<' {
+          if i + 3 < bytes.len() {
+            match bytes[i + 3] {
+              b'=' | b'!' => {}
+              _ => count += 1,
+            }
+          }
+        }
+      } else {
+        count += 1;
+      }
+    }
+    i += ch.len_utf8();
+  }
+  count
+}
+
+fn regex_group_prefix_info(
+  pattern: &str,
+  start: usize,
+  unicode_mode: bool,
+) -> Result<(bool /*quantifiable*/, usize /*consumed*/ ), RegexError> {
+  debug_assert_eq!(pattern.as_bytes()[start], b'(');
+  let bytes = pattern.as_bytes();
+  if start + 1 >= bytes.len() || bytes[start + 1] != b'?' {
+    // Capturing group.
+    return Ok((true, 1));
+  }
+
+  if start + 2 >= bytes.len() {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: start,
+      len: 1,
+    });
+  }
+
+  match bytes[start + 2] {
+    b':' => Ok((true, 3)), // (?:...) non-capturing group
+    // In non-unicode mode, Annex B allows quantifying lookahead groups. Unicode mode (`u`/`v`)
+    // uses the stricter grammar where lookaheads are not quantifiable.
+    b'=' | b'!' => Ok((!unicode_mode, 3)), // (?=...) / (?!...) lookahead assertions
+    b'<' => {
+      if start + 3 >= bytes.len() {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: start,
+          len: 1,
+        });
+      }
+      match bytes[start + 3] {
+        b'=' | b'!' => Ok((!unicode_mode, 4)), // (?<=...) / (?<!...) lookbehind assertions
+        _ => {
+          // Named capturing group: (?<name>...)
+          let after_prefix = start + 3;
+          let Some(end_name) = pattern[after_prefix..].find('>') else {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: start,
+              len: 1,
+            });
+          };
+          Ok((true, after_prefix + end_name + 1 - start))
+        }
+      }
+    }
+    _ => Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: start,
+      len: 1,
+    }),
+  }
+}
+
+fn validate_regex_pattern(
+  pattern: &str,
+  base_offset: usize,
+  unicode_mode: bool,
+  capture_groups: usize,
+) -> Result<(), RegexError> {
+  let bytes = pattern.as_bytes();
+  let mut i = 0usize;
+  let mut in_charset = false;
+  let mut group_stack: Vec<bool> = Vec::new();
+  let mut prev_can_be_quantified = false;
+  // Whether the immediately preceding token was a quantifier that can accept a `?` non-greedy
+  // modifier.
+  let mut quantifier_allows_lazy = false;
+
+  while i < pattern.len() {
+    let ch = pattern[i..].chars().next().unwrap();
+    let ch_len = ch.len_utf8();
+
+    if ch == '\\' {
+      let escape_start = i;
+      i += '\\'.len_utf8();
+      if i >= pattern.len() {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: 1,
+        });
+      }
+      let esc = pattern[i..].chars().next().unwrap();
+      let esc_len = esc.len_utf8();
+      if !in_charset && esc == 'u' {
+        let after_u = i + esc_len;
+        if after_u >= pattern.len() {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: after_u.saturating_sub(escape_start),
+          });
+        }
+        let bytes = pattern.as_bytes();
+        if bytes[after_u] == b'{' {
+          let mut j = after_u + 1;
+          let mut digits = 0usize;
+          while j < bytes.len() && bytes[j] != b'}' {
+            let c = bytes[j] as char;
+            if !c.is_ascii_hexdigit() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: j + 1 - escape_start,
+              });
+            }
+            digits += 1;
+            j += 1;
+          }
+          if j >= bytes.len() || digits == 0 {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          }
+          // Skip the closing `}`.
+          i = j + 1;
+        } else {
+          // `\uXXXX`
+          let mut j = after_u;
+          for _ in 0..4 {
+            if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: j.saturating_sub(escape_start),
+              });
+            }
+            j += 1;
+          }
+          i = j;
+        }
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        continue;
+      }
+
+      if !in_charset && esc == 'x' {
+        let after_x = i + esc_len;
+        let bytes = pattern.as_bytes();
+        let mut j = after_x;
+        for _ in 0..2 {
+          if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          }
+          j += 1;
+        }
+        i = j;
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        continue;
+      }
+
+      if !in_charset && esc.is_ascii_digit() {
+        if esc == '0' {
+          let after = i + esc_len;
+          let next_is_digit = after < pattern.len()
+            && pattern[after..]
+              .chars()
+              .next()
+              .is_some_and(|c| c.is_ascii_digit());
+          if unicode_mode && next_is_digit {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 2 + esc_len,
+            });
+          }
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          i += esc_len;
+          continue;
+        }
+
+        let mut j = i;
+        let mut value: usize = 0;
+        while j < pattern.len() {
+          let c = pattern[j..].chars().next().unwrap();
+          if !c.is_ascii_digit() {
+            break;
+          }
+          value = value.saturating_mul(10).saturating_add((c as u8 - b'0') as usize);
+          j += c.len_utf8();
+        }
+
+        if unicode_mode && value > capture_groups {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: j - escape_start,
+          });
+        }
+
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        i = j;
+        continue;
+      }
+
+      // Other escapes are treated as atoms.
+      if !in_charset {
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+      }
+
+      i += esc_len;
+      continue;
+    }
+
+    if in_charset {
+      if ch == ']' {
+        in_charset = false;
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+      }
+      i += ch_len;
+      continue;
+    }
+
+    match ch {
+      '[' => {
+        in_charset = true;
+        prev_can_be_quantified = false;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+      ']' => {
+        // Literal `]` outside charsets.
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+      '(' => {
+        let (quantifiable, consumed) =
+          regex_group_prefix_info(pattern, i, unicode_mode).map_err(|mut err| {
+            // regex_group_prefix_info reports offsets relative to the pattern slice; translate.
+            err.offset += base_offset;
+            err
+          })?;
+        group_stack.push(quantifiable);
+        prev_can_be_quantified = false;
+        quantifier_allows_lazy = false;
+        i += consumed;
+        continue;
+      }
+      ')' => {
+        let Some(quantifiable) = group_stack.pop() else {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + i,
+            len: 1,
+          });
+        };
+        prev_can_be_quantified = quantifiable;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+      '^' | '$' | '|' => {
+        // Assertions/alternation cannot be quantified.
+        prev_can_be_quantified = false;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+      '*' | '+' | '?' => {
+        if quantifier_allows_lazy && ch == '?' {
+          // Non-greedy modifier.
+          quantifier_allows_lazy = false;
+          i += ch_len;
+          continue;
+        }
+        if !prev_can_be_quantified {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + i,
+            len: 1,
+          });
+        }
+        prev_can_be_quantified = false;
+        quantifier_allows_lazy = true;
+        i += ch_len;
+        continue;
+      }
+      '{' => {
+        let quant_start = i;
+        let mut j = i + 1;
+        let mut digits = 0usize;
+        let mut min: usize = 0;
+        while j < bytes.len() {
+          let c = bytes[j];
+          if !(b'0'..=b'9').contains(&c) {
+            break;
+          }
+          min = min.saturating_mul(10).saturating_add((c - b'0') as usize);
+          digits += 1;
+          j += 1;
+        }
+
+        if digits == 0 {
+          if unicode_mode {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + quant_start,
+              len: 1,
+            });
+          }
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          i += ch_len;
+          continue;
+        }
+
+        let mut max: Option<usize> = None;
+        if j < bytes.len() && bytes[j] == b',' {
+          j += 1;
+          let mut max_digits = 0usize;
+          let mut max_val: usize = 0;
+          while j < bytes.len() {
+            let c = bytes[j];
+            if !(b'0'..=b'9').contains(&c) {
+              break;
+            }
+            max_val = max_val.saturating_mul(10).saturating_add((c - b'0') as usize);
+            max_digits += 1;
+            j += 1;
+          }
+          if max_digits > 0 {
+            max = Some(max_val);
+          }
+        }
+
+        if j >= bytes.len() || bytes[j] != b'}' {
+          if unicode_mode {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + quant_start,
+              len: 1,
+            });
+          }
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          i += ch_len;
+          continue;
+        }
+
+        if !prev_can_be_quantified {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + quant_start,
+            len: 1,
+          });
+        }
+        if let Some(max) = max {
+          if max < min {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + quant_start,
+              len: 1,
+            });
+          }
+        }
+
+        prev_can_be_quantified = false;
+        quantifier_allows_lazy = true;
+        i = j + 1;
+        continue;
+      }
+      '}' => {
+        if unicode_mode {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + i,
+            len: 1,
+          });
+        }
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+      _ => {
+        // Treat anything else as a literal atom.
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+    }
+  }
+
+  if in_charset || !group_stack.is_empty() {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: base_offset + pattern.len(),
+      len: 0,
+    });
+  }
+
+  Ok(())
+}
+
 fn validate_regex_literal(raw: &str) -> Result<(), RegexError> {
   let mut offset = '/'.len_utf8();
   let mut in_charset = false;
@@ -674,7 +1160,13 @@ fn validate_regex_literal(raw: &str) -> Result<(), RegexError> {
     }
     if !in_charset && ch == '/' {
       let flags_start = offset + ch.len_utf8();
-      return validate_regex_flags(raw, flags_start);
+      validate_regex_flags(raw, flags_start)?;
+      let flags = &raw[flags_start..];
+      let unicode_mode = flags.as_bytes().iter().any(|b| *b == b'u' || *b == b'v');
+      let pattern = &raw['/'.len_utf8()..offset];
+      let capture_groups = count_regex_capturing_groups(pattern);
+      validate_regex_pattern(pattern, '/'.len_utf8(), unicode_mode, capture_groups)?;
+      return Ok(());
     }
     if ch == '[' {
       in_charset = true;
@@ -700,6 +1192,7 @@ fn regex_error_to_syntax(err: RegexError, token_start: usize) -> SyntaxError {
   let typ = match err.kind {
     RegexErrorKind::LineTerminator => SyntaxErrorType::LineTerminatorInRegex,
     RegexErrorKind::Unterminated => SyntaxErrorType::UnexpectedEnd,
+    RegexErrorKind::InvalidPattern => SyntaxErrorType::ExpectedSyntax("valid regular expression"),
     RegexErrorKind::InvalidFlag | RegexErrorKind::DuplicateFlag => {
       SyntaxErrorType::ExpectedSyntax("valid regex flags")
     }
@@ -722,32 +1215,39 @@ pub fn normalise_literal_string(raw: &str) -> Option<String> {
 
 impl<'a> Parser<'a> {
   pub fn lit_arr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<LitArrExpr>> {
-    self.with_loc(|p| {
-      p.require(TT::BracketOpen)?;
-      let mut elements = Vec::<LitArrElem>::new();
-      loop {
-        if p.consume_if(TT::Comma).is_match() {
-          elements.push(LitArrElem::Empty);
-          continue;
-        };
-        if p.peek().typ == TT::BracketClose {
-          break;
-        };
-        let rest = p.consume_if(TT::DotDotDot).is_match();
-        let value = p.expr(ctx, [TT::Comma, TT::BracketClose])?;
-        elements.push(if rest {
-          LitArrElem::Rest(value)
-        } else {
-          LitArrElem::Single(value)
-        });
-        if p.peek().typ == TT::BracketClose {
-          break;
-        };
-        p.require(TT::Comma)?;
+    let start = self.checkpoint();
+    self.require(TT::BracketOpen)?;
+    let mut elements = Vec::<LitArrElem>::new();
+    let mut trailing_comma_after_rest = false;
+    loop {
+      if self.consume_if(TT::Comma).is_match() {
+        elements.push(LitArrElem::Empty);
+        continue;
+      };
+      if self.peek().typ == TT::BracketClose {
+        break;
+      };
+      let rest = self.consume_if(TT::DotDotDot).is_match();
+      let value = self.expr(ctx, [TT::Comma, TT::BracketClose])?;
+      elements.push(if rest {
+        LitArrElem::Rest(value)
+      } else {
+        LitArrElem::Single(value)
+      });
+      if self.peek().typ == TT::BracketClose {
+        break;
+      };
+      self.require(TT::Comma)?;
+      if rest && self.peek().typ == TT::BracketClose {
+        trailing_comma_after_rest = true;
       }
-      p.require(TT::BracketClose)?;
-      Ok(LitArrExpr { elements })
-    })
+    }
+    self.require(TT::BracketClose)?;
+    let mut node = Node::new(self.since_checkpoint(&start), LitArrExpr { elements });
+    if trailing_comma_after_rest {
+      node.assoc.set(TrailingCommaAfterRestElement);
+    }
+    Ok(node)
   }
 
   pub fn lit_bigint(&mut self) -> SyntaxResult<Node<LitBigIntExpr>> {
@@ -962,54 +1462,82 @@ impl<'a> Parser<'a> {
                       return Err(direct_key.error(SyntaxErrorType::ExpectedNotFound));
                     };
                     // TypeScript-style recovery: definite assignment assertion (e.g., `{ a! }`).
-                    let _definite_assignment = p.consume_if(TT::Exclamation).is_match();
-                    // TypeScript-style recovery: default value (e.g., `{ c = 1 }`).
-                    if p.consume_if(TT::Equals).is_match() {
-                      let key_name = direct_key.stx.key.clone();
-                      let key_loc = direct_key.loc;
-                      let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
-                      let id_expr = Node::new(
-                        key_loc,
-                        IdExpr {
-                          name: key_name.clone(),
-                        },
-                      )
-                      .into_wrapped();
-                      let bin_expr = Node::new(
-                        key_loc + default_val.loc,
-                        BinaryExpr {
-                          operator: OperatorName::Assignment,
-                          left: id_expr,
-                          right: default_val,
-                        },
-                      )
-                      .into_wrapped();
-                      ObjMemberType::Valued {
-                        key: ClassOrObjKey::Direct(Node::new(
-                          key_loc,
-                          ClassOrObjMemberDirectKey {
+                     let _definite_assignment = p.consume_if(TT::Exclamation).is_match();
+                     // TypeScript-style recovery: default value (e.g., `{ c = 1 }`).
+                     if p.consume_if(TT::Equals).is_match() {
+                       let key_name = direct_key.stx.key.clone();
+                       let key_loc = direct_key.loc;
+                       let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
+                       let id_expr = Node::new(
+                         key_loc,
+                         IdExpr {
+                           name: key_name.clone(),
+                         },
+                       )
+                       .into_wrapped();
+                       let mut bin_expr = Node::new(
+                         key_loc + default_val.loc,
+                         BinaryExpr {
+                           operator: OperatorName::Assignment,
+                           left: id_expr,
+                           right: default_val,
+                         },
+                       )
+                       .into_wrapped();
+                       bin_expr.assoc.set(CoverInitializedName);
+                       ObjMemberType::Valued {
+                         key: ClassOrObjKey::Direct(Node::new(
+                           key_loc,
+                           ClassOrObjMemberDirectKey {
                             key: key_name,
                             tt: TT::Identifier,
                           },
                         )),
-                        val: ClassOrObjVal::Prop(Some(bin_expr)),
-                      }
-                    } else {
-                      ObjMemberType::Shorthand {
-                        id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                      }
-                    }
-                  } else {
-                    if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
-                      return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
-                    }
-                    ObjMemberType::Shorthand {
-                      id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                    }
-                  }
-                }
+                         val: ClassOrObjVal::Prop(Some(bin_expr)),
+                       }
+                     } else {
+                       ObjMemberType::Shorthand {
+                         id: direct_key.map_stx(|n| IdExpr { name: n.key }),
+                       }
+                     }
+                   } else {
+                     if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
+                       return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                     }
+                     if p.consume_if(TT::Equals).is_match() {
+                       let key_name = direct_key.stx.key.clone();
+                       let key_loc = direct_key.loc;
+                       let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
+                       let id_expr = Node::new(
+                         key_loc,
+                         IdExpr {
+                           name: key_name.clone(),
+                         },
+                       )
+                       .into_wrapped();
+                       let mut bin_expr = Node::new(
+                         key_loc + default_val.loc,
+                         BinaryExpr {
+                           operator: OperatorName::Assignment,
+                           left: id_expr,
+                           right: default_val,
+                         },
+                       )
+                       .into_wrapped();
+                       bin_expr.assoc.set(CoverInitializedName);
+                       ObjMemberType::Valued {
+                         key: ClassOrObjKey::Direct(direct_key),
+                         val: ClassOrObjVal::Prop(Some(bin_expr)),
+                       }
+                     } else {
+                       ObjMemberType::Shorthand {
+                         id: direct_key.map_stx(|n| IdExpr { name: n.key }),
+                       }
+                     }
+                   }
+                 }
+               }
               }
-            }
             _ => ObjMemberType::Valued { key, val: value },
           };
           members.push(Node::new(member_start, ObjMember { typ }));
@@ -1098,7 +1626,9 @@ impl<'a> Parser<'a> {
       .chars()
       .next()
       .ok_or_else(|| t.error(SyntaxErrorType::UnexpectedEnd))?;
-    let has_closing = raw.ends_with(quote);
+    let quote_len = quote.len_utf8();
+    // A lone quote token (e.g. just `'`/`"`) should be treated as unterminated.
+    let has_closing = raw.len() >= quote_len.saturating_mul(2) && raw.ends_with(quote);
     let body_start = t.loc.0 + quote.len_utf8();
     let body_end = if has_closing {
       t.loc.1.saturating_sub(quote.len_utf8())
@@ -1106,6 +1636,14 @@ impl<'a> Parser<'a> {
       t.loc.1
     };
     let body = self.bytes(Loc(body_start, body_end));
+    if self.is_strict_ecmascript() {
+      if let Some((offset, len)) = find_non_octal_decimal_escape_sequence(body) {
+        return Err(Loc(body_start + offset, body_start + offset + len).error(
+          SyntaxErrorType::InvalidCharacterEscape,
+          Some(TT::LiteralString),
+        ));
+      }
+    }
     let escape_loc = find_legacy_escape_sequence(body)
       .map(|(offset, len)| Loc(body_start + offset, body_start + offset + len));
 
@@ -1196,12 +1734,20 @@ impl<'a> Parser<'a> {
     let first_raw = first_content.encode_utf16().collect::<Vec<_>>().into_boxed_slice();
     raw_parts.push(first_raw);
     let first_legacy_escape = find_legacy_escape_sequence(first_content);
-    if !tagged && invalid_escape.is_none() {
+    if !tagged {
       if let Some((rel, len)) = first_legacy_escape {
-        invalid_escape = Some(Loc(
+        let loc = Loc(
           t.loc.0 + content_offset + rel,
           t.loc.0 + content_offset + rel + len,
-        ));
+        );
+        // ECMAScript template literals reject legacy escape sequences. Tagged templates are the
+        // sole exception (their cooked value becomes `undefined` and the raw value remains).
+        if self.is_strict_ecmascript() {
+          return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(t.typ)));
+        }
+        if invalid_escape.is_none() {
+          invalid_escape = Some(loc);
+        }
       }
     }
     let decoded_first = decode_literal_utf16(first_content, true);
@@ -1252,12 +1798,15 @@ impl<'a> Parser<'a> {
         let raw_part = content.encode_utf16().collect::<Vec<_>>().into_boxed_slice();
         raw_parts.push(raw_part);
         let legacy_escape = find_legacy_escape_sequence(content);
-        if !tagged && invalid_escape.is_none() {
+        if !tagged {
           if let Some((rel, len)) = legacy_escape {
-            invalid_escape = Some(Loc(
-              string.loc.0 + offset + rel,
-              string.loc.0 + offset + rel + len,
-            ));
+            let loc = Loc(string.loc.0 + offset + rel, string.loc.0 + offset + rel + len);
+            if self.is_strict_ecmascript() {
+              return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(string.typ)));
+            }
+            if invalid_escape.is_none() {
+              invalid_escape = Some(loc);
+            }
           }
         }
 

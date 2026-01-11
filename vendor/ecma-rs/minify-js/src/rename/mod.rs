@@ -18,6 +18,7 @@ use parse_js::loc::Loc;
 use parse_js::parse::expr::pat::{is_valid_pattern_identifier, ParsePatternRules};
 use parse_js::token::{keyword_from_str, TT};
 use parse_js::Dialect;
+use parse_js::SourceType;
 use semantic_js::assoc::js::{declared_symbol, resolved_symbol, scope_id};
 use semantic_js::js::{JsSemantics, ScopeId, ScopeKind, SymbolId, TopLevelMode};
 
@@ -892,7 +893,7 @@ fn js_string_literal(value: &str) -> String {
 
 fn is_module_binding_identifier_token(name: &str) -> bool {
   let mut lexer = Lexer::new(name);
-  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts);
+  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Script);
   if token.loc.0 != 0 || token.loc.1 != name.len() {
     return false;
   }

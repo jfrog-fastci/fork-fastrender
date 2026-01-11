@@ -16,6 +16,7 @@ use crate::ast::expr::BinaryExpr;
 use crate::ast::expr::Expr;
 use crate::ast::node::Node;
 use crate::ast::node::ParenthesizedExpr;
+use crate::ast::node::TrailingCommaAfterRestElement;
 use crate::error::SyntaxErrorType;
 use crate::error::SyntaxResult;
 use crate::operator::OperatorName;
@@ -29,13 +30,6 @@ pub fn lit_to_pat(node: Node<Expr>) -> SyntaxResult<Node<Pat>> {
 
 pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> SyntaxResult<Node<Pat>> {
   let loc = node.loc;
-
-  // Parenthesized assignment targets are invalid in ECMAScript (e.g. `(a) = b`,
-  // `([a]) = b`, `({a}) = b`). Preserve TypeScript-style recovery behaviour in
-  // non-strict dialects.
-  if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-    return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-  }
 
   // TypeScript: Accept member expressions for error recovery, even with optional chaining.
   // Check for member expressions first (without moving the value).
@@ -66,6 +60,16 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
 
   match *node.stx {
     Expr::LitArr(n) => {
+      // Parenthesized array literals cannot be assignment targets.
+      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
+      // `[...x,]` is valid as an array literal but invalid as an assignment/binding
+      // pattern (rest elements must not have a trailing comma). The literal parser
+      // records this so we can reject it during cover grammar conversion.
+      if !recover && n.assoc.get::<TrailingCommaAfterRestElement>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
       let LitArrExpr { elements } = *n.stx;
       let mut pat_elements = Vec::<Option<ArrPatElem>>::new();
       let mut rest = None;
@@ -77,6 +81,11 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
           LitArrElem::Single(elem) => {
             match *elem.stx {
               Expr::Binary(n) => {
+                // Destructuring assignment/binding patterns do not permit parentheses around
+                // an assignment pattern element (e.g. `[(a = 0)] = 1`).
+                if !recover && elem.assoc.get::<ParenthesizedExpr>().is_some() {
+                  return Err(elem.loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+                }
                 let BinaryExpr {
                   operator,
                   left,
@@ -97,23 +106,7 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
             };
           }
           LitArrElem::Rest(expr) => {
-            if recover {
-              rest = Some(lit_to_pat_with_recover(expr, recover)?);
-            } else {
-              // Rest elements must be assignment targets (not patterns) in strict
-              // ECMAScript mode.
-              let rest_target = match expr.stx.as_ref() {
-                Expr::Id(_) => lit_to_pat_with_recover(expr, recover)?,
-                Expr::Member(member) if !member.stx.optional_chaining => {
-                  Node::new(expr.loc, Pat::AssignTarget(expr))
-                }
-                Expr::ComputedMember(member) if !member.stx.optional_chaining => {
-                  Node::new(expr.loc, Pat::AssignTarget(expr))
-                }
-                _ => return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None)),
-              };
-              rest = Some(rest_target);
-            }
+            rest = Some(lit_to_pat_with_recover(expr, recover)?);
           }
           LitArrElem::Empty => pat_elements.push(None),
         };
@@ -130,6 +123,10 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
       )
     }
     Expr::LitObj(n) => {
+      // Parenthesized object literals cannot be assignment targets.
+      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
       let LitObjExpr { members } = *n.stx;
       let mut properties = Vec::new();
       let mut rest: Option<Node<Pat>> = None;
@@ -144,6 +141,13 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
               let (target, default_value) = match value {
                 ClassOrObjVal::Prop(Some(initializer)) => match *initializer.stx {
                   Expr::Binary(n) => {
+                    if !recover && initializer.assoc.get::<ParenthesizedExpr>().is_some() {
+                      return Err(
+                        initializer
+                          .loc
+                          .error(SyntaxErrorType::InvalidAssigmentTarget, None),
+                      );
+                    }
                     let BinaryExpr {
                       operator,
                       left,
@@ -254,13 +258,6 @@ pub(crate) fn lhs_expr_to_assign_target_with_recover(
   operator_name: OperatorName,
   recover: bool,
 ) -> SyntaxResult<Node<Expr>> {
-  // Parenthesized assignment targets are invalid in ECMAScript (e.g. `(a) = b`,
-  // `(obj.prop) = b`). Preserve TypeScript-style recovery behaviour in non-strict
-  // dialects.
-  if !recover && lhs.assoc.get::<ParenthesizedExpr>().is_some() {
-    return Err(lhs.error(SyntaxErrorType::InvalidAssigmentTarget));
-  }
-
   if !recover {
     return match lhs.stx.as_ref() {
       e @ (Expr::LitArr(_) | Expr::LitObj(_) | Expr::Id(_)) => {

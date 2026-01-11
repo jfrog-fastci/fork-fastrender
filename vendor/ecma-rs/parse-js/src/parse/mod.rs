@@ -361,6 +361,20 @@ impl<'a> Parser<'a> {
     }
   }
 
+  /// Validate an *assignable reference* (simple assignment target), as required by update
+  /// expressions (`++x`, `x--`, etc.).
+  ///
+  /// This is stricter than `lhs_expr_to_assign_target_with_recover` because update expressions
+  /// do not accept destructuring patterns.
+  pub(crate) fn validate_update_target_expr(&self, expr: &Node<Expr>) -> SyntaxResult<()> {
+    match expr.stx.as_ref() {
+      Expr::Id(_) => Ok(()),
+      Expr::Member(member) if !member.stx.optional_chaining => Ok(()),
+      Expr::ComputedMember(member) if !member.stx.optional_chaining => Ok(()),
+      _ => Err(expr.error(SyntaxErrorType::InvalidAssigmentTarget)),
+    }
+  }
+
   pub(crate) fn validate_strict_assignment_target_pat(&self, pat: &Node<Pat>) -> SyntaxResult<()> {
     if !self.is_strict_ecmascript() || !self.is_strict_mode() {
       return Ok(());
@@ -416,12 +430,19 @@ impl<'a> Parser<'a> {
       if t.typ != TT::LiteralString {
         break;
       }
-      let value = self.lit_str_val_with_mode(LexMode::Standard)?;
+      // Strict mode directives are matched against the *raw* string literal text.
+      // For example, `"use\\x20strict"` evaluates to `"use strict"` at runtime,
+      // but it does **not** enable strict mode.
+      let tok = self.consume_with_mode(LexMode::Standard);
+      let is_use_strict = {
+        let raw = self.bytes(tok.loc);
+        raw == "\"use strict\"" || raw == "'use strict'"
+      };
       let next = self.peek();
       if Self::token_continues_expression_after_directive_string(&next) {
         break;
       }
-      if value == "use strict" {
+      if is_use_strict {
         found = true;
       }
       if next.typ == TT::Semicolon {
@@ -542,7 +563,8 @@ impl<'a> Parser<'a> {
     assert!(self.next_tok_i <= self.buf.len());
     if self.buf.len() == self.next_tok_i {
       let dialect = self.dialect();
-      let token = lex_next(&mut self.lexer, mode, dialect);
+      let source_type = self.source_type();
+      let token = lex_next(&mut self.lexer, mode, dialect, source_type);
       self.buf.push(BufferedToken {
         token,
         lex_mode: mode,

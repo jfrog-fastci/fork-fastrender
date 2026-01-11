@@ -453,7 +453,17 @@ impl<'a> Parser<'a> {
           await_expr_allowed: is_async,
           yield_expr_allowed: generator,
         });
-        let parameters = p.func_params(fn_ctx)?;
+        // Regular functions do not have a `super` binding. Ensure we don't inherit
+        // `super` allowances from an enclosing method/constructor when parsing
+        // parameter initializers.
+        let prev_super_prop_allowed = p.super_prop_allowed;
+        let prev_super_call_allowed = p.super_call_allowed;
+        p.super_prop_allowed = 0;
+        p.super_call_allowed = 0;
+        let parameters = p.func_params(fn_ctx);
+        p.super_prop_allowed = prev_super_prop_allowed;
+        p.super_call_allowed = prev_super_call_allowed;
+        let parameters = parameters?;
         // TypeScript: return type annotation - may be type predicate
         let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
           Some(p.type_expr_or_predicate(ctx)?)
@@ -516,9 +526,48 @@ impl<'a> Parser<'a> {
           None
         };
 
-        let extends = p
-          .consume_if(TT::KeywordExtends)
-          .and_then(|| p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements]))?;
+        let extends = if p.consume_if(TT::KeywordExtends).is_match() {
+          let expr = p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements])?;
+          if p.is_strict_ecmascript() {
+            let is_valid = if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+              true
+            } else {
+              match expr.stx.as_ref() {
+                Expr::Id(_)
+                | Expr::This(_)
+                | Expr::Import(_)
+                | Expr::ImportMeta(_)
+                | Expr::Func(_)
+                | Expr::Class(_)
+                | Expr::Member(_)
+                | Expr::ComputedMember(_)
+                | Expr::Call(_)
+                | Expr::TaggedTemplate(_)
+                | Expr::LitArr(_)
+                | Expr::LitObj(_)
+                | Expr::LitNum(_)
+                | Expr::LitStr(_)
+                | Expr::LitBool(_)
+                | Expr::LitNull(_)
+                | Expr::LitBigInt(_)
+                | Expr::LitRegex(_)
+                | Expr::LitTemplate(_)
+                | Expr::Instantiation(_) => true,
+                Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
+                _ => false,
+              }
+            };
+            if !is_valid {
+              return Err(expr.loc.error(
+                SyntaxErrorType::ExpectedSyntax("class heritage expression"),
+                None,
+              ));
+            }
+          }
+          Some(expr)
+        } else {
+          None
+        };
 
         // TypeScript: implements clause
         let mut implements = Vec::new();
@@ -575,9 +624,48 @@ impl<'a> Parser<'a> {
           None
         };
 
-        let extends = p
-          .consume_if(TT::KeywordExtends)
-          .and_then(|| p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements]))?;
+        let extends = if p.consume_if(TT::KeywordExtends).is_match() {
+          let expr = p.expr_with_ts_type_args(ctx, [TT::BraceOpen, TT::KeywordImplements])?;
+          if p.is_strict_ecmascript() {
+            let is_valid = if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+              true
+            } else {
+              match expr.stx.as_ref() {
+                Expr::Id(_)
+                | Expr::This(_)
+                | Expr::Import(_)
+                | Expr::ImportMeta(_)
+                | Expr::Func(_)
+                | Expr::Class(_)
+                | Expr::Member(_)
+                | Expr::ComputedMember(_)
+                | Expr::Call(_)
+                | Expr::TaggedTemplate(_)
+                | Expr::LitArr(_)
+                | Expr::LitObj(_)
+                | Expr::LitNum(_)
+                | Expr::LitStr(_)
+                | Expr::LitBool(_)
+                | Expr::LitNull(_)
+                | Expr::LitBigInt(_)
+                | Expr::LitRegex(_)
+                | Expr::LitTemplate(_)
+                | Expr::Instantiation(_) => true,
+                Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
+                _ => false,
+              }
+            };
+            if !is_valid {
+              return Err(expr.loc.error(
+                SyntaxErrorType::ExpectedSyntax("class heritage expression"),
+                None,
+              ));
+            }
+          }
+          Some(expr)
+        } else {
+          None
+        };
 
         // TypeScript: implements clause
         let mut implements = Vec::new();
@@ -1056,6 +1144,21 @@ impl<'a> Parser<'a> {
                   }
                 }
 
+                // `new super()` is not a valid ECMAScript construct. `super(...)` is a call
+                // expression and cannot appear in `new` constructor position (but `new super.prop()`
+                // is allowed because `super.prop` is a valid member expression).
+                if p.is_strict_ecmascript()
+                  && matches!(callee.stx.as_ref(), Expr::Super(_))
+                  && matches!(
+                    p.peek().typ,
+                    TT::ParenthesisOpen | TT::QuestionDotParenthesisOpen
+                  )
+                {
+                  return Err(callee.error(SyntaxErrorType::ExpectedSyntax(
+                    "super property access",
+                  )));
+                }
+
                 // Optional argument list (`new Foo(...)` / `new Foo?.(...)`).
                 if matches!(
                   p.peek().typ,
@@ -1098,6 +1201,7 @@ impl<'a> Parser<'a> {
               operator.name,
               OperatorName::PrefixIncrement | OperatorName::PrefixDecrement
             ) {
+              p.validate_update_target_expr(&operand)?;
               p.validate_strict_assignment_target_expr(&operand)?;
             }
 
@@ -1337,6 +1441,7 @@ impl<'a> Parser<'a> {
             self.restore_checkpoint(cp);
             break;
           };
+          self.validate_update_target_expr(&left)?;
           self.validate_strict_assignment_target_expr(&left)?;
           left = Node::new(
             left.loc + t.loc,
@@ -1386,6 +1491,56 @@ impl<'a> Parser<'a> {
             }
             return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
           }
+
+          // Tagged templates are only permitted after a `MemberExpression` or `CallExpression`
+          // (or any parenthesized expression, which is treated as a primary expression).
+          //
+          // If the preceding expression cannot be a tag and there is a LineTerminator, allow
+          // ASI to split statements (e.g. `a++\n\`x\`` should parse as `a++; \`x\``).
+          let is_parenthesized = left.assoc.get::<ParenthesizedExpr>().is_some();
+          let is_valid_tag_expr = is_parenthesized
+            || match left.stx.as_ref() {
+              Expr::Call(_)
+              | Expr::Class(_)
+              | Expr::ComputedMember(_)
+              | Expr::Func(_)
+              | Expr::Id(_)
+              | Expr::Import(_)
+              | Expr::ImportMeta(_)
+              | Expr::Instantiation(_)
+              | Expr::LitArr(_)
+              | Expr::LitBigInt(_)
+              | Expr::LitBool(_)
+              | Expr::LitNull(_)
+              | Expr::LitNum(_)
+              | Expr::LitObj(_)
+              | Expr::LitRegex(_)
+              | Expr::LitStr(_)
+              | Expr::LitTemplate(_)
+              | Expr::Member(_)
+              | Expr::NewTarget(_)
+              | Expr::NonNullAssertion(_)
+              | Expr::Super(_)
+              | Expr::TaggedTemplate(_)
+              | Expr::This(_)
+              | Expr::JsxElem(_)
+              | Expr::JsxExprContainer(_)
+              | Expr::JsxMember(_)
+              | Expr::JsxName(_)
+              | Expr::JsxSpreadAttr(_)
+              | Expr::JsxText(_) => true,
+              Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
+              _ => false,
+            };
+          if !is_valid_tag_expr {
+            if asi_allowed && t.preceded_by_line_terminator {
+              self.restore_checkpoint(cp);
+              asi.did_end_with_asi = true;
+              break;
+            }
+            return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
+          }
+
           let loc = t.loc;
           self.restore_checkpoint(cp);
           // ES2018: Tagged templates allow invalid escape sequences
@@ -1627,6 +1782,12 @@ impl<'a> Parser<'a> {
 
           left = match operator.name {
             OperatorName::Call | OperatorName::OptionalChainingCall => {
+              if self.is_strict_ecmascript()
+                && matches!(left.stx.as_ref(), Expr::ArrowFunc(_))
+                && left.assoc.get::<ParenthesizedExpr>().is_none()
+              {
+                return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
+              }
               let arguments = self.call_args(ctx)?;
               let end = self.require(TT::ParenthesisClose)?;
               Node::new(

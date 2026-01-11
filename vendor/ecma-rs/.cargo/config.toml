@@ -5,12 +5,11 @@
 # without switching toolchains.
 RUSTC_BOOTSTRAP = "1"
 
-# The parent repository's `.cargo/config.toml` configures `-fuse-ld=mold` for
-# faster linking. Some build environments ship a `clang` that does not recognize
-# `mold` as a valid `-fuse-ld` value.
+# The parent repository configures `clang` as the linker driver on Linux and
+# intentionally avoids pinning a specific `-fuse-ld=...` implementation (which
+# can break in minimal CI images).
 #
-# Override it in this nested workspace so `vendor/ecma-rs` builds work reliably
-# everywhere.
+# Keep the nested `vendor/ecma-rs` workspace similarly portable so its tools can
+# be built directly from this subdirectory as well.
 [target.'cfg(target_os = "linux")']
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]

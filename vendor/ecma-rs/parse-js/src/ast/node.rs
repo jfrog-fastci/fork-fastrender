@@ -29,6 +29,28 @@ pub struct NodeAssocData {
 #[derive(Clone, Copy, Debug)]
 pub struct ParenthesizedExpr;
 
+/// Marker attached to an expression node that originated from a *cover grammar*
+/// "initialized name" (`IdentifierReference Initializer`) in an object literal.
+///
+/// In ECMAScript, object literals *parse* `a = 1` using cover grammar to support
+/// destructuring patterns, but they are not valid in object literal expressions
+/// unless reinterpreted as a binding/assignment pattern.
+///
+/// `parse-js` preserves these parses so later stages can reinterpret them as
+/// patterns, then rejects any remaining instances in strict ECMAScript mode.
+#[derive(Clone, Copy, Debug)]
+pub struct CoverInitializedName;
+
+/// Marker attached to an array literal node when it contains a trailing comma
+/// immediately after a spread element (`[...x,]`).
+///
+/// Array *literals* allow this syntax, but when the literal is reinterpreted as
+/// an array binding/assignment pattern via cover grammar, rest elements must not
+/// have a trailing comma. `parse-js` records this marker during literal parsing
+/// so the pattern conversion step can enforce the restriction.
+#[derive(Clone, Copy, Debug)]
+pub struct TrailingCommaAfterRestElement;
+
 /// Marker attached to a numeric literal node that originated from a legacy octal
 /// integer literal (e.g. `010`).
 ///

@@ -628,7 +628,10 @@ impl<'a> Parser<'a> {
     Ok(if self.peek().typ == TT::BracketOpen {
       ClassOrObjKey::Computed({
         self.require(TT::BracketOpen).unwrap();
-        let key = self.expr(ctx, [TT::BracketClose])?;
+        // Computed property names are defined in terms of `AssignmentExpression` (not the full
+        // comma operator `Expression`), so a top-level comma is a syntax error:
+        // `({[a,b]: 0})` must fail, while `({[(a,b)]: 0})` is valid.
+        let key = self.expr(ctx, [TT::BracketClose, TT::Comma])?;
         self.require(TT::BracketClose)?;
         key
       })
@@ -647,11 +650,33 @@ impl<'a> Parser<'a> {
         TT::LiteralString => {
           let (_tok_loc, key, escape_loc, code_units) =
             self.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
+          if self.is_strict_ecmascript() && self.is_strict_mode() {
+            if let Some(escape_loc) = escape_loc {
+              return Err(escape_loc.error(
+                SyntaxErrorType::ExpectedSyntax(
+                  "octal escape sequences not allowed in strict mode",
+                ),
+                Some(TT::LiteralString),
+              ));
+            }
+          }
           legacy_escape = escape_loc;
           literal_code_units = Some(code_units);
           key
         }
-        TT::LiteralNumber => self.lit_num_val()?.to_string(),
+        TT::LiteralNumber => {
+          let raw = self.str(loc);
+          if self.is_strict_ecmascript()
+            && self.is_strict_mode()
+            && (crate::num::is_legacy_octal_literal(raw)
+              || crate::num::is_leading_zero_decimal_literal(raw))
+          {
+            return Err(t.error(SyntaxErrorType::ExpectedSyntax(
+              "numeric literals with leading zeros are not allowed in strict mode",
+            )));
+          }
+          self.lit_num_val()?.to_string()
+        }
         // There's no trailing `n`.
         TT::LiteralBigInt => self.lit_bigint_val()?.to_string(),
         TT::PrivateMember => self.consume_as_string(),
@@ -718,19 +743,33 @@ impl<'a> Parser<'a> {
             } else {
               None
             };
-            let is_module = p.is_module();
-            let fn_ctx = ctx.with_rules(ParsePatternRules {
-              await_allowed: !is_module,
-              yield_allowed: !is_module,
-              await_expr_allowed: false,
-              yield_expr_allowed: false,
-            });
-            let parameters = p.func_params(fn_ctx)?;
-            // TypeScript: return type annotation
-            let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-              Some(p.type_expr_or_predicate(ctx)?)
-            } else {
-              None
+             let is_module = p.is_module();
+             let is_derived_class = p.class_is_derived.last().copied().unwrap_or(false);
+             let fn_ctx = ctx.with_rules(ParsePatternRules {
+               await_allowed: !is_module,
+               yield_allowed: !is_module,
+               await_expr_allowed: false,
+               yield_expr_allowed: false,
+             });
+             // `super` is allowed in method/constructor parameter initializers.
+             // `super()` is only allowed in derived constructors.
+             let prev_super_prop_allowed = p.super_prop_allowed;
+             let prev_super_call_allowed = p.super_call_allowed;
+             p.super_prop_allowed += 1;
+             if is_constructor && is_derived_class {
+               p.super_call_allowed += 1;
+             } else {
+               p.super_call_allowed = 0;
+             }
+             let parameters = p.func_params(fn_ctx);
+             p.super_prop_allowed = prev_super_prop_allowed;
+             p.super_call_allowed = prev_super_call_allowed;
+             let parameters = parameters?;
+             // TypeScript: return type annotation
+             let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+               Some(p.type_expr_or_predicate(ctx)?)
+             } else {
+               None
             };
             let simple_params = Parser::is_simple_parameter_list(&parameters);
             let contains_use_strict = p.peek().typ == TT::BraceOpen
@@ -761,13 +800,12 @@ impl<'a> Parser<'a> {
               {
                 let _ = p.consume_if(TT::Semicolon);
                 None
-              } else {
-                let is_derived_class = p.class_is_derived.last().copied().unwrap_or(false);
-                Some(
-                  p.parse_method_block_body(fn_ctx, is_constructor && is_derived_class)?
-                    .into(),
-                )
-              };
+               } else {
+                 Some(
+                   p.parse_method_block_body(fn_ctx, is_constructor && is_derived_class)?
+                     .into(),
+                 )
+               };
               Ok(body)
             })();
             p.strict_mode = prev_strict_mode;
@@ -864,7 +902,15 @@ impl<'a> Parser<'a> {
         await_expr_allowed: is_async,
         yield_expr_allowed: is_generator,
       });
-      let parameters = p.func_params(fn_ctx)?;
+      // `super` is allowed in object/class methods. `super()` is never valid here.
+      let prev_super_prop_allowed = p.super_prop_allowed;
+      let prev_super_call_allowed = p.super_call_allowed;
+      p.super_prop_allowed += 1;
+      p.super_call_allowed = 0;
+      let parameters = p.func_params(fn_ctx);
+      p.super_prop_allowed = prev_super_prop_allowed;
+      p.super_call_allowed = prev_super_call_allowed;
+      let parameters = parameters?;
       // TypeScript: return type annotation - may be type predicate
       let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
         Some(p.type_expr_or_predicate(ctx)?)
@@ -1138,159 +1184,170 @@ impl<'a> Parser<'a> {
             .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
         );
       }
-      p.require(TT::ParenthesisOpen)?;
-      // Setters are not generators or async, so yield/await can be used as identifiers
-      let is_module = p.is_module();
-      let setter_ctx = ctx.with_rules(ParsePatternRules {
-        await_allowed: !is_module,
-        yield_allowed: !is_module,
-        await_expr_allowed: false,
-        yield_expr_allowed: false,
-      });
+      let prev_new_target_allowed = p.new_target_allowed;
+      let prev_super_prop_allowed = p.super_prop_allowed;
+      let prev_super_call_allowed = p.super_call_allowed;
+      p.new_target_allowed += 1;
+      p.super_prop_allowed += 1;
+      p.super_call_allowed = 0;
+      let res = (|| {
+        p.require(TT::ParenthesisOpen)?;
+        // Setters are not generators or async, so yield/await can be used as identifiers
+        let is_module = p.is_module();
+        let setter_ctx = ctx.with_rules(ParsePatternRules {
+          await_allowed: !is_module,
+          yield_allowed: !is_module,
+          await_expr_allowed: false,
+          yield_expr_allowed: false,
+        });
 
-      // TypeScript: Check for optional `this` parameter in setter
-      // Syntax: set x(this: Type, value: ValueType)
-      let mut parameters = Vec::new();
-      if !p.is_strict_ecmascript() && p.peek().typ == TT::KeywordThis {
-        let [_, next] = p.peek_n::<2>();
-        if next.typ == TT::Colon {
-          // Parse this parameter: this: Type
-          use crate::ast::expr::pat::IdPat;
-          use crate::ast::expr::pat::Pat;
-          use crate::ast::stmt::decl::ParamDecl;
-          use crate::ast::stmt::decl::PatDecl;
-          use crate::loc::Loc;
-          p.consume(); // consume 'this'
-          p.require(TT::Colon)?;
-          let type_annotation = Some(p.type_expr(ctx)?);
-          let this_pattern = Node::new(
-            Loc(0, 0),
-            PatDecl {
-              pat: Node::new(
-                Loc(0, 0),
-                Pat::Id(Node::new(
+        // TypeScript: Check for optional `this` parameter in setter
+        // Syntax: set x(this: Type, value: ValueType)
+        let mut parameters = Vec::new();
+        if !p.is_strict_ecmascript() && p.peek().typ == TT::KeywordThis {
+          let [_, next] = p.peek_n::<2>();
+          if next.typ == TT::Colon {
+            // Parse this parameter: this: Type
+            use crate::ast::expr::pat::IdPat;
+            use crate::ast::expr::pat::Pat;
+            use crate::ast::stmt::decl::ParamDecl;
+            use crate::ast::stmt::decl::PatDecl;
+            use crate::loc::Loc;
+            p.consume(); // consume 'this'
+            p.require(TT::Colon)?;
+            let type_annotation = Some(p.type_expr(ctx)?);
+            let this_pattern = Node::new(
+              Loc(0, 0),
+              PatDecl {
+                pat: Node::new(
                   Loc(0, 0),
-                  IdPat {
-                    name: String::from("this"),
-                  },
-                )),
-              ),
-            },
-          );
-          parameters.push(Node::new(
-            Loc(0, 0),
-            ParamDecl {
-              decorators: Vec::new(),
-              rest: false,
-              optional: false,
-              accessibility: None,
-              readonly: false,
-              pattern: this_pattern,
-              type_annotation,
-              default_value: None,
-            },
-          ));
-          // Consume comma after this parameter
-          if p.consume_if(TT::Comma).is_match() {
-            // Continue to parse value parameter
+                  Pat::Id(Node::new(
+                    Loc(0, 0),
+                    IdPat {
+                      name: String::from("this"),
+                    },
+                  )),
+                ),
+              },
+            );
+            parameters.push(Node::new(
+              Loc(0, 0),
+              ParamDecl {
+                decorators: Vec::new(),
+                rest: false,
+                optional: false,
+                accessibility: None,
+                readonly: false,
+                pattern: this_pattern,
+                type_annotation,
+                default_value: None,
+              },
+            ));
+            // Consume comma after this parameter
+            let _ = p.consume_if(TT::Comma);
           }
         }
-      }
 
-      // TypeScript: Parse value parameter (or error recovery - allow setters with no parameter)
-      let (pattern, type_annotation, default_value) = if p.peek().typ == TT::ParenthesisClose {
-        if !p.should_recover() {
-          return Err(
-            p.peek()
-              .error(SyntaxErrorType::ExpectedSyntax("setter parameter")),
+        // TypeScript: Parse value parameter (or error recovery - allow setters with no parameter)
+        let (pattern, type_annotation, default_value) = if p.peek().typ == TT::ParenthesisClose {
+          if !p.should_recover() {
+            return Err(
+              p.peek()
+                .error(SyntaxErrorType::ExpectedSyntax("setter parameter")),
+            );
+          }
+          // Empty parameter list - create synthetic parameter for error recovery
+          let loc = p.peek().loc;
+          let synthetic_pattern = Node::new(
+            loc,
+            PatDecl {
+              pat: Node::new(
+                loc,
+                IdPat {
+                  name: String::from("_"),
+                },
+              )
+              .into_wrapped(),
+            },
           );
-        }
-        // Empty parameter list - create synthetic parameter for error recovery
-        let loc = p.peek().loc;
-        let synthetic_pattern = Node::new(
-          loc,
-          PatDecl {
-            pat: Node::new(
-              loc,
-              IdPat {
-                name: String::from("_"),
-              },
-            )
-            .into_wrapped(),
+          (synthetic_pattern, None, None)
+        } else {
+          let pattern = p.pat_decl(setter_ctx)?;
+          // TypeScript: type annotation for setter parameter
+          let type_annotation =
+            if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+              Some(p.type_expr(ctx)?)
+            } else {
+              None
+            };
+          let default_value = p
+            .consume_if(TT::Equals)
+            .and_then(|| p.expr(setter_ctx, [TT::ParenthesisClose]))?;
+          (pattern, type_annotation, default_value)
+        };
+        let param_loc = pattern.loc;
+
+        // Add the value parameter to the parameters list
+        parameters.push(Node::new(
+          param_loc,
+          ParamDecl {
+            decorators: Vec::new(),
+            rest: false,
+            optional: false,
+            accessibility: None,
+            readonly: false,
+            pattern,
+            type_annotation,
+            default_value,
           },
-        );
-        (synthetic_pattern, None, None)
-      } else {
-        let pattern = p.pat_decl(setter_ctx)?;
-        // TypeScript: type annotation for setter parameter
-        let type_annotation = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-          Some(p.type_expr(ctx)?)
-        } else {
-          None
-        };
-        let default_value = p
-          .consume_if(TT::Equals)
-          .and_then(|| p.expr(setter_ctx, [TT::ParenthesisClose]))?;
-        (pattern, type_annotation, default_value)
-      };
-      let param_loc = pattern.loc;
+        ));
 
-      // Add the value parameter to the parameters list
-      parameters.push(Node::new(
-        param_loc,
-        ParamDecl {
-          decorators: Vec::new(),
-          rest: false,
-          optional: false,
-          accessibility: None,
-          readonly: false,
-          pattern,
-          type_annotation,
-          default_value,
-        },
-      ));
+        // ES2017+: Allow trailing comma in setter parameter list
+        let _ = p.consume_if(TT::Comma);
+        p.require(TT::ParenthesisClose)?;
+        let simple_params = Parser::is_simple_parameter_list(&parameters);
+        let contains_use_strict = p.peek().typ == TT::BraceOpen
+          && p.is_strict_ecmascript()
+          && p.has_use_strict_directive_in_block_body()?;
+        if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+          return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+            "`use strict` directive not allowed with a non-simple parameter list",
+          )));
+        }
 
-      // ES2017+: Allow trailing comma in setter parameter list
-      let _ = p.consume_if(TT::Comma);
-      p.require(TT::ParenthesisClose)?;
-      let simple_params = Parser::is_simple_parameter_list(&parameters);
-      let contains_use_strict = p.peek().typ == TT::BraceOpen
-        && p.is_strict_ecmascript()
-        && p.has_use_strict_directive_in_block_body()?;
-      if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-        return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-          "`use strict` directive not allowed with a non-simple parameter list",
-        )));
-      }
-
-      let prev_strict_mode = p.strict_mode;
-      if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-        p.strict_mode += 1;
-      }
-      // Setters don't have return types
-      // TypeScript: setter overload signatures and abstract setters have no body
-      let res = (|| {
-        p.validate_formal_parameters(None, &parameters, simple_params, true)?;
-        let body = if p.peek().typ == TT::Semicolon || (abstract_ && p.peek().typ != TT::BraceOpen)
-        {
-          let _ = p.consume_if(TT::Semicolon);
-          None
-        } else {
-          Some(p.parse_method_block_body(setter_ctx, false)?.into())
-        };
-        Ok(body)
+        let prev_strict_mode = p.strict_mode;
+        if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+          p.strict_mode += 1;
+        }
+        // Setters don't have return types
+        // TypeScript: setter overload signatures and abstract setters have no body
+        let res = (|| {
+          p.validate_formal_parameters(None, &parameters, simple_params, true)?;
+          let body =
+            if p.peek().typ == TT::Semicolon || (abstract_ && p.peek().typ != TT::BraceOpen) {
+              let _ = p.consume_if(TT::Semicolon);
+              None
+            } else {
+              Some(p.parse_method_block_body(setter_ctx, false)?.into())
+            };
+          Ok(body)
+        })();
+        p.strict_mode = prev_strict_mode;
+        let body = res?;
+        Ok(Func {
+          arrow: false,
+          async_: false,
+          generator: false,
+          type_parameters,
+          parameters,
+          return_type: None,
+          body,
+        })
       })();
-      p.strict_mode = prev_strict_mode;
-      let body = res?;
-      Ok(Func {
-        arrow: false,
-        async_: false,
-        generator: false,
-        type_parameters,
-        parameters,
-        return_type: None,
-        body,
-      })
+      p.new_target_allowed = prev_new_target_allowed;
+      p.super_prop_allowed = prev_super_prop_allowed;
+      p.super_call_allowed = prev_super_call_allowed;
+      res
     })?;
     let val = func.wrap(|func| ClassOrObjSetter { func });
     Ok((key, val))
@@ -1441,14 +1498,22 @@ impl<'a> Parser<'a> {
       // Otherwise it's a regular method or property
       let is_async = false;
       let is_generator = a.typ == TT::Asterisk;
-      if is_generator {
-        self.require(TT::Asterisk)?;
-      }
+      let generator_tok = if is_generator {
+        Some(self.require(TT::Asterisk)?)
+      } else {
+        None
+      };
       let key = self.class_or_obj_key(ctx)?;
       let looks_like_method = self.peek().typ == TT::ParenthesisOpen
         || (!self.is_strict_ecmascript()
           && self.peek().typ == TT::ChevronLeft
           && self.is_start_of_type_arguments());
+      if is_generator && !looks_like_method && !self.should_recover() {
+        // `*` may only prefix generator methods, not class fields / properties.
+        return Err(generator_tok.unwrap().error(SyntaxErrorType::ExpectedSyntax(
+          "generator method",
+        )));
+      }
       return Ok(if looks_like_method {
         let method = self.with_loc(|p| {
           let func = p.with_loc(|p| {
@@ -1468,7 +1533,15 @@ impl<'a> Parser<'a> {
               await_expr_allowed: is_async,
               yield_expr_allowed: is_generator,
             });
-            let parameters = p.func_params(fn_ctx)?;
+            // `super` is allowed in methods. `super()` is never valid here.
+            let prev_super_prop_allowed = p.super_prop_allowed;
+            let prev_super_call_allowed = p.super_call_allowed;
+            p.super_prop_allowed += 1;
+            p.super_call_allowed = 0;
+            let parameters = p.func_params(fn_ctx);
+            p.super_prop_allowed = prev_super_prop_allowed;
+            p.super_call_allowed = prev_super_call_allowed;
+            let parameters = parameters?;
             // TypeScript: return type annotation
             let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
               Some(p.type_expr_or_predicate(ctx)?)

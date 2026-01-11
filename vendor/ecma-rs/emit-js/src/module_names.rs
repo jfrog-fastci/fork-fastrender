@@ -3,6 +3,7 @@ use parse_js::lex::{lex_next, LexMode, Lexer};
 use parse_js::parse::expr::pat::{is_valid_pattern_identifier, ParsePatternRules};
 use parse_js::token::TT;
 use parse_js::Dialect;
+use parse_js::SourceType;
 
 /// Returns true when `name` can be emitted as a single `IdentifierName` token.
 ///
@@ -14,7 +15,7 @@ use parse_js::Dialect;
 /// so that escaped identifiers like `\u0061` are treated as valid.
 pub(crate) fn is_identifier_name_token(name: &str) -> bool {
   let mut lexer = Lexer::new(name);
-  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts);
+  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Script);
 
   // `lex_next` skips whitespace and comments. Reject anything that isn't
   // exactly one token spanning the entire string.
@@ -45,7 +46,7 @@ pub(crate) fn emit_identifier_name_or_string_literal(em: &mut Emitter, name: &st
 /// parser's `id_pat` validation for module-level patterns.
 pub(crate) fn is_module_binding_identifier_token(name: &str) -> bool {
   let mut lexer = Lexer::new(name);
-  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts);
+  let token = lex_next(&mut lexer, LexMode::Standard, Dialect::Ts, SourceType::Script);
 
   if token.loc.0 != 0 || token.loc.1 != name.len() {
     return false;

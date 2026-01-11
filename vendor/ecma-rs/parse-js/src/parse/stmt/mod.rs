@@ -5,7 +5,6 @@ use super::expr::Asi;
 use super::ParseCtx;
 use super::Parser;
 use crate::ast::node::Node;
-use crate::ast::stmt::decl::PatDecl;
 use crate::ast::stmt::BlockStmt;
 use crate::ast::stmt::BreakStmt;
 use crate::ast::stmt::CatchBlock;
@@ -66,6 +65,74 @@ impl<'a> Parser<'a> {
 
   pub fn stmts(&mut self, ctx: ParseCtx, end: TT) -> SyntaxResult<Vec<Node<Stmt>>> {
     self.repeat_until_tt(end, |p| p.stmt(ctx))
+  }
+
+  /// Parse a `Statement` (as opposed to a `StatementListItem`), as required by
+  /// single-statement positions like `if (...) <here>` or `while (...) <here>`.
+  ///
+  /// In strict ECMAScript mode (Dialect::Ecma), this rejects lexical declarations
+  /// (`let`/`const`/`class`/`using`) and most function declarations. Some
+  /// statement positions allow legacy function declarations in non-strict
+  /// scripts; those callers pass `allow_legacy_function_decl=true`.
+  pub fn stmt_in_statement_position(
+    &mut self,
+    ctx: ParseCtx,
+    allow_legacy_function_decl: bool,
+  ) -> SyntaxResult<Node<Stmt>> {
+    // TypeScript/JS recovery mode intentionally accepts many invalid programs, so
+    // keep using the more permissive `stmt` parsing in those dialects.
+    if self.should_recover() {
+      return self.stmt(ctx);
+    }
+
+    let [t0, t1, _t2] = self.peek_n();
+    match t0.typ {
+      // Lexical declarations are not valid `Statement`s (they are
+      // `StatementListItem`s). They must be wrapped in a block: `if (...) { let x = 1; }`.
+      TT::KeywordConst | TT::KeywordClass => Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+        "statement (not a declaration)",
+      ))),
+      TT::KeywordLet
+        if t1.typ == TT::BraceOpen
+          || t1.typ == TT::BracketOpen
+          || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+      {
+        Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+          "statement (not a declaration)",
+        )))
+      }
+      TT::KeywordUsing
+        if t1.typ == TT::BraceOpen
+          || t1.typ == TT::BracketOpen
+          || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+      {
+        Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+          "statement (not a declaration)",
+        )))
+      }
+      TT::KeywordAwait if t1.typ == TT::KeywordUsing => Err(t0.error(
+        SyntaxErrorType::ExpectedSyntax("statement (not a declaration)"),
+      )),
+
+      // Legacy (Annex B) function declarations are permitted in a small set of
+      // statement positions (e.g. labelled and `if` statement clauses) in
+      // non-strict scripts. They are never permitted in strict mode.
+      TT::KeywordFunction => {
+        if !allow_legacy_function_decl || self.is_strict_mode() || t1.typ == TT::Asterisk {
+          return Err(t0.error(SyntaxErrorType::ExpectedSyntax("statement")));
+        }
+        Ok(self.func_decl(ctx)?.into_wrapped())
+      }
+      // `async function` is a declaration and is not covered by legacy statement
+      // allowances.
+      TT::KeywordAsync if t1.typ == TT::KeywordFunction && !t1.preceded_by_line_terminator => {
+        Err(t0.error(SyntaxErrorType::ExpectedSyntax("statement")))
+      }
+
+      // Everything else is a valid `Statement` and can be handled by the normal
+      // (statement-list-item) parser.
+      _ => self.stmt(ctx),
+    }
   }
 
   pub fn stmt(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<Stmt>> {
@@ -344,7 +411,7 @@ impl<'a> Parser<'a> {
         name: label_name.clone(),
         is_iteration,
       });
-      let statement = p.stmt(ctx.non_top_level());
+      let statement = p.stmt_in_statement_position(ctx.non_top_level(), true);
       p.labels.truncate(prev_labels_len);
       let statement = statement?;
       Ok(LabelStmt {
@@ -517,7 +584,7 @@ impl<'a> Parser<'a> {
         } else {
           // Single statement.
           Ok(ForBody {
-            body: vec![p.stmt(ctx.non_top_level())?],
+            body: vec![p.stmt_in_statement_position(ctx.non_top_level(), false)?],
           })
         }
       })();
@@ -572,23 +639,6 @@ impl<'a> Parser<'a> {
     })
   }
 
-  // Helper function to parse 'in' or 'of' as an identifier in for-in/for-of loops
-  // This handles the special case where 'in' and 'of' are used as variable names
-  fn for_in_of_contextual_keyword_pattern(
-    &mut self,
-    _ctx: ParseCtx,
-  ) -> SyntaxResult<Node<PatDecl>> {
-    use crate::ast::expr::pat::IdPat;
-    use crate::ast::expr::pat::Pat;
-    self.with_loc(|p| {
-      let t = p.consume();
-      let name = p.string(t.loc);
-      let id_pat = Node::new(t.loc, IdPat { name });
-      let pat = Node::new(t.loc, Pat::Id(id_pat));
-      Ok(PatDecl { pat })
-    })
-  }
-
   /// For error recovery, consume an initializer in a for-in/of header and stop before the loop
   /// keyword so the parser can continue parsing the right-hand side.
   fn recover_for_in_of_initializer(&mut self, ctx: ParseCtx) {
@@ -605,13 +655,7 @@ impl<'a> Parser<'a> {
     Ok(match t0.typ {
       TT::KeywordVar | TT::KeywordConst | TT::KeywordUsing => ForInOfLhs::Decl({
         let mode = self.var_decl_mode()?;
-        // Special case: allow 'in' and 'of' as identifiers in for-in/for-of loops
-        // e.g., `for (var in of x)` or `for (var of of x)`
-        let pat = if self.peek().typ == TT::KeywordIn || self.peek().typ == TT::KeywordOf {
-          self.for_in_of_contextual_keyword_pattern(ctx)?
-        } else {
-          self.pat_decl(ctx)?
-        };
+        let pat = self.pat_decl(ctx)?;
 
         // TypeScript: type annotation (parse and discard for error recovery)
         if !self.is_strict_ecmascript() && self.consume_if(TT::Colon).is_match() {
@@ -646,18 +690,11 @@ impl<'a> Parser<'a> {
       TT::KeywordLet
         if t1.typ == TT::BraceOpen
           || t1.typ == TT::BracketOpen
-          || is_valid_pattern_identifier(t1.typ, ctx.rules)
-          || t1.typ == TT::KeywordIn
-          || t1.typ == TT::KeywordOf =>
+          || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
       {
         ForInOfLhs::Decl({
           let mode = self.var_decl_mode()?;
-          // Special case: allow 'in' and 'of' as identifiers in for-in/for-of loops
-          let pat = if self.peek().typ == TT::KeywordIn || self.peek().typ == TT::KeywordOf {
-            self.for_in_of_contextual_keyword_pattern(ctx)?
-          } else {
-            self.pat_decl(ctx)?
-          };
+          let pat = self.pat_decl(ctx)?;
 
           // TypeScript: type annotation (parse and discard for error recovery)
           if !self.is_strict_ecmascript() && self.consume_if(TT::Colon).is_match() {
@@ -688,12 +725,7 @@ impl<'a> Parser<'a> {
       // TypeScript: await using in for-of loop
       TT::KeywordAwait if t1.typ == TT::KeywordUsing => ForInOfLhs::Decl({
         let mode = self.var_decl_mode()?;
-        // Special case: allow 'in' and 'of' as identifiers in for-in/for-of loops
-        let pat = if self.peek().typ == TT::KeywordIn || self.peek().typ == TT::KeywordOf {
-          self.for_in_of_contextual_keyword_pattern(ctx)?
-        } else {
-          self.pat_decl(ctx)?
-        };
+        let pat = self.pat_decl(ctx)?;
 
         // TypeScript: type annotation (parse and discard for error recovery)
         if !self.is_strict_ecmascript() && self.consume_if(TT::Colon).is_match() {
@@ -738,12 +770,7 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordFor)?;
       p.require(TT::ParenthesisOpen)?;
       let lhs = p.for_in_of_lhs(header_ctx)?;
-      // Special case: if variable name is 'in', the keyword was already consumed
-      // e.g., `for (let in x)` - the 'in' serves as both variable name and keyword
-      if !p.consume_if(TT::KeywordIn).is_match() {
-        // 'in' keyword was already consumed as the variable name
-        // This is fine - just continue parsing
-      }
+      p.require(TT::KeywordIn)?;
       let rhs = p.expr(header_ctx, [TT::ParenthesisClose])?;
       p.require(TT::ParenthesisClose)?;
       let body = p.for_body(ctx)?;
@@ -765,13 +792,24 @@ impl<'a> Parser<'a> {
         ));
       }
       p.require(TT::ParenthesisOpen)?;
-      let lhs = p.for_in_of_lhs(header_ctx)?;
-      // Special case: if variable name is 'of', the keyword was already consumed
-      // e.g., `for (let of x)` - the 'of' serves as both variable name and keyword
-      if !p.consume_if(TT::KeywordOf).is_match() {
-        // 'of' keyword was already consumed as the variable name
-        // This is fine - just continue parsing
+      // In strict ECMAScript, `for-of` does not allow a left-hand-side expression that starts
+      // with `let` unless it is parsed as a lexical declaration.
+      //
+      // This matches the spec's lookahead restriction and the test262 parser tests:
+      // - `for (let in 1);` is permitted (Annex B legacy `let` as identifier in `for-in`)
+      // - `for (let.a of 0);` is a syntax error
+      let [t0, t1] = p.peek_n();
+      if t0.typ == TT::KeywordLet
+        && !(t1.typ == TT::BraceOpen
+          || t1.typ == TT::BracketOpen
+          || is_valid_pattern_identifier(t1.typ, header_ctx.rules))
+      {
+        return Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+          "for-of loop left-hand side cannot start with `let`",
+        )));
       }
+      let lhs = p.for_in_of_lhs(header_ctx)?;
+      p.require(TT::KeywordOf)?;
       let rhs = p.expr(header_ctx, [TT::ParenthesisClose])?;
       p.require(TT::ParenthesisClose)?;
       let body = p.for_body(ctx)?;
@@ -927,10 +965,10 @@ impl<'a> Parser<'a> {
       p.require(TT::ParenthesisOpen)?;
       let test = p.expr(ctx, [TT::ParenthesisClose])?;
       p.require(TT::ParenthesisClose)?;
-      let consequent = p.stmt(ctx.non_top_level())?;
+      let consequent = p.stmt_in_statement_position(ctx.non_top_level(), true)?;
       let alternate = p
         .consume_if(TT::KeywordElse)
-        .and_then(|| p.stmt(ctx.non_top_level()))?;
+        .and_then(|| p.stmt_in_statement_position(ctx.non_top_level(), true))?;
       Ok(IfStmt {
         test,
         consequent,
@@ -1035,7 +1073,7 @@ impl<'a> Parser<'a> {
       p.require(TT::ParenthesisClose)?;
       let prev_in_iteration = p.in_iteration;
       p.in_iteration += 1;
-      let body = p.stmt(ctx.non_top_level());
+      let body = p.stmt_in_statement_position(ctx.non_top_level(), false);
       p.in_iteration = prev_in_iteration;
       let body = body?;
       Ok(WhileStmt { condition, body })
@@ -1053,7 +1091,7 @@ impl<'a> Parser<'a> {
       p.require(TT::ParenthesisOpen)?;
       let object = p.expr(ctx, [TT::ParenthesisClose])?;
       p.require(TT::ParenthesisClose)?;
-      let body = p.stmt(ctx.non_top_level())?;
+      let body = p.stmt_in_statement_position(ctx.non_top_level(), false)?;
       Ok(WithStmt { object, body })
     })
   }
@@ -1063,7 +1101,7 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordDo)?;
       let prev_in_iteration = p.in_iteration;
       p.in_iteration += 1;
-      let body = p.stmt(ctx.non_top_level());
+      let body = p.stmt_in_statement_position(ctx.non_top_level(), false);
       p.in_iteration = prev_in_iteration;
       let body = body?;
       // Consume optional semicolon after body statement (ASI)
@@ -1085,11 +1123,18 @@ impl<'a> Parser<'a> {
       p.require(TT::BraceOpen)?;
       let prev_in_switch = p.in_switch;
       p.in_switch += 1;
+      let seen_default = std::cell::Cell::new(false);
       let branches = p.repeat_until_tt_with_loc(TT::BraceClose, |p| {
         let case = if p.consume_if(TT::KeywordCase).is_match() {
           Some(p.expr(ctx, [TT::Colon])?)
         } else {
-          p.require(TT::KeywordDefault)?;
+          let default_tok = p.require(TT::KeywordDefault)?;
+          if seen_default.get() {
+            return Err(default_tok.error(SyntaxErrorType::ExpectedSyntax(
+              "at most one default clause in switch statement",
+            )));
+          }
+          seen_default.set(true);
           None
         };
         p.require(TT::Colon)?;
