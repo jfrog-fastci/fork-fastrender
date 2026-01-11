@@ -4809,7 +4809,9 @@ fn strip_class_member(
   }
 
   let mut member = member;
-  if member.stx.declare {
+  // Abstract class members are type-only in TypeScript and must not emit runtime JS.
+  // (e.g. `abstract x: number;` or `abstract m(): void;`)
+  if member.stx.declare || member.stx.abstract_ {
     return None;
   }
   let is_constructor = !member.stx.static_

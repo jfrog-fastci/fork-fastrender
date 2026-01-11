@@ -313,3 +313,18 @@ fn full_mode_lowers_import_equals_and_export_assignment() {
     "expected lowered export= to include module.exports assignment, got: {output}"
   );
 }
+
+#[test]
+fn erases_abstract_class_members() {
+  let src = r#"
+    abstract class A {
+      abstract x: number;
+      abstract y?: string;
+      abstract z!: boolean;
+      abstract m(): void;
+    }
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "class A{}");
+}
