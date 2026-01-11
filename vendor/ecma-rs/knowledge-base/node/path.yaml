@@ -47,3 +47,31 @@
   since: "v0.1.0"
   effects: Pure
   purity: Pure
+
+- name: node:path.posix.join
+  aliases:
+    - path.posix.join
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.posix.resolve
+  aliases:
+    - path.posix.resolve
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.win32.join
+  aliases:
+    - path.win32.join
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
+- name: node:path.win32.resolve
+  aliases:
+    - path.win32.resolve
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure

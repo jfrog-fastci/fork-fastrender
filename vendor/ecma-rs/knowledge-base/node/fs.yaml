@@ -149,3 +149,59 @@
   since: "v10.0.0"
   effects: Io
   purity: Impure
+
+- name: node:fs/promises.readFile
+  aliases:
+    - fs/promises.readFile
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: node:fs/promises.writeFile
+  aliases:
+    - fs/promises.writeFile
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs/promises.stat
+  aliases:
+    - fs/promises.stat
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: node:fs/promises.readdir
+  aliases:
+    - fs/promises.readdir
+  since: "v10.0.0"
+  effects: Io
+  purity: ReadOnly
+
+- name: node:fs/promises.mkdir
+  aliases:
+    - fs/promises.mkdir
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs/promises.rm
+  aliases:
+    - fs/promises.rm
+  since: "v14.14.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs/promises.unlink
+  aliases:
+    - fs/promises.unlink
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
+
+- name: node:fs/promises.copyFile
+  aliases:
+    - fs/promises.copyFile
+  since: "v10.0.0"
+  effects: Io
+  purity: Impure
