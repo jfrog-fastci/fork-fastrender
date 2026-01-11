@@ -3,6 +3,7 @@ use core::ptr::null_mut;
 use runtime_native::async_abi::{Coroutine, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseRef as AbiPromiseRef;
+use runtime_native::RtShapeId;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -47,7 +48,7 @@ static COUNTER_VTABLE: CoroutineVTable = CoroutineVTable {
   resume: counter_resume,
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
-  promise_shape_id: 0,
+  promise_shape_id: RtShapeId::INVALID,
   abi_version: 0,
   reserved: [0; 4],
 };
@@ -127,7 +128,7 @@ static YIELD_ONCE_VTABLE: CoroutineVTable = CoroutineVTable {
   resume: yield_once_resume,
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
-  promise_shape_id: 0,
+  promise_shape_id: RtShapeId::INVALID,
   abi_version: 0,
   reserved: [0; 4],
 };

@@ -16,6 +16,8 @@
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicUsize;
 
+use crate::abi::RtShapeId;
+
 /// Promise state stored in [`PromiseHeader::state`].
 pub type PromiseState = u8;
 
@@ -112,8 +114,11 @@ pub struct CoroutineVTable {
   pub promise_size: u32,
   /// Allocation alignment of the coroutine's result promise (`Promise<T>`).
   pub promise_align: u32,
-  /// Opaque allocator/GC "shape id" for the promise object.
-  pub promise_shape_id: u32,
+  /// Runtime "shape id" for the promise object allocation.
+  ///
+  /// This must be a runtime-local [`RtShapeId`] index into the shape table registered via
+  /// `rt_register_shape_table` (not the semantic `types_ts_interned::ShapeId`).
+  pub promise_shape_id: RtShapeId,
 
   /// ABI version for forward compatibility (generated code should set to `0` for now).
   pub abi_version: u32,

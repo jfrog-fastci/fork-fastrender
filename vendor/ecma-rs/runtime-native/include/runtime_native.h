@@ -421,7 +421,7 @@ struct CoroutineVTable {
   CoroutineResumeFn resume;
   uint32_t promise_size;
   uint32_t promise_align;
-  uint32_t promise_shape_id;
+  RtShapeId promise_shape_id;
   uint32_t abi_version;
   uintptr_t reserved[4];
 };
