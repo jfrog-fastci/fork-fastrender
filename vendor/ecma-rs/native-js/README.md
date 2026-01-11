@@ -1,0 +1,155 @@
+# native-js
+
+`native-js` is a Rust library crate that compiles a **strict subset of TypeScript**
+into **LLVM IR** (and, optionally, an object file) as part of the native
+TypeScript→LLVM pipeline.
+
+This crate is intended to be used by tooling (see `native-js-cli/`) and by
+integration tests. It is not a general-purpose JavaScript engine and it does
+not try to support the full JavaScript/TypeScript language.
+
+## What it does
+
+At a high level, the native pipeline looks like:
+
+```
+TypeScript source
+  → parse-js (parser)
+  → hir-js (lowering)
+  → typecheck-ts (types + diagnostics)
+  → native-js (LLVM IR generation)
+  → LLVM (opt/codegen) + linker
+```
+
+`native-js` starts from the typechecked program and produces an LLVM module
+representing the program (usually a single entry function plus any referenced
+helpers/runtime stubs).
+
+## Build prerequisites
+
+### LLVM 18
+
+`native-js` uses the LLVM 18 C API via Rust bindings (e.g. `llvm-sys`/`inkwell`),
+so you must have an LLVM 18 installation available at build time.
+
+On Ubuntu, install:
+
+```bash
+sudo apt-get install -y llvm-18 llvm-18-dev clang-18 lld-18
+```
+
+Then set:
+
+```bash
+export LLVM_SYS_180_PREFIX=/usr/lib/llvm-18
+export PATH="/usr/lib/llvm-18/bin:$PATH"
+```
+
+You can also run the dependency checker:
+
+```bash
+bash vendor/ecma-rs/scripts/check_system.sh
+```
+
+### Wrapper scripts (recommended in agent environments)
+
+LLVM builds are memory-hungry. In this repo, prefer the wrapper which increases
+the process memory limit and auto-detects LLVM 18:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+```
+
+## Public API overview
+
+The API is intentionally small:
+
+- `compile(...)`: compile a typechecked TypeScript program into an LLVM module.
+- `CompileOptions`: controls codegen behavior (target, optimization level, emit
+  format, verification, debug info, etc).
+- Emit helpers: convenience functions to write the resulting module out as
+  textual LLVM IR (`.ll`) or as an object file (`.o`).
+
+The exact signatures are part of the crate’s Rust docs; the intent is that the
+caller can either:
+
+1. ask `native-js` to return an in-memory LLVM module, then use LLVM APIs to
+   inspect/transform it, or
+2. request an “emit” step which writes to disk (IR or object) for consumption by
+   a linker/toolchain.
+
+## Supported TypeScript subset
+
+We compile a **strict subset** of TypeScript. The compiler will error on
+constructs that TypeScript (`tsc`) would normally accept.
+
+### Rejected (hard errors)
+
+- `any` type (explicit or inferred)
+- Type assertions that “lie” (`x as T` where `x` is not `T`)
+- Non-null assertions on nullable values (`x!` where `x` might be `null`/`undefined`)
+- `eval()` / `new Function()`
+- `with` statement
+- `arguments` object
+- Prototype mutation after construction
+- Computed property access with non-constant keys (in strict paths)
+- `Proxy` (unsupported or heavily restricted)
+
+### Restricted
+
+- Union types: allowed, but lowered to tag-checked dispatch
+- `unknown`: allowed, but requires explicit narrowing before use
+- Dynamic property access: allowed only via slower paths (may warn)
+
+### Allowed (intended to work end-to-end)
+
+- Primitive types (`number`, `boolean`, `string`, `null`, `undefined`)
+- Interfaces, type aliases, generics
+- Classes (single inheritance; treated nominally for optimization purposes)
+- Tagged/discriminated unions
+- Literal types and `as const`
+- Tuples
+- `readonly` modifiers
+- `async`/`await` and `Promise`-based code
+- ES modules (`import`/`export`)
+
+## Debugging tips
+
+### Emit IR and run the verifier
+
+When debugging codegen, the fastest loop is:
+
+1. Emit textual IR (`.ll`) from the compiler (via emit helpers or
+   `native-js-cli --emit=llvm-ir`).
+2. Run LLVM’s verifier:
+
+```bash
+opt-18 -verify -disable-output out.ll
+```
+
+If you only have unversioned tools, ensure they’re LLVM 18:
+
+```bash
+llvm-config --version
+```
+
+### Common LLVM environment issues
+
+- **Build error: “No suitable version of LLVM found”**
+  - Ensure `llvm-18-dev` is installed.
+  - Ensure `LLVM_SYS_180_PREFIX` points at the LLVM 18 prefix (contains `bin/`,
+    `include/`, and `lib/`).
+- **Using the wrong LLVM version**
+  - If you have multiple LLVM versions installed, make sure the LLVM 18 tools
+    are on `PATH` (e.g. `/usr/lib/llvm-18/bin`).
+- **Linker/runtime errors due to missing LLVM shared libs**
+  - Some setups require `LD_LIBRARY_PATH="$LLVM_SYS_180_PREFIX/lib:$LD_LIBRARY_PATH"`.
+    (This depends on how LLVM was installed and whether it’s linked statically.)
+
+### Always keep a backtrace handy
+
+```bash
+RUST_BACKTRACE=1 cargo test -p native-js --lib
+```
+
