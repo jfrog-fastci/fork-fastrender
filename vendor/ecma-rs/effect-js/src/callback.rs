@@ -899,6 +899,54 @@ impl CallbackAnalyzer<'_> {
       }
 
       ExprKind::Member(mem) => {
+        if self.arguments_object_available {
+          if let Some(name) = body
+            .exprs
+            .get(mem.object.0 as usize)
+            .and_then(|expr| match expr.kind {
+              ExprKind::Ident(name) => Some(name),
+              _ => None,
+            })
+            .filter(|name| self.lowered.names.resolve(*name) == Some("arguments"))
+            .filter(|name| !self.name_is_shadowed(*name))
+          {
+            // `arguments[n]` can be a (slightly) more precise proxy for whether
+            // the callback uses the `index` (1) or `array` (2) arguments.
+            match &mem.property {
+              ObjectKey::Computed(expr) => {
+                self.visit_expr(body, *expr);
+                let expr_node = body.exprs.get(expr.0 as usize);
+                let idx = expr_node.and_then(|node| match &node.kind {
+                  ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.as_str()),
+                  ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.as_str()),
+                  _ => None,
+                });
+                match idx {
+                  Some("0") => {}
+                  Some("1") => self.uses_index = true,
+                  Some("2") => self.uses_array = true,
+                  _ => {
+                    // Unknown index; conservatively assume it may access either.
+                    self.uses_index = true;
+                    self.uses_array = true;
+                  }
+                }
+              }
+              // Property accesses like `arguments.length` don't directly depend on
+              // `index` or `array`, but we don't attempt to model them precisely
+              // here.
+              _ => {
+                self.uses_index = true;
+                self.uses_array = true;
+              }
+            }
+
+            // Avoid double-counting via `record_ident(arguments)`.
+            let _ = name;
+            return;
+          }
+        }
+
         self.visit_expr(body, mem.object);
         if let ObjectKey::Computed(expr) = &mem.property {
           self.visit_expr(body, *expr);
@@ -1282,7 +1330,37 @@ mod tests {
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
+  }
+
+  #[test]
+  fn callback_using_arguments_array_slot_counts_as_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[2]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
     assert_eq!(info.callback_uses_array, Some(true));
+  }
+
+  #[test]
+  fn callback_using_arguments_value_slot_does_not_count_index_or_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[0]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_array, Some(false));
   }
 
   #[test]
