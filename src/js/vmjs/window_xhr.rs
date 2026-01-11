@@ -1041,7 +1041,11 @@ fn get_or_create_listener_array(
   event_type: &str,
 ) -> Result<GcObject, VmError> {
   let key = alloc_key(scope, event_type)?;
-  match vm.get(scope, listeners_obj, key)? {
+  let existing = scope
+    .heap()
+    .object_get_own_data_property_value(listeners_obj, &key)?
+    .unwrap_or(Value::Undefined);
+  match existing {
     Value::Object(obj) => Ok(obj),
     _ => {
       let intr = vm
@@ -1058,9 +1062,12 @@ fn get_or_create_listener_array(
   }
 }
 
-fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
+fn array_length(scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
   let len_key = alloc_key(scope, "length")?;
-  let len_val = vm.get(scope, obj, len_key)?;
+  let len_val = scope
+    .heap()
+    .object_get_own_data_property_value(obj, &len_key)?
+    .unwrap_or(Value::Undefined);
   let len_u64 = number_to_u64(len_val)?;
   usize::try_from(len_u64).map_err(|_| VmError::TypeError("array length out of range"))
 }
@@ -1101,10 +1108,13 @@ fn xhr_add_event_listener_native(
   scope.push_root(Value::Object(arr))?;
 
   // Prevent duplicates (common in libs that patch XHR).
-  let len = array_length(vm, scope, arr)?;
+  let len = array_length(scope, arr)?;
   for idx in 0..len {
     let key = alloc_key(scope, &idx.to_string())?;
-    let existing = vm.get(scope, arr, key)?;
+    let existing = scope
+      .heap()
+      .object_get_own_data_property_value(arr, &key)?
+      .unwrap_or(Value::Undefined);
     if existing == listener {
       return Ok(Value::Undefined);
     }
@@ -1143,12 +1153,12 @@ fn xhr_remove_event_listener_native(
   scope.push_root(Value::Object(listeners_obj))?;
 
   let key = alloc_key(scope, &event_type)?;
-  let Value::Object(arr) = vm.get(scope, listeners_obj, key)? else {
+  let Some(Value::Object(arr)) = scope.heap().object_get_own_data_property_value(listeners_obj, &key)? else {
     return Ok(Value::Undefined);
   };
   scope.push_root(Value::Object(arr))?;
 
-  let len = array_length(vm, scope, arr)?;
+  let len = array_length(scope, arr)?;
   let mut removed = false;
   let mut remaining: Vec<Value> = Vec::new();
   remaining
@@ -1156,7 +1166,10 @@ fn xhr_remove_event_listener_native(
     .map_err(|_| VmError::OutOfMemory)?;
   for idx in 0..len {
     let k = alloc_key(scope, &idx.to_string())?;
-    let v = vm.get(scope, arr, k)?;
+    let v = scope
+      .heap()
+      .object_get_own_data_property_value(arr, &k)?
+      .unwrap_or(Value::Undefined);
     if !removed && v == listener {
       removed = true;
       continue;
@@ -1205,7 +1218,7 @@ fn xhr_dispatch_event_native(
     Value::Object(ev) => {
       scope.push_root(Value::Object(ev))?;
       let type_key = alloc_key(scope, "type")?;
-      let t = vm.get(scope, ev, type_key)?;
+      let t = vm.get_with_host_and_hooks(host, scope, hooks, ev, type_key)?;
       to_rust_string_limited(scope.heap_mut(), t, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?
     }
     other => to_rust_string_limited(scope.heap_mut(), other, XHR_EVENT_TYPE_MAX_BYTES, XHR_EVENT_TYPE_TOO_LONG_ERROR)?,
@@ -1254,7 +1267,7 @@ fn dispatch_xhr_event(
       s.push_str(other);
       // Avoid holding `s` across allocations by creating the key immediately.
       let key = alloc_key(scope, &s)?;
-      let value = vm.get(scope, xhr_obj, key)?;
+      let value = vm.get_with_host_and_hooks(host, scope, hooks, xhr_obj, key)?;
       if scope.heap().is_callable(value).unwrap_or(false) {
         let _ = vm.call_with_host_and_hooks(
           host,
@@ -1272,7 +1285,7 @@ fn dispatch_xhr_event(
 
   if !handler_prop.is_empty() {
     let key = alloc_key(scope, handler_prop)?;
-    let value = vm.get(scope, xhr_obj, key)?;
+    let value = vm.get_with_host_and_hooks(host, scope, hooks, xhr_obj, key)?;
     if scope.heap().is_callable(value).unwrap_or(false) {
       let _ = vm.call_with_host_and_hooks(
         host,
@@ -1293,15 +1306,18 @@ fn dispatch_xhr_event(
   scope.push_root(Value::Object(listeners_obj))?;
 
   let key = alloc_key(scope, event_type)?;
-  let Value::Object(arr) = vm.get(scope, listeners_obj, key)? else {
+  let Some(Value::Object(arr)) = scope.heap().object_get_own_data_property_value(listeners_obj, &key)? else {
     return Ok(());
   };
   scope.push_root(Value::Object(arr))?;
 
-  let len = array_length(vm, scope, arr)?;
+  let len = array_length(scope, arr)?;
   for idx in 0..len {
     let k = alloc_key(scope, &idx.to_string())?;
-    let listener = vm.get(scope, arr, k)?;
+    let listener = scope
+      .heap()
+      .object_get_own_data_property_value(arr, &k)?
+      .unwrap_or(Value::Undefined);
     if scope.heap().is_callable(listener).unwrap_or(false) {
       let _ = vm.call_with_host_and_hooks(
         host,

@@ -226,7 +226,7 @@ fn blob_ctor_construct(
     if let Value::Object(parts_obj) = parts_val {
       if scope.heap().object_prototype(parts_obj)? == Some(intr.array_prototype()) {
         let length_key = alloc_key(scope, "length")?;
-        let len_val = vm.get(scope, parts_obj, length_key)?;
+        let len_val = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, length_key)?;
         let Value::Number(n) = len_val else {
           return Err(VmError::TypeError("Blob parts array has invalid length"));
         };
@@ -237,7 +237,7 @@ fn blob_ctor_construct(
         parts.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
         for i in 0..len {
           let key = alloc_key(scope, &i.to_string())?;
-          let v = vm.get(scope, parts_obj, key)?;
+          let v = vm.get_with_host_and_hooks(host, scope, hooks, parts_obj, key)?;
           parts.push(v);
         }
       } else {
@@ -256,7 +256,7 @@ fn blob_ctor_construct(
       return Err(VmError::TypeError("Blob options must be an object"));
     };
     let type_key = alloc_key(scope, "type")?;
-    let type_val = vm.get(scope, options_obj, type_key)?;
+    let type_val = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, type_key)?;
     if !matches!(type_val, Value::Undefined) {
       let s = scope.to_string(vm, host, hooks, type_val)?;
       type_string = scope.heap().get_string(s)?.to_utf8_lossy();
