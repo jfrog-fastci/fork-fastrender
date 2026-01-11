@@ -1,5 +1,6 @@
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, InstTyp};
+use crate::analysis::interproc_escape::ProgramEscapeSummaries;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Escape classification for allocations local to a function.
@@ -334,10 +335,18 @@ fn join_escape(states: &mut BTreeMap<u32, EscapeState>, alloc: u32, esc: EscapeS
 pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
   let mut params: Vec<u32> = collect_param_vars(cfg).into_iter().collect();
   params.sort_unstable();
-  analyze_cfg_escapes_with_params(cfg, &params)
+  analyze_cfg_escapes_with_params_and_summaries(cfg, &params, None)
 }
 
 pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResult {
+  analyze_cfg_escapes_with_params_and_summaries(cfg, params, None)
+}
+
+pub fn analyze_cfg_escapes_with_params_and_summaries(
+  cfg: &Cfg,
+  params: &[u32],
+  summaries: Option<&ProgramEscapeSummaries>,
+) -> EscapeResult {
   let facts = collect_local_alloc_flow_facts(cfg);
   let alloc_vars = facts.alloc_vars.clone();
 
@@ -361,11 +370,46 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
   let mut stored_into: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
   let mut stored_external: BTreeMap<u32, EscapeState> = BTreeMap::new();
 
+  // Direct `Arg::Fn` return aliasing: if the callee may return an argument `k`, model the call
+  // result as aliasing that argument so subsequent `return`/stores of the call result are tracked.
+  let mut call_return_assigns: Vec<(u32, Arg)> = Vec::new();
+  if let Some(summaries) = summaries {
+    for label in cfg_labels_sorted(cfg) {
+      let Some(block) = cfg.bblocks.maybe_get(label) else {
+        continue;
+      };
+      for inst in block.iter() {
+        if inst.t != InstTyp::Call {
+          continue;
+        }
+        let (tgt, callee, _this, args, _spreads) = inst.as_call();
+        let Some(tgt) = tgt else {
+          continue;
+        };
+        let Arg::Fn(id) = callee else {
+          continue;
+        };
+        let Some(callee_summary) = summaries.get(*id) else {
+          continue;
+        };
+        for &k in callee_summary.returns_param.iter() {
+          if let Some(arg) = args.get(k) {
+            call_return_assigns.push((tgt, arg.clone()));
+          }
+        }
+      }
+    }
+  }
+
   let mut changed = true;
   while changed {
     changed = false;
 
-    for (tgt, arg) in facts.var_assigns.iter() {
+    for (tgt, arg) in facts
+      .var_assigns
+      .iter()
+      .chain(call_return_assigns.iter())
+    {
       let src_allocs = allocs_for_arg(&var_allocs, arg);
       if src_allocs.is_empty() {
         // Still propagate externalness through copies.
@@ -541,14 +585,66 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
           }
         }
         InstTyp::Call => {
-          let (_tgt, callee, _this, _args, _spreads) = inst.as_call();
+          let (_tgt, callee, this, args, _spreads) = inst.as_call();
           if marker_call_is_safe(callee) {
             continue;
           }
-          // Unknown/impure call: conservatively treat any allocation passed as escaping.
-          for arg in inst.args.iter() {
-            for alloc in allocs_for_arg(&var_allocs, arg) {
+
+          // If we have interprocedural summaries for direct `Arg::Fn` calls, use them to avoid
+          // conservatively forcing `GlobalEscape` for all passed allocations.
+          if let (Some(program_summaries), Arg::Fn(id)) = (summaries, callee) {
+            let Some(callee_summary) = program_summaries.get(*id) else {
+              // Missing summary should be impossible; fall back to conservative behaviour.
+              for arg in inst.args.iter() {
+                for alloc in allocs_for_arg(&var_allocs, arg) {
+                  join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+                }
+              }
+              continue;
+            };
+
+            // We don't model `this` in summaries; treat it conservatively.
+            for alloc in allocs_for_arg(&var_allocs, this) {
               join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+            }
+
+            for (k, arg) in args.iter().enumerate() {
+              let allocs = allocs_for_arg(&var_allocs, arg);
+              if allocs.is_empty() {
+                continue;
+              }
+
+              let callee_state = callee_summary
+                .param_escape
+                .get(k)
+                .copied()
+                .unwrap_or(EscapeState::Unknown);
+
+              let mapped = match callee_state {
+                EscapeState::NoEscape | EscapeState::ReturnEscape => EscapeState::NoEscape,
+                EscapeState::GlobalEscape | EscapeState::Unknown => callee_state,
+                EscapeState::ArgEscape(j) => {
+                  let receiver_ext = args.get(j).map(|a| ext_for_arg(&var_ext, a)).unwrap_or(EscapeState::GlobalEscape);
+                  match receiver_ext {
+                    EscapeState::ArgEscape(p) => EscapeState::ArgEscape(p),
+                    _ => EscapeState::GlobalEscape,
+                  }
+                }
+              };
+
+              if mapped == EscapeState::NoEscape {
+                continue;
+              }
+              for alloc in allocs {
+                join_escape(&mut alloc_states, alloc, mapped);
+              }
+            }
+          } else {
+            // Unknown/impure call: conservatively treat any allocation passed as escaping.
+            for arg in inst.args.iter() {
+              for alloc in allocs_for_arg(&var_allocs, arg) {
+                join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+              }
             }
           }
         }

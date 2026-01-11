@@ -12,7 +12,7 @@ use crate::{FnId, Program};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
-use super::{alias, effect, encoding, escape, nullability, ownership, purity, range};
+use super::{alias, effect, encoding, escape, interproc_escape, nullability, ownership, purity, range};
 
 /// Per-function analysis bundle.
 ///
@@ -285,11 +285,18 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   }
 
   // 4) escape
+  let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
   for &key in &keys {
-    analyses.escape.insert(
-      key,
-      escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
-    );
+    analyses
+      .escape
+      .insert(
+        key,
+        escape::analyze_cfg_escapes_with_params_and_summaries(
+          cfg_for_key(program, key),
+          params_for_key(program, key),
+          Some(&escape_summaries),
+        ),
+      );
   }
 
   // 5) ownership
@@ -376,10 +383,12 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   }
 
   // 4) escape
+  let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
   for &key in &keys {
-    let escapes = escape::analyze_cfg_escapes_with_params(
+    let escapes = escape::analyze_cfg_escapes_with_params_and_summaries(
       cfg_for_key(program, key),
       params_for_key(program, key),
+      Some(&escape_summaries),
     );
     annotate_cfg_escape_states(cfg_for_key_mut(program, key), &escapes);
     analyses.escape.insert(key, escapes);
