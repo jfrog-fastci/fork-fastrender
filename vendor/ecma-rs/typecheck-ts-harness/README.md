@@ -204,6 +204,29 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc 
   --compare-rust \
   --use-baselines
 
+## Strict-native regression suite (`strict-native`)
+
+`strict-native` runs a small, checker-only fixture corpus that exercises the
+native-strict dialect rules.
+
+Unlike `conformance`/`difftsc`, it does **not** use `tsc` as an oracle (these
+diagnostics are intentionally custom), so it does not require Node.js.
+
+```
+# Run the bundled strict-native fixtures against stored baselines
+cargo run -p typecheck-ts-harness --release -- strict-native
+
+# Update baselines from the current checker output
+cargo run -p typecheck-ts-harness --release -- strict-native --update-baselines
+
+# Filter / shard for CI
+cargo run -p typecheck-ts-harness --release -- strict-native \
+  --filter "**/proxy.ts" \
+  --shard 0/4 \
+  --timeout-secs 20 \
+  --json
+```
+
 # Allow small span drift (bytes)
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --span-tolerance 2
 
