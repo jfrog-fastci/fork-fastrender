@@ -637,6 +637,7 @@ mod tests {
     current_script: CurrentScriptStateHandle,
     started_classic_fetches: Vec<(HtmlScriptId, String)>,
     started_module_fetches: Vec<(HtmlScriptId, String)>,
+    started_inline_module_fetches: Vec<(HtmlScriptId, String)>,
     log: Vec<String>,
   }
 
@@ -647,6 +648,7 @@ mod tests {
         current_script: CurrentScriptStateHandle::default(),
         started_classic_fetches: Vec::new(),
         started_module_fetches: Vec::new(),
+        started_inline_module_fetches: Vec::new(),
         log: Vec::new(),
       }
     }
@@ -703,11 +705,14 @@ mod tests {
 
     fn start_inline_module_graph_fetch(
       &mut self,
-      _script_id: HtmlScriptId,
-      _source_text: &str,
+      script_id: HtmlScriptId,
+      source_text: &str,
       _base_url: Option<&str>,
       _options: ModuleGraphFetchOptions,
     ) -> Result<()> {
+      self
+        .started_inline_module_fetches
+        .push((script_id, source_text.to_string()));
       Ok(())
     }
 
@@ -820,6 +825,41 @@ mod tests {
   }
 
   #[test]
+  fn deferred_inline_module_scripts_execute_after_parsing_complete_in_document_order() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
+      Some("https://ex/doc.html"),
+      ParseBudget::new(1),
+    );
+    p.feed_str(
+      r#"<script type=module>/*m1*/</script><script type=module>/*m2*/</script>"#,
+    )?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(!p.parsing_finished());
+    assert_eq!(host.started_inline_module_fetches.len(), 2);
+
+    let m1 = host.started_inline_module_fetches[0].0;
+    let m2 = host.started_inline_module_fetches[1].0;
+
+    // Complete out-of-order before parsing completes.
+    p.on_module_graph_completed(&mut host, m2, "m2".to_string())?;
+    p.on_module_graph_completed(&mut host, m1, "m1".to_string())?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert!(
+      host.log.is_empty(),
+      "deferred module scripts must not execute before parsing completes"
+    );
+
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(
+      host.log,
+      vec!["module:m1".to_string(), "module:m2".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn async_module_scripts_can_execute_before_parsing_finishes() -> Result<()> {
     let mut host = Host::default();
     let mut p = HtmlScriptPipeline::<Host>::new_with_parse_budget(
@@ -844,4 +884,3 @@ mod tests {
     Ok(())
   }
 }
-
