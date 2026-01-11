@@ -221,6 +221,7 @@ fn block_on_returns_immediately_when_promise_already_settled() {
         runtime_native::rt_queue_microtask(Microtask {
           func: noop,
           data: core::ptr::null_mut(),
+          drop: None,
         });
       }
     }
@@ -299,6 +300,7 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
         runtime_native::rt_queue_microtask(Microtask {
           func: noop,
           data: core::ptr::null_mut(),
+          drop: None,
         });
       }
     }
@@ -356,10 +358,12 @@ fn block_on_returns_when_executor_is_in_error_state() {
     runtime_native::rt_queue_microtask(Microtask {
       func: noop,
       data: core::ptr::null_mut(),
+      drop: None,
     });
     runtime_native::rt_queue_microtask(Microtask {
       func: noop,
       data: core::ptr::null_mut(),
+      drop: None,
     });
   }
 
@@ -388,6 +392,7 @@ fn block_on_returns_when_executor_is_in_error_state() {
         runtime_native::rt_queue_microtask(Microtask {
           func: noop,
           data: core::ptr::null_mut(),
+          drop: None,
         });
       }
     }
@@ -421,6 +426,11 @@ fn block_on_returns_when_executor_is_in_error_state() {
   unsafe {
     runtime_native::rt_async_free_c_string(err);
   }
+
+  // Teardown: `rt_async_block_on` may have registered waiter nodes and/or enqueued reaction jobs
+  // before the executor entered an error state. Ensure all pending work is discarded before freeing
+  // this test-owned promise allocation.
+  runtime_native::rt_async_cancel_all();
 
   unsafe {
     drop(Box::from_raw(p.0.cast::<PromiseHeader>()));

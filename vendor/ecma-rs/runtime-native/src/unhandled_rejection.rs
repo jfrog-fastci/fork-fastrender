@@ -165,7 +165,52 @@ pub(crate) fn microtask_checkpoint() {
   }
 }
 
-pub(crate) fn clear_state_for_tests() {
+/// Remove `promise` from any internal tracker state.
+///
+/// This is used by teardown/drop paths that explicitly destroy promise allocations. The tracker
+/// stores persistent roots (`HandleId`) so dropping a promise while it is still queued for
+/// unhandled-rejection processing would otherwise leak those roots and could leave stale promise
+/// pointers in debug/test event logs.
+pub(crate) fn forget_promise(promise: PromiseRef) {
+  let mut tracker = TRACKER.lock();
+
+  let mut to_free: Vec<HandleId> = Vec::new();
+
+  tracker.about_to_be_notified.retain(|id| {
+    if promise_from_root(*id) == promise {
+      to_free.push(*id);
+      false
+    } else {
+      true
+    }
+  });
+  tracker.outstanding_rejected.retain(|id| {
+    if promise_from_root(*id) == promise {
+      to_free.push(*id);
+      false
+    } else {
+      true
+    }
+  });
+  tracker.pending_rejectionhandled.retain(|id| {
+    if promise_from_root(*id) == promise {
+      to_free.push(*id);
+      false
+    } else {
+      true
+    }
+  });
+
+  tracker.events.retain(|e| match e {
+    PromiseRejectionEvent::UnhandledRejection { promise: p } => *p != promise,
+    PromiseRejectionEvent::RejectionHandled { promise: p } => *p != promise,
+  });
+  for id in to_free {
+    free_promise_root(id);
+  }
+}
+
+pub(crate) fn clear_state() {
   let mut tracker = TRACKER.lock();
   for id in tracker.about_to_be_notified.drain(..) {
     free_promise_root(id);
@@ -177,6 +222,10 @@ pub(crate) fn clear_state_for_tests() {
     free_promise_root(id);
   }
   tracker.events.clear();
+}
+
+pub(crate) fn clear_state_for_tests() {
+  clear_state();
 }
 
 pub(crate) fn drain_events_for_tests() -> Vec<PromiseRejectionEvent> {

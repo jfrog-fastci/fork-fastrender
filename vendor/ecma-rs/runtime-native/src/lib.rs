@@ -1171,6 +1171,7 @@ mod tests {
       _async_spawn_deferred,
       _async_poll_legacy,
       _async_sleep_legacy,
+      _async_cancel_all,
       _queue_microtask,
       _queue_microtask_with_drop,
       _drain_microtasks,

@@ -13,6 +13,7 @@ fn ready_queue_len_is_capped() {
   let task = Microtask {
     func: noop,
     data: std::ptr::null_mut(),
+    drop: None,
   };
   unsafe {
     rt_queue_microtask(task);

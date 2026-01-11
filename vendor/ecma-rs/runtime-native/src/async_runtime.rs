@@ -67,6 +67,14 @@ pub(crate) fn reset_for_tests() {
   MAX_READY_QUEUE_LEN.store(DEFAULT_MAX_READY_QUEUE_LEN, Ordering::Release);
 }
 
+/// Reset internal bookkeeping so the async runtime can continue after teardown/cancellation.
+///
+/// Unlike [`reset_for_tests`], this preserves user-configured limits and hooks.
+pub(crate) fn reset_after_cancel() {
+  PERFORMING_MICROTASK_CHECKPOINT.with(|performing| performing.set(false));
+  *LAST_ERROR.lock() = None;
+}
+
 pub(crate) fn set_microtask_checkpoint_end_hook(hook: Option<MicrotaskCheckpointEndHook>) {
   *MICROTASK_CHECKPOINT_END_HOOK.lock() = hook;
 }

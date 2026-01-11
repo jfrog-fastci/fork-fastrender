@@ -48,6 +48,7 @@ fn scenario_microtask() {
     runtime_native::rt_queue_microtask(runtime_native::abi::Microtask {
       func: cb,
       data: std::ptr::null_mut(),
+      drop: None,
     });
   }
 

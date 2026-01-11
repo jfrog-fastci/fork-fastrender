@@ -3,6 +3,9 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex as ParkingMutex;
+use std::collections::HashSet;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
@@ -10,6 +13,27 @@ use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
 
+/// Promises that currently have pending reactions stored in their header.
+///
+/// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
+/// nodes that would otherwise never be enqueued (because the promise never settles after the host
+/// shuts down timers/I/O).
+static PROMISES_WITH_PENDING_REACTIONS: Lazy<ParkingMutex<HashSet<usize>>> =
+  Lazy::new(|| ParkingMutex::new(HashSet::new()));
+
+fn track_pending_reactions(ptr: *mut RtPromise) {
+  if ptr.is_null() {
+    return;
+  }
+  PROMISES_WITH_PENDING_REACTIONS.lock().insert(ptr as usize);
+}
+
+fn untrack_pending_reactions(ptr: *mut RtPromise) {
+  if ptr.is_null() {
+    return;
+  }
+  PROMISES_WITH_PENDING_REACTIONS.lock().remove(&(ptr as usize));
+}
 /// Internal promise state used while a promise is being settled.
 ///
 /// These values are not part of the public ABI; external code should only observe
@@ -354,8 +378,14 @@ fn drain_reactions(ptr: *mut RtPromise) {
   let reactions = unsafe { &(*ptr).header.waiters };
   let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
   if head.is_null() {
+    // No more reactions; ensure we don't retain the promise in the tracking set.
+    untrack_pending_reactions(ptr);
     return;
   }
+
+  // The promise no longer owns any pending reactions, so it can be removed from the tracking set
+  // even before we schedule the drained list.
+  untrack_pending_reactions(ptr);
 
   // The list is pushed in LIFO order; reverse to preserve FIFO registration order.
   head = unsafe { reverse_list(head) };
@@ -437,6 +467,7 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
   promise_mark_handled(p);
 
   push_reaction(ptr, node);
+  track_pending_reactions(ptr);
 
   // If the promise is already settled, drain and schedule immediately.
   let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
@@ -603,6 +634,46 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   }
 }
 
+/// Drop all pending promise reactions without running them.
+///
+/// This is used by `rt_async_cancel_all` to ensure awaiting coroutines (and other `then` callbacks)
+/// are properly torn down if the host stops driving the event loop before those promises settle.
+pub(crate) fn cancel_all_pending_reactions() {
+  let promises: Vec<*mut RtPromise> = {
+    let mut set = PROMISES_WITH_PENDING_REACTIONS.lock();
+    set.drain().map(|addr| addr as *mut RtPromise).collect()
+  };
+
+  for ptr in promises {
+    if ptr.is_null() {
+      continue;
+    }
+    if (ptr as usize) % core::mem::align_of::<RtPromise>() != 0 {
+      std::process::abort();
+    }
+
+    let reactions = unsafe { &(*ptr).header.waiters };
+    let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
+    while !head.is_null() {
+      let next = unsafe { (*head).next };
+      unsafe {
+        (*head).next = null_mut();
+      }
+
+      let vtable = unsafe { (*head).vtable };
+      if vtable.is_null() {
+        std::process::abort();
+      }
+      crate::ffi::abort_on_callback_panic(|| unsafe {
+        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+        drop_fn(head);
+      });
+
+      head = next;
+    }
+  }
+}
+
 /// Debug/test-only helper: expose the raw header pointer for a promise handle.
 #[allow(dead_code)]
 pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
@@ -621,13 +692,7 @@ pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
 /// `PromiseHeader + payload`) is UB.
 #[doc(hidden)]
 pub(crate) unsafe fn debug_drop_promise(p: PromiseRef) {
-  let ptr = promise_ptr(p);
-  if ptr.is_null() {
-    return;
-  }
-  unsafe {
-    drop(Box::from_raw(ptr));
-  }
+  promise_drop(p);
 }
 
 pub(crate) struct PromiseWaiterRaceHook {
@@ -925,8 +990,44 @@ pub(crate) fn promise_drop(p: PromiseRef) {
     return;
   }
 
-  // SAFETY: `PromiseRef` values are created from `Box::into_raw` in `promise_new`.
-  unsafe {
-    drop(Box::from_raw(ptr));
+  // Dropping a promise must not leak pending reaction nodes or leave stale pointers in the global
+  // tracking set used by `rt_async_cancel_all`.
+  //
+  // Note: this is primarily used by tests/embedders; production builds currently leak promises.
+  // Still, make the drop path robust so that:
+  // - pending reactions are destroyed without running, and
+  // - future cancellation/teardown does not observe a freed promise pointer.
+  untrack_pending_reactions(ptr);
+
+  // Drop any pending reaction nodes stored on the promise header.
+  //
+  // These would otherwise be leaked if the promise never settles (or if the embedding drops the
+  // promise early). We treat promise drop as a teardown operation, so callbacks are *not* executed.
+  let reactions = unsafe { &(*ptr).header.waiters };
+  let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
+  while !head.is_null() {
+    let next = unsafe { (*head).next };
+    unsafe {
+      (*head).next = null_mut();
+    }
+    let vtable = unsafe { (*head).vtable };
+    if vtable.is_null() {
+      std::process::abort();
+    }
+    crate::ffi::abort_on_callback_panic(|| unsafe {
+      let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) = std::mem::transmute((&*vtable).drop);
+      drop_fn(head);
+    });
+    head = next;
   }
+
+  // If this promise was keeping the event loop non-idle via an external pending count (e.g. a
+  // parallel task), clear the flag and decrement that count.
+  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+
+  // Also ensure the unhandled-rejection tracker doesn't retain a freed promise pointer.
+  crate::unhandled_rejection::forget_promise(p);
+
+  // SAFETY: `PromiseRef` values are created from `Box::into_raw` in `promise_new`.
+  unsafe { drop(Box::from_raw(ptr)) };
 }

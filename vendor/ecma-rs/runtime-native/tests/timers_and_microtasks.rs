@@ -28,6 +28,7 @@ fn microtask_ordering() {
       rt_queue_microtask(Microtask {
         func: microtask_b,
         data: Box::into_raw(b_data).cast(),
+        drop: None,
       });
     }
   }
@@ -37,6 +38,7 @@ fn microtask_ordering() {
     rt_queue_microtask(Microtask {
       func: microtask_a,
       data: Box::into_raw(Box::new(shared.clone())).cast(),
+      drop: None,
     });
   }
 
@@ -67,6 +69,7 @@ fn timeout_runs_microtask_checkpoint_after_macrotask() {
       rt_queue_microtask(Microtask {
         func: microtask,
         data: Box::into_raw(mt_data).cast(),
+        drop: None,
       });
     }
   }
@@ -168,6 +171,7 @@ fn thread_safe_microtask_wake_from_epoll() {
     rt_queue_microtask(Microtask {
       func: mark_ran,
       data: Box::into_raw(Box::new(ran.clone())).cast(),
+      drop: None,
     });
   }
 

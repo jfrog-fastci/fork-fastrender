@@ -253,12 +253,15 @@ pub struct HandleId(pub u64);
 ///
 /// ## Safety / contracts
 /// - `func` must be non-null.
-/// - `data` must remain valid until `func(data)` runs.
+/// - `data` must remain valid until `func(data)` runs (or until `drop(data)` runs).
+/// - If the microtask is discarded without running (e.g. `rt_async_cancel_all`), the runtime calls
+///   `drop(data)` if `drop` is non-null.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Microtask {
   pub func: extern "C" fn(*mut u8),
   pub data: *mut u8,
+  pub drop: Option<extern "C" fn(*mut u8)>,
 }
 
 /// Stable handle to a coroutine frame managed by the runtime.

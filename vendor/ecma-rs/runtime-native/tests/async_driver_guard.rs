@@ -32,6 +32,7 @@ fn rt_async_driver_concurrent_poll_aborts() {
       runtime_native::rt_queue_microtask(runtime_native::abi::Microtask {
         func: blocking_microtask,
         data: ctx as *const BlockCtx as *mut u8,
+        drop: None,
       });
     }
 
@@ -103,6 +104,7 @@ fn rt_async_run_until_idle_is_reentrant_noop() {
     runtime_native::rt_queue_microtask(runtime_native::abi::Microtask {
       func: reentrant_microtask,
       data: ctx as *const Ctx as *mut u8,
+      drop: None,
     });
   }
 

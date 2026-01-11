@@ -546,6 +546,29 @@ pub(crate) fn wait_for_work_under_driver_guard() {
   global().wait_for_work();
 }
 
+/// Cancel all pending work in the legacy async runtime (microtasks/macrotasks/timers/I/O watchers)
+/// without running it.
+///
+/// This is intended for teardown paths; see the exported `rt_async_cancel_all` ABI entrypoint.
+pub(crate) fn cancel_all_pending_work_under_driver_guard() {
+  assert_driver_guard_held("cancel_all_pending_work_under_driver_guard");
+
+  // Make teardown resilient even if a prior test enabled the debug poll-lock hold and then
+  // panicked. This is a no-op outside tests unless that hook was toggled.
+  debug_set_hold_poll_lock(false);
+
+  // If another thread is currently blocked in the reactor poll inside the event loop, ensure it
+  // wakes up so we don't block indefinitely on the poll lock during cancellation.
+  global().loop_.wake();
+
+  let _guard = POLL_LOCK.lock();
+  let _had_work = global().loop_.cancel_all();
+
+  // Cancellation abandons any in-flight "external pending" work (e.g. parallel tasks). Clear the
+  // counter so the runtime can report idle after teardown.
+  EXTERNAL_PENDING.store(0, Ordering::Release);
+}
+
 /// Test helper: reset the process-global async runtime to a clean idle state.
 ///
 /// This clears:

@@ -193,6 +193,7 @@ fn wake_from_epoll_wait() {
     runtime_native::rt_queue_microtask(Microtask {
       func: set_atomic_bool,
       data: ran as *const AtomicBool as *mut u8,
+      drop: None,
     });
   }
 

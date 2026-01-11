@@ -44,7 +44,8 @@ struct PromiseReactionJob {
 }
 
 extern "C" fn run_promise_reaction_job(data: *mut u8) {
-  // Safety: the task owns `PromiseReactionJob` via the task drop hook.
+  // Safety: `data` was allocated by `Box::into_raw(PromiseReactionJob)` in `make_reaction_task` and
+  // is freed by the task drop hook (`drop_promise_reaction_job`) after this callback returns.
   let job = unsafe { &mut *(data as *mut PromiseReactionJob) };
   let node = job.node;
   if node.is_null() {
@@ -54,6 +55,7 @@ extern "C" fn run_promise_reaction_job(data: *mut u8) {
   if vtable.is_null() {
     std::process::abort();
   }
+  let vtable = unsafe { &*vtable };
   let promise = job.promise.ptr() as PromiseRef;
   crate::ffi::abort_on_callback_panic(|| unsafe {
     let run: extern "C-unwind" fn(*mut PromiseReactionNode, PromiseRef) =

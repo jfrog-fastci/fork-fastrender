@@ -256,8 +256,22 @@ or other cross-thread enqueues.
 
 ### `rt_async_cancel_all()`
 
-Teardown helper that cancels all **runtime-owned** async-ABI coroutine frames currently queued in the
-runtime. For each cancelled frame, the runtime calls `(*coro.vtable).destroy(coro)` exactly once.
+Teardown helper that discards **all pending async work** without running it.
+
+This clears:
+
+- queued microtasks (promise reaction jobs, `queueMicrotask` callbacks, deferred coroutine resumes),
+- queued macrotasks (timers, I/O callbacks),
+- registered timers and I/O watchers,
+- pending legacy promise reactions stored on unresolved promises,
+- and any internal rejection-tracking bookkeeping.
+
+Drop hooks:
+
+- For **runtime-owned** native async-ABI coroutine frames (frames where `CORO_FLAG_RUNTIME_OWNS_FRAME`
+  is set), the runtime calls `(*coro.vtable).destroy(coro)` exactly once.
+- For queued microtasks, if `Microtask.drop` is non-null, the runtime calls `drop(data)` when the
+  microtask is discarded without running.
 
 ## Microtask draining (`rt_drain_microtasks` / `rt_async_run_until_idle`)
 
@@ -373,8 +387,10 @@ Bindings should implement `queueMicrotask(cb)` by:
 
 1. Allocating a small payload containing whatever is needed to call `cb` (e.g. function handle +
    realm/global).
-2. Calling `rt_queue_microtask(Microtask { func: <trampoline>, data: <payload> })`.
+2. Calling `rt_queue_microtask(Microtask { func: <trampoline>, data: <payload>, drop: <drop_fn or NULL> })`.
 3. Having the trampoline invoke `cb` and then free the payload (or otherwise manage its lifetime).
+   If a drop hook is provided, it is called only if the microtask is discarded without running (e.g.
+   `rt_async_cancel_all`).
 
 This avoids allocating a promise/coroutine frame for simple callbacks while still integrating with
 the runtime's single-consumer microtask checkpoint semantics.

@@ -18,6 +18,7 @@ fn microtask_does_not_run_until_drained() {
     runtime_native::rt_queue_microtask(Microtask {
       func: inc_atomic_usize,
       data: counter as *const AtomicUsize as *mut u8,
+      drop: None,
     });
   }
 
@@ -40,6 +41,7 @@ extern "C" fn chain_first(data: *mut u8) {
     runtime_native::rt_queue_microtask(Microtask {
       func: chain_second,
       data,
+      drop: None,
     });
   }
 }
@@ -61,6 +63,7 @@ fn microtasks_enqueued_during_execution_run_in_same_drain_call() {
     runtime_native::rt_queue_microtask(Microtask {
       func: chain_first,
       data: ctx as *const ChainCtx as *mut u8,
+      drop: None,
     });
   }
   assert!(runtime_native::rt_drain_microtasks());
@@ -88,6 +91,7 @@ fn drain_microtasks_does_not_run_macrotasks() {
     runtime_native::rt_queue_microtask(Microtask {
       func: set_atomic_bool,
       data: microtask_ran as *const AtomicBool as *mut u8,
+      drop: None,
     });
   }
   runtime_native::async_rt::global().enqueue_macrotask(Task::new(

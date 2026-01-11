@@ -1261,10 +1261,11 @@ pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -
   })
 }
 
-/// Cancel all runtime-owned async-ABI coroutine frames currently queued in the runtime.
+/// Tear down all pending async work without running it.
 ///
-/// This is primarily a teardown helper: it is intended to be called when the host is shutting down
-/// and wants to ensure no heap-owned coroutine frames leak.
+/// This is intended for embedders (and generated native programs) that need to abandon the
+/// event-loop early (termination, timeouts, shutdown) but still want to release any resources/GC
+/// roots held by queued jobs.
 #[no_mangle]
 pub extern "C" fn rt_async_cancel_all() {
   abort_on_panic(|| {
@@ -1273,7 +1274,26 @@ pub extern "C" fn rt_async_cancel_all() {
     // Treat cancellation as a "driving" operation: it destroys coroutine frames that may otherwise
     // be resumed by the event loop.
     let _ = async_rt::with_driver_guard("rt_async_cancel_all", || {
+      // Cancel runtime-owned coroutine frames for the native async ABI (`async_abi`).
       crate::async_runtime::cancel_all();
+
+      // Cancel all legacy executor work (microtasks/macrotasks/timers/I/O watchers).
+      async_rt::cancel_all_pending_work_under_driver_guard();
+
+      // Drop pending promise reactions stored on unresolved legacy promises (otherwise those
+      // reactions can keep awaiting coroutines alive indefinitely after shutdown).
+      async_rt::promise::cancel_all_pending_reactions();
+
+      // Clear any outstanding unhandled rejection tracker state so we don't retain promises as
+      // roots after teardown.
+      crate::unhandled_rejection::clear_state();
+
+      // Clear the web timer bookkeeping map so subsequent timer operations don't observe stale
+      // entries (the underlying async runtime timers have been cancelled above).
+      clear_web_timers();
+
+      // Clear runaway error state / reentrancy guard so the runtime can be reused after teardown.
+      crate::async_runtime::reset_after_cancel();
     });
   })
 }
@@ -1424,6 +1444,53 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
 // Microtasks (queueMicrotask-style jobs)
 // -----------------------------------------------------------------------------
 
+#[repr(C)]
+struct MicrotaskWithDrop {
+  func: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop: extern "C" fn(*mut u8),
+  ran: bool,
+}
+
+extern "C" fn run_microtask_with_drop(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw(MicrotaskWithDrop)` in the queueing helpers below and freed
+  // by `drop_microtask_with_drop`.
+  let task = unsafe { &mut *(data as *mut MicrotaskWithDrop) };
+  task.ran = true;
+  (task.func)(task.data);
+}
+
+extern "C" fn drop_microtask_with_drop(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw(MicrotaskWithDrop)` in the queueing helpers below.
+  let task = unsafe { Box::from_raw(data as *mut MicrotaskWithDrop) };
+  if !task.ran {
+    (task.drop)(task.data);
+  }
+}
+
+fn enqueue_microtask_with_optional_drop(
+  func: extern "C" fn(*mut u8),
+  data: *mut u8,
+  drop: Option<extern "C" fn(*mut u8)>,
+) {
+  match drop {
+    None => async_rt::global().enqueue_microtask(async_rt::Task::new(func, data)),
+    Some(drop) => {
+      let task = Box::new(MicrotaskWithDrop {
+        func,
+        data,
+        drop,
+        ran: false,
+      });
+      async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
+        run_microtask_with_drop,
+        Box::into_raw(task) as *mut u8,
+        drop_microtask_with_drop,
+      ));
+    }
+  }
+}
+
 /// Enqueue a single microtask callback onto the async runtime's microtask queue.
 ///
 /// This is a low-level primitive that can be used to implement Web-standard
@@ -1431,7 +1498,9 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
 ///
 /// # Safety
 /// - `task.func` must be a valid function pointer.
-/// - `task.data` must remain valid until the callback runs.
+/// - `task.data` must remain valid until the callback runs (or until `task.drop` is called).
+/// - If the microtask is discarded without running (e.g. `rt_async_cancel_all`),
+///   `task.drop(task.data)` is called if `task.drop` is non-null.
 #[no_mangle]
 pub unsafe extern "C" fn rt_queue_microtask(task: Microtask) {
   abort_on_panic(|| {
@@ -1444,7 +1513,7 @@ pub unsafe extern "C" fn rt_queue_microtask(task: Microtask) {
       std::process::abort();
     }
 
-    async_rt::global().enqueue_microtask(async_rt::Task::new(task.func, task.data));
+    enqueue_microtask_with_optional_drop(task.func, task.data, task.drop);
   })
 }
 
@@ -2100,13 +2169,17 @@ static NEXT_WEB_TIMER_ID: AtomicU64 = AtomicU64::new(1);
 static WEB_TIMERS: Lazy<GcAwareMutex<HashMap<TimerId, WebTimerState>>> =
   Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
-pub(crate) fn clear_web_timers_for_tests() {
+pub(crate) fn clear_web_timers() {
   let mut timers = WEB_TIMERS.lock();
   for (_, st) in timers.drain() {
     if let Some(drop_data) = st.drop_data {
       (drop_data)(st.data);
     }
   }
+}
+
+pub(crate) fn clear_web_timers_for_tests() {
+  clear_web_timers();
 }
 
 /// Debug/test helper: hold the global web-timer registry lock (`WEB_TIMERS`).
@@ -2253,7 +2326,7 @@ pub extern "C" fn rt_queue_microtask_with_drop(
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
-    async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(cb, data, drop_data));
+    enqueue_microtask_with_optional_drop(cb, data, Some(drop_data));
   })
 }
 

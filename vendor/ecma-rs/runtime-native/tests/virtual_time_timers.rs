@@ -45,6 +45,7 @@ fn virtual_time_allows_long_timeouts_without_wall_clock_waiting() {
     runtime_native::rt_queue_microtask(Microtask {
       func: noop,
       data: core::ptr::null_mut(),
+      drop: None,
     });
   }
   poll_thread.join().unwrap();

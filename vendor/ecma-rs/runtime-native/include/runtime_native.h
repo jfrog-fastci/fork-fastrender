@@ -58,9 +58,12 @@ typedef uint64_t HandleId;
 // Contract:
 // - `func` must be non-null.
 // - `data` must remain valid until `func(data)` runs.
+// - If the microtask is discarded without running (e.g. `rt_async_cancel_all`), the runtime calls
+//   `drop(data)` if non-null.
 typedef struct Microtask {
   void (*func)(uint8_t* data);
   uint8_t* data;
+  void (*drop)(uint8_t* data);
 } Microtask;
 
 // runtime-native does not yet implement a full JS value representation/GC.
@@ -721,7 +724,12 @@ PromiseRef rt_async_spawn(CoroutineId coro);
 // Like rt_async_spawn, but enqueues the coroutine's first resume as a microtask instead of running
 // synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
 PromiseRef rt_async_spawn_deferred(CoroutineId coro);
-// Cancel all queued runtime-owned coroutine frames.
+// Tear down all pending async work without running it.
+//
+// This discards queued microtasks/macrotasks, timers, I/O watchers, and pending promise reactions,
+// and invokes any registered drop hooks for discarded jobs (e.g. coroutine destroy, microtask
+// payload drops). Call this when an embedding needs to abandon the event loop early (termination,
+// timeout, shutdown) to avoid leaks.
 void rt_async_cancel_all(void);
 
 // Drive the runtime's async/event-loop queues for one turn.

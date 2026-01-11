@@ -1,6 +1,7 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
+  rt_async_cancel_all,
   rt_async_free_c_string,
   rt_async_poll_legacy as rt_async_poll,
   rt_async_set_limits,
@@ -59,4 +60,10 @@ fn async_runaway_is_detected() {
 
   assert!(err.contains("async runaway"));
   assert!(err.contains("max_ready_steps_per_poll"));
+
+  // Teardown: the runtime is in an error state and may still have queued work holding pointers into
+  // this test's coroutine frame. Cancel all pending work before dropping the frame to avoid
+  // use-after-free during the TestRuntimeGuard cleanup path.
+  rt_async_cancel_all();
 }
+

@@ -92,7 +92,9 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
   assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Cancellation after completion should not double-destroy.
-  runtime_native::rt_async_cancel_all();
+  unsafe {
+    runtime_native::rt_async_cancel_all();
+  }
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
 }
 
@@ -126,7 +128,9 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
   assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Cancelling the runtime must not attempt to destroy stack-owned frames.
-  runtime_native::rt_async_cancel_all();
+  unsafe {
+    runtime_native::rt_async_cancel_all();
+  }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 }
 
@@ -153,7 +157,9 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
-  runtime_native::rt_async_cancel_all();
+  unsafe {
+    runtime_native::rt_async_cancel_all();
+  }
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
   assert!(runtime_native::rt_handle_load(handle).is_null());
 
@@ -161,7 +167,9 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
   let _ = runtime_native::rt_drain_microtasks();
 
   // Idempotent.
-  runtime_native::rt_async_cancel_all();
+  unsafe {
+    runtime_native::rt_async_cancel_all();
+  }
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
 }
 
@@ -192,7 +200,9 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
   }
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
 
-  runtime_native::rt_async_cancel_all();
+  unsafe {
+    runtime_native::rt_async_cancel_all();
+  }
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
   assert!(runtime_native::rt_handle_load(handle).is_null());
 

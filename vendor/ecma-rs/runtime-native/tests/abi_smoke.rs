@@ -18,7 +18,8 @@ fn abi_layout_smoke() {
   let ptr_size = size_of::<usize>();
   let ptr_align = align_of::<usize>();
 
-  assert_eq!(size_of::<Microtask>(), 2 * ptr_size);
+  // `Microtask` layout: (func ptr, data ptr, optional drop ptr).
+  assert_eq!(size_of::<Microtask>(), 3 * ptr_size);
   assert_eq!(align_of::<Microtask>(), ptr_align);
 
   assert_eq!(align_of::<RtCoroutineHeader>(), ptr_align);

@@ -62,3 +62,4 @@ fn normal_async_workload_completes() {
   assert_eq!(coro.resumes, 11);
   assert!(rt_async_take_last_error().is_null());
 }
+

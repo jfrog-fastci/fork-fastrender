@@ -73,6 +73,7 @@ fn queue_microtask_then_promise_wakeup_runs_in_fifo_order() {
     runtime_native::rt_queue_microtask(Microtask {
       func: log_a,
       data: (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+      drop: None,
     });
   }
   runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut::<core::ffi::c_void>() as ValueRef);
@@ -109,6 +110,7 @@ fn promise_wakeup_then_queue_microtask_runs_in_fifo_order() {
     runtime_native::rt_queue_microtask(Microtask {
       func: log_a,
       data: (log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+      drop: None,
     });
   }
 
@@ -133,6 +135,7 @@ extern "C" fn microtask_a_resolve_promise_and_queue_c(data: *mut u8) {
     runtime_native::rt_queue_microtask(Microtask {
       func: log_c,
       data: (ctx.log as *const Mutex<Vec<u8>>).cast_mut().cast::<u8>(),
+      drop: None,
     });
   }
 }
@@ -164,6 +167,7 @@ fn microtask_enqueues_coroutine_and_callback_in_fifo_order() {
     runtime_native::rt_queue_microtask(Microtask {
       func: microtask_a_resolve_promise_and_queue_c,
       data: (ctx as *const ResolveCtx).cast_mut().cast::<u8>(),
+      drop: None,
     });
   }
 
