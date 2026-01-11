@@ -121,7 +121,12 @@ impl<'ast> Visit<'ast> for PanicVisitor {
   }
 
   fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-    if mac.path.is_ident("panic") {
+    if mac
+      .path
+      .segments
+      .last()
+      .is_some_and(|segment| segment.ident == "panic")
+    {
       self.panics.push(mac.span());
     }
     collect_panic_spans_in_token_stream(mac.tokens.clone(), &mut self.panics);
