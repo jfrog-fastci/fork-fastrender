@@ -5271,6 +5271,7 @@ impl HttpFetcher {
     url: &str,
     method: &str,
     user_headers: &[(String, String)],
+    suppressed_headers: Option<&HashSet<String>>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
@@ -5297,11 +5298,6 @@ impl HttpFetcher {
       return Ok(());
     }
 
-    // Avoid pathological recursion / nonsense: a preflight request is itself an OPTIONS request.
-    if method.eq_ignore_ascii_case("OPTIONS") {
-      return Ok(());
-    }
-
     let method_is_safelisted = is_cors_safelisted_method(method);
 
     // Determine which user-specified headers are CORS-unsafe and would therefore need to be
@@ -5312,6 +5308,10 @@ impl HttpFetcher {
     // size of CORS-safelisted header values.
     let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
     merge_user_request_headers(url, method, &mut sanitized_user_headers, user_headers)?;
+    if let Some(suppressed_headers) = suppressed_headers.filter(|set| !set.is_empty()) {
+      sanitized_user_headers
+        .retain(|(name, _)| !suppressed_headers.contains(&name.to_ascii_lowercase()));
+    }
     let unsafe_header_names = cors_unsafe_request_header_names(&sanitized_user_headers);
 
     let needs_preflight = !method_is_safelisted || !unsafe_header_names.is_empty();
@@ -7197,22 +7197,13 @@ impl HttpFetcher {
                 render_control::check_active(render_stage_hint_for_context(kind, &next))
                   .map_err(Error::Render)?;
                 self.policy.ensure_url_allowed(&next)?;
-                let filtered_user_headers = (!redirect_suppressed_headers.is_empty()).then(|| {
-                  user_headers
-                    .iter()
-                    .filter(|(name, _)| {
-                      !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-                });
-                let user_headers_for_preflight = filtered_user_headers.as_deref().unwrap_or(user_headers);
                 self.perform_cors_preflight_if_needed(
                   kind,
                   destination,
                   &next,
                   current_method,
-                  user_headers_for_preflight,
+                  user_headers,
+                  Some(&redirect_suppressed_headers),
                   client_origin,
                   referrer_url,
                   effective_referrer_policy,
@@ -7935,22 +7926,13 @@ impl HttpFetcher {
                 render_control::check_active(render_stage_hint_for_context(kind, &next))
                   .map_err(Error::Render)?;
                 self.policy.ensure_url_allowed(&next)?;
-                let filtered_user_headers = (!redirect_suppressed_headers.is_empty()).then(|| {
-                  user_headers
-                    .iter()
-                    .filter(|(name, _)| {
-                      !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-                });
-                let user_headers_for_preflight = filtered_user_headers.as_deref().unwrap_or(user_headers);
                 self.perform_cors_preflight_if_needed(
                   kind,
                   destination,
                   &next,
                   current_method,
-                  user_headers_for_preflight,
+                  user_headers,
+                  Some(&redirect_suppressed_headers),
                   client_origin,
                   referrer_url,
                   effective_referrer_policy,
@@ -8769,6 +8751,7 @@ impl ResourceFetcher for HttpFetcher {
             url,
             req.method,
             req.headers,
+            None,
             req.fetch.client_origin,
             req.fetch.referrer_url,
             req.fetch.referrer_policy,

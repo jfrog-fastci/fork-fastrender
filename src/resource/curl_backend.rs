@@ -770,23 +770,13 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
               render_control::check_active(super::render_stage_hint_for_context(kind, &next))
                 .map_err(Error::Render)?;
               fetcher.policy.ensure_url_allowed(&next)?;
-              let filtered_user_headers = (!redirect_suppressed_headers.is_empty()).then(|| {
-                user_headers
-                  .iter()
-                  .filter(|(name, _)| {
-                    !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
-                  })
-                  .cloned()
-                  .collect::<Vec<_>>()
-              });
-              let user_headers_for_preflight =
-                filtered_user_headers.as_deref().unwrap_or(user_headers);
               fetcher.perform_cors_preflight_if_needed(
                 kind,
                 destination,
                 &next,
                 current_method,
-                user_headers_for_preflight,
+                user_headers,
+                Some(&redirect_suppressed_headers),
                 client_origin,
                 referrer_url,
                 effective_referrer_policy,

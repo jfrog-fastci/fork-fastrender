@@ -1591,6 +1591,98 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_applies_to_options_method() {
+    if skip_if_curl_backend_missing("cors_preflight_applies_to_options_method") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("cors_preflight_applies_to_options_method") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let mut stream = accept_http_stream(&listener, "cors_preflight_applies_to_options_method");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("options /opt"),
+        "expected preflight OPTIONS request, got:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-method: options"),
+        "missing Access-Control-Request-Method header:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-headers: x-test"),
+        "missing Access-Control-Request-Headers header:\n{headers}"
+      );
+      let response = concat!(
+        "HTTP/1.1 204 No Content\r\n",
+        "Access-Control-Allow-Origin: https://client.example\r\n",
+        "Access-Control-Allow-Methods: OPTIONS\r\n",
+        "Access-Control-Allow-Headers: x-test\r\n",
+        "Content-Length: 0\r\n",
+        "Connection: close\r\n",
+        "\r\n"
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let mut stream = accept_http_stream(&listener, "cors_preflight_applies_to_options_method");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("options /opt"),
+        "expected actual OPTIONS request after preflight, got:\n{headers}"
+      );
+      assert!(
+        !lower.contains("access-control-request-method:"),
+        "unexpected Access-Control-Request-Method header on actual request:\n{headers}"
+      );
+      assert!(
+        lower.contains("x-test: hello"),
+        "missing X-Test header on actual request:\n{headers}"
+      );
+      let body = b"ok";
+      let response = format!(
+        concat!(
+          "HTTP/1.1 200 OK\r\n",
+          "Access-Control-Allow-Origin: https://client.example\r\n",
+          "Content-Type: text/plain\r\n",
+          "Content-Length: {}\r\n",
+          "Connection: close\r\n",
+          "\r\n"
+        ),
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/opt");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut request = Request::new("OPTIONS", &url);
+    request.credentials = RequestCredentials::Omit;
+    request.headers.append("X-Test", "hello").unwrap();
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+  }
+
+  #[test]
   fn cors_filters_response_headers_using_expose_headers() {
     let mut resource = FetchedResource::new(b"ok".to_vec(), None);
     resource.access_control_allow_origin = Some("https://client.example".to_string());
@@ -3015,50 +3107,52 @@ mod tests {
     let options_count = Arc::new(AtomicUsize::new(0));
     let options_count_req = Arc::clone(&options_count);
     let handle = thread::spawn(move || {
+      for _ in 0..3 {
+        let mut stream = accept_http_stream(
+          &listener,
+          "cors_preflight_cache_credentialed_entry_matches_non_credentialed_request",
+        );
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        let line = headers.lines().next().unwrap_or_default();
+        let method = line.split_whitespace().next().unwrap_or_default();
+        if method.eq_ignore_ascii_case("OPTIONS") {
+          options_count_req.fetch_add(1, Ordering::SeqCst);
+          let response = concat!(
+            "HTTP/1.1 204 No Content\r\n",
+            "Access-Control-Allow-Origin: https://client.example\r\n",
+            "Access-Control-Allow-Credentials: true\r\n",
+            "Access-Control-Allow-Methods: PUT\r\n",
+            "Access-Control-Allow-Headers: x-test\r\n",
+            "Access-Control-Max-Age: 60\r\n",
+            "Content-Length: 0\r\n",
+            "Connection: close\r\n",
+            "\r\n"
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+        } else {
+          let body = b"ok";
+          let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+          stream.write_all(body).unwrap();
+        }
+      }
+
+      // Ensure no extra preflight is attempted.
       listener.set_nonblocking(true).unwrap();
       let start = Instant::now();
-      let mut last_connection: Option<Instant> = None;
-      while start.elapsed() < Duration::from_secs(2) {
+      while start.elapsed() < Duration::from_millis(200) {
         match listener.accept() {
-          Ok((mut stream, _)) => {
-            last_connection = Some(Instant::now());
-            stream
-              .set_read_timeout(Some(Duration::from_millis(500)))
-              .unwrap();
-            let (headers, _body) = read_http_request(&mut stream);
-            let line = headers.lines().next().unwrap_or_default();
-            let method = line.split_whitespace().next().unwrap_or_default();
-            if method.eq_ignore_ascii_case("OPTIONS") {
-              options_count_req.fetch_add(1, Ordering::SeqCst);
-              let response = concat!(
-                "HTTP/1.1 204 No Content\r\n",
-                "Access-Control-Allow-Origin: https://client.example\r\n",
-                "Access-Control-Allow-Credentials: true\r\n",
-                "Access-Control-Allow-Methods: PUT\r\n",
-                "Access-Control-Allow-Headers: x-test\r\n",
-                "Access-Control-Max-Age: 60\r\n",
-                "Content-Length: 0\r\n",
-                "Connection: close\r\n",
-                "\r\n"
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-            } else {
-              let body = b"ok";
-              let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-              stream.write_all(body).unwrap();
-            }
-          }
+          Ok(_) => panic!("unexpected extra request (expected preflight to be cached)"),
           Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
-              break;
-            }
             thread::sleep(Duration::from_millis(5));
           }
-          Err(err) => panic!("accept: {err}"),
+          Err(err) => panic!("accept after requests: {err}"),
         }
       }
     });
@@ -3111,50 +3205,52 @@ mod tests {
     let options_count = Arc::new(AtomicUsize::new(0));
     let options_count_req = Arc::clone(&options_count);
     let handle = thread::spawn(move || {
+      for _ in 0..4 {
+        let mut stream = accept_http_stream(
+          &listener,
+          "cors_preflight_cache_non_credentialed_entry_does_not_match_credentialed_request",
+        );
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        let line = headers.lines().next().unwrap_or_default();
+        let method = line.split_whitespace().next().unwrap_or_default();
+        if method.eq_ignore_ascii_case("OPTIONS") {
+          options_count_req.fetch_add(1, Ordering::SeqCst);
+          let response = concat!(
+            "HTTP/1.1 204 No Content\r\n",
+            "Access-Control-Allow-Origin: https://client.example\r\n",
+            "Access-Control-Allow-Credentials: true\r\n",
+            "Access-Control-Allow-Methods: PUT\r\n",
+            "Access-Control-Allow-Headers: x-test\r\n",
+            "Access-Control-Max-Age: 60\r\n",
+            "Content-Length: 0\r\n",
+            "Connection: close\r\n",
+            "\r\n"
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+        } else {
+          let body = b"ok";
+          let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+          stream.write_all(body).unwrap();
+        }
+      }
+
+      // Ensure no extra preflight is attempted.
       listener.set_nonblocking(true).unwrap();
       let start = Instant::now();
-      let mut last_connection: Option<Instant> = None;
-      while start.elapsed() < Duration::from_secs(2) {
+      while start.elapsed() < Duration::from_millis(200) {
         match listener.accept() {
-          Ok((mut stream, _)) => {
-            last_connection = Some(Instant::now());
-            stream
-              .set_read_timeout(Some(Duration::from_millis(500)))
-              .unwrap();
-            let (headers, _body) = read_http_request(&mut stream);
-            let line = headers.lines().next().unwrap_or_default();
-            let method = line.split_whitespace().next().unwrap_or_default();
-            if method.eq_ignore_ascii_case("OPTIONS") {
-              options_count_req.fetch_add(1, Ordering::SeqCst);
-              let response = concat!(
-                "HTTP/1.1 204 No Content\r\n",
-                "Access-Control-Allow-Origin: https://client.example\r\n",
-                "Access-Control-Allow-Credentials: true\r\n",
-                "Access-Control-Allow-Methods: PUT\r\n",
-                "Access-Control-Allow-Headers: x-test\r\n",
-                "Access-Control-Max-Age: 60\r\n",
-                "Content-Length: 0\r\n",
-                "Connection: close\r\n",
-                "\r\n"
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-            } else {
-              let body = b"ok";
-              let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-              stream.write_all(body).unwrap();
-            }
-          }
+          Ok(_) => panic!("unexpected extra request (expected second preflight then stop)"),
           Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
-              break;
-            }
             thread::sleep(Duration::from_millis(5));
           }
-          Err(err) => panic!("accept: {err}"),
+          Err(err) => panic!("accept after requests: {err}"),
         }
       }
     });
@@ -3207,74 +3303,76 @@ mod tests {
     let options_count = Arc::new(AtomicUsize::new(0));
     let options_count_req = Arc::clone(&options_count);
     let handle = thread::spawn(move || {
+      for _ in 0..4 {
+        let mut stream = accept_http_stream(
+          &listener,
+          "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
+        );
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        let line = headers.lines().next().unwrap_or_default();
+        let method = line.split_whitespace().next().unwrap_or_default();
+        if method.eq_ignore_ascii_case("OPTIONS") {
+          options_count_req.fetch_add(1, Ordering::SeqCst);
+
+          let header_lower = headers.to_ascii_lowercase();
+          let req_headers = header_lower
+            .lines()
+            .find(|line| line.starts_with("access-control-request-headers:"))
+            .map(|line| line["access-control-request-headers:".len()..].trim())
+            .unwrap_or("");
+          let wants_authorization = req_headers
+            .split(',')
+            .map(|token| token.trim())
+            .any(|token| token == "authorization");
+
+          let response = if wants_authorization {
+            concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Methods: PUT\r\n",
+              "Access-Control-Allow-Headers: authorization\r\n",
+              "Access-Control-Max-Age: 60\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n"
+            )
+          } else {
+            concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Methods: PUT\r\n",
+              "Access-Control-Allow-Headers: *\r\n",
+              "Access-Control-Max-Age: 60\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n"
+            )
+          };
+          stream.write_all(response.as_bytes()).unwrap();
+        } else {
+          let body = b"ok";
+          let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+          stream.write_all(body).unwrap();
+        }
+      }
+
+      // Ensure no extra preflight is attempted.
       listener.set_nonblocking(true).unwrap();
       let start = Instant::now();
-      let mut last_connection: Option<Instant> = None;
-      while start.elapsed() < Duration::from_secs(2) {
+      while start.elapsed() < Duration::from_millis(200) {
         match listener.accept() {
-          Ok((mut stream, _)) => {
-            last_connection = Some(Instant::now());
-            stream
-              .set_read_timeout(Some(Duration::from_millis(500)))
-              .unwrap();
-            let (headers, _body) = read_http_request(&mut stream);
-            let line = headers.lines().next().unwrap_or_default();
-            let method = line.split_whitespace().next().unwrap_or_default();
-            if method.eq_ignore_ascii_case("OPTIONS") {
-              options_count_req.fetch_add(1, Ordering::SeqCst);
-
-              let header_lower = headers.to_ascii_lowercase();
-              let req_headers = header_lower
-                .lines()
-                .find(|line| line.starts_with("access-control-request-headers:"))
-                .map(|line| line["access-control-request-headers:".len()..].trim())
-                .unwrap_or("");
-              let wants_authorization = req_headers
-                .split(',')
-                .map(|token| token.trim())
-                .any(|token| token == "authorization");
-
-              let response = if wants_authorization {
-                concat!(
-                  "HTTP/1.1 204 No Content\r\n",
-                  "Access-Control-Allow-Origin: https://client.example\r\n",
-                  "Access-Control-Allow-Methods: PUT\r\n",
-                  "Access-Control-Allow-Headers: authorization\r\n",
-                  "Access-Control-Max-Age: 60\r\n",
-                  "Content-Length: 0\r\n",
-                  "Connection: close\r\n",
-                  "\r\n"
-                )
-              } else {
-                concat!(
-                  "HTTP/1.1 204 No Content\r\n",
-                  "Access-Control-Allow-Origin: https://client.example\r\n",
-                  "Access-Control-Allow-Methods: PUT\r\n",
-                  "Access-Control-Allow-Headers: *\r\n",
-                  "Access-Control-Max-Age: 60\r\n",
-                  "Content-Length: 0\r\n",
-                  "Connection: close\r\n",
-                  "\r\n"
-                )
-              };
-              stream.write_all(response.as_bytes()).unwrap();
-            } else {
-              let body = b"ok";
-              let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-              stream.write_all(body).unwrap();
-            }
-          }
+          Ok(_) => panic!("unexpected extra request (expected second preflight then stop)"),
           Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
-              break;
-            }
             thread::sleep(Duration::from_millis(5));
           }
-          Err(err) => panic!("accept: {err}"),
+          Err(err) => panic!("accept after requests: {err}"),
         }
       }
     });
@@ -4081,6 +4179,262 @@ mod tests {
       !second.contains("authorization:"),
       "expected cross-origin redirect to drop authorization, got:\n{second}"
     );
+  }
+
+  #[test]
+  fn cors_preflight_runs_for_cross_origin_redirect_destination() {
+    if skip_if_curl_backend_missing("cors_preflight_runs_for_cross_origin_redirect_destination") {
+      return;
+    }
+    let Some(listener1) =
+      try_bind_localhost("cors_preflight_runs_for_cross_origin_redirect_destination")
+    else {
+      return;
+    };
+    let Some(listener2) =
+      try_bind_localhost("cors_preflight_runs_for_cross_origin_redirect_destination")
+    else {
+      return;
+    };
+    let addr1 = listener1.local_addr().unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let client_origin_header_value = format!("http://{addr1}");
+
+    let handle1 = thread::spawn(move || {
+      let mut stream =
+        accept_http_stream(&listener1, "cors_preflight_runs_for_cross_origin_redirect_destination");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(lower.starts_with("put /start"), "unexpected first request:\n{headers}");
+      let response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://{addr2}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let client_origin_for_thread = client_origin_header_value.clone();
+    let handle2 = thread::spawn(move || {
+      // Preflight request to the redirect destination.
+      let mut stream =
+        accept_http_stream(&listener2, "cors_preflight_runs_for_cross_origin_redirect_destination");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("options /final"),
+        "expected preflight OPTIONS request, got:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-method: put"),
+        "missing Access-Control-Request-Method header:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-headers: x-test"),
+        "missing Access-Control-Request-Headers header:\n{headers}"
+      );
+      let response = format!(
+        concat!(
+          "HTTP/1.1 204 No Content\r\n",
+          "Access-Control-Allow-Origin: {client_origin}\r\n",
+          "Access-Control-Allow-Methods: PUT\r\n",
+          "Access-Control-Allow-Headers: x-test\r\n",
+          "Content-Length: 0\r\n",
+          "Connection: close\r\n",
+          "\r\n"
+        ),
+        client_origin = client_origin_for_thread
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request to the redirect destination.
+      let mut stream =
+        accept_http_stream(&listener2, "cors_preflight_runs_for_cross_origin_redirect_destination");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("put /final"),
+        "expected PUT request after preflight, got:\n{headers}"
+      );
+      let body = b"ok";
+      let response = format!(
+        concat!(
+          "HTTP/1.1 200 OK\r\n",
+          "Access-Control-Allow-Origin: {client_origin}\r\n",
+          "Content-Type: text/plain\r\n",
+          "Content-Length: {}\r\n",
+          "Connection: close\r\n",
+          "\r\n"
+        ),
+        body.len(),
+        client_origin = client_origin_for_thread
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr1}/start");
+    let client_origin = origin_from_url(&format!("http://{addr1}/")).expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&client_origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Omit;
+    request.headers.append("X-Test", "hello").unwrap();
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle1.join().unwrap();
+    handle2.join().unwrap();
+  }
+
+  #[test]
+  fn cors_preflight_redirect_does_not_request_suppressed_authorization() {
+    if skip_if_curl_backend_missing("cors_preflight_redirect_does_not_request_suppressed_authorization")
+    {
+      return;
+    }
+    let Some(listener1) =
+      try_bind_localhost("cors_preflight_redirect_does_not_request_suppressed_authorization")
+    else {
+      return;
+    };
+    let Some(listener2) =
+      try_bind_localhost("cors_preflight_redirect_does_not_request_suppressed_authorization")
+    else {
+      return;
+    };
+    let addr1 = listener1.local_addr().unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let client_origin_header_value = format!("http://{addr1}");
+
+    let handle1 = thread::spawn(move || {
+      let mut stream = accept_http_stream(
+        &listener1,
+        "cors_preflight_redirect_does_not_request_suppressed_authorization",
+      );
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(lower.starts_with("put /start"), "unexpected first request:\n{headers}");
+      assert!(
+        lower.contains("authorization: bearer secret"),
+        "expected initial same-origin request to include authorization, got:\n{headers}"
+      );
+      let response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://{addr2}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let client_origin_for_thread = client_origin_header_value.clone();
+    let handle2 = thread::spawn(move || {
+      // Preflight request to the redirect destination.
+      let mut stream = accept_http_stream(
+        &listener2,
+        "cors_preflight_redirect_does_not_request_suppressed_authorization",
+      );
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("options /final"),
+        "expected preflight OPTIONS request, got:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-method: put"),
+        "missing Access-Control-Request-Method header:\n{headers}"
+      );
+      assert!(
+        lower.contains("access-control-request-headers: x-test"),
+        "missing Access-Control-Request-Headers header:\n{headers}"
+      );
+      assert!(
+        !lower.contains("authorization"),
+        "expected redirect-suppressed Authorization header to be omitted from preflight, got:\n{headers}"
+      );
+      let response = format!(
+        concat!(
+          "HTTP/1.1 204 No Content\r\n",
+          "Access-Control-Allow-Origin: {client_origin}\r\n",
+          "Access-Control-Allow-Methods: PUT\r\n",
+          "Access-Control-Allow-Headers: x-test\r\n",
+          "Content-Length: 0\r\n",
+          "Connection: close\r\n",
+          "\r\n"
+        ),
+        client_origin = client_origin_for_thread
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request must not include Authorization after cross-origin redirect.
+      let mut stream = accept_http_stream(
+        &listener2,
+        "cors_preflight_redirect_does_not_request_suppressed_authorization",
+      );
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let lower = headers.to_ascii_lowercase();
+      assert!(
+        lower.starts_with("put /final"),
+        "expected PUT request after preflight, got:\n{headers}"
+      );
+      assert!(
+        !lower.contains("authorization:"),
+        "expected redirected PUT to omit Authorization header, got:\n{headers}"
+      );
+      let body = b"ok";
+      let response = format!(
+        concat!(
+          "HTTP/1.1 200 OK\r\n",
+          "Access-Control-Allow-Origin: {client_origin}\r\n",
+          "Content-Type: text/plain\r\n",
+          "Content-Length: {}\r\n",
+          "Connection: close\r\n",
+          "\r\n"
+        ),
+        body.len(),
+        client_origin = client_origin_for_thread
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr1}/start");
+    let client_origin = origin_from_url(&format!("http://{addr1}/")).expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&client_origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut request = Request::new("PUT", &url);
+    request.credentials = RequestCredentials::Omit;
+    request.headers.append("Authorization", "Bearer secret").unwrap();
+    request.headers.append("X-Test", "hello").unwrap();
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle1.join().unwrap();
+    handle2.join().unwrap();
   }
 
   #[test]
