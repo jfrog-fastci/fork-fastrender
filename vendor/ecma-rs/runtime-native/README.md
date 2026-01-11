@@ -63,6 +63,26 @@ Key guarantees include:
 - **at most one event per token per poll**, with read+write readiness merged when both are observed
 - a cross-thread `Waker` that interrupts a blocking poll
 
+## Panic policy (FFI safety)
+
+**Rust panics must never unwind across an `extern "C"` boundary.** Unwinding across FFI is
+undefined behaviour and can be miscompiled by LLVM.
+
+`runtime-native` uses an **abort-on-panic** policy:
+
+- All `#[no_mangle] extern "C" fn rt_*` exports are guarded; if a panic occurs while executing an
+  export, the process is aborted.
+- All internal dispatch sites that invoke embedder-provided callbacks (microtasks, timers, parallel
+  tasks, blocking tasks, thenables, etc.) are guarded. If a callback panics, the runtime prints a
+  short diagnostic containing the stable substring `runtime-native: panic in callback` and aborts.
+
+### Implications for embedders
+
+- Any panic inside `runtime-native` (including a panic originating from Rust code invoked via a
+  callback/task function pointer) is treated as a **fatal runtime bug** and aborts the process.
+- If you need recoverable error handling, do not use panics; plumb errors through explicit return
+  values and handles instead.
+
 ## Build (static library)
 
 From the `vendor/ecma-rs/` workspace root:
