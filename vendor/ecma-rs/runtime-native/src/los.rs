@@ -6,7 +6,8 @@ use std::ffi::c_void;
 
 #[derive(Debug)]
 struct LosEntry {
-  base: NonNull<u8>,
+  map_base: NonNull<u8>,
+  obj_base: NonNull<u8>,
   mmap_size: usize,
   obj_size: usize,
 }
@@ -39,21 +40,28 @@ impl LargeObjectSpace {
   ///
   /// Returns a pointer to the start of the object header.
   pub(crate) fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
-    debug_assert!(align.is_power_of_two());
-    debug_assert!(align <= page_size());
+    assert!(
+      align != 0 && align.is_power_of_two(),
+      "LOS alloc alignment must be a non-zero power of two"
+    );
     debug_assert!(size > 0);
 
-    let mmap_size = round_up_to_page_size(size);
+    let needed = size.checked_add(align - 1).expect("LOS alloc size overflow");
+    let mmap_size = round_up_to_page_size(needed);
 
-    let base_ptr = unsafe { os_alloc(mmap_size) };
-    let base = NonNull::new(base_ptr).expect("mmap returned null");
+    let map_base_ptr = unsafe { os_alloc(mmap_size) };
+    let map_base = NonNull::new(map_base_ptr).expect("mmap returned null");
+    let obj_addr = align_up(map_base.as_ptr() as usize, align);
+    let obj_base = NonNull::new(obj_addr as *mut u8).expect("LOS aligned pointer is null");
+    debug_assert!(obj_addr + size <= (map_base.as_ptr() as usize) + mmap_size);
 
     self.entries.push(LosEntry {
-      base,
+      map_base,
+      obj_base,
       mmap_size,
       obj_size: size,
     });
-    base.as_ptr()
+    obj_base.as_ptr()
   }
 
   /// Iterates over all currently-tracked LOS objects.
@@ -61,7 +69,7 @@ impl LargeObjectSpace {
   /// The callback receives `(object_ptr, object_size)`.
   pub(crate) fn for_each_object(&self, mut f: impl FnMut(*mut u8, usize)) {
     for entry in &self.entries {
-      f(entry.base.as_ptr(), entry.obj_size);
+      f(entry.obj_base.as_ptr(), entry.obj_size);
     }
   }
 
@@ -71,11 +79,11 @@ impl LargeObjectSpace {
   pub(crate) fn sweep(&mut self, current_epoch: u8) -> usize {
     let mut freed = 0usize;
     self.entries.retain(|entry| unsafe {
-      let hdr = &*(entry.base.as_ptr() as *const ObjHeader);
+      let hdr = &*(entry.obj_base.as_ptr() as *const ObjHeader);
       if hdr.is_marked(current_epoch) {
         true
       } else {
-        os_free(entry.base.as_ptr(), entry.mmap_size);
+        os_free(entry.map_base.as_ptr(), entry.mmap_size);
         freed += entry.mmap_size;
         false
       }
@@ -117,10 +125,16 @@ impl Drop for LargeObjectSpace {
   fn drop(&mut self) {
     for entry in self.entries.drain(..) {
       unsafe {
-        os_free(entry.base.as_ptr(), entry.mmap_size);
+        os_free(entry.map_base.as_ptr(), entry.mmap_size);
       }
     }
   }
+}
+
+#[inline]
+fn align_up(addr: usize, align: usize) -> usize {
+  debug_assert!(align != 0 && align.is_power_of_two());
+  (addr + (align - 1)) & !(align - 1)
 }
 
 fn round_up_to_page_size(size: usize) -> usize {

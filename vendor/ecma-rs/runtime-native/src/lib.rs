@@ -1599,7 +1599,7 @@ mod tests {
   fn native_async_spawn_awaits_and_resumes_after_promise_fulfill() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-    let mut awaited = Box::new(TestPromiseU64 {
+      let mut awaited = Box::new(TestPromiseU64 {
       header: async_abi::PromiseHeader {
         state: core::sync::atomic::AtomicU8::new(123),
         waiters: core::sync::atomic::AtomicUsize::new(456),

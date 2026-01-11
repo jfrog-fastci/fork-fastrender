@@ -110,6 +110,14 @@ pub struct ObjHeader {
 }
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
+/// Minimum alignment (in bytes) guaranteed for all GC-managed object base pointers.
+///
+/// Codegen may assume `rt_alloc` / `rt_alloc_pinned` return pointers aligned to at least this.
+pub const OBJ_ALIGN: usize = if mem::align_of::<ObjHeader>() > 16 {
+  mem::align_of::<ObjHeader>()
+} else {
+  16
+};
 
 // `meta` layout:
 // - bit 0: forwarded bit (nursery only)
@@ -294,6 +302,8 @@ impl ObjHeader {
 pub struct TypeDescriptor {
   /// Total object size in bytes (including the [`ObjHeader`]).
   pub size: usize,
+  /// Required alignment (in bytes) of the object base pointer.
+  pub align: usize,
   ptr_offsets: *const u32,
   ptr_offsets_len: u32,
 }
@@ -308,6 +318,16 @@ impl TypeDescriptor {
   pub const fn new(size: usize, ptr_offsets: &'static [u32]) -> Self {
     Self {
       size,
+      align: OBJ_ALIGN,
+      ptr_offsets: ptr_offsets.as_ptr(),
+      ptr_offsets_len: ptr_offsets.len() as u32,
+    }
+  }
+
+  pub const fn new_aligned(size: usize, align: usize, ptr_offsets: &'static [u32]) -> Self {
+    Self {
+      size,
+      align: if align > OBJ_ALIGN { align } else { OBJ_ALIGN },
       ptr_offsets: ptr_offsets.as_ptr(),
       ptr_offsets_len: ptr_offsets.len() as u32,
     }
@@ -320,9 +340,15 @@ impl TypeDescriptor {
   ///   `ptr_offsets_len` `u32` elements.
   /// - The pointed-to array must remain valid and immutable for as long as this descriptor is used
   ///   (typically for the duration of the process).
-  pub unsafe fn from_raw_parts(size: usize, ptr_offsets: *const u32, ptr_offsets_len: u32) -> Self {
+  pub unsafe fn from_raw_parts(
+    size: usize,
+    align: usize,
+    ptr_offsets: *const u32,
+    ptr_offsets_len: u32,
+  ) -> Self {
     Self {
       size,
+      align: if align > OBJ_ALIGN { align } else { OBJ_ALIGN },
       ptr_offsets,
       ptr_offsets_len,
     }

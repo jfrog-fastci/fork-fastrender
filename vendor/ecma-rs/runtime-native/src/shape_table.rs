@@ -76,8 +76,9 @@ pub(crate) unsafe fn register_shape_table(ptr: *const RtShapeDescriptor, len: us
   let mut type_descs = Vec::with_capacity(len);
   for desc in table {
     rt_descs.push(*desc);
+    let align = (desc.align as usize).max(crate::gc::OBJ_ALIGN);
     type_descs.push(unsafe {
-      TypeDescriptor::from_raw_parts(desc.size as usize, desc.ptr_offsets, desc.ptr_offsets_len)
+      TypeDescriptor::from_raw_parts(desc.size as usize, align, desc.ptr_offsets, desc.ptr_offsets_len)
     });
   }
 

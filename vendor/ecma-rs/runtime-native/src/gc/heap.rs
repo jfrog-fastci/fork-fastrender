@@ -1,6 +1,5 @@
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
-use std::mem;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,7 +39,7 @@ pub const IMMIX_MAX_OBJECT_SIZE: usize = IMMIX_BLOCK_SIZE / 2;
 
 const LOS_PAGE_SIZE: usize = 4096;
 
-const OBJ_ALIGN: usize = mem::align_of::<ObjHeader>();
+const OBJ_ALIGN: usize = super::OBJ_ALIGN;
 
 // Approximate metadata overhead for enforcing heap limits. This does not need to be exact, just
 // stable/deterministic.
@@ -527,7 +526,7 @@ impl GcHeap {
     }
 
     let size = req.size;
-    let align = req.align.max(OBJ_ALIGN);
+    let align = req.align.max(desc.align).max(OBJ_ALIGN);
 
     // If we're already above the hard cap, try a full collection before giving up.
     if self.estimated_total_bytes() > self.limits.max_heap_bytes {
@@ -598,9 +597,10 @@ impl GcHeap {
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
+    let align = desc.align.max(OBJ_ALIGN);
     let obj = self
       .nursery_tlab
-      .alloc(desc.size, OBJ_ALIGN, &self.nursery)
+      .alloc(desc.size, align, &self.nursery)
       .expect("nursery out of space");
 
     // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.
@@ -634,9 +634,10 @@ impl GcHeap {
     let size = array::checked_total_bytes(len, spec.elem_size)
       .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
 
+    let align = array::RT_ARRAY_TYPE_DESC.align.max(OBJ_ALIGN);
     let obj = self
       .nursery_tlab
-      .alloc(size, OBJ_ALIGN, &self.nursery)
+      .alloc(size, align, &self.nursery)
       .expect("nursery out of space");
 
     // SAFETY: The nursery allocation is valid for `size` bytes.
@@ -753,8 +754,9 @@ impl GcHeap {
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
+    let align = desc.align.max(OBJ_ALIGN);
     let obj = self
-      .alloc_old_raw(desc.size, OBJ_ALIGN)
+      .alloc_old_raw(desc.size, align)
       .unwrap_or_else(|_| panic!("old allocation out of space"));
 
     // SAFETY: The allocation is valid for `desc.size` bytes.
@@ -774,14 +776,16 @@ impl GcHeap {
   /// Pinned objects have a stable address across minor GC, major GC, and (future) compaction.
   /// They are still traced and reclaimed when unreachable.
   pub fn alloc_pinned(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
+    let align = desc.align.max(OBJ_ALIGN);
     self
-      .try_alloc_pinned(desc, desc.size, OBJ_ALIGN)
+      .try_alloc_pinned(desc, desc.size, align)
       .and_then(|o| o.ok_or(AllocError::OutOfMemory))
       .unwrap_or_else(|_| panic!("pinned allocation out of space"))
   }
 
   pub(crate) fn alloc_old_raw(&mut self, size: usize, align: usize) -> Result<*mut u8, AllocError> {
     debug_assert!(align.is_power_of_two());
+    let align = align.max(OBJ_ALIGN);
     self
       .try_alloc_old_raw(size, align, GrowMode::AllowGrow)
       .and_then(|o| o.ok_or(AllocError::OutOfMemory))
@@ -797,7 +801,10 @@ impl GcHeap {
     #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
-    let committed = round_up(size, LOS_PAGE_SIZE);
+    let committed_bytes = size
+      .checked_add(align.saturating_sub(1))
+      .ok_or(AllocError::OutOfMemory)?;
+    let committed = round_up(committed_bytes, LOS_PAGE_SIZE);
     let projected = self.projected_total_bytes_with(0, 1, committed);
     if projected > self.limits.max_heap_bytes {
       return Ok(None);
@@ -868,8 +875,11 @@ impl GcHeap {
   fn try_alloc_old_raw(&mut self, size: usize, align: usize, grow: GrowMode) -> Result<Option<*mut u8>, AllocError> {
     debug_assert!(align.is_power_of_two());
 
-    if size > self.config.los_threshold_bytes || size > IMMIX_MAX_OBJECT_SIZE {
-      let committed = round_up(size, LOS_PAGE_SIZE);
+    if size > self.config.los_threshold_bytes || size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
+      let committed_bytes = size
+        .checked_add(align.saturating_sub(1))
+        .ok_or(AllocError::OutOfMemory)?;
+      let committed = round_up(committed_bytes, LOS_PAGE_SIZE);
       let projected = self.projected_total_bytes_with(0, 1, committed);
       if projected > self.limits.max_heap_bytes {
         return Ok(None);

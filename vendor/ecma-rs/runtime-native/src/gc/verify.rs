@@ -43,7 +43,7 @@ impl GcHeap {
   pub fn verify_from_roots(&self, roots: &mut dyn RootSet) {
     let nursery_base = self.nursery.start() as usize;
     let nursery_alloc_end = nursery_base + self.nursery.allocated_bytes();
-    let align = mem::align_of::<ObjHeader>();
+    let min_align = super::OBJ_ALIGN;
 
     let known_desc = KNOWN_TYPE_DESCRIPTORS.lock();
 
@@ -55,7 +55,7 @@ impl GcHeap {
       if obj.is_null() {
         return;
       }
-      self.verify_obj_ptr(obj, nursery_base, nursery_alloc_end, align, &known_desc);
+      self.verify_obj_ptr(obj, nursery_base, nursery_alloc_end, min_align, &known_desc);
       worklist.push(obj);
     });
 
@@ -67,7 +67,7 @@ impl GcHeap {
         let header = &*(obj as *const ObjHeader);
         if header.is_forwarded() {
           obj = header.forwarding_ptr();
-          self.verify_obj_ptr(obj, nursery_base, nursery_alloc_end, align, &known_desc);
+          self.verify_obj_ptr(obj, nursery_base, nursery_alloc_end, min_align, &known_desc);
         }
       }
 
@@ -82,7 +82,7 @@ impl GcHeap {
           if child.is_null() {
             return;
           }
-          self.verify_obj_ptr(child, nursery_base, nursery_alloc_end, align, &known_desc);
+          self.verify_obj_ptr(child, nursery_base, nursery_alloc_end, min_align, &known_desc);
           worklist.push(child);
         });
       }
@@ -90,7 +90,7 @@ impl GcHeap {
   }
 
   pub(crate) fn verify_forwarding_pairs(&self, forwarded: &[(*mut u8, *mut u8)]) {
-    let align = mem::align_of::<ObjHeader>();
+    let min_align = super::OBJ_ALIGN;
     let known_desc = KNOWN_TYPE_DESCRIPTORS.lock();
 
     for &(from, to) in forwarded {
@@ -102,7 +102,7 @@ impl GcHeap {
         from as usize
       );
       assert_eq!(
-        (from as usize) & (align - 1),
+        (from as usize) & (min_align - 1),
         0,
         "forwarded-from pointer is misaligned: {:#x}",
         from as usize
@@ -111,6 +111,19 @@ impl GcHeap {
       // SAFETY: `from` points into nursery memory and was recorded during evacuation.
       let from_header = unsafe { &*(from as *const ObjHeader) };
       self.verify_obj_header(from_header, &known_desc);
+      let from_desc = unsafe { &*from_header.type_desc };
+      assert!(
+        from_desc.align.is_power_of_two(),
+        "type descriptor has non-power-of-two alignment: {}",
+        from_desc.align
+      );
+      assert_eq!(
+        (from as usize) & (from_desc.align - 1),
+        0,
+        "forwarded-from pointer does not satisfy its descriptor alignment ({}): {:#x}",
+        from_desc.align,
+        from as usize
+      );
       assert!(
         from_header.is_forwarded(),
         "evacuated nursery object is not marked as forwarded"
@@ -128,6 +141,13 @@ impl GcHeap {
       assert!(
         self.is_in_immix(to) || self.is_in_los(to),
         "forward target is not in old/LOS"
+      );
+      assert_eq!(
+        (to as usize) & (from_desc.align - 1),
+        0,
+        "forwarded-to pointer does not satisfy its descriptor alignment ({}): {:#x}",
+        from_desc.align,
+        to as usize
       );
       // SAFETY: `to` was allocated by the GC.
       let to_header = unsafe { &*(to as *const ObjHeader) };
@@ -148,11 +168,15 @@ impl GcHeap {
     obj: *mut u8,
     nursery_base: usize,
     nursery_alloc_end: usize,
-    align: usize,
+    min_align: usize,
     known_desc: &AHashSet<usize>,
   ) {
     let addr = obj as usize;
-    assert_eq!(addr & (align - 1), 0, "GC pointer is misaligned: {addr:#x}");
+    assert_eq!(
+      addr & (min_align - 1),
+      0,
+      "GC pointer is misaligned: {addr:#x}"
+    );
 
     if self.is_in_nursery(obj) {
       assert!(
@@ -177,8 +201,26 @@ impl GcHeap {
       );
     }
 
+    let desc = unsafe { &*header.type_desc };
     let size = unsafe { super::obj_size(obj) };
+    assert!(desc.size >= mem::size_of::<ObjHeader>(), "type descriptor size too small");
     assert!(size >= mem::size_of::<ObjHeader>(), "object size too small");
+    assert!(
+      size >= desc.size,
+      "object size {size} smaller than descriptor size {}",
+      desc.size
+    );
+    assert!(
+      desc.align != 0 && desc.align.is_power_of_two(),
+      "type descriptor has non-power-of-two alignment: {}",
+      desc.align
+    );
+    assert_eq!(
+      addr & (desc.align - 1),
+      0,
+      "GC pointer does not satisfy its descriptor alignment ({}): {addr:#x}",
+      desc.align
+    );
 
     // Only nursery objects have a contiguous allocated range we can bounds-check.
     if self.is_in_nursery(obj) {

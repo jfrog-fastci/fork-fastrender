@@ -10,15 +10,15 @@
 
 use crate::abi::RtShapeId;
 use crate::array;
+use crate::gc::heap::IMMIX_BLOCK_SIZE;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;
-use crate::gc::{ObjHeader, TypeDescriptor, YOUNG_SPACE};
+use crate::gc::{ObjHeader, TypeDescriptor, YOUNG_SPACE, OBJ_ALIGN};
 use crate::immix::LINE_SIZE;
 use crate::nursery::{NurserySpace, ThreadNursery};
 use crate::threading::ThreadId;
 use crate::shape_table;
 use parking_lot::Mutex;
 use std::cell::{Cell, UnsafeCell};
-use std::mem;
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
@@ -218,13 +218,22 @@ pub(crate) fn alloc(size: usize, shape: RtShapeId) -> *mut u8 {
   if size != shape_desc.size as usize {
     crate::trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
   }
-  let align = (shape_desc.align as usize).max(mem::align_of::<ObjHeader>());
   let type_desc = shape_table::lookup_type_descriptor(shape);
+  let shape_align = shape_desc.align as usize;
+  if shape_align == 0 || !shape_align.is_power_of_two() {
+    crate::trap::rt_trap_invalid_arg("rt_alloc: shape descriptor align must be a non-zero power of two");
+  }
+  let align = shape_align.max(OBJ_ALIGN);
+  debug_assert_eq!(
+    align,
+    type_desc.align,
+    "shape table TypeDescriptor::align must match max(OBJ_ALIGN, RtShapeDescriptor.align)"
+  );
 
   let global = global_heap();
   let epoch = current_mark_epoch(global);
 
-  if size > IMMIX_MAX_OBJECT_SIZE {
+  if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
     return with_heap_lock_mutator(|heap| {
       let obj = heap.los.alloc(size, align);
       unsafe { init_object(obj, size, type_desc, epoch, false) };
@@ -254,11 +263,11 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   let size = array::checked_total_bytes(len, spec.elem_size)
     .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
 
-  let align = mem::align_of::<array::RtArrayHeader>().max(16);
+  let align = array::RT_ARRAY_TYPE_DESC.align.max(OBJ_ALIGN);
   let global = global_heap();
   let epoch = current_mark_epoch(global);
 
-  if size > IMMIX_MAX_OBJECT_SIZE {
+  if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
     return with_heap_lock_mutator(|heap| {
       let obj = heap.los.alloc(size, align);
       unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
@@ -303,8 +312,17 @@ pub(crate) fn alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
   if size != shape_desc.size as usize {
     crate::trap::rt_trap_invalid_arg("rt_alloc_pinned: size does not match registered shape descriptor");
   }
-  let align = (shape_desc.align as usize).max(mem::align_of::<ObjHeader>());
   let type_desc = shape_table::lookup_type_descriptor(shape);
+  let shape_align = shape_desc.align as usize;
+  if shape_align == 0 || !shape_align.is_power_of_two() {
+    crate::trap::rt_trap_invalid_arg("rt_alloc_pinned: shape descriptor align must be a non-zero power of two");
+  }
+  let align = shape_align.max(OBJ_ALIGN);
+  debug_assert_eq!(
+    align,
+    type_desc.align,
+    "shape table TypeDescriptor::align must match max(OBJ_ALIGN, RtShapeDescriptor.align)"
+  );
 
   let global = global_heap();
   let epoch = current_mark_epoch(global);

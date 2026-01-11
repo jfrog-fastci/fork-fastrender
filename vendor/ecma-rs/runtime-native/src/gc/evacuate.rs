@@ -118,8 +118,9 @@ impl Evacuator<'_> {
         return Ok((header.forwarding_ptr(), false));
       }
 
+      let desc = header.type_desc();
       let size = super::obj_size(obj);
-      let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>())?;
+      let new_obj = self.heap.alloc_old_raw(size, desc.align)?;
 
       ptr::copy_nonoverlapping(obj, new_obj, size);
 
