@@ -96,6 +96,7 @@ RULES = [
     Rule("EFFECT", r"^EFFECT\d{4}$", allowed_crates={"effect-js"}),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),
     Rule("NATIVE", r"^NATIVE\d{4}$", allowed_crates={"native-js"}),
+    Rule("NJS", r"^NJS\d{4}$", allowed_crates={"native-js", "native-js-cli"}),
     Rule("RTNATIVE", r"^RTNATIVE\d{4}$", allowed_crates={"runtime-native"}),
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
     Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"minify-js"}),

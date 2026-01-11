@@ -48,6 +48,7 @@ prefixes for planned crates) and where they come from.
 | `EFFECT####` | `effect-js` | Effect inference diagnostics (analysis + semantic knowledge). |
 | `OPT####` | `optimize-js` | Optimizer diagnostics. |
 | `NATIVE####` | `native-js` | Native codegen diagnostics (LLVM IR generation + lowering). |
+| `NJS####` | `native-js` | Native compilation / LLVM backend diagnostics (short form; avoid mixing with `NATIVE####` in one crate). |
 | `RTNATIVE####` | `runtime-native` | Native runtime library diagnostics (GC/runtime integration). |
 | `EMIT####` | `emit-js` | Emitter/printer diagnostics. |
 | `MINIFYTS####` | `minify-js` | TypeScript erasure/minification diagnostics. |
