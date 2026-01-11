@@ -1,6 +1,7 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::css::types::{
   ContainerQuery, CssRule, ScrollStateDirection, ScrollStateFeature, ScrollStateQueryExpr,
+  ScrollStateSnappedAxis,
 };
 use fastrender::style::media::MediaContext;
 
@@ -65,6 +66,60 @@ fn stuck_scroll_state_query_parses() {
       direction: Some(ScrollStateDirection::Top),
     }))) => {}
     other => panic!("expected stuck scroll-state() feature to parse, got {other:?}"),
+  }
+}
+
+#[test]
+fn snapped_scroll_state_query_parses() {
+  let css = r#"
+    @container scroll-state(snapped: both) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let stylesheet = parse_stylesheet(css).expect("parsed stylesheet");
+  let container_rule = stylesheet
+    .rules
+    .iter()
+    .find_map(|rule| match rule {
+      CssRule::Container(container) => Some(container),
+      _ => None,
+    })
+    .expect("@container rule retained");
+
+  assert_eq!(container_rule.conditions.len(), 1);
+  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Snapped {
+      axis: Some(ScrollStateSnappedAxis::Both),
+    }))) => {}
+    other => panic!("expected snapped scroll-state() feature to parse, got {other:?}"),
+  }
+}
+
+#[test]
+fn scrolled_scroll_state_query_parses() {
+  let css = r#"
+    @container scroll-state(scrolled: block-start) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let stylesheet = parse_stylesheet(css).expect("parsed stylesheet");
+  let container_rule = stylesheet
+    .rules
+    .iter()
+    .find_map(|rule| match rule {
+      CssRule::Container(container) => Some(container),
+      _ => None,
+    })
+    .expect("@container rule retained");
+
+  assert_eq!(container_rule.conditions.len(), 1);
+  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Scrolled {
+      direction: Some(ScrollStateDirection::BlockStart),
+    }))) => {}
+    other => panic!("expected scrolled scroll-state() feature to parse, got {other:?}"),
   }
 }
 

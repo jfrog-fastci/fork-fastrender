@@ -19363,11 +19363,24 @@ fn build_container_query_context(
     // Ensure scroll snap is reflected in scroll-state container queries during layout/cascade,
     // matching the paint pipeline which applies scroll snap before evaluating scroll-driven state.
     let mut tree = fragments.clone();
-    let snapped = crate::scroll::apply_scroll_snap(&mut tree, scroll_state);
-    // `apply_scroll_snap` computes and stores scroll metadata on the (cloned) fragment tree, but
-    // `fragments` is an immutable reference so it may not have metadata pre-populated. Container
-    // query "snapped" evaluation needs access to the snap target list, so carry the computed
-    // metadata forward for the marking pass below.
+    // `apply_scroll_snap` only considers element scrollers that have an explicit scroll offset entry
+    // in `ScrollState::elements`. For container queries we want the default state ("no entry" =>
+    // "at offset 0") to still participate in snapping so `scroll-state(snapped: ...)` works at the
+    // initial scroll position.
+    tree.ensure_scroll_metadata();
+    let mut snap_input = scroll_state.clone();
+    if let Some(metadata) = tree.scroll_metadata.as_ref() {
+      for container in metadata.containers.iter() {
+        if container.uses_viewport_scroll {
+          continue;
+        }
+        let Some(box_id) = container.box_id else {
+          continue;
+        };
+        snap_input.elements.entry(box_id).or_insert(Point::ZERO);
+      }
+    }
+    let snapped = crate::scroll::apply_scroll_snap(&mut tree, &snap_input);
     (Some(snapped.state), tree.scroll_metadata.clone())
   } else {
     (None, None)
@@ -19933,13 +19946,10 @@ fn build_container_query_context(
       let eps = 1e-3;
       for container in metadata.containers.iter() {
         let scroll_offset = if container.uses_viewport_scroll {
-          Some(scroll_state.viewport)
+          scroll_state.viewport
+        } else if let Some(id) = container.box_id {
+          scroll_state.element_offset(id)
         } else {
-          container
-            .box_id
-            .and_then(|id| scroll_state.elements.get(&id).copied())
-        };
-        let Some(scroll_offset) = scroll_offset else {
           continue;
         };
 

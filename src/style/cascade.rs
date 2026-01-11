@@ -4208,11 +4208,9 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
     ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
-    ContainerQuery::ScrollState(scroll_query) => {
-      scroll_state_query_has_known_feature(scroll_query)
-        .then_some(CQ_SUPPORT_SCROLL_STATE_ANY)
-        .unwrap_or(CQ_SUPPORT_ALL)
-    }
+    // `scroll-state(...)` container queries always require a scroll-state query container
+    // (`container-type: scroll-state`), even when the inner feature is unknown/unsupported.
+    ContainerQuery::ScrollState(_) => CQ_SUPPORT_SCROLL_STATE_ANY,
     // Treat unknown/forward-compatible query terms as potentially referencing any container type.
     // This preserves expected OR short-circuit behavior like `(<size-feature>) or <unknown>`,
     // matching when the known branch is true.

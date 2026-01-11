@@ -1135,6 +1135,48 @@ fn container_scroll_state_scrolled_bottom_tracks_viewport_scroll_delta() {
 }
 
 #[test]
+fn container_scroll_state_snapped_x_matches_first_target_at_initial_scroll_offset() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 100px;
+        height: 40px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        display: flex;
+        scroll-snap-type: x mandatory;
+      }
+      .item {
+        flex: 0 0 100px;
+        scroll-snap-align: start;
+      }
+      #a { container-name: target; container-type: scroll-state; }
+      #marker { color: rgb(0, 0, 255); }
+      @container target scroll-state(snapped: x) {
+        #marker { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="a" class="item"><div id="marker">hello</div></div>
+      <div id="b" class="item"></div>
+      <div id="c" class="item"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(100, 40))
+    .expect("prepare");
+
+  let marker = find_by_id(prepared.styled_tree(), "marker").expect("marker");
+  assert_eq!(
+    marker.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected snapped: x to match the first snap target at the initial scroll offset"
+  );
+}
+
+#[test]
 fn container_scroll_state_snapped_x_matches_snapped_scroll_snap_target() {
   let html = r#"
     <style>
