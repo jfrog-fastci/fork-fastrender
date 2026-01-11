@@ -41,8 +41,8 @@ use crate::runtime_fn::GcEffect;
 use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
   LLVMDisposeBuilder, LLVMGetFirstInstruction, LLVMGetPointerAddressSpace, LLVMGetReturnType,
-  LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMPointerType, LLVMPositionBuilderAtEnd,
-  LLVMPositionBuilderBefore, LLVMTypeOf,
+  LLVMGetStringAttributeAtIndex, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsAFunction,
+  LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMTypeOf,
   LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{
@@ -68,6 +68,31 @@ impl GcSlot {
 pub enum GcRoot {
   Base(GcSlot),
   Derived { base: GcSlot, derived: GcSlot },
+}
+
+/// Treating a call as a "safepoint" is only required if the callee may trigger GC.
+///
+/// LLVM's `rewrite-statepoints-for-gc` pass uses a function attribute named
+/// `"gc-leaf-function"` to mark callees that are known to not contain safepoints.
+///
+/// We mirror that convention for *manually emitted* compiled calls: if a direct
+/// callee has `"gc-leaf-function"`, we treat it as [`GcEffect::NoGc`].
+unsafe fn direct_callee_gc_effect_from_attrs(callee: LLVMValueRef) -> Option<GcEffect> {
+  // Only direct/global callees can carry attributes. If this isn't a function
+  // value, it's an indirect call and we can't infer anything.
+  if LLVMIsAFunction(callee).is_null() {
+    return None;
+  }
+
+  // Attribute keys in the C API are length-delimited, but must be NUL-terminated.
+  const KEY: &[u8] = b"gc-leaf-function\0";
+  let attr = LLVMGetStringAttributeAtIndex(
+    callee,
+    llvm_sys::LLVMAttributeFunctionIndex,
+    KEY.as_ptr().cast(),
+    (KEY.len() - 1) as u32,
+  );
+  (!attr.is_null()).then_some(GcEffect::NoGc)
 }
 
 pub struct GcFrame {
@@ -329,7 +354,13 @@ impl GcFrame {
     call_args: &[LLVMValueRef],
     effect: Option<GcEffect>,
   ) -> Option<LLVMValueRef> {
-    match effect.unwrap_or(GcEffect::MayGc) {
+    let effect = effect.unwrap_or_else(|| {
+      // Conservative default: assume the call may GC unless explicitly annotated
+      // as a leaf/no-GC callee.
+      direct_callee_gc_effect_from_attrs(callee_ptr).unwrap_or(GcEffect::MayGc)
+    });
+
+    match effect {
       GcEffect::NoGc => {
         let ret_ty = LLVMGetReturnType(callee_fn_ty);
         let call = LLVMBuildCall2(
