@@ -129,7 +129,7 @@ use crate::style::values::Length;
 use crate::text::color_fonts::ColorFontRenderer;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_loader::FontContext;
-use crate::text::pipeline::GlyphPosition;
+use crate::text::pipeline::{text_diagnostics_session_id, GlyphPosition, TextDiagnosticsThreadGuard};
 use lru::LruCache;
 use rayon::prelude::*;
 use rustybuzz::Variation;
@@ -11480,6 +11480,7 @@ impl DisplayListRenderer {
     let shared_backdrop_filter_cache = SharedBackdropFilterCache::default();
     let diagnostics_enabled = self.diagnostics_enabled;
     let diagnostics_session = paint_diagnostics_session_id();
+    let text_diagnostics_session = text_diagnostics_session_id();
     let image_pixmap_diagnostics = self.image_pixmap_diagnostics.clone();
     let background_paint_diagnostics = self.background_paint_diagnostics.clone();
     let clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
@@ -11517,6 +11518,8 @@ impl DisplayListRenderer {
         .into_par_iter()
         .map(|chunk| {
           let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+          let _text_diagnostics_guard =
+            text_diagnostics_session.map(TextDiagnosticsThreadGuard::enter);
           with_allocation_budget(allocation_budget.as_ref(), || {
             let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
             with_deadline(deadline.as_ref(), || {
@@ -11721,6 +11724,7 @@ impl DisplayListRenderer {
     let stage_heartbeat = active_stage_heartbeat();
     let allocation_budget = active_allocation_budget();
     let diagnostics_session = paint_diagnostics_session_id();
+    let text_diagnostics_session = text_diagnostics_session_id();
 
     let chunk_size = plane_count
       .checked_add(task_capacity.saturating_sub(1))
@@ -11738,6 +11742,8 @@ impl DisplayListRenderer {
         .into_par_iter()
         .map(|chunk| {
           let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+          let _text_diagnostics_guard =
+            text_diagnostics_session.map(TextDiagnosticsThreadGuard::enter);
           with_allocation_budget(allocation_budget.as_ref(), || {
             let _heartbeat_guard = StageHeartbeatGuard::install(stage_heartbeat);
             with_deadline(deadline.as_ref(), || {

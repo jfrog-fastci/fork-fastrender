@@ -11492,7 +11492,7 @@ impl DisplayListBuilder {
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
+        let mut text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut cloned = (*pseudo_style).clone();
           let opacity = cloned.opacity.clamp(0.0, 1.0);
           let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
@@ -11504,6 +11504,10 @@ impl DisplayListBuilder {
           cloned.color = fallback_color;
           cloned
         };
+        // HTML `<input>` controls paint their value as a single line without wrapping; overflow is
+        // handled via clipping/scrolling rather than soft line breaks.
+        text_style.white_space = crate::style::types::WhiteSpace::Nowrap;
+        text_style.text_wrap = crate::style::types::TextWrap::NoWrap;
 
         let mut text_rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;

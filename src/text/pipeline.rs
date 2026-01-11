@@ -506,6 +506,45 @@ pub(crate) fn text_diagnostics_enabled() -> bool {
   TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.get() == active_session)
 }
 
+/// Returns the active text diagnostics session id (if any).
+///
+/// This is used by paint code to opt parallel worker threads into the currently active session via
+/// [`TextDiagnosticsThreadGuard`].
+pub(crate) fn text_diagnostics_session_id() -> Option<u64> {
+  if !TEXT_DIAGNOSTICS_ENABLED.load(Ordering::Acquire) {
+    return None;
+  }
+  let active_session = TEXT_DIAGNOSTICS_SESSION.load(Ordering::Acquire);
+  (active_session != 0).then_some(active_session)
+}
+
+/// Temporarily opts the current thread into a text diagnostics session.
+///
+/// Text work can execute on rayon worker threads (e.g., parallel paint tiling). The render thread
+/// must explicitly opt worker threads into diagnostics so thread-local `text_diagnostics_enabled()`
+/// checks remain cheap and so unrelated shaping work on other threads isn't counted.
+#[must_use]
+pub(crate) struct TextDiagnosticsThreadGuard {
+  prev_session: u64,
+}
+
+impl TextDiagnosticsThreadGuard {
+  pub(crate) fn enter(session: u64) -> Self {
+    let prev_session = TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| {
+      let prev = current.get();
+      current.set(session);
+      prev
+    });
+    Self { prev_session }
+  }
+}
+
+impl Drop for TextDiagnosticsThreadGuard {
+  fn drop(&mut self) {
+    TEXT_DIAGNOSTICS_THREAD_SESSION.with(|current| current.set(self.prev_session));
+  }
+}
+
 pub(crate) fn text_diagnostics_timer(stage: TextDiagnosticsStage) -> Option<TextDiagnosticsTimer> {
   if !text_diagnostics_enabled() {
     return None;

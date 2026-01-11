@@ -8,6 +8,9 @@ use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
+use rustc_hash::FxHashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,9 +44,58 @@ pub struct BrowserDocument {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  /// Hash of the most recently rendered interaction state.
+  ///
+  /// Interaction state influences pseudo-class matching (`:hover`, `:focus`, etc) and form control
+  /// painting (caret/selection/IME). When it changes we must treat cached style/layout results as
+  /// invalid, even if the DOM itself is unchanged.
+  interaction_state_hash: u64,
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
+}
+
+fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
+  let mut values: Vec<usize> = set.iter().copied().collect();
+  values.sort_unstable();
+  values.hash(hasher);
+}
+
+fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  match state {
+    None => {
+      0u8.hash(&mut hasher);
+    }
+    Some(state) => {
+      1u8.hash(&mut hasher);
+      state.focused.hash(&mut hasher);
+      state.focus_visible.hash(&mut hasher);
+      state.focus_chain.hash(&mut hasher);
+      state.hover_chain.hash(&mut hasher);
+      state.active_chain.hash(&mut hasher);
+      hash_usize_set(&mut hasher, &state.visited_links);
+      if let Some(preedit) = &state.ime_preedit {
+        1u8.hash(&mut hasher);
+        preedit.node_id.hash(&mut hasher);
+        preedit.text.hash(&mut hasher);
+        preedit.cursor.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
+      if let Some(edit) = &state.text_edit {
+        1u8.hash(&mut hasher);
+        edit.node_id.hash(&mut hasher);
+        edit.caret.hash(&mut hasher);
+        edit.caret_affinity.hash(&mut hasher);
+        edit.selection.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
+      hash_usize_set(&mut hasher, &state.user_validity);
+    }
+  }
+  hasher.finish()
 }
 
 impl BrowserDocument {
@@ -82,6 +134,7 @@ impl BrowserDocument {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      interaction_state_hash: interaction_state_fingerprint(None),
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
@@ -110,6 +163,7 @@ impl BrowserDocument {
       layout_dirty: false,
       // First frame still needs a paint.
       paint_dirty: true,
+      interaction_state_hash: interaction_state_fingerprint(None),
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
@@ -825,7 +879,11 @@ impl BrowserDocument {
     &mut self,
     interaction_state: Option<&InteractionState>,
   ) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() {
+    let interaction_hash = interaction_state_fingerprint(interaction_state);
+    if !self.is_dirty()
+      && self.prepared.is_some()
+      && interaction_hash == self.interaction_state_hash
+    {
       return Ok(None);
     }
     let frame = self.render_frame_with_scroll_state_and_interaction_state(interaction_state)?;
@@ -839,7 +897,11 @@ impl BrowserDocument {
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
     interaction_state: Option<&InteractionState>,
   ) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() && self.prepared.is_some() {
+    let interaction_hash = interaction_state_fingerprint(interaction_state);
+    if !self.is_dirty()
+      && self.prepared.is_some()
+      && interaction_hash == self.interaction_state_hash
+    {
       return Ok(None);
     }
     let frame =
@@ -854,6 +916,13 @@ impl BrowserDocument {
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
     interaction_state: Option<&InteractionState>,
   ) -> Result<super::PaintedFrame> {
+    let interaction_hash = interaction_state_fingerprint(interaction_state);
+    if interaction_hash != self.interaction_state_hash {
+      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
+      // re-run style/layout when it changes.
+      self.invalidate_all();
+    }
+
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -909,6 +978,7 @@ impl BrowserDocument {
     if self.is_dirty() {
       self.clear_dirty();
     }
+    self.interaction_state_hash = interaction_hash;
 
     Ok(frame)
   }

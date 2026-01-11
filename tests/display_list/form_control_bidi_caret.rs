@@ -2,6 +2,7 @@ use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::state::TextEditPaintState;
 use fastrender::interaction::InteractionState;
+use fastrender::text::caret::CaretAffinity;
 use fastrender::{BrowserDocument, FastRender, FastRenderConfig, RenderOptions};
 use std::collections::HashMap;
 use tiny_skia::Pixmap;
@@ -72,7 +73,7 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     text_edit: Some(TextEditPaintState {
       node_id,
       caret: 0,
-      caret_affinity: Default::default(),
+      caret_affinity: CaretAffinity::Downstream,
       selection: None,
     }),
     ..InteractionState::default()
@@ -88,7 +89,7 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     text_edit: Some(TextEditPaintState {
       node_id,
       caret: value_len,
-      caret_affinity: Default::default(),
+      caret_affinity: CaretAffinity::Downstream,
       selection: None,
     }),
     ..InteractionState::default()
