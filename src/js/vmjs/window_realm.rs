@@ -289,26 +289,6 @@ impl WindowRealmUserData {
   }
 }
 
-/// Minimal host context used when executing scripts/microtasks directly via [`WindowRealm`] without
-/// the higher-level `WindowHost`/`BrowserTab` host plumbing.
-///
-/// `vm-js`'s [`vm_js::VmHost`] trait is intentionally lightweight (it is essentially a type-erased
-/// handle for embedder state). Most FastRender integrations use `DocumentHostState` or
-/// `BrowserDocumentDom2` as the `VmHost` so that DOM bindings can access `document.currentScript`
-/// bookkeeping. When `WindowRealm` is used standalone we still want to preserve the ability to
-/// thread a current-script handle through VM callbacks when available, while keeping the host
-/// context otherwise empty.
-#[derive(Debug, Default)]
-struct VmJsHostContext {
-  current_script: Option<CurrentScriptStateHandle>,
-}
-
-impl VmJsHostContext {
-  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
-    self.current_script.as_ref()
-  }
-}
-
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm_options = config.vm_options.clone();
@@ -10399,25 +10379,6 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
 struct CurrentScriptOverrideGuard {
   handle: Option<CurrentScriptStateHandle>,
   previous: Option<NodeId>,
-}
-
-/// Lightweight `VmHost` context used by `WindowRealm::perform_microtask_checkpoint`.
-///
-/// Unlike the higher-level `WindowHost`/`EventLoop` integration, the `WindowRealm` API can be used
-/// directly without an embedding host state (like [`DocumentHostState`]). We still need a concrete
-/// `VmHost` value so:
-/// - the `vm-js` job runner has something to pass to native handlers, and
-/// - host-side helpers (e.g. dynamic script execution) can recover `Document.currentScript` state
-///   via `Any::downcast_mut`.
-#[derive(Debug, Default)]
-struct VmJsHostContext {
-  current_script: CurrentScriptStateHandle,
-}
-
-impl VmJsHostContext {
-  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
-    Some(&self.current_script)
-  }
 }
 
 impl CurrentScriptOverrideGuard {
