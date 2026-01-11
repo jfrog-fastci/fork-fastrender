@@ -144,6 +144,10 @@ impl ProgramState {
 
     let mut lowerer = TypeLowerer::new(Arc::clone(&store));
     lowerer.set_file(file);
+    let strict_native = self.compiler_options.strict_native
+      && !self.lib_file_ids.contains(&file)
+      && self.file_kinds.get(&file) != Some(&FileKind::Dts);
+    lowerer.set_strict_native(strict_native);
     if has_semantics {
       let mut binding_defs = HashMap::new();
       if let Some(state) = self.files.get(&file) {

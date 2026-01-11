@@ -960,6 +960,7 @@ pub fn check_body(
     None,
     None,
     false,
+    false,
     None,
     None,
   )
@@ -983,6 +984,7 @@ pub fn check_body_with_expander(
   relate_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
   type_param_decls: Option<&HashMap<DefId, Arc<[TypeParamDecl]>>>,
   contextual_fn_ty: Option<TypeId>,
+  strict_native: bool,
   no_implicit_any: bool,
   jsx_mode: Option<JsxMode>,
   cancelled: Option<&Arc<AtomicBool>>,
@@ -1030,6 +1032,7 @@ pub fn check_body_with_expander(
     None => TypeLowerer::new(Arc::clone(&store)),
   };
   lowerer.set_file(file);
+  lowerer.set_strict_native(strict_native);
   let synthetic_top_level = matches!(body.kind, BodyKind::TopLevel)
     && body.exprs.is_empty()
     && body.stmts.is_empty()
@@ -1072,6 +1075,7 @@ pub fn check_body_with_expander(
     in_async_function: false,
     check_var_assignments: !synthetic_top_level,
     widen_object_literals: true,
+    strict_native,
     no_implicit_any,
     use_define_for_class_fields,
     native_define_class_fields,
@@ -1133,6 +1137,9 @@ pub fn check_body_with_expander(
   checker
     .diagnostics
     .extend(checker.lowerer.take_diagnostics());
+  if checker.strict_native {
+    checker.report_forbidden_any_types();
+  }
   codes::normalize_diagnostics(&mut checker.diagnostics);
   BodyCheckResult {
     body: body_id,
@@ -1202,6 +1209,7 @@ struct Checker<'a> {
   in_async_function: bool,
   check_var_assignments: bool,
   widen_object_literals: bool,
+  strict_native: bool,
   no_implicit_any: bool,
   use_define_for_class_fields: bool,
   native_define_class_fields: bool,
@@ -1513,6 +1521,35 @@ impl<'a> Checker<'a> {
         }
       }
       AstPat::AssignTarget(_) => {}
+    }
+  }
+
+  fn report_forbidden_any_types(&mut self) {
+    let prim = self.store.primitive_ids();
+    for (idx, ty) in self.expr_types.iter().enumerate() {
+      let ty = self.store.canon(*ty);
+      if ty != prim.any {
+        continue;
+      }
+      if let Some(span) = self.expr_spans.get(idx).copied() {
+        self.diagnostics.push(codes::FORBIDDEN_ANY.error(
+          "forbidden `any` type",
+          Span::new(self.file, span),
+        ));
+      }
+    }
+
+    for (idx, ty) in self.pat_types.iter().enumerate() {
+      let ty = self.store.canon(*ty);
+      if ty != prim.any {
+        continue;
+      }
+      if let Some(span) = self.pat_spans.get(idx).copied() {
+        self.diagnostics.push(codes::FORBIDDEN_ANY.error(
+          "forbidden `any` type",
+          Span::new(self.file, span),
+        ));
+      }
     }
   }
 
@@ -2669,13 +2706,36 @@ impl<'a> Checker<'a> {
         } else {
           let inner = self.check_expr(&assert.stx.expression);
           if let Some(annotation) = assert.stx.type_annotation.as_ref() {
-            self.lowerer.lower_type_expr(annotation)
+            let target = self.lowerer.lower_type_expr(annotation);
+            if self.strict_native {
+              let prim = self.store.primitive_ids();
+              let span = Span::new(self.file, loc_to_range(self.file, expr.loc));
+              let inner = self.store.canon(inner);
+              let target = self.store.canon(target);
+              if inner == prim.any || target == prim.any {
+                self
+                  .diagnostics
+                  .push(codes::FORBIDDEN_ANY.error("forbidden `any` type", span));
+              } else if !self.relate.is_assignable(inner, target) {
+                self.diagnostics.push(codes::UNSAFE_TYPE_ASSERTION.error(
+                  format!(
+                    "Type '{}' is not assignable to type '{}'.",
+                    TypeDisplay::new(self.store.as_ref(), inner),
+                    TypeDisplay::new(self.store.as_ref(), target)
+                  ),
+                  span,
+                ));
+              }
+            }
+            target
           } else {
             inner
           }
         }
       }
-      AstExpr::NonNullAssertion(assert) => self.check_expr(&assert.stx.expression),
+      AstExpr::NonNullAssertion(assert) => {
+        self.check_expr(&assert.stx.expression)
+      }
       AstExpr::SatisfiesExpr(expr) => {
         let target_ty = self.lowerer.lower_type_expr(&expr.stx.type_annotation);
         let value_ty = self.check_expr_with_expected(&expr.stx.expression, target_ty);
@@ -7415,6 +7475,34 @@ pub fn check_body_with_env_with_bindings(
   relate: RelateCtx,
   ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
 ) -> BodyCheckResult {
+  check_body_with_env_with_bindings_strict_native(
+    body_id,
+    body,
+    names,
+    file,
+    _source,
+    store,
+    initial,
+    flow_bindings,
+    relate,
+    ref_expander,
+    false,
+  )
+}
+
+pub fn check_body_with_env_with_bindings_strict_native(
+  body_id: BodyId,
+  body: &Body,
+  names: &NameInterner,
+  file: FileId,
+  _source: &str,
+  store: Arc<TypeStore>,
+  initial: &HashMap<NameId, TypeId>,
+  flow_bindings: Option<&FlowBindings>,
+  relate: RelateCtx,
+  ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  strict_native: bool,
+) -> BodyCheckResult {
   let mut checker = FlowBodyChecker::new(
     body_id,
     body,
@@ -7425,6 +7513,7 @@ pub fn check_body_with_env_with_bindings(
     flow_bindings,
     relate,
     ref_expander,
+    strict_native,
   );
   checker.run();
   codes::normalize_diagnostics(&mut checker.diagnostics);
@@ -7487,6 +7576,7 @@ struct FlowBodyChecker<'a> {
   return_types: Vec<TypeId>,
   return_indices: HashMap<StmtId, usize>,
   widen_object_literals: bool,
+  strict_native: bool,
   ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
   initial: HashMap<FlowBindingId, TypeId>,
   param_bindings: HashSet<BindingKey>,
@@ -8178,6 +8268,7 @@ impl<'a> FlowBodyChecker<'a> {
     flow_bindings: Option<&'a FlowBindings>,
     relate: RelateCtx<'a>,
     ref_expander: Option<&'a dyn types_ts_interned::RelateTypeExpander>,
+    strict_native: bool,
   ) -> Self {
     let prim = store.primitive_ids();
     let expr_types = vec![prim.unknown; body.exprs.len()];
@@ -8249,6 +8340,7 @@ impl<'a> FlowBodyChecker<'a> {
       return_types,
       return_indices,
       widen_object_literals: true,
+      strict_native,
       ref_expander,
       initial: initial_flow,
       param_bindings: bindings.param_bindings.clone(),
@@ -9215,8 +9307,17 @@ impl<'a> FlowBodyChecker<'a> {
           }
         }
       }
-      ExprKind::NonNull { expr } => {
-        let inner_ty = self.eval_expr(*expr, env).0;
+      ExprKind::NonNull { expr: inner_expr } => {
+        let inner_ty = self.eval_expr(*inner_expr, env).0;
+        if self.strict_native {
+          let (_, nullish) = narrow_non_nullish(inner_ty, &self.store);
+          if self.store.canon(nullish) != prim.never {
+            self.diagnostics.push(codes::INVALID_NON_NULL_ASSERTION.error(
+              "non-null assertion discards `null` or `undefined`",
+              Span::new(self.file, expr.span),
+            ));
+          }
+        }
         let (_, nonnull) = narrow_by_nullish_equality(
           inner_ty,
           BinaryOp::Equality,

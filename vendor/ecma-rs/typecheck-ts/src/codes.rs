@@ -676,6 +676,59 @@ pub const IMPLICIT_ANY: Code = Code::new(
   &[],
 );
 
+/// TN0001: `any` type is forbidden in strict-native mode.
+///
+/// This diagnostic is emitted when `compilerOptions.strict_native` is enabled
+/// and the checker observes an `any` type in user code, either because it was
+/// written explicitly (e.g. `: any`, `as any`, `T = any`) or inferred for an
+/// expression/pattern/binding.
+///
+/// - Primary span: the `any` type node or expression/pattern receiving an `any`
+///   type.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const FORBIDDEN_ANY: Code = Code::new(
+  "TN0001",
+  "forbidden any type",
+  "`any` type annotation or expression/pattern typed as `any`",
+  &["primary: `any`-typed span"],
+  &[],
+);
+
+/// TN0002: Unsafe type assertion in strict-native mode.
+///
+/// TypeScript's normal assertion rules allow narrowing via `as` even when the
+/// asserted type is not assignable from the expression type. In strict-native
+/// mode we require the expression type to be assignable to the asserted type.
+///
+/// - Primary span: the full type assertion expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const UNSAFE_TYPE_ASSERTION: Code = Code::new(
+  "TN0002",
+  "unsafe type assertion",
+  "type assertion expression",
+  &["primary: type assertion expression"],
+  &[],
+);
+
+/// TN0003: Invalid non-null assertion in strict-native mode.
+///
+/// TypeScript's `x!` operator removes `null`/`undefined` from the static type.
+/// In strict-native mode we only allow the assertion when it is a no-op (the
+/// expression type is already non-nullish due to narrowing).
+///
+/// - Primary span: the full non-null assertion expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const INVALID_NON_NULL_ASSERTION: Code = Code::new(
+  "TN0003",
+  "invalid non-null assertion",
+  "non-null assertion expression",
+  &["primary: non-null assertion expression"],
+  &[],
+);
+
 /// TC3001: JSX syntax is present but the compiler is not configured to allow it.
 ///
 /// - Primary span: the JSX element expression.

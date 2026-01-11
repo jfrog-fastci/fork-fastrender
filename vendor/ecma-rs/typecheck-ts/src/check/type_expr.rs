@@ -63,6 +63,7 @@ pub struct TypeLowerer {
   next_type_param: u32,
   resolver: Option<Arc<dyn TypeResolver>>,
   file: Option<FileId>,
+  strict_native: bool,
   diagnostics: Vec<Diagnostic>,
   predicates: Vec<LoweredPredicate>,
 }
@@ -86,6 +87,7 @@ impl TypeLowerer {
       next_type_param: 0,
       resolver: None,
       file: None,
+      strict_native: false,
       diagnostics: Vec::new(),
       predicates: Vec::new(),
     }
@@ -101,6 +103,11 @@ impl TypeLowerer {
   /// Associate a file id with this lowerer for diagnostics and predicate spans.
   pub fn set_file(&mut self, file: FileId) {
     self.file = Some(file);
+  }
+
+  /// Enable or disable strict-native lowering checks.
+  pub fn set_strict_native(&mut self, strict_native: bool) {
+    self.strict_native = strict_native;
   }
 
   /// Set or clear the resolver used to resolve named type references.
@@ -193,7 +200,12 @@ impl TypeLowerer {
 
   pub fn lower_type_expr(&mut self, expr: &Node<TypeExpr>) -> TypeId {
     match expr.stx.as_ref() {
-      TypeExpr::Any(_) => self.store.primitive_ids().any,
+      TypeExpr::Any(_) => {
+        if self.strict_native {
+          self.push_diag(expr.loc, &codes::FORBIDDEN_ANY, "forbidden `any` type");
+        }
+        self.store.primitive_ids().any
+      }
       TypeExpr::Unknown(_) => self.store.primitive_ids().unknown,
       TypeExpr::Never(_) => self.store.primitive_ids().never,
       TypeExpr::Void(_) => self.store.primitive_ids().void,

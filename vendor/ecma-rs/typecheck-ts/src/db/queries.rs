@@ -535,7 +535,7 @@ pub mod body_check {
 
   use crate::check::caches::{CheckerCacheStats, CheckerCaches};
   use crate::check::hir_body::{
-    check_body_with_env, check_body_with_expander, BindingTypeResolver,
+    check_body_with_env_with_bindings_strict_native, check_body_with_expander, BindingTypeResolver,
   };
   use crate::codes;
   use crate::db::expander::{DbTypeExpander, TypeExpanderDb};
@@ -602,6 +602,7 @@ pub mod body_check {
     pub target: ScriptTarget,
     pub no_implicit_any: bool,
     pub native_strict: bool,
+    pub strict_native: bool,
     pub use_define_for_class_fields: bool,
     pub interned_def_types: HashMap<DefId, InternedTypeId>,
     pub interned_type_params: HashMap<DefId, Vec<TypeParamId>>,
@@ -993,6 +994,15 @@ pub mod body_check {
         Some(Arc::new(BindingTypeResolver::new(binding_defs)) as Arc<_>)
       };
       let ast_index = self.ast_index(meta.file, &ast);
+      let is_dts = ctx
+        .file_registry
+        .lookup_key(meta.file)
+        .map(|key| ctx.host.file_kind(&key) == crate::lib_support::FileKind::Dts)
+        .unwrap_or(false);
+      let strict_native = ctx.strict_native
+        && ctx.file_registry.lookup_origin(meta.file) != Some(crate::FileOrigin::Lib)
+        && !is_dts;
+      let no_implicit_any = ctx.no_implicit_any || strict_native;
       let mut result = check_body_with_expander(
         body_id,
         body,
@@ -1008,13 +1018,14 @@ pub mod body_check {
         Some(&expander),
         Some(&ctx.interned_type_param_decls),
         contextual_fn_ty,
-        ctx.no_implicit_any,
+        strict_native,
+        no_implicit_any,
         ctx.jsx_mode,
         Some(&ctx.cancelled),
       );
 
       if !body.exprs.is_empty()
-        && matches!(meta.kind, HirBodyKind::Function | HirBodyKind::TopLevel)
+        && (matches!(meta.kind, HirBodyKind::Function | HirBodyKind::TopLevel) || strict_native)
       {
         if ctx.cancelled.load(Ordering::Relaxed) {
           panic_any(crate::FatalError::Cancelled);
@@ -1104,7 +1115,7 @@ pub mod body_check {
           flow_hooks,
           caches.relation.clone(),
         );
-        let flow_result = check_body_with_env(
+        let flow_result = check_body_with_env_with_bindings_strict_native(
           body_id,
           body,
           &lowered.names,
@@ -1112,8 +1123,10 @@ pub mod body_check {
           "",
           Arc::clone(&ctx.store),
           &initial_env,
+          None,
           flow_relate,
           Some(&expander),
+          strict_native,
         );
         let mut relate_hooks = relate_hooks();
         relate_hooks.expander = Some(&expander);
@@ -2104,6 +2117,7 @@ fn decl_types_for(db: &dyn Db, file: FileInput) -> SharedDeclTypes {
   let key_to_id = |key: &FileKey| db.file_input_by_key(key).map(|input| input.file_id(db));
   let file_id = file.file_id(db);
   let file_key = Some(file.key(db));
+  let strict_native = compiler_options(db).strict_native && file.kind(db) != FileKind::Dts;
   let defs = flat_defs_for(db);
   let module_namespace_defs = db.module_namespace_defs_input().defs(db).clone();
   let value_defs = db.value_defs_input().defs(db).clone();
@@ -2115,6 +2129,7 @@ fn decl_types_for(db: &dyn Db, file: FileInput) -> SharedDeclTypes {
     defs,
     file_id,
     file_key,
+    strict_native,
     Some(&host),
     Some(&key_to_id),
     Some(module_namespace_defs.as_ref()),

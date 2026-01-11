@@ -26,6 +26,7 @@ pub struct HirDeclLowerer<'a, 'diag> {
   defs: HashMap<(FileId, String), DefId>,
   file: FileId,
   file_key: Option<FileKey>,
+  strict_native: bool,
   local_defs: HashMap<String, HirDefId>,
   diagnostics: &'diag mut Vec<Diagnostic>,
   type_params: HashMap<HirTypeParamId, TypeParamId>,
@@ -47,6 +48,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     defs: HashMap<(FileId, String), DefId>,
     file: FileId,
     file_key: Option<FileKey>,
+    strict_native: bool,
     local_defs: HashMap<String, HirDefId>,
     diagnostics: &'diag mut Vec<Diagnostic>,
     def_map: Option<&'a HashMap<DefId, DefId>>,
@@ -63,6 +65,7 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
       defs,
       file,
       file_key,
+      strict_native,
       local_defs,
       diagnostics,
       type_params: HashMap::new(),
@@ -533,8 +536,16 @@ impl<'a, 'diag> HirDeclLowerer<'a, 'diag> {
     let Some(ty) = self.arenas().type_exprs.get(id.0 as usize).cloned() else {
       return self.store.primitive_ids().unknown;
     };
+    let span = Span::new(self.file, ty.span);
     match ty.kind {
-      TypeExprKind::Any => self.store.primitive_ids().any,
+      TypeExprKind::Any => {
+        if self.strict_native {
+          self
+            .diagnostics
+            .push(codes::FORBIDDEN_ANY.error("forbidden `any` type", span));
+        }
+        self.store.primitive_ids().any
+      }
       TypeExprKind::Unknown => self.store.primitive_ids().unknown,
       TypeExprKind::Never => self.store.primitive_ids().never,
       TypeExprKind::Void => self.store.primitive_ids().void,

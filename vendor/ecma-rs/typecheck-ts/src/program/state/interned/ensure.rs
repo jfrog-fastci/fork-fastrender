@@ -824,6 +824,29 @@ impl ProgramState {
     self.refresh_import_def_types()?;
     self.rebuild_interned_named_def_types();
     self.recompute_global_bindings();
+    if self.compiler_options.strict_native {
+      let entries: Vec<_> = self
+        .interned_def_types
+        .iter()
+        .map(|(def, ty)| (*def, *ty))
+        .collect();
+      for (def, ty) in entries {
+        let Some(data) = self.def_data.get(&def) else {
+          continue;
+        };
+        if self.lib_file_ids.contains(&data.file)
+          || self.file_kinds.get(&data.file) == Some(&FileKind::Dts)
+        {
+          continue;
+        }
+        if matches!(store.type_kind(store.canon(ty)), tti::TypeKind::Any) {
+          self.push_program_diagnostic(codes::FORBIDDEN_ANY.error(
+            "forbidden `any` type",
+            Span::new(data.file, data.span),
+          ));
+        }
+      }
+    }
     codes::normalize_diagnostics(&mut self.diagnostics);
     self.decl_types_fingerprint = Some(fingerprint);
     Ok(())

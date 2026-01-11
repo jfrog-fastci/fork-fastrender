@@ -691,6 +691,11 @@ impl ProgramState {
       None
     };
 
+    let strict_native = self.compiler_options.strict_native
+      && !self.lib_file_ids.contains(&file)
+      && self.file_kinds.get(&file) != Some(&FileKind::Dts);
+    let no_implicit_any = self.compiler_options.no_implicit_any || strict_native;
+
     let prim = store.primitive_ids();
     let caches = self.checker_caches.for_body();
     for def in binding_defs.values() {
@@ -745,7 +750,8 @@ impl ProgramState {
         Some(&expander),
         Some(&self.interned_type_param_decls),
         contextual_fn_ty,
-        self.compiler_options.no_implicit_any,
+        strict_native,
+        no_implicit_any,
         self.compiler_options.jsx,
         Some(&self.cancelled),
       );
@@ -819,7 +825,7 @@ impl ProgramState {
           flow_hooks,
           caches.relation.clone(),
         );
-        let flow_result = check::hir_body::check_body_with_env_with_bindings(
+        let flow_result = check::hir_body::check_body_with_env_with_bindings_strict_native(
           body_id,
           body,
           &lowered.names,
@@ -830,6 +836,7 @@ impl ProgramState {
           flow_bindings.as_ref(),
           flow_relate,
           Some(&expander),
+          strict_native,
         );
         if std::env::var("DEBUG_OVERLOAD").is_ok() {
           for (idx, expr) in body.exprs.iter().enumerate() {

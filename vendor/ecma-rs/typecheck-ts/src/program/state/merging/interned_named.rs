@@ -82,12 +82,17 @@ impl ProgramState {
           continue;
         };
         let has_body = func.stx.function.stx.body.is_some();
+        let strict_native = self.compiler_options.strict_native
+          && !self.lib_file_ids.contains(&file)
+          && self.file_kinds.get(&file) != Some(&FileKind::Dts);
+        let no_implicit_any = self.compiler_options.no_implicit_any || strict_native;
         let (sig_id, params, diags) = Self::lower_function_signature(
           store,
           file,
           func.stx.as_ref(),
           Some(resolver.clone()),
-          self.compiler_options.no_implicit_any,
+          strict_native,
+          no_implicit_any,
         );
         if !diags.is_empty() {
           for diag in diags {
@@ -353,6 +358,7 @@ impl ProgramState {
     file: FileId,
     func: &FuncDecl,
     resolver: Option<Arc<dyn TypeResolver>>,
+    strict_native: bool,
     no_implicit_any: bool,
   ) -> (tti::SignatureId, Vec<TypeParamId>, Vec<Diagnostic>) {
     let mut lowerer = match resolver {
@@ -360,6 +366,7 @@ impl ProgramState {
       None => TypeLowerer::new(Arc::clone(store)),
     };
     lowerer.set_file(file);
+    lowerer.set_strict_native(strict_native);
     let prim = store.primitive_ids();
     let mut type_param_decls = Vec::new();
     if let Some(params) = func.function.stx.type_parameters.as_ref() {

@@ -419,7 +419,11 @@ impl ProgramState {
             }
           }
 
-          if self.compiler_options.no_implicit_any
+          let no_implicit_any = self.compiler_options.no_implicit_any
+            || (self.compiler_options.strict_native
+              && !self.lib_file_ids.contains(&def_data.file)
+              && self.file_kinds.get(&def_data.file) != Some(&FileKind::Dts));
+          if no_implicit_any
             && !skip_implicit_any
             && annotated.is_none()
             && matches!(
